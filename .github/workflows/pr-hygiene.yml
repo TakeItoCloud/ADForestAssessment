@@ -1,0 +1,38 @@
+name: pr-hygiene
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title (Conventional Commits)
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if ! printf '%s' "$PR_TITLE" | grep -Eq '^(feat|fix|perf|refactor|test|docs|chore|build|ci)(\([a-z0-9._/-]+\))?!?: .+'; then
+            echo "::error::PR title does not follow Conventional Commits."
+            echo "Got:      $PR_TITLE"
+            echo "Expected: <type>(<optional scope>): <summary>"
+            echo "Types:    feat fix perf refactor test docs chore build ci"
+            exit 1
+          fi
+          echo "PR title OK: $PR_TITLE"
+
+      - name: Check self-review checklist is complete
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          UNCHECKED=$(printf '%s' "$PR_BODY" | grep -cE '^[[:space:]]*-[[:space:]]\[[[:space:]]\]' || true)
+          if [ "$UNCHECKED" -gt 0 ]; then
+            echo "::error::$UNCHECKED unticked checklist item(s) remain in the PR description."
+            printf '%s' "$PR_BODY" | grep -E '^[[:space:]]*-[[:space:]]\[[[:space:]]\]' || true
+            exit 1
+          fi
+          echo "Checklist complete."

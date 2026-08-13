@@ -1,0 +1,24 @@
+#!/bin/sh
+# Refuse direct pushes to the trunk. Branch + PR instead.
+# Deliberate override: git push --no-verify  (record it in CHANGELOG.md)
+
+protected_branch="main"
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+    case "$remote_ref" in
+        "refs/heads/$protected_branch")
+            echo ""
+            echo "BLOCKED: direct push to '$protected_branch' is not allowed."
+            echo ""
+            echo "  git switch -c feat/<slug>"
+            echo "  git push -u origin feat/<slug>"
+            echo "  gh pr create --fill"
+            echo ""
+            echo "Override: git push --no-verify  (then record it in CHANGELOG.md)"
+            echo ""
+            exit 1
+            ;;
+    esac
+done
+
+exit 0
