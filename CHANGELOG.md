@@ -10,6 +10,23 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-08-13 (phase P4.4)
+
+- Trunk-based workflow conventions backfilled from `TakeItoCloud/template-ps-tool`, which
+  gained them after this repository was created: [`docs/WORKFLOW.md`](docs/WORKFLOW.md) (a
+  mirror of the canonical rulebook), `.github/pull_request_template.md` (the PR self-review
+  checklist), `.github/workflows/pr-hygiene.yml` (fails a PR on unticked checklist boxes or
+  on a PR title that is not a Conventional Commit), and `.githooks/pre-push` (refuses direct
+  pushes to `main`).
+- `.gitattributes` forcing LF on `.githooks/**`, so a Windows checkout cannot hand the hook a
+  CRLF shebang and silently break it.
+- README: a pointer to `docs/WORKFLOW.md`, and a **Green gate** section. This repository
+  uses the default gate — `Invoke-Pester -CI` plus the analyzer, both run from the
+  repository root.
+
+Git hooks are not cloned with a repository. Each existing clone needs
+`git config core.hooksPath .githooks` run once before the pre-push hook is live.
+
 ### Added
 
 - Initial extraction from infra-scripting-suite
