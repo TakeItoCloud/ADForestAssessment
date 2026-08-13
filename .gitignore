@@ -1,6 +1,9 @@
 # Build output
 dist/
 
+# Assessment run output - contains real directory data, never commit
+AdAssessment/
+
 # Logs
 *.log
 

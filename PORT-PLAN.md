@@ -1,18 +1,106 @@
-# __TOOLNAME__ — Port Plan
+# ADForestAssessment — Port Plan
 
 ## Purpose
 
-One paragraph: what __TOOLNAME__ is being built or ported to do, what it replaces, and
-what "finished" means for it. Replace this placeholder before the first phase starts —
-every phase below is judged against it.
+ADForestAssessment is the extracted, versioned home of the AD forest assessment that lived at
+`infra-scripting-suite/powershell/Assessments/ActiveDirectory/Invoke-ADForestAssessment.ps1`.
+It audits a forest read-only and reports only what it could verify. "Finished" means: it runs
+clean against a real multi-domain forest from this repository, the analyzer suspensions below
+are gone, and the return-shape fragility in P3 is closed.
+
+The suite's own build plan — the 17-section coverage checklist, the verdict model, the
+5.1-safe design note — is kept verbatim at
+[docs/PORT-PLAN-source.md](docs/PORT-PLAN-source.md). All 17 sections were Done before
+extraction; this plan starts from there.
 
 ## Phases
 
 | Phase | Scope | Status | Date |
 | --- | --- | --- | --- |
-| P1 | Scaffold: module, tests, lint settings, CI green on an empty tool | Planned | |
-| P2 | Core read-only functionality: gather and report, no writes | Planned | |
-| P3 | Packaging and first tagged release | Planned | |
+| P1 | Extraction onto template-ps-tool: packaging manifest, harness repointing, repo tests, CI green | Done | 2026-08-13 |
+| P2 | Retire the analyzer suspensions that are real debt (see below) | Planned | |
+| P3 | Fix the `return , @()` shape so an empty result is empty at any call site | Planned | |
+| P4 | Runtime verification against a live multi-domain forest with real trusts | Planned | |
+| P5 | Wire the dependency-free harnesses into CI as a second gate | Planned | |
+| P6 | Packaging and first tagged release | Planned | |
+
+## The 5.1 constraint — read before changing anything
+
+The assessment script is written with 5.1-safe idioms on purpose: **no `??`, no `?:`, no
+ternary**, so it runs on a stock domain controller's Windows PowerShell 5.1 as well as on
+pwsh 7. The manifest declares `PowerShellVersion = '5.1'` and
+`CompatiblePSEditions = @('Desktop','Core')`, and `PSUseCompatibleSyntax` targets both `5.1`
+and `7.4`. A test asserts all of it.
+
+This is the one place in the extracted toolset where the house "add `#Requires -Version 7.4`"
+rule is deliberately **not** applied. Running on the DC is the point.
+
+## Backlog detail
+
+### P2 — Analyzer suspensions
+
+`PSScriptAnalyzerSettings.psd1` excludes nine rules. Only some are debt; the file records the
+split, and it matters because most of the volume is in the test harness, not the tool.
+
+**Real debt, in the assessment script:**
+
+| Rule | Hits in the script | What the fix means |
+| --- | --- | --- |
+| `PSAvoidUsingEmptyCatchBlock` | 9 | Every optional module or external tool degrades to `Not Assessed`, which is the fail-closed contract working as designed — but the catch should still record *why* through `Write-Log`. Right now "not installed" and "threw" are indistinguishable in the report. |
+| `PSAvoidOverwritingBuiltInCmdlets` | 1 | The script defines `Write-Log`, colliding with a cmdlet present in some PowerShell profiles. |
+| `PSUseShouldProcessForStateChangingFunctions` | 4 | The `New-*` functions build in-memory finding objects and write the local report bundle. Nothing touches the directory, so this is a naming artifact rather than a safety gap — but house standards still want it. |
+| `PSReviewUnusedParameter` | 12 | Collectors take the shared collector parameter set for interface symmetry. Carried over from the tool's own settings, which documented exactly this. |
+
+**Harness-only, and correct as written — do not "fix":**
+
+`PSAvoidUsingWriteHost` (25), `PSReviewUnusedParameter` (53),
+`PSAvoidAssignmentToAutomaticVariable` (3), `PSAvoidOverwritingBuiltInCmdlets` (3),
+`PSAvoidUsingPlainTextForPassword` (1), `PSUsePSCredentialType` (1) and
+`PSUseSingularNouns` (1) all land in `tests\harness\`. Those runners print their own results
+to the console by design, stub `Import-Module` / `Start-Transcript` / `Stop-Transcript` so a
+smoke run never touches the real host, and declare the real cmdlets' parameters on stubs for
+signature fidelity. The credential findings are on a stub `Get-ADTrust`; no credential is
+ever handled.
+
+The clean way to close this without weakening the tool's gate is to lint `src\` and
+`tests\harness\` with different settings, rather than one union of exclusions.
+
+### P3 — `return , @()` returns one empty array, not nothing
+
+`Get-AdfaTrustSecurityWarning` ends with `return , $warnings.ToArray()`. The comma stops a
+single warning unrolling to a scalar — but in the empty case it writes *one object* (the
+empty array) to the pipeline. So:
+
+```powershell
+@(Get-AdfaTrustSecurityWarning -Trust $cleanTrust).Count   # 1  <- surprising
+$w = Get-AdfaTrustSecurityWarning -Trust $cleanTrust
+@($w).Count                                                # 0  <- correct
+```
+
+Every caller in the script assigns first, so **the tool reports clean trusts correctly** —
+verified end to end during extraction, and now covered by a test. But the contract is a trap,
+and the inherited Pester file fell into it: its "returns nothing for a clean trust" case used
+the first form and had been failing. That test was corrected during extraction rather than
+deleted, and a second test now asserts the end-to-end verdict is `Healthy`.
+
+Audit every `return , …` in the script and settle on one shape that is empty at any call
+site.
+
+### P4 — Runtime verification
+
+The extraction was gated on static analysis and the pure-logic test suite. The script has not
+been run against a forest from this repository. Run it against a multi-domain forest with at
+least one external and one forest trust, and confirm: both trust directions verify
+independently, an intentionally broken direction reports `Failed` and not `Not Assessed`,
+optional modules that are absent produce `Not Assessed` sections, and the HTML plus
+CSV-per-topic bundle lands in Documents.
+
+### P5 — Harnesses in CI
+
+`tests\harness\Run-Validation.ps1` and `Run-SmokeTest.ps1` are dependency-free by design, for
+hosts where PSGallery is blocked. They are not `*.Tests.ps1`, so `Invoke-Pester` skips them
+and CI never runs them today. Add a CI step that executes both and fails on a non-zero exit —
+they are the gate that works everywhere, and letting them rot defeats the reason they exist.
 
 ## Rules
 
@@ -25,7 +113,9 @@ every phase below is judged against it.
 - Nothing is deferred silently. Work moved out of a phase becomes a **new row** in the
   table above with its own scope and `Planned` status — it is never dropped in a comment
   or left implicit in the commit message.
-- Read-only/report mode is the default. Any phase that introduces a state-changing
-  operation must ship it behind `SupportsShouldProcess` and cover `-WhatIf` in tests.
-- No fabricated data: sample output, fixtures, and documentation examples reflect what
-  the code actually produces.
+- The tool stays read-only against the directory. Any phase that introduces a write must
+  ship it behind `SupportsShouldProcess` and cover `-WhatIf` in tests.
+- Coverage-aware and fail-closed is not negotiable: anything not collected is
+  `Not Assessed`, never a false `Pass` or `0`, and an untested trust direction is never
+  reported as `Verified`.
+- The 5.1 floor stays until someone decides otherwise on the record.

@@ -12,7 +12,7 @@
 .EXAMPLE
     PS> .\build\package.ps1
 
-    Creates dist\__TOOLNAME__-v0.1.0.zip and prints its full path.
+    Creates dist\ADForestAssessment-v0.1.0.zip and prints its full path.
 #>
 [CmdletBinding()]
 param(
