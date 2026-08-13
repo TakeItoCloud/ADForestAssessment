@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality-gate:
+    name: lint and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install PowerShell modules
+        run: Install-Module Pester, PSScriptAnalyzer -Force -Scope CurrentUser
+
+      - name: Lint (PSScriptAnalyzer)
+        run: |
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+          if ($results) {
+            $results | Format-Table -AutoSize | Out-String -Width 200
+            throw "PSScriptAnalyzer reported $($results.Count) finding(s)."
+          }
+          Write-Output 'PSScriptAnalyzer: 0 findings.'
+
+      - name: Test (Pester)
+        run: Invoke-Pester -CI

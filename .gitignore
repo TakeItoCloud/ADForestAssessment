@@ -1,0 +1,25 @@
+# Build output
+dist/
+
+# Logs
+*.log
+
+# Test output
+TestResults*.xml
+coverage*.xml
+
+# Editor
+.vscode/
+# Uncomment to share the workspace settings with the team:
+# !.vscode/settings.json
+.idea/
+*.suo
+*.user
+
+# OS junk
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
