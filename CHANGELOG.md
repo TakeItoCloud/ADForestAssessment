@@ -10,6 +10,33 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed — 2026-08-14 (phase P5.3)
+
+The three workflow files backfilled in P4.4 are refreshed from
+`TakeItoCloud/template-ps-tool`, which moved a phase ahead in P5.2. All three are copied
+byte-for-byte from the template's `main` and verified by git blob SHA, so this repository's
+mirrors are identical to the canonical files rather than merely similar to them.
+
+- `.github/pull_request_template.md` — the seven-item self-review checklist is replaced by
+  three evidence lines (`- **Read-only default:**`, `- **No fabricated data:**`,
+  `- **Verified against real data:**`), each of which must state **how** the property was
+  verified. The checklist was ticked by whoever wrote the change, so it recorded a claim
+  rather than controlling anything.
+- `.github/workflows/pr-hygiene.yml` — the Conventional Commits title check is unchanged.
+  The unticked-box check is replaced by an evidence check that fails, naming each line, when
+  a label carries nothing after its colon, and fails when the `## Evidence` section is
+  absent. `- [ ]` no longer fails anything anywhere: a grep cannot tell a stray box inside
+  pasted gate output from a real unticked item.
+- `docs/WORKFLOW.md` — §2 to §6 are rewritten around the three commands in `ps-toolbox`
+  (`Start-ToolChange`, `Complete-ToolChange`, `Publish-ToolRelease`), plus a section on
+  where they come from and on a repository with no CI reporting `CiChecks / NotAssessed` and
+  merging anyway. §1 and §7 to §11 are unchanged, including the "Rewriting `main`"
+  prohibition and §8's account of what the Free plan actually enforces.
+
+Nothing outside those three files changed: `.githooks/pre-push` and `.gitattributes` were
+compared against the template by blob SHA and already matched, and `README.md`, `ci.yml`,
+`src/` and `tests/` are untouched.
+
 ### Added — 2026-08-13 (phase P4.4)
 
 - Trunk-based workflow conventions backfilled from `TakeItoCloud/template-ps-tool`, which

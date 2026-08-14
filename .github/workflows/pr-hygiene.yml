@@ -25,14 +25,51 @@ jobs:
           fi
           echo "PR title OK: $PR_TITLE"
 
-      - name: Check self-review checklist is complete
+      # The seven-item checklist this replaced was ticked by whoever wrote the change, so
+      # it recorded rather than controlled. Three lines that must say HOW each property was
+      # verified are harder to fill in emptily and more useful to read later.
+      #
+      # Unticked boxes are deliberately NOT checked any more: the checklist is gone, and a
+      # '- [ ]' anywhere in a body - including inside a pasted gate-output code fence, which
+      # a grep cannot tell from prose - is no longer a hygiene failure.
+      #
+      # The body reaches the shell through env:, never through ${{ }} interpolation into
+      # run:, so a title or body containing shell metacharacters is data and not code.
+      - name: Check the three evidence lines are filled in
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          UNCHECKED=$(printf '%s' "$PR_BODY" | grep -cE '^[[:space:]]*-[[:space:]]\[[[:space:]]\]' || true)
-          if [ "$UNCHECKED" -gt 0 ]; then
-            echo "::error::$UNCHECKED unticked checklist item(s) remain in the PR description."
-            printf '%s' "$PR_BODY" | grep -E '^[[:space:]]*-[[:space:]]\[[[:space:]]\]' || true
+          # GitHub delivers the body with CRLF line endings; a lone CR after the label
+          # would otherwise read as content and let an empty line pass.
+          BODY=$(printf '%s' "$PR_BODY" | tr -d '\r')
+
+          if ! printf '%s\n' "$BODY" | grep -qE '^##[[:space:]]+Evidence[[:space:]]*$'; then
+            echo "::error::The pull request body has no '## Evidence' section, so none of the three evidence lines could be checked."
+            echo "Expected a '## Evidence' heading followed by:"
+            echo '  - **Read-only default:** <how this was verified>'
+            echo '  - **No fabricated data:** <how this was verified>'
+            echo '  - **Verified against real data:** <how this was verified>'
             exit 1
           fi
-          echo "Checklist complete."
+
+          STATUS=0
+          for LABEL in "Read-only default" "No fabricated data" "Verified against real data"; do
+            LINE=$(printf '%s\n' "$BODY" | grep -E "^[[:space:]]*-[[:space:]]+\*\*${LABEL}:\*\*" | head -n 1 || true)
+
+            if [ -z "$LINE" ]; then
+              echo "::error::Evidence line '- **${LABEL}:**' is missing from the pull request body."
+              STATUS=1
+              continue
+            fi
+
+            VALUE=$(printf '%s' "$LINE" | sed -E "s/^[[:space:]]*-[[:space:]]+\*\*${LABEL}:\*\*[[:space:]]*//")
+            if [ -z "$VALUE" ]; then
+              echo "::error::Evidence line '- **${LABEL}:**' is empty. State HOW the property was verified. 'Yes' or 'N/A' alone is not evidence; if the property genuinely does not apply to this change, say why in a sentence."
+              STATUS=1
+            fi
+          done
+
+          if [ "$STATUS" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Evidence lines OK: all three state how they were verified."
