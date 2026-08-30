@@ -1,4 +1,10 @@
 #Requires -Version 5.1
+# ------------------------------------------------------------------------------
+#  ADForestAssessment
+#  Copyright (c) 2026 Carlos Annes / TakeItToCloud. All rights reserved.
+#  Licensed, not sold. Unauthorised copying, redistribution, or commercial use
+#  is prohibited. See LICENSE at the repository root.
+# ------------------------------------------------------------------------------
 <#
 .SYNOPSIS
     Near-enterprise-grade Active Directory forest assessment with two-way trust health.
@@ -91,6 +97,14 @@
 .PARAMETER IncludeRepadmin
     Also capture raw 'repadmin /replsummary' and per-DC '/showrepl /errorsonly' under raw\.
 
+.PARAMETER IncludeLingeringObjectScan
+    Proactively enumerate lingering objects per DC with
+    'repadmin /removelingeringobjects ... /advisory_mode' (each DC compared against its
+    domain's PDC emulator). Advisory mode changes NOTHING in the directory, but it does
+    write events (1938/1942/1946) to the target DCs' Directory Service logs - hence
+    opt-in. Strongly recommended in a post-restore recovery, where tombstone lifetime
+    may already have been exceeded.
+
 .PARAMETER SkipTrustVerification
     Collect trust configuration but do not run the external secure-channel verification
     (nltest / netdom). Trust health is then reported as "Not Assessed".
@@ -159,6 +173,7 @@ param(
 
     [switch]$IncludeDcdiag,
     [switch]$IncludeRepadmin,
+    [switch]$IncludeLingeringObjectScan,
     [switch]$SkipTrustVerification,
 
     [string]$Server,
@@ -180,7 +195,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.4.0'
+    Version                 = '1.5.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -601,6 +616,56 @@ function Test-AdfaSecureChannel {
     return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'nltest/netdom'; Detail = 'No conclusive verification output.' }
 }
 
+function Test-AdfaRemoteSecureChannel {
+    <#
+    .SYNOPSIS
+        Verifies a trust direction by executing nltest /sc_verify ON a domain controller
+        of the partner domain, over WinRM. The inbound side of a trust can only be proven
+        from the partner's side: running nltest locally against our own domain name
+        verifies this machine's own channel and returns NERR_Success on any healthy DC,
+        regardless of the trust's real state. Fail-closed: when the partner DC cannot be
+        remoted to, returns Not Assessed naming the exact command to run there - never a
+        fabricated Verified.
+    .OUTPUTS
+        [pscustomobject] Result, Tool, Detail
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$PartnerDomain,
+        [Parameter(Mandatory)][string]$VerifyDomain,
+        [string]$PartnerDc,
+        [pscredential]$Credential,
+        [int]$RpcPortTimeoutMs = 1200
+    )
+    $remoteHost = $PartnerDc
+    if ([string]::IsNullOrWhiteSpace($remoteHost)) { $remoteHost = $PartnerDomain }
+    $manual = ("Run 'nltest /sc_verify:{0}' on a DC in {1} to verify this direction." -f $VerifyDomain, $PartnerDomain)
+
+    if (-not (Test-TcpPort -ComputerName $remoteHost -Port 5985 -TimeoutMs $RpcPortTimeoutMs)) {
+        return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'winrm'; Detail = ("WinRM (5985) not reachable on {0}. {1}" -f $remoteHost, $manual) }
+    }
+    try {
+        $icm = @{
+            ComputerName = $remoteHost
+            ScriptBlock  = { param($d) & nltest.exe "/sc_verify:$d" 2>&1 | Out-String }
+            ArgumentList = $VerifyDomain
+            ErrorAction  = 'Stop'
+        }
+        if ($Credential) { $icm.Credential = $Credential }
+        $out = [string](Invoke-Command @icm)
+        if ($out -match 'NERR_Success') {
+            return [pscustomobject]@{ Result = 'Verified'; Tool = 'winrm+nltest'; Detail = ("nltest /sc_verify:{0} executed on {1} reported NERR_Success." -f $VerifyDomain, $remoteHost) }
+        }
+        $excerpt = (($out -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First 3) -join ' | '
+        if (-not $excerpt) { $excerpt = 'no output' }
+        return [pscustomobject]@{ Result = 'Failed'; Tool = 'winrm+nltest'; Detail = ("nltest /sc_verify:{0} executed on {1} did not report success: {2}" -f $VerifyDomain, $remoteHost, $excerpt) }
+    }
+    catch {
+        return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'winrm'; Detail = ("WinRM query to {0} failed: {1} {2}" -f $remoteHost, $_.Exception.Message, $manual) }
+    }
+}
+
 function Get-AdfaTrustSecurityWarning {
     <#
     .SYNOPSIS
@@ -706,10 +771,14 @@ function Get-AdfaTrustHealth {
                 $outbound = $o.Result; $outboundDetail = $o.Detail
             }
             if ($direction -eq 'Inbound' -or $direction -eq 'Bidirectional') {
-                # The inbound side is validated from the trusted partner; from the local side we
-                # can only confirm it when the partner accepts our verification request.
-                $i = Test-AdfaSecureChannel -SourceDomain $target -TargetDomain $DomainName `
-                    -TimeoutSeconds $TimeoutSeconds -Retries 1 -RetryDelaySeconds $RetryDelaySeconds
+                # The inbound direction can only be proven from the partner's side. A local
+                # nltest against our own domain name verifies this machine's own channel and
+                # succeeds on any healthy DC - a false Verified. Execute the verification ON
+                # a partner DC over WinRM; degrade to Not Assessed when that is not possible.
+                $trustCred = $null
+                if ($AdParams.ContainsKey('Credential')) { $trustCred = $AdParams['Credential'] }
+                $i = Test-AdfaRemoteSecureChannel -PartnerDomain $target -VerifyDomain $DomainName `
+                    -PartnerDc $probeHost -Credential $trustCred -RpcPortTimeoutMs $RpcPortTimeoutMs
                 $inbound = $i.Result; $inboundDetail = $i.Detail
             }
         }
@@ -1002,7 +1071,14 @@ function Get-AdfaDcDiagnostic {
         [int]$RetryDelaySeconds = 2,
         [int]$RpcPortTimeoutMs = 1200
     )
-    $tests = 'Netlogons', 'Services', 'Replications', 'FsmoCheck', 'Advertising', 'SysVolCheck'
+    # Full post-restore grid. The nine beyond the original six matter specifically after
+    # a restore: MachineAccount (DC computer object/SPNs), ObjectsReplicated (DSA objects
+    # converged), RidManager (RID pool reachable), KccEvent (topology errors), Intersite,
+    # VerifyReferences/CrossRefValidation (FSMO + partition cross-refs intact),
+    # KnowsOfRoleHolders, DFSREvent (SYSVOL replication errors).
+    $tests = 'Netlogons', 'Services', 'Replications', 'FsmoCheck', 'Advertising', 'SysVolCheck',
+        'MachineAccount', 'ObjectsReplicated', 'RidManager', 'KccEvent', 'VerifyReferences',
+        'CrossRefValidation', 'KnowsOfRoleHolders', 'Intersite', 'DFSREvent'
     $haveDcdiag = Test-CommandAvailable -Name 'dcdiag.exe'
     $rows = foreach ($dc in $DomainControllers) {
         $row = [ordered]@{ DomainController = $dc; Status = $null; Ping = $null }
@@ -1741,30 +1817,247 @@ function Get-AdfaDcHardening {
     return , @($rows)
 }
 
-function Get-AdfaBackupStatus {
+function ConvertFrom-AdfaShowreplCsv {
     <#
     .SYNOPSIS
-        Last directory-partition backup times via 'repadmin /showbackup'.
+        Pure parser for 'repadmin /showrepl * /csv' output. Locates the CSV header and
+        returns one object per replication link. Tolerates banner lines before the header.
     .OUTPUTS
         [pscustomobject[]]
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([int]$TimeoutSeconds = 90, [int]$Retries = 2, [int]$RetryDelaySeconds = 2, [int]$MaxAgeDays = 30)
+    param([AllowEmptyString()][string]$Text = '')
+    # Plain returns on purpose: callers wrap with @(...), and the `return , @()` shape
+    # would hand them one element that IS the empty array (PORT-PLAN P3).
+    if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
+    $lines = @($Text -split "`r?`n")
+    $headerIdx = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match 'Destination DSA' -and $lines[$i] -match 'Naming Context') { $headerIdx = $i; break }
+    }
+    if ($headerIdx -lt 0) { return @() }
+    $csv = @($lines[$headerIdx..($lines.Count - 1)] | Where-Object { $_ -match '\S' })
+    try { return @($csv | ConvertFrom-Csv) }
+    catch { return @() }
+}
+
+function Get-AdfaRepadminReplication {
+    <#
+    .SYNOPSIS
+        Cross-checks replication with 'repadmin /showrepl * /csv', which fans out from
+        this host and reports links the Get-ADReplication* cmdlets miss when a partner
+        is unreachable (the cmdlets query each DC's own view; repadmin reports the
+        failing edge from the surviving side). One finding per failing link; a Pass
+        summary when every reported link is clean.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([int]$TimeoutSeconds = 300, [int]$Retries = 2, [int]$RetryDelaySeconds = 2)
+    if (-not (Test-CommandAvailable -Name 'repadmin.exe')) {
+        return , @(New-Finding -Area 'Replication' -Item 'repadmin cross-check' -Status $script:Status.NotAssessed -Detail 'repadmin.exe not available on this host.')
+    }
+    $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments '/showrepl * /csv' `
+        -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
+    $links = @(ConvertFrom-AdfaShowreplCsv -Text $r.StdOut)
+    if (@($links).Count -eq 0) {
+        return , @(New-Finding -Area 'Replication' -Item 'repadmin cross-check' -Status $script:Status.NotAssessed -Detail ("Could not parse 'repadmin /showrepl * /csv' output. {0}" -f $(if ($r.Error) { $r.Error } else { 'See raw capture (-IncludeRepadmin) for the unparsed output.' })))
+    }
+    $rows = @()
+    $failing = 0
+    foreach ($l in $links) {
+        $names = $l.PSObject.Properties.Name
+        $failures = 0
+        if ($names -contains 'Number of Failures' -and "$($l.'Number of Failures')" -match '^\d+$') { $failures = [int]$l.'Number of Failures' }
+        if ($failures -gt 0) {
+            $failing++
+            $src = ''; $dst = ''; $nc = ''; $lastOk = ''; $status = ''
+            if ($names -contains 'Source DSA') { $src = [string]$l.'Source DSA' }
+            if ($names -contains 'Destination DSA') { $dst = [string]$l.'Destination DSA' }
+            if ($names -contains 'Naming Context') { $nc = [string]$l.'Naming Context' }
+            if ($names -contains 'Last Success Time') { $lastOk = [string]$l.'Last Success Time' }
+            if ($names -contains 'Last Failure Status') { $status = [string]$l.'Last Failure Status' }
+            $rows += New-Finding -Area 'Replication' -Item ("repadmin: {0} <- {1}" -f $dst, $src) -Status $script:Status.Fail `
+                -Detail ("{0} consecutive failure(s) on {1}; last failure status {2}; last success {3}." -f $failures, $nc, $status, $(if ($lastOk) { $lastOk } else { 'unknown' }))
+        }
+    }
+    if ($failing -eq 0) {
+        $rows += New-Finding -Area 'Replication' -Item 'repadmin cross-check' -Status $script:Status.Pass -Detail ("repadmin /showrepl reports {0} link(s), all with zero failures." -f @($links).Count)
+    }
+    else {
+        $rows += New-Finding -Area 'Replication' -Item 'repadmin cross-check summary' -Status $script:Status.Fail -Detail ("{0} of {1} replication link(s) report failures." -f $failing, @($links).Count)
+    }
+    return , @($rows)
+}
+
+function Get-AdfaLatestBackupDate {
+    <#
+    .SYNOPSIS
+        Pure parser: extracts the most recent date from 'repadmin /showbackup' output.
+        Returns $null when no date can be found - the caller reports Not Assessed, never
+        a fabricated age.
+    .OUTPUTS
+        [nullable[datetime]]
+    #>
+    [CmdletBinding()]
+    [OutputType([nullable[datetime]])]
+    param([AllowEmptyString()][string]$Text = '')
+    $best = $null
+    foreach ($m in [regex]::Matches($Text, '\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?')) {
+        $d = [datetime]::MinValue
+        if ([datetime]::TryParseExact($m.Value, [string[]]@('yyyy-MM-dd HH:mm:ss', 'yyyy-MM-dd HH:mm'), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$d)) {
+            if ($null -eq $best -or $d -gt $best) { $best = $d }
+        }
+    }
+    foreach ($m in [regex]::Matches($Text, '\d{1,2}/\d{1,2}/\d{4}( \d{1,2}:\d{2}(:\d{2})?)?')) {
+        $d = [datetime]::MinValue
+        if ([datetime]::TryParse($m.Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$d)) {
+            if ($null -eq $best -or $d -gt $best) { $best = $d }
+        }
+    }
+    return $best
+}
+
+function Get-AdfaBackupStatus {
+    <#
+    .SYNOPSIS
+        Last directory-partition backup time PER DC via 'repadmin /showbackup <dc>'.
+        In a restore-from-backup recovery this tells you which DCs were restored and
+        when - correlate with the machine-account password ages in DcSecureChannel.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        [int]$TimeoutSeconds = 90,
+        [int]$Retries = 2,
+        [int]$RetryDelaySeconds = 2,
+        [int]$MaxAgeDays = 30,
+        [int]$RpcPortTimeoutMs = 1200
+    )
     if (-not (Test-CommandAvailable -Name 'repadmin.exe')) {
         return , @(New-Finding -Area 'Backup' -Item 'Directory backup status' -Status $script:Status.NotAssessed -Detail 'repadmin.exe not available on this host.')
     }
-    $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments '/showbackup *' -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
     $rows = @()
-    # Parse lines like: "<partition> : <date time>"
-    $backupLines = @($r.StdOut -split "`r?`n" | Where-Object { $_ -match '\d{4}-\d{2}-\d{2}' -or $_ -match '\d{1,2}/\d{1,2}/\d{4}' })
-    if ($backupLines.Count -eq 0) {
-        $rows += New-Finding -Area 'Backup' -Item 'Directory backup status' -Status $script:Status.NotAssessed -Detail 'Could not parse repadmin /showbackup output.'
-    }
-    else {
-        foreach ($line in ($backupLines | Select-Object -First 12)) {
-            $rows += New-Finding -Area 'Backup' -Item 'Partition backup' -Status $script:Status.Info -Detail $line.Trim()
+    $targets = @($DomainControllers | Where-Object { $_ })
+    if (@($targets).Count -eq 0) {
+        # No DC list - fall back to the local view.
+        $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments '/showbackup' -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
+        $latest = Get-AdfaLatestBackupDate -Text $r.StdOut
+        if ($null -eq $latest) {
+            $rows += New-Finding -Area 'Backup' -Item 'Directory backup (local DC)' -Status $script:Status.NotAssessed -Detail 'Could not parse repadmin /showbackup output.'
         }
+        else {
+            $age = ((Get-Date) - $latest).TotalDays
+            $status = $script:Status.Pass
+            if ($age -gt $MaxAgeDays) { $status = $script:Status.Warning }
+            $rows += New-Finding -Area 'Backup' -Item 'Directory backup (local DC)' -Status $status -Detail ("Latest partition backup {0:yyyy-MM-dd HH:mm} ({1:N0} day(s) ago)." -f $latest, $age)
+        }
+        return , @($rows)
+    }
+    foreach ($dc in $targets) {
+        if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
+            $rows += New-Finding -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail 'DC not reachable (RPC/135) - run repadmin /showbackup locally on it.'
+            continue
+        }
+        $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments ("/showbackup {0}" -f $dc) -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
+        $latest = Get-AdfaLatestBackupDate -Text $r.StdOut
+        if ($null -eq $latest) {
+            $rows += New-Finding -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail ("Could not parse repadmin /showbackup output for this DC.{0}" -f $(if ($r.Error) { ' ' + $r.Error } else { '' }))
+        }
+        else {
+            $age = ((Get-Date) - $latest).TotalDays
+            $status = $script:Status.Pass
+            if ($age -gt $MaxAgeDays) { $status = $script:Status.Warning }
+            $rows += New-Finding -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $status -Detail ("Latest partition backup {0:yyyy-MM-dd HH:mm} ({1:N0} day(s) ago). A very old value on a restored DC dates the backup it came from." -f $latest, $age)
+        }
+    }
+    return , @($rows)
+}
+
+function Get-AdfaLingeringObjectScan {
+    <#
+    .SYNOPSIS
+        Proactive lingering-object enumeration using
+        'repadmin /removelingeringobjects <dc> <reference-dsa-guid> <NC> /advisory_mode'.
+        Advisory mode makes NO directory changes - it only compares each DC against the
+        reference DC (the domain's PDC emulator) and logs what WOULD be removed. This is
+        the check that finds lingering objects BEFORE they block replication with event
+        1988, instead of after. Opt-in via -IncludeLingeringObjectScan because it writes
+        events (1938/1942/1946) to the target DCs' Directory Service logs.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{},
+        [int]$TimeoutSeconds = 300,
+        [int]$RpcPortTimeoutMs = 1200
+    )
+    $rows = @()
+    if (-not (Test-CommandAvailable -Name 'repadmin.exe')) {
+        return , @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail 'repadmin.exe not available on this host.')
+    }
+    $p = @{} + $AdParams; $p.Server = $DomainName
+    $domainNc = ''; $refDc = ''; $dcs = @()
+    try {
+        $dom = Get-ADDomain @p
+        $domainNc = [string]$dom.DistinguishedName
+        $refDc = [string]$dom.PDCEmulator
+        $dcs = @(Get-ADDomainController -Filter * @p | Select-Object -ExpandProperty HostName)
+    }
+    catch {
+        return , @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail $_.Exception.Message)
+    }
+    $refGuid = ''
+    try {
+        $inv = @(Get-AdfaDsaInventory -AdParams $AdParams)
+        $refNorm = $refDc.ToLowerInvariant().TrimEnd('.')
+        foreach ($d in $inv) {
+            if ($d.DnsHostName -and $d.DnsHostName.ToLowerInvariant().TrimEnd('.') -eq $refNorm) { $refGuid = $d.DsaGuid; break }
+        }
+    }
+    catch { }
+    if (-not $refGuid) {
+        return , @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail ("Could not resolve the DSA GUID of the reference DC ({0})." -f $refDc))
+    }
+
+    foreach ($dc in $dcs) {
+        if ($dc.ToLowerInvariant().TrimEnd('.') -eq $refDc.ToLowerInvariant().TrimEnd('.')) { continue }
+        if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
+            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail 'DC not reachable (RPC/135).'
+            continue
+        }
+        $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' `
+            -Arguments ('/removelingeringobjects {0} {1} "{2}" /advisory_mode' -f $dc, $refGuid, $domainNc) `
+            -TimeoutSeconds $TimeoutSeconds -Retries 1
+        $out = [string]$r.StdOut
+        $count = -1
+        if ($out -match '(?i)(\d+)\s+lingering object') { $count = [int]$Matches[1] }
+        else {
+            $perLine = ([regex]::Matches($out, '(?i)^\s*lingering obj', [System.Text.RegularExpressions.RegexOptions]::Multiline)).Count
+            if ($perLine -gt 0) { $count = $perLine }
+            elseif ($r.Success) { $count = 0 }
+        }
+        if ($count -gt 0) {
+            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.Fail -Detail ("{0} lingering object(s) found relative to {1} on {2}. Directory Service events 1946 on {3} list each object." -f $count, $refDc, $domainNc, $dc)
+        }
+        elseif ($count -eq 0) {
+            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.Pass -Detail ("No lingering objects relative to {0} on {1}." -f $refDc, $domainNc)
+        }
+        else {
+            $excerpt = (($out -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First 3) -join ' | '
+            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail ("Inconclusive output: {0}" -f $(if ($excerpt) { $excerpt } else { $r.Error }))
+        }
+    }
+    if (@($rows).Count -eq 0) {
+        $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.Info -Detail ("Only one DC in {0} - nothing to compare against the reference." -f $DomainName)
     }
     return , @($rows)
 }
@@ -1889,37 +2182,71 @@ function Get-AdfaExchangeSchemaMarker {
 # region Recovery & consistency (post-incident)
 # ===========================================================================
 
+function Get-AdfaDnsQueryOutcome {
+    <#
+    .SYNOPSIS
+        Pure classification of a DNS query result. Distinguishes an authoritative
+        "the record does not exist" from "the server did not answer" - conflating them
+        would let a dead DNS server masquerade as a missing record (or vice versa).
+    .OUTPUTS
+        [string] NoTool | Resolved | NoRecord | NoAnswer
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [bool]$Available = $true,
+        [int]$TargetCount = 0,
+        [string]$ErrorText = ''
+    )
+    if (-not $Available) { return 'NoTool' }
+    if ($TargetCount -gt 0) { return 'Resolved' }
+    if ($ErrorText -match '(?i)does not exist|name_error|nxdomain|no records|non-existent|no such') { return 'NoRecord' }
+    return 'NoAnswer'
+}
+
 function Resolve-AdfaDnsRecord {
     <#
     .SYNOPSIS
         Resolves a DNS record (SRV or CNAME) with Resolve-DnsName, falling back to
-        nslookup where the DnsClient module is absent. Fail-closed: reports whether a
-        resolver was available at all, so "no tool" is never conflated with "no record".
+        nslookup where the DnsClient module is absent. -Server queries a specific DNS
+        server, so AD-integrated zone content can be compared PER SERVER - in a forest
+        with broken replication the _msdcs content genuinely differs between DCs, and
+        one resolver's view is not forest truth. Fail-closed: "no tool", "no record"
+        and "no answer" are reported as distinct outcomes, never conflated.
     .OUTPUTS
-        [pscustomobject] Available (bool), Targets (string[]), Error (string)
+        [pscustomobject] Available (bool), Targets (string[]), Error (string),
+        Outcome (NoTool|Resolved|NoRecord|NoAnswer)
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][ValidateSet('SRV', 'CNAME')][string]$Type
+        [Parameter(Mandatory)][ValidateSet('SRV', 'CNAME')][string]$Type,
+        [string]$Server
     )
     $targets = @()
     if (Test-CommandAvailable -Name 'Resolve-DnsName') {
+        $err = ''
         try {
-            $ans = @(Resolve-DnsName -Name $Name -Type $Type -DnsOnly -ErrorAction Stop)
+            $rp = @{ Name = $Name; Type = $Type; DnsOnly = $true; ErrorAction = 'Stop' }
+            if ($Server) { $rp.Server = $Server }
+            $ans = @(Resolve-DnsName @rp)
             foreach ($a in $ans) {
                 if ($Type -eq 'SRV' -and $a.PSObject.Properties['NameTarget'] -and $a.NameTarget) { $targets += [string]$a.NameTarget }
                 elseif ($Type -eq 'CNAME' -and $a.PSObject.Properties['NameHost'] -and $a.NameHost) { $targets += [string]$a.NameHost }
             }
-            return [pscustomobject]@{ Available = $true; Targets = @($targets | Sort-Object -Unique); Error = '' }
         }
-        catch {
-            return [pscustomobject]@{ Available = $true; Targets = @(); Error = $_.Exception.Message }
+        catch { $err = $_.Exception.Message }
+        $targets = @($targets | Sort-Object -Unique)
+        return [pscustomobject]@{
+            Available = $true; Targets = $targets; Error = $err
+            Outcome   = Get-AdfaDnsQueryOutcome -Available $true -TargetCount @($targets).Count -ErrorText $err
         }
     }
     if (Test-CommandAvailable -Name 'nslookup.exe') {
-        $r = Invoke-ExternalCommand -FilePath 'nslookup.exe' -Arguments ("-type={0} {1}" -f $Type, $Name) -TimeoutSeconds 30 -Retries 1
+        $lookupArgs = "-type={0} {1}" -f $Type, $Name
+        if ($Server) { $lookupArgs = "{0} {1}" -f $lookupArgs, $Server }
+        $r = Invoke-ExternalCommand -FilePath 'nslookup.exe' -Arguments $lookupArgs -TimeoutSeconds 20 -Retries 1
         if ($r.StdOut) {
             foreach ($line in ($r.StdOut -split "`r?`n")) {
                 if ($Type -eq 'SRV' -and $line -match 'svr hostname\s*=\s*(\S+)') { $targets += $Matches[1].TrimEnd('.') }
@@ -1927,10 +2254,57 @@ function Resolve-AdfaDnsRecord {
             }
         }
         $err = ''
-        if (@($targets).Count -eq 0) { $err = 'No records returned by nslookup.' }
-        return [pscustomobject]@{ Available = $true; Targets = @($targets | Sort-Object -Unique); Error = $err }
+        if (@($targets).Count -eq 0) {
+            if ($r.StdOut -match '(?i)non-existent domain|NXDOMAIN') { $err = 'Non-existent domain (no such record).' }
+            elseif ($r.StdOut -match '(?i)timed out|no response|server failed') { $err = 'DNS server did not answer.' }
+            else { $err = 'No records returned by nslookup.' }
+        }
+        $targets = @($targets | Sort-Object -Unique)
+        return [pscustomobject]@{
+            Available = $true; Targets = $targets; Error = $err
+            Outcome   = Get-AdfaDnsQueryOutcome -Available $true -TargetCount @($targets).Count -ErrorText $err
+        }
     }
-    return [pscustomobject]@{ Available = $false; Targets = @(); Error = 'Neither Resolve-DnsName nor nslookup.exe is available on this host.' }
+    return [pscustomobject]@{
+        Available = $false; Targets = @()
+        Error     = 'Neither Resolve-DnsName nor nslookup.exe is available on this host.'
+        Outcome   = 'NoTool'
+    }
+}
+
+function Compare-AdfaDnsServerView {
+    <#
+    .SYNOPSIS
+        Pure comparison of multiple DNS servers' views of the same record set against
+        the host set Active Directory contains. Reports per-server divergence plus a
+        consensus summary, so "3 of 7 DNS servers advertise a DC that does not exist"
+        is visible instead of one resolver's answer being printed as forest truth.
+    .OUTPUTS
+        [pscustomobject] PerServer, AgreeingServers, DivergentServers, ServersQueried
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyCollection()][string[]]$AdHosts = @(),
+        [hashtable]$ServerTargets = @{}
+    )
+    $perServer = @()
+    foreach ($srv in @($ServerTargets.Keys | Sort-Object)) {
+        $cmp = Compare-AdfaDnsAdvertisement -AdHosts $AdHosts -DnsTargets $ServerTargets[$srv]
+        $perServer += [pscustomobject]@{
+            Server         = $srv
+            StaleInDns     = $cmp.StaleInDns
+            MissingFromDns = $cmp.MissingFromDns
+            Matched        = $cmp.Matched
+            Agrees         = (@($cmp.StaleInDns).Count -eq 0 -and @($cmp.MissingFromDns).Count -eq 0)
+        }
+    }
+    [pscustomobject]@{
+        PerServer        = @($perServer)
+        AgreeingServers  = @($perServer | Where-Object { $_.Agrees } | Select-Object -ExpandProperty Server)
+        DivergentServers = @($perServer | Where-Object { -not $_.Agrees } | Select-Object -ExpandProperty Server)
+        ServersQueried   = @($perServer).Count
+    }
 }
 
 function Compare-AdfaDnsAdvertisement {
@@ -1986,13 +2360,52 @@ function Resolve-AdfaDcPasswordVerdict {
     return $script:Status.Pass
 }
 
+function Get-AdfaDnsRecordView {
+    <#
+    .SYNOPSIS
+        Queries one DNS record on every given DNS server (plus the local resolver) and
+        buckets the outcomes: answering servers with their target lists, and servers
+        that did not answer. AD-integrated zones replicate through AD, so when
+        replication is broken the answer genuinely differs per server - each server's
+        view is collected separately, never merged.
+    .OUTPUTS
+        [pscustomobject] ToolAvailable (bool), Views (hashtable server->targets),
+        Unanswered (string[]), Error (string)
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][ValidateSet('SRV', 'CNAME')][string]$Type,
+        [AllowEmptyCollection()][string[]]$DnsServers = @()
+    )
+    $views = @{}
+    $unanswered = @()
+
+    $local = Resolve-AdfaDnsRecord -Name $Name -Type $Type
+    if ($local.Outcome -eq 'NoTool') {
+        return [pscustomobject]@{ ToolAvailable = $false; Views = @{}; Unanswered = @(); Error = $local.Error }
+    }
+    if ($local.Outcome -eq 'NoAnswer') { $unanswered += '(local resolver)' }
+    else { $views['(local resolver)'] = @($local.Targets) }
+
+    foreach ($srv in @($DnsServers | Where-Object { $_ } | Sort-Object -Unique)) {
+        $r = Resolve-AdfaDnsRecord -Name $Name -Type $Type -Server $srv
+        if ($r.Outcome -eq 'NoAnswer') { $unanswered += $srv }
+        else { $views[$srv] = @($r.Targets) }
+    }
+    [pscustomobject]@{ ToolAvailable = $true; Views = $views; Unanswered = @($unanswered); Error = '' }
+}
+
 function Get-AdfaDnsAdConsistency {
     <#
     .SYNOPSIS
-        Compares the DC locator SRV records DNS advertises for a domain against the DCs
-        Active Directory actually contains. Stale entries (a removed/dead DC still
-        advertised) and missing entries (a live DC not advertised) are the two divergences
-        that surface as intermittent RPC 1722 and logon failures after a restore.
+        Compares the DC locator SRV records against the DCs Active Directory actually
+        contains - PER DNS SERVER. Stale entries (a removed/dead DC still advertised)
+        and missing entries (a live DC not advertised) are the divergences that surface
+        as intermittent RPC 1722 and logon failures after a restore; in a forest with
+        broken replication different DNS servers hold different zone content, so each
+        server's view is assessed and a divergence summary is reported.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -2000,7 +2413,8 @@ function Get-AdfaDnsAdConsistency {
     [OutputType([pscustomobject[]])]
     param(
         [Parameter(Mandatory)][string]$DomainName,
-        [hashtable]$AdParams = @{}
+        [hashtable]$AdParams = @{},
+        [AllowEmptyCollection()][string[]]$DnsServers = @()
     )
     $rows = @()
     $p = @{} + $AdParams; $p.Server = $DomainName
@@ -2014,47 +2428,60 @@ function Get-AdfaDnsAdConsistency {
     }
 
     foreach ($rec in @(("_ldap._tcp.dc._msdcs.{0}" -f $DomainName), ("_kerberos._tcp.dc._msdcs.{0}" -f $DomainName))) {
-        $res = Resolve-AdfaDnsRecord -Name $rec -Type SRV
-        if (-not $res.Available) {
-            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed -Detail $res.Error
+        $view = Get-AdfaDnsRecordView -Name $rec -Type SRV -DnsServers $DnsServers
+        if (-not $view.ToolAvailable) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed -Detail $view.Error
             continue
         }
-        if (@($res.Targets).Count -eq 0) {
-            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.Fail -Detail ("No SRV targets resolvable. {0}" -f $res.Error)
+        if (@($view.Views.Keys).Count -eq 0) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed -Detail ("No DNS server answered for this record ({0} queried: {1})." -f @($view.Unanswered).Count, ($view.Unanswered -join ', '))
             continue
         }
-        $cmp = Compare-AdfaDnsAdvertisement -AdHosts $adHosts -DnsTargets $res.Targets
-        foreach ($s in $cmp.StaleInDns) {
-            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("Stale DNS entry: {0}" -f $s) -Status $script:Status.Fail -Detail ("{0} is advertised in {1} but no such DC exists in AD." -f $s, $rec)
+        $sum = Compare-AdfaDnsServerView -AdHosts $adHosts -ServerTargets $view.Views
+        foreach ($ps in @($sum.PerServer | Where-Object { -not $_.Agrees })) {
+            $bits = @()
+            if (@($ps.StaleInDns).Count -gt 0) { $bits += ("stale (no such DC in AD): {0}" -f ((@($ps.StaleInDns) | Select-Object -First 8) -join ', ')) }
+            if (@($ps.MissingFromDns).Count -gt 0) { $bits += ("missing (DC in AD, not advertised): {0}" -f ((@($ps.MissingFromDns) | Select-Object -First 8) -join ', ')) }
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0} on {1}" -f $rec, $ps.Server) -Status $script:Status.Fail -Detail ($bits -join '; ')
         }
-        foreach ($m in $cmp.MissingFromDns) {
-            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("DC missing from DNS: {0}" -f $m) -Status $script:Status.Fail -Detail ("{0} exists in AD but is not advertised in {1}." -f $m, $rec)
+        $unansweredNote = ''
+        if (@($view.Unanswered).Count -gt 0) { $unansweredNote = (' {0} server(s) did not answer: {1}.' -f @($view.Unanswered).Count, ($view.Unanswered -join ', ')) }
+        if (@($sum.DivergentServers).Count -eq 0) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.Pass -Detail ("All {0} answering DNS server(s) agree with AD ({1} DC(s)).{2}" -f $sum.ServersQueried, @($adHosts).Count, $unansweredNote)
         }
-        if (@($cmp.StaleInDns).Count -eq 0 -and @($cmp.MissingFromDns).Count -eq 0) {
-            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.Pass -Detail ("{0} DC(s), DNS and AD agree." -f @($cmp.Matched).Count)
+        else {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0} - divergence summary" -f $rec) -Status $script:Status.Fail -Detail ("{0} of {1} answering DNS server(s) diverge from AD: {2}.{3}" -f @($sum.DivergentServers).Count, $sum.ServersQueried, ($sum.DivergentServers -join ', '), $unansweredNote)
         }
     }
 
-    # PDC locator record must point at the actual PDC emulator.
+    # PDC locator record must point at the actual PDC emulator - on every DNS server.
     try {
         $pdc = (Get-ADDomain @p).PDCEmulator
+        $actual = ''
+        if ($pdc) { $actual = ([string]$pdc).ToLowerInvariant().TrimEnd('.') }
         $pdcRec = "_ldap._tcp.pdc._msdcs.{0}" -f $DomainName
-        $res = Resolve-AdfaDnsRecord -Name $pdcRec -Type SRV
-        if (-not $res.Available) {
-            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.NotAssessed -Detail $res.Error
+        $view = Get-AdfaDnsRecordView -Name $pdcRec -Type SRV -DnsServers $DnsServers
+        if (-not $view.ToolAvailable) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.NotAssessed -Detail $view.Error
         }
-        elseif (@($res.Targets).Count -eq 0) {
-            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.Fail -Detail 'PDC locator record missing - logons and password changes will misroute.'
+        elseif (@($view.Views.Keys).Count -eq 0) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.NotAssessed -Detail 'No DNS server answered for the PDC locator record.'
         }
         else {
-            $adv = @($res.Targets)[0].ToLowerInvariant().TrimEnd('.')
-            $actual = ''
-            if ($pdc) { $actual = ([string]$pdc).ToLowerInvariant().TrimEnd('.') }
-            if ($adv -eq $actual) {
-                $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.Pass -Detail ("Points at the PDC emulator ({0})." -f $pdc)
+            $wrong = @()
+            foreach ($srv in @($view.Views.Keys | Sort-Object)) {
+                $t = @($view.Views[$srv])
+                if (@($t).Count -eq 0) { $wrong += ("{0} (record missing)" -f $srv) }
+                else {
+                    $adv = ([string]$t[0]).ToLowerInvariant().TrimEnd('.')
+                    if ($adv -ne $actual) { $wrong += ("{0} (advertises {1})" -f $srv, $adv) }
+                }
+            }
+            if (@($wrong).Count -eq 0) {
+                $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.Pass -Detail ("All {0} answering DNS server(s) point at the PDC emulator ({1})." -f @($view.Views.Keys).Count, $pdc)
             }
             else {
-                $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.Fail -Detail ("DNS advertises {0} but the PDC emulator is {1}." -f $adv, $actual)
+                $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.Fail -Detail ("PDC emulator is {0} but: {1}. Logons and password changes will misroute on those servers." -f $actual, ($wrong -join '; '))
             }
         }
     }
@@ -2065,43 +2492,27 @@ function Get-AdfaDnsAdConsistency {
     return , @($rows)
 }
 
-function Get-AdfaDsaGuidCname {
+function Get-AdfaDsaInventory {
     <#
     .SYNOPSIS
-        Verifies the DSA GUID CNAME alias in _msdcs for every DC. Replication resolves a
-        source DC through <objectGUID-of-NTDS-Settings>._msdcs.<forestroot>, not through
-        its A record - a missing or wrong alias is the single most common cause of RPC
-        1722 replication failures after metadata cleanup or a restore.
+        Enumerates every nTDSDSA object in the Configuration NC with its DSA GUID and
+        the owning server's dNSHostName. Shared by the DSA CNAME check and the
+        lingering-object scan. StrictMode-safe against objects missing properties.
     .OUTPUTS
-        [pscustomobject[]]
+        [pscustomobject[]] DsaGuid, ServerDn, DnsHostName ('' when orphaned)
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param(
-        [Parameter(Mandatory)][string]$ForestRoot,
-        [hashtable]$AdParams = @{}
-    )
-    $rows = @()
-    $dsas = @()
-    try {
-        $cfg = (Get-ADRootDSE @AdParams).configurationNamingContext
-        $dsas = @(Get-ADObject -LDAPFilter '(objectClass=nTDSDSA)' -SearchBase $cfg -Properties objectGUID @AdParams)
-    }
-    catch {
-        $rows += New-Finding -Area 'DsaCname' -Item 'nTDSDSA enumeration' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
-        return , @($rows)
-    }
-
+    param([hashtable]$AdParams = @{})
+    $out = @()
+    $cfg = (Get-ADRootDSE @AdParams).configurationNamingContext
+    $dsas = @(Get-ADObject -LDAPFilter '(objectClass=nTDSDSA)' -SearchBase $cfg -Properties objectGUID @AdParams)
     foreach ($dsa in $dsas) {
-        # StrictMode-safe: tolerate directory objects (or test stubs) missing properties.
         $dsaDn = ''
         if ($dsa.PSObject.Properties['DistinguishedName'] -and $dsa.DistinguishedName) { $dsaDn = [string]$dsa.DistinguishedName }
         $dsaGuid = ''
         if ($dsa.PSObject.Properties['objectGUID'] -and $dsa.objectGUID) { $dsaGuid = [string]$dsa.objectGUID }
-        if (-not $dsaDn -or -not $dsaGuid) {
-            $rows += New-Finding -Area 'DsaCname' -Item 'nTDSDSA object' -Status $script:Status.NotAssessed -Detail 'Directory returned an nTDSDSA object without DistinguishedName/objectGUID - cannot evaluate its alias.'
-            continue
-        }
+        if (-not $dsaDn -or -not $dsaGuid) { continue }
         $serverDn = $dsaDn -replace '^CN=NTDS Settings,', ''
         $dcHost = ''
         try {
@@ -2109,28 +2520,81 @@ function Get-AdfaDsaGuidCname {
             if ($srvObj.PSObject.Properties['dNSHostName'] -and $srvObj.dNSHostName) { $dcHost = [string]$srvObj.dNSHostName }
         }
         catch { }
+        $out += [pscustomobject]@{ DsaGuid = $dsaGuid; ServerDn = $serverDn; DnsHostName = $dcHost }
+    }
+    # Plain return on purpose: callers wrap with @(...); `return , @()` would hand them
+    # one element that IS the empty array and StrictMode then chokes on it (PORT-PLAN P3).
+    return @($out)
+}
 
-        if (-not $dcHost) {
-            $rows += New-Finding -Area 'DsaCname' -Item ("Orphaned NTDS Settings: {0}" -f $serverDn) -Status $script:Status.Warning -Detail 'nTDSDSA object exists but its server object has no dNSHostName - likely metadata left behind by an incomplete demotion or restore.'
+function Get-AdfaDsaGuidCname {
+    <#
+    .SYNOPSIS
+        Verifies the DSA GUID CNAME alias in _msdcs for every DC - on every DNS server.
+        Replication resolves a source DC through <objectGUID-of-NTDS-Settings>._msdcs,
+        not through its A record; a missing or wrong alias is the single most common
+        cause of RPC 1722 replication failures after metadata cleanup or a restore, and
+        with broken replication the alias can exist on some DNS servers and not others.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$ForestRoot,
+        [hashtable]$AdParams = @{},
+        [AllowEmptyCollection()][string[]]$DnsServers = @()
+    )
+    $rows = @()
+    $dsas = @()
+    try { $dsas = @(Get-AdfaDsaInventory -AdParams $AdParams) }
+    catch {
+        $rows += New-Finding -Area 'DsaCname' -Item 'nTDSDSA enumeration' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+        return , @($rows)
+    }
+    if (@($dsas).Count -eq 0) {
+        $rows += New-Finding -Area 'DsaCname' -Item 'nTDSDSA enumeration' -Status $script:Status.NotAssessed -Detail 'No usable nTDSDSA objects returned from the Configuration NC.'
+        return , @($rows)
+    }
+
+    foreach ($dsa in $dsas) {
+        if (-not $dsa.DnsHostName) {
+            $rows += New-Finding -Area 'DsaCname' -Item ("Orphaned NTDS Settings: {0}" -f $dsa.ServerDn) -Status $script:Status.Warning -Detail 'nTDSDSA object exists but its server object has no dNSHostName - likely metadata left behind by an incomplete demotion or restore.'
             continue
         }
-
-        $alias = "{0}._msdcs.{1}" -f $dsaGuid, $ForestRoot
-        $res = Resolve-AdfaDnsRecord -Name $alias -Type CNAME
-        if (-not $res.Available) {
-            $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.NotAssessed -Detail $res.Error
+        $dcHost = $dsa.DnsHostName
+        $expected = $dcHost.ToLowerInvariant().TrimEnd('.')
+        $alias = "{0}._msdcs.{1}" -f $dsa.DsaGuid, $ForestRoot
+        $view = Get-AdfaDnsRecordView -Name $alias -Type CNAME -DnsServers $DnsServers
+        if (-not $view.ToolAvailable) {
+            $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.NotAssessed -Detail $view.Error
+            continue
         }
-        elseif (@($res.Targets).Count -eq 0) {
-            $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.Fail -Detail ("DSA GUID CNAME missing: {0} does not resolve. Inbound replication from this DC will fail with RPC/DNS errors." -f $alias)
+        if (@($view.Views.Keys).Count -eq 0) {
+            $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.NotAssessed -Detail ("No DNS server answered for {0}." -f $alias)
+            continue
+        }
+        $missingOn = @(); $wrongOn = @(); $okOn = @()
+        foreach ($srv in @($view.Views.Keys | Sort-Object)) {
+            $t = @($view.Views[$srv])
+            if (@($t).Count -eq 0) { $missingOn += $srv }
+            else {
+                $got = ([string]$t[0]).ToLowerInvariant().TrimEnd('.')
+                if ($got -eq $expected) { $okOn += $srv }
+                else { $wrongOn += ("{0} (-> {1})" -f $srv, $got) }
+            }
+        }
+        $unansweredNote = ''
+        if (@($view.Unanswered).Count -gt 0) { $unansweredNote = (' {0} server(s) did not answer: {1}.' -f @($view.Unanswered).Count, ($view.Unanswered -join ', ')) }
+        if (@($missingOn).Count -eq 0 -and @($wrongOn).Count -eq 0) {
+            $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.Pass -Detail ("{0} -> {1} consistent on all {2} answering DNS server(s).{3}" -f $alias, $expected, @($okOn).Count, $unansweredNote)
         }
         else {
-            $target = @($res.Targets)[0].ToLowerInvariant().TrimEnd('.')
-            if ($target -eq $dcHost.ToLowerInvariant().TrimEnd('.')) {
-                $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.Pass -Detail ("{0} -> {1}" -f $alias, $target)
-            }
-            else {
-                $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.Fail -Detail ("DSA GUID CNAME points to the WRONG host: {0} -> {1} (expected {2})." -f $alias, $target, $dcHost)
-            }
+            $bits = @()
+            if (@($missingOn).Count -gt 0) { $bits += ("MISSING on: {0}" -f ($missingOn -join ', ')) }
+            if (@($wrongOn).Count -gt 0) { $bits += ("WRONG HOST on: {0} (expected {1})" -f ($wrongOn -join ', '), $expected) }
+            if (@($okOn).Count -gt 0) { $bits += ("correct on: {0}" -f ($okOn -join ', ')) }
+            $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.Fail -Detail ("{0}: {1}.{2} Inbound replication from this DC fails wherever the alias is absent or wrong." -f $alias, ($bits -join '; '), $unansweredNote)
         }
     }
     return , @($rows)
@@ -2140,7 +2604,7 @@ function Get-AdfaGcConsistency {
     <#
     .SYNOPSIS
         Compares the Global Catalog set Active Directory believes in (forest
-        GlobalCatalogs) against what DNS advertises under _gc._tcp.<forest>.
+        GlobalCatalogs) against what each DNS server advertises under _gc._tcp.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -2148,7 +2612,8 @@ function Get-AdfaGcConsistency {
     [OutputType([pscustomobject[]])]
     param(
         [Parameter(Mandatory)][string]$ForestRoot,
-        [hashtable]$AdParams = @{}
+        [hashtable]$AdParams = @{},
+        [AllowEmptyCollection()][string[]]$DnsServers = @()
     )
     $rows = @()
     $gcs = @()
@@ -2159,24 +2624,29 @@ function Get-AdfaGcConsistency {
     }
 
     $rec = "_gc._tcp.{0}" -f $ForestRoot
-    $res = Resolve-AdfaDnsRecord -Name $rec -Type SRV
-    if (-not $res.Available) {
-        $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed -Detail $res.Error
+    $view = Get-AdfaDnsRecordView -Name $rec -Type SRV -DnsServers $DnsServers
+    if (-not $view.ToolAvailable) {
+        $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed -Detail $view.Error
         return , @($rows)
     }
-    if (@($res.Targets).Count -eq 0) {
-        $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.Fail -Detail 'No Global Catalog SRV records resolvable - forest-wide logons, universal group lookups and Exchange will fail.'
+    if (@($view.Views.Keys).Count -eq 0) {
+        $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed -Detail ("No DNS server answered for {0} ({1} queried)." -f $rec, @($view.Unanswered).Count)
         return , @($rows)
     }
-    $cmp = Compare-AdfaDnsAdvertisement -AdHosts $gcs -DnsTargets $res.Targets
-    foreach ($s in $cmp.StaleInDns) {
-        $rows += New-Finding -Area 'GcConsistency' -Item ("Global Catalog: {0}" -f $s) -Status $script:Status.Fail -Detail ("Advertised as a GC in DNS but is not a GC in AD (or no longer exists). Clients will bind to it and fail." -f $s)
+    $sum = Compare-AdfaDnsServerView -AdHosts $gcs -ServerTargets $view.Views
+    foreach ($ps in @($sum.PerServer | Where-Object { -not $_.Agrees })) {
+        $bits = @()
+        if (@($ps.StaleInDns).Count -gt 0) { $bits += ("advertised as GC but not a GC in AD (or gone): {0}" -f ((@($ps.StaleInDns) | Select-Object -First 8) -join ', ')) }
+        if (@($ps.MissingFromDns).Count -gt 0) { $bits += ("GC in AD but not advertised: {0}" -f ((@($ps.MissingFromDns) | Select-Object -First 8) -join ', ')) }
+        $rows += New-Finding -Area 'GcConsistency' -Item ("Global Catalogs on {0}" -f $ps.Server) -Status $script:Status.Fail -Detail ($bits -join '; ')
     }
-    foreach ($m in $cmp.MissingFromDns) {
-        $rows += New-Finding -Area 'GcConsistency' -Item ("Global Catalog: {0}" -f $m) -Status $script:Status.Warning -Detail ("GC in AD but not advertised in {0} - either still completing partial-attribute-set replication or its Netlogon registration is failing." -f $rec)
+    $unansweredNote = ''
+    if (@($view.Unanswered).Count -gt 0) { $unansweredNote = (' {0} server(s) did not answer: {1}.' -f @($view.Unanswered).Count, ($view.Unanswered -join ', ')) }
+    if (@($sum.DivergentServers).Count -eq 0) {
+        $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.Pass -Detail ("All {0} answering DNS server(s) agree with AD ({1} GC(s)).{2}" -f $sum.ServersQueried, @($gcs).Count, $unansweredNote)
     }
-    if (@($cmp.StaleInDns).Count -eq 0 -and @($cmp.MissingFromDns).Count -eq 0) {
-        $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.Pass -Detail ("{0} GC(s), DNS and AD agree." -f @($cmp.Matched).Count)
+    else {
+        $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0} - divergence summary" -f $rec) -Status $script:Status.Fail -Detail ("{0} of {1} answering DNS server(s) diverge from AD: {2}. Forest-wide logons and Exchange address-book lookups behave differently per DNS server.{3}" -f @($sum.DivergentServers).Count, $sum.ServersQueried, ($sum.DivergentServers -join ', '), $unansweredNote)
     }
     return , @($rows)
 }
@@ -2376,9 +2846,22 @@ function Get-AdfaDsEventLog {
 # ===========================================================================
 
 # Table-driven mapping from a finding's section/item/detail text to a best-practice fix.
-# First match wins; specific patterns must precede general ones. Kept as data so adding
-# guidance never touches collector logic.
+# First match wins; specific patterns must precede general ones. An entry may carry a
+# Section regex - it is then considered only for findings from matching sections. This
+# matters because detail text leaks across domains: a broken trust's reason reads
+# "secure channel verification FAILED", which must route to the TRUST remediation, not
+# the machine-account one. Kept as data so adding guidance never touches collector logic.
 $script:RecommendationMap = @(
+    # --- Section-scoped entries first: they cannot be hijacked by detail wording ---
+    @{ Section = '(?i)trust'; Match = '(?i)sid filtering'
+       Text  = 'Re-enable SID filtering on the trust: "netdom trust <local> /domain:<partner> /quarantine:Yes" (external trusts). Only relax for a documented, time-boxed migration.' }
+    @{ Section = '(?i)trust'; Match = '(?i)rc4'
+       Text  = 'Enable AES on the trust ("ksetup /setenctypeattr <partner> AES256-CTS-HMAC-SHA1-96 AES128-CTS-HMAC-SHA1-96" or the trust dialog''s AES checkbox), then reset the trust password so new AES keys are derived.' }
+    @{ Section = '(?i)trust'; Match = '.'
+       Text  = 'Confirm the network path and DNS name resolution (conditional forwarders / stub zones) to the partner domain in BOTH directions, then reset the trust secure channel: "netdom trust <local> /domain:<partner> /reset". Re-verify with "nltest /sc_verify:<partner>" from the local side and on a partner DC. After a ransomware incident, reset trust passwords as part of credential hygiene.' }
+    @{ Section = '(?i)secure channel|machine password'; Match = '.'
+       Text  = 'Reset the secure channel against a known-healthy DC. Member/workstation: "Reset-ComputerMachinePassword -Server <healthyDC>" or "nltest /sc_reset:<domain>". For a DC: stop the KDC service, run "netdom resetpwd /server:<healthyDC> /userd:<domain>\<admin> /passwordd:*", restart. Never disjoin/rejoin a domain controller.' }
+    # --- Unscoped entries: matched against "Section :: Item :: Detail" ---
     @{ Match = '(?i)dsa guid cname|orphaned ntds settings'
        Text  = 'If the DC is live: on that DC run "ipconfig /registerdns" and "nltest /dsregdns", then restart the Netlogon service, and confirm the _msdcs zone accepts secure dynamic updates. If the DC no longer exists: remove its metadata (ntdsutil "metadata cleanup", or delete the server object in AD Sites and Services) and delete the stale record. Replication resolves source DCs through this alias - fix it before chasing RPC 1722 errors.' }
     @{ Match = '(?i)stale dns entry'
@@ -2393,14 +2876,6 @@ $script:RecommendationMap = @(
        Text  = 'Replication was stopped longer than tombstone lifetime; restarting it blindly risks lingering objects. Preferred fix: forcibly demote the divergent DC, clean its metadata, and repromote it. Only consider "allow replication with divergent and corrupt partner" after a full lingering-object scan.' }
     @{ Match = '(?i)usn rollback|unsupported restore'
        Text  = 'This DC was restored by snapshot/image, which is unsupported. Forcibly demote it (dcpromo /forceremoval), clean its metadata, and repromote. Recover DCs only via system-state restore or by rebuilding and repromoting.' }
-    @{ Match = '(?i)secure channel|machine.account password'
-       Text  = 'Reset the secure channel against a known-healthy DC. Member/workstation: "Reset-ComputerMachinePassword -Server <healthyDC>" or "nltest /sc_reset:<domain>". For a DC: stop the KDC service, run "netdom resetpwd /server:<healthyDC> /userd:<domain>\<admin> /passwordd:*", restart. Never disjoin/rejoin a domain controller.' }
-    @{ Match = '(?i)sid filtering'
-       Text  = 'Re-enable SID filtering on the trust: "netdom trust <local> /domain:<partner> /quarantine:Yes" (external trusts). Only relax for a documented, time-boxed migration.' }
-    @{ Match = '(?i)rc4'
-       Text  = 'Enable AES on the trust ("ksetup /setenctypeattr <partner> AES256-CTS-HMAC-SHA1-96 AES128-CTS-HMAC-SHA1-96" or the trust dialog''s AES checkbox), then reset the trust password so new AES keys are derived.' }
-    @{ Match = '(?i)trust'
-       Text  = 'Confirm the network path and DNS name resolution (conditional forwarders / stub zones) to the partner domain in BOTH directions, then reset the trust secure channel: "netdom trust <local> /domain:<partner> /reset". Re-verify with "nltest /sc_verify:<partner>". After a ransomware incident, reset trust passwords as part of credential hygiene.' }
     @{ Match = '(?i)replication'
        Text  = 'Fix the DNS findings first (stale records, DSA GUID CNAMEs) - most post-restore RPC 1722 replication errors are DNS, not the network. Then: "repadmin /replsummary", "repadmin /showrepl <dc>", force with "repadmin /replicate <dest> <source> <NC>", and re-run this assessment to confirm.' }
     @{ Match = '(?i)no a record|does not resolve'
@@ -2475,6 +2950,7 @@ function Get-AdfaRecommendation {
     )
     $combined = "{0} :: {1} :: {2}" -f $Section, $Item, $Detail
     foreach ($entry in $script:RecommendationMap) {
+        if ($entry.ContainsKey('Section') -and -not ($Section -match $entry.Section)) { continue }
         if ($combined -match $entry.Match) { return [string]$entry.Text }
     }
     return ''
@@ -2677,6 +3153,8 @@ function Invoke-Main {
     if (Test-SectionSelected 'Replication' $Sections) {
         Write-Stage 'Replication health'
         $sectionData['Replication Health'] = Get-AdfaReplicationHealth -DomainControllers $dcNames -RepParams $repParams -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -StaleMinutes $script:Config.ReplicationStaleMinutes
+        Write-Stage 'Replication cross-check (repadmin /showrepl * /csv)'
+        $sectionData['Replication Cross-Check (repadmin)'] = Get-AdfaRepadminReplication -TimeoutSeconds 300 -Retries $script:Config.Retries -RetryDelaySeconds $script:Config.RetryDelaySeconds
     }
 
     $topology = $null
@@ -2767,8 +3245,8 @@ function Invoke-Main {
         $sectionData['DC Hardening'] = Get-AdfaDcHardening -DomainControllers $dcNames -Credential $Credential -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
     }
     if (Test-SectionSelected 'Backup' $Sections) {
-        Write-Stage 'Directory backup status'
-        $sectionData['Backup Status'] = Get-AdfaBackupStatus @ext
+        Write-Stage 'Directory backup status (per DC)'
+        $sectionData['Backup Status'] = Get-AdfaBackupStatus -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs @ext
     }
     if (Test-SectionSelected 'TimeSync' $Sections) {
         Write-Stage 'Time synchronization'
@@ -2787,17 +3265,17 @@ function Invoke-Main {
 
     # ---- Recovery & consistency (post-incident) ----
     if (Test-SectionSelected 'DnsAdConsistency' $Sections) {
-        Write-Stage 'DNS vs AD consistency (stale / missing locator records)'
-        $dacRows = foreach ($d in $targetDomains) { Get-AdfaDnsAdConsistency -DomainName $d -AdParams $adParams }
+        Write-Stage 'DNS vs AD consistency (per DNS server)'
+        $dacRows = foreach ($d in $targetDomains) { Get-AdfaDnsAdConsistency -DomainName $d -AdParams $adParams -DnsServers $dcNames }
         $sectionData['DNS vs AD Consistency'] = @($dacRows)
     }
     if (Test-SectionSelected 'DsaCname' $Sections) {
-        Write-Stage 'DSA GUID CNAME records (_msdcs)'
-        $sectionData['DSA GUID CNAMEs'] = Get-AdfaDsaGuidCname -ForestRoot $forest.Name -AdParams $adParams
+        Write-Stage 'DSA GUID CNAME records (_msdcs, per DNS server)'
+        $sectionData['DSA GUID CNAMEs'] = Get-AdfaDsaGuidCname -ForestRoot $forest.Name -AdParams $adParams -DnsServers $dcNames
     }
     if (Test-SectionSelected 'GcConsistency' $Sections) {
-        Write-Stage 'Global Catalog consistency (AD flag vs DNS)'
-        $sectionData['Global Catalog Consistency'] = Get-AdfaGcConsistency -ForestRoot $forest.Name -AdParams $adParams
+        Write-Stage 'Global Catalog consistency (AD flag vs DNS, per DNS server)'
+        $sectionData['Global Catalog Consistency'] = Get-AdfaGcConsistency -ForestRoot $forest.Name -AdParams $adParams -DnsServers $dcNames
     }
     if (Test-SectionSelected 'PortMatrix' $Sections) {
         Write-Stage 'Port reachability matrix (replication port set)'
@@ -2816,6 +3294,13 @@ function Invoke-Main {
         Write-Stage 'Directory Service event log (lingering / rollback / DNS failures)'
         $sectionData['Directory Service Events'] = Get-AdfaDsEventLog -DomainControllers $dcNames -Credential $Credential `
             -LookbackDays $script:Config.DsEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+    }
+    if ($IncludeLingeringObjectScan) {
+        Write-Stage 'Lingering object scan (repadmin advisory mode - no changes)'
+        $loRows = foreach ($d in $targetDomains) {
+            Get-AdfaLingeringObjectScan -DomainName $d -AdParams $adParams -TimeoutSeconds 300 -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        }
+        $sectionData['Lingering Object Scan (advisory)'] = @($loRows)
     }
 
     if (Test-SectionSelected 'ExchangeSchema' $Sections) {

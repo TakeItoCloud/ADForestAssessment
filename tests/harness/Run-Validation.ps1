@@ -121,11 +121,28 @@ function Test-AdfaSecureChannel {
     param([string]$SourceDomain, [string]$TargetDomain, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
     [pscustomobject]@{ Result = 'Verified'; Tool = 'stub'; Detail = 'stub' }
 }
+# Inbound is verified ON the partner DC (Test-AdfaRemoteSecureChannel) - the old local
+# nltest against our own domain was a false Verified. Stub the remote path succeeding:
+function Test-AdfaRemoteSecureChannel {
+    param([string]$PartnerDomain, [string]$VerifyDomain, [string]$PartnerDc, [pscredential]$Credential, [int]$RpcPortTimeoutMs)
+    [pscustomobject]@{ Result = 'Verified'; Tool = 'stub'; Detail = 'stub remote verify' }
+}
 $rows = Get-AdfaTrustHealth -DomainName 'a.local' -AdParams @{}
 Assert-Equal 1 (@($rows).Count) 'One trust row returned'
 Assert-Equal 'Healthy' $rows[0].Health 'Healthy forest trust, both directions verified'
 Assert-Equal 'Verified' $rows[0].OutboundSecureChannel 'Outbound recorded Verified'
-Assert-Equal 'Verified' $rows[0].InboundSecureChannel 'Inbound recorded Verified'
+Assert-Equal 'Verified' $rows[0].InboundSecureChannel 'Inbound recorded Verified (via stubbed partner-side verification)'
+
+# And when the partner side cannot be remoted to, inbound must be Not Assessed - never
+# inferred from a local check that would succeed on any healthy DC.
+function Test-AdfaRemoteSecureChannel {
+    param([string]$PartnerDomain, [string]$VerifyDomain, [string]$PartnerDc, [pscredential]$Credential, [int]$RpcPortTimeoutMs)
+    [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'winrm'; Detail = "WinRM not reachable. Run 'nltest /sc_verify:$VerifyDomain' on a DC in $PartnerDomain." }
+}
+$rows = Get-AdfaTrustHealth -DomainName 'a.local' -AdParams @{}
+Assert-Equal 'Not Assessed' $rows[0].InboundSecureChannel 'Inbound honestly Not Assessed when the partner side is unreachable'
+Assert-Equal 'Healthy' $rows[0].Health 'Outbound-verified trust stays Healthy with the inbound coverage gap noted'
+Assert-True ($rows[0].Reasons -match 'Inbound') 'Coverage gap for inbound is stated in Reasons'
 
 # Skip-verification path must never fabricate a result.
 $rows = Get-AdfaTrustHealth -DomainName 'a.local' -AdParams @{} -SkipVerification
@@ -208,6 +225,33 @@ Assert-True ((Get-AdfaRecommendation -Section 'Trusts & Two-Way Health' -Item 't
 Assert-True ((Get-AdfaRecommendation -Section 'Directory Service Events' -Item 'Event 1988 on DC1' -Detail 'Lingering object detected') -match 'removelingeringobjects') 'Recommendation: lingering object => removelingeringobjects'
 Assert-True ((Get-AdfaRecommendation -Section 'DSA GUID CNAMEs' -Item 'DSA GUID CNAME for dc1' -Detail 'missing') -match 'dsregdns') 'Recommendation: missing DSA CNAME => dsregdns'
 Assert-Equal '' (Get-AdfaRecommendation -Section 'Forest Summary' -Item 'xyzzy' -Detail 'nothing matches') 'Recommendation: no match => empty, never invented'
+$trustRec = Get-AdfaRecommendation -Section 'Trusts & Two-Way Health' -Item 'corp-partner' -Detail 'Outbound secure channel verification FAILED.'
+Assert-True ($trustRec -match 'netdom trust' -and $trustRec -notmatch 'resetpwd') 'Recommendation: trust failure mentioning secure channel routes to the TRUST fix'
+
+Write-Host "== 11. R1/R2 pure logic ==" -ForegroundColor Cyan
+# DNS query outcome classification
+Assert-Equal 'NoTool' (Get-AdfaDnsQueryOutcome -Available $false) 'DNS outcome: no resolver tool'
+Assert-Equal 'Resolved' (Get-AdfaDnsQueryOutcome -Available $true -TargetCount 2) 'DNS outcome: targets => Resolved'
+Assert-Equal 'NoRecord' (Get-AdfaDnsQueryOutcome -Available $true -TargetCount 0 -ErrorText 'DNS name does not exist') 'DNS outcome: NXDOMAIN => NoRecord'
+Assert-Equal 'NoAnswer' (Get-AdfaDnsQueryOutcome -Available $true -TargetCount 0 -ErrorText 'request timed out') 'DNS outcome: timeout => NoAnswer, never NoRecord'
+
+# Per-server divergence
+$views = @{ 'dns1' = @('dc1.x', 'dc2.x'); 'dns2' = @('dc2.x', 'dc3.x') }
+$sv = Compare-AdfaDnsServerView -AdHosts @('dc1.x', 'dc2.x') -ServerTargets $views
+Assert-Equal 'dns2' (@($sv.DivergentServers) -join ',') 'Server view: divergent server named'
+Assert-Equal 'dns1' (@($sv.AgreeingServers) -join ',') 'Server view: agreeing server named'
+
+# repadmin /showrepl CSV parse
+$showrepl = "Repadmin banner line`nshowrepl_COLUMNS,Destination DSA Site,Destination DSA,Naming Context,Source DSA Site,Source DSA,Transport Type,Number of Failures,Last Failure Time,Last Success Time,Last Failure Status`nshowrepl_INFO,S1,DC1,""DC=x"",S1,DC2,RPC,0,0,2026-08-30 10:00:00,0`nshowrepl_INFO,S1,DC1,""DC=x"",S1,DC3,RPC,7,t,t,1722"
+$links = @(ConvertFrom-AdfaShowreplCsv -Text $showrepl)
+Assert-Equal 2 (@($links).Count) 'showrepl CSV: two links parsed past the banner'
+Assert-Equal '7' ([string](@($links | Where-Object { $_.'Source DSA' -eq 'DC3' })[0].'Number of Failures')) 'showrepl CSV: failure count preserved'
+Assert-Equal 0 (@(ConvertFrom-AdfaShowreplCsv -Text 'garbage').Count) 'showrepl CSV: unparsable => empty, not a crash'
+
+# Backup date extraction
+$bd = Get-AdfaLatestBackupDate -Text "DC=x : 2026-07-01 10:00:00`nCN=Configuration : 2026-08-15 09:30:00"
+Assert-Equal ([datetime]'2026-08-15 09:30:00') $bd 'Backup date: most recent of several'
+Assert-True ($null -eq (Get-AdfaLatestBackupDate -Text 'no dates')) 'Backup date: none parsable => null, never fabricated'
 
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })

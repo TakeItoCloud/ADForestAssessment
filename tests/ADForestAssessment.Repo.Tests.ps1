@@ -44,6 +44,17 @@ Describe 'Packaging manifest' {
     It 'keeps the script itself on the 5.1 floor' {
         Get-Content -Path $script:ScriptPath -Raw | Should -Match '(?im)^#requires\s+-version\s+5\.1'
     }
+
+    It 'keeps the manifest version identical to the script Config version (the HTML report prints it)' {
+        $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
+        $scriptText = Get-Content -Path $script:ScriptPath -Raw
+        $scriptText -match "(?m)^\s*Version\s*=\s*'([\d\.]+)'" | Should -BeTrue
+        $Matches[1] | Should -Be $manifest.ModuleVersion
+    }
+
+    It 'ships a LICENSE at the repository root' {
+        Join-Path $script:RepoRoot 'LICENSE' | Should -Exist
+    }
 }
 
 Describe 'Repository layout' {

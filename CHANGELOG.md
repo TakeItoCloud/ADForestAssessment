@@ -10,6 +10,51 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-08-30 (recovery defects R1 + depth R2, tool v1.5.0)
+
+Three defects found in review of v1.4.0, all fixed:
+
+- **Inbound trust false-Verified (critical).** The inbound direction of every trust was
+  "verified" by running `nltest /sc_verify:<ourOwnDomain>` locally, which checks the local
+  machine's own channel and succeeds on any healthy DC regardless of the trust's real
+  state. Inbound is now verified by executing `nltest /sc_verify:<ourDomain>` ON a DC of
+  the partner domain over WinRM (`Test-AdfaRemoteSecureChannel`); where the partner DC
+  cannot be remoted to, the direction reports `Not Assessed` naming the exact command to
+  run there — never a fabricated Verified.
+- **DNS checks trusted one resolver.** `DnsAdConsistency`, `DsaCname` and `GcConsistency`
+  queried only the local resolver, printing one DNS server's view as forest truth — in a
+  forest with broken replication the AD-integrated zone content genuinely differs per
+  server, and that divergence is the thing being hunted. All three now query every DC's
+  DNS plus the local resolver, report per-server divergence rows, and add a consensus
+  summary ("3 of 7 answering DNS servers diverge from AD"). "No such record" is
+  distinguished from "server did not answer" (`Get-AdfaDnsQueryOutcome`) so a dead DNS
+  server cannot masquerade as a missing record.
+- **Recommendation mis-routing on trust failures.** First-match-wins over the
+  concatenated text sent a broken trust (whose reason reads "secure channel verification
+  FAILED") to the machine-account remediation (`netdom resetpwd`) instead of the trust
+  remediation (`netdom trust /reset`). Map entries can now be scoped to a Section regex;
+  trust and machine-password guidance are section-scoped and cannot be hijacked by detail
+  wording.
+
+Depth (R2): the dcdiag grid grew from 6 to 15 tests (adds MachineAccount,
+ObjectsReplicated, RidManager, KccEvent, VerifyReferences, CrossRefValidation,
+KnowsOfRoleHolders, Intersite, DFSREvent); replication is cross-checked with
+`repadmin /showrepl * /csv` (one Fail finding per failing link — repadmin sees edges the
+Get-ADReplication* cmdlets miss when a partner is unreachable); backup status now runs
+`repadmin /showbackup` per DC with a parsed age verdict (correlate an old backup date with
+a stale machine-account password to date a restored DC); and a new opt-in
+`-IncludeLingeringObjectScan` runs `repadmin /removelingeringobjects ... /advisory_mode`
+per DC against the domain PDC — advisory mode changes nothing in the directory but finds
+lingering objects BEFORE they block replication with event 1988 (opt-in because it writes
+events 1938/1942/1946 on the target DCs).
+
+Process: manifest and script versions aligned at 1.5.0 (a repo test now asserts parity —
+the HTML report prints the script value); proprietary LICENSE added at the repository root
+with a copyright header in the script, matching the Assessments repository; PORT-PLAN.md
+reconciled with a Recovery track table (R0 retro-logged, R1/R2 Done, R3/R4 Planned).
+Runtime verification against a live forest (R4) is still outstanding: all new coverage is
+pure-logic with stubs.
+
 ### Added — 2026-08-30 (recovery & consistency sections, tool v1.4.0)
 
 Six new sections aimed at assessing a forest during or after a restore-from-backup

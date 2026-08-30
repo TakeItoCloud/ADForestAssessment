@@ -22,9 +22,9 @@ Extracted from
 | --- | --- |
 | Forest & domains | Functional levels, FSMO role holders |
 | Domain controllers | OS, GC, site, IP, read-only status |
-| Replication | Partner metadata, failures, queue; sites, subnets, site links, connection objects |
-| **Trusts** | Forest and domain trusts with per-direction secure-channel verification, SID filtering, selective authentication, TGT delegation, encryption posture |
-| Diagnostics | `dcdiag` key tests and core service state, parsed to PASS/FAIL |
+| Replication | Partner metadata, failures, queue; sites, subnets, site links, connection objects; `repadmin /showrepl * /csv` cross-check (catches links the AD cmdlets miss when a partner is unreachable) |
+| **Trusts** | Forest and domain trusts with per-direction secure-channel verification — outbound from the local side, **inbound executed on a partner-domain DC over WinRM** (a direction that cannot be tested from the correct side is `Not Assessed`, never `Verified`) — plus SID filtering, selective authentication, TGT delegation, encryption posture |
+| Diagnostics | `dcdiag` parsed to PASS/FAIL across 15 tests (Netlogons, Services, Replications, FsmoCheck, Advertising, SysVolCheck, MachineAccount, ObjectsReplicated, RidManager, KccEvent, VerifyReferences, CrossRefValidation, KnowsOfRoleHolders, Intersite, DFSREvent) |
 | DNS | Zones, scavenging, forwarders, zone transfer, critical SRV records, secure dynamic updates |
 | SYSVOL | DFSR migration state |
 | Group Policy | Linked / unlinked GPOs, WMI filters, central store |
@@ -36,9 +36,10 @@ Extracted from
 | Kerberos exposure | Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation |
 | DC hardening | Print Spooler, SMBv1, LDAP signing requirement (remote CIM / registry) |
 | Resilience | Directory backup status (`repadmin /showbackup`), time sync (`w32tm`), DC count, duplicate SPNs |
-| **Recovery: DNS vs AD** | DC locator SRV records compared against the DCs the directory actually contains — stale entries for removed DCs and live DCs not advertised, plus the PDC locator record |
-| **Recovery: DSA CNAMEs** | Per-DC `<DSA-GUID>._msdcs` alias verification (missing / wrong target) — the usual cause of RPC 1722 after metadata cleanup or restore — and orphaned NTDS Settings objects |
-| **Recovery: GC consistency** | Global Catalog flag in AD vs `_gc._tcp` DNS advertisement |
+| **Recovery: DNS vs AD** | DC locator SRV records compared against the DCs the directory actually contains — **on every DC's DNS server separately**, with a divergence summary ("3 of 7 answering servers advertise a DC that no longer exists"); plus the PDC locator record per server |
+| **Recovery: DSA CNAMEs** | Per-DC `<DSA-GUID>._msdcs` alias verification (missing / wrong target, per DNS server) — the usual cause of RPC 1722 after metadata cleanup or restore — and orphaned NTDS Settings objects |
+| **Recovery: GC consistency** | Global Catalog flag in AD vs `_gc._tcp` DNS advertisement, per DNS server |
+| **Recovery: lingering objects** | Opt-in (`-IncludeLingeringObjectScan`) advisory-mode `repadmin /removelingeringobjects` pass per DC against the domain PDC — finds lingering objects before they block replication; changes nothing in the directory |
 | **Recovery: port matrix** | Per-DC reachability on the replication port set (88/135/389/445 critical; 636/3268/9389 optional), separating "unresolvable" from "port closed" |
 | **Recovery: secure channels** | DC machine-account password age from the replicated `pwdLastSet` (collected centrally) and per-DC `nltest /sc_verify` over WinRM where reachable |
 | **Recovery: DS events** | Per-DC Directory Service log scan for lingering objects (1988), tombstone-lifetime exceeded (2042), USN rollback (2095), unsupported restore (2103), source-GUID DNS failures (2087/2088), KCC failures (1311/1865/1925/1084) |
@@ -78,8 +79,9 @@ checks (CIM / registry) and `dcdiag` need administrative rights on the domain co
 # Skip trust secure-channel verification
 .\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -SkipVerification
 
-# Post-incident triage: the recovery sections plus the health checks they depend on
-.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -AllDomains -Sections `
+# Post-incident triage: the recovery sections plus the health checks they depend on,
+# including the advisory-mode lingering-object scan (writes events on target DCs, changes nothing)
+.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -AllDomains -IncludeLingeringObjectScan -Sections `
     DnsAdConsistency,DsaCname,GcConsistency,PortMatrix,Replication,Trusts,DcSecureChannel,DsEvents,TimeSync,Sysvol,Backup
 ```
 
@@ -162,3 +164,11 @@ Package a release artifact:
 ```
 
 This writes `dist\ADForestAssessment-v<version>.zip` and prints the artifact path.
+
+## Licence
+
+ADForestAssessment is proprietary software; see [LICENSE](LICENSE) at the repository
+root. No licence to use, copy, modify, or distribute it is granted by possession of a
+copy — any use requires a separate written licence agreement signed by the copyright
+holder. Assessment reports generated from a customer's environment contain that
+customer's data and are not claimed by this licence.

@@ -204,7 +204,89 @@ Describe 'Recovery & consistency pure logic' {
         }
     }
 
+    Context 'Test-AdfaRemoteSecureChannel (inbound trust, executed on the partner side)' {
+        It 'reports Not Assessed with the manual command when the partner DC has no WinRM' {
+            Mock Test-TcpPort { $false }
+            $r = Test-AdfaRemoteSecureChannel -PartnerDomain 'partner.example' -VerifyDomain 'ours.example' -PartnerDc 'dc1.partner.example'
+            $r.Result | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match "nltest /sc_verify:ours\.example"
+            $r.Detail | Should -Match 'partner\.example'
+        }
+        It 'parses NERR_Success from the partner DC as Verified' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { 'Trust Verification Status = 0x0 NERR_Success' }
+            (Test-AdfaRemoteSecureChannel -PartnerDomain 'partner.example' -VerifyDomain 'ours.example' -PartnerDc 'dc1.partner.example').Result | Should -Be 'Verified'
+        }
+        It 'parses an error status from the partner DC as Failed, never Verified' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { 'Trust Verification Status = 0xc0000022 STATUS_ACCESS_DENIED' }
+            (Test-AdfaRemoteSecureChannel -PartnerDomain 'partner.example' -VerifyDomain 'ours.example' -PartnerDc 'dc1.partner.example').Result | Should -Be 'Failed'
+        }
+        It 'reports Not Assessed when the WinRM call itself throws' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { throw 'Access is denied' }
+            $r = Test-AdfaRemoteSecureChannel -PartnerDomain 'partner.example' -VerifyDomain 'ours.example' -PartnerDc 'dc1.partner.example'
+            $r.Result | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'Access is denied'
+        }
+    }
+
+    Context 'Get-AdfaDnsQueryOutcome' {
+        It 'classifies each outcome distinctly' {
+            Get-AdfaDnsQueryOutcome -Available $false | Should -Be 'NoTool'
+            Get-AdfaDnsQueryOutcome -Available $true -TargetCount 2 | Should -Be 'Resolved'
+            Get-AdfaDnsQueryOutcome -Available $true -TargetCount 0 -ErrorText 'DNS name does not exist' | Should -Be 'NoRecord'
+            Get-AdfaDnsQueryOutcome -Available $true -TargetCount 0 -ErrorText 'request timed out contacting server' | Should -Be 'NoAnswer'
+        }
+    }
+
+    Context 'Compare-AdfaDnsServerView' {
+        It 'reports per-server divergence instead of one merged view' {
+            $views = @{ 'dns1' = @('dc1.x', 'dc2.x'); 'dns2' = @('dc2.x', 'dc3.x'); 'dns3' = @() }
+            $s = Compare-AdfaDnsServerView -AdHosts @('dc1.x', 'dc2.x') -ServerTargets $views
+            $s.ServersQueried | Should -Be 3
+            $s.AgreeingServers | Should -Be @('dns1')
+            $s.DivergentServers | Should -Be @('dns2', 'dns3')
+            ($s.PerServer | Where-Object Server -eq 'dns2').StaleInDns | Should -Be @('dc3.x')
+            ($s.PerServer | Where-Object Server -eq 'dns3').MissingFromDns | Should -Be @('dc1.x', 'dc2.x')
+        }
+    }
+
+    Context 'ConvertFrom-AdfaShowreplCsv' {
+        It 'parses links past banner lines and preserves failure counts' {
+            $text = @"
+Repadmin: running command /showrepl against full DC dc1.contoso.com
+showrepl_COLUMNS,Destination DSA Site,Destination DSA,Naming Context,Source DSA Site,Source DSA,Transport Type,Number of Failures,Last Failure Time,Last Success Time,Last Failure Status
+showrepl_INFO,Default-First-Site-Name,DC1,"DC=contoso,DC=com",Default-First-Site-Name,DC2,RPC,0,0,2026-08-30 10:00:00,0
+showrepl_INFO,Default-First-Site-Name,DC1,"DC=contoso,DC=com",Default-First-Site-Name,DC3,RPC,42,2026-08-29 09:00:00,2026-08-01 10:00:00,1722
+"@
+            $rows = @(ConvertFrom-AdfaShowreplCsv -Text $text)
+            $rows.Count | Should -Be 2
+            ($rows | Where-Object { $_.'Source DSA' -eq 'DC3' }).'Number of Failures' | Should -Be '42'
+        }
+        It 'returns an empty set for unparsable text' {
+            @(ConvertFrom-AdfaShowreplCsv -Text 'garbage with no header').Count | Should -Be 0
+            @(ConvertFrom-AdfaShowreplCsv -Text '').Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaLatestBackupDate' {
+        It 'extracts the most recent of several dates' {
+            $d = Get-AdfaLatestBackupDate -Text "DC=x : 2026-07-01 10:00:00`nCN=Configuration : 2026-08-15 09:30:00"
+            $d | Should -Be ([datetime]'2026-08-15 09:30:00')
+        }
+        It 'handles US-style dates and returns null when nothing parses' {
+            (Get-AdfaLatestBackupDate -Text 'backup at 8/15/2026 09:30:00').Year | Should -Be 2026
+            Get-AdfaLatestBackupDate -Text 'no dates here' | Should -BeNullOrEmpty
+        }
+    }
+
     Context 'Get-AdfaRecommendation' {
+        It 'routes a trust failure whose detail mentions the secure channel to the TRUST fix, not the machine-account one' {
+            $r = Get-AdfaRecommendation -Section 'Trusts & Two-Way Health' -Item 'corp-partner' -Detail 'Outbound secure channel verification FAILED.'
+            $r | Should -Match 'netdom trust'
+            $r | Should -Not -Match 'resetpwd'
+        }
         It 'maps a broken trust to a netdom trust reset' {
             Get-AdfaRecommendation -Section 'Trusts & Two-Way Health' -Item 'corp-partner' -Detail 'Trust partner is not reachable.' |
                 Should -Match 'netdom trust'

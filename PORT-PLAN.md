@@ -20,9 +20,28 @@ extraction; this plan starts from there.
 | P1 | Extraction onto template-ps-tool: packaging manifest, harness repointing, repo tests, CI green | Done | 2026-08-13 |
 | P2 | Retire the analyzer suspensions that are real debt (see below) | Planned | |
 | P3 | Fix the `return , @()` shape so an empty result is empty at any call site | Planned | |
-| P4 | Runtime verification against a live multi-domain forest with real trusts | Planned | |
+| P4 | Runtime verification against a live multi-domain forest with real trusts | Superseded by R4 | |
 | P5 | Wire the dependency-free harnesses into CI as a second gate | Planned | |
-| P6 | Packaging and first tagged release | Planned | |
+| P6 | Packaging and first tagged release | Superseded by R4 | |
+
+## Recovery track (post-incident assessment)
+
+Added for assessing a forest during/after a restore-from-backup recovery. R0 (v1.4.0)
+landed without a row in this table, breaking the rule that the plan and the changelog move
+in the same commit — recorded here after the fact rather than silently.
+
+| Phase | Scope | Status | Date |
+| --- | --- | --- | --- |
+| R0 | v1.4.0: six recovery sections (DNS vs AD, DSA CNAMEs, GC consistency, port matrix, DC secure channel, DS events) + recommendation engine | Done (retro-logged) | 2026-08-30 |
+| R1 | v1.5.0 defects: inbound trust verified ON the partner DC (was a false local Verified); all DNS checks per-server with divergence summaries (was one resolver's view); recommendation map section-scoped (trust failures got machine-account advice); versions aligned; LICENSE added | Done | 2026-08-30 |
+| R2 | Depth: dcdiag 15-test grid, repadmin `/showrepl * /csv` cross-check, `/showbackup` per DC, opt-in advisory-mode lingering-object scan | Done | 2026-08-30 |
+| R3 | HTML report restructured for a recovery audience: coverage panel first, findings with evidence + recommendation + validation command, then detail sections | Planned | |
+| R4 | Runtime verification against a live multi-domain forest (or a lab with a deliberately broken trust and stale _msdcs), then tag and package (absorbs P4/P6) | Planned | |
+
+**R4 is the gate for trusting the recovery sections in production**: every R0-R2 check is
+covered by pure-logic tests with stubs and CI runs on ubuntu — nothing has yet exercised
+`Get-WinEvent -ComputerName`, `Invoke-Command`, `dcdiag /s:` or per-server `Resolve-DnsName`
+against a real directory.
 
 ## The 5.1 constraint — read before changing anything
 
