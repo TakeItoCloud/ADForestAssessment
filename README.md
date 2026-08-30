@@ -36,8 +36,20 @@ Extracted from
 | Kerberos exposure | Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation |
 | DC hardening | Print Spooler, SMBv1, LDAP signing requirement (remote CIM / registry) |
 | Resilience | Directory backup status (`repadmin /showbackup`), time sync (`w32tm`), DC count, duplicate SPNs |
+| **Recovery: DNS vs AD** | DC locator SRV records compared against the DCs the directory actually contains — stale entries for removed DCs and live DCs not advertised, plus the PDC locator record |
+| **Recovery: DSA CNAMEs** | Per-DC `<DSA-GUID>._msdcs` alias verification (missing / wrong target) — the usual cause of RPC 1722 after metadata cleanup or restore — and orphaned NTDS Settings objects |
+| **Recovery: GC consistency** | Global Catalog flag in AD vs `_gc._tcp` DNS advertisement |
+| **Recovery: port matrix** | Per-DC reachability on the replication port set (88/135/389/445 critical; 636/3268/9389 optional), separating "unresolvable" from "port closed" |
+| **Recovery: secure channels** | DC machine-account password age from the replicated `pwdLastSet` (collected centrally) and per-DC `nltest /sc_verify` over WinRM where reachable |
+| **Recovery: DS events** | Per-DC Directory Service log scan for lingering objects (1988), tombstone-lifetime exceeded (2042), USN rollback (2095), unsupported restore (2103), source-GUID DNS failures (2087/2088), KCC failures (1311/1865/1925/1084) |
 | Identity export | Full user and computer export with every populated attribute (CSV; HTML shows a summary) |
 | Exchange | Schema markers |
+
+Every Fail / Warning / Broken / Degraded finding in the consolidated output carries a
+**best-practice remediation recommendation** (a `Recommendation` column in
+`csv\Findings-Consolidated.csv`, `|| FIX:` lines in the detailed log, and the HTML lead
+section). A finding with no verified guidance carries an empty value — recommendations are
+mapped, never invented.
 
 ## Requirements
 
@@ -65,6 +77,10 @@ checks (CIM / registry) and `dcdiag` need administrative rights on the domain co
 
 # Skip trust secure-channel verification
 .\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -SkipVerification
+
+# Post-incident triage: the recovery sections plus the health checks they depend on
+.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -AllDomains -Sections `
+    DnsAdConsistency,DsaCname,GcConsistency,PortMatrix,Replication,Trusts,DcSecureChannel,DsEvents,TimeSync,Sysvol,Backup
 ```
 
 The report bundle lands in the logged-on user's Documents:

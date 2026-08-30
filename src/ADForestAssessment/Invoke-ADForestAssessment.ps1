@@ -34,8 +34,27 @@
         - Directory backup status (repadmin /showbackup), time synchronization (w32tm)
         - DNS depth: critical SRV records, secure dynamic updates
         - Redundancy: DC count, GPO central store, duplicate SPNs
+        - RECOVERY & CONSISTENCY (post-incident, e.g. after a restore-from-backup):
+            * DNS vs AD divergence - DC locator SRV records compared against the DCs the
+              directory actually contains (stale entries for removed DCs, live DCs not
+              advertised)
+            * DSA GUID CNAME records in _msdcs - the usual cause of RPC 1722 replication
+              failures after metadata cleanup or restore
+            * Global Catalog flag vs _gc._tcp DNS advertisement
+            * Per-DC reachability matrix on the ports replication requires
+              (Kerberos/RPC/LDAP/SMB + LDAPS/GC/ADWS)
+            * DC machine-account password age (replicated attribute, collected centrally)
+              and per-DC secure-channel verification over WinRM where reachable
+            * Directory Service event log scan per DC for the events that block or mask
+              recovery: lingering objects (1988), tombstone-lifetime exceeded (2042),
+              USN rollback (2095), unsupported restore (2103), GUID DNS lookup failures
+              (2087/2088), KCC topology failures (1311/1865/1925)
         - Exchange schema markers
         - Optional raw repadmin / dcdiag capture
+
+    Every Fail / Warning / Broken / Degraded row in the consolidated findings carries a
+    best-practice remediation recommendation (Recommendation column in
+    csv\Findings-Consolidated.csv, the detailed log, and the HTML lead section).
 
     The report is written to the logged-on user's Documents folder by default:
         %USERPROFILE%\Documents\AdAssessment\yyyy-MM-dd_HH-mm-ss\
@@ -61,6 +80,10 @@
     -Sections to exclude it for a quick health-only run. Cross-forest note: -AllDomains covers
     domains WITHIN the target forest only. To assess another forest, run again with -Server /
     -Credential pointed at a DC in that forest.
+
+    Recovery sections (post-incident): DnsAdConsistency, DsaCname, GcConsistency, PortMatrix,
+    DcSecureChannel, DsEvents. For a focused post-restore triage run:
+    -Sections DnsAdConsistency,DsaCname,GcConsistency,PortMatrix,Replication,Trusts,DcSecureChannel,DsEvents,TimeSync,Sysvol,Backup
 
 .PARAMETER IncludeDcdiag
     Also capture raw 'dcdiag /c /v' output per DC under raw\.
@@ -129,7 +152,9 @@ param(
         'Topology', 'Trusts', 'DcDiagnostics', 'Dns', 'Sysvol', 'Gpo', 'PasswordPolicy',
         'PrivilegedAccounts', 'SecurityPosture', 'StaleObjects', 'Identity',
         'Pki', 'Acl', 'Kerberos', 'PrivilegedHygiene', 'DcHardening', 'Backup', 'TimeSync',
-        'DnsDepth', 'Redundancy', 'ExchangeSchema')]
+        'DnsDepth', 'Redundancy', 'ExchangeSchema',
+        'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
+        'DsEvents')]
     [string[]]$Sections = @('All'),
 
     [switch]$IncludeDcdiag,
@@ -155,7 +180,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.3.0'
+    Version                 = '1.4.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -193,6 +218,38 @@ $script:Config = @{
     EnrolleeSuppliesSubject = 0x00000001  # msPKI-Certificate-Name-Flag
     PendAllRequests         = 0x00000002  # msPKI-Enrollment-Flag (manager approval)
     AuthEkuOids             = @('1.3.6.1.5.5.7.3.2', '1.3.6.1.4.1.311.20.2.2', '1.3.6.1.5.2.3.4', '2.5.29.37.0')
+    # --- Recovery & consistency checks (post-incident) ---
+    # DC machine-account passwords rotate every 30 days by default (client-initiated).
+    # pwdLastSet is a replicated attribute, so age is collectable centrally; an old value
+    # on a DC means rotation is not happening - typical of a DC restored from old backup.
+    DcPasswordWarnDays      = 45
+    DcPasswordFailDays      = 90
+    # Ports replication and authentication actually require between DCs.
+    ReplicationPorts        = @(
+        @{ Port = 88;   Name = 'Kerberos';            Critical = $true }
+        @{ Port = 135;  Name = 'RPC Endpoint Mapper'; Critical = $true }
+        @{ Port = 389;  Name = 'LDAP';                Critical = $true }
+        @{ Port = 445;  Name = 'SMB';                 Critical = $true }
+        @{ Port = 636;  Name = 'LDAPS';               Critical = $false }
+        @{ Port = 3268; Name = 'Global Catalog LDAP'; Critical = $false }
+        @{ Port = 9389; Name = 'ADWS';                Critical = $false }
+    )
+    DsEventLookbackDays     = 14
+    # Directory Service events that block or mask recovery in a mixed-restore forest.
+    DsEventsOfInterest      = @(
+        @{ Id = 1988; Severity = 'Fail';    Meaning = 'Lingering object detected - replication BLOCKED by strict consistency.' }
+        @{ Id = 2042; Severity = 'Fail';    Meaning = 'Replication stopped - tombstone lifetime exceeded; will not resume without intervention.' }
+        @{ Id = 2095; Severity = 'Fail';    Meaning = 'USN rollback detected - the directory is silently diverging.' }
+        @{ Id = 2103; Severity = 'Fail';    Meaning = 'AD DS database restored using an unsupported restore procedure.' }
+        @{ Id = 2087; Severity = 'Fail';    Meaning = 'DNS lookup failure resolving a source DC GUID - direct cause of RPC 1722 replication errors.' }
+        @{ Id = 2088; Severity = 'Warning'; Meaning = 'DNS lookup failed but a fallback succeeded - DNS is broken and replication is masking it.' }
+        @{ Id = 1311; Severity = 'Warning'; Meaning = 'KCC could not build a replication topology.' }
+        @{ Id = 1865; Severity = 'Warning'; Meaning = 'KCC could not reach one or more sites.' }
+        @{ Id = 1925; Severity = 'Warning'; Meaning = 'Failed to establish a replication link.' }
+        @{ Id = 1084; Severity = 'Warning'; Meaning = 'Replication failed for a specific object.' }
+    )
+    # NTDS-DSA options bit 0 = this DSA is a Global Catalog.
+    NtdsDsaOptionIsGc       = 1
 }
 
 # Status vocabulary (fail-closed).
@@ -1829,6 +1886,601 @@ function Get-AdfaExchangeSchemaMarker {
 }
 
 # ===========================================================================
+# region Recovery & consistency (post-incident)
+# ===========================================================================
+
+function Resolve-AdfaDnsRecord {
+    <#
+    .SYNOPSIS
+        Resolves a DNS record (SRV or CNAME) with Resolve-DnsName, falling back to
+        nslookup where the DnsClient module is absent. Fail-closed: reports whether a
+        resolver was available at all, so "no tool" is never conflated with "no record".
+    .OUTPUTS
+        [pscustomobject] Available (bool), Targets (string[]), Error (string)
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][ValidateSet('SRV', 'CNAME')][string]$Type
+    )
+    $targets = @()
+    if (Test-CommandAvailable -Name 'Resolve-DnsName') {
+        try {
+            $ans = @(Resolve-DnsName -Name $Name -Type $Type -DnsOnly -ErrorAction Stop)
+            foreach ($a in $ans) {
+                if ($Type -eq 'SRV' -and $a.PSObject.Properties['NameTarget'] -and $a.NameTarget) { $targets += [string]$a.NameTarget }
+                elseif ($Type -eq 'CNAME' -and $a.PSObject.Properties['NameHost'] -and $a.NameHost) { $targets += [string]$a.NameHost }
+            }
+            return [pscustomobject]@{ Available = $true; Targets = @($targets | Sort-Object -Unique); Error = '' }
+        }
+        catch {
+            return [pscustomobject]@{ Available = $true; Targets = @(); Error = $_.Exception.Message }
+        }
+    }
+    if (Test-CommandAvailable -Name 'nslookup.exe') {
+        $r = Invoke-ExternalCommand -FilePath 'nslookup.exe' -Arguments ("-type={0} {1}" -f $Type, $Name) -TimeoutSeconds 30 -Retries 1
+        if ($r.StdOut) {
+            foreach ($line in ($r.StdOut -split "`r?`n")) {
+                if ($Type -eq 'SRV' -and $line -match 'svr hostname\s*=\s*(\S+)') { $targets += $Matches[1].TrimEnd('.') }
+                elseif ($Type -eq 'CNAME' -and $line -match 'canonical name\s*=\s*(\S+)') { $targets += $Matches[1].TrimEnd('.') }
+            }
+        }
+        $err = ''
+        if (@($targets).Count -eq 0) { $err = 'No records returned by nslookup.' }
+        return [pscustomobject]@{ Available = $true; Targets = @($targets | Sort-Object -Unique); Error = $err }
+    }
+    return [pscustomobject]@{ Available = $false; Targets = @(); Error = 'Neither Resolve-DnsName nor nslookup.exe is available on this host.' }
+}
+
+function Compare-AdfaDnsAdvertisement {
+    <#
+    .SYNOPSIS
+        Pure comparison of the DC set Active Directory contains against the host set DNS
+        advertises. Names are normalised (case, trailing dot) before comparing.
+    .OUTPUTS
+        [pscustomobject] StaleInDns (string[]), MissingFromDns (string[]), Matched (string[])
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyCollection()][string[]]$AdHosts = @(),
+        [AllowEmptyCollection()][string[]]$DnsTargets = @()
+    )
+    $ad = @{}
+    foreach ($h in $AdHosts) { if ($h) { $ad[$h.ToLowerInvariant().TrimEnd('.')] = $true } }
+    $dns = @{}
+    foreach ($t in $DnsTargets) { if ($t) { $dns[$t.ToLowerInvariant().TrimEnd('.')] = $true } }
+
+    $stale = @(); $missing = @(); $matched = @()
+    foreach ($k in $dns.Keys) { if (-not $ad.ContainsKey($k)) { $stale += $k } }
+    foreach ($k in $ad.Keys) {
+        if ($dns.ContainsKey($k)) { $matched += $k } else { $missing += $k }
+    }
+    [pscustomobject]@{
+        StaleInDns     = @($stale | Sort-Object)
+        MissingFromDns = @($missing | Sort-Object)
+        Matched        = @($matched | Sort-Object)
+    }
+}
+
+function Resolve-AdfaDcPasswordVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict for a DC machine-account password age. Rotation is client-initiated
+        every 30 days by default, so an old replicated pwdLastSet means rotation is not
+        happening - typical of a DC restored from an old backup.
+    .OUTPUTS
+        [string] Pass | Warning | Fail | Not Assessed
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][nullable[double]]$AgeDays,
+        [int]$WarnDays = 45,
+        [int]$FailDays = 90
+    )
+    if ($null -eq $AgeDays) { return $script:Status.NotAssessed }
+    if ($AgeDays -ge $FailDays) { return $script:Status.Fail }
+    if ($AgeDays -ge $WarnDays) { return $script:Status.Warning }
+    return $script:Status.Pass
+}
+
+function Get-AdfaDnsAdConsistency {
+    <#
+    .SYNOPSIS
+        Compares the DC locator SRV records DNS advertises for a domain against the DCs
+        Active Directory actually contains. Stale entries (a removed/dead DC still
+        advertised) and missing entries (a live DC not advertised) are the two divergences
+        that surface as intermittent RPC 1722 and logon failures after a restore.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{}
+    )
+    $rows = @()
+    $p = @{} + $AdParams; $p.Server = $DomainName
+    $adHosts = @()
+    try {
+        $adHosts = @(Get-ADDomainController -Filter * @p | Select-Object -ExpandProperty HostName)
+    }
+    catch {
+        $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item 'DC list from AD' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+        return , @($rows)
+    }
+
+    foreach ($rec in @(("_ldap._tcp.dc._msdcs.{0}" -f $DomainName), ("_kerberos._tcp.dc._msdcs.{0}" -f $DomainName))) {
+        $res = Resolve-AdfaDnsRecord -Name $rec -Type SRV
+        if (-not $res.Available) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed -Detail $res.Error
+            continue
+        }
+        if (@($res.Targets).Count -eq 0) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.Fail -Detail ("No SRV targets resolvable. {0}" -f $res.Error)
+            continue
+        }
+        $cmp = Compare-AdfaDnsAdvertisement -AdHosts $adHosts -DnsTargets $res.Targets
+        foreach ($s in $cmp.StaleInDns) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("Stale DNS entry: {0}" -f $s) -Status $script:Status.Fail -Detail ("{0} is advertised in {1} but no such DC exists in AD." -f $s, $rec)
+        }
+        foreach ($m in $cmp.MissingFromDns) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("DC missing from DNS: {0}" -f $m) -Status $script:Status.Fail -Detail ("{0} exists in AD but is not advertised in {1}." -f $m, $rec)
+        }
+        if (@($cmp.StaleInDns).Count -eq 0 -and @($cmp.MissingFromDns).Count -eq 0) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.Pass -Detail ("{0} DC(s), DNS and AD agree." -f @($cmp.Matched).Count)
+        }
+    }
+
+    # PDC locator record must point at the actual PDC emulator.
+    try {
+        $pdc = (Get-ADDomain @p).PDCEmulator
+        $pdcRec = "_ldap._tcp.pdc._msdcs.{0}" -f $DomainName
+        $res = Resolve-AdfaDnsRecord -Name $pdcRec -Type SRV
+        if (-not $res.Available) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.NotAssessed -Detail $res.Error
+        }
+        elseif (@($res.Targets).Count -eq 0) {
+            $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.Fail -Detail 'PDC locator record missing - logons and password changes will misroute.'
+        }
+        else {
+            $adv = @($res.Targets)[0].ToLowerInvariant().TrimEnd('.')
+            $actual = ''
+            if ($pdc) { $actual = ([string]$pdc).ToLowerInvariant().TrimEnd('.') }
+            if ($adv -eq $actual) {
+                $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.Pass -Detail ("Points at the PDC emulator ({0})." -f $pdc)
+            }
+            else {
+                $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item ("SRV {0}" -f $pdcRec) -Status $script:Status.Fail -Detail ("DNS advertises {0} but the PDC emulator is {1}." -f $adv, $actual)
+            }
+        }
+    }
+    catch {
+        $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item 'PDC locator record' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+    }
+
+    return , @($rows)
+}
+
+function Get-AdfaDsaGuidCname {
+    <#
+    .SYNOPSIS
+        Verifies the DSA GUID CNAME alias in _msdcs for every DC. Replication resolves a
+        source DC through <objectGUID-of-NTDS-Settings>._msdcs.<forestroot>, not through
+        its A record - a missing or wrong alias is the single most common cause of RPC
+        1722 replication failures after metadata cleanup or a restore.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$ForestRoot,
+        [hashtable]$AdParams = @{}
+    )
+    $rows = @()
+    $dsas = @()
+    try {
+        $cfg = (Get-ADRootDSE @AdParams).configurationNamingContext
+        $dsas = @(Get-ADObject -LDAPFilter '(objectClass=nTDSDSA)' -SearchBase $cfg -Properties objectGUID @AdParams)
+    }
+    catch {
+        $rows += New-Finding -Area 'DsaCname' -Item 'nTDSDSA enumeration' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+        return , @($rows)
+    }
+
+    foreach ($dsa in $dsas) {
+        # StrictMode-safe: tolerate directory objects (or test stubs) missing properties.
+        $dsaDn = ''
+        if ($dsa.PSObject.Properties['DistinguishedName'] -and $dsa.DistinguishedName) { $dsaDn = [string]$dsa.DistinguishedName }
+        $dsaGuid = ''
+        if ($dsa.PSObject.Properties['objectGUID'] -and $dsa.objectGUID) { $dsaGuid = [string]$dsa.objectGUID }
+        if (-not $dsaDn -or -not $dsaGuid) {
+            $rows += New-Finding -Area 'DsaCname' -Item 'nTDSDSA object' -Status $script:Status.NotAssessed -Detail 'Directory returned an nTDSDSA object without DistinguishedName/objectGUID - cannot evaluate its alias.'
+            continue
+        }
+        $serverDn = $dsaDn -replace '^CN=NTDS Settings,', ''
+        $dcHost = ''
+        try {
+            $srvObj = Get-ADObject -Identity $serverDn -Properties dNSHostName @AdParams
+            if ($srvObj.PSObject.Properties['dNSHostName'] -and $srvObj.dNSHostName) { $dcHost = [string]$srvObj.dNSHostName }
+        }
+        catch { }
+
+        if (-not $dcHost) {
+            $rows += New-Finding -Area 'DsaCname' -Item ("Orphaned NTDS Settings: {0}" -f $serverDn) -Status $script:Status.Warning -Detail 'nTDSDSA object exists but its server object has no dNSHostName - likely metadata left behind by an incomplete demotion or restore.'
+            continue
+        }
+
+        $alias = "{0}._msdcs.{1}" -f $dsaGuid, $ForestRoot
+        $res = Resolve-AdfaDnsRecord -Name $alias -Type CNAME
+        if (-not $res.Available) {
+            $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.NotAssessed -Detail $res.Error
+        }
+        elseif (@($res.Targets).Count -eq 0) {
+            $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.Fail -Detail ("DSA GUID CNAME missing: {0} does not resolve. Inbound replication from this DC will fail with RPC/DNS errors." -f $alias)
+        }
+        else {
+            $target = @($res.Targets)[0].ToLowerInvariant().TrimEnd('.')
+            if ($target -eq $dcHost.ToLowerInvariant().TrimEnd('.')) {
+                $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.Pass -Detail ("{0} -> {1}" -f $alias, $target)
+            }
+            else {
+                $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.Fail -Detail ("DSA GUID CNAME points to the WRONG host: {0} -> {1} (expected {2})." -f $alias, $target, $dcHost)
+            }
+        }
+    }
+    return , @($rows)
+}
+
+function Get-AdfaGcConsistency {
+    <#
+    .SYNOPSIS
+        Compares the Global Catalog set Active Directory believes in (forest
+        GlobalCatalogs) against what DNS advertises under _gc._tcp.<forest>.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$ForestRoot,
+        [hashtable]$AdParams = @{}
+    )
+    $rows = @()
+    $gcs = @()
+    try { $gcs = @((Get-ADForest @AdParams).GlobalCatalogs) }
+    catch {
+        $rows += New-Finding -Area 'GcConsistency' -Item 'GC list from AD' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+        return , @($rows)
+    }
+
+    $rec = "_gc._tcp.{0}" -f $ForestRoot
+    $res = Resolve-AdfaDnsRecord -Name $rec -Type SRV
+    if (-not $res.Available) {
+        $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed -Detail $res.Error
+        return , @($rows)
+    }
+    if (@($res.Targets).Count -eq 0) {
+        $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.Fail -Detail 'No Global Catalog SRV records resolvable - forest-wide logons, universal group lookups and Exchange will fail.'
+        return , @($rows)
+    }
+    $cmp = Compare-AdfaDnsAdvertisement -AdHosts $gcs -DnsTargets $res.Targets
+    foreach ($s in $cmp.StaleInDns) {
+        $rows += New-Finding -Area 'GcConsistency' -Item ("Global Catalog: {0}" -f $s) -Status $script:Status.Fail -Detail ("Advertised as a GC in DNS but is not a GC in AD (or no longer exists). Clients will bind to it and fail." -f $s)
+    }
+    foreach ($m in $cmp.MissingFromDns) {
+        $rows += New-Finding -Area 'GcConsistency' -Item ("Global Catalog: {0}" -f $m) -Status $script:Status.Warning -Detail ("GC in AD but not advertised in {0} - either still completing partial-attribute-set replication or its Netlogon registration is failing." -f $rec)
+    }
+    if (@($cmp.StaleInDns).Count -eq 0 -and @($cmp.MissingFromDns).Count -eq 0) {
+        $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.Pass -Detail ("{0} GC(s), DNS and AD agree." -f @($cmp.Matched).Count)
+    }
+    return , @($rows)
+}
+
+function Get-AdfaPortMatrix {
+    <#
+    .SYNOPSIS
+        Per-DC reachability on the ports replication and authentication require, probed
+        from this host. Separates "unresolvable in DNS" from "resolvable but the port is
+        closed" - they have completely different fixes.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        [int]$RpcPortTimeoutMs = 1200
+    )
+    $rows = @()
+    foreach ($dc in $DomainControllers) {
+        $resolvable = $true
+        try { [void][System.Net.Dns]::GetHostAddresses($dc) }
+        catch { $resolvable = $false }
+        if (-not $resolvable) {
+            $rows += New-Finding -Area 'PortMatrix' -Item $dc -Status $script:Status.Fail -Detail 'Host name does not resolve in DNS - no A record. Nothing can reach this DC by name.'
+            continue
+        }
+        $closedCritical = @(); $closedOptional = @(); $open = @()
+        foreach ($p in $script:Config.ReplicationPorts) {
+            if (Test-TcpPort -ComputerName $dc -Port $p.Port -TimeoutMs $RpcPortTimeoutMs) { $open += ("{0}/{1}" -f $p.Port, $p.Name) }
+            elseif ($p.Critical) { $closedCritical += ("{0}/{1}" -f $p.Port, $p.Name) }
+            else { $closedOptional += ("{0}/{1}" -f $p.Port, $p.Name) }
+        }
+        if (@($closedCritical).Count -gt 0) {
+            $rows += New-Finding -Area 'PortMatrix' -Item $dc -Status $script:Status.Fail -Detail ("Critical port(s) not reachable: {0}.{1}" -f ($closedCritical -join ', '), $(if (@($closedOptional).Count -gt 0) { ' Also closed: ' + ($closedOptional -join ', ') + '.' } else { '' }))
+        }
+        elseif (@($closedOptional).Count -gt 0) {
+            $rows += New-Finding -Area 'PortMatrix' -Item $dc -Status $script:Status.Warning -Detail ("Optional port(s) not reachable: {0}. Core replication ports are open." -f ($closedOptional -join ', '))
+        }
+        else {
+            $rows += New-Finding -Area 'PortMatrix' -Item $dc -Status $script:Status.Pass -Detail ("All {0} probed ports reachable." -f @($open).Count)
+        }
+    }
+    if (@($DomainControllers).Count -eq 0) {
+        $rows += New-Finding -Area 'PortMatrix' -Item 'Port matrix' -Status $script:Status.NotAssessed -Detail 'No domain controllers enumerated.'
+    }
+    return , @($rows)
+}
+
+function Get-AdfaDcSecureChannel {
+    <#
+    .SYNOPSIS
+        Two checks per DC. (1) Machine-account password age from the replicated
+        pwdLastSet attribute - collected centrally, no remoting needed; a stale value is
+        the fingerprint of a DC restored from an old backup. (2) Where WinRM is
+        reachable, secure-channel verification run ON the DC via nltest /sc_verify;
+        where it is not, the check reports Not Assessed and says what to run locally.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{},
+        [pscredential]$Credential,
+        [int]$WarnDays = 45,
+        [int]$FailDays = 90,
+        [int]$RpcPortTimeoutMs = 1200
+    )
+    $rows = @()
+    $p = @{} + $AdParams; $p.Server = $DomainName
+    $dcs = @()
+    try { $dcs = @(Get-ADDomainController -Filter * @p) }
+    catch {
+        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'DC enumeration' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+        return , @($rows)
+    }
+
+    foreach ($dc in $dcs) {
+        # (1) Machine-account password age - central, from the replicated attribute.
+        try {
+            $comp = Get-ADComputer -Identity $dc.ComputerObjectDN -Properties PasswordLastSet @p
+            $age = $null
+            if ($comp.PasswordLastSet) { $age = ((Get-Date) - $comp.PasswordLastSet).TotalDays }
+            $verdict = Resolve-AdfaDcPasswordVerdict -AgeDays $age -WarnDays $WarnDays -FailDays $FailDays
+            $ageText = 'never set / not readable'
+            if ($null -ne $age) { $ageText = ('{0:N0} day(s) old (set {1:yyyy-MM-dd})' -f $age, $comp.PasswordLastSet) }
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Machine-account password: {0}" -f $dc.HostName) -Status $verdict -Detail ("pwdLastSet is {0}. Default rotation is every 30 days; a stale value on a DC usually means it was restored from an old backup or rotation is disabled." -f $ageText)
+        }
+        catch {
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Machine-account password: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+        }
+
+        # (2) Secure channel verified ON the DC, via WinRM where reachable.
+        if (Test-TcpPort -ComputerName $dc.HostName -Port 5985 -TimeoutMs $RpcPortTimeoutMs) {
+            try {
+                $icm = @{
+                    ComputerName = $dc.HostName
+                    ScriptBlock  = { param($d) & nltest.exe "/sc_verify:$d" 2>&1 | Out-String }
+                    ArgumentList = $DomainName
+                    ErrorAction  = 'Stop'
+                }
+                if ($Credential) { $icm.Credential = $Credential }
+                $out = [string](Invoke-Command @icm)
+                if ($out -match 'NERR_Success') {
+                    $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.Pass -Detail 'nltest /sc_verify on the DC reported NERR_Success.'
+                }
+                else {
+                    $excerpt = (($out -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First 3) -join ' | '
+                    $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.Fail -Detail ("nltest /sc_verify on the DC did not report success: {0}" -f $excerpt)
+                }
+            }
+            catch {
+                $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail ("WinRM query failed: {0}. Run 'nltest /sc_verify:{1}' locally on the DC." -f $_.Exception.Message, $DomainName)
+            }
+        }
+        else {
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail ("WinRM (5985) not reachable from this host. Run 'nltest /sc_verify:{0}' locally on the DC." -f $DomainName)
+        }
+    }
+    return , @($rows)
+}
+
+function Get-AdfaDsEventLog {
+    <#
+    .SYNOPSIS
+        Scans each DC's Directory Service event log (remotely, over the event log RPC
+        interface) for the events that block or mask recovery: lingering objects,
+        tombstone-lifetime exceeded, USN rollback, unsupported restore, source-DC GUID
+        DNS failures and KCC topology failures. Unreachable DCs degrade to Not Assessed.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        [pscredential]$Credential,
+        [int]$LookbackDays = 14,
+        [int]$RpcPortTimeoutMs = 1200
+    )
+    $rows = @()
+    $ids = @($script:Config.DsEventsOfInterest | ForEach-Object { [int]$_.Id })
+    $meta = @{}
+    foreach ($e in $script:Config.DsEventsOfInterest) { $meta[[int]$e.Id] = $e }
+
+    foreach ($dc in $DomainControllers) {
+        if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
+            $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail 'RPC (135) not reachable - event log could not be read remotely. Check the Directory Service log on the DC itself.'
+            continue
+        }
+        try {
+            $gwe = @{
+                ComputerName    = $dc
+                FilterHashtable = @{ LogName = 'Directory Service'; Id = $ids; StartTime = (Get-Date).AddDays(-$LookbackDays) }
+                MaxEvents       = 500
+                ErrorAction     = 'Stop'
+            }
+            if ($Credential) { $gwe.Credential = $Credential }
+            $events = @(Get-WinEvent @gwe)
+            if (@($events).Count -eq 0) {
+                $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s)." -f $LookbackDays)
+                continue
+            }
+            foreach ($g in ($events | Group-Object Id)) {
+                $id = [int]$g.Name
+                $m = $meta[$id]
+                $sev = $script:Status.Warning
+                $meaning = ''
+                if ($m) {
+                    $meaning = [string]$m.Meaning
+                    if ([string]$m.Severity -eq 'Fail') { $sev = $script:Status.Fail }
+                }
+                $last = ($g.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1).TimeCreated
+                $rows += New-Finding -Area 'DsEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}" -f $g.Count, $LookbackDays, $last, $meaning)
+            }
+        }
+        catch {
+            if ($_.Exception.Message -match 'No events were found') {
+                $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s)." -f $LookbackDays)
+            }
+            else {
+                $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("Event log query failed: {0}" -f $_.Exception.Message)
+            }
+        }
+    }
+    if (@($DomainControllers).Count -eq 0) {
+        $rows += New-Finding -Area 'DsEvents' -Item 'Directory Service events' -Status $script:Status.NotAssessed -Detail 'No domain controllers enumerated.'
+    }
+    return , @($rows)
+}
+
+# ===========================================================================
+# region Best-practice recommendations
+# ===========================================================================
+
+# Table-driven mapping from a finding's section/item/detail text to a best-practice fix.
+# First match wins; specific patterns must precede general ones. Kept as data so adding
+# guidance never touches collector logic.
+$script:RecommendationMap = @(
+    @{ Match = '(?i)dsa guid cname|orphaned ntds settings'
+       Text  = 'If the DC is live: on that DC run "ipconfig /registerdns" and "nltest /dsregdns", then restart the Netlogon service, and confirm the _msdcs zone accepts secure dynamic updates. If the DC no longer exists: remove its metadata (ntdsutil "metadata cleanup", or delete the server object in AD Sites and Services) and delete the stale record. Replication resolves source DCs through this alias - fix it before chasing RPC 1722 errors.' }
+    @{ Match = '(?i)stale dns entry'
+       Text  = 'This host is advertised in DNS but does not exist in AD. Delete its stale SRV/A records, confirm metadata cleanup completed for the removed DC (ntdsutil "metadata cleanup"), then run "nltest /dsregdns" on surviving DCs to re-register clean records.' }
+    @{ Match = '(?i)missing from dns|not advertised'
+       Text  = 'On the affected DC: "ipconfig /registerdns", "nltest /dsregdns", restart Netlogon. Verify the zone allows secure dynamic updates and that the DC''s NIC points at working AD DNS servers (never an external resolver first).' }
+    @{ Match = '(?i)pdc locator|pdc emulator'
+       Text  = 'Re-register the PDC record: on the actual PDC emulator run "nltest /dsregdns" and restart Netlogon; if the role moved during recovery, confirm FSMO placement with "netdom query fsmo" and seize/transfer as intended before fixing DNS.' }
+    @{ Match = '(?i)lingering object'
+       Text  = 'Remove lingering objects rather than forcing replication through: "repadmin /removelingeringobjects <dc> <authoritative-dc-dsa-guid> <NC> /advisory_mode" first to preview, then without /advisory_mode. Do not disable strict replication consistency.' }
+    @{ Match = '(?i)tombstone lifetime'
+       Text  = 'Replication was stopped longer than tombstone lifetime; restarting it blindly risks lingering objects. Preferred fix: forcibly demote the divergent DC, clean its metadata, and repromote it. Only consider "allow replication with divergent and corrupt partner" after a full lingering-object scan.' }
+    @{ Match = '(?i)usn rollback|unsupported restore'
+       Text  = 'This DC was restored by snapshot/image, which is unsupported. Forcibly demote it (dcpromo /forceremoval), clean its metadata, and repromote. Recover DCs only via system-state restore or by rebuilding and repromoting.' }
+    @{ Match = '(?i)secure channel|machine.account password'
+       Text  = 'Reset the secure channel against a known-healthy DC. Member/workstation: "Reset-ComputerMachinePassword -Server <healthyDC>" or "nltest /sc_reset:<domain>". For a DC: stop the KDC service, run "netdom resetpwd /server:<healthyDC> /userd:<domain>\<admin> /passwordd:*", restart. Never disjoin/rejoin a domain controller.' }
+    @{ Match = '(?i)sid filtering'
+       Text  = 'Re-enable SID filtering on the trust: "netdom trust <local> /domain:<partner> /quarantine:Yes" (external trusts). Only relax for a documented, time-boxed migration.' }
+    @{ Match = '(?i)rc4'
+       Text  = 'Enable AES on the trust ("ksetup /setenctypeattr <partner> AES256-CTS-HMAC-SHA1-96 AES128-CTS-HMAC-SHA1-96" or the trust dialog''s AES checkbox), then reset the trust password so new AES keys are derived.' }
+    @{ Match = '(?i)trust'
+       Text  = 'Confirm the network path and DNS name resolution (conditional forwarders / stub zones) to the partner domain in BOTH directions, then reset the trust secure channel: "netdom trust <local> /domain:<partner> /reset". Re-verify with "nltest /sc_verify:<partner>". After a ransomware incident, reset trust passwords as part of credential hygiene.' }
+    @{ Match = '(?i)replication'
+       Text  = 'Fix the DNS findings first (stale records, DSA GUID CNAMEs) - most post-restore RPC 1722 replication errors are DNS, not the network. Then: "repadmin /replsummary", "repadmin /showrepl <dc>", force with "repadmin /replicate <dest> <source> <NC>", and re-run this assessment to confirm.' }
+    @{ Match = '(?i)no a record|does not resolve'
+       Text  = 'Fix name resolution first: create or re-register the A record (on the DC: "ipconfig /registerdns", restart Netlogon) and confirm this host points at AD DNS servers. A host that does not resolve is unreachable regardless of firewall state.' }
+    @{ Match = '(?i)port.*not reachable'
+       Text  = 'Open the AD replication port set between DCs: TCP 88, 135, 389, 445, 636, 3268 plus the dynamic RPC range 49152-65535 (or pin replication to a fixed port via the NTDS "TCP/IP Port" registry value and open that). Distinguish firewall blocks from a service not listening (check with netstat on the DC).' }
+    @{ Match = '(?i)time sync|w32tm|time skew|clock'
+       Text  = 'Point the forest-root PDC emulator at reliable external NTP: "w32tm /config /manualpeerlist:""<ntp1> <ntp2>"" /syncfromflags:manual /reliable:yes /update"; every other DC: "w32tm /config /syncfromflags:domhier /update"; then "w32tm /resync". Kerberos fails beyond 5 minutes of skew.' }
+    @{ Match = '(?i)central store'
+       Text  = 'Create the GPO central store: copy %SystemRoot%\PolicyDefinitions (including language subfolders) into \\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions on the PDC; DFSR replicates it to the other DCs.' }
+    @{ Match = '(?i)sysvol|dfsr'
+       Text  = 'Check "dfsrmig /getmigrationstate". If SYSVOL is not replicating after the restore, perform an authoritative (D4) DFSR restore on the best DC and non-authoritative (D2) on the others via msDFSR-Options, and verify the SYSVOL/NETLOGON shares exist on every DC before editing GPOs.' }
+    @{ Match = '(?i)krbtgt'
+       Text  = 'Reset the krbtgt password TWICE per domain, waiting for full replication (10+ hours / one ticket lifetime) between resets - mandatory after a ransomware incident to invalidate any forged golden tickets. Use Microsoft''s New-KrbtgtKeys.ps1 for a controlled rollout.' }
+    @{ Match = '(?i)kerberoast'
+       Text  = 'Move the flagged service accounts to Group Managed Service Accounts (gMSA); where impossible, set 30+ character random passwords and AES-only Kerberos ("Set-ADUser -KerberosEncryptionType AES256").' }
+    @{ Match = '(?i)as-rep|preauth|pre-auth'
+       Text  = 'Re-enable Kerberos pre-authentication on the flagged accounts (clear "Do not require Kerberos preauthentication" / the DONT_REQ_PREAUTH UAC bit).' }
+    @{ Match = '(?i)delegation'
+       Text  = 'Remove unconstrained delegation; replace with resource-based constrained delegation where delegation is genuinely required. Mark privileged accounts "sensitive and cannot be delegated" and add them to Protected Users.' }
+    @{ Match = '(?i)dcsync|replication.*extended right'
+       Text  = 'Remove the DS-Replication-Get-Changes* extended rights from every non-default principal on the domain head. After an incident, treat an unexplained grant as evidence of persistence: reset that principal''s credentials and audit its history.' }
+    @{ Match = '(?i)esc1|certificate template|enrol'
+       Text  = 'Harden the template: remove ENROLLEE_SUPPLIES_SUBJECT, require manager approval, and restrict enrollment permissions. Audit already-issued certificates (certutil -view) and revoke anything suspicious - certificates outlive password resets.' }
+    @{ Match = '(?i)backup'
+       Text  = 'Take a fresh system-state backup of at least two DCs per domain now ("wbadmin start systemstatebackup -backuptarget:<vol>"). After a restore-based recovery the newest backup is your safety net AND your tombstone-lifetime clock.' }
+    @{ Match = '(?i)global catalog'
+       Text  = 'Align GC state: if the DC should be a GC, verify partial-attribute-set replication completed (Directory Service event 1119) and re-register DNS ("nltest /dsregdns"); if it should not, clear the GC flag in AD Sites and Services and scavenge the stale _gc records.' }
+    @{ Match = '(?i)duplicate spn'
+       Text  = 'List duplicates with "setspn -X" and remove the SPN from the wrong account with "setspn -D <spn> <account>". Kerberos authentication is unreliable while duplicates exist.' }
+    @{ Match = '(?i)smbv1'
+       Text  = 'Remove SMBv1 on DCs: "Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol" / "Uninstall-WindowsFeature FS-SMB1". It is a ransomware lateral-movement vector with no place on a domain controller.' }
+    @{ Match = '(?i)spooler'
+       Text  = 'Disable the Print Spooler service on all domain controllers ("Stop-Service Spooler; Set-Service Spooler -StartupType Disabled") - PrintNightmare-class exploits give SYSTEM on a DC.' }
+    @{ Match = '(?i)ldap signing'
+       Text  = 'Require LDAP signing on DCs (GPO: "Domain controller: LDAP server signing requirements" = Require signing) and enable LDAP channel binding; audit first with events 2886-2889 to find clients that would break.' }
+    @{ Match = '(?i)password policy|lockout'
+       Text  = 'Raise the domain password policy to current guidance (14+ character minimum, no periodic-expiry theatre, lockout/throttling on) and use fine-grained password policies for privileged and service accounts.' }
+    @{ Match = '(?i)recycle bin'
+       Text  = 'Enable the AD Recycle Bin ("Enable-ADOptionalFeature ''Recycle Bin Feature'' ..."). It is irreversible but makes object recovery trivial - exactly what a recovery scenario needs.' }
+    @{ Match = '(?i)machine account quota'
+       Text  = 'Set ms-DS-MachineAccountQuota to 0 so ordinary users cannot join computers to the domain; delegate joins explicitly.' }
+    @{ Match = '(?i)scavenging|aging'
+       Text  = 'Enable DNS scavenging with matched refresh/no-refresh intervals (7/7 days typical) on the AD zones and one scavenging server - stale records after a recovery cause exactly the divergence this report checks for.' }
+    @{ Match = '(?i)zone transfer'
+       Text  = 'Restrict zone transfers to named secondaries only (or disable entirely for AD-integrated zones).' }
+    @{ Match = '(?i)secure dynamic'
+       Text  = 'Set the zone to Secure-only dynamic updates so only authenticated machines can register or overwrite records.' }
+    @{ Match = '(?i)stale|inactive|never.expir'
+       Text  = 'Disable first, delete later: disable the flagged accounts, monitor for breakage for 30 days, then remove. After an incident, stale enabled accounts are re-entry vectors.' }
+    @{ Match = '(?i)dcdiag|advertising|netlogons|sysvolcheck|fsmocheck|kccevent'
+       Text  = 'Read raw\dcdiag_<dc>.txt for the failing test detail; fix in dependency order: DNS -> replication -> SYSVOL -> advertising. A dcdiag failure is a symptom - the DNS/replication sections of this report usually name the cause.' }
+    @{ Match = '(?i)event \d+ on'
+       Text  = 'Correlate with the Replication and DNS sections of this report; the event detail names the object or partner involved. Fix the cause there, then confirm the event stops recurring.' }
+)
+
+function Get-AdfaRecommendation {
+    <#
+    .SYNOPSIS
+        Pure lookup: maps a finding's section/item/detail text to a best-practice
+        remediation recommendation. Returns '' when no guidance matches - an absent
+        recommendation is honest, never invented.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [string]$Section = '',
+        [string]$Item = '',
+        [string]$Detail = ''
+    )
+    $combined = "{0} :: {1} :: {2}" -f $Section, $Item, $Detail
+    foreach ($entry in $script:RecommendationMap) {
+        if ($combined -match $entry.Match) { return [string]$entry.Text }
+    }
+    return ''
+}
+
+# ===========================================================================
 # region HTML report
 # ===========================================================================
 
@@ -2133,6 +2785,39 @@ function Invoke-Main {
         $sectionData['Redundancy & Availability'] = @($rdRows)
     }
 
+    # ---- Recovery & consistency (post-incident) ----
+    if (Test-SectionSelected 'DnsAdConsistency' $Sections) {
+        Write-Stage 'DNS vs AD consistency (stale / missing locator records)'
+        $dacRows = foreach ($d in $targetDomains) { Get-AdfaDnsAdConsistency -DomainName $d -AdParams $adParams }
+        $sectionData['DNS vs AD Consistency'] = @($dacRows)
+    }
+    if (Test-SectionSelected 'DsaCname' $Sections) {
+        Write-Stage 'DSA GUID CNAME records (_msdcs)'
+        $sectionData['DSA GUID CNAMEs'] = Get-AdfaDsaGuidCname -ForestRoot $forest.Name -AdParams $adParams
+    }
+    if (Test-SectionSelected 'GcConsistency' $Sections) {
+        Write-Stage 'Global Catalog consistency (AD flag vs DNS)'
+        $sectionData['Global Catalog Consistency'] = Get-AdfaGcConsistency -ForestRoot $forest.Name -AdParams $adParams
+    }
+    if (Test-SectionSelected 'PortMatrix' $Sections) {
+        Write-Stage 'Port reachability matrix (replication port set)'
+        $sectionData['Port Reachability'] = Get-AdfaPortMatrix -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+    }
+    if (Test-SectionSelected 'DcSecureChannel' $Sections) {
+        Write-Stage 'DC machine-account passwords & secure channels'
+        $scRows = foreach ($d in $targetDomains) {
+            Get-AdfaDcSecureChannel -DomainName $d -AdParams $adParams -Credential $Credential `
+                -WarnDays $script:Config.DcPasswordWarnDays -FailDays $script:Config.DcPasswordFailDays `
+                -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        }
+        $sectionData['DC Secure Channel & Machine Passwords'] = @($scRows)
+    }
+    if (Test-SectionSelected 'DsEvents' $Sections) {
+        Write-Stage 'Directory Service event log (lingering / rollback / DNS failures)'
+        $sectionData['Directory Service Events'] = Get-AdfaDsEventLog -DomainControllers $dcNames -Credential $Credential `
+            -LookbackDays $script:Config.DsEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+    }
+
     if (Test-SectionSelected 'ExchangeSchema' $Sections) {
         $sectionData['Exchange Schema Markers'] = Get-AdfaExchangeSchemaMarker -AdParams $adParams
     }
@@ -2202,9 +2887,16 @@ function Invoke-Main {
                 if (($names -contains $dc) -and $row.$dc) { $detailParts += [string]$row.$dc }
             }
             $scopeVal = if ($names -contains 'Scope') { [string]$row.Scope } else { '' }
+            $detailText = $detailParts -join ' | '
+            # Attach a best-practice fix to every actionable (non-Pass) finding.
+            $recommendation = ''
+            if ($status -match '^(Fail|Broken|Failed|Warning|Degraded)$') {
+                $recommendation = Get-AdfaRecommendation -Section $key -Item ([string]$item) -Detail $detailText
+            }
             $consolidated += [pscustomobject]@{
                 Section = $key; Scope = $scopeVal; Item = [string]$item
-                Status  = $status; Detail = ($detailParts -join ' | ')
+                Status  = $status; Detail = $detailText
+                Recommendation = $recommendation
             }
         }
     }
@@ -2222,7 +2914,7 @@ function Invoke-Main {
             '^(Not Assessed)$' { 'WARN'; break }
             default { 'RESULT' }
         }
-        $msg = '{0,-12} {1} :: {2}{3}' -f $f.Status, $f.Section, $f.Item, $(if ($f.Detail) { " -> $($f.Detail)" } else { '' })
+        $msg = '{0,-12} {1} :: {2}{3}{4}' -f $f.Status, $f.Section, $f.Item, $(if ($f.Detail) { " -> $($f.Detail)" } else { '' }), $(if ($f.Recommendation) { " || FIX: $($f.Recommendation)" } else { '' })
         Write-Log -Level $lvl -Section $f.Scope -Message $msg
     }
 
@@ -2250,7 +2942,7 @@ function Invoke-Main {
     $htmlSections['Findings (worst first)'] = @($consolidated | Where-Object { $_.Status -notmatch '^(Pass|Healthy|Verified|Info)$' })
     foreach ($k in $sectionData.Keys) { $htmlSections[$k] = $sectionData[$k] }
     if (@($htmlSections['Findings (worst first)']).Count -eq 0) {
-        $htmlSections['Findings (worst first)'] = @([pscustomobject]@{ Section = '(none)'; Item = 'No warnings or failures'; Status = 'Pass'; Detail = 'All assessed checks passed.' })
+        $htmlSections['Findings (worst first)'] = @([pscustomobject]@{ Section = '(none)'; Item = 'No warnings or failures'; Status = 'Pass'; Detail = 'All assessed checks passed.'; Recommendation = '' })
     }
     New-AdfaHtmlReport -Sections $htmlSections -Meta $meta -Path $reportPath | Out-Null
 

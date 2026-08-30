@@ -10,6 +10,38 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-08-30 (recovery & consistency sections, tool v1.4.0)
+
+Six new sections aimed at assessing a forest during or after a restore-from-backup
+recovery, where some DCs replicate and others do not and DNS divergence masquerades as
+network failure. All are single-machine collectors: they query every DC remotely and
+degrade to `Not Assessed` (with the exact command to run locally) where a remote interface
+is unreachable.
+
+- `DnsAdConsistency` — DC locator SRV records (`_ldap`/`_kerberos` under `dc._msdcs`, plus
+  the PDC record) compared against the DCs the directory actually contains. Stale entries
+  for removed DCs and live DCs not advertised are reported per host, Fail.
+- `DsaCname` — per-DC `<DSA-GUID>._msdcs.<forest>` CNAME verification (missing / pointing
+  at the wrong host), plus orphaned NTDS Settings objects. Replication resolves source DCs
+  through this alias; a broken one is the classic post-cleanup RPC 1722.
+- `GcConsistency` — forest `GlobalCatalogs` vs `_gc._tcp` advertisement, both directions.
+- `PortMatrix` — per-DC TCP reachability on 88/135/389/445 (critical) and 636/3268/9389
+  (optional), with "unresolvable in DNS" reported separately from "port closed".
+- `DcSecureChannel` — DC machine-account password age from the replicated `pwdLastSet`
+  attribute (centrally collectable; a stale value fingerprints a DC restored from an old
+  backup), and `nltest /sc_verify` executed on each DC over WinRM where port 5985 answers.
+- `DsEvents` — per-DC Directory Service event log scan (14 days) for 1988, 2042, 2095,
+  2103, 2087, 2088, 1311, 1865, 1925, 1084, each mapped to a severity and a plain-language
+  meaning.
+
+Every Fail / Warning / Broken / Degraded row in the consolidated findings now carries a
+best-practice `Recommendation` (table-driven map in the script; first match wins; empty
+when nothing verified applies — never invented). The recommendation appears in
+`csv\Findings-Consolidated.csv`, as `|| FIX:` in the detailed log, and in the HTML lead
+section. New pure functions (`Compare-AdfaDnsAdvertisement`,
+`Resolve-AdfaDcPasswordVerdict`, `Get-AdfaRecommendation`, `Resolve-AdfaDnsRecord`) are
+covered in both the Pester suite and the dependency-free harness (56 harness checks).
+
 ### Changed — 2026-08-14 (phase P5.3)
 
 The three workflow files backfilled in P4.4 are refreshed from

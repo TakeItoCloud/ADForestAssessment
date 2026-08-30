@@ -2,7 +2,7 @@
     # ADForestAssessment ships as a single self-contained script, not a module: there is no
     # RootModule and nothing is exported. This manifest exists so the repository has one
     # versioned artifact that build\package.ps1 can read and zip.
-    ModuleVersion        = '1.0.0'
+    ModuleVersion        = '1.1.0'
     GUID                 = '2c6821ed-37a0-4ddc-8e53-dd76ac171829'
     Author               = 'TakeItoCloud'
     CompanyName          = 'TakeItoCloud'

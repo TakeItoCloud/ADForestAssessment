@@ -166,6 +166,72 @@ Describe 'Deep security pure logic' {
     }
 }
 
+Describe 'Recovery & consistency pure logic' {
+
+    Context 'Compare-AdfaDnsAdvertisement' {
+        It 'separates stale, missing and matched hosts' {
+            $c = Compare-AdfaDnsAdvertisement -AdHosts @('dc1.corp.local', 'dc2.corp.local') -DnsTargets @('dc2.corp.local', 'dc3.corp.local')
+            $c.StaleInDns | Should -Be @('dc3.corp.local')
+            $c.MissingFromDns | Should -Be @('dc1.corp.local')
+            $c.Matched | Should -Be @('dc2.corp.local')
+        }
+        It 'normalises case and trailing dots before comparing' {
+            $c = Compare-AdfaDnsAdvertisement -AdHosts @('DC1.Corp.Local') -DnsTargets @('dc1.corp.local.')
+            @($c.StaleInDns).Count | Should -Be 0
+            @($c.MissingFromDns).Count | Should -Be 0
+            $c.Matched | Should -Be @('dc1.corp.local')
+        }
+        It 'treats empty inputs as agreement, not divergence' {
+            $c = Compare-AdfaDnsAdvertisement -AdHosts @() -DnsTargets @()
+            @($c.StaleInDns).Count | Should -Be 0
+            @($c.MissingFromDns).Count | Should -Be 0
+        }
+    }
+
+    Context 'Resolve-AdfaDcPasswordVerdict' {
+        It 'passes a freshly rotated machine password' {
+            Resolve-AdfaDcPasswordVerdict -AgeDays 10 | Should -Be 'Pass'
+        }
+        It 'warns at the warn threshold and fails at the fail threshold' {
+            Resolve-AdfaDcPasswordVerdict -AgeDays 45 | Should -Be 'Warning'
+            Resolve-AdfaDcPasswordVerdict -AgeDays 90 | Should -Be 'Fail'
+        }
+        It 'never fabricates a verdict when the age is unknown' {
+            Resolve-AdfaDcPasswordVerdict -AgeDays $null | Should -Be 'Not Assessed'
+        }
+        It 'honours custom thresholds' {
+            Resolve-AdfaDcPasswordVerdict -AgeDays 20 -WarnDays 15 -FailDays 30 | Should -Be 'Warning'
+        }
+    }
+
+    Context 'Get-AdfaRecommendation' {
+        It 'maps a broken trust to a netdom trust reset' {
+            Get-AdfaRecommendation -Section 'Trusts & Two-Way Health' -Item 'corp-partner' -Detail 'Trust partner is not reachable.' |
+                Should -Match 'netdom trust'
+        }
+        It 'maps a lingering-object event to removelingeringobjects, not a generic replication fix' {
+            Get-AdfaRecommendation -Section 'Directory Service Events' -Item 'Event 1988 on DC1' -Detail 'Lingering object detected - replication BLOCKED.' |
+                Should -Match 'removelingeringobjects'
+        }
+        It 'maps USN rollback to demote-and-repromote' {
+            Get-AdfaRecommendation -Section 'Directory Service Events' -Item 'Event 2095 on DC1' -Detail 'USN rollback detected.' |
+                Should -Match 'demote'
+        }
+        It 'maps a missing DSA GUID CNAME to DNS re-registration' {
+            Get-AdfaRecommendation -Section 'DSA GUID CNAMEs' -Item 'DSA GUID CNAME for dc1' -Detail 'DSA GUID CNAME missing' |
+                Should -Match 'dsregdns'
+        }
+        It 'maps a stale secure channel to a machine-password reset that never disjoins a DC' {
+            $r = Get-AdfaRecommendation -Section 'DC Secure Channel & Machine Passwords' -Item 'Secure channel: dc1' -Detail 'verification failed'
+            $r | Should -Match 'netdom resetpwd'
+            $r | Should -Match 'Never disjoin'
+        }
+        It 'returns an empty string rather than inventing guidance' {
+            Get-AdfaRecommendation -Section 'Forest Summary' -Item 'xyzzy' -Detail 'nothing matches this' | Should -Be ''
+        }
+    }
+}
+
 Describe 'PSScriptAnalyzer' {
     It 'has no Error/Warning findings against the committed settings' -Skip:(-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
         $settings = Join-Path (Split-Path -Parent $PSScriptRoot) 'PSScriptAnalyzerSettings.psd1'
