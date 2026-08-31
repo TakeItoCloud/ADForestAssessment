@@ -195,7 +195,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.5.1'
+    Version                 = '1.6.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -325,6 +325,46 @@ function New-Folder {
     return $Path
 }
 
+function Expand-AdfaRowList {
+    <#
+    .SYNOPSIS
+        Flattens nested row collections and drops nulls, so a section is always a flat
+        list of finding objects.
+    .DESCRIPTION
+        Defence in depth for the aggregation fault found on the first multi-domain live
+        run. Collectors used to end in `return , @($rows)`, which emits the array as ONE
+        object; the per-domain pattern
+
+            $rows = foreach ($d in $targetDomains) { Get-AdfaSomething -DomainName $d }
+
+        then produced an array OF ARRAYS once there was more than one domain, and
+        `@($rows)` does not flatten that. Downstream, every consumer looked for a Status
+        property on what was actually an array, found none, and skipped the row - so whole
+        sections were collected and then silently discarded. Single-domain runs were
+        unaffected, which is why it went unseen.
+
+        The collectors now return plainly, so nesting should not arise. This function
+        makes the output path robust to it anyway: a shape mistake must never again cost
+        data without saying so.
+    .OUTPUTS
+        [object[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param([Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Rows)
+
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($r in @($Rows)) {
+        if ($null -eq $r) { continue }
+        # Flatten a nested collection, but never a string or a dictionary.
+        if (($r -is [System.Collections.IEnumerable]) -and ($r -isnot [string]) -and ($r -isnot [System.Collections.IDictionary])) {
+            foreach ($inner in $r) { if ($null -ne $inner) { [void]$out.Add($inner) } }
+        }
+        else { [void]$out.Add($r) }
+    }
+    return @($out.ToArray())
+}
+
 function ConvertTo-AdfaRowSet {
     <#
     .SYNOPSIS
@@ -352,7 +392,7 @@ function ConvertTo-AdfaRowSet {
     [OutputType([pscustomobject[]])]
     param([Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Rows)
 
-    $items = @($Rows | Where-Object { $null -ne $_ })
+    $items = @(Expand-AdfaRowList -Rows $Rows)
     if ($items.Count -eq 0) { return @() }
 
     # First-seen column order across every row.
@@ -373,7 +413,7 @@ function ConvertTo-AdfaRowSet {
         }
         [pscustomobject]$ordered
     }
-    # Plain return: callers wrap with @(); `return , @()` would hand back one element that
+    # Plain return: callers wrap with @(); `return @()` would hand back one element that
     # IS the empty array (PORT-PLAN P3).
     return @($out)
 }
@@ -604,9 +644,12 @@ function Resolve-AdfaTrustHealth {
         return [pscustomobject]@{ Health = 'Not Assessed'; Reasons = $reasons.ToArray() }
     }
 
-    foreach ($w in $SecurityWarnings) { $reasons.Add($w) }
+    # Normalise before counting: collectors return plainly, so an empty result arrives as
+    # $null and $null.Count throws under StrictMode.
+    $warn = @($SecurityWarnings | Where-Object { $_ })
+    foreach ($w in $warn) { $reasons.Add($w) }
 
-    if ($SecurityWarnings.Count -gt 0) {
+    if ($warn.Count -gt 0) {
         return [pscustomobject]@{ Health = 'Degraded'; Reasons = $reasons.ToArray() }
     }
 
@@ -761,7 +804,7 @@ function Get-AdfaTrustSecurityWarning {
             $warnings.Add('Trust is configured to use RC4 encryption.')
         }
     }
-    return , $warnings.ToArray()
+    return $warnings.ToArray()
 }
 
 function Get-AdfaTrustHealth {
@@ -789,7 +832,7 @@ function Get-AdfaTrustHealth {
     }
     catch {
         Write-Warning ("Trust enumeration failed for {0}: {1}" -f $DomainName, $_.Exception.Message)
-        return , @([pscustomobject]@{
+        return @([pscustomobject]@{
                 Scope = $DomainName; TrustName = '(enumeration failed)'; Health = 'Not Assessed'
                 Detail = $_.Exception.Message
             })
@@ -874,7 +917,7 @@ function Get-AdfaTrustHealth {
             Detail = 'No trust relationships found for this domain.'
         }
     }
-    return , $results
+    return $results
 }
 
 # ===========================================================================
@@ -969,7 +1012,7 @@ function Get-AdfaDomainControllerInventory {
             Enabled                = $(if ($comp) { $comp.Enabled } else { $script:Status.NotAssessed })
         }
     }
-    return , @($inv)
+    return @($inv)
 }
 
 # ===========================================================================
@@ -1061,7 +1104,7 @@ function Get-AdfaReplicationHealth {
             Detail = $(if ($notes.Count -gt 0) { $notes -join ' | ' } else { '' })
         }
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaReplicationTopology {
@@ -1106,7 +1149,7 @@ function Get-AdfaSiteHealthFinding {
     if (@($findings).Count -eq 0) {
         $findings += New-Finding -Area 'Sites' -Item 'Site/subnet topology' -Status $script:Status.Pass -Detail 'All sites have subnets and DCs.'
     }
-    return , @($findings)
+    return @($findings)
 }
 
 # ===========================================================================
@@ -1187,7 +1230,7 @@ function Get-AdfaDcDiagnostic {
         $row.Failures = $failDetails -join ' | '
         [pscustomobject]$row
     }
-    return , @($rows)
+    return @($rows)
 }
 
 # ===========================================================================
@@ -1205,7 +1248,7 @@ function Get-AdfaDnsHealth {
     [OutputType([pscustomobject[]])]
     param([Parameter(Mandatory)][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
     if (-not (Test-ModuleAvailable -Name 'DnsServer')) {
-        return , @(New-Finding -Area 'DNS' -Item 'DnsServer module' -Status $script:Status.NotAssessed -Detail 'RSAT DnsServer module not installed on this host.')
+        return @(New-Finding -Area 'DNS' -Item 'DnsServer module' -Status $script:Status.NotAssessed -Detail 'RSAT DnsServer module not installed on this host.')
     }
     Import-Module DnsServer -ErrorAction SilentlyContinue -Verbose:$false
     $rows = @()
@@ -1238,7 +1281,7 @@ function Get-AdfaDnsHealth {
             $rows += New-Finding -Area 'DNS' -Item $dc -Status $script:Status.NotAssessed -Detail $_.Exception.Message
         }
     }
-    return , @($rows)
+    return @($rows)
 }
 
 # ===========================================================================
@@ -1266,7 +1309,7 @@ function Get-AdfaSysvolHealth {
     else {
         $rows += New-Finding -Area 'SYSVOL' -Item 'DFSR migration global state' -Status $script:Status.NotAssessed -Detail 'dfsrmig.exe not available on this host.'
     }
-    return , @($rows)
+    return @($rows)
 }
 
 # ===========================================================================
@@ -1284,7 +1327,7 @@ function Get-AdfaGpoInventory {
     [OutputType([pscustomobject[]])]
     param([Parameter(Mandatory)][string]$DomainName)
     if (-not (Test-ModuleAvailable -Name 'GroupPolicy')) {
-        return , @(New-Finding -Area 'GPO' -Item 'GroupPolicy module' -Status $script:Status.NotAssessed -Detail 'RSAT GroupPolicy module not installed on this host.' -Scope $DomainName)
+        return @(New-Finding -Area 'GPO' -Item 'GroupPolicy module' -Status $script:Status.NotAssessed -Detail 'RSAT GroupPolicy module not installed on this host.' -Scope $DomainName)
     }
     Import-Module GroupPolicy -ErrorAction SilentlyContinue -Verbose:$false
     $rows = @()
@@ -1306,7 +1349,7 @@ function Get-AdfaGpoInventory {
     catch {
         $rows += [pscustomobject]@{ Scope = $DomainName; GPOName = '(enumeration failed)'; Status = $script:Status.NotAssessed; Detail = $_.Exception.Message }
     }
-    return , @($rows)
+    return @($rows)
 }
 
 # ===========================================================================
@@ -1351,7 +1394,7 @@ function Get-AdfaPasswordPolicy {
         }
     }
     catch { }
-    return , @($rows)
+    return @($rows)
 }
 
 # ===========================================================================
@@ -1392,7 +1435,7 @@ function Get-AdfaPrivilegedAccount {
             $rows += [pscustomobject]@{ Scope = $DomainName; Group = $name; MemberCount = $null; Members = ''; Status = $script:Status.NotAssessed; Detail = $_.Exception.Message }
         }
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaSecurityPosture {
@@ -1450,7 +1493,7 @@ function Get-AdfaSecurityPosture {
     }
     catch { $rows += New-Finding -Scope $DomainName -Area 'Security' -Item 'DES/reversible-encryption accounts' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
 
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaStaleObject {
@@ -1475,7 +1518,7 @@ function Get-AdfaStaleObject {
         $rows += New-Finding -Scope $DomainName -Area 'Stale' -Item 'PasswordNeverExpires users' -Status $(if ($neverExpire.Count -eq 0) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0} enabled users" -f $neverExpire.Count)
     }
     catch { $rows += New-Finding -Scope $DomainName -Area 'Stale' -Item 'PasswordNeverExpires users' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-    return , @($rows)
+    return @($rows)
 }
 
 # ===========================================================================
@@ -1518,7 +1561,7 @@ function Get-AdfaObjectPropertyUnion {
     foreach ($obj in @($Objects)) {
         foreach ($name in $obj.PSObject.Properties.Name) { [void]$set.Add($name) }
     }
-    return , (@($set) | Sort-Object)
+    return (@($set) | Sort-Object)
 }
 
 function Get-AdfaUserInventory {
@@ -1536,10 +1579,10 @@ function Get-AdfaUserInventory {
     param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
     $srv = @{} + $AdParams; $srv.Server = $DomainName
     $users = @(Get-ADUser -Filter * -Properties * @srv)
-    if ($users.Count -eq 0) { return , @() }
+    if ($users.Count -eq 0) { return @() }
     $props = Get-AdfaObjectPropertyUnion -Objects $users
     $flat = foreach ($u in $users) { ConvertTo-AdfaFlatObject -InputObject $u -Property $props }
-    return , @($flat)
+    return @($flat)
 }
 
 function Get-AdfaComputerInventory {
@@ -1554,10 +1597,10 @@ function Get-AdfaComputerInventory {
     param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
     $srv = @{} + $AdParams; $srv.Server = $DomainName
     $computers = @(Get-ADComputer -Filter * -Properties * @srv)
-    if ($computers.Count -eq 0) { return , @() }
+    if ($computers.Count -eq 0) { return @() }
     $props = Get-AdfaObjectPropertyUnion -Objects $computers
     $flat = foreach ($c in $computers) { ConvertTo-AdfaFlatObject -InputObject $c -Property $props }
-    return , @($flat)
+    return @($flat)
 }
 
 function Get-AdfaIdentitySummary {
@@ -1586,7 +1629,7 @@ function Get-AdfaIdentitySummary {
     $enabledC = @($c | Where-Object { & $isEnabled $_ }).Count
     $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Users'; Total = $u.Count; Enabled = $enabledU; Disabled = ($u.Count - $enabledU); Status = $script:Status.Info; Detail = 'Full attribute export in csv\AllUsers_*.csv' }
     $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Computers'; Total = $c.Count; Enabled = $enabledC; Disabled = ($c.Count - $enabledC); Status = $script:Status.Info; Detail = 'Full attribute export in csv\AllComputers_*.csv' }
-    return , @($rows)
+    return @($rows)
 }
 
 # ===========================================================================
@@ -1667,7 +1710,7 @@ function Find-AdfaDuplicateSpn {
     $dupes = foreach ($k in $map.Keys) {
         if ($map[$k].Count -gt 1) { [pscustomobject]@{ Spn = $k; Holders = ($map[$k] -join '; ') } }
     }
-    return , @($dupes | Where-Object { $null -ne $_ })
+    return @($dupes | Where-Object { $null -ne $_ })
 }
 
 # ===========================================================================
@@ -1691,7 +1734,7 @@ function Get-AdfaPkiHealth {
         $cas = @(Get-ADObject -SearchBase "CN=Enrollment Services,$pkiBase" -LDAPFilter '(objectClass=pKIEnrollmentService)' -Properties dNSHostName, cn @AdParams -ErrorAction Stop)
         if ($cas.Count -eq 0) {
             $rows += New-Finding -Area 'PKI' -Item 'Certificate Authorities' -Status $script:Status.Info -Detail 'No enterprise CA found in the forest.'
-            return , @($rows)
+            return @($rows)
         }
         $rows += New-Finding -Area 'PKI' -Item 'Certificate Authorities' -Status $script:Status.Info -Detail (("{0} CA(s): {1}" -f $cas.Count, (($cas | ForEach-Object { $_.dNSHostName }) -join ', ')))
 
@@ -1711,7 +1754,7 @@ function Get-AdfaPkiHealth {
     catch {
         $rows += New-Finding -Area 'PKI' -Item 'AD CS assessment' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaDangerousAcl {
@@ -1749,7 +1792,7 @@ function Get-AdfaDangerousAcl {
     catch {
         $rows += New-Finding -Scope $DomainName -Area 'ACL' -Item 'DCSync rights review' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaKerberosExposure {
@@ -1795,7 +1838,7 @@ function Get-AdfaKerberosExposure {
     }
     catch { $rows += New-Finding -Scope $DomainName -Area 'Kerberos' -Item 'Resource-based constrained delegation configured' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
 
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaPrivilegedHygiene {
@@ -1827,7 +1870,7 @@ function Get-AdfaPrivilegedHygiene {
     }
     catch { $rows += New-Finding -Scope $DomainName -Area 'PrivHygiene' -Item 'Protected Users group members' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
 
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaDcHardening {
@@ -1872,7 +1915,7 @@ function Get-AdfaDcHardening {
         }
         catch { $rows += New-Finding -Area 'DCHardening' -Item ("{0}: LDAP signing required" -f $dc) -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function ConvertFrom-AdfaShowreplCsv {
@@ -1886,7 +1929,7 @@ function ConvertFrom-AdfaShowreplCsv {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param([AllowEmptyString()][string]$Text = '')
-    # Plain returns on purpose: callers wrap with @(...), and the `return , @()` shape
+    # Plain returns on purpose: callers wrap with @(...), and the `return @()` shape
     # would hand them one element that IS the empty array (PORT-PLAN P3).
     if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
     $lines = @($Text -split "`r?`n")
@@ -1915,13 +1958,13 @@ function Get-AdfaRepadminReplication {
     [OutputType([pscustomobject[]])]
     param([int]$TimeoutSeconds = 300, [int]$Retries = 2, [int]$RetryDelaySeconds = 2)
     if (-not (Test-CommandAvailable -Name 'repadmin.exe')) {
-        return , @(New-Finding -Area 'Replication' -Item 'repadmin cross-check' -Status $script:Status.NotAssessed -Detail 'repadmin.exe not available on this host.')
+        return @(New-Finding -Area 'Replication' -Item 'repadmin cross-check' -Status $script:Status.NotAssessed -Detail 'repadmin.exe not available on this host.')
     }
     $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments '/showrepl * /csv' `
         -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
     $links = @(ConvertFrom-AdfaShowreplCsv -Text $r.StdOut)
     if (@($links).Count -eq 0) {
-        return , @(New-Finding -Area 'Replication' -Item 'repadmin cross-check' -Status $script:Status.NotAssessed -Detail ("Could not parse 'repadmin /showrepl * /csv' output. {0}" -f $(if ($r.Error) { $r.Error } else { 'See raw capture (-IncludeRepadmin) for the unparsed output.' })))
+        return @(New-Finding -Area 'Replication' -Item 'repadmin cross-check' -Status $script:Status.NotAssessed -Detail ("Could not parse 'repadmin /showrepl * /csv' output. {0}" -f $(if ($r.Error) { $r.Error } else { 'See raw capture (-IncludeRepadmin) for the unparsed output.' })))
     }
     $rows = @()
     $failing = 0
@@ -1947,7 +1990,7 @@ function Get-AdfaRepadminReplication {
     else {
         $rows += New-Finding -Area 'Replication' -Item 'repadmin cross-check summary' -Status $script:Status.Fail -Detail ("{0} of {1} replication link(s) report failures." -f $failing, @($links).Count)
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaLatestBackupDate {
@@ -1998,7 +2041,7 @@ function Get-AdfaBackupStatus {
         [int]$RpcPortTimeoutMs = 1200
     )
     if (-not (Test-CommandAvailable -Name 'repadmin.exe')) {
-        return , @(New-Finding -Area 'Backup' -Item 'Directory backup status' -Status $script:Status.NotAssessed -Detail 'repadmin.exe not available on this host.')
+        return @(New-Finding -Area 'Backup' -Item 'Directory backup status' -Status $script:Status.NotAssessed -Detail 'repadmin.exe not available on this host.')
     }
     $rows = @()
     $targets = @($DomainControllers | Where-Object { $_ })
@@ -2015,7 +2058,7 @@ function Get-AdfaBackupStatus {
             if ($age -gt $MaxAgeDays) { $status = $script:Status.Warning }
             $rows += New-Finding -Area 'Backup' -Item 'Directory backup (local DC)' -Status $status -Detail ("Latest partition backup {0:yyyy-MM-dd HH:mm} ({1:N0} day(s) ago)." -f $latest, $age)
         }
-        return , @($rows)
+        return @($rows)
     }
     foreach ($dc in $targets) {
         if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
@@ -2034,7 +2077,7 @@ function Get-AdfaBackupStatus {
             $rows += New-Finding -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $status -Detail ("Latest partition backup {0:yyyy-MM-dd HH:mm} ({1:N0} day(s) ago). A very old value on a restored DC dates the backup it came from." -f $latest, $age)
         }
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaLingeringObjectScan {
@@ -2060,7 +2103,7 @@ function Get-AdfaLingeringObjectScan {
     )
     $rows = @()
     if (-not (Test-CommandAvailable -Name 'repadmin.exe')) {
-        return , @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail 'repadmin.exe not available on this host.')
+        return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail 'repadmin.exe not available on this host.')
     }
     $p = @{} + $AdParams; $p.Server = $DomainName
     $domainNc = ''; $refDc = ''; $dcs = @()
@@ -2071,7 +2114,7 @@ function Get-AdfaLingeringObjectScan {
         $dcs = @(Get-ADDomainController -Filter * @p | Select-Object -ExpandProperty HostName)
     }
     catch {
-        return , @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail $_.Exception.Message)
+        return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail $_.Exception.Message)
     }
     $refGuid = ''
     try {
@@ -2083,7 +2126,7 @@ function Get-AdfaLingeringObjectScan {
     }
     catch { }
     if (-not $refGuid) {
-        return , @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail ("Could not resolve the DSA GUID of the reference DC ({0})." -f $refDc))
+        return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail ("Could not resolve the DSA GUID of the reference DC ({0})." -f $refDc))
     }
 
     foreach ($dc in $dcs) {
@@ -2117,7 +2160,7 @@ function Get-AdfaLingeringObjectScan {
     if (@($rows).Count -eq 0) {
         $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.Info -Detail ("Only one DC in {0} - nothing to compare against the reference." -f $DomainName)
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaTimeSync {
@@ -2131,7 +2174,7 @@ function Get-AdfaTimeSync {
     [OutputType([pscustomobject[]])]
     param([int]$TimeoutSeconds = 60)
     if (-not (Test-CommandAvailable -Name 'w32tm.exe')) {
-        return , @(New-Finding -Area 'TimeSync' -Item 'w32time' -Status $script:Status.NotAssessed -Detail 'w32tm.exe not available on this host.')
+        return @(New-Finding -Area 'TimeSync' -Item 'w32time' -Status $script:Status.NotAssessed -Detail 'w32tm.exe not available on this host.')
     }
     $rows = @()
     $src = Invoke-ExternalCommand -FilePath 'w32tm.exe' -Arguments '/query /source' -TimeoutSeconds $TimeoutSeconds -Retries 1 -RetryDelaySeconds 1
@@ -2139,7 +2182,7 @@ function Get-AdfaTimeSync {
     $status = $script:Status.Info
     if ($source -match 'Local CMOS Clock|Free-running') { $status = $script:Status.Warning }
     $rows += New-Finding -Area 'TimeSync' -Item 'Time source' -Status $status -Detail ("Source: {0}" -f ("$source".Trim()))
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaDnsDepth {
@@ -2177,7 +2220,7 @@ function Get-AdfaDnsDepth {
         }
         catch { $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item 'Secure dynamic updates' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaRedundancy {
@@ -2214,7 +2257,7 @@ function Get-AdfaRedundancy {
     }
     catch { $rows += New-Finding -Scope $DomainName -Area 'Redundancy' -Item 'Duplicate SPNs' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
 
-    return , @($rows)
+    return @($rows)
 }
 
 # ===========================================================================
@@ -2233,7 +2276,7 @@ function Get-AdfaExchangeSchemaMarker {
         else { $m += [pscustomobject]@{ Marker = 'ms-Exch-Schema-Version-Pt'; RangeUpper = $null; WhenChanged = $null; Note = 'NotFound' } }
     }
     catch { $m += [pscustomobject]@{ Marker = 'ms-Exch-Schema-Version-Pt'; RangeUpper = $null; WhenChanged = $null; Note = $_.Exception.Message } }
-    return , @($m)
+    return @($m)
 }
 
 # ===========================================================================
@@ -2482,7 +2525,7 @@ function Get-AdfaDnsAdConsistency {
     }
     catch {
         $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item 'DC list from AD' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
-        return , @($rows)
+        return @($rows)
     }
 
     foreach ($rec in @(("_ldap._tcp.dc._msdcs.{0}" -f $DomainName), ("_kerberos._tcp.dc._msdcs.{0}" -f $DomainName))) {
@@ -2547,7 +2590,7 @@ function Get-AdfaDnsAdConsistency {
         $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item 'PDC locator record' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
     }
 
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaDsaInventory {
@@ -2580,7 +2623,7 @@ function Get-AdfaDsaInventory {
         catch { }
         $out += [pscustomobject]@{ DsaGuid = $dsaGuid; ServerDn = $serverDn; DnsHostName = $dcHost }
     }
-    # Plain return on purpose: callers wrap with @(...); `return , @()` would hand them
+    # Plain return on purpose: callers wrap with @(...); `return @()` would hand them
     # one element that IS the empty array and StrictMode then chokes on it (PORT-PLAN P3).
     return @($out)
 }
@@ -2608,11 +2651,11 @@ function Get-AdfaDsaGuidCname {
     try { $dsas = @(Get-AdfaDsaInventory -AdParams $AdParams) }
     catch {
         $rows += New-Finding -Area 'DsaCname' -Item 'nTDSDSA enumeration' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
-        return , @($rows)
+        return @($rows)
     }
     if (@($dsas).Count -eq 0) {
         $rows += New-Finding -Area 'DsaCname' -Item 'nTDSDSA enumeration' -Status $script:Status.NotAssessed -Detail 'No usable nTDSDSA objects returned from the Configuration NC.'
-        return , @($rows)
+        return @($rows)
     }
 
     foreach ($dsa in $dsas) {
@@ -2655,7 +2698,7 @@ function Get-AdfaDsaGuidCname {
             $rows += New-Finding -Area 'DsaCname' -Item ("DSA GUID CNAME for {0}" -f $dcHost) -Status $script:Status.Fail -Detail ("{0}: {1}.{2} Inbound replication from this DC fails wherever the alias is absent or wrong." -f $alias, ($bits -join '; '), $unansweredNote)
         }
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaGcConsistency {
@@ -2678,18 +2721,18 @@ function Get-AdfaGcConsistency {
     try { $gcs = @((Get-ADForest @AdParams).GlobalCatalogs) }
     catch {
         $rows += New-Finding -Area 'GcConsistency' -Item 'GC list from AD' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
-        return , @($rows)
+        return @($rows)
     }
 
     $rec = "_gc._tcp.{0}" -f $ForestRoot
     $view = Get-AdfaDnsRecordView -Name $rec -Type SRV -DnsServers $DnsServers
     if (-not $view.ToolAvailable) {
         $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed -Detail $view.Error
-        return , @($rows)
+        return @($rows)
     }
     if (@($view.Views.Keys).Count -eq 0) {
         $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed -Detail ("No DNS server answered for {0} ({1} queried)." -f $rec, @($view.Unanswered).Count)
-        return , @($rows)
+        return @($rows)
     }
     $sum = Compare-AdfaDnsServerView -AdHosts $gcs -ServerTargets $view.Views
     foreach ($ps in @($sum.PerServer | Where-Object { -not $_.Agrees })) {
@@ -2706,7 +2749,7 @@ function Get-AdfaGcConsistency {
     else {
         $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0} - divergence summary" -f $rec) -Status $script:Status.Fail -Detail ("{0} of {1} answering DNS server(s) diverge from AD: {2}. Forest-wide logons and Exchange address-book lookups behave differently per DNS server.{3}" -f @($sum.DivergentServers).Count, $sum.ServersQueried, ($sum.DivergentServers -join ', '), $unansweredNote)
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaPortMatrix {
@@ -2752,7 +2795,7 @@ function Get-AdfaPortMatrix {
     if (@($DomainControllers).Count -eq 0) {
         $rows += New-Finding -Area 'PortMatrix' -Item 'Port matrix' -Status $script:Status.NotAssessed -Detail 'No domain controllers enumerated.'
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaDcSecureChannel {
@@ -2782,7 +2825,7 @@ function Get-AdfaDcSecureChannel {
     try { $dcs = @(Get-ADDomainController -Filter * @p) }
     catch {
         $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'DC enumeration' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
-        return , @($rows)
+        return @($rows)
     }
 
     foreach ($dc in $dcs) {
@@ -2827,7 +2870,7 @@ function Get-AdfaDcSecureChannel {
             $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail ("WinRM (5985) not reachable from this host. Run 'nltest /sc_verify:{0}' locally on the DC." -f $DomainName)
         }
     }
-    return , @($rows)
+    return @($rows)
 }
 
 function Get-AdfaDsEventLog {
@@ -2896,7 +2939,7 @@ function Get-AdfaDsEventLog {
     if (@($DomainControllers).Count -eq 0) {
         $rows += New-Finding -Area 'DsEvents' -Item 'Directory Service events' -Status $script:Status.NotAssessed -Detail 'No domain controllers enumerated.'
     }
-    return , @($rows)
+    return @($rows)
 }
 
 # ===========================================================================
@@ -3416,11 +3459,24 @@ function Invoke-Main {
     # ---- Consolidated findings + detailed itemised log ----
     # One row per status-bearing check across every section: the single actionable list.
     $consolidated = @()
+    $unreadableRows = 0
     foreach ($key in $sectionData.Keys) {
-        foreach ($row in @($sectionData[$key])) {
+        # Expand first: a nested collection here would present as a row with no Status and
+        # be skipped, which is how whole sections were once discarded without a word.
+        foreach ($row in @(Expand-AdfaRowList -Rows $sectionData[$key])) {
             $names = $row.PSObject.Properties.Name
             $statusCol = if ($names -contains 'Status') { 'Status' } elseif ($names -contains 'Health') { 'Health' } else { $null }
-            if (-not $statusCol) { continue }
+            if (-not $statusCol) {
+                # Rows with no status column are informational inventory (sites, subnets,
+                # site links) and belong only in their own section - expected, not an error.
+                # Anything that is not a plain object, though, means a collector returned a
+                # shape this build did not expect: say so rather than dropping it in silence.
+                if (($row -is [System.Collections.IEnumerable]) -and ($row -isnot [string])) {
+                    $unreadableRows++
+                    Write-Log -Level ERROR ("Section '{0}' produced a row of type {1} that carries no status - it is NOT in the consolidated findings. This is a tool defect; report it." -f $key, $row.GetType().Name)
+                }
+                continue
+            }
             $status = [string]$row.$statusCol
             $item = if ($names -contains 'Item') { $row.Item }
                     elseif ($names -contains 'TrustName') { $row.TrustName }
@@ -3450,6 +3506,31 @@ function Invoke-Main {
     $sevRank = @{ 'Fail' = 0; 'Broken' = 0; 'Failed' = 0; 'Warning' = 1; 'Degraded' = 1; 'Not Assessed' = 2; 'Info' = 3; 'Pass' = 4; 'Healthy' = 4; 'Verified' = 4 }
     $consolidated = $consolidated | Sort-Object @{ e = { $r = $sevRank[$_.Status]; if ($null -eq $r) { 5 } else { $r } } }, Section, Item
     Save-Csv -InputObject $consolidated -Path (Join-Path $csvPath 'Findings-Consolidated.csv')
+
+    # ---- Section reconciliation ----
+    # Collected-vs-reported, per section. A section that produced rows but contributed no
+    # finding is either pure inventory (expected) or data loss (a defect). Stating the
+    # count for every section makes the second case impossible to miss - the failure mode
+    # that discarded twelve sections on the first multi-domain run showed no symptom at all.
+    $sectionAudit = @()
+    foreach ($key in $sectionData.Keys) {
+        $collected = @(Expand-AdfaRowList -Rows $sectionData[$key]).Count
+        $reported = @($consolidated | Where-Object { $_.Section -eq $key }).Count
+        $sectionAudit += [pscustomobject]@{
+            Section = $key; RowsCollected = $collected; FindingsReported = $reported
+            Note    = $(if ($collected -gt 0 -and $reported -eq 0) { 'No status-bearing rows (inventory section, or data loss - verify)' } else { '' })
+        }
+    }
+    Save-Csv -InputObject $sectionAudit -Path (Join-Path $csvPath 'Section-Coverage.csv')
+    Write-Log -Level RESULT ("Section reconciliation ({0} sections):" -f @($sectionAudit).Count)
+    foreach ($a in $sectionAudit) {
+        $lvl = if ($a.Note) { 'WARN' } else { 'RESULT' }
+        Write-Log -Level $lvl ('{0,-42} collected={1,-6} reported={2}{3}' -f $a.Section, $a.RowsCollected, $a.FindingsReported, $(if ($a.Note) { ' <- ' + $a.Note } else { '' }))
+    }
+    if ($unreadableRows -gt 0) {
+        Write-Log -Level ERROR ("{0} collected row(s) could not be interpreted and are absent from the consolidated findings. Treat this report as INCOMPLETE." -f $unreadableRows)
+        Write-Warning ("{0} collected row(s) could not be interpreted - the consolidated findings are INCOMPLETE. See the log." -f $unreadableRows)
+    }
 
     # Detailed itemised log: every section's findings, worst first, with the exact detail text.
     Write-Log -Level RESULT ("Assessment findings ({0} checks across {1} sections):" -f @($consolidated).Count, $sectionData.Keys.Count)
@@ -3486,6 +3567,9 @@ function Invoke-Main {
     # Lead the report with the consolidated, severity-sorted findings, then the detail sections.
     $htmlSections = [ordered]@{}
     $htmlSections['Findings (worst first)'] = @($consolidated | Where-Object { $_.Status -notmatch '^(Pass|Healthy|Verified|Info)$' })
+    # Reconciliation sits directly under the findings: what each section collected against
+    # what it contributed, so a silently empty section is visible in the report itself.
+    $htmlSections['Section Coverage (collected vs reported)'] = $sectionAudit
     foreach ($k in $sectionData.Keys) { $htmlSections[$k] = $sectionData[$k] }
     if (@($htmlSections['Findings (worst first)']).Count -eq 0) {
         $htmlSections['Findings (worst first)'] = @([pscustomobject]@{ Section = '(none)'; Item = 'No warnings or failures'; Status = 'Pass'; Detail = 'All assessed checks passed.'; Recommendation = '' })

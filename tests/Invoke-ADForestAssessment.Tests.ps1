@@ -398,6 +398,80 @@ Describe 'Heterogeneous row shapes (regression: live run 2026-08-30)' {
     }
 }
 
+Describe 'Multi-domain aggregation contract (regression: 12 sections silently discarded)' {
+
+    # Per-domain sections are built as:
+    #   $rows = foreach ($d in $targetDomains) { Get-AdfaSomething -DomainName $d }
+    # While collectors ended in `return , @($rows)` each iteration emitted the array as ONE
+    # object, so with more than one domain the section became an array of arrays. Consumers
+    # looked for Status on an array, found none, and skipped it - collected, then discarded
+    # without a word. Single-domain runs were unaffected, which is why it went unseen.
+
+    It 'no collector still uses the return-comma idiom that caused it' {
+        # Anchor to the start of a code line: the comments in the script quote the old
+        # idiom while explaining this defect, and must not trip the guard.
+        $offenders = @(Get-Content -Path $script:Target | Where-Object { $_ -match '^\s*return\s+,' })
+        $offenders -join "`n" | Should -BeNullOrEmpty
+    }
+
+    It 'a collector returning several rows aggregates flat across domains' {
+        function Get-AdfaFakeSection {
+            param([string]$DomainName)
+            $rows = @(
+                [pscustomobject]@{ Scope = $DomainName; Area = 'X'; Item = 'a'; Status = 'Fail'; Detail = 'd' },
+                [pscustomobject]@{ Scope = $DomainName; Area = 'X'; Item = 'b'; Status = 'Pass'; Detail = 'd' }
+            )
+            return @($rows)
+        }
+        $agg = foreach ($d in @('root.local', 'north.local', 'epal.local')) { Get-AdfaFakeSection -DomainName $d }
+        $section = @($agg)
+        $section.Count | Should -Be 6
+        $section[0].PSObject.Properties.Name | Should -Contain 'Status'
+        @($section | Select-Object -ExpandProperty Scope -Unique).Count | Should -Be 3
+    }
+
+    It 'a collector returning ONE row still aggregates flat across domains' {
+        function Get-AdfaFakeSingle {
+            param([string]$DomainName)
+            return @(@([pscustomobject]@{ Scope = $DomainName; Item = 'only'; Status = 'Warning' }))
+        }
+        $agg = foreach ($d in @('a.local', 'b.local')) { Get-AdfaFakeSingle -DomainName $d }
+        @($agg).Count | Should -Be 2
+        @($agg)[0].PSObject.Properties.Name | Should -Contain 'Status'
+    }
+
+    Context 'Expand-AdfaRowList' {
+        It 'flattens a nested section back to findings' {
+            $nested = @(
+                @([pscustomobject]@{ Item = 'a'; Status = 'Fail' }),
+                @([pscustomobject]@{ Item = 'b'; Status = 'Pass' }, [pscustomobject]@{ Item = 'c'; Status = 'Warning' })
+            )
+            $flat = @(Expand-AdfaRowList -Rows $nested)
+            $flat.Count | Should -Be 3
+            $flat[0].PSObject.Properties.Name | Should -Contain 'Status'
+        }
+        It 'leaves a flat list alone and drops nulls' {
+            $flat = @(Expand-AdfaRowList -Rows @([pscustomobject]@{ A = 1 }, $null, [pscustomobject]@{ A = 2 }))
+            $flat.Count | Should -Be 2
+        }
+        It 'never splits a string into characters' {
+            $r = @(Expand-AdfaRowList -Rows @('hello'))
+            $r.Count | Should -Be 1
+            $r[0] | Should -Be 'hello'
+        }
+        It 'returns empty for empty or null input' {
+            @(Expand-AdfaRowList -Rows @()).Count | Should -Be 0
+            @(Expand-AdfaRowList -Rows $null).Count | Should -Be 0
+        }
+    }
+
+    It 'Resolve-AdfaTrustHealth tolerates a null warning list (plain returns yield null when empty)' {
+        $v = Resolve-AdfaTrustHealth -Direction Bidirectional -OutboundResult Verified -InboundResult Verified `
+            -TargetReachable $true -SecurityWarnings $null
+        $v.Health | Should -Be 'Healthy'
+    }
+}
+
 Describe 'PSScriptAnalyzer' {
     It 'has no Error/Warning findings against the committed settings' -Skip:(-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
         $settings = Join-Path (Split-Path -Parent $PSScriptRoot) 'PSScriptAnalyzerSettings.psd1'

@@ -90,10 +90,17 @@ The report bundle lands in the logged-on user's Documents:
 ```text
 %USERPROFILE%\Documents\AdAssessment\yyyy-MM-dd_HH-mm-ss\
     Assessment.html
+    csv\Findings-Consolidated.csv   all findings, severity-sorted, with recommendations
+    csv\Section-Coverage.csv        rows collected vs findings reported, per section
     csv\        one CSV per topic
     raw\        optional repadmin / dcdiag capture
     transcript
 ```
+
+`Section-Coverage.csv` (and the matching panel in the HTML) reconciles what each section
+collected against what it contributed to the findings. A status-bearing section showing
+`FindingsReported = 0` is either pure inventory or data loss — the report says which rather
+than leaving the two indistinguishable.
 
 Off Windows it falls back to `$HOME/Documents`.
 

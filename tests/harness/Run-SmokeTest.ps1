@@ -148,7 +148,72 @@ Write-Host ""
 Write-Host ("Output bundle: {0}" -f $result.OutputRoot)
 Get-ChildItem -Recurse $result.OutputRoot | Select-Object -First 30 FullName | ForEach-Object { Write-Host ("   {0}" -f $_.FullName) }
 
+# =============================================================================
+# MULTI-DOMAIN PASS (regression: live run 2026-08-31)
+# =============================================================================
+# The single-domain pass above cannot catch aggregation faults. Per-domain sections are
+# built as `$rows = foreach ($d in $targetDomains) { Get-AdfaSomething -DomainName $d }`.
+# While collectors ended in `return , @($rows)` each iteration emitted the array as ONE
+# object, so with MORE THAN ONE domain the section became an array of arrays. Every
+# consumer then looked for a Status property on an array, found none, and skipped it -
+# twelve sections were collected and silently discarded, DNS-vs-AD consistency and DC
+# secure channel among them. One domain hid it completely.
+Write-Host ""
+Write-Host "== Running Invoke-Main against a THREE-DOMAIN stubbed forest ==" -ForegroundColor Cyan
+
+$multiDomains = @('contoso.com', 'north.contoso.com', 'epal.contoso.com')
+function Get-ADForest { param([Parameter(ValueFromRemainingArguments)]$a)
+    [pscustomobject]@{ Name='contoso.com'; RootDomain='contoso.com'; ForestMode='Windows2016Forest'
+        Domains=@('contoso.com','north.contoso.com','epal.contoso.com')
+        Sites=@('Default-First-Site-Name'); GlobalCatalogs=@('dc1.contoso.com')
+        SchemaMaster='dc1.contoso.com'; DomainNamingMaster='dc1.contoso.com'; UPNSuffixes=@() } }
+
+$out2 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_multi_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $out2
+$script:AllDomains = $true
+$result2 = Invoke-Main
+
+Check ($null -ne $result2) 'Multi-domain: Invoke-Main returned a summary object'
+Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scoped ({0})" -f @($result2.DomainsScoped).Count)
+
+# The core assertion: per-domain sections must contribute findings, not vanish.
+$findings2 = @(Import-Csv (Join-Path $result2.CsvPath 'Findings-Consolidated.csv'))
+Check ($findings2.Count -gt 0) ("Multi-domain: consolidated findings are not empty ({0} rows)" -f $findings2.Count)
+
+foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords')) {
+    $n = @($findings2 | Where-Object { $_.Section -eq $sec }).Count
+    Check ($n -gt 0) ("Multi-domain: section '{0}' reached the consolidated findings ({1} rows)" -f $sec, $n)
+}
+
+# Every scoped domain must actually appear - not just the first one.
+$scopes = @($findings2 | Select-Object -ExpandProperty Scope -Unique | Where-Object { $_ })
+foreach ($d in $multiDomains) {
+    Check ($scopes -contains $d) ("Multi-domain: findings carry scope '{0}'" -f $d)
+}
+
+# A section CSV must hold real columns, never array metadata (Length/Rank/Count).
+$ppCsv = Join-Path $result2.CsvPath 'Password Policy.csv'
+if (Test-Path $ppCsv) {
+    $cols = @((Import-Csv $ppCsv | Select-Object -First 1).PSObject.Properties.Name)
+    Check (-not ($cols -contains 'Length' -and $cols -contains 'Rank')) ("Multi-domain: section CSV holds findings, not array metadata ({0})" -f ($cols -join ','))
+}
+else { Check $false 'Multi-domain: Password Policy CSV exists' }
+
+# The reconciliation file must exist and show no unexplained empty status-bearing section.
+$auditCsv = Join-Path $result2.CsvPath 'Section-Coverage.csv'
+Check (Test-Path $auditCsv) 'Multi-domain: Section-Coverage.csv written'
+if (Test-Path $auditCsv) {
+    $audit = @(Import-Csv $auditCsv)
+    Check ($audit.Count -gt 0) ("Multi-domain: reconciliation covers {0} sections" -f $audit.Count)
+    $lost = @($audit | Where-Object { $_.Section -eq 'DNS vs AD Consistency' -and [int]$_.FindingsReported -eq 0 })
+    Check ($lost.Count -eq 0) 'Multi-domain: DNS vs AD Consistency reported findings (reconciliation)'
+}
+
+Write-Host ""
+Write-Host ("Multi-domain bundle: {0}" -f $result2.OutputRoot)
+
 # cleanup
+Remove-Item -Recurse -Force $out2 -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 Write-Host ""

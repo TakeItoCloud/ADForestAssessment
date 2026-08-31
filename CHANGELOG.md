@@ -10,6 +10,57 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-08-31 (silent multi-domain data loss, tool v1.6.0)
+
+**Twelve sections were collected and then discarded without any error**, including the two
+that matter most after a restore: DNS-vs-AD consistency and DC secure channel /
+machine-account passwords. Any `-AllDomains` run against a forest with more than one domain
+was affected. Single-domain runs were not, which is why every test to date passed.
+
+**Cause.** Collectors ended in `return , @($rows)`. The leading comma emits the array as a
+single object, which protects a one-element result from unrolling — but the per-domain
+aggregation pattern is
+
+```powershell
+$rows = foreach ($d in $targetDomains) { Get-AdfaSomething -DomainName $d }
+$sectionData['X'] = @($rows)
+```
+
+With one domain that yields the rows. With N domains it yields an array OF N ARRAYS, and
+`@()` does not flatten that. Every downstream consumer then examined an array where it
+expected a finding: the consolidated-findings builder looked for a `Status` property,
+found none, and hit `continue` — silently. `Export-Csv` wrote the array's own metadata
+(`Length`, `Rank`, `Count`) as the section CSV. Nothing threw, nothing was logged, and the
+report looked complete.
+
+Measured on the three-domain regression fixture: **39 findings reported where 123 existed —
+68% discarded.**
+
+**Fix, in four parts.**
+
+1. The idiom is gone: all 60 `return , ...` statements are now plain returns, so multi-row
+   and multi-domain aggregation flattens naturally. This is PORT-PLAN P3, which was open
+   and which I twice noted and did not close; it was not a cosmetic empty-array wrinkle.
+2. `Expand-AdfaRowList` flattens nested collections defensively on every output path, so a
+   future shape mistake cannot silently cost data.
+3. The consolidated builder no longer skips in silence: a row that is not a plain object is
+   logged at ERROR, counted, and the run warns that the findings are INCOMPLETE.
+4. New `csv\Section-Coverage.csv` and a "Section Coverage" panel in the HTML reconcile
+   rows collected against findings reported for every section, so an empty section is
+   visible in the report itself rather than being indistinguishable from a clean one.
+
+`Resolve-AdfaTrustHealth` is now null-safe on its warning list, since a plain return yields
+`$null` when empty and `$null.Count` throws under StrictMode.
+
+**Test coverage that was missing.** The end-to-end smoke test only ever ran a
+single-domain forest, so it could not observe an aggregation fault. It now runs a second
+pass against a three-domain forest and asserts that each per-domain section reaches the
+consolidated findings, that every scoped domain appears, that section CSVs contain findings
+rather than array metadata, and that the reconciliation reports no lost section. Verified
+against the pre-fix script: the new pass fails with 6 errors, naming the discarded
+sections and the `Length,LongLength,Rank,...` CSV. A Pester guard also fails the build if
+the `return ,` idiom is reintroduced.
+
 ### Fixed — 2026-08-30 (first live-forest run, tool v1.5.1)
 
 First execution against a real multi-domain forest (the start of R4) failed while writing
