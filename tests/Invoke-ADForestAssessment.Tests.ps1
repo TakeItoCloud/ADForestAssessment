@@ -314,6 +314,90 @@ showrepl_INFO,Default-First-Site-Name,DC1,"DC=contoso,DC=com",Default-First-Site
     }
 }
 
+Describe 'Heterogeneous row shapes (regression: live run 2026-08-30)' {
+
+    # A section's rows are not always the same shape. Get-AdfaReplicationHealth emits a
+    # row WITHOUT FailureDetail for an unreachable DC and one WITH it for a reachable DC,
+    # so a forest where the first DC answers and a later one does not produced:
+    #   ConvertTo-AdfaHtmlSection : The property 'FailureDetail' cannot be found on this object
+    # and the entire HTML report was lost after a full collection run.
+
+    Context 'ConvertTo-AdfaRowSet' {
+        It 'unions columns in first-seen order and fills missing values with empty string' {
+            $rows = @(
+                [pscustomobject]@{ DomainController = 'dc1'; Status = 'Fail'; FailureDetail = 'partner=dc9' },
+                [pscustomobject]@{ DomainController = 'dc2'; Status = 'Not Assessed'; Detail = 'SKIPPED' }
+            )
+            $n = @(ConvertTo-AdfaRowSet -Rows $rows)
+            $n.Count | Should -Be 2
+            @($n[0].PSObject.Properties.Name) | Should -Be @('DomainController', 'Status', 'FailureDetail', 'Detail')
+            @($n[1].PSObject.Properties.Name) | Should -Be @('DomainController', 'Status', 'FailureDetail', 'Detail')
+            $n[1].FailureDetail | Should -Be ''
+            $n[0].Detail | Should -Be ''
+            $n[0].FailureDetail | Should -Be 'partner=dc9'
+        }
+        It 'converts nulls to empty string and drops null rows' {
+            $n = @(ConvertTo-AdfaRowSet -Rows @([pscustomobject]@{ A = $null; B = 'x' }, $null))
+            $n.Count | Should -Be 1
+            $n[0].A | Should -Be ''
+        }
+        It 'returns a genuinely empty set for empty or null input' {
+            @(ConvertTo-AdfaRowSet -Rows @()).Count | Should -Be 0
+            @(ConvertTo-AdfaRowSet -Rows $null).Count | Should -Be 0
+        }
+        It 'leaves already-uniform rows untouched in order and value' {
+            $rows = @([pscustomobject]@{ X = 1; Y = 'a' }, [pscustomobject]@{ X = 2; Y = 'b' })
+            $n = @(ConvertTo-AdfaRowSet -Rows $rows)
+            @($n[0].PSObject.Properties.Name) | Should -Be @('X', 'Y')
+            $n[1].Y | Should -Be 'b'
+        }
+    }
+
+    Context 'ConvertTo-AdfaHtmlSection' {
+        It 'renders a mixed-shape section instead of throwing PropertyNotFoundStrict' {
+            $rows = @(
+                [pscustomobject]@{ DomainController = 'dc1'; Status = 'Fail'; FailureDetail = 'partner=dc9 lastError=1722' },
+                [pscustomobject]@{ DomainController = 'dc2'; Status = 'Not Assessed'; Detail = 'SKIPPED: RPC135=False' }
+            )
+            { ConvertTo-AdfaHtmlSection -Title 'Replication Health' -Data $rows } | Should -Not -Throw
+            # Assign outside the Should scriptblock - it runs in its own scope, so an
+            # assignment made inside it would not be visible here.
+            $html = ConvertTo-AdfaHtmlSection -Title 'Replication Health' -Data $rows
+            $html | Should -Match 'FailureDetail'
+            $html | Should -Match 'dc2'
+            $html | Should -Match "tr class='na'"
+            $html | Should -Match "tr class='bad'"
+        }
+        It 'renders when the SHORT row comes first (column union, not row-0 columns)' {
+            $rows = @(
+                [pscustomobject]@{ DomainController = 'dc2'; Status = 'Not Assessed'; Detail = 'SKIPPED' },
+                [pscustomobject]@{ DomainController = 'dc1'; Status = 'Fail'; FailureDetail = 'partner=dc9' }
+            )
+            $html = ConvertTo-AdfaHtmlSection -Title 'Replication Health' -Data $rows
+            $html | Should -Match 'FailureDetail'
+            $html | Should -Match 'partner=dc9'
+        }
+        It 'renders a multi-domain trust section mixing full rows with an enumeration-failure row' {
+            $rows = @(
+                [pscustomobject]@{ Scope = 'a.local'; TrustName = 'b.local'; Health = 'Healthy'; Reasons = 'ok'; VerifyDetail = 'v' },
+                [pscustomobject]@{ Scope = 'c.local'; TrustName = '(enumeration failed)'; Health = 'Not Assessed'; Detail = 'server down' }
+            )
+            { ConvertTo-AdfaHtmlSection -Title 'Trusts & Two-Way Health' -Data $rows } | Should -Not -Throw
+        }
+    }
+
+    Context 'Get-AdfaReplicationHealth row shape' {
+        It 'emits FailureDetail on the unreachable-DC row so the section is uniform at source' {
+            Mock Test-TcpPort { $false }
+            # No @() wrap: the function ends in `return , @($rows)`, so wrapping again
+            # nests the array and $rows[0] would be the array itself (PORT-PLAN P3).
+            $rows = Get-AdfaReplicationHealth -DomainControllers @('dc1.contoso.com')
+            @($rows[0].PSObject.Properties.Name) | Should -Contain 'FailureDetail'
+            $rows[0].Status | Should -Be 'Not Assessed'
+        }
+    }
+}
+
 Describe 'PSScriptAnalyzer' {
     It 'has no Error/Warning findings against the committed settings' -Skip:(-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
         $settings = Join-Path (Split-Path -Parent $PSScriptRoot) 'PSScriptAnalyzerSettings.psd1'

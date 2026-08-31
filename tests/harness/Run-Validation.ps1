@@ -253,6 +253,31 @@ $bd = Get-AdfaLatestBackupDate -Text "DC=x : 2026-07-01 10:00:00`nCN=Configurati
 Assert-Equal ([datetime]'2026-08-15 09:30:00') $bd 'Backup date: most recent of several'
 Assert-True ($null -eq (Get-AdfaLatestBackupDate -Text 'no dates')) 'Backup date: none parsable => null, never fabricated'
 
+Write-Host "== 12. Heterogeneous row shapes (regression: live run 2026-08-30) ==" -ForegroundColor Cyan
+# A reachable DC yields FailureDetail; an unreachable one did not. Reading row 0's columns
+# off a shorter row threw PropertyNotFoundStrict and lost the entire HTML report.
+$mixed = @(
+    [pscustomobject]@{ DomainController = 'dc1'; Status = 'Fail'; FailureDetail = 'partner=dc9 lastError=1722' },
+    [pscustomobject]@{ DomainController = 'dc2'; Status = 'Not Assessed'; Detail = 'SKIPPED: RPC135=False' }
+)
+$norm = @(ConvertTo-AdfaRowSet -Rows $mixed)
+Assert-Equal 2 (@($norm).Count) 'RowSet: both rows survive normalisation'
+Assert-Equal 'DomainController,Status,FailureDetail,Detail' (@($norm[0].PSObject.Properties.Name) -join ',') 'RowSet: column union in first-seen order'
+Assert-Equal '' ([string]$norm[1].FailureDetail) 'RowSet: missing column filled with empty string'
+Assert-Equal 'partner=dc9 lastError=1722' ([string]$norm[0].FailureDetail) 'RowSet: present values preserved'
+Assert-Equal 0 (@(ConvertTo-AdfaRowSet -Rows @()).Count) 'RowSet: empty input => empty, not one empty array'
+
+$renderOk = $true
+try { $html = ConvertTo-AdfaHtmlSection -Title 'Replication Health' -Data $mixed }
+catch { $renderOk = $false; $html = '' }
+Assert-True $renderOk 'HTML: mixed-shape section renders instead of throwing PropertyNotFoundStrict'
+Assert-True ($html -match 'FailureDetail' -and $html -match 'dc2') 'HTML: union column and short row both present'
+
+# Short row first: columns must come from the union, not from row 0.
+$mixedRev = @($mixed[1], $mixed[0])
+$htmlRev = ConvertTo-AdfaHtmlSection -Title 'Replication Health' -Data $mixedRev
+Assert-True ($htmlRev -match 'partner=dc9') 'HTML: short row first still renders the longer row''s data'
+
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue

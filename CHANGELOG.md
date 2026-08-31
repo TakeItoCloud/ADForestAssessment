@@ -10,6 +10,39 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-08-30 (first live-forest run, tool v1.5.1)
+
+First execution against a real multi-domain forest (the start of R4) failed while writing
+the report:
+
+```
+ConvertTo-AdfaHtmlSection : The property 'FailureDetail' cannot be found on this object.
+```
+
+**Cause.** A section's rows are not always the same shape. `Get-AdfaReplicationHealth`
+emitted a row *without* `FailureDetail` for an unreachable DC and one *with* it for a
+reachable DC. The HTML renderer took its column list from row 0 and then read every column
+off every row, so under `Set-StrictMode -Version Latest` the shorter row threw
+`PropertyNotFoundStrict`. A forest where the first DC answers and a later one does not —
+precisely the state this tool exists to report — could not render its own report.
+
+The same heterogeneity silently damaged CSV output: `Export-Csv` takes its columns from the
+first object only, so whenever a short row sorted first, the extra columns of every later
+row were dropped from the file without warning.
+
+**Fix.** A shared `ConvertTo-AdfaRowSet` normalises any collection to one column set
+(first-seen order, missing values as `''`) and is applied by both output paths — `Save-Csv`
+and `ConvertTo-AdfaHtmlSection` — so any heterogeneous section, present or future, renders
+and exports completely. `Get-AdfaReplicationHealth` also emits a uniform shape at source.
+The same latent fault existed in the trusts section, where `-AllDomains` concatenates full
+trust rows with `(enumeration failed)` / `(no trusts)` rows from other domains; it is
+covered by the same fix and by a regression test.
+
+**Also:** HTML rendering is no longer fatal to the run. The CSVs and the itemised log are
+already on disk when it starts, and collection may not be cheap to repeat during a
+recovery, so a rendering fault is now logged loudly, leaves the findings intact, and still
+closes the transcript and returns the run summary.
+
 ### Fixed — 2026-08-30 (recovery defects R1 + depth R2, tool v1.5.0)
 
 Three defects found in review of v1.4.0, all fixed:

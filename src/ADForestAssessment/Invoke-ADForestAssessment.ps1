@@ -195,7 +195,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.5.0'
+    Version                 = '1.5.1'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -325,6 +325,59 @@ function New-Folder {
     return $Path
 }
 
+function ConvertTo-AdfaRowSet {
+    <#
+    .SYNOPSIS
+        Normalises a collection of findings to one common column set, so every row carries
+        every column (missing values become '').
+    .DESCRIPTION
+        A section's rows are not always the same shape: an unreachable DC, a domain whose
+        trusts could not be enumerated, or a failed GPO query emit a shorter object than the
+        full-data rows beside them. That heterogeneity broke both output paths:
+
+          - HTML: the renderer took its columns from row 0 and then read every column off
+            every row, so under Set-StrictMode a shorter row threw PropertyNotFoundStrict
+            and the whole report failed to write.
+          - CSV: Export-Csv takes its columns from the FIRST object only, so whenever a
+            short row happened to sort first, the extra columns of every later row were
+            silently dropped from the file.
+
+        Both are fixed here rather than in each collector, because any future section can
+        be heterogeneous. Column order is first-seen (row 0's columns first, then any new
+        ones as they appear), so the report layout is unchanged when rows already agree.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Rows)
+
+    $items = @($Rows | Where-Object { $null -ne $_ })
+    if ($items.Count -eq 0) { return @() }
+
+    # First-seen column order across every row.
+    $cols = New-Object System.Collections.Generic.List[string]
+    foreach ($item in $items) {
+        foreach ($name in @($item.PSObject.Properties.Name)) {
+            if (-not $cols.Contains($name)) { $cols.Add($name) }
+        }
+    }
+    if ($cols.Count -eq 0) { return @() }
+
+    $out = foreach ($item in $items) {
+        $ordered = [ordered]@{}
+        foreach ($c in $cols) {
+            $prop = $item.PSObject.Properties[$c]   # $null when absent - StrictMode-safe
+            if ($null -eq $prop -or $null -eq $prop.Value) { $ordered[$c] = '' }
+            else { $ordered[$c] = $prop.Value }
+        }
+        [pscustomobject]$ordered
+    }
+    # Plain return: callers wrap with @(); `return , @()` would hand back one element that
+    # IS the empty array (PORT-PLAN P3).
+    return @($out)
+}
+
 function Save-Csv {
     [CmdletBinding()]
     param(
@@ -332,7 +385,9 @@ function Save-Csv {
         [Parameter(Mandatory)][string]$Path
     )
     if ($null -eq $InputObject) { return }
-    $rows = @($InputObject)
+    # Normalise first: Export-Csv columns come from the first object, so a short row
+    # sorting first would silently drop the other rows' columns from the file.
+    $rows = @(ConvertTo-AdfaRowSet -Rows $InputObject)
     if ($rows.Count -eq 0) { return }
     $rows | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $Path -Force
 }
@@ -940,10 +995,13 @@ function Get-AdfaReplicationHealth {
         $rpcOk = Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
         $adwsOk = Test-TcpPort -ComputerName $dc -Port 9389 -TimeoutMs $RpcPortTimeoutMs
         if (-not ($rpcOk -and $adwsOk)) {
+            # Same shape as the full row below - a section whose rows disagree breaks CSV
+            # columns and, under StrictMode, the HTML renderer.
             [pscustomobject]@{
                 DomainController = $dc; PartnerCount = $null; PartnerErrors = $null
                 LastSuccessMinutesAgo = $null; FailureCount = $null; OldestFailureTime = $null
                 ReplicationQueue = $null; Status = $script:Status.NotAssessed
+                FailureDetail = ''
                 Detail = ("SKIPPED: RPC135={0} ADWS9389={1}" -f $rpcOk, $adwsOk)
             }
             continue
@@ -2984,7 +3042,10 @@ function ConvertTo-AdfaHtmlSection {
         [AllowNull()]$Data,
         [string]$Description
     )
-    $rows = @($Data)
+    # Normalise to one column set: a section can legitimately mix row shapes (an
+    # unreachable DC or a failed enumeration emits a shorter object than its neighbours),
+    # and reading a missing property under StrictMode would throw and lose the report.
+    $rows = @(ConvertTo-AdfaRowSet -Rows $Data)
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.AppendLine("<h2>$(ConvertTo-AdfaHtmlText $Title)</h2>")
     if ($Description) { [void]$sb.AppendLine("<p class='desc'>$(ConvertTo-AdfaHtmlText $Description)</p>") }
@@ -3429,13 +3490,29 @@ function Invoke-Main {
     if (@($htmlSections['Findings (worst first)']).Count -eq 0) {
         $htmlSections['Findings (worst first)'] = @([pscustomobject]@{ Section = '(none)'; Item = 'No warnings or failures'; Status = 'Pass'; Detail = 'All assessed checks passed.'; Recommendation = '' })
     }
-    New-AdfaHtmlReport -Sections $htmlSections -Meta $meta -Path $reportPath | Out-Null
+    # The CSVs and the itemised log are already on disk at this point. A rendering fault
+    # must not discard them, stop the transcript from closing, or suppress the run summary
+    # - the collection is the expensive part and on a recovery it may not be repeatable
+    # cheaply. Report the failure loudly and carry on.
+    $reportRendered = $false
+    try {
+        New-AdfaHtmlReport -Sections $htmlSections -Meta $meta -Path $reportPath | Out-Null
+        $reportRendered = $true
+    }
+    catch {
+        $reportPath = ''
+        Write-Log -Level ERROR ("HTML report generation FAILED: {0}" -f $_.Exception.Message)
+        Write-Warning ("HTML report could not be written: {0}" -f $_.Exception.Message)
+        Write-Warning ("All findings are still on disk: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv'))
+    }
+    if ($reportRendered) { Write-Log -Level INFO ("HTML report: {0}" -f $reportPath) }
 
     Write-Log -Level INFO ("Detailed log: {0}" -f $script:LogFile)
     Write-Log -Level INFO ("Consolidated findings: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv'))
     try { Stop-Transcript | Out-Null } catch { }
 
-    Write-Stage ("DONE. Report: {0}" -f $reportPath)
+    if ($reportRendered) { Write-Stage ("DONE. Report: {0}" -f $reportPath) }
+    else { Write-Stage ("DONE (HTML report failed to render). Findings: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv')) }
 
     [pscustomobject]@{
         Forest        = $forest.Name

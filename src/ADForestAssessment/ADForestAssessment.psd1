@@ -5,7 +5,7 @@
     # Kept identical to $script:Config.Version in the assessment script - the HTML report
     # prints that value, and a client-facing report must not claim a version the package
     # does not. A repo test asserts the two match.
-    ModuleVersion        = '1.5.0'
+    ModuleVersion        = '1.5.1'
     GUID                 = '2c6821ed-37a0-4ddc-8e53-dd76ac171829'
     Author               = 'TakeItoCloud'
     CompanyName          = 'TakeItoCloud'
