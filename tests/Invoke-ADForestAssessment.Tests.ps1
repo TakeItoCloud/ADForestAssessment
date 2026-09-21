@@ -706,13 +706,18 @@ Describe 'Exchange Server SE compatibility' {
     BeforeAll {
         $script:SeCfg = $script:Config.ExchangeSe
         $script:DcOk = @([pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false })
-    }
-    # Returns $null rather than indexing [0] into an empty array, which throws under StrictMode.
-    function Get-SeTestRow {
-        param($Rows, [string]$Item)
-        $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
-        if ($m.Count -eq 0) { return $null }
-        return $m[0]
+
+        # Defined HERE, not in the Describe body. Pester v5 runs a Describe body during
+        # discovery and It blocks during the run phase, so a function declared in the body is
+        # gone by the time the tests execute (CommandNotFoundException). BeforeAll runs in the
+        # run phase, so this is visible to every It in the container.
+        # Returns $null rather than indexing [0] into an empty array, which throws under StrictMode.
+        function Get-SeTestRow {
+            param($Rows, [string]$Item)
+            $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
     }
 
     Context 'Config table provenance' {
