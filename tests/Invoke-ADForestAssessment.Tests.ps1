@@ -479,3 +479,421 @@ Describe 'PSScriptAnalyzer' {
         $findings | Should -BeNullOrEmpty
     }
 }
+
+Describe 'JSON report document' {
+    BeforeAll {
+        $script:LegacySummary = [pscustomobject]@{ Pass = 1; Warning = 1; Fail = 1; NotAssessed = 1 }
+        $script:MixedFindings = @(
+            (New-Finding -Area 'A' -Item 'i1' -Status 'Pass'         -Detail 'd'),
+            (New-Finding -Area 'A' -Item 'i2' -Status 'Warning'      -Detail 'd'),
+            (New-Finding -Area 'A' -Item 'i3' -Status 'Fail'         -Detail 'd'),
+            (New-Finding -Area 'A' -Item 'i4' -Status 'Not Assessed' -Detail 'd'),
+            (New-Finding -Area 'A' -Item 'i5' -Status 'Info'         -Detail 'd'),
+            (New-Finding -Area 'A' -Item 'i6' -Status 'Info'         -Detail 'd')
+        )
+        $script:DocMeta = [pscustomobject]@{
+            Forest = 'contoso.com'; Generated = '2026-01-01 00:00:00Z'; RunBy = 'CONTOSO\tester'
+            Version = '9.9.9'; DomainsScoped = @('contoso.com', 'north.contoso.com'); DcCount = 2
+            Badges = "<span class='b-ok'>Pass 1</span>"
+        }
+        # Not $sections: the script under test declares a [ValidateSet] $Sections parameter and
+        # PowerShell variable names are case-insensitive, so that name is taken in this scope.
+        $docSections = [ordered]@{}
+        $docSections['One Row'] = @([pscustomobject]@{ Name = 'dc1'; Site = 'HQ' })
+        $docSections['Empty'] = @()
+        $script:DocSections = $docSections
+    }
+
+    Context 'New-AdfaReportSummary' {
+        # Invoke-Main's four counters match Pass/Healthy, Warning/Degraded, Fail/Broken and
+        # Not Assessed, but not 'Info' - a valid New-Finding status. Measured on the
+        # three-domain fixture: 123 findings, 106 counted, 17 Info counted nowhere.
+        It 'counts every finding exactly once' {
+            $s = New-AdfaReportSummary -Summary $script:LegacySummary -Findings $script:MixedFindings
+            [int]$s.total | Should -Be 6
+            $bucketSum = [int]$s.pass + [int]$s.warning + [int]$s.fail + [int]$s.notAssessed +
+                [int]$s.info + [int]$s.unclassified
+            $bucketSum | Should -Be 6
+        }
+        It 'counts Info findings instead of dropping them' {
+            $s = New-AdfaReportSummary -Summary $script:LegacySummary -Findings $script:MixedFindings
+            [int]$s.info | Should -Be 2
+            [int]$s.unclassified | Should -Be 0
+        }
+        It 'surfaces a status no filter matches rather than losing it' {
+            $s = New-AdfaReportSummary -Summary $script:LegacySummary `
+                -Findings @([pscustomobject]@{ Area = 'A'; Item = 'i'; Status = 'Verified'; Detail = 'd' })
+            [int]$s.unclassified | Should -Be 1
+            [int]$s.total | Should -Be 1
+        }
+        It 'does not throw on a row with no Status column (StrictMode-safe)' {
+            { New-AdfaReportSummary -Summary $script:LegacySummary -Findings @([pscustomobject]@{ Area = 'A' }) } |
+                Should -Not -Throw
+        }
+        It 'reports zero for an empty finding set' {
+            [int](New-AdfaReportSummary -Summary $script:LegacySummary -Findings @()).total | Should -Be 0
+        }
+    }
+
+    Context 'New-AdfaReportDocument' {
+        It 'emits a schema version so a consumer can tell a tool change from an environment change' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            [int]$doc.schemaVersion | Should -Be 1
+            [string]$doc.tool.name | Should -Be 'ADForestAssessment'
+            [string]$doc.tool.version | Should -Be '9.9.9'
+        }
+        It 'records every scoped domain, not just the first' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            @($doc.run.domainsScoped).Count | Should -Be 2
+        }
+        It 'keeps presentation markup out of the data document' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            # $doc is an OrderedDictionary, so PSObject.Properties would enumerate .NET members
+            # rather than keys and pass whatever the document held. Assert on the keys.
+            @($doc.Keys) | Should -Not -Contain 'Badges'
+            @($doc.Keys) | Should -Contain 'summary'   # non-vacuity: this is how keys surface
+        }
+        It 'keeps a section that collected nothing, as an empty array' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            @($doc.sections.Keys) | Should -Contain 'Empty'
+            @($doc.sections['Empty']).Count | Should -Be 0
+        }
+    }
+
+    Context 'Serialisation' {
+        It 'round-trips with a single-element section still addressable' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            $back = $doc | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+            [string]@($back.sections.'One Row')[0].Name | Should -Be 'dc1'
+            @($back.findings).Count | Should -Be 6
+        }
+        It 'leaks no HTML into the JSON' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            $json = $doc | ConvertTo-Json -Depth 12
+            $json | Should -Not -Match '<span'
+            $json | Should -Not -Match 'b-ok'
+        }
+        It 'demonstrates that the ConvertTo-Json default depth of 2 loses section rows' {
+            # Truncation stringifies the row to PowerShell's hashtable form - '@{Name=dc1; ...}' -
+            # rather than emitting a type name, so that is the marker. Without this the explicit
+            # -Depth on Export-AdfaJsonReport would be unjustified.
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            ($doc | ConvertTo-Json -Depth 2 -WarningAction SilentlyContinue) | Should -Match '"@\{'
+            ($doc | ConvertTo-Json -Depth 12) | Should -Not -Match '"@\{'
+        }
+    }
+
+    Context 'Export-AdfaJsonReport' {
+        It 'writes a parseable file and returns its path' {
+            $tmp = Join-Path ([IO.Path]::GetTempPath()) ("adfa_json_{0}.json" -f [guid]::NewGuid().ToString('N'))
+            try {
+                $p = Export-AdfaJsonReport -Meta $script:DocMeta -Findings $script:MixedFindings `
+                    -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary -Path $tmp
+                $p | Should -Be $tmp
+                Test-Path $tmp | Should -BeTrue
+                $doc = Get-Content $tmp -Raw | ConvertFrom-Json
+                [int]$doc.summary.total | Should -Be 6
+                [string]$doc.run.forest | Should -Be 'contoso.com'
+            }
+            finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+Describe 'Directory Service log coverage' {
+    # The defect this closes: finding no events reported Pass, so a DC whose Directory Service
+    # log was wiped during a ransomware recovery read exactly like a healthy one on the checks
+    # that matter most - USN rollback (2095), unsupported restore (2103), lingering objects
+    # (1988). Absence is only evidence when the log reaches back across the window.
+    BeforeAll { $script:WStart = (Get-Date).AddDays(-14) }
+
+    Context 'Get-AdfaEventLogCoverage' {
+        It 'reports Covered when the log predates the window' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord $script:WStart.AddDays(-30) -WindowStart $script:WStart | Should -Be 'Covered'
+        }
+        It 'reports Covered at the exact window boundary' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord $script:WStart -WindowStart $script:WStart | Should -Be 'Covered'
+        }
+        It 'reports Truncated when the log starts inside the window' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord $script:WStart.AddDays(1) -WindowStart $script:WStart | Should -Be 'Truncated'
+        }
+        It 'never reports Covered for a log cleared moments ago' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 3 `
+                -OldestRecord (Get-Date) -WindowStart $script:WStart | Should -Be 'Truncated'
+        }
+        It 'reports Empty for a log with no records' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 0 `
+                -OldestRecord $null -WindowStart $script:WStart | Should -Be 'Empty'
+        }
+        It 'reports Unknown rather than Covered when a bound is missing' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord $null -WindowStart $script:WStart | Should -Be 'Unknown'
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord $script:WStart.AddDays(-1) -WindowStart $null | Should -Be 'Unknown'
+            Get-AdfaEventLogCoverage -Inspected $false -RecordCount $null `
+                -OldestRecord $null -WindowStart $script:WStart | Should -Be 'Unknown'
+        }
+        It 'never classifies any degraded input as Covered' {
+            # Non-vacuity: the declared population is the four ways coverage can be incomplete,
+            # and all four are evaluated here rather than asserted in the aggregate.
+            $degraded = @(
+                (Get-AdfaEventLogCoverage -Inspected $false -RecordCount 10 -OldestRecord $script:WStart.AddDays(-5) -WindowStart $script:WStart),
+                (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 0  -OldestRecord $null                      -WindowStart $script:WStart),
+                (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 10 -OldestRecord $null                      -WindowStart $script:WStart),
+                (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 10 -OldestRecord $script:WStart.AddDays(2)  -WindowStart $script:WStart)
+            )
+            @($degraded).Count | Should -Be 4
+            @($degraded | Where-Object { $_ -eq 'Covered' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaDsEventCoverageDetail' {
+        It 'adds no caveat when coverage is complete' {
+            Get-AdfaDsEventCoverageDetail -Coverage 'Covered' -OldestRecord $script:WStart -LookbackDays 14 |
+                Should -BeNullOrEmpty
+        }
+        It 'names where coverage actually begins' {
+            # Guards a real precedence bug: "a {0}" + "b" -f $x formats only the SECOND string,
+            # so the timestamp silently stayed a literal {0} until this asserted on it.
+            $d = Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' `
+                -OldestRecord ([datetime]'2026-09-15 08:30') -LookbackDays 14
+            $d | Should -Match '2026-09-15 08:30'
+            $d | Should -Not -Match '\{0\}'
+            $d | Should -Match 'cleared or has wrapped'
+        }
+        It 'says absence proves nothing for an empty log' {
+            Get-AdfaDsEventCoverageDetail -Coverage 'Empty' -OldestRecord $null -LookbackDays 14 |
+                Should -Match 'proves nothing'
+        }
+        It 'carries the underlying cause when the log could not be inspected' {
+            Get-AdfaDsEventCoverageDetail -Coverage 'Unknown' -OldestRecord $null -LookbackDays 14 `
+                -Reason 'Access is denied' | Should -Match 'Access is denied'
+        }
+    }
+
+    Context 'Remediation routing' {
+        It 'routes a coverage finding to evidence recovery, not a secure-channel reset' {
+            $r = Get-AdfaRecommendation -Section 'Directory Service Events' `
+                -Item 'Log coverage on dc1.contoso.com' `
+                -Detail (Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' -OldestRecord (Get-Date) -LookbackDays 14)
+            $r | Should -Not -BeNullOrEmpty
+            $r | Should -Match 'UNASSESSED'
+            $r | Should -Not -Match 'netdom trust'
+        }
+        It 'still routes a real USN rollback to rollback guidance' {
+            # The coverage entry sits ahead of the event entries in a first-match-wins map,
+            # so this pins the ordering rather than assuming it.
+            $r = Get-AdfaRecommendation -Section 'Directory Service Events' `
+                -Item 'Event 2095 on dc1.contoso.com' `
+                -Detail '1 occurrence(s) in 14 day(s), last 2026-09-20 10:00. USN rollback detected - the directory is silently diverging.'
+            $r | Should -Not -BeNullOrEmpty
+            $r | Should -Not -Match 'UNASSESSED'
+        }
+    }
+}
+
+Describe 'Exchange Server SE compatibility' {
+    BeforeAll {
+        $script:SeCfg = $script:Config.ExchangeSe
+        $script:DcOk = @([pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false })
+
+        # Defined HERE, not in the Describe body. Pester v5 runs a Describe body during
+        # discovery and It blocks during the run phase, so a function declared in the body is
+        # gone by the time the tests execute (CommandNotFoundException). BeforeAll runs in the
+        # run phase, so this is visible to every It in the container.
+        # Returns $null rather than indexing [0] into an empty array, which throws under StrictMode.
+        function Get-SeTestRow {
+            param($Rows, [string]$Item)
+            $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
+    }
+
+    Context 'Config table provenance' {
+        It 'records where the values came from and when' {
+            # CLAUDE.md: volatile vendor facts carry their source URL and read date.
+            $script:SeCfg.SourceUrl | Should -Match 'learn\.microsoft\.com'
+            $script:SeCfg.ReadDate | Should -Match '^\d{4}-\d{2}-\d{2}$'
+        }
+    }
+
+    Context 'Test-AdfaOsSupported' {
+        It 'accepts every OS in the supported matrix' {
+            foreach ($os in @('Windows Server 2025 Datacenter', 'Windows Server 2022 Standard',
+                    'Windows Server 2019 Datacenter', 'Windows Server 2016 Standard',
+                    'Windows Server 2012 R2 Datacenter')) {
+                Test-AdfaOsSupported -OperatingSystem $os -SupportedOs $script:SeCfg.SupportedDomainControllerOs |
+                    Should -Not -BeNullOrEmpty -Because "$os is listed as supported"
+            }
+        }
+        It 'does not confuse plain Windows Server 2012 with 2012 R2' {
+            # 2012 R2 is supported and plain 2012 is not. A pattern loosened to bare '2012'
+            # would silently pass an unsupported DC, so this is pinned explicitly.
+            Test-AdfaOsSupported -OperatingSystem 'Windows Server 2012 Standard' `
+                -SupportedOs $script:SeCfg.SupportedDomainControllerOs | Should -BeNullOrEmpty
+            Test-AdfaOsSupported -OperatingSystem 'Windows Server 2012 R2 Standard' `
+                -SupportedOs $script:SeCfg.SupportedDomainControllerOs | Should -Be 'Windows Server 2012 R2'
+        }
+        It 'rejects an out-of-support OS and an empty string' {
+            Test-AdfaOsSupported -OperatingSystem 'Windows Server 2008 R2 Enterprise' `
+                -SupportedOs $script:SeCfg.SupportedDomainControllerOs | Should -BeNullOrEmpty
+            Test-AdfaOsSupported -OperatingSystem '' `
+                -SupportedOs $script:SeCfg.SupportedDomainControllerOs | Should -BeNullOrEmpty
+        }
+        It 'supports nothing when the table is empty, rather than everything' {
+            Test-AdfaOsSupported -OperatingSystem 'Windows Server 2019' -SupportedOs @() | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'Forest functional level verdict' {
+        It 'passes the two supported levels and fails a lower one' {
+            foreach ($m in @('Windows2016Forest', 'Windows2012R2Forest')) {
+                $r = Get-AdfaExchangeSeCompatibility -ForestMode $m -DomainSummaries @() `
+                    -DomainControllers $script:DcOk -SeConfig $script:SeCfg
+                [string](Get-SeTestRow $r 'Forest functional level').Status | Should -Be 'Pass' -Because "$m is supported"
+            }
+            $bad = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2008R2Forest' -DomainSummaries @() `
+                -DomainControllers $script:DcOk -SeConfig $script:SeCfg
+            $row = Get-SeTestRow $bad 'Forest functional level'
+            [string]$row.Status | Should -Be 'Fail'
+            $row.Detail | Should -Match 'Windows2016Forest'   # names what IS supported
+        }
+        It 'reports Not Assessed when the level could not be read, never Pass' {
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode '' -DomainSummaries @() `
+                -DomainControllers $script:DcOk -SeConfig $script:SeCfg
+            [string](Get-SeTestRow $r 'Forest functional level').Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'Domain controller OS verdict' {
+        It 'fails the forest when any single DC runs an unsupported OS' {
+            # "All domain controllers in the forest must be running one of the supported
+            # versions", so one bad DC is a blocker rather than a warning.
+            $dcs = @(
+                [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false },
+                [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Windows Server 2012 Standard'; IsReadOnly = $false }
+            )
+            $row = Get-SeTestRow (Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' `
+                    -DomainSummaries @() -DomainControllers $dcs -SeConfig $script:SeCfg) 'Domain controller operating systems'
+            [string]$row.Status | Should -Be 'Fail'
+            $row.Detail | Should -Match 'dc2\.contoso\.com'
+            $row.Detail | Should -Not -Match 'dc1\.contoso\.com'
+        }
+        It 'treats an unreadable OS as absent, not unsupported, and says so in its own row' {
+            # An absent key and a measured absence are different claims (CLAUDE.md).
+            $dcs = @(
+                [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $false },
+                [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Not Assessed'; IsReadOnly = $false }
+            )
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+                -DomainControllers $dcs -SeConfig $script:SeCfg
+            [string](Get-SeTestRow $r 'Domain controller operating systems').Status | Should -Be 'Pass'
+            $unk = Get-SeTestRow $r 'Domain controller OS - not readable'
+            $unk | Should -Not -BeNullOrEmpty
+            [string]$unk.Status | Should -Be 'Not Assessed'
+            $unk.Detail | Should -Match 'unverified, not compatible'
+        }
+        It 'reports Not Assessed when nothing is readable and when no DCs were enumerated' {
+            $allUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+                -DomainControllers @([pscustomobject]@{ HostName = 'dc1'; OperatingSystem = 'Not Assessed'; IsReadOnly = $false }) `
+                -SeConfig $script:SeCfg
+            [string](Get-SeTestRow $allUnk 'Domain controller operating systems').Status | Should -Be 'Not Assessed'
+            $none = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+                -DomainControllers @() -SeConfig $script:SeCfg
+            [string](Get-SeTestRow $none 'Domain controller operating systems').Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'Read-only DCs and scope' {
+        It 'warns about a read-only DC and stays silent when there is none' {
+            $dcs = @(
+                [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $false },
+                [pscustomobject]@{ HostName = 'rodc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $true }
+            )
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+                -DomainControllers $dcs -SeConfig $script:SeCfg
+            $row = Get-SeTestRow $r 'Read-only domain controllers'
+            $row | Should -Not -BeNullOrEmpty
+            [string]$row.Status | Should -Be 'Warning'
+            $row.Detail | Should -Match 'rodc1\.contoso\.com'
+
+            # Non-vacuity for the negative case: the lookup really does return null when absent.
+            Get-SeTestRow $r 'No Such Item Exists' | Should -BeNullOrEmpty
+            $clean = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+                -DomainControllers $script:DcOk -SeConfig $script:SeCfg
+            Get-SeTestRow $clean 'Read-only domain controllers' | Should -BeNullOrEmpty
+        }
+        It 'states its own limits so it is not mistaken for full SE readiness' {
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+                -DomainControllers $script:DcOk -SeConfig $script:SeCfg
+            (Get-SeTestRow $r 'Scope of this check').Detail | Should -Match 'does NOT cover'
+        }
+    }
+
+    Context 'Merge-AdfaExchangeSeConfig' {
+        It 'replaces only the keys the override names' {
+            $m = Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg `
+                -Override @{ SupportedForestModes = @('Windows2025Forest') } -OverrideSource 'C:\cfg\se.json'
+            @($m.SupportedForestModes).Count | Should -Be 1
+            @($m.SupportedDomainControllerOs).Count | Should -Be 5
+        }
+        It 'rewrites provenance so findings do not cite Learn for overridden values' {
+            $m = Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg `
+                -Override @{ SupportedForestModes = @('Windows2025Forest') } -OverrideSource 'C:\cfg\se.json'
+            [string]$m.SourceUrl | Should -Be 'C:\cfg\se.json'
+        }
+        It 'changes nothing for a null override' {
+            @((Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Override $null).SupportedForestModes).Count |
+                Should -Be 2
+        }
+        It 'refuses an override that would empty a gate' {
+            # An empty list would make every value unsupported now, and could become vacuously
+            # true under a future refactor. Neither is an acceptable config outcome.
+            { Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Override @{ SupportedForestModes = @() } } |
+                Should -Throw
+            { Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Override @{ SupportedDomainControllerOs = @() } } |
+                Should -Throw
+        }
+        It 'actually changes the verdict, rather than being decoration' {
+            $strict = Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg `
+                -Override @{ SupportedForestModes = @('Windows2016Forest') }
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -DomainSummaries @() `
+                -DomainControllers $script:DcOk -SeConfig $strict
+            [string](Get-SeTestRow $r 'Forest functional level').Status | Should -Be 'Fail'
+        }
+    }
+
+    Context 'Import-AdfaExchangeSeConfig' {
+        It 'throws rather than silently falling back when the file is missing or malformed' {
+            { Import-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Path (Join-Path ([IO.Path]::GetTempPath()) 'adfa-no-such-file.json') } |
+                Should -Throw
+            $bad = Join-Path ([IO.Path]::GetTempPath()) ("adfa_badcfg_{0}.json" -f [guid]::NewGuid().ToString('N'))
+            try {
+                'this is not json {' | Out-File -LiteralPath $bad -Encoding UTF8
+                { Import-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Path $bad } | Should -Throw
+            }
+            finally { Remove-Item $bad -Force -ErrorAction SilentlyContinue }
+        }
+        It 'loads a valid override from disk' {
+            $good = Join-Path ([IO.Path]::GetTempPath()) ("adfa_cfg_{0}.json" -f [guid]::NewGuid().ToString('N'))
+            try {
+                '{ "SupportedForestModes": [ "Windows2016Forest" ] }' | Out-File -LiteralPath $good -Encoding UTF8
+                $m = Import-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Path $good
+                @($m.SupportedForestModes).Count | Should -Be 1
+                [string]$m.SourceUrl | Should -Be $good
+            }
+            finally { Remove-Item $good -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}

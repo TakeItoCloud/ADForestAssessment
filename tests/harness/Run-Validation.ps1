@@ -279,6 +279,281 @@ $htmlRev = ConvertTo-AdfaHtmlSection -Title 'Replication Health' -Data $mixedRev
 Assert-True ($htmlRev -match 'partner=dc9') 'HTML: short row first still renders the longer row''s data'
 
 Write-Host ""
+Write-Host "== 13. JSON report document (machine-readable output) ==" -ForegroundColor Cyan
+
+# --- Summary roll-up: every finding lands in exactly one bucket -----------------
+# The four counters Invoke-Main keeps for the log line and the HTML badges match
+# Pass/Healthy, Warning/Degraded, Fail/Broken and Not Assessed - but NOT 'Info', which is a
+# valid New-Finding status. Measured on the three-domain fixture: 123 findings, 106 counted,
+# 17 Info counted nowhere. The document adds 'info' plus an 'unclassified' catch-all so a
+# consumer can assert the buckets sum to the total.
+$legacy = [pscustomobject]@{ Pass = 1; Warning = 1; Fail = 1; NotAssessed = 1 }
+$mixedFindings = @(
+    (New-Finding -Area 'A' -Item 'i1' -Status 'Pass'         -Detail 'd'),
+    (New-Finding -Area 'A' -Item 'i2' -Status 'Warning'      -Detail 'd'),
+    (New-Finding -Area 'A' -Item 'i3' -Status 'Fail'         -Detail 'd'),
+    (New-Finding -Area 'A' -Item 'i4' -Status 'Not Assessed' -Detail 'd'),
+    (New-Finding -Area 'A' -Item 'i5' -Status 'Info'         -Detail 'd'),
+    (New-Finding -Area 'A' -Item 'i6' -Status 'Info'         -Detail 'd')
+)
+$sum = New-AdfaReportSummary -Summary $legacy -Findings $mixedFindings
+Assert-Equal 6 ([int]$sum.total) 'Summary: total counts every finding'
+Assert-Equal 2 ([int]$sum.info) 'Summary: Info findings are counted, not invisible'
+Assert-Equal 0 ([int]$sum.unclassified) 'Summary: nothing escapes every bucket'
+$bucketSum = [int]$sum.pass + [int]$sum.warning + [int]$sum.fail + [int]$sum.notAssessed +
+    [int]$sum.info + [int]$sum.unclassified
+Assert-Equal 6 $bucketSum 'Summary: buckets reconcile with the total'
+
+# A status none of the filters know must surface in 'unclassified', never vanish.
+$oddFindings = @([pscustomobject]@{ Area = 'A'; Item = 'i'; Status = 'Verified'; Detail = 'd' })
+$oddSum = New-AdfaReportSummary -Summary $legacy -Findings $oddFindings
+Assert-Equal 1 ([int]$oddSum.unclassified) 'Summary: an unknown status is reported, not dropped'
+Assert-Equal 1 ([int]$oddSum.total) 'Summary: unknown status still counted in the total'
+
+# A row with no Status column at all must not throw under StrictMode.
+$noStatusOk = $true
+try { $nsSum = New-AdfaReportSummary -Summary $legacy -Findings @([pscustomobject]@{ Area = 'A' }) }
+catch { $noStatusOk = $false }
+Assert-True $noStatusOk 'Summary: a row without Status does not throw (StrictMode-safe)'
+Assert-Equal 0 ([int]$nsSum.info) 'Summary: a row without Status is not counted as Info'
+
+Assert-Equal 0 ([int](New-AdfaReportSummary -Summary $legacy -Findings @()).total) 'Summary: empty findings => total 0'
+
+# --- Document shape -------------------------------------------------------------
+$meta = [pscustomobject]@{
+    Forest = 'contoso.com'; Generated = '2026-01-01 00:00:00Z'; RunBy = 'CONTOSO\tester'
+    Version = '9.9.9'; DomainsScoped = @('contoso.com', 'north.contoso.com'); DcCount = 2
+    Badges = "<span class='b-ok'>Pass 1</span>"
+}
+# NOTE: not $sections - the script under test declares a [ValidateSet] $Sections parameter and
+# PowerShell variable names are case-insensitive, so that name is taken in this scope.
+$docSections = [ordered]@{}
+$docSections['One Row'] = @([pscustomobject]@{ Name = 'dc1'; Site = 'HQ' })
+$docSections['Empty']   = @()
+$doc = New-AdfaReportDocument -Meta $meta -Findings $mixedFindings -Coverage @() -Sections $docSections -Summary $legacy
+
+Assert-Equal 1 ([int]$doc.schemaVersion) 'Document: schemaVersion emitted'
+Assert-Equal 'ADForestAssessment' ([string]$doc.tool.name) 'Document: tool name'
+Assert-Equal '9.9.9' ([string]$doc.tool.version) 'Document: tool version from config'
+Assert-Equal 'contoso.com' ([string]$doc.run.forest) 'Document: forest recorded'
+Assert-Equal 2 (@($doc.run.domainsScoped).Count) 'Document: every scoped domain recorded'
+Assert-Equal 6 (@($doc.findings).Count) 'Document: findings carried'
+# $doc is an OrderedDictionary, so PSObject.Properties enumerates .NET members, not keys -
+# testing it that way would pass whatever the document contained. Assert on the keys, and on
+# the serialised text, so the claim is about real content.
+Assert-True (@($doc.Keys) -notcontains 'Badges') 'Document: no Badges key in the data document'
+Assert-True (@($doc.Keys) -contains 'summary') 'Document: expected keys really are inspectable this way (non-vacuity)'
+Assert-True (@($doc.sections.Keys) -contains 'Empty') 'Document: a section that collected nothing is still present'
+Assert-Equal 0 (@($doc.sections['Empty']).Count) 'Document: empty section is empty, not one empty array'
+
+# --- Serialisation round trip ---------------------------------------------------
+# This is the assertion that has to travel to Windows PowerShell 5.1: ConvertTo-Json there is
+# a different implementation, and a single-element array collapsing to an object - or an empty
+# one rendering as "" - would break any consumer indexing the result. Verified on pwsh 7.4 in
+# CI; this harness is what carries the check onto a 5.1 host.
+$json = $doc | ConvertTo-Json -Depth 12
+$back = $json | ConvertFrom-Json
+Assert-True ($null -ne $back) 'Round trip: document parses back'
+Assert-Equal 'dc1' ([string]@($back.sections.'One Row')[0].Name) 'Round trip: single-element section keeps its row addressable'
+Assert-True (@($back.findings).Count -eq 6) 'Round trip: findings survive as an array'
+Assert-True ($json -notmatch '"@\{') 'Round trip: no row collapsed to a hashtable string at depth 12'
+Assert-True ($json -notmatch 'b-ok' -and $json -notmatch '<span') 'Round trip: no HTML markup leaked into the JSON'
+
+# Depth 2 is the ConvertTo-Json default and MUST be shown to lose data, otherwise the explicit
+# -Depth on Export-AdfaJsonReport is cargo cult. Truncation stringifies the row rather than
+# emitting a type name, so that is what is asserted.
+$shallow = $doc | ConvertTo-Json -Depth 2
+Assert-True ($shallow -match '"@\{') 'Depth: the default depth of 2 demonstrably collapses section rows'
+
+Write-Host ""
+Write-Host "== 14. Directory Service log coverage (a cleared log must not read as healthy) ==" -ForegroundColor Cyan
+
+# The defect this closes: finding no events reported Pass, so a DC whose Directory Service log
+# was wiped during a ransomware recovery looked exactly like a healthy one on the checks that
+# matter most - USN rollback (2095), unsupported restore (2103), lingering objects (1988).
+$wStart = (Get-Date).AddDays(-14)
+
+Assert-Equal 'Covered' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord $wStart.AddDays(-30) -WindowStart $wStart) 'Coverage: log older than the window => Covered'
+Assert-Equal 'Covered' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord $wStart -WindowStart $wStart) 'Coverage: oldest record exactly at the window start => Covered (boundary)'
+Assert-Equal 'Truncated' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord $wStart.AddDays(1) -WindowStart $wStart) 'Coverage: log starts inside the window => Truncated'
+Assert-Equal 'Truncated' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 3 -OldestRecord (Get-Date) -WindowStart $wStart) 'Coverage: log cleared moments ago => Truncated, never Covered'
+Assert-Equal 'Empty' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 0 -OldestRecord $null -WindowStart $wStart) 'Coverage: zero records => Empty'
+Assert-Equal 'Unknown' (Get-AdfaEventLogCoverage -Inspected $false -RecordCount $null -OldestRecord $null -WindowStart $wStart) 'Coverage: log not inspectable => Unknown'
+Assert-Equal 'Unknown' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord $null -WindowStart $wStart) 'Coverage: oldest record unknown => Unknown, not Covered'
+Assert-Equal 'Unknown' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord $wStart.AddDays(-1) -WindowStart $null) 'Coverage: no window bound => Unknown, not Covered'
+
+# Fail-closed in the round: NOTHING may classify as Covered without both bounds present and
+# the log demonstrably reaching back. Enumerate the non-covered inputs and assert the whole set.
+$notCovered = @(
+    (Get-AdfaEventLogCoverage -Inspected $false -RecordCount 10   -OldestRecord $wStart.AddDays(-5) -WindowStart $wStart),
+    (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 0    -OldestRecord $null               -WindowStart $wStart),
+    (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 10   -OldestRecord $null               -WindowStart $wStart),
+    (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 10   -OldestRecord $wStart.AddDays(2)  -WindowStart $wStart)
+)
+Assert-Equal 4 (@($notCovered).Count) 'Coverage: non-vacuity - four degraded inputs were actually evaluated'
+Assert-Equal 0 (@($notCovered | Where-Object { $_ -eq 'Covered' }).Count) 'Coverage: no degraded input is ever reported as Covered'
+
+# The caveat sentence must name what limits the claim, not just say "unknown".
+Assert-Equal '' (Get-AdfaDsEventCoverageDetail -Coverage 'Covered' -OldestRecord $wStart -LookbackDays 14) 'Detail: Covered carries no caveat'
+$trunc = Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' -OldestRecord ([datetime]'2026-09-15 08:30') -LookbackDays 14
+Assert-True ($trunc -match '2026-09-15 08:30') 'Detail: Truncated names where coverage actually begins'
+Assert-True ($trunc -match 'cleared or has wrapped') 'Detail: Truncated names the likely cause'
+$empty = Get-AdfaDsEventCoverageDetail -Coverage 'Empty' -OldestRecord $null -LookbackDays 14
+Assert-True ($empty -match 'proves nothing') 'Detail: Empty says absence proves nothing'
+$unk = Get-AdfaDsEventCoverageDetail -Coverage 'Unknown' -OldestRecord $null -LookbackDays 14 -Reason 'Access is denied'
+Assert-True ($unk -match 'Access is denied') 'Detail: Unknown carries the underlying cause'
+
+# The finding must carry guidance, and it must be the RIGHT guidance: recovering the evidence,
+# not resetting a secure channel. The map is first-match-wins, so ordering is behaviour.
+$covRec = Get-AdfaRecommendation -Section 'Directory Service Events' -Item 'Log coverage on dc1.contoso.com' `
+    -Detail (Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' -OldestRecord (Get-Date) -LookbackDays 14)
+Assert-True (-not [string]::IsNullOrWhiteSpace($covRec)) 'Recommendation: a coverage finding carries guidance'
+Assert-True ($covRec -match 'UNASSESSED') 'Recommendation: says to treat the DC as unassessed, not healthy'
+Assert-True ($covRec -match 'evtx|SIEM') 'Recommendation: points at recovering the archived evidence'
+Assert-True ($covRec -notmatch 'netdom trust') 'Recommendation: not hijacked by the trust guidance'
+
+# A real event found in the window must still route to its own event guidance, not to the
+# coverage text - the new entry sits ahead of the event entries, so this is worth pinning.
+$rollbackRec = Get-AdfaRecommendation -Section 'Directory Service Events' -Item 'Event 2095 on dc1.contoso.com' `
+    -Detail '1 occurrence(s) in 14 day(s), last 2026-09-20 10:00. USN rollback detected - the directory is silently diverging.'
+Assert-True ($rollbackRec -notmatch 'UNASSESSED') 'Recommendation: a real USN rollback still gets rollback guidance, not coverage guidance'
+Assert-True (-not [string]::IsNullOrWhiteSpace($rollbackRec)) 'Recommendation: USN rollback guidance is present'
+
+Write-Host ""
+Write-Host "== 15. Exchange Server SE compatibility (forest level + DC operating systems) ==" -ForegroundColor Cyan
+
+$seCfg = $script:Config.ExchangeSe
+Assert-True ($seCfg.SourceUrl -match 'learn\.microsoft\.com') 'SE config: carries its vendor source URL'
+Assert-True ($seCfg.ReadDate -match '^\d{4}-\d{2}-\d{2}$') 'SE config: carries the date the source was read'
+
+# --- OS pattern matching. The 2012 R2 / 2012 split is the trap: 2012 R2 is supported and
+# plain 2012 is not, so a loosened pattern would silently pass an unsupported DC.
+Assert-Equal 'Windows Server 2025' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2025 Datacenter' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2025 supported'
+Assert-Equal 'Windows Server 2022' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2022 Standard' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2022 supported'
+Assert-Equal 'Windows Server 2019' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2019 Datacenter' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2019 supported'
+Assert-Equal 'Windows Server 2016' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2016 Standard' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2016 supported'
+Assert-Equal 'Windows Server 2012 R2' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2012 R2 Datacenter' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2012 R2 supported'
+Assert-Equal '' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2012 Standard' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: plain 2012 NOT supported (not confused with 2012 R2)'
+Assert-Equal '' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2008 R2 Enterprise' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2008 R2 NOT supported'
+Assert-Equal '' (Test-AdfaOsSupported -OperatingSystem '' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: empty string is not supported'
+Assert-Equal '' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2019' -SupportedOs @()) 'SE OS: an empty table supports nothing (never vacuously true)'
+
+# --- Verdict: forest functional level
+$dcOk = @([pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false })
+function Get-SeRow {
+    # Returns $null rather than indexing [0] into an empty array, which throws under StrictMode.
+    param($Rows, [string]$Item)
+    $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+    if ($m.Count -eq 0) { return $null }
+    return $m[0]
+}
+
+$rFfl = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-Equal 'Pass' ([string](Get-SeRow $rFfl 'Forest functional level').Status) 'SE FFL: Windows2016Forest => Pass'
+$rFfl2 = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-Equal 'Pass' ([string](Get-SeRow $rFfl2 'Forest functional level').Status) 'SE FFL: Windows2012R2Forest => Pass'
+$rFflBad = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2008R2Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-Equal 'Fail' ([string](Get-SeRow $rFflBad 'Forest functional level').Status) 'SE FFL: Windows2008R2Forest => Fail'
+Assert-True ((Get-SeRow $rFflBad 'Forest functional level').Detail -match 'Windows2016Forest') 'SE FFL: the failure names what IS supported'
+$rFflNone = Get-AdfaExchangeSeCompatibility -ForestMode '' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-Equal 'Not Assessed' ([string](Get-SeRow $rFflNone 'Forest functional level').Status) 'SE FFL: unreadable => Not Assessed, never Pass'
+
+# --- Verdict: DC operating systems. One bad DC anywhere in the forest is a blocker.
+$dcMixed = @(
+    [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false },
+    [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Windows Server 2012 Standard';   IsReadOnly = $false }
+)
+$rOs = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcMixed -SeConfig $seCfg
+$osRow = Get-SeRow $rOs 'Domain controller operating systems'
+Assert-Equal 'Fail' ([string]$osRow.Status) 'SE DC OS: one unsupported DC => Fail for the forest'
+Assert-True ($osRow.Detail -match 'dc2\.contoso\.com') 'SE DC OS: the failure names the offending DC'
+Assert-True ($osRow.Detail -notmatch 'dc1\.contoso\.com') 'SE DC OS: a compliant DC is not named as a problem'
+
+# An unreadable OS is an absent measurement, NOT an unsupported one - they are different claims.
+$dcUnknown = @(
+    [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $false },
+    [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Not Assessed';        IsReadOnly = $false }
+)
+$rUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcUnknown -SeConfig $seCfg
+Assert-Equal 'Pass' ([string](Get-SeRow $rUnk 'Domain controller operating systems').Status) 'SE DC OS: a readable DC still passes on its own merits'
+$unkRow = Get-SeRow $rUnk 'Domain controller OS - not readable'
+Assert-True ($null -ne $unkRow) 'SE DC OS: an unreadable OS gets its own row, so a partial pass cannot hide it'
+# Guarded: if the row is missing the assertion above has already failed, and dereferencing
+# $null here would abort the whole harness instead of reporting a clean FAIL.
+if ($null -ne $unkRow) {
+    Assert-Equal 'Not Assessed' ([string]$unkRow.Status) 'SE DC OS: unreadable => Not Assessed, not Fail'
+    Assert-True ($unkRow.Detail -match 'unverified, not compatible') 'SE DC OS: unreadable row refuses to imply compatibility'
+}
+
+$rAllUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+    -DomainControllers @([pscustomobject]@{ HostName = 'dc1'; OperatingSystem = 'Not Assessed'; IsReadOnly = $false }) -SeConfig $seCfg
+Assert-Equal 'Not Assessed' ([string](Get-SeRow $rAllUnk 'Domain controller operating systems').Status) 'SE DC OS: nothing readable => Not Assessed, never Pass'
+
+$rNoDc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers @() -SeConfig $seCfg
+Assert-Equal 'Not Assessed' ([string](Get-SeRow $rNoDc 'Domain controller operating systems').Status) 'SE DC OS: no DCs enumerated => Not Assessed'
+
+# --- RODC caveat
+$dcRodc = @(
+    [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $false },
+    [pscustomobject]@{ HostName = 'rodc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $true }
+)
+$rRodc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcRodc -SeConfig $seCfg
+$rodcRow = Get-SeRow $rRodc 'Read-only domain controllers'
+Assert-True ($null -ne $rodcRow) 'SE RODC: a read-only DC is reported'
+if ($null -ne $rodcRow) {
+    Assert-Equal 'Warning' ([string]$rodcRow.Status) 'SE RODC: reported as a Warning, not a false blocker'
+    Assert-True ($rodcRow.Detail -match 'rodc1\.contoso\.com') 'SE RODC: names the read-only DC'
+}
+# Non-vacuity for the "no row" assertions below: prove the lookup can actually return nothing,
+# so an absent row is evidence rather than an artefact of how it is queried.
+Assert-True ($null -eq (Get-SeRow $rRodc 'No Such Item Exists')) 'SE RODC: non-vacuity - the row lookup returns null for an absent item'
+$rNoRodc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-True ($null -eq (Get-SeRow $rNoRodc 'Read-only domain controllers')) 'SE RODC: no row when there are no read-only DCs'
+
+# --- Scope statement: the section must not be mistaken for full SE readiness.
+$scopeRow = Get-SeRow $rFfl 'Scope of this check'
+Assert-True ($null -ne $scopeRow) 'SE scope: the section states its own limits'
+if ($null -ne $scopeRow) {
+    Assert-True ($scopeRow.Detail -match 'does NOT cover') 'SE scope: names what it does not cover'
+}
+
+# --- Config override merge
+$merged = Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override @{ SupportedForestModes = @('Windows2025Forest') } -OverrideSource 'C:\cfg\se.json'
+Assert-Equal 1 (@($merged.SupportedForestModes).Count) 'SE config: override replaces the forest mode list'
+Assert-Equal 5 (@($merged.SupportedDomainControllerOs).Count) 'SE config: keys absent from the override keep their built-in value'
+Assert-Equal 'C:\cfg\se.json' ([string]$merged.SourceUrl) 'SE config: provenance rewritten so findings do not cite Learn for overridden values'
+$unmerged = Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override $null
+Assert-Equal 2 (@($unmerged.SupportedForestModes).Count) 'SE config: a null override changes nothing'
+
+# An override must not be able to empty a gate.
+$emptied = $false
+try { Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override @{ SupportedForestModes = @() } | Out-Null }
+catch { $emptied = $true }
+Assert-True $emptied 'SE config: an empty forest-mode list is rejected, not honoured'
+$emptiedOs = $false
+try { Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override @{ SupportedDomainControllerOs = @() } | Out-Null }
+catch { $emptiedOs = $true }
+Assert-True $emptiedOs 'SE config: an empty OS list is rejected, not honoured'
+
+# The override must actually change the verdict, or it is decoration.
+$strict = Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override @{ SupportedForestModes = @('Windows2016Forest') }
+$rStrict = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $strict
+Assert-Equal 'Fail' ([string](Get-SeRow $rStrict 'Forest functional level').Status) 'SE config: a narrowed override really does change the verdict'
+
+# Remediation must reach the SE findings and must be SE-specific, not generic replication advice.
+$fflRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Forest functional level' `
+    -Detail 'Windows2008R2Forest is NOT supported for Exchange Server SE.'
+Assert-True ($fflRec -match 'Set-ADForestMode') 'SE remediation: forest level fix names the cmdlet'
+Assert-True ($fflRec -match 'one-way|cannot be reverted') 'SE remediation: warns the change is irreversible'
+$osRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Domain controller operating systems' `
+    -Detail '1 of 2 DC(s) run an OS not supported for Exchange Server SE: dc2 (Windows Server 2012 Standard).'
+Assert-True ($osRec -match 'Every domain controller in the forest') 'SE remediation: OS fix states the forest-wide scope'
+Assert-True ($osRec -notmatch 'nltest /dsregdns') 'SE remediation: not hijacked by the DNS guidance'
+$rodcRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Read-only domain controllers' `
+    -Detail '1 read-only DC(s): rodc1.contoso.com.'
+Assert-True ($rodcRec -match 'writeable global catalog') 'SE remediation: RODC advice names the real constraint'
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }

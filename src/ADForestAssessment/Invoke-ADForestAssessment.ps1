@@ -166,7 +166,7 @@ param(
         'Topology', 'Trusts', 'DcDiagnostics', 'Dns', 'Sysvol', 'Gpo', 'PasswordPolicy',
         'PrivilegedAccounts', 'SecurityPosture', 'StaleObjects', 'Identity',
         'Pki', 'Acl', 'Kerberos', 'PrivilegedHygiene', 'DcHardening', 'Backup', 'TimeSync',
-        'DnsDepth', 'Redundancy', 'ExchangeSchema',
+        'DnsDepth', 'Redundancy', 'ExchangeSchema', 'ExchangeSeReadiness',
         'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
         'DsEvents')]
     [string[]]$Sections = @('All'),
@@ -178,6 +178,15 @@ param(
 
     [string]$Server,
     [pscredential]$Credential,
+
+    # Replaces the built-in Exchange SE prerequisite table (supported forest functional levels
+    # and DC operating systems) from a JSON file, so a revision to Microsoft's supportability
+    # matrix is a config edit rather than a code change. Keys omitted from the file keep their
+    # built-in value; an unreadable or malformed file is a terminating error rather than a
+    # silent fall back to defaults, because a run that quietly judged against the wrong table
+    # would be worse than one that stopped.
+    [ValidateNotNullOrEmpty()]
+    [string]$ExchangeSeConfigPath,
 
     [ValidateRange(1, 3650)][int]$StaleDays = 90,
     [ValidateRange(1, 3650)][int]$KrbtgtMaxAgeDays = 180,
@@ -195,7 +204,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.6.0'
+    Version                 = '1.7.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -250,6 +259,33 @@ $script:Config = @{
         @{ Port = 9389; Name = 'ADWS';                Critical = $false }
     )
     DsEventLookbackDays     = 14
+    # --- Exchange Server SE: the AD prerequisites, as a versioned table -------------------
+    # Volatile vendor facts, so they live here with their source and read date and can be
+    # replaced from a file via -ExchangeSeConfigPath when Microsoft revises the matrix. A new
+    # supported OS or functional level must be a config edit, never a code edit.
+    #
+    # Source: https://learn.microsoft.com/exchange/plan-and-deploy/supportability-matrix#supported-active-directory-environments
+    # Read:   2026-09-21
+    ExchangeSe              = @{
+        Release                     = 'Exchange Server SE'
+        SourceUrl                   = 'https://learn.microsoft.com/exchange/plan-and-deploy/supportability-matrix#supported-active-directory-environments'
+        ReadDate                    = '2026-09-21'
+        # Get-ADForest().ForestMode enum names. Windows Server 2016 is the highest forest
+        # functional level Microsoft has ever shipped - there is no 2019/2022/2025 value to
+        # list, which is why this table stops there rather than being out of date.
+        SupportedForestModes        = @('Windows2016Forest', 'Windows2012R2Forest')
+        # Matched against Get-ADComputer's OperatingSystem string. Note 2012 R2 is supported
+        # and plain 2012 is NOT, so the R2 pattern must not be loosened to bare '2012'.
+        SupportedDomainControllerOs = @(
+            @{ Label = 'Windows Server 2025'; Pattern = '(?i)windows server\s*2025' }
+            @{ Label = 'Windows Server 2022'; Pattern = '(?i)windows server\s*2022' }
+            @{ Label = 'Windows Server 2019'; Pattern = '(?i)windows server\s*2019' }
+            @{ Label = 'Windows Server 2016'; Pattern = '(?i)windows server\s*2016' }
+            @{ Label = 'Windows Server 2012 R2'; Pattern = '(?i)windows server\s*2012\s*r2' }
+        )
+        # "Read-only GCs and read-only DCs aren't supported" - same source.
+        ReadOnlySupported           = $false
+    }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
     DsEventsOfInterest      = @(
         @{ Id = 1988; Severity = 'Fail';    Meaning = 'Lingering object detected - replication BLOCKED by strict consistency.' }
@@ -1029,11 +1065,19 @@ function Get-AdfaReplicationHealth {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [Parameter(Mandatory)][string[]]$DomainControllers,
+        # AllowEmptyCollection: when DC enumeration fails the caller passes an empty list, and a
+        # Mandatory [string[]] refuses to bind it - which aborted the whole run with a parameter
+        # binding error instead of reporting the section as unassessed. The recovery sections
+        # added in v1.4.0 already allowed an empty list; these older ones did not.
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers,
         [hashtable]$RepParams = @{},
         [int]$RpcPortTimeoutMs = 1200,
         [int]$StaleMinutes = 180
     )
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'Replication' -Item 'Replication health' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so replication health could not be assessed. This is not a clean result.')
+    }
     $rows = foreach ($dc in $DomainControllers) {
         $rpcOk = Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
         $adwsOk = Test-TcpPort -ComputerName $dc -Port 9389 -TimeoutMs $RpcPortTimeoutMs
@@ -1133,7 +1177,9 @@ function Get-AdfaSiteHealthFinding {
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][pscustomobject]$Topology, [Parameter(Mandatory)][pscustomobject[]]$DomainControllers)
+    param([Parameter(Mandatory)][pscustomobject]$Topology,
+        # See the note on Get-AdfaReplicationHealth: an empty inventory must degrade, not abort.
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DomainControllers)
     $findings = @()
     $dcSites = @($DomainControllers | ForEach-Object { $_.Site } | Sort-Object -Unique)
 
@@ -1166,12 +1212,20 @@ function Get-AdfaDcDiagnostic {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [Parameter(Mandatory)][string[]]$DomainControllers,
+        # AllowEmptyCollection: when DC enumeration fails the caller passes an empty list, and a
+        # Mandatory [string[]] refuses to bind it - which aborted the whole run with a parameter
+        # binding error instead of reporting the section as unassessed. The recovery sections
+        # added in v1.4.0 already allowed an empty list; these older ones did not.
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers,
         [int]$TimeoutSeconds = 90,
         [int]$Retries = 2,
         [int]$RetryDelaySeconds = 2,
         [int]$RpcPortTimeoutMs = 1200
     )
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'DcDiagnostics' -Item 'dcdiag grid' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so no dcdiag test could be run. This is not a clean result.')
+    }
     # Full post-restore grid. The nine beyond the original six matter specifically after
     # a restore: MachineAccount (DC computer object/SPNs), ObjectsReplicated (DSA objects
     # converged), RidManager (RID pool reachable), KccEvent (topology errors), Intersite,
@@ -1246,7 +1300,11 @@ function Get-AdfaDnsHealth {
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'DNS' -Item 'DNS health' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so no DNS server could be queried. This is not a clean result.')
+    }
     if (-not (Test-ModuleAvailable -Name 'DnsServer')) {
         return @(New-Finding -Area 'DNS' -Item 'DnsServer module' -Status $script:Status.NotAssessed -Detail 'RSAT DnsServer module not installed on this host.')
     }
@@ -1271,7 +1329,11 @@ function Get-AdfaDnsHealth {
                 $fwd = Get-DnsServerForwarder -ComputerName $dc -ErrorAction Stop
                 $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.Info -Detail (($fwd.IPAddress | ForEach-Object { $_.ToString() }) -join ', ')
             }
-            catch { }
+            catch {
+                # Previously silent: the forwarders row simply vanished, so a reader could not
+                # tell "no forwarders configured" from "the query failed".
+                $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.NotAssessed -Detail ("Forwarder list could not be read: {0}" -f $_.Exception.Message)
+            }
             $insecureXfer = @($zones | Where-Object { $_.PSObject.Properties.Name -contains 'SecureSecondaries' -and $_.SecureSecondaries -eq 'TransferAnyServer' })
             if ($insecureXfer.Count -gt 0) {
                 $rows += New-Finding -Area 'DNS' -Item ("{0}: zone transfer" -f $dc) -Status $script:Status.Warning -Detail ("Zones allowing transfer to ANY server: {0}" -f (($insecureXfer.ZoneName | Select-Object -First 8) -join ', '))
@@ -1393,7 +1455,14 @@ function Get-AdfaPasswordPolicy {
             }
         }
     }
-    catch { }
+    catch {
+        # Previously silent. With no row at all, a report showing only the default policy could
+        # not be distinguished from one where the FGPP query failed - and an absent key and a
+        # measured absence are different claims.
+        $rows += New-Finding -Scope $DomainName -Area 'PasswordPolicy' -Item 'Fine-grained password policies' `
+            -Status $script:Status.NotAssessed `
+            -Detail ("Could not be enumerated: {0}. This is NOT the same as 'no fine-grained policies exist'." -f $_.Exception.Message)
+    }
     return @($rows)
 }
 
@@ -1883,7 +1952,11 @@ function Get-AdfaDcHardening {
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'DCHardening' -Item 'DC hardening' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so no hardening setting could be read. This is not a clean result.')
+    }
     $rows = @()
     foreach ($dc in $DomainControllers) {
         if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
@@ -2117,6 +2190,7 @@ function Get-AdfaLingeringObjectScan {
         return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail $_.Exception.Message)
     }
     $refGuid = ''
+    $refGuidError = ''
     try {
         $inv = @(Get-AdfaDsaInventory -AdParams $AdParams)
         $refNorm = $refDc.ToLowerInvariant().TrimEnd('.')
@@ -2124,9 +2198,16 @@ function Get-AdfaLingeringObjectScan {
             if ($d.DnsHostName -and $d.DnsHostName.ToLowerInvariant().TrimEnd('.') -eq $refNorm) { $refGuid = $d.DsaGuid; break }
         }
     }
-    catch { }
+    catch {
+        # The verdict below was already fail-closed, but the cause was discarded - so
+        # "the DSA inventory threw" and "the reference DC simply was not in it" read alike.
+        $refGuidError = $_.Exception.Message
+    }
     if (-not $refGuid) {
-        return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail ("Could not resolve the DSA GUID of the reference DC ({0})." -f $refDc))
+        $why = ''
+        if ($refGuidError) { $why = (" DSA inventory failed: {0}" -f $refGuidError) }
+        else { $why = ' The DSA inventory was readable but contained no entry matching that host name.' }
+        return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail ("Could not resolve the DSA GUID of the reference DC ({0}).{1}" -f $refDc, $why))
     }
 
     foreach ($dc in $dcs) {
@@ -2260,6 +2341,279 @@ function Get-AdfaRedundancy {
     return @($rows)
 }
 
+# ===========================================================================
+# region Exchange Server SE readiness (AD prerequisites only)
+# ===========================================================================
+
+function Test-AdfaOsSupported {
+    <#
+    .SYNOPSIS
+        Pure match of a DC's OperatingSystem string against the supported-OS table.
+    .DESCRIPTION
+        Returns the matching table Label, or '' when nothing matches. Kept separate so the
+        patterns are testable in isolation - the 2012 R2 / 2012 distinction in particular,
+        where 2012 R2 is supported and plain 2012 is not, and a loosened pattern would
+        silently pass an unsupported DC.
+    .OUTPUTS
+        [string] The supported-OS label, or '' when unsupported.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$OperatingSystem,
+        [AllowNull()][AllowEmptyCollection()]$SupportedOs = @()
+    )
+    if ([string]::IsNullOrWhiteSpace($OperatingSystem)) { return '' }
+    foreach ($entry in @($SupportedOs)) {
+        if ($null -eq $entry) { continue }
+        $pattern = ''
+        if ($entry -is [hashtable]) { $pattern = [string]$entry['Pattern'] }
+        else {
+            $prop = $entry.PSObject.Properties['Pattern']   # $null when absent - StrictMode-safe
+            if ($null -ne $prop) { $pattern = [string]$prop.Value }
+        }
+        if ([string]::IsNullOrWhiteSpace($pattern)) { continue }
+        if ($OperatingSystem -match $pattern) {
+            if ($entry -is [hashtable]) { return [string]$entry['Label'] }
+            return [string]$entry.PSObject.Properties['Label'].Value
+        }
+    }
+    return ''
+}
+
+function Merge-AdfaExchangeSeConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override table over the built-in Exchange SE prerequisite table.
+    .DESCRIPTION
+        Only the keys present in the override are replaced, so a file that names one key does
+        not blank the rest. Separated from the file read so the merge rules are testable
+        without a filesystem.
+
+        An override MUST NOT be able to empty a gate: a SupportedForestModes or
+        SupportedDomainControllerOs of zero entries would make every value unsupported (or,
+        worse in a future refactor, everything vacuously fine), so an empty collection is
+        rejected rather than honoured. Provenance is rewritten to name the override, because a
+        finding that cites Microsoft Learn must not do so when the values came from elsewhere.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+
+    $names = @()
+    if ($Override -is [hashtable]) { $names = @($Override.Keys) }
+    else { $names = @($Override.PSObject.Properties.Name) }
+
+    foreach ($k in $names) {
+        $value = $null
+        if ($Override -is [hashtable]) { $value = $Override[$k] }
+        else { $value = $Override.PSObject.Properties[$k].Value }
+        if ($null -eq $value) { continue }
+        if (($k -eq 'SupportedForestModes' -or $k -eq 'SupportedDomainControllerOs') -and @($value).Count -eq 0) {
+            throw ("Exchange SE config override sets '{0}' to an empty list. An empty gate cannot be honoured - remove the key to keep the built-in value." -f $k)
+        }
+        $merged[$k] = $value
+    }
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) {
+        $merged['SourceUrl'] = $OverrideSource
+        $merged['ReadDate'] = (Get-Date).ToString('yyyy-MM-dd')
+    }
+    return $merged
+}
+
+function Import-AdfaExchangeSeConfig {
+    <#
+    .SYNOPSIS
+        Loads an Exchange SE prerequisite override from JSON and merges it over the built-in table.
+    .DESCRIPTION
+        Thin wrapper over Merge-AdfaExchangeSeConfig. A missing, unreadable or malformed file
+        throws: silently judging a forest against the wrong table is worse than stopping.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [Parameter(Mandatory)][string]$Path
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw ("Exchange SE config not found: {0}" -f $Path)
+    }
+    $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw ("Exchange SE config is empty: {0}" -f $Path)
+    }
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw ("Exchange SE config is not valid JSON ({0}): {1}" -f $Path, $_.Exception.Message) }
+    return (Merge-AdfaExchangeSeConfig -BaseConfig $BaseConfig -Override $obj -OverrideSource $Path)
+}
+
+function Get-AdfaExchangeSeCompatibility {
+    <#
+    .SYNOPSIS
+        Verdict on whether the forest's AD level and DC operating systems permit Exchange SE.
+    .DESCRIPTION
+        Deliberately narrow. This answers only the two questions the directory can answer on
+        its own - forest functional level, and the operating system of every DC in the forest -
+        plus the read-only caveat from the same table. It is NOT an Exchange SE readiness
+        assessment: schema and organisation object versions, the per-site writeable-GC
+        requirement, Exchange server inventory and coexistence builds are out of scope here
+        and belong to ExchangeAssessment, whose remit that is.
+
+        Pure: every value is passed in, nothing is queried, so the whole verdict is testable
+        without a directory.
+
+        Fail-closed. A DC whose OperatingSystem could not be read is reported Not Assessed with
+        that cause named - never assumed supported, and never counted as unsupported either,
+        because an absent value and a measured unsupported value are different claims.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$ForestMode,
+        [AllowNull()][AllowEmptyCollection()]$DomainSummaries = @(),
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [Parameter(Mandatory)][hashtable]$SeConfig
+    )
+    $rows = @()
+    $release = [string]$SeConfig['Release']
+    $provenance = ("Per {0} (read {1})." -f [string]$SeConfig['SourceUrl'], [string]$SeConfig['ReadDate'])
+    $supportedModes = @($SeConfig['SupportedForestModes'])
+    $supportedOs = @($SeConfig['SupportedDomainControllerOs'])
+    $osLabels = @($supportedOs | ForEach-Object {
+            if ($_ -is [hashtable]) { [string]$_['Label'] } else { [string]$_.PSObject.Properties['Label'].Value }
+        })
+
+    # ---- Forest functional level ----
+    if ([string]::IsNullOrWhiteSpace($ForestMode)) {
+        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Forest functional level' -Status $script:Status.NotAssessed `
+            -Detail ("Forest functional level could not be read, so {0} compatibility cannot be judged. {1}" -f $release, $provenance)
+    }
+    elseif ($supportedModes -contains $ForestMode) {
+        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Forest functional level' -Status $script:Status.Pass `
+            -Detail ("{0} - supported for {1}. {2}" -f $ForestMode, $release, $provenance)
+    }
+    else {
+        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Forest functional level' -Status $script:Status.Fail `
+            -Detail ("{0} is NOT supported for {1}. Supported: {2}. Setup will not proceed until the forest functional level is raised. {3}" -f `
+                $ForestMode, $release, ($supportedModes -join ', '), $provenance)
+    }
+
+    # ---- Domain functional levels: informational ----
+    # The supportability matrix states a FOREST functional level requirement and no domain one,
+    # so these are reported rather than judged. Inventing a domain gate would be a fabricated
+    # vendor requirement.
+    foreach ($d in @($DomainSummaries)) {
+        if ($null -eq $d) { continue }
+        $dmProp = $d.PSObject.Properties['DomainMode']
+        $dnProp = $d.PSObject.Properties['DomainName']
+        $dm = ''
+        if ($null -ne $dmProp -and $null -ne $dmProp.Value) { $dm = [string]$dmProp.Value }
+        $dn = ''
+        if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $dn = [string]$dnProp.Value }
+        if ([string]::IsNullOrWhiteSpace($dm)) { continue }
+        $rows += New-Finding -Scope $dn -Area 'ExchangeSeReadiness' -Item ("Domain functional level - {0}" -f $dn) `
+            -Status $script:Status.Info `
+            -Detail ("{0}. Recorded for completeness: the supportability matrix states a forest functional level requirement and does not state a domain one. {1}" -f $dm, $provenance)
+    }
+
+    # ---- Domain controller operating systems ----
+    # "All domain controllers in the forest must be running one of the supported versions",
+    # so a single unsupported DC anywhere in the forest is a blocker, not a warning.
+    $dcs = @($DomainControllers | Where-Object { $null -ne $_ })
+    if ($dcs.Count -eq 0) {
+        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.NotAssessed `
+            -Detail ("No domain controllers were enumerated, so no OS could be checked against the {0} supported list ({1})." -f $release, ($osLabels -join ', '))
+    }
+    else {
+        $unsupported = @()
+        $unknown = @()
+        $supported = @()
+        foreach ($dc in $dcs) {
+            $hostProp = $dc.PSObject.Properties['HostName']
+            $osProp = $dc.PSObject.Properties['OperatingSystem']
+            $dcName = '(unnamed)'
+            if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $dcName = [string]$hostProp.Value }
+            $os = ''
+            if ($null -ne $osProp -and $null -ne $osProp.Value) { $os = [string]$osProp.Value }
+
+            # The inventory writes the literal 'Not Assessed' into OperatingSystem when the
+            # Get-ADComputer enrichment failed. That is an absent measurement, not a bad OS.
+            if ([string]::IsNullOrWhiteSpace($os) -or $os -eq $script:Status.NotAssessed) {
+                $unknown += $dcName
+                continue
+            }
+            $label = Test-AdfaOsSupported -OperatingSystem $os -SupportedOs $supportedOs
+            if ([string]::IsNullOrWhiteSpace($label)) { $unsupported += ("{0} ({1})" -f $dcName, $os) }
+            else { $supported += $dcName }
+        }
+
+        if ($unsupported.Count -gt 0) {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.Fail `
+                -Detail ("{0} of {1} DC(s) run an OS not supported for {2}: {3}. Every DC in the forest must run a supported version. Supported: {4}. {5}" -f `
+                    $unsupported.Count, $dcs.Count, $release, ($unsupported -join '; '), ($osLabels -join ', '), $provenance)
+        }
+        elseif ($unknown.Count -gt 0 -and $supported.Count -eq 0) {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.NotAssessed `
+                -Detail ("No DC operating system could be read ({0} DC(s): {1}), so {2} compatibility is unverified. Supported: {3}." -f `
+                    $unknown.Count, ($unknown -join ', '), $release, ($osLabels -join ', '))
+        }
+        else {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.Pass `
+                -Detail ("All {0} DC(s) whose OS could be read run a version supported for {1}. Supported: {2}. {3}" -f `
+                    $supported.Count, $release, ($osLabels -join ', '), $provenance)
+        }
+
+        # An unreadable OS is reported on its own, so a partial pass above can never hide it.
+        if ($unknown.Count -gt 0) {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller OS - not readable' -Status $script:Status.NotAssessed `
+                -Detail ("{0} of {1} DC(s) did not return an operating system: {2}. Re-run with credentials that can read the DC computer objects; until then these DCs are unverified, not compatible." -f `
+                    $unknown.Count, $dcs.Count, ($unknown -join ', '))
+        }
+
+        # Read-only DCs. The same table says read-only DCs and GCs are not supported; Exchange
+        # will not use one. Reported as a Warning rather than a blocker because an RODC in a site
+        # Exchange is never installed into does not stop Setup - what stops Setup is a target
+        # site with no writeable GC, which is ExchangeAssessment's check and not claimed here.
+        if (-not [bool]$SeConfig['ReadOnlySupported']) {
+            $rodc = @()
+            foreach ($dc in $dcs) {
+                $roProp = $dc.PSObject.Properties['IsReadOnly']
+                $hostProp = $dc.PSObject.Properties['HostName']
+                if ($null -eq $roProp -or $null -eq $roProp.Value) { continue }
+                if ([string]$roProp.Value -eq $script:Status.NotAssessed) { continue }
+                if ([bool]$roProp.Value) {
+                    $n = '(unnamed)'
+                    if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $n = [string]$hostProp.Value }
+                    $rodc += $n
+                }
+            }
+            if ($rodc.Count -gt 0) {
+                $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Read-only domain controllers' -Status $script:Status.Warning `
+                    -Detail ("{0} read-only DC(s): {1}. Read-only DCs and read-only global catalogs are not supported for {2} - Exchange will not use them. Confirm every site an Exchange server goes into also holds a writeable global catalog. {3}" -f `
+                        $rodc.Count, ($rodc -join ', '), $release, $provenance)
+            }
+        }
+    }
+
+    # Scope statement, so nobody reads this section as full SE readiness.
+    $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Scope of this check' -Status $script:Status.Info `
+        -Detail ("Covers the AD prerequisites this tool can answer from the directory: forest functional level and DC operating systems. It does NOT cover schema or organisation object versions, the per-site writeable global catalog requirement, Exchange server inventory or coexistence builds.")
+    return @($rows)
+}
 # ===========================================================================
 # region Exchange schema markers
 # ===========================================================================
@@ -2620,7 +2974,12 @@ function Get-AdfaDsaInventory {
             $srvObj = Get-ADObject -Identity $serverDn -Properties dNSHostName @AdParams
             if ($srvObj.PSObject.Properties['dNSHostName'] -and $srvObj.dNSHostName) { $dcHost = [string]$srvObj.dNSHostName }
         }
-        catch { }
+        catch {
+            # Inventory rows carry no Status column, so there is nowhere here to put a finding.
+            # It is logged instead: a blank DnsHostName silently fails to correlate with the DSA
+            # CNAME and GC checks downstream, and that is worth a line in the run log.
+            Write-Log -Level WARN -Section 'DsaInventory' -Message ("Server object {0} could not be read, so DSA {1} has no host name and will not correlate with the DNS checks: {2}" -f $serverDn, $dsaGuid, $_.Exception.Message)
+        }
         $out += [pscustomobject]@{ DsaGuid = $dsaGuid; ServerDn = $serverDn; DnsHostName = $dcHost }
     }
     # Plain return on purpose: callers wrap with @(...); `return @()` would hand them
@@ -2873,6 +3232,153 @@ function Get-AdfaDcSecureChannel {
     return @($rows)
 }
 
+
+function Get-AdfaEventLogCoverage {
+    <#
+    .SYNOPSIS
+        Pure classification of whether an event log actually covers a lookback window.
+    .DESCRIPTION
+        Absence of an event is only evidence if the log goes back far enough to have recorded
+        one. Before this, a Directory Service log with nothing in it reported Pass - so a DC
+        whose log had been cleared during a ransomware recovery, or had simply wrapped, read
+        exactly like a healthy one on the checks that matter most (USN rollback 2095,
+        unsupported restore 2103, lingering objects 1988).
+
+        The signal is the oldest record the log still retains, compared with the start of the
+        window being asked about. That one measurement covers every way the window can be
+        incomplete - cleared, wrapped, or a DC rebuilt more recently than the window - and
+        needs no vendor-specific "log was cleared" event ID. A specific marker event was
+        considered and deliberately not used: the Windows Event Log docs on Microsoft Learn do
+        not publish one for an arbitrary log (searched 2026-09-21), and it would add nothing,
+        because clearing a log necessarily moves its oldest retained record forward.
+
+        Verdicts:
+          Covered   - the log reaches back to or past the window start; absence is meaningful.
+          Truncated - the log starts inside the window; absence is NOT meaningful before
+                      OldestRecord, and any count found is a floor rather than a total.
+          Empty     - the log holds no records at all; nothing can be concluded.
+          Unknown   - the log could not be inspected (unreachable, access denied, absent).
+    .OUTPUTS
+        [string] Covered | Truncated | Empty | Unknown
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [bool]$Inspected = $true,
+        [AllowNull()][Nullable[int]]$RecordCount,
+        [AllowNull()][Nullable[datetime]]$OldestRecord,
+        [AllowNull()][Nullable[datetime]]$WindowStart
+    )
+    if (-not $Inspected) { return 'Unknown' }
+    if ($null -ne $RecordCount -and $RecordCount -le 0) { return 'Empty' }
+    # Either bound missing means the comparison cannot be made - say so rather than assume.
+    if ($null -eq $OldestRecord -or $null -eq $WindowStart) { return 'Unknown' }
+    if ($OldestRecord -le $WindowStart) { return 'Covered' }
+    return 'Truncated'
+}
+
+function Get-AdfaDsEventCoverageDetail {
+    <#
+    .SYNOPSIS
+        The sentence that explains a non-Covered verdict, naming what limits the claim.
+    .DESCRIPTION
+        Kept beside the classifier and pure, so the wording a report carries is testable
+        rather than buried in string concatenation inside a collector.
+    .OUTPUTS
+        [string] Empty for 'Covered' - there is nothing to caveat.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][ValidateSet('Covered', 'Truncated', 'Empty', 'Unknown')][string]$Coverage,
+        [AllowNull()][Nullable[datetime]]$OldestRecord,
+        [int]$LookbackDays = 14,
+        [string]$Reason = ''
+    )
+    if ($Coverage -eq 'Covered') { return '' }
+    if ($Coverage -eq 'Empty') {
+        return ("The Directory Service log holds no records, so the absence of an event proves nothing. " +
+            "A log cleared during recovery looks identical to a healthy one here - read the log on the DC itself.")
+    }
+    if ($Coverage -eq 'Truncated') {
+        $from = ''
+        if ($null -ne $OldestRecord) { $from = $OldestRecord.ToString('yyyy-MM-dd HH:mm') }
+        # The concatenation is parenthesised before -f on purpose: -f binds tighter than +, so
+        # "a {0}" + "b" -f $x formats only the SECOND string and leaves {0} literal.
+        return (("The Directory Service log only goes back to {0}, which is inside the {1}-day window, " +
+                "so nothing can be concluded about the period before that. The log was cleared or has wrapped.") -f $from, $LookbackDays)
+    }
+    $suffix = ''
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) { $suffix = (" Cause: {0}" -f $Reason) }
+    return ("The Directory Service log could not be inspected, so its coverage of the {0}-day window is unknown.{1}" -f $LookbackDays, $suffix)
+}
+
+function Get-AdfaDsEventLogCoverage {
+    <#
+    .SYNOPSIS
+        Measures how far back a DC's Directory Service log actually reaches.
+    .DESCRIPTION
+        Thin collector over Get-AdfaEventLogCoverage. Get-WinEvent -ListLog gives the record
+        count but not the oldest record's timestamp, so the oldest record is read directly
+        with -Oldest -MaxEvents 1.
+    .OUTPUTS
+        [pscustomobject] Coverage, OldestRecord, RecordCount, Reason
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [pscredential]$Credential,
+        [Parameter(Mandatory)][datetime]$WindowStart
+    )
+    $recordCount = $null
+    $oldest = $null
+    $reason = ''
+    $inspected = $false
+    try {
+        $listArgs = @{ ListLog = 'Directory Service'; ComputerName = $ComputerName; ErrorAction = 'Stop' }
+        if ($Credential) { $listArgs.Credential = $Credential }
+        $log = Get-WinEvent @listArgs
+        if ($null -ne $log) {
+            $inspected = $true
+            $prop = $log.PSObject.Properties['RecordCount']   # $null when absent - StrictMode-safe
+            if ($null -ne $prop -and $null -ne $prop.Value) { $recordCount = [int]$prop.Value }
+        }
+        else { $reason = 'Get-WinEvent -ListLog returned nothing for the Directory Service log.' }
+    }
+    catch {
+        $reason = $_.Exception.Message
+    }
+
+    if ($inspected -and ($null -eq $recordCount -or $recordCount -gt 0)) {
+        try {
+            $oldArgs = @{
+                ComputerName = $ComputerName; LogName = 'Directory Service'
+                Oldest = $true; MaxEvents = 1; ErrorAction = 'Stop'
+            }
+            if ($Credential) { $oldArgs.Credential = $Credential }
+            $first = @(Get-WinEvent @oldArgs)
+            if (@($first).Count -gt 0) { $oldest = [datetime]$first[0].TimeCreated }
+            else { $recordCount = 0 }
+        }
+        catch {
+            # The log listed but its oldest record could not be read: coverage is unknown, not
+            # covered. Recorded rather than swallowed, so the report can name the cause.
+            $reason = ("oldest record unreadable: {0}" -f $_.Exception.Message)
+            $inspected = $false
+        }
+    }
+
+    $coverage = Get-AdfaEventLogCoverage -Inspected $inspected -RecordCount $recordCount `
+        -OldestRecord $oldest -WindowStart $WindowStart
+    return [pscustomobject]@{
+        Coverage     = $coverage
+        OldestRecord = $oldest
+        RecordCount  = $recordCount
+        Reason       = $reason
+    }
+}
+
 function Get-AdfaDsEventLog {
     <#
     .SYNOPSIS
@@ -2880,6 +3386,13 @@ function Get-AdfaDsEventLog {
         interface) for the events that block or mask recovery: lingering objects,
         tombstone-lifetime exceeded, USN rollback, unsupported restore, source-DC GUID
         DNS failures and KCC topology failures. Unreachable DCs degrade to Not Assessed.
+    .DESCRIPTION
+        Every DC's log coverage is measured before any conclusion is drawn from it. Finding no
+        events is only evidence if the log actually reaches back across the window: a log
+        cleared during a ransomware recovery, or one that has simply wrapped, is silent for the
+        same reason a healthy one is. So a clean scan over an incomplete window reports
+        Not Assessed naming where coverage begins, never Pass, and a scan that DOES find events
+        over an incomplete window reports the count as a floor rather than a total.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -2896,22 +3409,44 @@ function Get-AdfaDsEventLog {
     $meta = @{}
     foreach ($e in $script:Config.DsEventsOfInterest) { $meta[[int]$e.Id] = $e }
 
+    $windowStart = (Get-Date).AddDays(-$LookbackDays)
+
     foreach ($dc in $DomainControllers) {
         if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
             $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail 'RPC (135) not reachable - event log could not be read remotely. Check the Directory Service log on the DC itself.'
             continue
         }
+
+        # How far back does this log actually reach? Asked before the scan, because it decides
+        # whether "no events" means anything at all.
+        $cov = Get-AdfaDsEventLogCoverage -ComputerName $dc -Credential $Credential -WindowStart $windowStart
+        $covNote = Get-AdfaDsEventCoverageDetail -Coverage $cov.Coverage -OldestRecord $cov.OldestRecord `
+            -LookbackDays $LookbackDays -Reason $cov.Reason
+        $rows += New-Finding -Area 'DsEvents' -Item ("Log coverage on {0}" -f $dc) `
+            -Status $(if ($cov.Coverage -eq 'Covered') { $script:Status.Pass } else { $script:Status.NotAssessed }) `
+            -Detail $(if ($cov.Coverage -eq 'Covered') {
+                    ("Directory Service log covers the full {0}-day window (oldest record {1:yyyy-MM-dd HH:mm})." -f $LookbackDays, $cov.OldestRecord)
+                }
+                else { $covNote })
+
         try {
             $gwe = @{
                 ComputerName    = $dc
-                FilterHashtable = @{ LogName = 'Directory Service'; Id = $ids; StartTime = (Get-Date).AddDays(-$LookbackDays) }
+                FilterHashtable = @{ LogName = 'Directory Service'; Id = $ids; StartTime = $windowStart }
                 MaxEvents       = 500
                 ErrorAction     = 'Stop'
             }
             if ($Credential) { $gwe.Credential = $Credential }
             $events = @(Get-WinEvent @gwe)
             if (@($events).Count -eq 0) {
-                $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s)." -f $LookbackDays)
+                # The fail-closed branch: silence over an incomplete window is not a clean bill
+                # of health. Reporting Pass here is what let a wiped log look healthy.
+                if ($cov.Coverage -eq 'Covered') {
+                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s); log covers the whole window." -f $LookbackDays)
+                }
+                else {
+                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("No events of interest found, but this is NOT a pass. {0}" -f $covNote)
+                }
                 continue
             }
             foreach ($g in ($events | Group-Object Id)) {
@@ -2924,12 +3459,20 @@ function Get-AdfaDsEventLog {
                     if ([string]$m.Severity -eq 'Fail') { $sev = $script:Status.Fail }
                 }
                 $last = ($g.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1).TimeCreated
-                $rows += New-Finding -Area 'DsEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}" -f $g.Count, $LookbackDays, $last, $meaning)
+                # A count taken from a partial log is a lower bound, and saying so costs nothing.
+                $floor = ''
+                if ($cov.Coverage -ne 'Covered') { $floor = (" Count is a MINIMUM - {0}" -f $covNote) }
+                $rows += New-Finding -Area 'DsEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}{4}" -f $g.Count, $LookbackDays, $last, $meaning, $floor)
             }
         }
         catch {
             if ($_.Exception.Message -match 'No events were found') {
-                $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s)." -f $LookbackDays)
+                if ($cov.Coverage -eq 'Covered') {
+                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s); log covers the whole window." -f $LookbackDays)
+                }
+                else {
+                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("No events of interest found, but this is NOT a pass. {0}" -f $covNote)
+                }
             }
             else {
                 $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("Event log query failed: {0}" -f $_.Exception.Message)
@@ -2962,7 +3505,19 @@ $script:RecommendationMap = @(
        Text  = 'Confirm the network path and DNS name resolution (conditional forwarders / stub zones) to the partner domain in BOTH directions, then reset the trust secure channel: "netdom trust <local> /domain:<partner> /reset". Re-verify with "nltest /sc_verify:<partner>" from the local side and on a partner DC. After a ransomware incident, reset trust passwords as part of credential hygiene.' }
     @{ Section = '(?i)secure channel|machine password'; Match = '.'
        Text  = 'Reset the secure channel against a known-healthy DC. Member/workstation: "Reset-ComputerMachinePassword -Server <healthyDC>" or "nltest /sc_reset:<domain>". For a DC: stop the KDC service, run "netdom resetpwd /server:<healthyDC> /userd:<domain>\<admin> /passwordd:*", restart. Never disjoin/rejoin a domain controller.' }
+    # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
+    #     replication/time wording in a detail line cannot hijack a readiness finding.
+    @{ Section = '(?i)exchange se'; Match = '(?i)forest functional level'
+       Text  = 'Raise the forest functional level before Setup: confirm every DC is on a supported OS first, then "Set-ADForestMode -Identity <forest> -ForestMode Windows2016Forest" (raise each domain with Set-ADDomainMode first where needed). This is a one-way change and cannot be reverted without a forest recovery, so take a verified system-state backup of two DCs per domain and confirm replication is healthy beforehand.' }
+    @{ Section = '(?i)exchange se'; Match = '(?i)not supported for|not readable|unverified, not compatible'
+       Text  = 'Every domain controller in the forest must run a supported Windows Server version, not only the ones in the Exchange site. Upgrade or decommission the named DCs before Setup, transferring any FSMO roles they hold first. Where the OS could not be read, re-run with credentials able to read the DC computer objects - an unreadable value is not a pass.' }
+    @{ Section = '(?i)exchange se'; Match = '(?i)read-only domain controller'
+       Text  = 'Exchange does not use a read-only DC or a read-only global catalog. No action is needed for an RODC in a site where no Exchange server will be installed; for any site that WILL host one, confirm it also contains a writeable global catalog, or Setup fails in that site alone.' }
     # --- Unscoped entries: matched against "Section :: Item :: Detail" ---
+    # Ahead of the event-specific entries: a log that cannot cover the window is a different
+    # problem from an event found in it, and the fix is to recover the evidence, not the DC.
+    @{ Match = '(?i)log coverage|absence of an event proves nothing|cleared or has wrapped|NOT a pass'
+       Text  = 'Treat this DC as UNASSESSED for the window, not healthy - a cleared or wrapped Directory Service log is silent for the same reason a healthy one is. Recover the evidence before drawing any conclusion: check for an archived copy (%SystemRoot%\System32\winevt\Logs\*.evtx, any SIEM or log-forwarding target, or the backup the DC was restored from), and corroborate independently - "repadmin /showrepl <dc> /errorsonly" and "repadmin /showutdvec" reveal a replication break that the log would have reported. Then raise the log so the next run can conclude: "wevtutil sl \"Directory Service\" /ms:67108864" (64 MB) and confirm retention is Overwrite as needed. On a post-incident forest, also run the advisory lingering-object scan (-IncludeLingeringObjectScan), which does not depend on the event log at all.' }
     @{ Match = '(?i)dsa guid cname|orphaned ntds settings'
        Text  = 'If the DC is live: on that DC run "ipconfig /registerdns" and "nltest /dsregdns", then restart the Netlogon service, and confirm the _msdcs zone accepts secure dynamic updates. If the DC no longer exists: remove its metadata (ntdsutil "metadata cleanup", or delete the server object in AD Sites and Services) and delete the stale record. Replication resolves source DCs through this alias - fix it before chasing RPC 1722 errors.' }
     @{ Match = '(?i)stale dns entry'
@@ -3164,6 +3719,144 @@ code{background:#f3f4f6;padding:1px 5px;border-radius:3px;}
     return $Path
 }
 
+function New-AdfaReportSummary {
+    <#
+    .SYNOPSIS
+        Builds a self-reconciling roll-up: every finding lands in exactly one bucket.
+    .DESCRIPTION
+        The four counters Invoke-Main computes for the log line and the HTML badges match
+        Pass/Healthy, Warning/Degraded, Fail/Broken and Not Assessed. They do NOT match
+        'Info', which is a valid New-Finding status, so those rows are counted nowhere.
+        Measured on the three-domain fixture: 123 findings, 106 counted, 17 Info invisible.
+
+        Those four are carried through unchanged, so the JSON agrees with the HTML and the
+        log rather than quietly telling a third story. What is added is 'info', an
+        'unclassified' bucket for any status none of them match, and 'total'. A consumer can
+        assert that the buckets sum to the total; if a future status escapes every filter it
+        shows up in 'unclassified' instead of vanishing.
+    .OUTPUTS
+        [System.Collections.Specialized.OrderedDictionary]
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Summary,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Findings
+    )
+    $rows = @(Expand-AdfaRowList -Rows $Findings)
+    $statuses = @($rows | ForEach-Object {
+            $prop = $_.PSObject.Properties['Status']   # $null when absent - StrictMode-safe
+            if ($null -eq $prop) { '' } else { [string]$prop.Value }
+        })
+    $info = @($statuses | Where-Object { $_ -eq 'Info' }).Count
+    $classified = @($statuses | Where-Object {
+            $_ -match '^(Pass|Healthy|Warning|Degraded|Fail|Broken|Not Assessed|Info)$'
+        }).Count
+    return [ordered]@{
+        pass         = [int]$Summary.Pass
+        warning      = [int]$Summary.Warning
+        fail         = [int]$Summary.Fail
+        notAssessed  = [int]$Summary.NotAssessed
+        info         = [int]$info
+        unclassified = [int](@($statuses).Count - $classified)
+        total        = [int]@($statuses).Count
+    }
+}
+
+function New-AdfaReportDocument {
+    <#
+    .SYNOPSIS
+        Builds the machine-readable report object. Pure: no I/O, no collection.
+    .DESCRIPTION
+        Separated from the writer so the document's shape is unit-testable without a
+        filesystem, in the same style as Get-AdfaDnsQueryOutcome and Resolve-AdfaTrustHealth.
+
+        Every collection goes through ConvertTo-AdfaRowSet - the same normalisation the CSVs
+        use - so a section whose rows differ in shape serialises with a stable column union
+        instead of dropping the later rows' properties (the defect fixed for CSV and HTML in
+        v1.5.1 and v1.6.0; JSON must not reintroduce it on a third output path).
+
+        schemaVersion is emitted so a consumer diffing two runs can tell a tool change from
+        an environment change. Bump it only when the shape changes incompatibly.
+    .OUTPUTS
+        [System.Collections.Specialized.OrderedDictionary]
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Meta,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Findings,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Coverage,
+        [Parameter(Mandatory)][AllowNull()]$Sections,
+        [Parameter(Mandatory)][pscustomobject]$Summary
+    )
+
+    $sectionMap = [ordered]@{}
+    if ($null -ne $Sections) {
+        foreach ($key in @($Sections.Keys)) {
+            $sectionMap[[string]$key] = @(ConvertTo-AdfaRowSet -Rows $Sections[$key])
+        }
+    }
+    # Normalised once: the summary counts and the serialised findings must describe the same
+    # rows, so they are derived from one collection rather than normalised twice.
+    $findingRows = @(ConvertTo-AdfaRowSet -Rows $Findings)
+
+    # Meta carries an HTML badge string for the report header; it is presentation and has no
+    # place in a data document, so the fields are taken by name rather than splatted.
+    $doc = [ordered]@{
+        schemaVersion = 1
+        tool          = [ordered]@{
+            name    = 'ADForestAssessment'
+            version = [string]$Meta.Version
+        }
+        run           = [ordered]@{
+            forest        = [string]$Meta.Forest
+            generated     = [string]$Meta.Generated
+            runBy         = [string]$Meta.RunBy
+            domainsScoped = @($Meta.DomainsScoped)
+            dcCount       = [int]$Meta.DcCount
+            sectionsRun   = @($sectionMap.Keys)
+        }
+        summary       = (New-AdfaReportSummary -Summary $Summary -Findings $findingRows)
+        findings      = $findingRows
+        coverage      = @(ConvertTo-AdfaRowSet -Rows $Coverage)
+        sections      = $sectionMap
+    }
+    return $doc
+}
+
+function Export-AdfaJsonReport {
+    <#
+    .SYNOPSIS
+        Writes the run as JSON beside the HTML report.
+    .DESCRIPTION
+        Serialises what Invoke-Main has already assembled. Nothing is collected here, so a
+        serialisation fault costs no data - the CSVs and the itemised log are already on disk
+        by the time this runs.
+
+        Depth is explicit and generous. ConvertTo-Json defaults to 2, which would render a
+        section's rows as type names instead of values - silent truncation, which is the
+        precise failure mode this tool exists to avoid. A test asserts the default depth
+        carries real section data rather than "System.Object[]".
+    .OUTPUTS
+        [string] The path written.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Meta,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Findings,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Coverage,
+        [Parameter(Mandatory)][AllowNull()]$Sections,
+        [Parameter(Mandatory)][pscustomobject]$Summary,
+        [Parameter(Mandatory)][string]$Path,
+        [int]$Depth = 12
+    )
+    $doc = New-AdfaReportDocument -Meta $Meta -Findings $Findings -Coverage $Coverage -Sections $Sections -Summary $Summary
+    $doc | ConvertTo-Json -Depth $Depth | Out-File -Encoding UTF8 -FilePath $Path -Force
+    return $Path
+}
+
 # ===========================================================================
 # region MAIN
 # ===========================================================================
@@ -3241,16 +3934,52 @@ function Invoke-Main {
         $sectionData['Domain Controllers'] = $inv
     }
     $dcNames = @($allDcInventory | Select-Object -ExpandProperty HostName -ErrorAction SilentlyContinue)
+    # Every per-DC section downstream reads $dcNames. When this fallback threw silently, all of
+    # them reported "No domain controllers enumerated" and the actual cause - bad credentials, no
+    # ADWS, a dead target DC - was discarded. The reason is captured so those sections can name
+    # it, which is the difference between "this forest has no DCs" and "we could not ask".
+    $script:DcEnumerationError = ''
     if ($dcNames.Count -eq 0) {
-        try { $dcNames = @(Get-ADDomainController -Filter * @adParams | Select-Object -ExpandProperty HostName) } catch { }
+        try { $dcNames = @(Get-ADDomainController -Filter * @adParams | Select-Object -ExpandProperty HostName) }
+        catch {
+            $script:DcEnumerationError = $_.Exception.Message
+            Write-Log -Level ERROR -Section 'DomainControllers' -Message ("Domain controller enumeration FAILED, so every per-DC section is unassessed rather than clean: {0}" -f $_.Exception.Message)
+        }
+    }
+    if ($dcNames.Count -eq 0) {
+        $whyNoDcs = 'No domain controllers could be enumerated.'
+        if ($script:DcEnumerationError) { $whyNoDcs = ("Domain controller enumeration failed: {0}" -f $script:DcEnumerationError) }
+        Write-Log -Level ERROR -Section 'DomainControllers' -Message $whyNoDcs
+        # A first-class finding, so the report itself says the per-DC checks are unassessed.
+        # Without this the only trace was each section's own terse "no DCs enumerated" line.
+        $sectionData['Domain Controller Enumeration'] = @(New-Finding -Area 'DomainControllers' `
+                -Item 'Domain controller enumeration' -Status $script:Status.NotAssessed `
+                -Detail ("{0} Every per-DC check (replication, DNS consistency, ports, secure channels, DS events, diagnostics) is therefore UNASSESSED, not clean." -f $whyNoDcs))
     }
 
+    # A throw here used to drop the domain from the section silently - the same shape of defect
+    # as the v1.6.0 multi-domain data loss, where a reader saw a shorter list and no error. Each
+    # failure now becomes a row, so the section's own count reconciles with the domains scoped.
     if (Test-SectionSelected 'Domains' $Sections) {
-        $ds = foreach ($d in $targetDomains) { try { Get-AdfaDomainSummary -DomainName $d -AdParams $adParams } catch { } }
+        $ds = foreach ($d in $targetDomains) {
+            try { Get-AdfaDomainSummary -DomainName $d -AdParams $adParams }
+            catch {
+                Write-Log -Level ERROR -Section $d -Message ("Domain summary failed: {0}" -f $_.Exception.Message)
+                New-Finding -Scope $d -Area 'Domains' -Item ("Domain summary - {0}" -f $d) -Status $script:Status.NotAssessed `
+                    -Detail ("Could not be read: {0}. Functional level, FSMO holders and the domain SID are unknown for this domain." -f $_.Exception.Message)
+            }
+        }
         $sectionData['Domain Summary'] = @($ds)
     }
     if (Test-SectionSelected 'Fsmo' $Sections) {
-        $fs = foreach ($d in $targetDomains) { try { Get-AdfaFsmoRole -DomainName $d -AdParams $adParams } catch { } }
+        $fs = foreach ($d in $targetDomains) {
+            try { Get-AdfaFsmoRole -DomainName $d -AdParams $adParams }
+            catch {
+                Write-Log -Level ERROR -Section $d -Message ("FSMO role lookup failed: {0}" -f $_.Exception.Message)
+                New-Finding -Scope $d -Area 'Fsmo' -Item ("FSMO roles - {0}" -f $d) -Status $script:Status.NotAssessed `
+                    -Detail ("Could not be read: {0}. Role holders for this domain are unknown - do not conclude they are healthy." -f $_.Exception.Message)
+            }
+        }
         $sectionData['FSMO Roles'] = @($fs)
     }
 
@@ -3411,6 +4140,25 @@ function Invoke-Main {
         $sectionData['Exchange Schema Markers'] = Get-AdfaExchangeSchemaMarker -AdParams $adParams
     }
 
+    if (Test-SectionSelected 'ExchangeSeReadiness' $Sections) {
+        Write-Stage 'Exchange Server SE compatibility (forest level + DC operating systems)'
+        # An override that cannot be read is fatal here rather than swallowed: the alternative
+        # is judging the forest against the built-in table while the operator believes theirs
+        # is in force.
+        $seConfig = $script:Config.ExchangeSe
+        if ($ExchangeSeConfigPath) {
+            $seConfig = Import-AdfaExchangeSeConfig -BaseConfig $script:Config.ExchangeSe -Path $ExchangeSeConfigPath
+            Write-Log -Level INFO ("Exchange SE prerequisite table overridden from {0}" -f $ExchangeSeConfigPath)
+        }
+        $forestMode = ''
+        if ($null -ne $forest) {
+            $fmProp = $forest.PSObject.Properties['ForestMode']   # $null when absent - StrictMode-safe
+            if ($null -ne $fmProp -and $null -ne $fmProp.Value) { $forestMode = [string]$fmProp.Value }
+        }
+        $sectionData['Exchange SE Compatibility'] = Get-AdfaExchangeSeCompatibility -ForestMode $forestMode `
+            -DomainSummaries $sectionData['Domain Summary'] -DomainControllers $allDcInventory -SeConfig $seConfig
+    }
+
     # ---- Full identity export (all attributes) -> CSV; HTML gets a summary only ----
     if (Test-SectionSelected 'Identity' $Sections) {
         Write-Stage 'Identity inventory (full user/computer export)'
@@ -3553,13 +4301,18 @@ function Invoke-Main {
     $countNa = @($flat | Where-Object { $_ -eq 'Not Assessed' }).Count
     Write-Log -Level RESULT ("Summary: Pass={0} Warning={1} Fail={2} NotAssessed={3}" -f $countOk, $countWarn, $countBad, $countNa)
     $badges = "<span class='b-ok'>Pass $countOk</span><span class='b-warn'>Warning $countWarn</span><span class='b-bad'>Fail $countBad</span><span class='b-na'>Not Assessed $countNa</span>"
+    # One summary object, consumed by the JSON document and by this function's return value,
+    # so the two can never disagree about the same run.
+    $runSummary = [pscustomobject]@{ Pass = $countOk; Warning = $countWarn; Fail = $countBad; NotAssessed = $countNa }
 
     $meta = [pscustomobject]@{
-        Forest    = $forest.Name
-        Generated = (Get-Date).ToString('u')
-        RunBy     = ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
-        Version   = $script:Config.Version
-        Badges    = $badges
+        Forest        = $forest.Name
+        Generated     = (Get-Date).ToString('u')
+        RunBy         = ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
+        Version       = $script:Config.Version
+        DomainsScoped = @($targetDomains)
+        DcCount       = @($dcNames).Count
+        Badges        = $badges
     }
 
     Write-Stage 'Writing HTML report'
@@ -3591,6 +4344,22 @@ function Invoke-Main {
     }
     if ($reportRendered) { Write-Log -Level INFO ("HTML report: {0}" -f $reportPath) }
 
+    # JSON is the machine-readable twin of the HTML, for diffing one run against the next
+    # (a phased rollout re-runs this between phases). Guarded separately from the HTML so
+    # neither renderer can take the other down, and so a JSON fault cannot discard the CSVs.
+    Write-Stage 'Writing JSON report'
+    $jsonPath = Join-Path $runRoot 'Assessment.json'
+    try {
+        Export-AdfaJsonReport -Meta $meta -Findings $consolidated -Coverage $sectionAudit `
+            -Sections $sectionData -Summary $runSummary -Path $jsonPath | Out-Null
+        Write-Log -Level INFO ("JSON report: {0}" -f $jsonPath)
+    }
+    catch {
+        $jsonPath = ''
+        Write-Log -Level ERROR ("JSON report generation FAILED: {0}" -f $_.Exception.Message)
+        Write-Warning ("JSON report could not be written: {0}" -f $_.Exception.Message)
+    }
+
     Write-Log -Level INFO ("Detailed log: {0}" -f $script:LogFile)
     Write-Log -Level INFO ("Consolidated findings: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv'))
     try { Stop-Transcript | Out-Null } catch { }
@@ -3604,12 +4373,13 @@ function Invoke-Main {
         DcCount       = $dcNames.Count
         OutputRoot    = $runRoot
         ReportPath    = $reportPath
+        JsonPath      = $jsonPath
         CsvPath       = $csvPath
         RawPath       = $rawPath
         LogFile       = $script:LogFile
         FindingsFile  = (Join-Path $csvPath 'Findings-Consolidated.csv')
         Transcript    = $transcript
-        Summary       = [pscustomobject]@{ Pass = $countOk; Warning = $countWarn; Fail = $countBad; NotAssessed = $countNa }
+        Summary       = $runSummary
         Sections      = @($sectionData.Keys)
     }
 }
