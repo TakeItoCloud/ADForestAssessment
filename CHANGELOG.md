@@ -10,6 +10,40 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-09-21 (an unreadable forest aborted the run with no report, tool v1.7.0)
+
+`Invoke-Main` called `Get-ADForest` and `Get-ADDomain` **unguarded** while resolving which
+domains to scope, before any section ran. A forest that could not be contacted killed the run
+with a raw exception and produced **no report at all** — on a damaged or partly-recovered forest,
+which is the case this tool exists for, the operator got a stack trace instead of an artefact
+naming the cause. Recorded as PORT-PLAN H9 when the H3 harness had to be narrowed around it.
+
+Both calls are now guarded and the failure becomes the report's **headline finding**:
+
+- **Forest unreadable** → a `Fail` row leading the report, carrying the underlying error and
+  saying plainly that nothing in the report was assessed, plus what to check (ADWS 9389, LDAP
+  389, credentials, `-Server` pointed at a known-healthy DC). Every section then degrades around
+  it, which is only possible because the collectors were made to tolerate an empty domain and DC
+  list in the preceding change.
+- **Current domain unreadable but the forest readable** → the run falls back to the forest root
+  domain, which is a genuine recovery on a damaged forest. Because it **changes the scope**, it is
+  a `Warning` row naming the substitution and telling the reader to confirm it was the intended
+  domain — never done quietly.
+- **Forest readable but reporting no domains** → a `Fail` row, rather than a run that silently
+  assesses nothing.
+- `Import-Module ActiveDirectory` still terminates, since without it there is no directory access
+  and nothing to report on, but it now names the requirement instead of surfacing a raw
+  module-load error.
+
+A fourth smoke-test scenario runs `Invoke-Main` with `Get-ADForest` throwing and asserts the run
+completes, the HTML/JSON/CSV bundle still lands, the failure is a single `Fail` headline carrying
+its cause — and the property that matters, that **nothing reports `Pass` when nothing could be
+read**. Measured: 18 findings, 0 passes. Before this change the same scenario produced no report.
+
+Demonstrated able to fail: removing the guard reproduces the original abort and turns two
+assertions red. Restored byte-for-byte, hash verified.
+
+
 ### Fixed — 2026-09-21 (collection failures were swallowed; a failed DC enumeration aborted the run, tool v1.7.0)
 
 Seven `catch { }` blocks discarded the reason a collector failed, so "not installed", "access

@@ -3894,7 +3894,13 @@ function Invoke-Main {
     Write-Stage ("AD Forest Assessment v{0} starting" -f $script:Config.Version)
     Write-Stage ("Output: {0}" -f $runRoot)
 
-    Import-Module ActiveDirectory -ErrorAction Stop -Verbose:$false
+    # Terminating on purpose: with no module there is no directory access and nothing to report
+    # on. The message names the requirement instead of surfacing a raw module-load error.
+    try { Import-Module ActiveDirectory -ErrorAction Stop -Verbose:$false }
+    catch {
+        Write-Log -Level ERROR ("RSAT ActiveDirectory module could not be loaded: {0}" -f $_.Exception.Message)
+        throw ("The RSAT ActiveDirectory module is required and could not be loaded: {0}. Install RSAT-AD-PowerShell, or run this on a domain controller." -f $_.Exception.Message)
+    }
     Write-Stage 'ActiveDirectory module imported'
 
     $adParams = @{}
@@ -3903,18 +3909,60 @@ function Invoke-Main {
     $repParams = @{}
     if ($Credential) { $repParams.Credential = $Credential }
 
-    $forest = Get-ADForest @adParams
-    $rootDomain = $forest.RootDomain
+    # Forest and domain resolution. Previously unguarded: on a forest where either call throws -
+    # a damaged or partially-recovered one, which is precisely what this tool exists for - the run
+    # died with a raw exception and produced NO report at all. Now the failure becomes the
+    # report's headline finding and every section degrades around it, which is only possible
+    # because the collectors now tolerate an empty domain and DC list.
+    $scopeRows = @()
+    $forestError = ''
+    $forest = $null
+    try { $forest = Get-ADForest @adParams }
+    catch { $forestError = $_.Exception.Message }
+
+    if ($null -eq $forest) {
+        Write-Log -Level ERROR -Section 'ForestScope' -Message ("Forest could not be read: {0}" -f $forestError)
+        # A placeholder so the reporting path still runs and a bundle still lands on disk. Named
+        # so nobody mistakes it for a forest: every section around it reports Not Assessed.
+        $forest = [pscustomobject]@{ Name = '(forest unreadable)'; RootDomain = ''; Domains = @(); ForestMode = '' }
+        $scopeRows += New-Finding -Area 'ForestScope' -Item 'Forest resolution' -Status $script:Status.Fail `
+            -Detail ("The forest could not be read, so NOTHING in this report was assessed: {0}. Check that the target is reachable, that ADWS (9389) and LDAP (389) are open, and that the credentials can read the directory. Re-run with -Server pointed at a known-healthy DC." -f $forestError)
+    }
+
+    $rootDomain = [string]$forest.RootDomain
     $targetDomains = @()
-    if ($AllDomains) { $targetDomains = @($forest.Domains) }
-    else {
-        $cur = (Get-ADDomain @adParams).DNSRoot
-        $targetDomains = @($cur)
+    if (-not $forestError) {
+        if ($AllDomains) { $targetDomains = @($forest.Domains) }
+        else {
+            try { $targetDomains = @((Get-ADDomain @adParams).DNSRoot) }
+            catch {
+                # The forest object read but the current domain did not. Falling back to the forest
+                # root is a genuine recovery on a damaged forest - but it CHANGES THE SCOPE of the
+                # run, so it is reported loudly rather than done quietly.
+                Write-Log -Level ERROR -Section 'ForestScope' -Message ("Current domain could not be read: {0}" -f $_.Exception.Message)
+                if ($rootDomain) {
+                    $targetDomains = @($rootDomain)
+                    $scopeRows += New-Finding -Area 'ForestScope' -Item 'Domain scope' -Status $script:Status.Warning `
+                        -Detail ("The current domain could not be determined ({0}), so this run was scoped to the forest ROOT domain '{1}' instead. Confirm that is the domain you meant to assess; if not, re-run with -Server pointed at a DC in the intended domain." -f $_.Exception.Message, $rootDomain)
+                }
+                else {
+                    $scopeRows += New-Finding -Area 'ForestScope' -Item 'Domain scope' -Status $script:Status.Fail `
+                        -Detail ("The current domain could not be determined ({0}) and the forest reported no root domain to fall back to, so no domain was assessed." -f $_.Exception.Message)
+                }
+            }
+        }
+    }
+    if (@($targetDomains).Count -eq 0 -and -not $forestError) {
+        $scopeRows += New-Finding -Area 'ForestScope' -Item 'Domain scope' -Status $script:Status.Fail `
+            -Detail 'The forest was readable but reported no domains to assess. Every per-domain section is therefore unassessed, not clean.'
     }
     Write-Stage ("Forest: {0}; assessing domains: {1}" -f $forest.Name, ($targetDomains -join ', '))
 
     $sectionData = [ordered]@{}
     $sectionStatus = [ordered]@{}
+    # Scope problems lead the report: if the forest or the domain list could not be resolved,
+    # every section below is unassessed and the reader needs to know that before reading them.
+    if (@($scopeRows).Count -gt 0) { $sectionData['Forest & Domain Scope'] = @($scopeRows) }
     $ext = @{ TimeoutSeconds = $script:Config.ExternalToolTimeoutSec; Retries = $script:Config.Retries; RetryDelaySeconds = $script:Config.RetryDelaySeconds }
 
     # ---- Forest-level sections ----

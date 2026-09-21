@@ -57,7 +57,7 @@ verdict only.
 | H6 | Replication convergence: parse `repadmin /replsummary` into findings; `/showutdvec` lag per DC per NC | Planned | |
 | H7 | Restore integrity: `msDS-GenerationId` / `invocationID`; dcdiag `CheckSecurityError` + `VerifyEnterpriseReferences` | Planned | |
 | H8 | `_msdcs` delegation; PDC external time source and Hyper-V time-sync conflict; per-site writeable-GC assertion | Planned | |
-| H9 | `Invoke-Main` calls `Get-ADForest` / `Get-ADDomain` **unguarded** while resolving which domains to scope, before any section runs. A forest where those throw aborts the run with a raw exception instead of reporting what it could reach — the opposite of fail-closed on exactly the damaged forest this track exists for. Found by the H3 failure-mode harness, which had to be narrowed to avoid it | Planned | |
+| H9 | Forest and domain resolution guarded: an unreadable forest is now the report's headline `Fail` instead of a raw abort with no report; an unreadable current domain falls back to the forest root as a loud `Warning` naming the scope change | Done | 2026-09-21 |
 
 | Phase | Scope | Status | Date |
 | --- | --- | --- | --- |
