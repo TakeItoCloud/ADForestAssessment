@@ -10,6 +10,54 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-09-21 (a cleared Directory Service log reported Pass, tool v1.7.0)
+
+**A domain controller whose Directory Service log had been wiped reported `Pass`.** The event
+scan concluded from silence: zero matching events in the window produced
+`New-Finding ... -Status Pass`, and the `catch` mapped "No events were found" to `Pass` as
+well. So on exactly the environment this section exists for — a forest recovered from a
+ransomware incident, where logs are routinely cleared — the checks that matter most read clean:
+USN rollback (2095), unsupported restore (2103), lingering objects (1988), tombstone lifetime
+exceeded (2042).
+
+Absence of an event is only evidence if the log goes back far enough to have recorded one.
+Every DC's log coverage is now measured before any conclusion is drawn from it, by comparing
+the oldest record the log still retains against the start of the lookback window:
+
+| Verdict | Meaning |
+| --- | --- |
+| `Covered` | the log reaches back to or past the window start — absence is meaningful |
+| `Truncated` | the log starts inside the window — cleared or wrapped; nothing can be said about the period before it |
+| `Empty` | no records at all — nothing can be concluded |
+| `Unknown` | the log could not be inspected (unreachable, access denied, absent) |
+
+A clean scan over anything but `Covered` now reports **`Not Assessed`, naming where coverage
+begins**, never `Pass`. A scan that *does* find events over an incomplete window reports its
+count as a **minimum** rather than a total. Each DC also gets an explicit `Log coverage on <dc>`
+row, so the coverage question is answered in the report rather than left implicit.
+
+One measurement covers every way the window can be incomplete — cleared, wrapped, or a DC
+rebuilt more recently than the window. **No "log was cleared" event ID is used.** One was
+considered and rejected: Microsoft Learn does not publish such a marker for an arbitrary log
+(searched 2026-09-21), and it would add nothing, because clearing a log necessarily moves its
+oldest retained record forward. Guessing an ID would have been an invented vendor fact.
+
+`Get-AdfaEventLogCoverage` and `Get-AdfaDsEventCoverageDetail` are pure and tested directly,
+including the boundary case and all four ways coverage degrades. The guard was demonstrated
+able to fail — forcing the classifier to return `Covered` turns three assertions red — and the
+script restored byte-for-byte, hash verified.
+
+Findings carry remediation pointing at **recovering the evidence**, not resetting the DC:
+archived `.evtx`, SIEM or log-forwarding copies, corroboration through
+`repadmin /showrepl /errorsonly` and `/showutdvec`, raising the log size so the next run can
+conclude, and the advisory lingering-object scan, which does not depend on the event log at
+all. A test pins the routing in both directions, since the map is first-match-wins: a coverage
+finding must not get secure-channel advice, and a real 2095 must still get rollback advice.
+
+Also fixes a precedence bug found by these tests: in `"a {0}" + "b" -f $x`, `-f` binds only to
+the second string, so the timestamp in the `Truncated` caveat stayed a literal `{0}`. A sweep
+of the file found no other instance.
+
 ### Added — 2026-09-21 (JSON report, tool v1.7.0)
 
 `Assessment.json` is written beside `Assessment.html`, so a run can be diffed against the

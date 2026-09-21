@@ -606,3 +606,98 @@ Describe 'JSON report document' {
         }
     }
 }
+
+Describe 'Directory Service log coverage' {
+    # The defect this closes: finding no events reported Pass, so a DC whose Directory Service
+    # log was wiped during a ransomware recovery read exactly like a healthy one on the checks
+    # that matter most - USN rollback (2095), unsupported restore (2103), lingering objects
+    # (1988). Absence is only evidence when the log reaches back across the window.
+    BeforeAll { $script:WStart = (Get-Date).AddDays(-14) }
+
+    Context 'Get-AdfaEventLogCoverage' {
+        It 'reports Covered when the log predates the window' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord $script:WStart.AddDays(-30) -WindowStart $script:WStart | Should -Be 'Covered'
+        }
+        It 'reports Covered at the exact window boundary' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord $script:WStart -WindowStart $script:WStart | Should -Be 'Covered'
+        }
+        It 'reports Truncated when the log starts inside the window' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord $script:WStart.AddDays(1) -WindowStart $script:WStart | Should -Be 'Truncated'
+        }
+        It 'never reports Covered for a log cleared moments ago' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 3 `
+                -OldestRecord (Get-Date) -WindowStart $script:WStart | Should -Be 'Truncated'
+        }
+        It 'reports Empty for a log with no records' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 0 `
+                -OldestRecord $null -WindowStart $script:WStart | Should -Be 'Empty'
+        }
+        It 'reports Unknown rather than Covered when a bound is missing' {
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord $null -WindowStart $script:WStart | Should -Be 'Unknown'
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord $script:WStart.AddDays(-1) -WindowStart $null | Should -Be 'Unknown'
+            Get-AdfaEventLogCoverage -Inspected $false -RecordCount $null `
+                -OldestRecord $null -WindowStart $script:WStart | Should -Be 'Unknown'
+        }
+        It 'never classifies any degraded input as Covered' {
+            # Non-vacuity: the declared population is the four ways coverage can be incomplete,
+            # and all four are evaluated here rather than asserted in the aggregate.
+            $degraded = @(
+                (Get-AdfaEventLogCoverage -Inspected $false -RecordCount 10 -OldestRecord $script:WStart.AddDays(-5) -WindowStart $script:WStart),
+                (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 0  -OldestRecord $null                      -WindowStart $script:WStart),
+                (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 10 -OldestRecord $null                      -WindowStart $script:WStart),
+                (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 10 -OldestRecord $script:WStart.AddDays(2)  -WindowStart $script:WStart)
+            )
+            @($degraded).Count | Should -Be 4
+            @($degraded | Where-Object { $_ -eq 'Covered' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaDsEventCoverageDetail' {
+        It 'adds no caveat when coverage is complete' {
+            Get-AdfaDsEventCoverageDetail -Coverage 'Covered' -OldestRecord $script:WStart -LookbackDays 14 |
+                Should -BeNullOrEmpty
+        }
+        It 'names where coverage actually begins' {
+            # Guards a real precedence bug: "a {0}" + "b" -f $x formats only the SECOND string,
+            # so the timestamp silently stayed a literal {0} until this asserted on it.
+            $d = Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' `
+                -OldestRecord ([datetime]'2026-09-15 08:30') -LookbackDays 14
+            $d | Should -Match '2026-09-15 08:30'
+            $d | Should -Not -Match '\{0\}'
+            $d | Should -Match 'cleared or has wrapped'
+        }
+        It 'says absence proves nothing for an empty log' {
+            Get-AdfaDsEventCoverageDetail -Coverage 'Empty' -OldestRecord $null -LookbackDays 14 |
+                Should -Match 'proves nothing'
+        }
+        It 'carries the underlying cause when the log could not be inspected' {
+            Get-AdfaDsEventCoverageDetail -Coverage 'Unknown' -OldestRecord $null -LookbackDays 14 `
+                -Reason 'Access is denied' | Should -Match 'Access is denied'
+        }
+    }
+
+    Context 'Remediation routing' {
+        It 'routes a coverage finding to evidence recovery, not a secure-channel reset' {
+            $r = Get-AdfaRecommendation -Section 'Directory Service Events' `
+                -Item 'Log coverage on dc1.contoso.com' `
+                -Detail (Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' -OldestRecord (Get-Date) -LookbackDays 14)
+            $r | Should -Not -BeNullOrEmpty
+            $r | Should -Match 'UNASSESSED'
+            $r | Should -Not -Match 'netdom trust'
+        }
+        It 'still routes a real USN rollback to rollback guidance' {
+            # The coverage entry sits ahead of the event entries in a first-match-wins map,
+            # so this pins the ordering rather than assuming it.
+            $r = Get-AdfaRecommendation -Section 'Directory Service Events' `
+                -Item 'Event 2095 on dc1.contoso.com' `
+                -Detail '1 occurrence(s) in 14 day(s), last 2026-09-20 10:00. USN rollback detected - the directory is silently diverging.'
+            $r | Should -Not -BeNullOrEmpty
+            $r | Should -Not -Match 'UNASSESSED'
+        }
+    }
+}

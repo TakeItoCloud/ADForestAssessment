@@ -2873,6 +2873,153 @@ function Get-AdfaDcSecureChannel {
     return @($rows)
 }
 
+
+function Get-AdfaEventLogCoverage {
+    <#
+    .SYNOPSIS
+        Pure classification of whether an event log actually covers a lookback window.
+    .DESCRIPTION
+        Absence of an event is only evidence if the log goes back far enough to have recorded
+        one. Before this, a Directory Service log with nothing in it reported Pass - so a DC
+        whose log had been cleared during a ransomware recovery, or had simply wrapped, read
+        exactly like a healthy one on the checks that matter most (USN rollback 2095,
+        unsupported restore 2103, lingering objects 1988).
+
+        The signal is the oldest record the log still retains, compared with the start of the
+        window being asked about. That one measurement covers every way the window can be
+        incomplete - cleared, wrapped, or a DC rebuilt more recently than the window - and
+        needs no vendor-specific "log was cleared" event ID. A specific marker event was
+        considered and deliberately not used: the Windows Event Log docs on Microsoft Learn do
+        not publish one for an arbitrary log (searched 2026-09-21), and it would add nothing,
+        because clearing a log necessarily moves its oldest retained record forward.
+
+        Verdicts:
+          Covered   - the log reaches back to or past the window start; absence is meaningful.
+          Truncated - the log starts inside the window; absence is NOT meaningful before
+                      OldestRecord, and any count found is a floor rather than a total.
+          Empty     - the log holds no records at all; nothing can be concluded.
+          Unknown   - the log could not be inspected (unreachable, access denied, absent).
+    .OUTPUTS
+        [string] Covered | Truncated | Empty | Unknown
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [bool]$Inspected = $true,
+        [AllowNull()][Nullable[int]]$RecordCount,
+        [AllowNull()][Nullable[datetime]]$OldestRecord,
+        [AllowNull()][Nullable[datetime]]$WindowStart
+    )
+    if (-not $Inspected) { return 'Unknown' }
+    if ($null -ne $RecordCount -and $RecordCount -le 0) { return 'Empty' }
+    # Either bound missing means the comparison cannot be made - say so rather than assume.
+    if ($null -eq $OldestRecord -or $null -eq $WindowStart) { return 'Unknown' }
+    if ($OldestRecord -le $WindowStart) { return 'Covered' }
+    return 'Truncated'
+}
+
+function Get-AdfaDsEventCoverageDetail {
+    <#
+    .SYNOPSIS
+        The sentence that explains a non-Covered verdict, naming what limits the claim.
+    .DESCRIPTION
+        Kept beside the classifier and pure, so the wording a report carries is testable
+        rather than buried in string concatenation inside a collector.
+    .OUTPUTS
+        [string] Empty for 'Covered' - there is nothing to caveat.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][ValidateSet('Covered', 'Truncated', 'Empty', 'Unknown')][string]$Coverage,
+        [AllowNull()][Nullable[datetime]]$OldestRecord,
+        [int]$LookbackDays = 14,
+        [string]$Reason = ''
+    )
+    if ($Coverage -eq 'Covered') { return '' }
+    if ($Coverage -eq 'Empty') {
+        return ("The Directory Service log holds no records, so the absence of an event proves nothing. " +
+            "A log cleared during recovery looks identical to a healthy one here - read the log on the DC itself.")
+    }
+    if ($Coverage -eq 'Truncated') {
+        $from = ''
+        if ($null -ne $OldestRecord) { $from = $OldestRecord.ToString('yyyy-MM-dd HH:mm') }
+        # The concatenation is parenthesised before -f on purpose: -f binds tighter than +, so
+        # "a {0}" + "b" -f $x formats only the SECOND string and leaves {0} literal.
+        return (("The Directory Service log only goes back to {0}, which is inside the {1}-day window, " +
+                "so nothing can be concluded about the period before that. The log was cleared or has wrapped.") -f $from, $LookbackDays)
+    }
+    $suffix = ''
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) { $suffix = (" Cause: {0}" -f $Reason) }
+    return ("The Directory Service log could not be inspected, so its coverage of the {0}-day window is unknown.{1}" -f $LookbackDays, $suffix)
+}
+
+function Get-AdfaDsEventLogCoverage {
+    <#
+    .SYNOPSIS
+        Measures how far back a DC's Directory Service log actually reaches.
+    .DESCRIPTION
+        Thin collector over Get-AdfaEventLogCoverage. Get-WinEvent -ListLog gives the record
+        count but not the oldest record's timestamp, so the oldest record is read directly
+        with -Oldest -MaxEvents 1.
+    .OUTPUTS
+        [pscustomobject] Coverage, OldestRecord, RecordCount, Reason
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [pscredential]$Credential,
+        [Parameter(Mandatory)][datetime]$WindowStart
+    )
+    $recordCount = $null
+    $oldest = $null
+    $reason = ''
+    $inspected = $false
+    try {
+        $listArgs = @{ ListLog = 'Directory Service'; ComputerName = $ComputerName; ErrorAction = 'Stop' }
+        if ($Credential) { $listArgs.Credential = $Credential }
+        $log = Get-WinEvent @listArgs
+        if ($null -ne $log) {
+            $inspected = $true
+            $prop = $log.PSObject.Properties['RecordCount']   # $null when absent - StrictMode-safe
+            if ($null -ne $prop -and $null -ne $prop.Value) { $recordCount = [int]$prop.Value }
+        }
+        else { $reason = 'Get-WinEvent -ListLog returned nothing for the Directory Service log.' }
+    }
+    catch {
+        $reason = $_.Exception.Message
+    }
+
+    if ($inspected -and ($null -eq $recordCount -or $recordCount -gt 0)) {
+        try {
+            $oldArgs = @{
+                ComputerName = $ComputerName; LogName = 'Directory Service'
+                Oldest = $true; MaxEvents = 1; ErrorAction = 'Stop'
+            }
+            if ($Credential) { $oldArgs.Credential = $Credential }
+            $first = @(Get-WinEvent @oldArgs)
+            if (@($first).Count -gt 0) { $oldest = [datetime]$first[0].TimeCreated }
+            else { $recordCount = 0 }
+        }
+        catch {
+            # The log listed but its oldest record could not be read: coverage is unknown, not
+            # covered. Recorded rather than swallowed, so the report can name the cause.
+            $reason = ("oldest record unreadable: {0}" -f $_.Exception.Message)
+            $inspected = $false
+        }
+    }
+
+    $coverage = Get-AdfaEventLogCoverage -Inspected $inspected -RecordCount $recordCount `
+        -OldestRecord $oldest -WindowStart $WindowStart
+    return [pscustomobject]@{
+        Coverage     = $coverage
+        OldestRecord = $oldest
+        RecordCount  = $recordCount
+        Reason       = $reason
+    }
+}
+
 function Get-AdfaDsEventLog {
     <#
     .SYNOPSIS
@@ -2880,6 +3027,13 @@ function Get-AdfaDsEventLog {
         interface) for the events that block or mask recovery: lingering objects,
         tombstone-lifetime exceeded, USN rollback, unsupported restore, source-DC GUID
         DNS failures and KCC topology failures. Unreachable DCs degrade to Not Assessed.
+    .DESCRIPTION
+        Every DC's log coverage is measured before any conclusion is drawn from it. Finding no
+        events is only evidence if the log actually reaches back across the window: a log
+        cleared during a ransomware recovery, or one that has simply wrapped, is silent for the
+        same reason a healthy one is. So a clean scan over an incomplete window reports
+        Not Assessed naming where coverage begins, never Pass, and a scan that DOES find events
+        over an incomplete window reports the count as a floor rather than a total.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -2896,22 +3050,44 @@ function Get-AdfaDsEventLog {
     $meta = @{}
     foreach ($e in $script:Config.DsEventsOfInterest) { $meta[[int]$e.Id] = $e }
 
+    $windowStart = (Get-Date).AddDays(-$LookbackDays)
+
     foreach ($dc in $DomainControllers) {
         if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
             $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail 'RPC (135) not reachable - event log could not be read remotely. Check the Directory Service log on the DC itself.'
             continue
         }
+
+        # How far back does this log actually reach? Asked before the scan, because it decides
+        # whether "no events" means anything at all.
+        $cov = Get-AdfaDsEventLogCoverage -ComputerName $dc -Credential $Credential -WindowStart $windowStart
+        $covNote = Get-AdfaDsEventCoverageDetail -Coverage $cov.Coverage -OldestRecord $cov.OldestRecord `
+            -LookbackDays $LookbackDays -Reason $cov.Reason
+        $rows += New-Finding -Area 'DsEvents' -Item ("Log coverage on {0}" -f $dc) `
+            -Status $(if ($cov.Coverage -eq 'Covered') { $script:Status.Pass } else { $script:Status.NotAssessed }) `
+            -Detail $(if ($cov.Coverage -eq 'Covered') {
+                    ("Directory Service log covers the full {0}-day window (oldest record {1:yyyy-MM-dd HH:mm})." -f $LookbackDays, $cov.OldestRecord)
+                }
+                else { $covNote })
+
         try {
             $gwe = @{
                 ComputerName    = $dc
-                FilterHashtable = @{ LogName = 'Directory Service'; Id = $ids; StartTime = (Get-Date).AddDays(-$LookbackDays) }
+                FilterHashtable = @{ LogName = 'Directory Service'; Id = $ids; StartTime = $windowStart }
                 MaxEvents       = 500
                 ErrorAction     = 'Stop'
             }
             if ($Credential) { $gwe.Credential = $Credential }
             $events = @(Get-WinEvent @gwe)
             if (@($events).Count -eq 0) {
-                $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s)." -f $LookbackDays)
+                # The fail-closed branch: silence over an incomplete window is not a clean bill
+                # of health. Reporting Pass here is what let a wiped log look healthy.
+                if ($cov.Coverage -eq 'Covered') {
+                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s); log covers the whole window." -f $LookbackDays)
+                }
+                else {
+                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("No events of interest found, but this is NOT a pass. {0}" -f $covNote)
+                }
                 continue
             }
             foreach ($g in ($events | Group-Object Id)) {
@@ -2924,12 +3100,20 @@ function Get-AdfaDsEventLog {
                     if ([string]$m.Severity -eq 'Fail') { $sev = $script:Status.Fail }
                 }
                 $last = ($g.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1).TimeCreated
-                $rows += New-Finding -Area 'DsEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}" -f $g.Count, $LookbackDays, $last, $meaning)
+                # A count taken from a partial log is a lower bound, and saying so costs nothing.
+                $floor = ''
+                if ($cov.Coverage -ne 'Covered') { $floor = (" Count is a MINIMUM - {0}" -f $covNote) }
+                $rows += New-Finding -Area 'DsEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}{4}" -f $g.Count, $LookbackDays, $last, $meaning, $floor)
             }
         }
         catch {
             if ($_.Exception.Message -match 'No events were found') {
-                $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s)." -f $LookbackDays)
+                if ($cov.Coverage -eq 'Covered') {
+                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s); log covers the whole window." -f $LookbackDays)
+                }
+                else {
+                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("No events of interest found, but this is NOT a pass. {0}" -f $covNote)
+                }
             }
             else {
                 $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("Event log query failed: {0}" -f $_.Exception.Message)
@@ -2963,6 +3147,10 @@ $script:RecommendationMap = @(
     @{ Section = '(?i)secure channel|machine password'; Match = '.'
        Text  = 'Reset the secure channel against a known-healthy DC. Member/workstation: "Reset-ComputerMachinePassword -Server <healthyDC>" or "nltest /sc_reset:<domain>". For a DC: stop the KDC service, run "netdom resetpwd /server:<healthyDC> /userd:<domain>\<admin> /passwordd:*", restart. Never disjoin/rejoin a domain controller.' }
     # --- Unscoped entries: matched against "Section :: Item :: Detail" ---
+    # Ahead of the event-specific entries: a log that cannot cover the window is a different
+    # problem from an event found in it, and the fix is to recover the evidence, not the DC.
+    @{ Match = '(?i)log coverage|absence of an event proves nothing|cleared or has wrapped|NOT a pass'
+       Text  = 'Treat this DC as UNASSESSED for the window, not healthy - a cleared or wrapped Directory Service log is silent for the same reason a healthy one is. Recover the evidence before drawing any conclusion: check for an archived copy (%SystemRoot%\System32\winevt\Logs\*.evtx, any SIEM or log-forwarding target, or the backup the DC was restored from), and corroborate independently - "repadmin /showrepl <dc> /errorsonly" and "repadmin /showutdvec" reveal a replication break that the log would have reported. Then raise the log so the next run can conclude: "wevtutil sl \"Directory Service\" /ms:67108864" (64 MB) and confirm retention is Overwrite as needed. On a post-incident forest, also run the advisory lingering-object scan (-IncludeLingeringObjectScan), which does not depend on the event log at all.' }
     @{ Match = '(?i)dsa guid cname|orphaned ntds settings'
        Text  = 'If the DC is live: on that DC run "ipconfig /registerdns" and "nltest /dsregdns", then restart the Netlogon service, and confirm the _msdcs zone accepts secure dynamic updates. If the DC no longer exists: remove its metadata (ntdsutil "metadata cleanup", or delete the server object in AD Sites and Services) and delete the stale record. Replication resolves source DCs through this alias - fix it before chasing RPC 1722 errors.' }
     @{ Match = '(?i)stale dns entry'

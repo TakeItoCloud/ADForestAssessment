@@ -50,7 +50,7 @@ verdict only.
 | Phase | Scope | Status | Date |
 | --- | --- | --- | --- |
 | H1 | v1.7.0: JSON report (`Assessment.json`) with a self-reconciling summary; smoke-test SID stub fidelity | Done | 2026-09-21 |
-| H2 | Event-log coverage guard: a cleared or truncated Directory Service log must report `Not Assessed`, never `Pass` | Planned | |
+| H2 | Event-log coverage guard: a cleared or truncated Directory Service log must report `Not Assessed`, never `Pass` | Done | 2026-09-21 |
 | H3 | Empty-catch cause reporting — 7 real sites, incl. the three in `Invoke-Main`'s DC enumeration | Planned | |
 | H4 | `ExchangeSeReadiness`: FFL + DC OS vs the supported matrix, from a versioned config table | Planned | |
 | H5 | SYSVOL/DFSR depth: backlog per member, SYSVOL+NETLOGON share per DC, `msDFSR-Options` D4/D2 | Planned | |

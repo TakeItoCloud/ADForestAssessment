@@ -366,6 +366,60 @@ $shallow = $doc | ConvertTo-Json -Depth 2
 Assert-True ($shallow -match '"@\{') 'Depth: the default depth of 2 demonstrably collapses section rows'
 
 Write-Host ""
+Write-Host "== 14. Directory Service log coverage (a cleared log must not read as healthy) ==" -ForegroundColor Cyan
+
+# The defect this closes: finding no events reported Pass, so a DC whose Directory Service log
+# was wiped during a ransomware recovery looked exactly like a healthy one on the checks that
+# matter most - USN rollback (2095), unsupported restore (2103), lingering objects (1988).
+$wStart = (Get-Date).AddDays(-14)
+
+Assert-Equal 'Covered' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord $wStart.AddDays(-30) -WindowStart $wStart) 'Coverage: log older than the window => Covered'
+Assert-Equal 'Covered' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord $wStart -WindowStart $wStart) 'Coverage: oldest record exactly at the window start => Covered (boundary)'
+Assert-Equal 'Truncated' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord $wStart.AddDays(1) -WindowStart $wStart) 'Coverage: log starts inside the window => Truncated'
+Assert-Equal 'Truncated' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 3 -OldestRecord (Get-Date) -WindowStart $wStart) 'Coverage: log cleared moments ago => Truncated, never Covered'
+Assert-Equal 'Empty' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 0 -OldestRecord $null -WindowStart $wStart) 'Coverage: zero records => Empty'
+Assert-Equal 'Unknown' (Get-AdfaEventLogCoverage -Inspected $false -RecordCount $null -OldestRecord $null -WindowStart $wStart) 'Coverage: log not inspectable => Unknown'
+Assert-Equal 'Unknown' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord $null -WindowStart $wStart) 'Coverage: oldest record unknown => Unknown, not Covered'
+Assert-Equal 'Unknown' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord $wStart.AddDays(-1) -WindowStart $null) 'Coverage: no window bound => Unknown, not Covered'
+
+# Fail-closed in the round: NOTHING may classify as Covered without both bounds present and
+# the log demonstrably reaching back. Enumerate the non-covered inputs and assert the whole set.
+$notCovered = @(
+    (Get-AdfaEventLogCoverage -Inspected $false -RecordCount 10   -OldestRecord $wStart.AddDays(-5) -WindowStart $wStart),
+    (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 0    -OldestRecord $null               -WindowStart $wStart),
+    (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 10   -OldestRecord $null               -WindowStart $wStart),
+    (Get-AdfaEventLogCoverage -Inspected $true  -RecordCount 10   -OldestRecord $wStart.AddDays(2)  -WindowStart $wStart)
+)
+Assert-Equal 4 (@($notCovered).Count) 'Coverage: non-vacuity - four degraded inputs were actually evaluated'
+Assert-Equal 0 (@($notCovered | Where-Object { $_ -eq 'Covered' }).Count) 'Coverage: no degraded input is ever reported as Covered'
+
+# The caveat sentence must name what limits the claim, not just say "unknown".
+Assert-Equal '' (Get-AdfaDsEventCoverageDetail -Coverage 'Covered' -OldestRecord $wStart -LookbackDays 14) 'Detail: Covered carries no caveat'
+$trunc = Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' -OldestRecord ([datetime]'2026-09-15 08:30') -LookbackDays 14
+Assert-True ($trunc -match '2026-09-15 08:30') 'Detail: Truncated names where coverage actually begins'
+Assert-True ($trunc -match 'cleared or has wrapped') 'Detail: Truncated names the likely cause'
+$empty = Get-AdfaDsEventCoverageDetail -Coverage 'Empty' -OldestRecord $null -LookbackDays 14
+Assert-True ($empty -match 'proves nothing') 'Detail: Empty says absence proves nothing'
+$unk = Get-AdfaDsEventCoverageDetail -Coverage 'Unknown' -OldestRecord $null -LookbackDays 14 -Reason 'Access is denied'
+Assert-True ($unk -match 'Access is denied') 'Detail: Unknown carries the underlying cause'
+
+# The finding must carry guidance, and it must be the RIGHT guidance: recovering the evidence,
+# not resetting a secure channel. The map is first-match-wins, so ordering is behaviour.
+$covRec = Get-AdfaRecommendation -Section 'Directory Service Events' -Item 'Log coverage on dc1.contoso.com' `
+    -Detail (Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' -OldestRecord (Get-Date) -LookbackDays 14)
+Assert-True (-not [string]::IsNullOrWhiteSpace($covRec)) 'Recommendation: a coverage finding carries guidance'
+Assert-True ($covRec -match 'UNASSESSED') 'Recommendation: says to treat the DC as unassessed, not healthy'
+Assert-True ($covRec -match 'evtx|SIEM') 'Recommendation: points at recovering the archived evidence'
+Assert-True ($covRec -notmatch 'netdom trust') 'Recommendation: not hijacked by the trust guidance'
+
+# A real event found in the window must still route to its own event guidance, not to the
+# coverage text - the new entry sits ahead of the event entries, so this is worth pinning.
+$rollbackRec = Get-AdfaRecommendation -Section 'Directory Service Events' -Item 'Event 2095 on dc1.contoso.com' `
+    -Detail '1 occurrence(s) in 14 day(s), last 2026-09-20 10:00. USN rollback detected - the directory is silently diverging.'
+Assert-True ($rollbackRec -notmatch 'UNASSESSED') 'Recommendation: a real USN rollback still gets rollback guidance, not coverage guidance'
+Assert-True (-not [string]::IsNullOrWhiteSpace($rollbackRec)) 'Recommendation: USN rollback guidance is present'
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }
