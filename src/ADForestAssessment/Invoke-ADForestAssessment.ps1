@@ -259,6 +259,31 @@ $script:Config = @{
         @{ Port = 9389; Name = 'ADWS';                Critical = $false }
     )
     DsEventLookbackDays     = 14
+    # --- DFS Replication log events that decide whether SYSVOL is actually replicating ------
+    # Meanings are taken from the vendor's own troubleshooting articles, not inferred:
+    #   https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-missing-sysvol-and-netlogon-shares
+    #   https://learn.microsoft.com/troubleshoot/windows-server/group-policy/force-authoritative-non-authoritative-synchronization  (KB 2218556)
+    # Read: 2026-09-21. Events whose meaning the vendor does not publish are deliberately absent
+    # rather than guessed.
+    DfsrEventsOfInterest    = @(
+        @{ Id = 2213; Severity = 'Fail'; Meaning = 'Dirty shutdown detected - DFSR replication is PAUSED on this volume and will not resume until the ResumeReplication WMI method is run.' }
+        @{ Id = 4012; Severity = 'Fail'; Meaning = 'Content freshness protection stopped replication - the folder has not replicated for longer than MaxOfflineTimeInDays. SYSVOL will not converge without reinitialisation.' }
+        @{ Id = 4114; Severity = 'Fail'; Meaning = 'SYSVOL is no longer being replicated on this DC (membership disabled, msDFSR-Enabled=FALSE).' }
+        @{ Id = 4144; Severity = 'Fail'; Meaning = 'DFSR membership disabled for this replicated folder - logged during a D2/D4-equivalent reinitialisation.' }
+        @{ Id = 4614; Severity = 'Warning'; Meaning = 'DFSR is WAITING to perform initial replication of SYSVOL. Until event 4604 follows, this DC has not initialised SYSVOL.' }
+        @{ Id = 4604; Severity = 'Info'; Meaning = 'SYSVOL replicated folder initialised successfully - the healthy end state.' }
+        @{ Id = 2212; Severity = 'Warning'; Meaning = 'Dirty shutdown - DFSR is rebuilding its database; expect 2214 to follow on completion.' }
+        @{ Id = 2214; Severity = 'Info'; Meaning = 'Dirty shutdown recovery completed.' }
+        @{ Id = 5002; Severity = 'Warning'; Meaning = 'DFSR connection error with a replication partner.' }
+        @{ Id = 5014; Severity = 'Warning'; Meaning = 'DFSR RPC communication problem with a replication partner.' }
+    )
+    DfsrEventLookbackDays   = 14
+    # DN template for the SYSVOL subscription object, per KB 2218556. msDFSR-Enabled=FALSE means
+    # SYSVOL replication is switched off on that DC; msDFSR-options=1 marks it authoritative (the
+    # DFSR equivalent of FRS D4). Both are set by hand during a recovery and are easy to leave
+    # behind, and neither is visible anywhere else in this report.
+    SysvolSubscriptionDn    = 'CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,{0}'
+    SysvolShares            = @('SYSVOL', 'NETLOGON')
     # --- Exchange Server SE: the AD prerequisites, as a versioned table -------------------
     # Volatile vendor facts, so they live here with their source and read date and can be
     # replaced from a file via -ExchangeSeConfigPath when Microsoft revises the matrix. A new
@@ -3277,7 +3302,7 @@ function Get-AdfaEventLogCoverage {
     return 'Truncated'
 }
 
-function Get-AdfaDsEventCoverageDetail {
+function Get-AdfaEventCoverageDetail {
     <#
     .SYNOPSIS
         The sentence that explains a non-Covered verdict, naming what limits the claim.
@@ -3293,30 +3318,33 @@ function Get-AdfaDsEventCoverageDetail {
         [Parameter(Mandatory)][ValidateSet('Covered', 'Truncated', 'Empty', 'Unknown')][string]$Coverage,
         [AllowNull()][Nullable[datetime]]$OldestRecord,
         [int]$LookbackDays = 14,
-        [string]$Reason = ''
+        [string]$Reason = '',
+        # Named by the caller so one guard serves both the Directory Service and the
+        # DFS Replication logs rather than the wording being duplicated per log.
+        [string]$LogName = 'Directory Service'
     )
     if ($Coverage -eq 'Covered') { return '' }
     if ($Coverage -eq 'Empty') {
-        return ("The Directory Service log holds no records, so the absence of an event proves nothing. " +
-            "A log cleared during recovery looks identical to a healthy one here - read the log on the DC itself.")
+        return (("The {0} log holds no records, so the absence of an event proves nothing. " +
+                "A log cleared during recovery looks identical to a healthy one here - read the log on the DC itself.") -f $LogName)
     }
     if ($Coverage -eq 'Truncated') {
         $from = ''
         if ($null -ne $OldestRecord) { $from = $OldestRecord.ToString('yyyy-MM-dd HH:mm') }
         # The concatenation is parenthesised before -f on purpose: -f binds tighter than +, so
         # "a {0}" + "b" -f $x formats only the SECOND string and leaves {0} literal.
-        return (("The Directory Service log only goes back to {0}, which is inside the {1}-day window, " +
-                "so nothing can be concluded about the period before that. The log was cleared or has wrapped.") -f $from, $LookbackDays)
+        return (("The {0} log only goes back to {1}, which is inside the {2}-day window, " +
+                "so nothing can be concluded about the period before that. The log was cleared or has wrapped.") -f $LogName, $from, $LookbackDays)
     }
     $suffix = ''
     if (-not [string]::IsNullOrWhiteSpace($Reason)) { $suffix = (" Cause: {0}" -f $Reason) }
-    return ("The Directory Service log could not be inspected, so its coverage of the {0}-day window is unknown.{1}" -f $LookbackDays, $suffix)
+    return ("The {0} log could not be inspected, so its coverage of the {1}-day window is unknown.{2}" -f $LogName, $LookbackDays, $suffix)
 }
 
-function Get-AdfaDsEventLogCoverage {
+function Get-AdfaEventLogCoverageForLog {
     <#
     .SYNOPSIS
-        Measures how far back a DC's Directory Service log actually reaches.
+        Measures how far back a named event log on a DC actually reaches.
     .DESCRIPTION
         Thin collector over Get-AdfaEventLogCoverage. Get-WinEvent -ListLog gives the record
         count but not the oldest record's timestamp, so the oldest record is read directly
@@ -3328,6 +3356,7 @@ function Get-AdfaDsEventLogCoverage {
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][string]$LogName,
         [pscredential]$Credential,
         [Parameter(Mandatory)][datetime]$WindowStart
     )
@@ -3336,7 +3365,7 @@ function Get-AdfaDsEventLogCoverage {
     $reason = ''
     $inspected = $false
     try {
-        $listArgs = @{ ListLog = 'Directory Service'; ComputerName = $ComputerName; ErrorAction = 'Stop' }
+        $listArgs = @{ ListLog = $LogName; ComputerName = $ComputerName; ErrorAction = 'Stop' }
         if ($Credential) { $listArgs.Credential = $Credential }
         $log = Get-WinEvent @listArgs
         if ($null -ne $log) {
@@ -3344,7 +3373,7 @@ function Get-AdfaDsEventLogCoverage {
             $prop = $log.PSObject.Properties['RecordCount']   # $null when absent - StrictMode-safe
             if ($null -ne $prop -and $null -ne $prop.Value) { $recordCount = [int]$prop.Value }
         }
-        else { $reason = 'Get-WinEvent -ListLog returned nothing for the Directory Service log.' }
+        else { $reason = ("Get-WinEvent -ListLog returned nothing for the {0} log." -f $LogName) }
     }
     catch {
         $reason = $_.Exception.Message
@@ -3353,7 +3382,7 @@ function Get-AdfaDsEventLogCoverage {
     if ($inspected -and ($null -eq $recordCount -or $recordCount -gt 0)) {
         try {
             $oldArgs = @{
-                ComputerName = $ComputerName; LogName = 'Directory Service'
+                ComputerName = $ComputerName; LogName = $LogName
                 Oldest = $true; MaxEvents = 1; ErrorAction = 'Stop'
             }
             if ($Credential) { $oldArgs.Credential = $Credential }
@@ -3377,6 +3406,325 @@ function Get-AdfaDsEventLogCoverage {
         RecordCount  = $recordCount
         Reason       = $reason
     }
+}
+
+
+function Get-AdfaSysvolShareOutcome {
+    <#
+    .SYNOPSIS
+        Pure classification of whether a DC is actually sharing SYSVOL and NETLOGON.
+    .DESCRIPTION
+        The distinction that matters is between "the share is not there" and "we could not
+        look". A DC that is unreachable over SMB tells us nothing about its shares, and calling
+        that a missing share would invent a failure; calling it healthy would hide one.
+
+        Missing SYSVOL/NETLOGON is the vendor's own first diagnostic for broken SYSVOL
+        replication, and it is a common state after a restore - the DFSR service will not share
+        SYSVOL until the replicated folder has initialised (event 4604).
+        https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-missing-sysvol-and-netlogon-shares
+        Read: 2026-09-21.
+    .OUTPUTS
+        [string] Shared | MissingSysvol | MissingNetlogon | MissingBoth | Unknown
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [bool]$SmbReachable = $true,
+        [AllowNull()][Nullable[bool]]$SysvolPresent,
+        [AllowNull()][Nullable[bool]]$NetlogonPresent
+    )
+    if (-not $SmbReachable) { return 'Unknown' }
+    if ($null -eq $SysvolPresent -or $null -eq $NetlogonPresent) { return 'Unknown' }
+    if ($SysvolPresent -and $NetlogonPresent) { return 'Shared' }
+    if (-not $SysvolPresent -and -not $NetlogonPresent) { return 'MissingBoth' }
+    if (-not $SysvolPresent) { return 'MissingSysvol' }
+    return 'MissingNetlogon'
+}
+
+function Get-AdfaSysvolShareHealth {
+    <#
+    .SYNOPSIS
+        Per-DC SYSVOL / NETLOGON share presence.
+    .DESCRIPTION
+        Thin collector over Get-AdfaSysvolShareOutcome. SMB (445) is probed first so an
+        unreachable DC is reported as unknown rather than as a missing share.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        [int]$RpcPortTimeoutMs = 1200
+    )
+    $rows = @()
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'SYSVOL' -Item 'SYSVOL / NETLOGON shares' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so no share could be probed. This is not a clean result.')
+    }
+    foreach ($dc in $DomainControllers) {
+        $smbOk = Test-TcpPort -ComputerName $dc -Port 445 -TimeoutMs $RpcPortTimeoutMs
+        $sysvol = $null
+        $netlogon = $null
+        if ($smbOk) {
+            foreach ($share in @($script:Config.SysvolShares)) {
+                $present = $null
+                try { $present = [bool](Test-Path -LiteralPath ("\\{0}\{1}" -f $dc, $share) -ErrorAction Stop) }
+                catch { $present = $null }
+                if ($share -eq 'SYSVOL') { $sysvol = $present } else { $netlogon = $present }
+            }
+        }
+        $outcome = Get-AdfaSysvolShareOutcome -SmbReachable $smbOk -SysvolPresent $sysvol -NetlogonPresent $netlogon
+        $status = $script:Status.NotAssessed
+        $detail = ''
+        switch ($outcome) {
+            'Shared' {
+                $status = $script:Status.Pass
+                $detail = 'Both SYSVOL and NETLOGON are shared.'
+            }
+            'MissingBoth' {
+                $status = $script:Status.Fail
+                $detail = 'Neither SYSVOL nor NETLOGON is shared. Group Policy and logon scripts are not being served by this DC, and DFSR has not initialised the replicated folder (look for event 4604, and for 2213 / 4012 / 4114 in the DFS Replication log).'
+            }
+            'MissingSysvol' {
+                $status = $script:Status.Fail
+                $detail = 'SYSVOL is NOT shared (NETLOGON is). Group Policy is not being served by this DC.'
+            }
+            'MissingNetlogon' {
+                $status = $script:Status.Fail
+                $detail = 'NETLOGON is NOT shared (SYSVOL is). Logon scripts are not being served by this DC.'
+            }
+            default {
+                $status = $script:Status.NotAssessed
+                $detail = 'SMB (445) was not reachable, so the shares could not be probed. Nothing can be concluded about them from here - check on the DC itself.'
+            }
+        }
+        $rows += New-Finding -Area 'SYSVOL' -Item ("Shares on {0}" -f $dc) -Status $status -Detail $detail
+    }
+    return @($rows)
+}
+
+function Get-AdfaDfsrSubscriptionVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict on the SYSVOL subscription state across every DC in a domain.
+    .DESCRIPTION
+        Per KB 2218556, a DFSR-replicated SYSVOL is reinitialised by hand through two attributes
+        on each DC's SYSVOL subscription object: msDFSR-Enabled=FALSE takes that DC out of
+        replication, and msDFSR-options=1 marks one DC authoritative (the DFSR equivalent of the
+        FRS D4). Both are edited during a recovery and both are easy to leave behind - and
+        nothing else in this report would show it.
+        https://learn.microsoft.com/troubleshoot/windows-server/group-policy/force-authoritative-non-authoritative-synchronization
+        Read: 2026-09-21.
+
+        The cross-DC rule is the reason this is a whole-domain verdict rather than a per-DC one:
+        the procedure marks exactly ONE member authoritative, so two or more is a conflict that
+        cannot be seen by looking at any single DC.
+
+        The verdict describes what the attributes say and what that means. It does not claim the
+        reinitialisation is unfinished on the strength of msDFSR-options alone - the vendor does
+        not document clearing it afterwards, so a set value is reported as state, not as a fault.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [AllowNull()][AllowEmptyCollection()]$Subscriptions = @()
+    )
+    $rows = @()
+    $subs = @($Subscriptions | Where-Object { $null -ne $_ })
+    if ($subs.Count -eq 0) {
+        return @(New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'DFSR SYSVOL subscription state' -Status $script:Status.NotAssessed `
+                -Detail 'No SYSVOL subscription object could be read, so it is unknown whether SYSVOL replication is enabled on these DCs. This is not a clean result.')
+    }
+
+    $disabled = @()
+    $unknown = @()
+    $authoritative = @()
+    foreach ($sub in $subs) {
+        $name = '(unnamed)'
+        $nProp = $sub.PSObject.Properties['DcName']
+        if ($null -ne $nProp -and $null -ne $nProp.Value) { $name = [string]$nProp.Value }
+        $eProp = $sub.PSObject.Properties['Enabled']
+        $oProp = $sub.PSObject.Properties['Options']
+        if ($null -eq $eProp -or $null -eq $eProp.Value) { $unknown += $name }
+        elseif (-not [bool]$eProp.Value) { $disabled += $name }
+        if ($null -ne $oProp -and $null -ne $oProp.Value -and [int]$oProp.Value -eq 1) { $authoritative += $name }
+    }
+
+    if ($disabled.Count -gt 0) {
+        $rows += New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'DFSR SYSVOL replication disabled' -Status $script:Status.Fail `
+            -Detail ("msDFSR-Enabled=FALSE on {0} of {1} DC(s): {2}. SYSVOL is NOT replicating on those DCs and they will not share SYSVOL. This attribute is only set by hand, during a D2/D4-equivalent reinitialisation - if that procedure was interrupted it must be completed by setting msDFSR-Enabled=TRUE and running 'dfsrdiag pollad'." -f `
+                $disabled.Count, $subs.Count, ($disabled -join ', '))
+    }
+    else {
+        $rows += New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'DFSR SYSVOL replication enabled' -Status $script:Status.Pass `
+            -Detail ("msDFSR-Enabled is TRUE on all {0} DC(s) whose subscription object could be read." -f ($subs.Count - $unknown.Count))
+    }
+
+    if ($unknown.Count -gt 0) {
+        $rows += New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'DFSR SYSVOL subscription - not readable' -Status $script:Status.NotAssessed `
+            -Detail ("msDFSR-Enabled could not be read on {0} DC(s): {1}. Those DCs are unverified, not healthy." -f $unknown.Count, ($unknown -join ', '))
+    }
+
+    if ($authoritative.Count -gt 1) {
+        $rows += New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'Conflicting authoritative SYSVOL members' -Status $script:Status.Fail `
+            -Detail ("msDFSR-options=1 on {0} DCs: {1}. The reinitialisation procedure marks exactly ONE member authoritative; more than one is a conflict and the domain's SYSVOL content may diverge depending on which initialises first. Decide which DC holds the correct SYSVOL and clear the attribute on the others." -f `
+                $authoritative.Count, ($authoritative -join ', '))
+    }
+    elseif ($authoritative.Count -eq 1) {
+        $rows += New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'Authoritative SYSVOL member set' -Status $script:Status.Warning `
+            -Detail ("msDFSR-options=1 on {0}, marking it the authoritative SYSVOL member (the DFSR equivalent of an FRS D4). That is expected DURING a deliberate SYSVOL rebuild and unexpected otherwise. Confirm the rebuild completed - DFS Replication event 4602 on that DC, then 4604 on the others - and that this DC genuinely holds the SYSVOL content you want to keep." -f $authoritative[0])
+    }
+    return @($rows)
+}
+
+function Get-AdfaDfsrSubscription {
+    <#
+    .SYNOPSIS
+        Reads each DC's SYSVOL subscription object (msDFSR-Enabled, msDFSR-options).
+    .OUTPUTS
+        [pscustomobject[]] DcName, Enabled, Options, Error
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [hashtable]$AdParams = @{}
+    )
+    $out = @()
+    foreach ($dc in @($DomainControllers | Where-Object { $null -ne $_ })) {
+        $dn = ''
+        $name = ''
+        $hostProp = $dc.PSObject.Properties['HostName']
+        $dnProp = $dc.PSObject.Properties['ComputerObjectDN']
+        if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $name = [string]$hostProp.Value }
+        if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $dn = [string]$dnProp.Value }
+        if (-not $dn) {
+            $out += [pscustomobject]@{ DcName = $name; Enabled = $null; Options = $null; Error = 'No computer object DN on the inventory row, so the subscription DN could not be built.' }
+            continue
+        }
+        $subDn = $script:Config.SysvolSubscriptionDn -f $dn
+        try {
+            $p = @{} + $AdParams
+            $p.Identity = $subDn
+            $p.Properties = @('msDFSR-Enabled', 'msDFSR-options')
+            $obj = Get-ADObject @p -ErrorAction Stop
+            $en = $null
+            $op = $null
+            $eProp = $obj.PSObject.Properties['msDFSR-Enabled']
+            $oProp = $obj.PSObject.Properties['msDFSR-options']
+            if ($null -ne $eProp -and $null -ne $eProp.Value) { $en = [bool]$eProp.Value }
+            if ($null -ne $oProp -and $null -ne $oProp.Value) { $op = [int]$oProp.Value }
+            # An unset msDFSR-Enabled is the default-enabled state, not "unknown": the attribute
+            # is only written when someone disables replication. Treated as TRUE so a healthy DC
+            # is not reported as unverified, which would cry wolf on every normal forest.
+            if ($null -eq $en) { $en = $true }
+            $out += [pscustomobject]@{ DcName = $name; Enabled = $en; Options = $op; Error = '' }
+        }
+        catch {
+            $out += [pscustomobject]@{ DcName = $name; Enabled = $null; Options = $null; Error = $_.Exception.Message }
+        }
+    }
+    return @($out)
+}
+
+function Get-AdfaDfsrEventLog {
+    <#
+    .SYNOPSIS
+        Scans each DC's DFS Replication log for the events that decide SYSVOL health.
+    .DESCRIPTION
+        The SYSVOL counterpart of Get-AdfaDsEventLog, and gated on log coverage the same way:
+        finding no events only means something if the log reaches back across the window. After
+        a ransomware recovery it frequently does not.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        [pscredential]$Credential,
+        [int]$LookbackDays = 14,
+        [int]$RpcPortTimeoutMs = 1200
+    )
+    $rows = @()
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'DfsrEvents' -Item 'DFS Replication events' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so the DFS Replication log could not be read. This is not a clean result.')
+    }
+    $ids = @($script:Config.DfsrEventsOfInterest | ForEach-Object { [int]$_.Id })
+    $meta = @{}
+    foreach ($e in $script:Config.DfsrEventsOfInterest) { $meta[[int]$e.Id] = $e }
+    $windowStart = (Get-Date).AddDays(-$LookbackDays)
+
+    foreach ($dc in $DomainControllers) {
+        if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
+            $rows += New-Finding -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed -Detail 'RPC (135) not reachable - the DFS Replication log could not be read remotely.'
+            continue
+        }
+        $cov = Get-AdfaEventLogCoverageForLog -ComputerName $dc -LogName 'DFS Replication' -Credential $Credential -WindowStart $windowStart
+        $covNote = ''
+        if ($cov.Coverage -ne 'Covered') {
+            $covNote = ("The DFS Replication log does not cover the full {0}-day window (coverage: {1}{2}), so absence of an event proves nothing." -f `
+                    $LookbackDays, $cov.Coverage, $(if ($null -ne $cov.OldestRecord) { ("; oldest record {0:yyyy-MM-dd HH:mm}" -f $cov.OldestRecord) } else { '' }))
+        }
+        $rows += New-Finding -Area 'DfsrEvents' -Item ("Log coverage on {0}" -f $dc) `
+            -Status $(if ($cov.Coverage -eq 'Covered') { $script:Status.Pass } else { $script:Status.NotAssessed }) `
+            -Detail $(if ($cov.Coverage -eq 'Covered') { ("DFS Replication log covers the full {0}-day window." -f $LookbackDays) } else { $covNote })
+
+        try {
+            $gwe = @{
+                ComputerName    = $dc
+                FilterHashtable = @{ LogName = 'DFS Replication'; Id = $ids; StartTime = $windowStart }
+                MaxEvents       = 500
+                ErrorAction     = 'Stop'
+            }
+            if ($Credential) { $gwe.Credential = $Credential }
+            $events = @(Get-WinEvent @gwe)
+            if (@($events).Count -eq 0) {
+                if ($cov.Coverage -eq 'Covered') {
+                    # Not a Pass: SYSVOL health is proven by seeing 4604, not by silence.
+                    $rows += New-Finding -Area 'DfsrEvents' -Item $dc -Status $script:Status.Warning `
+                        -Detail ("No DFS Replication events of interest in {0} day(s) - including no 4604 (SYSVOL initialised). Silence is not evidence that SYSVOL initialised; confirm the shares are present and that DFSR has logged a 4604 at some point." -f $LookbackDays)
+                }
+                else {
+                    $rows += New-Finding -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed `
+                        -Detail ("No DFS Replication events of interest found, but this is NOT a pass. {0}" -f $covNote)
+                }
+                continue
+            }
+            foreach ($g in ($events | Group-Object Id)) {
+                $id = [int]$g.Name
+                $m = $meta[$id]
+                $sev = $script:Status.Warning
+                $meaning = ''
+                if ($m) {
+                    $meaning = [string]$m.Meaning
+                    if ([string]$m.Severity -eq 'Fail') { $sev = $script:Status.Fail }
+                    elseif ([string]$m.Severity -eq 'Info') { $sev = $script:Status.Info }
+                }
+                $last = ($g.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1).TimeCreated
+                $floor = ''
+                if ($cov.Coverage -ne 'Covered') { $floor = (" Count is a MINIMUM - {0}" -f $covNote) }
+                $rows += New-Finding -Area 'DfsrEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev `
+                    -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}{4}" -f $g.Count, $LookbackDays, $last, $meaning, $floor)
+            }
+        }
+        catch {
+            if ($_.Exception.Message -match 'No events were found|There is not an event log') {
+                $rows += New-Finding -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed `
+                    -Detail ("The DFS Replication log held no matching events or is not present: {0}. Not a pass." -f $_.Exception.Message)
+            }
+            else {
+                $rows += New-Finding -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("DFS Replication log query failed: {0}" -f $_.Exception.Message)
+            }
+        }
+    }
+    return @($rows)
 }
 
 function Get-AdfaDsEventLog {
@@ -3419,9 +3767,9 @@ function Get-AdfaDsEventLog {
 
         # How far back does this log actually reach? Asked before the scan, because it decides
         # whether "no events" means anything at all.
-        $cov = Get-AdfaDsEventLogCoverage -ComputerName $dc -Credential $Credential -WindowStart $windowStart
-        $covNote = Get-AdfaDsEventCoverageDetail -Coverage $cov.Coverage -OldestRecord $cov.OldestRecord `
-            -LookbackDays $LookbackDays -Reason $cov.Reason
+        $cov = Get-AdfaEventLogCoverageForLog -ComputerName $dc -LogName 'Directory Service' -Credential $Credential -WindowStart $windowStart
+        $covNote = Get-AdfaEventCoverageDetail -Coverage $cov.Coverage -OldestRecord $cov.OldestRecord `
+            -LookbackDays $LookbackDays -Reason $cov.Reason -LogName 'Directory Service'
         $rows += New-Finding -Area 'DsEvents' -Item ("Log coverage on {0}" -f $dc) `
             -Status $(if ($cov.Coverage -eq 'Covered') { $script:Status.Pass } else { $script:Status.NotAssessed }) `
             -Detail $(if ($cov.Coverage -eq 'Covered') {
@@ -3513,6 +3861,27 @@ $script:RecommendationMap = @(
        Text  = 'Every domain controller in the forest must run a supported Windows Server version, not only the ones in the Exchange site. Upgrade or decommission the named DCs before Setup, transferring any FSMO roles they hold first. Where the OS could not be read, re-run with credentials able to read the DC computer objects - an unreadable value is not a pass.' }
     @{ Section = '(?i)exchange se'; Match = '(?i)read-only domain controller'
        Text  = 'Exchange does not use a read-only DC or a read-only global catalog. No action is needed for an RODC in a site where no Exchange server will be installed; for any site that WILL host one, confirm it also contains a writeable global catalog, or Setup fails in that site alone.' }
+    # --- SYSVOL / DFSR specifics, ahead of the generic sysvol|dfsr entry below, which would
+    #     otherwise answer every one of these with "perform a D4". Reinitialising is the LAST
+    #     resort: the vendor's own guidance is that it is unnecessary in most cases and can lose
+    #     data, and it hides the cause.
+    #     https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-missing-sysvol-and-netlogon-shares
+    #     https://learn.microsoft.com/troubleshoot/windows-server/group-policy/force-authoritative-non-authoritative-synchronization
+    #     Read: 2026-09-21.
+    @{ Match = '(?i)msDFSR-options=1 on \d+ DCs|conflicting authoritative'
+       Text  = 'Only ONE member may be authoritative. Decide which DC holds the SYSVOL content you want to keep - normally the PDC emulator, and compare \\<dc>\SYSVOL\<domain>\Policies on the candidates first - then clear msDFSR-options on every other DC''s "CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,<server DN>" object. Leaving two set means SYSVOL content depends on which DC initialises first.' }
+    @{ Match = '(?i)msDFSR-Enabled=FALSE'
+       Text  = 'SYSVOL replication is switched off on the named DCs, which only happens by hand during a D2/D4-equivalent rebuild - so finish it. Set msDFSR-Enabled=TRUE on "CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,<server DN>", force AD replication, then run "dfsrdiag pollad" on that DC. Watch for DFS Replication events 4614 (waiting) then 4604 (initialised); only 4604 means SYSVOL is serving again. Recover from the authoritative DC outward through its direct partners, not all at once.' }
+    @{ Match = '(?i)authoritative SYSVOL member'
+       Text  = 'Expected only during a deliberate SYSVOL rebuild. Confirm it finished: DFS Replication event 4602 on this DC, then 4604 on the others, and \\<dc>\SYSVOL present everywhere. If no rebuild was intended, this attribute was left behind - establish which DC holds correct SYSVOL content before clearing anything, because the next DFSR initialisation will treat this DC as the source of truth.' }
+    @{ Match = '(?i)neither SYSVOL nor NETLOGON|SYSVOL is NOT shared|NETLOGON is NOT shared'
+       Text  = 'Do NOT jump to a D4 rebuild - find the cause first. On the DC, read the DFS Replication log: event 2213 means a dirty shutdown paused replication and the fix is the ResumeReplication WMI method, not a rebuild; 4012 means content freshness stopped it (MaxOfflineTimeInDays exceeded) and needs reinitialisation; 4114 means the membership is disabled. A DC that has never logged 4604 has never initialised SYSVOL. Confirm AD replication is healthy first - DFSR reads its configuration from the directory, so a broken AD replica cannot converge SYSVOL.' }
+    @{ Match = '(?i)dirty shutdown detected'
+       Text  = 'DFSR paused replication after a dirty shutdown and will not resume by itself. Run the ResumeReplication WMI method on that volume as the 2213 event instructs; event 2214 confirms recovery completed. Do not delete the DFSR database - that makes DFSR treat all local data as non-authoritative and risks losing SYSVOL content.' }
+    @{ Match = '(?i)content freshness'
+       Text  = 'Replication has been stopped for longer than MaxOfflineTimeInDays, so DFSR will not resume without reinitialisation. Recover the affected DCs non-authoritatively (msDFSR-Enabled FALSE then TRUE, with "dfsrdiag pollad"), fanning out from a known-healthy DC through its direct partners. Only set a DC authoritative if EVERY DC has logged 4012 - that is the single case where an authoritative rebuild is correct.' }
+    @{ Match = '(?i)WAITING to perform initial replication'
+       Text  = 'This DC has not initialised SYSVOL and is not serving it. Run "dfsrdiag pollad" on it and wait for event 4604. If 4604 never arrives, its upstream partner is not serving SYSVOL either - fix the upstream DC first; initial sync cannot complete from a partner that has nothing to give.' }
     # --- Unscoped entries: matched against "Section :: Item :: Detail" ---
     # Ahead of the event-specific entries: a log that cannot cover the window is a different
     # problem from an event found in it, and the fix is to recover the evidence, not the DC.
@@ -4076,7 +4445,29 @@ function Invoke-Main {
     }
     if (Test-SectionSelected 'Sysvol' $Sections) {
         Write-Stage 'SYSVOL/DFSR'
-        $sectionData['SYSVOL / DFSR'] = Get-AdfaSysvolHealth @ext
+        $sysvolRows = @(Get-AdfaSysvolHealth @ext)
+
+        # Whether each DC is actually serving SYSVOL and NETLOGON. The vendor's own first
+        # diagnostic for broken SYSVOL replication, and a common state after a restore: DFSR
+        # does not share SYSVOL until the replicated folder has initialised.
+        $sysvolRows += @(Get-AdfaSysvolShareHealth -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs)
+
+        # The two attributes a D2/D4-equivalent rebuild edits by hand, per KB 2218556. Read
+        # per domain, because "exactly one member is authoritative" is a cross-DC rule that
+        # cannot be checked from any single DC.
+        foreach ($d in $targetDomains) {
+            $domainDcs = @($allDcInventory | Where-Object {
+                    $sc = $_.PSObject.Properties['Scope']   # $null when absent - StrictMode-safe
+                    $null -ne $sc -and [string]$sc.Value -eq $d
+                })
+            $subs = @(Get-AdfaDfsrSubscription -DomainName $d -DomainControllers $domainDcs -AdParams $adParams)
+            $sysvolRows += @(Get-AdfaDfsrSubscriptionVerdict -DomainName $d -Subscriptions $subs)
+        }
+        $sectionData['SYSVOL / DFSR'] = @($sysvolRows)
+
+        Write-Stage 'DFS Replication events'
+        $sectionData['DFS Replication Events'] = Get-AdfaDfsrEventLog -DomainControllers $dcNames -Credential $Credential `
+            -LookbackDays $script:Config.DfsrEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
     }
     if (Test-SectionSelected 'Gpo' $Sections) {
         Write-Stage 'GPO inventory'

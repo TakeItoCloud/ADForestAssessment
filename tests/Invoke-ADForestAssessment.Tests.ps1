@@ -657,26 +657,26 @@ Describe 'Directory Service log coverage' {
         }
     }
 
-    Context 'Get-AdfaDsEventCoverageDetail' {
+    Context 'Get-AdfaEventCoverageDetail' {
         It 'adds no caveat when coverage is complete' {
-            Get-AdfaDsEventCoverageDetail -Coverage 'Covered' -OldestRecord $script:WStart -LookbackDays 14 |
+            Get-AdfaEventCoverageDetail -Coverage 'Covered' -OldestRecord $script:WStart -LookbackDays 14 |
                 Should -BeNullOrEmpty
         }
         It 'names where coverage actually begins' {
             # Guards a real precedence bug: "a {0}" + "b" -f $x formats only the SECOND string,
             # so the timestamp silently stayed a literal {0} until this asserted on it.
-            $d = Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' `
+            $d = Get-AdfaEventCoverageDetail -Coverage 'Truncated' `
                 -OldestRecord ([datetime]'2026-09-15 08:30') -LookbackDays 14
             $d | Should -Match '2026-09-15 08:30'
             $d | Should -Not -Match '\{0\}'
             $d | Should -Match 'cleared or has wrapped'
         }
         It 'says absence proves nothing for an empty log' {
-            Get-AdfaDsEventCoverageDetail -Coverage 'Empty' -OldestRecord $null -LookbackDays 14 |
+            Get-AdfaEventCoverageDetail -Coverage 'Empty' -OldestRecord $null -LookbackDays 14 |
                 Should -Match 'proves nothing'
         }
         It 'carries the underlying cause when the log could not be inspected' {
-            Get-AdfaDsEventCoverageDetail -Coverage 'Unknown' -OldestRecord $null -LookbackDays 14 `
+            Get-AdfaEventCoverageDetail -Coverage 'Unknown' -OldestRecord $null -LookbackDays 14 `
                 -Reason 'Access is denied' | Should -Match 'Access is denied'
         }
     }
@@ -685,7 +685,7 @@ Describe 'Directory Service log coverage' {
         It 'routes a coverage finding to evidence recovery, not a secure-channel reset' {
             $r = Get-AdfaRecommendation -Section 'Directory Service Events' `
                 -Item 'Log coverage on dc1.contoso.com' `
-                -Detail (Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' -OldestRecord (Get-Date) -LookbackDays 14)
+                -Detail (Get-AdfaEventCoverageDetail -Coverage 'Truncated' -OldestRecord (Get-Date) -LookbackDays 14)
             $r | Should -Not -BeNullOrEmpty
             $r | Should -Match 'UNASSESSED'
             $r | Should -Not -Match 'netdom trust'
@@ -894,6 +894,109 @@ Describe 'Exchange Server SE compatibility' {
                 [string]$m.SourceUrl | Should -Be $good
             }
             finally { Remove-Item $good -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+Describe 'SYSVOL / DFSR depth' {
+    BeforeAll {
+        # Defined in BeforeAll, not the Describe body: a Describe body runs during Pester's
+        # discovery phase, so a function declared there does not exist when It blocks execute.
+        function Get-SvTestRow {
+            param($Rows, [string]$Item)
+            $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
+    }
+
+    Context 'Get-AdfaSysvolShareOutcome' {
+        It 'distinguishes a missing share from an unreachable DC' {
+            # The whole point: "not shared" is a finding, "could not look" is not.
+            Get-AdfaSysvolShareOutcome -SmbReachable $true -SysvolPresent $true -NetlogonPresent $true | Should -Be 'Shared'
+            Get-AdfaSysvolShareOutcome -SmbReachable $true -SysvolPresent $false -NetlogonPresent $false | Should -Be 'MissingBoth'
+            Get-AdfaSysvolShareOutcome -SmbReachable $true -SysvolPresent $false -NetlogonPresent $true | Should -Be 'MissingSysvol'
+            Get-AdfaSysvolShareOutcome -SmbReachable $true -SysvolPresent $true -NetlogonPresent $false | Should -Be 'MissingNetlogon'
+            Get-AdfaSysvolShareOutcome -SmbReachable $false -SysvolPresent $null -NetlogonPresent $null | Should -Be 'Unknown'
+        }
+        It 'never reports Shared for a DC it could not reach' {
+            Get-AdfaSysvolShareOutcome -SmbReachable $false -SysvolPresent $true -NetlogonPresent $true | Should -Be 'Unknown'
+            Get-AdfaSysvolShareOutcome -SmbReachable $true -SysvolPresent $null -NetlogonPresent $true | Should -Be 'Unknown'
+        }
+    }
+
+    Context 'Get-AdfaDfsrSubscriptionVerdict' {
+        # Per KB 2218556 a DFSR SYSVOL rebuild is driven by msDFSR-Enabled and msDFSR-options,
+        # both edited by hand. Nothing else in this report would show either one.
+        It 'passes when every DC is enabled and none is marked authoritative' {
+            $v = Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions @(
+                [pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $true; Options = $null },
+                [pscustomobject]@{ DcName = 'dc2.contoso.com'; Enabled = $true; Options = $null })
+            [string](Get-SvTestRow $v 'DFSR SYSVOL replication enabled').Status | Should -Be 'Pass'
+            Get-SvTestRow $v 'Authoritative SYSVOL member set' | Should -BeNullOrEmpty
+            Get-SvTestRow $v 'No Such Item' | Should -BeNullOrEmpty   # non-vacuity
+        }
+        It 'fails and names the DC when msDFSR-Enabled is FALSE' {
+            $v = Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions @(
+                [pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $true; Options = $null },
+                [pscustomobject]@{ DcName = 'dc2.contoso.com'; Enabled = $false; Options = $null })
+            $row = Get-SvTestRow $v 'DFSR SYSVOL replication disabled'
+            [string]$row.Status | Should -Be 'Fail'
+            $row.Detail | Should -Match 'dc2\.contoso\.com'
+            $row.Detail | Should -Not -Match 'dc1\.contoso\.com'
+        }
+        It 'fails when more than one DC is marked authoritative' {
+            # A cross-DC rule: the procedure marks exactly one member authoritative, so this
+            # conflict is invisible from any single DC and only a domain-wide verdict finds it.
+            $v = Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions @(
+                [pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $true; Options = 1 },
+                [pscustomobject]@{ DcName = 'dc2.contoso.com'; Enabled = $true; Options = 1 })
+            $row = Get-SvTestRow $v 'Conflicting authoritative SYSVOL members'
+            [string]$row.Status | Should -Be 'Fail'
+            $row.Detail | Should -Match 'dc1'
+            $row.Detail | Should -Match 'dc2'
+            Get-SvTestRow $v 'Authoritative SYSVOL member set' | Should -BeNullOrEmpty
+        }
+        It 'warns rather than fails for a single authoritative member' {
+            # Expected during a deliberate rebuild, so it is state to confirm, not a defect.
+            $v = Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions @(
+                [pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $true; Options = 1 })
+            [string](Get-SvTestRow $v 'Authoritative SYSVOL member set').Status | Should -Be 'Warning'
+        }
+        It 'reports Not Assessed when the subscription cannot be read' {
+            $v = Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions @(
+                [pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $null; Options = $null })
+            [string](Get-SvTestRow $v 'DFSR SYSVOL subscription - not readable').Status | Should -Be 'Not Assessed'
+            [string](Get-SvTestRow (Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions @()) `
+                    'DFSR SYSVOL subscription state').Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'Remediation routing' {
+        It 'does not answer every SYSVOL problem with "perform a D4"' {
+            # Reinitialising is the vendor's last resort - unnecessary in most cases and able to
+            # lose data - so each failure must route to its own fix.
+            $share = Get-AdfaRecommendation -Section 'SYSVOL / DFSR' -Item 'Shares on dc1.contoso.com' `
+                -Detail 'Neither SYSVOL nor NETLOGON is shared.'
+            $share | Should -Match 'Do NOT jump to a D4'
+            $dirty = Get-AdfaRecommendation -Section 'DFS Replication Events' -Item 'Event 2213 on dc1' `
+                -Detail 'Dirty shutdown detected - DFSR replication is PAUSED on this volume.'
+            $dirty | Should -Match 'ResumeReplication'
+            $fresh = Get-AdfaRecommendation -Section 'DFS Replication Events' -Item 'Event 4012 on dc1' `
+                -Detail 'Content freshness protection stopped replication - longer than MaxOfflineTimeInDays.'
+            $fresh | Should -Match 'EVERY DC has logged 4012'
+            $conflict = Get-AdfaRecommendation -Section 'SYSVOL / DFSR' -Item 'Conflicting authoritative SYSVOL members' `
+                -Detail 'msDFSR-options=1 on 2 DCs: dc1, dc2.'
+            $conflict | Should -Match 'Only ONE member may be authoritative'
+        }
+    }
+
+    Context 'Log-agnostic coverage guard' {
+        It 'names whichever log it is reporting on' {
+            Get-AdfaEventCoverageDetail -Coverage 'Truncated' -OldestRecord ([datetime]'2026-09-15 08:30') `
+                -LookbackDays 14 -LogName 'DFS Replication' | Should -Match 'DFS Replication log only goes back'
+            Get-AdfaEventCoverageDetail -Coverage 'Empty' -OldestRecord $null -LookbackDays 14 |
+                Should -Match 'Directory Service log holds no records'
         }
     }
 }

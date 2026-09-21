@@ -53,7 +53,8 @@ verdict only.
 | H2 | Event-log coverage guard: a cleared or truncated Directory Service log must report `Not Assessed`, never `Pass` | Done | 2026-09-21 |
 | H3 | Empty-catch cause reporting — 7 real sites, incl. the three in `Invoke-Main`'s DC enumeration; plus `[AllowEmptyCollection()]` on the five pre-v1.4.0 per-DC collectors, which aborted the run outright when DC enumeration failed | Done | 2026-09-21 |
 | H4 | `ExchangeSeReadiness`: FFL + DC OS vs the supported matrix, from a versioned config table | Done | 2026-09-21 |
-| H5 | SYSVOL/DFSR depth: backlog per member, SYSVOL+NETLOGON share per DC, `msDFSR-Options` D4/D2 | Planned | |
+| H5a | SYSVOL/DFSR depth: SYSVOL+NETLOGON share presence per DC, `msDFSR-Enabled` / `msDFSR-options` per DC with the cross-DC "exactly one authoritative" rule, and a DFS Replication event scan reusing the H2 coverage guard | Done | 2026-09-21 |
+| H5b | DFSR **backlog** per replicated folder per member pair. Split from H5a because it needs the optional DFSR module, O(n) member pairs, and careful handling of `Get-DfsrBacklog`'s 100-record cap (the true count is only in the verbose stream, so a naive count reports a floor as a total) | Planned | |
 | H6 | Replication convergence: parse `repadmin /replsummary` into findings; `/showutdvec` lag per DC per NC | Planned | |
 | H7 | Restore integrity: `msDS-GenerationId` / `invocationID`; dcdiag `CheckSecurityError` + `VerifyEnterpriseReferences` | Planned | |
 | H8 | `_msdcs` delegation; PDC external time source and Hyper-V time-sync conflict; per-site writeable-GC assertion | Planned | |
