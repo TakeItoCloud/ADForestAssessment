@@ -420,6 +420,140 @@ Assert-True ($rollbackRec -notmatch 'UNASSESSED') 'Recommendation: a real USN ro
 Assert-True (-not [string]::IsNullOrWhiteSpace($rollbackRec)) 'Recommendation: USN rollback guidance is present'
 
 Write-Host ""
+Write-Host "== 15. Exchange Server SE compatibility (forest level + DC operating systems) ==" -ForegroundColor Cyan
+
+$seCfg = $script:Config.ExchangeSe
+Assert-True ($seCfg.SourceUrl -match 'learn\.microsoft\.com') 'SE config: carries its vendor source URL'
+Assert-True ($seCfg.ReadDate -match '^\d{4}-\d{2}-\d{2}$') 'SE config: carries the date the source was read'
+
+# --- OS pattern matching. The 2012 R2 / 2012 split is the trap: 2012 R2 is supported and
+# plain 2012 is not, so a loosened pattern would silently pass an unsupported DC.
+Assert-Equal 'Windows Server 2025' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2025 Datacenter' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2025 supported'
+Assert-Equal 'Windows Server 2022' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2022 Standard' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2022 supported'
+Assert-Equal 'Windows Server 2019' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2019 Datacenter' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2019 supported'
+Assert-Equal 'Windows Server 2016' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2016 Standard' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2016 supported'
+Assert-Equal 'Windows Server 2012 R2' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2012 R2 Datacenter' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2012 R2 supported'
+Assert-Equal '' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2012 Standard' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: plain 2012 NOT supported (not confused with 2012 R2)'
+Assert-Equal '' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2008 R2 Enterprise' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: 2008 R2 NOT supported'
+Assert-Equal '' (Test-AdfaOsSupported -OperatingSystem '' -SupportedOs $seCfg.SupportedDomainControllerOs) 'SE OS: empty string is not supported'
+Assert-Equal '' (Test-AdfaOsSupported -OperatingSystem 'Windows Server 2019' -SupportedOs @()) 'SE OS: an empty table supports nothing (never vacuously true)'
+
+# --- Verdict: forest functional level
+$dcOk = @([pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false })
+function Get-SeRow {
+    # Returns $null rather than indexing [0] into an empty array, which throws under StrictMode.
+    param($Rows, [string]$Item)
+    $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+    if ($m.Count -eq 0) { return $null }
+    return $m[0]
+}
+
+$rFfl = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-Equal 'Pass' ([string](Get-SeRow $rFfl 'Forest functional level').Status) 'SE FFL: Windows2016Forest => Pass'
+$rFfl2 = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-Equal 'Pass' ([string](Get-SeRow $rFfl2 'Forest functional level').Status) 'SE FFL: Windows2012R2Forest => Pass'
+$rFflBad = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2008R2Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-Equal 'Fail' ([string](Get-SeRow $rFflBad 'Forest functional level').Status) 'SE FFL: Windows2008R2Forest => Fail'
+Assert-True ((Get-SeRow $rFflBad 'Forest functional level').Detail -match 'Windows2016Forest') 'SE FFL: the failure names what IS supported'
+$rFflNone = Get-AdfaExchangeSeCompatibility -ForestMode '' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-Equal 'Not Assessed' ([string](Get-SeRow $rFflNone 'Forest functional level').Status) 'SE FFL: unreadable => Not Assessed, never Pass'
+
+# --- Verdict: DC operating systems. One bad DC anywhere in the forest is a blocker.
+$dcMixed = @(
+    [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false },
+    [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Windows Server 2012 Standard';   IsReadOnly = $false }
+)
+$rOs = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcMixed -SeConfig $seCfg
+$osRow = Get-SeRow $rOs 'Domain controller operating systems'
+Assert-Equal 'Fail' ([string]$osRow.Status) 'SE DC OS: one unsupported DC => Fail for the forest'
+Assert-True ($osRow.Detail -match 'dc2\.contoso\.com') 'SE DC OS: the failure names the offending DC'
+Assert-True ($osRow.Detail -notmatch 'dc1\.contoso\.com') 'SE DC OS: a compliant DC is not named as a problem'
+
+# An unreadable OS is an absent measurement, NOT an unsupported one - they are different claims.
+$dcUnknown = @(
+    [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $false },
+    [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Not Assessed';        IsReadOnly = $false }
+)
+$rUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcUnknown -SeConfig $seCfg
+Assert-Equal 'Pass' ([string](Get-SeRow $rUnk 'Domain controller operating systems').Status) 'SE DC OS: a readable DC still passes on its own merits'
+$unkRow = Get-SeRow $rUnk 'Domain controller OS - not readable'
+Assert-True ($null -ne $unkRow) 'SE DC OS: an unreadable OS gets its own row, so a partial pass cannot hide it'
+# Guarded: if the row is missing the assertion above has already failed, and dereferencing
+# $null here would abort the whole harness instead of reporting a clean FAIL.
+if ($null -ne $unkRow) {
+    Assert-Equal 'Not Assessed' ([string]$unkRow.Status) 'SE DC OS: unreadable => Not Assessed, not Fail'
+    Assert-True ($unkRow.Detail -match 'unverified, not compatible') 'SE DC OS: unreadable row refuses to imply compatibility'
+}
+
+$rAllUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+    -DomainControllers @([pscustomobject]@{ HostName = 'dc1'; OperatingSystem = 'Not Assessed'; IsReadOnly = $false }) -SeConfig $seCfg
+Assert-Equal 'Not Assessed' ([string](Get-SeRow $rAllUnk 'Domain controller operating systems').Status) 'SE DC OS: nothing readable => Not Assessed, never Pass'
+
+$rNoDc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers @() -SeConfig $seCfg
+Assert-Equal 'Not Assessed' ([string](Get-SeRow $rNoDc 'Domain controller operating systems').Status) 'SE DC OS: no DCs enumerated => Not Assessed'
+
+# --- RODC caveat
+$dcRodc = @(
+    [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $false },
+    [pscustomobject]@{ HostName = 'rodc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $true }
+)
+$rRodc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcRodc -SeConfig $seCfg
+$rodcRow = Get-SeRow $rRodc 'Read-only domain controllers'
+Assert-True ($null -ne $rodcRow) 'SE RODC: a read-only DC is reported'
+if ($null -ne $rodcRow) {
+    Assert-Equal 'Warning' ([string]$rodcRow.Status) 'SE RODC: reported as a Warning, not a false blocker'
+    Assert-True ($rodcRow.Detail -match 'rodc1\.contoso\.com') 'SE RODC: names the read-only DC'
+}
+# Non-vacuity for the "no row" assertions below: prove the lookup can actually return nothing,
+# so an absent row is evidence rather than an artefact of how it is queried.
+Assert-True ($null -eq (Get-SeRow $rRodc 'No Such Item Exists')) 'SE RODC: non-vacuity - the row lookup returns null for an absent item'
+$rNoRodc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-True ($null -eq (Get-SeRow $rNoRodc 'Read-only domain controllers')) 'SE RODC: no row when there are no read-only DCs'
+
+# --- Scope statement: the section must not be mistaken for full SE readiness.
+$scopeRow = Get-SeRow $rFfl 'Scope of this check'
+Assert-True ($null -ne $scopeRow) 'SE scope: the section states its own limits'
+if ($null -ne $scopeRow) {
+    Assert-True ($scopeRow.Detail -match 'does NOT cover') 'SE scope: names what it does not cover'
+}
+
+# --- Config override merge
+$merged = Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override @{ SupportedForestModes = @('Windows2025Forest') } -OverrideSource 'C:\cfg\se.json'
+Assert-Equal 1 (@($merged.SupportedForestModes).Count) 'SE config: override replaces the forest mode list'
+Assert-Equal 5 (@($merged.SupportedDomainControllerOs).Count) 'SE config: keys absent from the override keep their built-in value'
+Assert-Equal 'C:\cfg\se.json' ([string]$merged.SourceUrl) 'SE config: provenance rewritten so findings do not cite Learn for overridden values'
+$unmerged = Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override $null
+Assert-Equal 2 (@($unmerged.SupportedForestModes).Count) 'SE config: a null override changes nothing'
+
+# An override must not be able to empty a gate.
+$emptied = $false
+try { Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override @{ SupportedForestModes = @() } | Out-Null }
+catch { $emptied = $true }
+Assert-True $emptied 'SE config: an empty forest-mode list is rejected, not honoured'
+$emptiedOs = $false
+try { Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override @{ SupportedDomainControllerOs = @() } | Out-Null }
+catch { $emptiedOs = $true }
+Assert-True $emptiedOs 'SE config: an empty OS list is rejected, not honoured'
+
+# The override must actually change the verdict, or it is decoration.
+$strict = Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override @{ SupportedForestModes = @('Windows2016Forest') }
+$rStrict = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $strict
+Assert-Equal 'Fail' ([string](Get-SeRow $rStrict 'Forest functional level').Status) 'SE config: a narrowed override really does change the verdict'
+
+# Remediation must reach the SE findings and must be SE-specific, not generic replication advice.
+$fflRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Forest functional level' `
+    -Detail 'Windows2008R2Forest is NOT supported for Exchange Server SE.'
+Assert-True ($fflRec -match 'Set-ADForestMode') 'SE remediation: forest level fix names the cmdlet'
+Assert-True ($fflRec -match 'one-way|cannot be reverted') 'SE remediation: warns the change is irreversible'
+$osRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Domain controller operating systems' `
+    -Detail '1 of 2 DC(s) run an OS not supported for Exchange Server SE: dc2 (Windows Server 2012 Standard).'
+Assert-True ($osRec -match 'Every domain controller in the forest') 'SE remediation: OS fix states the forest-wide scope'
+Assert-True ($osRec -notmatch 'nltest /dsregdns') 'SE remediation: not hijacked by the DNS guidance'
+$rodcRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Read-only domain controllers' `
+    -Detail '1 read-only DC(s): rodc1.contoso.com.'
+Assert-True ($rodcRec -match 'writeable global catalog') 'SE remediation: RODC advice names the real constraint'
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }

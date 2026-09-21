@@ -10,6 +10,53 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-09-21 (Exchange Server SE compatibility verdict, tool v1.7.0)
+
+`-Sections ExchangeSeReadiness` answers the two Exchange SE prerequisites the directory can
+answer on its own, and says plainly that it answers nothing else.
+
+| Gate | Supported | Verdict when not met |
+| --- | --- | --- |
+| Forest functional level | `Windows2016Forest`, `Windows2012R2Forest` | `Fail`, naming what is supported |
+| DC operating system, **every DC in the forest** | WS 2025 / 2022 / 2019 / 2016 / 2012 R2 | `Fail`, naming the offending DCs |
+| Read-only DCs | not supported | `Warning` |
+
+Forest level and DC OS were already collected as inventory strings (`ForestMode`,
+`OperatingSystem`) and never compared to anything.
+
+A single unsupported DC **anywhere in the forest** is a `Fail`, not a warning, because the
+requirement is that all of them run a supported version — not only the ones in the Exchange
+site. Read-only DCs are a `Warning` rather than a blocker: an RODC in a site no Exchange server
+is installed into does not stop Setup. What does stop it is a target site with no writeable
+global catalog, and that check is **not** claimed here.
+
+Fail-closed, and the distinction is deliberate: a DC whose `OperatingSystem` could not be read
+is `Not Assessed` on a row of its own, never counted as supported and never counted as
+unsupported either — an absent measurement and a measured failure are different claims. The
+separate row exists so a pass on the readable DCs cannot hide it.
+
+Values live in a **versioned config table** with `-ExchangeSeConfigPath` to override it, so a
+revision to Microsoft's matrix is a config edit rather than a code change. The table carries its
+source URL and read date
+([supportability matrix](https://learn.microsoft.com/exchange/plan-and-deploy/supportability-matrix#supported-active-directory-environments),
+read 2026-09-21). A missing or malformed override file is a terminating error, not a silent fall
+back to the built-in table — judging a forest against the wrong table while the operator believes
+theirs is in force is worse than stopping. An override that would leave a gate empty is rejected.
+When an override is in force, provenance is rewritten so findings cite the file and not Learn.
+
+Domain functional levels are reported as `Info`, not judged: the supportability matrix states a
+forest requirement and does not state a domain one, and inventing a domain gate would be a
+fabricated vendor requirement.
+
+**Scope is stated in the output itself**, as an `Info` row, so the section cannot be mistaken for
+Exchange SE readiness. Schema and organisation object versions, the per-site writeable-GC
+requirement, Exchange server inventory and coexistence builds are `ExchangeAssessment`'s remit.
+
+Both gates were demonstrated able to fail: loosening the `2012 R2` pattern to bare `2012` turns
+three assertions red (it would otherwise pass an unsupported DC), and counting an unreadable OS
+as supported turns two red. Script restored byte-for-byte after each, hash verified. A test also
+pins that a narrowed override really changes the verdict, so the config path is not decoration.
+
 ### Fixed — 2026-09-21 (a cleared Directory Service log reported Pass, tool v1.7.0)
 
 **A domain controller whose Directory Service log had been wiped reported `Pass`.** The event

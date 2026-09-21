@@ -45,6 +45,7 @@ Extracted from
 | **Recovery: DS events** | Per-DC Directory Service log scan for lingering objects (1988), tombstone-lifetime exceeded (2042), USN rollback (2095), unsupported restore (2103), source-GUID DNS failures (2087/2088), KCC failures (1311/1865/1925/1084) — **gated on log coverage**: the oldest retained record is compared against the lookback window, and a clean scan over a cleared, wrapped or unreadable log reports `Not Assessed` naming where coverage begins, never `Pass`. A count taken from a partial log is reported as a minimum |
 | Identity export | Full user and computer export with every populated attribute (CSV; HTML shows a summary) |
 | Exchange | Schema markers |
+| **Exchange SE compatibility** | Forest functional level and **every DC's operating system** against the Exchange Server SE supported matrix, plus the read-only-DC caveat — from a versioned config table with a `-ExchangeSeConfigPath` override. Deliberately narrow: it does *not* cover schema/organisation object versions, the per-site writeable-GC requirement, Exchange server inventory or coexistence builds |
 
 Every Fail / Warning / Broken / Degraded finding in the consolidated output carries a
 **best-practice remediation recommendation** (a `Recommendation` column in
@@ -78,6 +79,13 @@ checks (CIM / registry) and `dcdiag` need administrative rights on the domain co
 
 # Skip trust secure-channel verification
 .\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -SkipVerification
+
+# Exchange Server SE compatibility only (forest functional level + DC operating systems)
+.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -Sections Forest,Domains,DomainControllers,ExchangeSeReadiness
+
+# ...judged against your own prerequisite table instead of the built-in one
+.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -Sections ExchangeSeReadiness `
+    -ExchangeSeConfigPath C:\Scripts\exchange-se-prereqs.json
 
 # Post-incident triage: the recovery sections plus the health checks they depend on,
 # including the advisory-mode lingering-object scan (writes events on target DCs, changes nothing)
@@ -125,6 +133,41 @@ collected against what it contributed to the findings. A status-bearing section 
 than leaving the two indistinguishable.
 
 Off Windows it falls back to `$HOME/Documents`.
+
+## Exchange Server SE compatibility
+
+`-Sections ExchangeSeReadiness` answers only what the directory itself can answer:
+
+| Gate | Supported for Exchange Server SE |
+| --- | --- |
+| Forest functional level | `Windows2016Forest`, `Windows2012R2Forest` — a lower level is a `Fail` |
+| DC operating system, **every DC in the forest** | Windows Server 2025 / 2022 / 2019 / 2016 / 2012 R2 — one unsupported DC anywhere is a `Fail` |
+| Read-only DCs | Not supported; reported as a `Warning`, since an RODC in a site no Exchange server enters does not stop Setup |
+
+Values come from
+[the supportability matrix](https://learn.microsoft.com/exchange/plan-and-deploy/supportability-matrix#supported-active-directory-environments)
+(read 2026-09-21) and live in a versioned table in the script, not scattered through the code.
+When Microsoft revises the matrix, override it rather than editing code:
+
+```json
+{
+  "SupportedForestModes": [ "Windows2016Forest", "Windows2012R2Forest" ],
+  "SupportedDomainControllerOs": [
+    { "Label": "Windows Server 2025", "Pattern": "(?i)windows server\\s*2025" }
+  ]
+}
+```
+
+Keys you omit keep their built-in value. A missing or malformed file is a **terminating error**,
+not a silent fall back to the defaults — a run that judged the forest against the wrong table
+while you believed yours was in force would be worse than one that stopped. An override that
+would leave a gate empty is rejected for the same reason. When an override is in force, findings
+cite the file rather than Microsoft Learn.
+
+**What this is not.** It is not an Exchange SE readiness assessment. Schema and organisation
+object versions, the requirement that each Exchange site hold a writeable global catalog,
+Exchange server inventory and coexistence build levels are out of scope here and belong to
+`ExchangeAssessment`. The section says so in its own output rather than leaving you to infer it.
 
 ## Verdict model
 

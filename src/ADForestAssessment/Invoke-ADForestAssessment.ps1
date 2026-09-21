@@ -166,7 +166,7 @@ param(
         'Topology', 'Trusts', 'DcDiagnostics', 'Dns', 'Sysvol', 'Gpo', 'PasswordPolicy',
         'PrivilegedAccounts', 'SecurityPosture', 'StaleObjects', 'Identity',
         'Pki', 'Acl', 'Kerberos', 'PrivilegedHygiene', 'DcHardening', 'Backup', 'TimeSync',
-        'DnsDepth', 'Redundancy', 'ExchangeSchema',
+        'DnsDepth', 'Redundancy', 'ExchangeSchema', 'ExchangeSeReadiness',
         'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
         'DsEvents')]
     [string[]]$Sections = @('All'),
@@ -178,6 +178,15 @@ param(
 
     [string]$Server,
     [pscredential]$Credential,
+
+    # Replaces the built-in Exchange SE prerequisite table (supported forest functional levels
+    # and DC operating systems) from a JSON file, so a revision to Microsoft's supportability
+    # matrix is a config edit rather than a code change. Keys omitted from the file keep their
+    # built-in value; an unreadable or malformed file is a terminating error rather than a
+    # silent fall back to defaults, because a run that quietly judged against the wrong table
+    # would be worse than one that stopped.
+    [ValidateNotNullOrEmpty()]
+    [string]$ExchangeSeConfigPath,
 
     [ValidateRange(1, 3650)][int]$StaleDays = 90,
     [ValidateRange(1, 3650)][int]$KrbtgtMaxAgeDays = 180,
@@ -250,6 +259,33 @@ $script:Config = @{
         @{ Port = 9389; Name = 'ADWS';                Critical = $false }
     )
     DsEventLookbackDays     = 14
+    # --- Exchange Server SE: the AD prerequisites, as a versioned table -------------------
+    # Volatile vendor facts, so they live here with their source and read date and can be
+    # replaced from a file via -ExchangeSeConfigPath when Microsoft revises the matrix. A new
+    # supported OS or functional level must be a config edit, never a code edit.
+    #
+    # Source: https://learn.microsoft.com/exchange/plan-and-deploy/supportability-matrix#supported-active-directory-environments
+    # Read:   2026-09-21
+    ExchangeSe              = @{
+        Release                     = 'Exchange Server SE'
+        SourceUrl                   = 'https://learn.microsoft.com/exchange/plan-and-deploy/supportability-matrix#supported-active-directory-environments'
+        ReadDate                    = '2026-09-21'
+        # Get-ADForest().ForestMode enum names. Windows Server 2016 is the highest forest
+        # functional level Microsoft has ever shipped - there is no 2019/2022/2025 value to
+        # list, which is why this table stops there rather than being out of date.
+        SupportedForestModes        = @('Windows2016Forest', 'Windows2012R2Forest')
+        # Matched against Get-ADComputer's OperatingSystem string. Note 2012 R2 is supported
+        # and plain 2012 is NOT, so the R2 pattern must not be loosened to bare '2012'.
+        SupportedDomainControllerOs = @(
+            @{ Label = 'Windows Server 2025'; Pattern = '(?i)windows server\s*2025' }
+            @{ Label = 'Windows Server 2022'; Pattern = '(?i)windows server\s*2022' }
+            @{ Label = 'Windows Server 2019'; Pattern = '(?i)windows server\s*2019' }
+            @{ Label = 'Windows Server 2016'; Pattern = '(?i)windows server\s*2016' }
+            @{ Label = 'Windows Server 2012 R2'; Pattern = '(?i)windows server\s*2012\s*r2' }
+        )
+        # "Read-only GCs and read-only DCs aren't supported" - same source.
+        ReadOnlySupported           = $false
+    }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
     DsEventsOfInterest      = @(
         @{ Id = 1988; Severity = 'Fail';    Meaning = 'Lingering object detected - replication BLOCKED by strict consistency.' }
@@ -2261,6 +2297,279 @@ function Get-AdfaRedundancy {
 }
 
 # ===========================================================================
+# region Exchange Server SE readiness (AD prerequisites only)
+# ===========================================================================
+
+function Test-AdfaOsSupported {
+    <#
+    .SYNOPSIS
+        Pure match of a DC's OperatingSystem string against the supported-OS table.
+    .DESCRIPTION
+        Returns the matching table Label, or '' when nothing matches. Kept separate so the
+        patterns are testable in isolation - the 2012 R2 / 2012 distinction in particular,
+        where 2012 R2 is supported and plain 2012 is not, and a loosened pattern would
+        silently pass an unsupported DC.
+    .OUTPUTS
+        [string] The supported-OS label, or '' when unsupported.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$OperatingSystem,
+        [AllowNull()][AllowEmptyCollection()]$SupportedOs = @()
+    )
+    if ([string]::IsNullOrWhiteSpace($OperatingSystem)) { return '' }
+    foreach ($entry in @($SupportedOs)) {
+        if ($null -eq $entry) { continue }
+        $pattern = ''
+        if ($entry -is [hashtable]) { $pattern = [string]$entry['Pattern'] }
+        else {
+            $prop = $entry.PSObject.Properties['Pattern']   # $null when absent - StrictMode-safe
+            if ($null -ne $prop) { $pattern = [string]$prop.Value }
+        }
+        if ([string]::IsNullOrWhiteSpace($pattern)) { continue }
+        if ($OperatingSystem -match $pattern) {
+            if ($entry -is [hashtable]) { return [string]$entry['Label'] }
+            return [string]$entry.PSObject.Properties['Label'].Value
+        }
+    }
+    return ''
+}
+
+function Merge-AdfaExchangeSeConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override table over the built-in Exchange SE prerequisite table.
+    .DESCRIPTION
+        Only the keys present in the override are replaced, so a file that names one key does
+        not blank the rest. Separated from the file read so the merge rules are testable
+        without a filesystem.
+
+        An override MUST NOT be able to empty a gate: a SupportedForestModes or
+        SupportedDomainControllerOs of zero entries would make every value unsupported (or,
+        worse in a future refactor, everything vacuously fine), so an empty collection is
+        rejected rather than honoured. Provenance is rewritten to name the override, because a
+        finding that cites Microsoft Learn must not do so when the values came from elsewhere.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+
+    $names = @()
+    if ($Override -is [hashtable]) { $names = @($Override.Keys) }
+    else { $names = @($Override.PSObject.Properties.Name) }
+
+    foreach ($k in $names) {
+        $value = $null
+        if ($Override -is [hashtable]) { $value = $Override[$k] }
+        else { $value = $Override.PSObject.Properties[$k].Value }
+        if ($null -eq $value) { continue }
+        if (($k -eq 'SupportedForestModes' -or $k -eq 'SupportedDomainControllerOs') -and @($value).Count -eq 0) {
+            throw ("Exchange SE config override sets '{0}' to an empty list. An empty gate cannot be honoured - remove the key to keep the built-in value." -f $k)
+        }
+        $merged[$k] = $value
+    }
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) {
+        $merged['SourceUrl'] = $OverrideSource
+        $merged['ReadDate'] = (Get-Date).ToString('yyyy-MM-dd')
+    }
+    return $merged
+}
+
+function Import-AdfaExchangeSeConfig {
+    <#
+    .SYNOPSIS
+        Loads an Exchange SE prerequisite override from JSON and merges it over the built-in table.
+    .DESCRIPTION
+        Thin wrapper over Merge-AdfaExchangeSeConfig. A missing, unreadable or malformed file
+        throws: silently judging a forest against the wrong table is worse than stopping.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [Parameter(Mandatory)][string]$Path
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw ("Exchange SE config not found: {0}" -f $Path)
+    }
+    $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw ("Exchange SE config is empty: {0}" -f $Path)
+    }
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw ("Exchange SE config is not valid JSON ({0}): {1}" -f $Path, $_.Exception.Message) }
+    return (Merge-AdfaExchangeSeConfig -BaseConfig $BaseConfig -Override $obj -OverrideSource $Path)
+}
+
+function Get-AdfaExchangeSeCompatibility {
+    <#
+    .SYNOPSIS
+        Verdict on whether the forest's AD level and DC operating systems permit Exchange SE.
+    .DESCRIPTION
+        Deliberately narrow. This answers only the two questions the directory can answer on
+        its own - forest functional level, and the operating system of every DC in the forest -
+        plus the read-only caveat from the same table. It is NOT an Exchange SE readiness
+        assessment: schema and organisation object versions, the per-site writeable-GC
+        requirement, Exchange server inventory and coexistence builds are out of scope here
+        and belong to ExchangeAssessment, whose remit that is.
+
+        Pure: every value is passed in, nothing is queried, so the whole verdict is testable
+        without a directory.
+
+        Fail-closed. A DC whose OperatingSystem could not be read is reported Not Assessed with
+        that cause named - never assumed supported, and never counted as unsupported either,
+        because an absent value and a measured unsupported value are different claims.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$ForestMode,
+        [AllowNull()][AllowEmptyCollection()]$DomainSummaries = @(),
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [Parameter(Mandatory)][hashtable]$SeConfig
+    )
+    $rows = @()
+    $release = [string]$SeConfig['Release']
+    $provenance = ("Per {0} (read {1})." -f [string]$SeConfig['SourceUrl'], [string]$SeConfig['ReadDate'])
+    $supportedModes = @($SeConfig['SupportedForestModes'])
+    $supportedOs = @($SeConfig['SupportedDomainControllerOs'])
+    $osLabels = @($supportedOs | ForEach-Object {
+            if ($_ -is [hashtable]) { [string]$_['Label'] } else { [string]$_.PSObject.Properties['Label'].Value }
+        })
+
+    # ---- Forest functional level ----
+    if ([string]::IsNullOrWhiteSpace($ForestMode)) {
+        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Forest functional level' -Status $script:Status.NotAssessed `
+            -Detail ("Forest functional level could not be read, so {0} compatibility cannot be judged. {1}" -f $release, $provenance)
+    }
+    elseif ($supportedModes -contains $ForestMode) {
+        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Forest functional level' -Status $script:Status.Pass `
+            -Detail ("{0} - supported for {1}. {2}" -f $ForestMode, $release, $provenance)
+    }
+    else {
+        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Forest functional level' -Status $script:Status.Fail `
+            -Detail ("{0} is NOT supported for {1}. Supported: {2}. Setup will not proceed until the forest functional level is raised. {3}" -f `
+                $ForestMode, $release, ($supportedModes -join ', '), $provenance)
+    }
+
+    # ---- Domain functional levels: informational ----
+    # The supportability matrix states a FOREST functional level requirement and no domain one,
+    # so these are reported rather than judged. Inventing a domain gate would be a fabricated
+    # vendor requirement.
+    foreach ($d in @($DomainSummaries)) {
+        if ($null -eq $d) { continue }
+        $dmProp = $d.PSObject.Properties['DomainMode']
+        $dnProp = $d.PSObject.Properties['DomainName']
+        $dm = ''
+        if ($null -ne $dmProp -and $null -ne $dmProp.Value) { $dm = [string]$dmProp.Value }
+        $dn = ''
+        if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $dn = [string]$dnProp.Value }
+        if ([string]::IsNullOrWhiteSpace($dm)) { continue }
+        $rows += New-Finding -Scope $dn -Area 'ExchangeSeReadiness' -Item ("Domain functional level - {0}" -f $dn) `
+            -Status $script:Status.Info `
+            -Detail ("{0}. Recorded for completeness: the supportability matrix states a forest functional level requirement and does not state a domain one. {1}" -f $dm, $provenance)
+    }
+
+    # ---- Domain controller operating systems ----
+    # "All domain controllers in the forest must be running one of the supported versions",
+    # so a single unsupported DC anywhere in the forest is a blocker, not a warning.
+    $dcs = @($DomainControllers | Where-Object { $null -ne $_ })
+    if ($dcs.Count -eq 0) {
+        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.NotAssessed `
+            -Detail ("No domain controllers were enumerated, so no OS could be checked against the {0} supported list ({1})." -f $release, ($osLabels -join ', '))
+    }
+    else {
+        $unsupported = @()
+        $unknown = @()
+        $supported = @()
+        foreach ($dc in $dcs) {
+            $hostProp = $dc.PSObject.Properties['HostName']
+            $osProp = $dc.PSObject.Properties['OperatingSystem']
+            $dcName = '(unnamed)'
+            if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $dcName = [string]$hostProp.Value }
+            $os = ''
+            if ($null -ne $osProp -and $null -ne $osProp.Value) { $os = [string]$osProp.Value }
+
+            # The inventory writes the literal 'Not Assessed' into OperatingSystem when the
+            # Get-ADComputer enrichment failed. That is an absent measurement, not a bad OS.
+            if ([string]::IsNullOrWhiteSpace($os) -or $os -eq $script:Status.NotAssessed) {
+                $unknown += $dcName
+                continue
+            }
+            $label = Test-AdfaOsSupported -OperatingSystem $os -SupportedOs $supportedOs
+            if ([string]::IsNullOrWhiteSpace($label)) { $unsupported += ("{0} ({1})" -f $dcName, $os) }
+            else { $supported += $dcName }
+        }
+
+        if ($unsupported.Count -gt 0) {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.Fail `
+                -Detail ("{0} of {1} DC(s) run an OS not supported for {2}: {3}. Every DC in the forest must run a supported version. Supported: {4}. {5}" -f `
+                    $unsupported.Count, $dcs.Count, $release, ($unsupported -join '; '), ($osLabels -join ', '), $provenance)
+        }
+        elseif ($unknown.Count -gt 0 -and $supported.Count -eq 0) {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.NotAssessed `
+                -Detail ("No DC operating system could be read ({0} DC(s): {1}), so {2} compatibility is unverified. Supported: {3}." -f `
+                    $unknown.Count, ($unknown -join ', '), $release, ($osLabels -join ', '))
+        }
+        else {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.Pass `
+                -Detail ("All {0} DC(s) whose OS could be read run a version supported for {1}. Supported: {2}. {3}" -f `
+                    $supported.Count, $release, ($osLabels -join ', '), $provenance)
+        }
+
+        # An unreadable OS is reported on its own, so a partial pass above can never hide it.
+        if ($unknown.Count -gt 0) {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller OS - not readable' -Status $script:Status.NotAssessed `
+                -Detail ("{0} of {1} DC(s) did not return an operating system: {2}. Re-run with credentials that can read the DC computer objects; until then these DCs are unverified, not compatible." -f `
+                    $unknown.Count, $dcs.Count, ($unknown -join ', '))
+        }
+
+        # Read-only DCs. The same table says read-only DCs and GCs are not supported; Exchange
+        # will not use one. Reported as a Warning rather than a blocker because an RODC in a site
+        # Exchange is never installed into does not stop Setup - what stops Setup is a target
+        # site with no writeable GC, which is ExchangeAssessment's check and not claimed here.
+        if (-not [bool]$SeConfig['ReadOnlySupported']) {
+            $rodc = @()
+            foreach ($dc in $dcs) {
+                $roProp = $dc.PSObject.Properties['IsReadOnly']
+                $hostProp = $dc.PSObject.Properties['HostName']
+                if ($null -eq $roProp -or $null -eq $roProp.Value) { continue }
+                if ([string]$roProp.Value -eq $script:Status.NotAssessed) { continue }
+                if ([bool]$roProp.Value) {
+                    $n = '(unnamed)'
+                    if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $n = [string]$hostProp.Value }
+                    $rodc += $n
+                }
+            }
+            if ($rodc.Count -gt 0) {
+                $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Read-only domain controllers' -Status $script:Status.Warning `
+                    -Detail ("{0} read-only DC(s): {1}. Read-only DCs and read-only global catalogs are not supported for {2} - Exchange will not use them. Confirm every site an Exchange server goes into also holds a writeable global catalog. {3}" -f `
+                        $rodc.Count, ($rodc -join ', '), $release, $provenance)
+            }
+        }
+    }
+
+    # Scope statement, so nobody reads this section as full SE readiness.
+    $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Scope of this check' -Status $script:Status.Info `
+        -Detail ("Covers the AD prerequisites this tool can answer from the directory: forest functional level and DC operating systems. It does NOT cover schema or organisation object versions, the per-site writeable global catalog requirement, Exchange server inventory or coexistence builds.")
+    return @($rows)
+}
+# ===========================================================================
 # region Exchange schema markers
 # ===========================================================================
 
@@ -3146,6 +3455,14 @@ $script:RecommendationMap = @(
        Text  = 'Confirm the network path and DNS name resolution (conditional forwarders / stub zones) to the partner domain in BOTH directions, then reset the trust secure channel: "netdom trust <local> /domain:<partner> /reset". Re-verify with "nltest /sc_verify:<partner>" from the local side and on a partner DC. After a ransomware incident, reset trust passwords as part of credential hygiene.' }
     @{ Section = '(?i)secure channel|machine password'; Match = '.'
        Text  = 'Reset the secure channel against a known-healthy DC. Member/workstation: "Reset-ComputerMachinePassword -Server <healthyDC>" or "nltest /sc_reset:<domain>". For a DC: stop the KDC service, run "netdom resetpwd /server:<healthyDC> /userd:<domain>\<admin> /passwordd:*", restart. Never disjoin/rejoin a domain controller.' }
+    # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
+    #     replication/time wording in a detail line cannot hijack a readiness finding.
+    @{ Section = '(?i)exchange se'; Match = '(?i)forest functional level'
+       Text  = 'Raise the forest functional level before Setup: confirm every DC is on a supported OS first, then "Set-ADForestMode -Identity <forest> -ForestMode Windows2016Forest" (raise each domain with Set-ADDomainMode first where needed). This is a one-way change and cannot be reverted without a forest recovery, so take a verified system-state backup of two DCs per domain and confirm replication is healthy beforehand.' }
+    @{ Section = '(?i)exchange se'; Match = '(?i)not supported for|not readable|unverified, not compatible'
+       Text  = 'Every domain controller in the forest must run a supported Windows Server version, not only the ones in the Exchange site. Upgrade or decommission the named DCs before Setup, transferring any FSMO roles they hold first. Where the OS could not be read, re-run with credentials able to read the DC computer objects - an unreadable value is not a pass.' }
+    @{ Section = '(?i)exchange se'; Match = '(?i)read-only domain controller'
+       Text  = 'Exchange does not use a read-only DC or a read-only global catalog. No action is needed for an RODC in a site where no Exchange server will be installed; for any site that WILL host one, confirm it also contains a writeable global catalog, or Setup fails in that site alone.' }
     # --- Unscoped entries: matched against "Section :: Item :: Detail" ---
     # Ahead of the event-specific entries: a log that cannot cover the window is a different
     # problem from an event found in it, and the fix is to recover the evidence, not the DC.
@@ -3735,6 +4052,25 @@ function Invoke-Main {
 
     if (Test-SectionSelected 'ExchangeSchema' $Sections) {
         $sectionData['Exchange Schema Markers'] = Get-AdfaExchangeSchemaMarker -AdParams $adParams
+    }
+
+    if (Test-SectionSelected 'ExchangeSeReadiness' $Sections) {
+        Write-Stage 'Exchange Server SE compatibility (forest level + DC operating systems)'
+        # An override that cannot be read is fatal here rather than swallowed: the alternative
+        # is judging the forest against the built-in table while the operator believes theirs
+        # is in force.
+        $seConfig = $script:Config.ExchangeSe
+        if ($ExchangeSeConfigPath) {
+            $seConfig = Import-AdfaExchangeSeConfig -BaseConfig $script:Config.ExchangeSe -Path $ExchangeSeConfigPath
+            Write-Log -Level INFO ("Exchange SE prerequisite table overridden from {0}" -f $ExchangeSeConfigPath)
+        }
+        $forestMode = ''
+        if ($null -ne $forest) {
+            $fmProp = $forest.PSObject.Properties['ForestMode']   # $null when absent - StrictMode-safe
+            if ($null -ne $fmProp -and $null -ne $fmProp.Value) { $forestMode = [string]$fmProp.Value }
+        }
+        $sectionData['Exchange SE Compatibility'] = Get-AdfaExchangeSeCompatibility -ForestMode $forestMode `
+            -DomainSummaries $sectionData['Domain Summary'] -DomainControllers $allDcInventory -SeConfig $seConfig
     }
 
     # ---- Full identity export (all attributes) -> CSV; HTML gets a summary only ----
