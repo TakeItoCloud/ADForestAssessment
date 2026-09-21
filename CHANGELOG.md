@@ -10,7 +10,7 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
-### Added — 2026-09-21 (SYSVOL backlog, opt-in, tool v1.7.0)
+### Added — 2026-09-21 (SYSVOL backlog, opt-in, tool v1.8.0)
 
 `-IncludeSysvolBacklog` measures pending SYSVOL files **in both directions** between every DC and
 its domain's PDC emulator — the DC where Group Policy edits are normally written, and therefore
@@ -42,7 +42,7 @@ Demonstrated able to fail: marking an at-cap count as exact turns the floor asse
 Restored byte-for-byte, hash verified.
 
 
-### Added — 2026-09-21 (SYSVOL/DFSR depth: shares, subscription state, DFSR events, tool v1.7.0)
+### Added — 2026-09-21 (SYSVOL/DFSR depth: shares, subscription state, DFSR events, tool v1.8.0)
 
 The SYSVOL section was one check — `dfsrmig /getglobalstate` — which says whether the domain
 migrated to DFSR years ago and nothing about whether SYSVOL is replicating *now*. Divergent or
@@ -99,7 +99,7 @@ states a backlog "is not necessarily an indication of problems", so the verdict 
 rather than a threshold picked here.
 
 
-### Fixed — 2026-09-21 (an unreadable forest aborted the run with no report, tool v1.7.0)
+### Fixed — 2026-09-21 (an unreadable forest aborted the run with no report, tool v1.8.0)
 
 `Invoke-Main` called `Get-ADForest` and `Get-ADDomain` **unguarded** while resolving which
 domains to scope, before any section ran. A forest that could not be contacted killed the run
