@@ -479,3 +479,130 @@ Describe 'PSScriptAnalyzer' {
         $findings | Should -BeNullOrEmpty
     }
 }
+
+Describe 'JSON report document' {
+    BeforeAll {
+        $script:LegacySummary = [pscustomobject]@{ Pass = 1; Warning = 1; Fail = 1; NotAssessed = 1 }
+        $script:MixedFindings = @(
+            (New-Finding -Area 'A' -Item 'i1' -Status 'Pass'         -Detail 'd'),
+            (New-Finding -Area 'A' -Item 'i2' -Status 'Warning'      -Detail 'd'),
+            (New-Finding -Area 'A' -Item 'i3' -Status 'Fail'         -Detail 'd'),
+            (New-Finding -Area 'A' -Item 'i4' -Status 'Not Assessed' -Detail 'd'),
+            (New-Finding -Area 'A' -Item 'i5' -Status 'Info'         -Detail 'd'),
+            (New-Finding -Area 'A' -Item 'i6' -Status 'Info'         -Detail 'd')
+        )
+        $script:DocMeta = [pscustomobject]@{
+            Forest = 'contoso.com'; Generated = '2026-01-01 00:00:00Z'; RunBy = 'CONTOSO\tester'
+            Version = '9.9.9'; DomainsScoped = @('contoso.com', 'north.contoso.com'); DcCount = 2
+            Badges = "<span class='b-ok'>Pass 1</span>"
+        }
+        # Not $sections: the script under test declares a [ValidateSet] $Sections parameter and
+        # PowerShell variable names are case-insensitive, so that name is taken in this scope.
+        $docSections = [ordered]@{}
+        $docSections['One Row'] = @([pscustomobject]@{ Name = 'dc1'; Site = 'HQ' })
+        $docSections['Empty'] = @()
+        $script:DocSections = $docSections
+    }
+
+    Context 'New-AdfaReportSummary' {
+        # Invoke-Main's four counters match Pass/Healthy, Warning/Degraded, Fail/Broken and
+        # Not Assessed, but not 'Info' - a valid New-Finding status. Measured on the
+        # three-domain fixture: 123 findings, 106 counted, 17 Info counted nowhere.
+        It 'counts every finding exactly once' {
+            $s = New-AdfaReportSummary -Summary $script:LegacySummary -Findings $script:MixedFindings
+            [int]$s.total | Should -Be 6
+            $bucketSum = [int]$s.pass + [int]$s.warning + [int]$s.fail + [int]$s.notAssessed +
+                [int]$s.info + [int]$s.unclassified
+            $bucketSum | Should -Be 6
+        }
+        It 'counts Info findings instead of dropping them' {
+            $s = New-AdfaReportSummary -Summary $script:LegacySummary -Findings $script:MixedFindings
+            [int]$s.info | Should -Be 2
+            [int]$s.unclassified | Should -Be 0
+        }
+        It 'surfaces a status no filter matches rather than losing it' {
+            $s = New-AdfaReportSummary -Summary $script:LegacySummary `
+                -Findings @([pscustomobject]@{ Area = 'A'; Item = 'i'; Status = 'Verified'; Detail = 'd' })
+            [int]$s.unclassified | Should -Be 1
+            [int]$s.total | Should -Be 1
+        }
+        It 'does not throw on a row with no Status column (StrictMode-safe)' {
+            { New-AdfaReportSummary -Summary $script:LegacySummary -Findings @([pscustomobject]@{ Area = 'A' }) } |
+                Should -Not -Throw
+        }
+        It 'reports zero for an empty finding set' {
+            [int](New-AdfaReportSummary -Summary $script:LegacySummary -Findings @()).total | Should -Be 0
+        }
+    }
+
+    Context 'New-AdfaReportDocument' {
+        It 'emits a schema version so a consumer can tell a tool change from an environment change' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            [int]$doc.schemaVersion | Should -Be 1
+            [string]$doc.tool.name | Should -Be 'ADForestAssessment'
+            [string]$doc.tool.version | Should -Be '9.9.9'
+        }
+        It 'records every scoped domain, not just the first' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            @($doc.run.domainsScoped).Count | Should -Be 2
+        }
+        It 'keeps presentation markup out of the data document' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            # $doc is an OrderedDictionary, so PSObject.Properties would enumerate .NET members
+            # rather than keys and pass whatever the document held. Assert on the keys.
+            @($doc.Keys) | Should -Not -Contain 'Badges'
+            @($doc.Keys) | Should -Contain 'summary'   # non-vacuity: this is how keys surface
+        }
+        It 'keeps a section that collected nothing, as an empty array' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            @($doc.sections.Keys) | Should -Contain 'Empty'
+            @($doc.sections['Empty']).Count | Should -Be 0
+        }
+    }
+
+    Context 'Serialisation' {
+        It 'round-trips with a single-element section still addressable' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            $back = $doc | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+            [string]@($back.sections.'One Row')[0].Name | Should -Be 'dc1'
+            @($back.findings).Count | Should -Be 6
+        }
+        It 'leaks no HTML into the JSON' {
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            $json = $doc | ConvertTo-Json -Depth 12
+            $json | Should -Not -Match '<span'
+            $json | Should -Not -Match 'b-ok'
+        }
+        It 'demonstrates that the ConvertTo-Json default depth of 2 loses section rows' {
+            # Truncation stringifies the row to PowerShell's hashtable form - '@{Name=dc1; ...}' -
+            # rather than emitting a type name, so that is the marker. Without this the explicit
+            # -Depth on Export-AdfaJsonReport would be unjustified.
+            $doc = New-AdfaReportDocument -Meta $script:DocMeta -Findings $script:MixedFindings `
+                -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary
+            ($doc | ConvertTo-Json -Depth 2 -WarningAction SilentlyContinue) | Should -Match '"@\{'
+            ($doc | ConvertTo-Json -Depth 12) | Should -Not -Match '"@\{'
+        }
+    }
+
+    Context 'Export-AdfaJsonReport' {
+        It 'writes a parseable file and returns its path' {
+            $tmp = Join-Path ([IO.Path]::GetTempPath()) ("adfa_json_{0}.json" -f [guid]::NewGuid().ToString('N'))
+            try {
+                $p = Export-AdfaJsonReport -Meta $script:DocMeta -Findings $script:MixedFindings `
+                    -Coverage @() -Sections $script:DocSections -Summary $script:LegacySummary -Path $tmp
+                $p | Should -Be $tmp
+                Test-Path $tmp | Should -BeTrue
+                $doc = Get-Content $tmp -Raw | ConvertFrom-Json
+                [int]$doc.summary.total | Should -Be 6
+                [string]$doc.run.forest | Should -Be 'contoso.com'
+            }
+            finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}

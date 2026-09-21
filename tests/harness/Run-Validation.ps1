@@ -279,6 +279,93 @@ $htmlRev = ConvertTo-AdfaHtmlSection -Title 'Replication Health' -Data $mixedRev
 Assert-True ($htmlRev -match 'partner=dc9') 'HTML: short row first still renders the longer row''s data'
 
 Write-Host ""
+Write-Host "== 13. JSON report document (machine-readable output) ==" -ForegroundColor Cyan
+
+# --- Summary roll-up: every finding lands in exactly one bucket -----------------
+# The four counters Invoke-Main keeps for the log line and the HTML badges match
+# Pass/Healthy, Warning/Degraded, Fail/Broken and Not Assessed - but NOT 'Info', which is a
+# valid New-Finding status. Measured on the three-domain fixture: 123 findings, 106 counted,
+# 17 Info counted nowhere. The document adds 'info' plus an 'unclassified' catch-all so a
+# consumer can assert the buckets sum to the total.
+$legacy = [pscustomobject]@{ Pass = 1; Warning = 1; Fail = 1; NotAssessed = 1 }
+$mixedFindings = @(
+    (New-Finding -Area 'A' -Item 'i1' -Status 'Pass'         -Detail 'd'),
+    (New-Finding -Area 'A' -Item 'i2' -Status 'Warning'      -Detail 'd'),
+    (New-Finding -Area 'A' -Item 'i3' -Status 'Fail'         -Detail 'd'),
+    (New-Finding -Area 'A' -Item 'i4' -Status 'Not Assessed' -Detail 'd'),
+    (New-Finding -Area 'A' -Item 'i5' -Status 'Info'         -Detail 'd'),
+    (New-Finding -Area 'A' -Item 'i6' -Status 'Info'         -Detail 'd')
+)
+$sum = New-AdfaReportSummary -Summary $legacy -Findings $mixedFindings
+Assert-Equal 6 ([int]$sum.total) 'Summary: total counts every finding'
+Assert-Equal 2 ([int]$sum.info) 'Summary: Info findings are counted, not invisible'
+Assert-Equal 0 ([int]$sum.unclassified) 'Summary: nothing escapes every bucket'
+$bucketSum = [int]$sum.pass + [int]$sum.warning + [int]$sum.fail + [int]$sum.notAssessed +
+    [int]$sum.info + [int]$sum.unclassified
+Assert-Equal 6 $bucketSum 'Summary: buckets reconcile with the total'
+
+# A status none of the filters know must surface in 'unclassified', never vanish.
+$oddFindings = @([pscustomobject]@{ Area = 'A'; Item = 'i'; Status = 'Verified'; Detail = 'd' })
+$oddSum = New-AdfaReportSummary -Summary $legacy -Findings $oddFindings
+Assert-Equal 1 ([int]$oddSum.unclassified) 'Summary: an unknown status is reported, not dropped'
+Assert-Equal 1 ([int]$oddSum.total) 'Summary: unknown status still counted in the total'
+
+# A row with no Status column at all must not throw under StrictMode.
+$noStatusOk = $true
+try { $nsSum = New-AdfaReportSummary -Summary $legacy -Findings @([pscustomobject]@{ Area = 'A' }) }
+catch { $noStatusOk = $false }
+Assert-True $noStatusOk 'Summary: a row without Status does not throw (StrictMode-safe)'
+Assert-Equal 0 ([int]$nsSum.info) 'Summary: a row without Status is not counted as Info'
+
+Assert-Equal 0 ([int](New-AdfaReportSummary -Summary $legacy -Findings @()).total) 'Summary: empty findings => total 0'
+
+# --- Document shape -------------------------------------------------------------
+$meta = [pscustomobject]@{
+    Forest = 'contoso.com'; Generated = '2026-01-01 00:00:00Z'; RunBy = 'CONTOSO\tester'
+    Version = '9.9.9'; DomainsScoped = @('contoso.com', 'north.contoso.com'); DcCount = 2
+    Badges = "<span class='b-ok'>Pass 1</span>"
+}
+# NOTE: not $sections - the script under test declares a [ValidateSet] $Sections parameter and
+# PowerShell variable names are case-insensitive, so that name is taken in this scope.
+$docSections = [ordered]@{}
+$docSections['One Row'] = @([pscustomobject]@{ Name = 'dc1'; Site = 'HQ' })
+$docSections['Empty']   = @()
+$doc = New-AdfaReportDocument -Meta $meta -Findings $mixedFindings -Coverage @() -Sections $docSections -Summary $legacy
+
+Assert-Equal 1 ([int]$doc.schemaVersion) 'Document: schemaVersion emitted'
+Assert-Equal 'ADForestAssessment' ([string]$doc.tool.name) 'Document: tool name'
+Assert-Equal '9.9.9' ([string]$doc.tool.version) 'Document: tool version from config'
+Assert-Equal 'contoso.com' ([string]$doc.run.forest) 'Document: forest recorded'
+Assert-Equal 2 (@($doc.run.domainsScoped).Count) 'Document: every scoped domain recorded'
+Assert-Equal 6 (@($doc.findings).Count) 'Document: findings carried'
+# $doc is an OrderedDictionary, so PSObject.Properties enumerates .NET members, not keys -
+# testing it that way would pass whatever the document contained. Assert on the keys, and on
+# the serialised text, so the claim is about real content.
+Assert-True (@($doc.Keys) -notcontains 'Badges') 'Document: no Badges key in the data document'
+Assert-True (@($doc.Keys) -contains 'summary') 'Document: expected keys really are inspectable this way (non-vacuity)'
+Assert-True (@($doc.sections.Keys) -contains 'Empty') 'Document: a section that collected nothing is still present'
+Assert-Equal 0 (@($doc.sections['Empty']).Count) 'Document: empty section is empty, not one empty array'
+
+# --- Serialisation round trip ---------------------------------------------------
+# This is the assertion that has to travel to Windows PowerShell 5.1: ConvertTo-Json there is
+# a different implementation, and a single-element array collapsing to an object - or an empty
+# one rendering as "" - would break any consumer indexing the result. Verified on pwsh 7.4 in
+# CI; this harness is what carries the check onto a 5.1 host.
+$json = $doc | ConvertTo-Json -Depth 12
+$back = $json | ConvertFrom-Json
+Assert-True ($null -ne $back) 'Round trip: document parses back'
+Assert-Equal 'dc1' ([string]@($back.sections.'One Row')[0].Name) 'Round trip: single-element section keeps its row addressable'
+Assert-True (@($back.findings).Count -eq 6) 'Round trip: findings survive as an array'
+Assert-True ($json -notmatch '"@\{') 'Round trip: no row collapsed to a hashtable string at depth 12'
+Assert-True ($json -notmatch 'b-ok' -and $json -notmatch '<span') 'Round trip: no HTML markup leaked into the JSON'
+
+# Depth 2 is the ConvertTo-Json default and MUST be shown to lose data, otherwise the explicit
+# -Depth on Export-AdfaJsonReport is cargo cult. Truncation stringifies the row rather than
+# emitting a type name, so that is what is asserted.
+$shallow = $doc | ConvertTo-Json -Depth 2
+Assert-True ($shallow -match '"@\{') 'Depth: the default depth of 2 demonstrably collapses section rows'
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }

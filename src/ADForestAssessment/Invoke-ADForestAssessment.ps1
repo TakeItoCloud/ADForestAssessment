@@ -195,7 +195,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.6.0'
+    Version                 = '1.7.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -3164,6 +3164,144 @@ code{background:#f3f4f6;padding:1px 5px;border-radius:3px;}
     return $Path
 }
 
+function New-AdfaReportSummary {
+    <#
+    .SYNOPSIS
+        Builds a self-reconciling roll-up: every finding lands in exactly one bucket.
+    .DESCRIPTION
+        The four counters Invoke-Main computes for the log line and the HTML badges match
+        Pass/Healthy, Warning/Degraded, Fail/Broken and Not Assessed. They do NOT match
+        'Info', which is a valid New-Finding status, so those rows are counted nowhere.
+        Measured on the three-domain fixture: 123 findings, 106 counted, 17 Info invisible.
+
+        Those four are carried through unchanged, so the JSON agrees with the HTML and the
+        log rather than quietly telling a third story. What is added is 'info', an
+        'unclassified' bucket for any status none of them match, and 'total'. A consumer can
+        assert that the buckets sum to the total; if a future status escapes every filter it
+        shows up in 'unclassified' instead of vanishing.
+    .OUTPUTS
+        [System.Collections.Specialized.OrderedDictionary]
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Summary,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Findings
+    )
+    $rows = @(Expand-AdfaRowList -Rows $Findings)
+    $statuses = @($rows | ForEach-Object {
+            $prop = $_.PSObject.Properties['Status']   # $null when absent - StrictMode-safe
+            if ($null -eq $prop) { '' } else { [string]$prop.Value }
+        })
+    $info = @($statuses | Where-Object { $_ -eq 'Info' }).Count
+    $classified = @($statuses | Where-Object {
+            $_ -match '^(Pass|Healthy|Warning|Degraded|Fail|Broken|Not Assessed|Info)$'
+        }).Count
+    return [ordered]@{
+        pass         = [int]$Summary.Pass
+        warning      = [int]$Summary.Warning
+        fail         = [int]$Summary.Fail
+        notAssessed  = [int]$Summary.NotAssessed
+        info         = [int]$info
+        unclassified = [int](@($statuses).Count - $classified)
+        total        = [int]@($statuses).Count
+    }
+}
+
+function New-AdfaReportDocument {
+    <#
+    .SYNOPSIS
+        Builds the machine-readable report object. Pure: no I/O, no collection.
+    .DESCRIPTION
+        Separated from the writer so the document's shape is unit-testable without a
+        filesystem, in the same style as Get-AdfaDnsQueryOutcome and Resolve-AdfaTrustHealth.
+
+        Every collection goes through ConvertTo-AdfaRowSet - the same normalisation the CSVs
+        use - so a section whose rows differ in shape serialises with a stable column union
+        instead of dropping the later rows' properties (the defect fixed for CSV and HTML in
+        v1.5.1 and v1.6.0; JSON must not reintroduce it on a third output path).
+
+        schemaVersion is emitted so a consumer diffing two runs can tell a tool change from
+        an environment change. Bump it only when the shape changes incompatibly.
+    .OUTPUTS
+        [System.Collections.Specialized.OrderedDictionary]
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Meta,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Findings,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Coverage,
+        [Parameter(Mandatory)][AllowNull()]$Sections,
+        [Parameter(Mandatory)][pscustomobject]$Summary
+    )
+
+    $sectionMap = [ordered]@{}
+    if ($null -ne $Sections) {
+        foreach ($key in @($Sections.Keys)) {
+            $sectionMap[[string]$key] = @(ConvertTo-AdfaRowSet -Rows $Sections[$key])
+        }
+    }
+    # Normalised once: the summary counts and the serialised findings must describe the same
+    # rows, so they are derived from one collection rather than normalised twice.
+    $findingRows = @(ConvertTo-AdfaRowSet -Rows $Findings)
+
+    # Meta carries an HTML badge string for the report header; it is presentation and has no
+    # place in a data document, so the fields are taken by name rather than splatted.
+    $doc = [ordered]@{
+        schemaVersion = 1
+        tool          = [ordered]@{
+            name    = 'ADForestAssessment'
+            version = [string]$Meta.Version
+        }
+        run           = [ordered]@{
+            forest        = [string]$Meta.Forest
+            generated     = [string]$Meta.Generated
+            runBy         = [string]$Meta.RunBy
+            domainsScoped = @($Meta.DomainsScoped)
+            dcCount       = [int]$Meta.DcCount
+            sectionsRun   = @($sectionMap.Keys)
+        }
+        summary       = (New-AdfaReportSummary -Summary $Summary -Findings $findingRows)
+        findings      = $findingRows
+        coverage      = @(ConvertTo-AdfaRowSet -Rows $Coverage)
+        sections      = $sectionMap
+    }
+    return $doc
+}
+
+function Export-AdfaJsonReport {
+    <#
+    .SYNOPSIS
+        Writes the run as JSON beside the HTML report.
+    .DESCRIPTION
+        Serialises what Invoke-Main has already assembled. Nothing is collected here, so a
+        serialisation fault costs no data - the CSVs and the itemised log are already on disk
+        by the time this runs.
+
+        Depth is explicit and generous. ConvertTo-Json defaults to 2, which would render a
+        section's rows as type names instead of values - silent truncation, which is the
+        precise failure mode this tool exists to avoid. A test asserts the default depth
+        carries real section data rather than "System.Object[]".
+    .OUTPUTS
+        [string] The path written.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Meta,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Findings,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Coverage,
+        [Parameter(Mandatory)][AllowNull()]$Sections,
+        [Parameter(Mandatory)][pscustomobject]$Summary,
+        [Parameter(Mandatory)][string]$Path,
+        [int]$Depth = 12
+    )
+    $doc = New-AdfaReportDocument -Meta $Meta -Findings $Findings -Coverage $Coverage -Sections $Sections -Summary $Summary
+    $doc | ConvertTo-Json -Depth $Depth | Out-File -Encoding UTF8 -FilePath $Path -Force
+    return $Path
+}
+
 # ===========================================================================
 # region MAIN
 # ===========================================================================
@@ -3553,13 +3691,18 @@ function Invoke-Main {
     $countNa = @($flat | Where-Object { $_ -eq 'Not Assessed' }).Count
     Write-Log -Level RESULT ("Summary: Pass={0} Warning={1} Fail={2} NotAssessed={3}" -f $countOk, $countWarn, $countBad, $countNa)
     $badges = "<span class='b-ok'>Pass $countOk</span><span class='b-warn'>Warning $countWarn</span><span class='b-bad'>Fail $countBad</span><span class='b-na'>Not Assessed $countNa</span>"
+    # One summary object, consumed by the JSON document and by this function's return value,
+    # so the two can never disagree about the same run.
+    $runSummary = [pscustomobject]@{ Pass = $countOk; Warning = $countWarn; Fail = $countBad; NotAssessed = $countNa }
 
     $meta = [pscustomobject]@{
-        Forest    = $forest.Name
-        Generated = (Get-Date).ToString('u')
-        RunBy     = ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
-        Version   = $script:Config.Version
-        Badges    = $badges
+        Forest        = $forest.Name
+        Generated     = (Get-Date).ToString('u')
+        RunBy         = ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
+        Version       = $script:Config.Version
+        DomainsScoped = @($targetDomains)
+        DcCount       = @($dcNames).Count
+        Badges        = $badges
     }
 
     Write-Stage 'Writing HTML report'
@@ -3591,6 +3734,22 @@ function Invoke-Main {
     }
     if ($reportRendered) { Write-Log -Level INFO ("HTML report: {0}" -f $reportPath) }
 
+    # JSON is the machine-readable twin of the HTML, for diffing one run against the next
+    # (a phased rollout re-runs this between phases). Guarded separately from the HTML so
+    # neither renderer can take the other down, and so a JSON fault cannot discard the CSVs.
+    Write-Stage 'Writing JSON report'
+    $jsonPath = Join-Path $runRoot 'Assessment.json'
+    try {
+        Export-AdfaJsonReport -Meta $meta -Findings $consolidated -Coverage $sectionAudit `
+            -Sections $sectionData -Summary $runSummary -Path $jsonPath | Out-Null
+        Write-Log -Level INFO ("JSON report: {0}" -f $jsonPath)
+    }
+    catch {
+        $jsonPath = ''
+        Write-Log -Level ERROR ("JSON report generation FAILED: {0}" -f $_.Exception.Message)
+        Write-Warning ("JSON report could not be written: {0}" -f $_.Exception.Message)
+    }
+
     Write-Log -Level INFO ("Detailed log: {0}" -f $script:LogFile)
     Write-Log -Level INFO ("Consolidated findings: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv'))
     try { Stop-Transcript | Out-Null } catch { }
@@ -3604,12 +3763,13 @@ function Invoke-Main {
         DcCount       = $dcNames.Count
         OutputRoot    = $runRoot
         ReportPath    = $reportPath
+        JsonPath      = $jsonPath
         CsvPath       = $csvPath
         RawPath       = $rawPath
         LogFile       = $script:LogFile
         FindingsFile  = (Join-Path $csvPath 'Findings-Consolidated.csv')
         Transcript    = $transcript
-        Summary       = [pscustomobject]@{ Pass = $countOk; Warning = $countWarn; Fail = $countBad; NotAssessed = $countNa }
+        Summary       = $runSummary
         Sections      = @($sectionData.Keys)
     }
 }

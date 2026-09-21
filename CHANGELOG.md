@@ -10,6 +10,56 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-09-21 (JSON report, tool v1.7.0)
+
+`Assessment.json` is written beside `Assessment.html`, so a run can be diffed against the
+next one. The immediate driver is a phased Exchange Server SE rollout: the assessment is
+re-run between phases, and comparing two HTML files or two folders of CSVs by hand is not a
+control. Findings, the section-coverage reconciliation and every section's rows are all in
+the document, alongside `schemaVersion`, the tool version and the run's scope.
+
+Nothing is collected for the JSON. `Export-AdfaJsonReport` serialises what `Invoke-Main` has
+already assembled, and runs after the CSVs and the itemised log are on disk, under its own
+try/catch — so a serialisation fault can neither cost data nor take the HTML report down with
+it. Rows go through `ConvertTo-AdfaRowSet`, the same normalisation the CSVs use, so a
+heterogeneous section cannot lose its later rows' columns on this third output path the way
+it did on the first two (v1.5.1, v1.6.0).
+
+`New-AdfaReportDocument` and `New-AdfaReportSummary` are pure and separately tested, in the
+style of `Get-AdfaDnsQueryOutcome`.
+
+**The roll-up under-counted, and still does outside the JSON.** The four counters
+`Invoke-Main` computes for the log's `Summary:` line and the HTML badges match
+`Pass|Healthy`, `Warning|Degraded`, `Fail|Broken` and `Not Assessed` — but not `Info`, which
+is a valid `New-Finding` status. Measured on the three-domain fixture: **123 findings, 106
+counted, 17 `Info` counted nowhere.** No finding was ever lost — all 123 are in the CSV, the
+HTML and the JSON — but the headline numbers did not reconcile with them.
+
+The JSON summary therefore carries `info`, an `unclassified` catch-all for any status none of
+the filters match, and `total`. A consumer can assert that the buckets sum to the total, and a
+status that escapes every filter in future shows up in `unclassified` instead of vanishing.
+The four original counters are passed through unchanged, so the JSON agrees with the HTML and
+the log rather than telling a third story.
+
+**The HTML badges and the log line are deliberately left as they are.** Correcting them
+changes output that has already been shown to people, which is the operator's call and not
+this change's business. Recorded as PORT-PLAN row **R6**.
+
+### Fixed — 2026-09-21 (smoke-test stub fidelity)
+
+`Run-SmokeTest.ps1` stubbed `Get-ADDomain`'s `DomainSID` as `[pscustomobject]@{ Value = ... }`.
+The real cmdlet returns a `System.Security.Principal.SecurityIdentifier`, whose `ToString()`
+is the SID string; the stub's was `@{Value=S-1-5-21-1-2-3}`, and
+`Get-AdfaDomainSummary`'s `[string]$d.DomainSID` duly wrote that into the report. The new JSON
+depth guard caught it on its first run.
+
+`SecurityIdentifier` cannot be constructed off Windows and this harness must run anywhere, so
+the stub overrides `ToString()` instead and keeps `.Value` — the collector reads it both ways
+(`[string]$d.DomainSID` at `Get-AdfaDomainSummary`, `.DomainSID.Value` in the privileged-group
+and Kerberos collectors). Product code is unchanged: against a real directory the output was
+always correct.
+
+
 ### Fixed — 2026-08-31 (silent multi-domain data loss, tool v1.6.0)
 
 **Twelve sections were collected and then discarded without any error**, including the two

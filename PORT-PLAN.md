@@ -40,6 +40,29 @@ in the same commit — recorded here after the fact rather than silently.
 | R3 | HTML report restructured for a recovery audience: coverage panel first, findings with evidence + recommendation + validation command, then detail sections | Planned | |
 | R4 | Runtime verification against a live multi-domain forest (or a lab with a deliberately broken trust and stale _msdcs), then tag and package (absorbs P4/P6) | Planned | |
 
+## Health & readiness track (post-ransomware recovery, Exchange SE readiness)
+
+Added for a forest recovered from a ransomware incident that is about to take Exchange
+Server SE in phases. Scope is deep AD/DC health; Exchange SE coverage is deliberately
+minimal — forest/domain functional level and DC OS versions against the supported matrix,
+verdict only.
+
+| Phase | Scope | Status | Date |
+| --- | --- | --- | --- |
+| H1 | v1.7.0: JSON report (`Assessment.json`) with a self-reconciling summary; smoke-test SID stub fidelity | Done | 2026-09-21 |
+| H2 | Event-log coverage guard: a cleared or truncated Directory Service log must report `Not Assessed`, never `Pass` | Planned | |
+| H3 | Empty-catch cause reporting — 7 real sites, incl. the three in `Invoke-Main`'s DC enumeration | Planned | |
+| H4 | `ExchangeSeReadiness`: FFL + DC OS vs the supported matrix, from a versioned config table | Planned | |
+| H5 | SYSVOL/DFSR depth: backlog per member, SYSVOL+NETLOGON share per DC, `msDFSR-Options` D4/D2 | Planned | |
+| H6 | Replication convergence: parse `repadmin /replsummary` into findings; `/showutdvec` lag per DC per NC | Planned | |
+| H7 | Restore integrity: `msDS-GenerationId` / `invocationID`; dcdiag `CheckSecurityError` + `VerifyEnterpriseReferences` | Planned | |
+| H8 | `_msdcs` delegation; PDC external time source and Hyper-V time-sync conflict; per-site writeable-GC assertion | Planned | |
+
+| Phase | Scope | Status | Date |
+| --- | --- | --- | --- |
+| R5 | Runtime verification of the H-track checks against a live forest. **Operator-owned** — the build environment is Linux with no directory and no Windows PowerShell 5.1, so every AD call, `Get-WinEvent -ComputerName`, `dfsrmig` and `repadmin` path is exercised against stubs only | Planned | |
+| R6 | HTML badges and the log's `Summary:` line under-count: the four counters do not match `Info`, so 17 of 123 findings on the three-domain fixture are counted nowhere. The JSON summary reconciles (v1.7.0); correcting the HTML and the log changes output already shown to people, so it is the operator's call | Planned | |
+
 **R4 is the gate for trusting the recovery sections in production**: every R0-R2 check is
 covered by pure-logic tests with stubs and CI runs on ubuntu — nothing has yet exercised
 `Get-WinEvent -ComputerName`, `Invoke-Command`, `dcdiag /s:` or per-server `Resolve-DnsName`

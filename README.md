@@ -90,12 +90,34 @@ The report bundle lands in the logged-on user's Documents:
 ```text
 %USERPROFILE%\Documents\AdAssessment\yyyy-MM-dd_HH-mm-ss\
     Assessment.html
+    Assessment.json                 the whole run, machine-readable (see below)
     csv\Findings-Consolidated.csv   all findings, severity-sorted, with recommendations
     csv\Section-Coverage.csv        rows collected vs findings reported, per section
     csv\        one CSV per topic
     raw\        optional repadmin / dcdiag capture
     transcript
 ```
+
+### `Assessment.json`
+
+The machine-readable twin of the HTML, for diffing one run against the next — re-run the
+assessment between the phases of a staged deployment and compare, rather than eyeballing two
+HTML files. It carries `schemaVersion`, the tool version, the run's scope, the roll-up, every
+finding with its recommendation, the section-coverage reconciliation, and every section's rows:
+
+```text
+{ schemaVersion, tool{name,version}, run{forest,generated,runBy,domainsScoped,dcCount,sectionsRun},
+  summary{pass,warning,fail,notAssessed,info,unclassified,total},
+  findings[], coverage[], sections{<section name>: [rows]} }
+```
+
+`summary` is self-reconciling: the buckets sum to `total`, and a status that matches none of
+them lands in `unclassified` rather than going uncounted. The four named counters are the same
+ones the HTML badges and the log's `Summary:` line use — note that those two do **not** count
+`Info` findings (PORT-PLAN R6), which is why `info` is broken out here.
+
+Nothing is collected for the JSON: it serialises what the run already assembled, after the
+CSVs and the log are on disk, so a serialisation fault costs no data.
 
 `Section-Coverage.csv` (and the matching panel in the HTML) reconciles what each section
 collected against what it contributed to the findings. A status-bearing section showing

@@ -27,6 +27,20 @@ function Start-Transcript { param([Parameter(ValueFromRemainingArguments)]$args)
 function Stop-Transcript { param([Parameter(ValueFromRemainingArguments)]$args) }
 
 $now = Get-Date
+
+# Get-ADDomain returns DomainSID as a System.Security.Principal.SecurityIdentifier, whose
+# ToString() is the SID string. The collector reads it two ways - [string]$d.DomainSID at
+# Get-AdfaDomainSummary, and .DomainSID.Value elsewhere - so the stub must honour both.
+# A bare [pscustomobject]@{Value=...} honours only .Value: its ToString() yields
+# "@{Value=S-1-5-21-1-2-3}", which the JSON guard caught being written into the report.
+# SecurityIdentifier itself cannot be constructed off Windows, and this harness must run
+# anywhere, so ToString() is overridden instead.
+function New-StubSid {
+    param([string]$Sid)
+    $o = [pscustomobject]@{ Value = $Sid }
+    $o | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.Value } -Force
+    return $o
+}
 function Get-ADForest { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ Name='contoso.com'; RootDomain='contoso.com'; ForestMode='Windows2016Forest'
         Domains=@('contoso.com'); Sites=@('Default-First-Site-Name'); GlobalCatalogs=@('dc1.contoso.com')
@@ -34,7 +48,7 @@ function Get-ADForest { param([Parameter(ValueFromRemainingArguments)]$a)
 function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ DNSRoot='contoso.com'; NetBIOSName='CONTOSO'; DomainMode='Windows2016Domain'
         PDCEmulator='dc1.contoso.com'; RIDMaster='dc1.contoso.com'; InfrastructureMaster='dc1.contoso.com'
-        DomainSID=[pscustomobject]@{ Value='S-1-5-21-1-2-3' }; DistinguishedName='DC=contoso,DC=com' } }
+        DomainSID=(New-StubSid 'S-1-5-21-1-2-3'); DistinguishedName='DC=contoso,DC=com' } }
 function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ HostName='dc1.contoso.com'; Name='DC1'; Site='Default-First-Site-Name'
         IPv4Address='10.0.0.1'; IsGlobalCatalog=$true; IsReadOnly=$false; ComputerObjectDN='CN=DC1,OU=DCs,DC=contoso,DC=com' } }
@@ -207,6 +221,58 @@ if (Test-Path $auditCsv) {
     Check ($audit.Count -gt 0) ("Multi-domain: reconciliation covers {0} sections" -f $audit.Count)
     $lost = @($audit | Where-Object { $_.Section -eq 'DNS vs AD Consistency' -and [int]$_.FindingsReported -eq 0 })
     Check ($lost.Count -eq 0) 'Multi-domain: DNS vs AD Consistency reported findings (reconciliation)'
+}
+
+# ---- JSON report (machine-readable twin of the HTML) -----------------------
+# A phased rollout re-runs the assessment between phases and diffs the result, so the JSON
+# must carry the findings and the section data in full. The depth check matters: ConvertTo-Json
+# defaults to depth 2, which would render section rows as "System.Object[]" instead of values.
+Check (-not [string]::IsNullOrWhiteSpace($result2.JsonPath)) 'Multi-domain: JsonPath returned'
+Check (Test-Path $result2.JsonPath) 'Multi-domain: Assessment.json written'
+if (Test-Path $result2.JsonPath) {
+    $doc = Get-Content $result2.JsonPath -Raw | ConvertFrom-Json
+    Check ($doc.schemaVersion -eq 1) 'JSON: schemaVersion present'
+    Check ($doc.tool.name -eq 'ADForestAssessment') 'JSON: tool name present'
+    Check (-not [string]::IsNullOrWhiteSpace([string]$doc.tool.version)) 'JSON: tool version present'
+    Check ($doc.run.forest -eq 'contoso.com') 'JSON: run.forest recorded'
+    Check (@($doc.run.domainsScoped).Count -eq 3) ("JSON: all three domains recorded ({0})" -f @($doc.run.domainsScoped).Count)
+
+    # The JSON summary and the CSV findings must describe the same run.
+    $jf = @($doc.findings)
+    Check ($jf.Count -eq @($findings2).Count) ("JSON: findings match the consolidated CSV ({0} vs {1})" -f $jf.Count, @($findings2).Count)
+    Check (@($doc.coverage).Count -eq $audit.Count) ("JSON: coverage matches Section-Coverage.csv ({0})" -f @($doc.coverage).Count)
+    # Every finding must land in exactly one bucket. 'Info' is a valid New-Finding status that
+    # the four legacy counters do not match, so the document adds it plus an 'unclassified'
+    # catch-all; without them 17 of 123 rows were counted nowhere.
+    $jsonTotal = [int]$doc.summary.pass + [int]$doc.summary.warning + [int]$doc.summary.fail +
+        [int]$doc.summary.notAssessed + [int]$doc.summary.info + [int]$doc.summary.unclassified
+    Check ($jsonTotal -eq $jf.Count) ("JSON: summary buckets reconcile with findings ({0} = {1})" -f $jsonTotal, $jf.Count)
+    Check ([int]$doc.summary.total -eq $jf.Count) ("JSON: summary.total matches findings ({0})" -f [int]$doc.summary.total)
+    Check ([int]$doc.summary.info -gt 0) ("JSON: Info findings are counted, not invisible ({0})" -f [int]$doc.summary.info)
+    Check ([int]$doc.summary.unclassified -eq 0) ("JSON: no finding escaped every bucket ({0})" -f [int]$doc.summary.unclassified)
+
+    # Findings must carry the remediation guidance, not just the verdict.
+    $fnames = @(@($jf)[0].PSObject.Properties.Name)
+    Check ($fnames -contains 'Status' -and $fnames -contains 'Recommendation') ("JSON: findings carry Status + Recommendation ({0})" -f ($fnames -join ','))
+
+    # Depth: a section's rows must be objects with real values, never a type name.
+    $secNames = @($doc.sections.PSObject.Properties.Name)
+    Check ($secNames.Count -gt 0) ("JSON: {0} sections serialised" -f $secNames.Count)
+    Check ($secNames -contains 'DNS vs AD Consistency') 'JSON: recovery section present in sections map'
+    # Depth truncation does NOT show up as "System.Object[]" - ConvertTo-Json stringifies the
+    # row to PowerShell's hashtable form instead, e.g. '@{Scope=contoso.com; PolicyName=...}'.
+    # Measured: at the ConvertTo-Json default of -Depth 2, every section row collapses to one
+    # such string while `findings` (one level shallower) still serialises correctly. So the
+    # guard asserts the rows are objects with readable properties, not that a type name is
+    # absent - and it targets `sections`, which is the deepest branch.
+    $raw = Get-Content $result2.JsonPath -Raw
+    Check ($raw -notmatch '"@\{') 'JSON: no row collapsed to a hashtable string (depth sufficient)'
+
+    $pp = @($doc.sections.'Password Policy')
+    Check ($pp.Count -eq 3) ("JSON: Password Policy carries 3 rows ({0})" -f $pp.Count)
+    Check (-not ($pp[0] -is [string])) 'JSON: section row is an object, not a stringified hashtable'
+    Check ($null -ne $pp[0].PSObject.Properties['MinPasswordLength']) 'JSON: section row properties are addressable'
+    Check ([string]$pp[0].Scope -eq 'contoso.com') ("JSON: section row value readable (Scope={0})" -f [string]$pp[0].Scope)
 }
 
 Write-Host ""
