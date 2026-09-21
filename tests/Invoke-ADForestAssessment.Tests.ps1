@@ -1000,3 +1000,72 @@ Describe 'SYSVOL / DFSR depth' {
         }
     }
 }
+
+Describe 'SYSVOL backlog' {
+    # Get-DfsrBacklog returns at most 100 records and the true total appears only in its verbose
+    # stream, so counting the returned objects reports a FLOOR as a total once the backlog
+    # reaches the cap. That is the defect these tests exist to prevent.
+    Context 'Get-AdfaDfsrBacklogCount' {
+        It 'prefers the verbose count over a capped object count' {
+            $v = 'The replicated folder has a backlog of files. Replicated folder: "SYSVOL Share". Count: 2400'
+            $r = Get-AdfaDfsrBacklogCount -VerboseMessage $v -ObjectCount 100 -DisplayCap 100
+            [int]$r.Count | Should -Be 2400
+            [bool]$r.Exact | Should -BeTrue
+        }
+        It 'marks an at-cap object count as NOT exact' {
+            $r = Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 100 -DisplayCap 100
+            [int]$r.Count | Should -Be 100
+            [bool]$r.Exact | Should -BeFalse
+        }
+        It 'uses the object count below the cap, exactly' {
+            $r = Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 7 -DisplayCap 100
+            [int]$r.Count | Should -Be 7
+            [bool]$r.Exact | Should -BeTrue
+            [int](Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 0 -DisplayCap 100).Count | Should -Be 0
+        }
+        It 'returns -1 for a failed call rather than 0' {
+            # Unmeasured and zero are different claims; conflating them would report a broken
+            # measurement as a converged folder.
+            [int](Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 0 -DisplayCap 100 -Succeeded $false).Count |
+                Should -Be -1
+        }
+        It 'does not mistake an unrelated verbose line for a count' {
+            [int](Get-AdfaDfsrBacklogCount -VerboseMessage 'Connected to partner over port 135. Count: 99' `
+                    -ObjectCount 3 -DisplayCap 100).Count | Should -Be 3
+        }
+    }
+
+    Context 'Get-AdfaSysvolBacklogVerdict' {
+        It 'passes only on a measured zero' {
+            [string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 0 -Exact $true).Status |
+                Should -Be 'Pass'
+            [string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count -1 -Exact $true -Reason 'RPC failed').Status |
+                Should -Be 'Not Assessed'
+        }
+        It 'escalates with size' {
+            [string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 5 -Exact $true -WarnAt 1 -FailAt 100).Status |
+                Should -Be 'Warning'
+            [string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 100 -Exact $false -WarnAt 1 -FailAt 100).Status |
+                Should -Be 'Fail'
+        }
+        It 'never presents a floor as a total' {
+            $floor = (Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 100 -Exact $false -WarnAt 1 -FailAt 100).Detail
+            $floor | Should -Match 'at least 100'
+            $floor | Should -Match 'floor, not a total'
+            # Non-vacuity: the caveat is conditional, not always present.
+            $exact = (Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 100 -Exact $true -WarnAt 1 -FailAt 100).Detail
+            $exact | Should -Not -Match 'at least'
+            $exact | Should -Not -Match 'floor, not a total'
+        }
+        It 'does not overstate the vendor position on backlogs' {
+            # Microsoft: a backlog "is not necessarily an indication of problems" and "indicates
+            # latency". The tighter bar applied to SYSVOL is ours, and the finding says so.
+            (Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 5 -Exact $true).Detail |
+                Should -Match 'indicates latency rather than a fault'
+        }
+        It 'names the direction measured' {
+            (Get-AdfaSysvolBacklogVerdict -SourceDc 'dcA' -DestinationDc 'dcB' -Count 5 -Exact $true).Detail |
+                Should -Match 'dcA -> dcB'
+        }
+    }
+}

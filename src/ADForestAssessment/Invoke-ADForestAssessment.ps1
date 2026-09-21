@@ -105,6 +105,13 @@
     opt-in. Strongly recommended in a post-restore recovery, where tombstone lifetime
     may already have been exceeded.
 
+.PARAMETER IncludeSysvolBacklog
+    Measure the SYSVOL replication backlog in both directions between every DC and its domain's
+    PDC emulator, using the DFSR module. Read-only. Opt-in because it costs two RPC round trips
+    per DC. Get-DfsrBacklog displays at most 100 records and its true total appears only in the
+    verbose stream, so where that cannot be read the count is reported as a floor, never as a
+    total.
+
 .PARAMETER SkipTrustVerification
     Collect trust configuration but do not run the external secure-channel verification
     (nltest / netdom). Trust health is then reported as "Not Assessed".
@@ -174,6 +181,12 @@ param(
     [switch]$IncludeDcdiag,
     [switch]$IncludeRepadmin,
     [switch]$IncludeLingeringObjectScan,
+
+    # Measures the SYSVOL backlog in both directions between each DC and its domain's PDC
+    # emulator. Opt-in because it costs two RPC round trips per DC and needs the optional DFSR
+    # module; strongly recommended on a post-restore run, where a standing SYSVOL backlog is the
+    # difference between "Group Policy is converging" and "it silently is not".
+    [switch]$IncludeSysvolBacklog,
     [switch]$SkipTrustVerification,
 
     [string]$Server,
@@ -278,6 +291,24 @@ $script:Config = @{
         @{ Id = 5014; Severity = 'Warning'; Meaning = 'DFSR RPC communication problem with a replication partner.' }
     )
     DfsrEventLookbackDays   = 14
+    # --- SYSVOL backlog thresholds ---------------------------------------------------------
+    # Microsoft is explicit that a DFSR backlog "is not necessarily an indication of problems"
+    # and "indicates latency", so these are not vendor limits and are not presented as such:
+    #   https://learn.microsoft.com/powershell/module/dfsr/get-dfsrbacklog  (read 2026-09-21)
+    # The reasoning for applying a tighter bar to SYSVOL than to a general replicated folder is
+    # that SYSVOL only changes when Group Policy changes, so it should sit at or near zero; a
+    # standing backlog means a policy edit is not reaching that DC. Thresholds live here so an
+    # operator can move them without touching code.
+    SysvolBacklogWarnAt     = 1
+    # FailAt is set to the cmdlet's own 100-record display cap: at or above it the true size is
+    # no longer observable from the object count, and a folder that changes only with Group
+    # Policy does not accumulate that much ordinary latency.
+    SysvolBacklogFailAt     = 100
+    # Get-DfsrBacklog returns at most 100 records; the true total appears only in the verbose
+    # stream. Kept as data so the cap is not a magic number buried in the parser.
+    DfsrBacklogDisplayCap   = 100
+    SysvolReplicationGroup  = 'Domain System Volume'
+    SysvolReplicatedFolder  = 'SYSVOL Share'
     # DN template for the SYSVOL subscription object, per KB 2218556. msDFSR-Enabled=FALSE means
     # SYSVOL replication is switched off on that DC; msDFSR-options=1 marks it authoritative (the
     # DFSR equivalent of FRS D4). Both are set by hand during a recovery and are easy to leave
@@ -3632,6 +3663,185 @@ function Get-AdfaDfsrSubscription {
     return @($out)
 }
 
+
+function Get-AdfaDfsrBacklogCount {
+    <#
+    .SYNOPSIS
+        Pure resolution of a DFSR backlog size from what Get-DfsrBacklog actually returns.
+    .DESCRIPTION
+        Get-DfsrBacklog returns at most 100 records, and the true total appears only in its
+        verbose stream - so counting the returned objects reports a FLOOR as if it were a total
+        once the backlog reaches the cap. Microsoft's own documented way to get the real number
+        is to read the verbose message, whose format is:
+
+            The replicated folder has a backlog of files. Replicated folder: "RF01". Count: 2400
+
+        https://learn.microsoft.com/powershell/module/dfsr/get-dfsrbacklog  (read 2026-09-21)
+
+        So: prefer the verbose count when it parses; otherwise fall back to the object count,
+        which is exact below the cap and a floor at it. The caller is told which, because
+        "2400" and "at least 100" are different claims.
+
+        Returns Count (int) and Exact (bool). Count is -1 when nothing could be determined.
+    .OUTPUTS
+        [pscustomobject] Count, Exact, Source
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$VerboseMessage = '',
+        [int]$ObjectCount = 0,
+        [int]$DisplayCap = 100,
+        [bool]$Succeeded = $true
+    )
+    if (-not $Succeeded) {
+        return [pscustomobject]@{ Count = -1; Exact = $false; Source = 'None' }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($VerboseMessage)) {
+        # Anchored on the vendor's documented wording rather than any trailing number in the
+        # text, so an unrelated verbose line cannot be read as a backlog size.
+        $m = [regex]::Match($VerboseMessage, '(?i)backlog of files.*?Count:\s*(\d+)')
+        if ($m.Success) {
+            return [pscustomobject]@{ Count = [int]$m.Groups[1].Value; Exact = $true; Source = 'Verbose' }
+        }
+    }
+    if ($ObjectCount -ge $DisplayCap) {
+        return [pscustomobject]@{ Count = $DisplayCap; Exact = $false; Source = 'CappedObjects' }
+    }
+    return [pscustomobject]@{ Count = $ObjectCount; Exact = $true; Source = 'Objects' }
+}
+
+function Get-AdfaSysvolBacklogVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict on one directed SYSVOL backlog measurement.
+    .DESCRIPTION
+        Thresholds come from config, not from the vendor: Microsoft states a backlog indicates
+        latency and is "not necessarily an indication of problems". The tighter bar applied here
+        is reasoned and stated in the finding itself - SYSVOL changes only when Group Policy
+        changes, so a standing backlog means a policy edit is not reaching that DC.
+
+        A count that is a floor rather than a total is never reported as if it were exact.
+    .OUTPUTS
+        [pscustomobject] Status, Detail
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$SourceDc,
+        [Parameter(Mandatory)][string]$DestinationDc,
+        [int]$Count = -1,
+        [bool]$Exact = $true,
+        [int]$WarnAt = 1,
+        [int]$FailAt = 100,
+        [string]$Reason = ''
+    )
+    if ($Count -lt 0) {
+        $why = 'the backlog could not be measured'
+        if (-not [string]::IsNullOrWhiteSpace($Reason)) { $why = $Reason }
+        return [pscustomobject]@{
+            Status = $script:Status.NotAssessed
+            Detail = ("SYSVOL backlog {0} -> {1} could not be measured: {2}. This is not a clean result." -f $SourceDc, $DestinationDc, $why)
+        }
+    }
+    $shown = [string]$Count
+    if (-not $Exact) { $shown = ("at least {0}" -f $Count) }
+    if ($Count -eq 0) {
+        return [pscustomobject]@{
+            Status = $script:Status.Pass
+            Detail = ("SYSVOL backlog {0} -> {1} is 0 - that direction has converged." -f $SourceDc, $DestinationDc)
+        }
+    }
+    $status = $script:Status.Warning
+    if ($Count -ge $FailAt) { $status = $script:Status.Fail }
+    elseif ($Count -lt $WarnAt) { $status = $script:Status.Pass }
+    $capNote = ''
+    if (-not $Exact) {
+        $capNote = ' The true figure may be far higher: Get-DfsrBacklog displays at most 100 records and its verbose count could not be read, so this is a floor, not a total.'
+    }
+    return [pscustomobject]@{
+        Status = $status
+        Detail = ("SYSVOL backlog {0} -> {1} is {2} file(s) pending. SYSVOL changes only when Group Policy changes, so it should sit at or near zero - a standing backlog means a policy edit is not reaching {1}. (A DFSR backlog on its own indicates latency rather than a fault; the tighter bar here is specific to SYSVOL.){3}" -f `
+                $SourceDc, $DestinationDc, $shown, $capNote)
+    }
+}
+
+function Get-AdfaSysvolBacklog {
+    <#
+    .SYNOPSIS
+        Measures the SYSVOL backlog in both directions between a reference DC and every other DC.
+    .DESCRIPTION
+        Opt-in, because it costs two RPC round trips per DC and needs the optional DFSR module.
+        The reference DC is the domain's PDC emulator, which is where Group Policy edits are
+        normally written, so it is the DC the others should be catching up with.
+
+        Both directions are measured: a backlog TO the PDC and a backlog FROM it are different
+        faults, and testing only one would miss half of them.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [Parameter(Mandatory)][string]$ReferenceDc,
+        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        [int]$RpcPortTimeoutMs = 1200
+    )
+    $rows = @()
+    if (-not (Test-ModuleAvailable -Name 'DFSR')) {
+        return @(New-Finding -Scope $DomainName -Area 'SysvolBacklog' -Item 'SYSVOL backlog' -Status $script:Status.NotAssessed `
+                -Detail 'The DFSR PowerShell module is not installed on this host, so the SYSVOL backlog could not be measured. Install RSAT FS-DFS-Mgmt-Con, or run "dfsrdiag backlog" on a DC.')
+    }
+    Import-Module DFSR -ErrorAction SilentlyContinue -Verbose:$false
+    $peers = @($DomainControllers | Where-Object {
+            $null -ne $_ -and $_.ToLowerInvariant().TrimEnd('.') -ne $ReferenceDc.ToLowerInvariant().TrimEnd('.')
+        })
+    if ($peers.Count -eq 0) {
+        return @(New-Finding -Scope $DomainName -Area 'SysvolBacklog' -Item 'SYSVOL backlog' -Status $script:Status.NotAssessed `
+                -Detail ("No DC other than the reference ({0}) was available to compare against, so no backlog could be measured." -f $ReferenceDc))
+    }
+
+    $group = [string]$script:Config.SysvolReplicationGroup
+    $folder = [string]$script:Config.SysvolReplicatedFolder
+    foreach ($peer in $peers) {
+        if (-not (Test-TcpPort -ComputerName $peer -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
+            $rows += New-Finding -Scope $DomainName -Area 'SysvolBacklog' -Item ("Backlog with {0}" -f $peer) -Status $script:Status.NotAssessed `
+                -Detail 'RPC (135) not reachable, so neither direction could be measured.'
+            continue
+        }
+        foreach ($pair in @(@{ From = $ReferenceDc; To = $peer }, @{ From = $peer; To = $ReferenceDc })) {
+            $objCount = 0
+            $verboseText = ''
+            $ok = $true
+            $reason = ''
+            try {
+                # 4>&1 redirects the verbose stream into the output so the true count can be read;
+                # the object count alone stops at the cmdlet's 100-record cap.
+                $captured = @(Get-DfsrBacklog -GroupName $group -FolderName $folder `
+                        -SourceComputerName $pair.From -DestinationComputerName $pair.To `
+                        -Verbose -ErrorAction Stop 4>&1)
+                foreach ($item in $captured) {
+                    if ($item -is [System.Management.Automation.VerboseRecord]) { $verboseText = ("{0} {1}" -f $verboseText, $item.Message) }
+                    else { $objCount++ }
+                }
+            }
+            catch {
+                $ok = $false
+                $reason = $_.Exception.Message
+            }
+            $resolved = Get-AdfaDfsrBacklogCount -VerboseMessage $verboseText -ObjectCount $objCount `
+                -DisplayCap ([int]$script:Config.DfsrBacklogDisplayCap) -Succeeded $ok
+            $verdict = Get-AdfaSysvolBacklogVerdict -SourceDc ([string]$pair.From) -DestinationDc ([string]$pair.To) `
+                -Count ([int]$resolved.Count) -Exact ([bool]$resolved.Exact) `
+                -WarnAt ([int]$script:Config.SysvolBacklogWarnAt) -FailAt ([int]$script:Config.SysvolBacklogFailAt) -Reason $reason
+            $rows += New-Finding -Scope $DomainName -Area 'SysvolBacklog' `
+                -Item ("Backlog {0} -> {1}" -f $pair.From, $pair.To) -Status $verdict.Status -Detail $verdict.Detail
+        }
+    }
+    return @($rows)
+}
+
 function Get-AdfaDfsrEventLog {
     <#
     .SYNOPSIS
@@ -4468,6 +4678,31 @@ function Invoke-Main {
         Write-Stage 'DFS Replication events'
         $sectionData['DFS Replication Events'] = Get-AdfaDfsrEventLog -DomainControllers $dcNames -Credential $Credential `
             -LookbackDays $script:Config.DfsrEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+
+        if ($IncludeSysvolBacklog) {
+            Write-Stage 'SYSVOL backlog (DFSR, both directions against each domain PDC)'
+            $backlogRows = @()
+            foreach ($d in $targetDomains) {
+                # The PDC emulator is where Group Policy edits are normally written, so it is the
+                # DC the others should be catching up with.
+                $pdc = ''
+                try { $pdc = [string](Get-ADDomain -Identity $d @adParams).PDCEmulator }
+                catch {
+                    Write-Log -Level ERROR -Section $d -Message ("PDC emulator lookup failed, so no SYSVOL backlog could be measured: {0}" -f $_.Exception.Message)
+                    $backlogRows += New-Finding -Scope $d -Area 'SysvolBacklog' -Item 'SYSVOL backlog' -Status $script:Status.NotAssessed `
+                        -Detail ("The PDC emulator could not be identified, so there was no reference DC to measure against: {0}" -f $_.Exception.Message)
+                    continue
+                }
+                $domainDcNames = @($allDcInventory | Where-Object {
+                        $sc = $_.PSObject.Properties['Scope']   # $null when absent - StrictMode-safe
+                        $null -ne $sc -and [string]$sc.Value -eq $d
+                    } | Select-Object -ExpandProperty HostName)
+                if (@($domainDcNames).Count -eq 0) { $domainDcNames = @($dcNames) }
+                $backlogRows += @(Get-AdfaSysvolBacklog -DomainName $d -ReferenceDc $pdc `
+                        -DomainControllers $domainDcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs)
+            }
+            $sectionData['SYSVOL Backlog'] = @($backlogRows)
+        }
     }
     if (Test-SectionSelected 'Gpo' $Sections) {
         Write-Stage 'GPO inventory'

@@ -10,6 +10,38 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-09-21 (SYSVOL backlog, opt-in, tool v1.7.0)
+
+`-IncludeSysvolBacklog` measures pending SYSVOL files **in both directions** between every DC and
+its domain's PDC emulator — the DC where Group Policy edits are normally written, and therefore
+the one the others should be catching up with. Both directions are measured because a backlog
+*to* the PDC and one *from* it are different faults and testing one would miss half of them.
+
+Opt-in, because it costs two RPC round trips per DC and needs the optional DFSR module. Absent
+module, unreachable DC or failed call all report `Not Assessed` with the cause, never zero.
+
+**The trap this check exists to avoid.** `Get-DfsrBacklog` returns **at most 100 records**, and
+the true total appears only in its verbose stream
+([docs](https://learn.microsoft.com/powershell/module/dfsr/get-dfsrbacklog), read 2026-09-21). So
+the obvious implementation — count the returned objects — silently reports **a floor as if it
+were a total**: a backlog of 2,400 and one of exactly 100 look identical. The verbose stream is
+captured and parsed for the real figure, anchored on the vendor's documented wording so an
+unrelated verbose line cannot be misread as a count. Where it cannot be read, the finding says
+**"at least 100"** and states plainly that the true figure may be far higher. A test pins that an
+exact figure carries no such caveat, so the wording stays meaningful.
+
+Thresholds are **ours, not the vendor's, and the finding says so.** Microsoft states a backlog
+"is not necessarily an indication of problems" and "indicates latency". The tighter bar applied
+here is reasoned rather than borrowed: SYSVOL changes only when Group Policy changes, so it should
+sit at or near zero, and a standing backlog means a policy edit is not reaching that DC. Both
+thresholds live in the config table so an operator can move them without touching code, and the
+`Fail` threshold is set at the cmdlet's own 100-record cap — the point beyond which the true size
+stops being observable from the object count at all.
+
+Demonstrated able to fail: marking an at-cap count as exact turns the floor assertion red.
+Restored byte-for-byte, hash verified.
+
+
 ### Added — 2026-09-21 (SYSVOL/DFSR depth: shares, subscription state, DFSR events, tool v1.7.0)
 
 The SYSVOL section was one check — `dfsrmig /getglobalstate` — which says whether the domain

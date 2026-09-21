@@ -658,6 +658,54 @@ Assert-True ($dirtyRec -match 'ResumeReplication') 'SYSVOL remediation: a dirty 
 Assert-True ($dirtyRec -notmatch 'Do NOT jump') 'SYSVOL remediation: entries do not bleed into each other'
 
 Write-Host ""
+Write-Host "== 17. SYSVOL backlog (the 100-record cap is the trap) ==" -ForegroundColor Cyan
+
+# Get-DfsrBacklog returns at most 100 records and the true total is only in its verbose stream,
+# so counting objects reports a FLOOR as a total once the backlog reaches the cap. The vendor's
+# documented message format is:
+#   The replicated folder has a backlog of files. Replicated folder: "RF01". Count: 2400
+$vmsg = 'The replicated folder has a backlog of files. Replicated folder: "SYSVOL Share". Count: 2400'
+$r1 = Get-AdfaDfsrBacklogCount -VerboseMessage $vmsg -ObjectCount 100 -DisplayCap 100
+Assert-Equal 2400 ([int]$r1.Count) 'Backlog: the verbose count beats the capped object count'
+Assert-True ([bool]$r1.Exact) 'Backlog: a verbose count is exact'
+Assert-Equal 'Verbose' ([string]$r1.Source) 'Backlog: source recorded as Verbose'
+
+# Without a verbose count, an at-cap result is a floor and must say so.
+$r2 = Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 100 -DisplayCap 100
+Assert-Equal 100 ([int]$r2.Count) 'Backlog: at the cap, the count is the cap'
+Assert-True (-not [bool]$r2.Exact) 'Backlog: at the cap WITHOUT a verbose count, the figure is NOT exact'
+
+# Below the cap the object count is the real answer.
+$r3 = Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 7 -DisplayCap 100
+Assert-Equal 7 ([int]$r3.Count) 'Backlog: below the cap the object count is used'
+Assert-True ([bool]$r3.Exact) 'Backlog: below the cap the figure is exact'
+Assert-Equal 0 ([int](Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 0 -DisplayCap 100).Count) 'Backlog: no objects and no verbose => 0'
+
+# A failed call is unmeasured, not zero - the distinction the whole tool turns on.
+$r4 = Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 0 -DisplayCap 100 -Succeeded $false
+Assert-Equal (-1) ([int]$r4.Count) 'Backlog: a failed call is -1 (unmeasured), never 0'
+
+# The parser must not read any trailing number as a backlog size.
+Assert-Equal 3 ([int](Get-AdfaDfsrBacklogCount -VerboseMessage 'Connected to partner over port 135. Count: 99' -ObjectCount 3 -DisplayCap 100).Count) 'Backlog: an unrelated verbose line is not mistaken for a count'
+
+# --- Verdicts
+Assert-Equal 'Pass' ([string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 0 -Exact $true -WarnAt 1 -FailAt 100).Status) 'Backlog verdict: zero => Pass'
+Assert-Equal 'Warning' ([string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 5 -Exact $true -WarnAt 1 -FailAt 100).Status) 'Backlog verdict: a small standing backlog => Warning'
+Assert-Equal 'Fail' ([string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 100 -Exact $false -WarnAt 1 -FailAt 100).Status) 'Backlog verdict: at or above FailAt => Fail'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count (-1) -Exact $true -Reason 'RPC failed').Status) 'Backlog verdict: unmeasured => Not Assessed, never Pass'
+
+# An inexact figure must never be presented as a total.
+$floorDetail = (Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 100 -Exact $false -WarnAt 1 -FailAt 100).Detail
+Assert-True ($floorDetail -match 'at least 100') 'Backlog verdict: a floor is reported as "at least"'
+Assert-True ($floorDetail -match 'floor, not a total') 'Backlog verdict: the caveat names the cap explicitly'
+$exactDetail = (Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 100 -Exact $true -WarnAt 1 -FailAt 100).Detail
+Assert-True ($exactDetail -notmatch 'at least') 'Backlog verdict: an exact figure carries no floor caveat'
+Assert-True ($exactDetail -notmatch 'floor, not a total') 'Backlog verdict: non-vacuity - the caveat really is conditional'
+# The finding must not overstate the vendor position.
+Assert-True ($exactDetail -match 'indicates latency rather than a fault') 'Backlog verdict: states that a backlog alone is latency, not a fault'
+Assert-True ((Get-AdfaSysvolBacklogVerdict -SourceDc 'dcA' -DestinationDc 'dcB' -Count 5 -Exact $true).Detail -match 'dcA -> dcB') 'Backlog verdict: the direction is named'
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }
