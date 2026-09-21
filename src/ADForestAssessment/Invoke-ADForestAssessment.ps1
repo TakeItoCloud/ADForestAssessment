@@ -1065,11 +1065,19 @@ function Get-AdfaReplicationHealth {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [Parameter(Mandatory)][string[]]$DomainControllers,
+        # AllowEmptyCollection: when DC enumeration fails the caller passes an empty list, and a
+        # Mandatory [string[]] refuses to bind it - which aborted the whole run with a parameter
+        # binding error instead of reporting the section as unassessed. The recovery sections
+        # added in v1.4.0 already allowed an empty list; these older ones did not.
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers,
         [hashtable]$RepParams = @{},
         [int]$RpcPortTimeoutMs = 1200,
         [int]$StaleMinutes = 180
     )
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'Replication' -Item 'Replication health' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so replication health could not be assessed. This is not a clean result.')
+    }
     $rows = foreach ($dc in $DomainControllers) {
         $rpcOk = Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
         $adwsOk = Test-TcpPort -ComputerName $dc -Port 9389 -TimeoutMs $RpcPortTimeoutMs
@@ -1169,7 +1177,9 @@ function Get-AdfaSiteHealthFinding {
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][pscustomobject]$Topology, [Parameter(Mandatory)][pscustomobject[]]$DomainControllers)
+    param([Parameter(Mandatory)][pscustomobject]$Topology,
+        # See the note on Get-AdfaReplicationHealth: an empty inventory must degrade, not abort.
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DomainControllers)
     $findings = @()
     $dcSites = @($DomainControllers | ForEach-Object { $_.Site } | Sort-Object -Unique)
 
@@ -1202,12 +1212,20 @@ function Get-AdfaDcDiagnostic {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [Parameter(Mandatory)][string[]]$DomainControllers,
+        # AllowEmptyCollection: when DC enumeration fails the caller passes an empty list, and a
+        # Mandatory [string[]] refuses to bind it - which aborted the whole run with a parameter
+        # binding error instead of reporting the section as unassessed. The recovery sections
+        # added in v1.4.0 already allowed an empty list; these older ones did not.
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers,
         [int]$TimeoutSeconds = 90,
         [int]$Retries = 2,
         [int]$RetryDelaySeconds = 2,
         [int]$RpcPortTimeoutMs = 1200
     )
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'DcDiagnostics' -Item 'dcdiag grid' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so no dcdiag test could be run. This is not a clean result.')
+    }
     # Full post-restore grid. The nine beyond the original six matter specifically after
     # a restore: MachineAccount (DC computer object/SPNs), ObjectsReplicated (DSA objects
     # converged), RidManager (RID pool reachable), KccEvent (topology errors), Intersite,
@@ -1282,7 +1300,11 @@ function Get-AdfaDnsHealth {
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'DNS' -Item 'DNS health' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so no DNS server could be queried. This is not a clean result.')
+    }
     if (-not (Test-ModuleAvailable -Name 'DnsServer')) {
         return @(New-Finding -Area 'DNS' -Item 'DnsServer module' -Status $script:Status.NotAssessed -Detail 'RSAT DnsServer module not installed on this host.')
     }
@@ -1307,7 +1329,11 @@ function Get-AdfaDnsHealth {
                 $fwd = Get-DnsServerForwarder -ComputerName $dc -ErrorAction Stop
                 $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.Info -Detail (($fwd.IPAddress | ForEach-Object { $_.ToString() }) -join ', ')
             }
-            catch { }
+            catch {
+                # Previously silent: the forwarders row simply vanished, so a reader could not
+                # tell "no forwarders configured" from "the query failed".
+                $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.NotAssessed -Detail ("Forwarder list could not be read: {0}" -f $_.Exception.Message)
+            }
             $insecureXfer = @($zones | Where-Object { $_.PSObject.Properties.Name -contains 'SecureSecondaries' -and $_.SecureSecondaries -eq 'TransferAnyServer' })
             if ($insecureXfer.Count -gt 0) {
                 $rows += New-Finding -Area 'DNS' -Item ("{0}: zone transfer" -f $dc) -Status $script:Status.Warning -Detail ("Zones allowing transfer to ANY server: {0}" -f (($insecureXfer.ZoneName | Select-Object -First 8) -join ', '))
@@ -1429,7 +1455,14 @@ function Get-AdfaPasswordPolicy {
             }
         }
     }
-    catch { }
+    catch {
+        # Previously silent. With no row at all, a report showing only the default policy could
+        # not be distinguished from one where the FGPP query failed - and an absent key and a
+        # measured absence are different claims.
+        $rows += New-Finding -Scope $DomainName -Area 'PasswordPolicy' -Item 'Fine-grained password policies' `
+            -Status $script:Status.NotAssessed `
+            -Detail ("Could not be enumerated: {0}. This is NOT the same as 'no fine-grained policies exist'." -f $_.Exception.Message)
+    }
     return @($rows)
 }
 
@@ -1919,7 +1952,11 @@ function Get-AdfaDcHardening {
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'DCHardening' -Item 'DC hardening' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so no hardening setting could be read. This is not a clean result.')
+    }
     $rows = @()
     foreach ($dc in $DomainControllers) {
         if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
@@ -2153,6 +2190,7 @@ function Get-AdfaLingeringObjectScan {
         return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail $_.Exception.Message)
     }
     $refGuid = ''
+    $refGuidError = ''
     try {
         $inv = @(Get-AdfaDsaInventory -AdParams $AdParams)
         $refNorm = $refDc.ToLowerInvariant().TrimEnd('.')
@@ -2160,9 +2198,16 @@ function Get-AdfaLingeringObjectScan {
             if ($d.DnsHostName -and $d.DnsHostName.ToLowerInvariant().TrimEnd('.') -eq $refNorm) { $refGuid = $d.DsaGuid; break }
         }
     }
-    catch { }
+    catch {
+        # The verdict below was already fail-closed, but the cause was discarded - so
+        # "the DSA inventory threw" and "the reference DC simply was not in it" read alike.
+        $refGuidError = $_.Exception.Message
+    }
     if (-not $refGuid) {
-        return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail ("Could not resolve the DSA GUID of the reference DC ({0})." -f $refDc))
+        $why = ''
+        if ($refGuidError) { $why = (" DSA inventory failed: {0}" -f $refGuidError) }
+        else { $why = ' The DSA inventory was readable but contained no entry matching that host name.' }
+        return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail ("Could not resolve the DSA GUID of the reference DC ({0}).{1}" -f $refDc, $why))
     }
 
     foreach ($dc in $dcs) {
@@ -2929,7 +2974,12 @@ function Get-AdfaDsaInventory {
             $srvObj = Get-ADObject -Identity $serverDn -Properties dNSHostName @AdParams
             if ($srvObj.PSObject.Properties['dNSHostName'] -and $srvObj.dNSHostName) { $dcHost = [string]$srvObj.dNSHostName }
         }
-        catch { }
+        catch {
+            # Inventory rows carry no Status column, so there is nowhere here to put a finding.
+            # It is logged instead: a blank DnsHostName silently fails to correlate with the DSA
+            # CNAME and GC checks downstream, and that is worth a line in the run log.
+            Write-Log -Level WARN -Section 'DsaInventory' -Message ("Server object {0} could not be read, so DSA {1} has no host name and will not correlate with the DNS checks: {2}" -f $serverDn, $dsaGuid, $_.Exception.Message)
+        }
         $out += [pscustomobject]@{ DsaGuid = $dsaGuid; ServerDn = $serverDn; DnsHostName = $dcHost }
     }
     # Plain return on purpose: callers wrap with @(...); `return @()` would hand them
@@ -3884,16 +3934,52 @@ function Invoke-Main {
         $sectionData['Domain Controllers'] = $inv
     }
     $dcNames = @($allDcInventory | Select-Object -ExpandProperty HostName -ErrorAction SilentlyContinue)
+    # Every per-DC section downstream reads $dcNames. When this fallback threw silently, all of
+    # them reported "No domain controllers enumerated" and the actual cause - bad credentials, no
+    # ADWS, a dead target DC - was discarded. The reason is captured so those sections can name
+    # it, which is the difference between "this forest has no DCs" and "we could not ask".
+    $script:DcEnumerationError = ''
     if ($dcNames.Count -eq 0) {
-        try { $dcNames = @(Get-ADDomainController -Filter * @adParams | Select-Object -ExpandProperty HostName) } catch { }
+        try { $dcNames = @(Get-ADDomainController -Filter * @adParams | Select-Object -ExpandProperty HostName) }
+        catch {
+            $script:DcEnumerationError = $_.Exception.Message
+            Write-Log -Level ERROR -Section 'DomainControllers' -Message ("Domain controller enumeration FAILED, so every per-DC section is unassessed rather than clean: {0}" -f $_.Exception.Message)
+        }
+    }
+    if ($dcNames.Count -eq 0) {
+        $whyNoDcs = 'No domain controllers could be enumerated.'
+        if ($script:DcEnumerationError) { $whyNoDcs = ("Domain controller enumeration failed: {0}" -f $script:DcEnumerationError) }
+        Write-Log -Level ERROR -Section 'DomainControllers' -Message $whyNoDcs
+        # A first-class finding, so the report itself says the per-DC checks are unassessed.
+        # Without this the only trace was each section's own terse "no DCs enumerated" line.
+        $sectionData['Domain Controller Enumeration'] = @(New-Finding -Area 'DomainControllers' `
+                -Item 'Domain controller enumeration' -Status $script:Status.NotAssessed `
+                -Detail ("{0} Every per-DC check (replication, DNS consistency, ports, secure channels, DS events, diagnostics) is therefore UNASSESSED, not clean." -f $whyNoDcs))
     }
 
+    # A throw here used to drop the domain from the section silently - the same shape of defect
+    # as the v1.6.0 multi-domain data loss, where a reader saw a shorter list and no error. Each
+    # failure now becomes a row, so the section's own count reconciles with the domains scoped.
     if (Test-SectionSelected 'Domains' $Sections) {
-        $ds = foreach ($d in $targetDomains) { try { Get-AdfaDomainSummary -DomainName $d -AdParams $adParams } catch { } }
+        $ds = foreach ($d in $targetDomains) {
+            try { Get-AdfaDomainSummary -DomainName $d -AdParams $adParams }
+            catch {
+                Write-Log -Level ERROR -Section $d -Message ("Domain summary failed: {0}" -f $_.Exception.Message)
+                New-Finding -Scope $d -Area 'Domains' -Item ("Domain summary - {0}" -f $d) -Status $script:Status.NotAssessed `
+                    -Detail ("Could not be read: {0}. Functional level, FSMO holders and the domain SID are unknown for this domain." -f $_.Exception.Message)
+            }
+        }
         $sectionData['Domain Summary'] = @($ds)
     }
     if (Test-SectionSelected 'Fsmo' $Sections) {
-        $fs = foreach ($d in $targetDomains) { try { Get-AdfaFsmoRole -DomainName $d -AdParams $adParams } catch { } }
+        $fs = foreach ($d in $targetDomains) {
+            try { Get-AdfaFsmoRole -DomainName $d -AdParams $adParams }
+            catch {
+                Write-Log -Level ERROR -Section $d -Message ("FSMO role lookup failed: {0}" -f $_.Exception.Message)
+                New-Finding -Scope $d -Area 'Fsmo' -Item ("FSMO roles - {0}" -f $d) -Status $script:Status.NotAssessed `
+                    -Detail ("Could not be read: {0}. Role holders for this domain are unknown - do not conclude they are healthy." -f $_.Exception.Message)
+            }
+        }
         $sectionData['FSMO Roles'] = @($fs)
     }
 

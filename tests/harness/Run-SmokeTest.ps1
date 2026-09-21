@@ -278,6 +278,73 @@ if (Test-Path $result2.JsonPath) {
 Write-Host ""
 Write-Host ("Multi-domain bundle: {0}" -f $result2.OutputRoot)
 
+# ---- Scenario 3: collection failures must be reported, never swallowed -------
+# Regression guard for the empty-catch fixes. The failure mode being pinned is the one this
+# repo already shipped once (v1.6.0): a collector throws, its rows quietly do not appear, and
+# the report looks complete. Here the DC enumeration and the per-domain lookups all fail, and
+# the run must come back saying so rather than looking clean.
+Write-Host ""
+Write-Host "== Running Invoke-Main with failing collectors ==" -ForegroundColor Cyan
+
+# Get-ADDomain is deliberately NOT broken here: Invoke-Main calls it unguarded while resolving
+# which domains to scope, long before any section runs, so breaking it aborts the run instead of
+# exercising a catch. That unguarded path is recorded as PORT-PLAN H9 rather than widened into
+# this change. The two collectors below are stubbed at the seam this change actually touches.
+function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: ADWS unreachable on the target DC' }
+function Get-ADFineGrainedPasswordPolicy { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: FGPP query denied' }
+function Get-AdfaDomainSummary { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: domain summary unavailable' }
+function Get-AdfaFsmoRole { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: FSMO lookup denied' }
+
+$out3 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $out3
+$script:AllDomains = $false
+$result3 = Invoke-Main
+
+Check ($null -ne $result3) 'Failure mode: Invoke-Main still returns a summary rather than dying'
+Check (Test-Path $result3.FindingsFile) 'Failure mode: consolidated findings still written'
+$findings3 = @(Import-Csv $result3.FindingsFile)
+Check ($findings3.Count -gt 0) ("Failure mode: findings are not empty ({0} rows)" -f $findings3.Count)
+
+# Nothing may be reported as healthy on the strength of a collector that threw.
+$dcEnum = @($findings3 | Where-Object { $_.Item -match 'Domain controller enumeration' })
+Check ($dcEnum.Count -ge 1) 'Failure mode: DC enumeration failure is a first-class finding'
+if ($dcEnum.Count -ge 1) {
+    Check ($dcEnum[0].Status -eq 'Not Assessed') ("Failure mode: DC enumeration reported Not Assessed (got '{0}')" -f $dcEnum[0].Status)
+    Check ($dcEnum[0].Detail -match 'ADWS unreachable') 'Failure mode: the underlying cause is carried into the report'
+    Check ($dcEnum[0].Detail -match 'UNASSESSED, not clean') 'Failure mode: the finding refuses to imply the per-DC checks are clean'
+}
+
+$dsRow = @($findings3 | Where-Object { $_.Item -match 'Domain summary' })
+Check ($dsRow.Count -ge 1) 'Failure mode: a domain whose summary failed appears as a row, not a gap'
+if ($dsRow.Count -ge 1) { Check ($dsRow[0].Status -eq 'Not Assessed') 'Failure mode: failed domain summary is Not Assessed' }
+
+$fsmoRow = @($findings3 | Where-Object { $_.Item -match 'FSMO roles' })
+Check ($fsmoRow.Count -ge 1) 'Failure mode: a domain whose FSMO lookup failed appears as a row'
+if ($fsmoRow.Count -ge 1) { Check ($fsmoRow[0].Status -eq 'Not Assessed') 'Failure mode: failed FSMO lookup is Not Assessed' }
+
+$fgpp = @($findings3 | Where-Object { $_.Item -match 'Fine-grained password policies' })
+Check ($fgpp.Count -ge 1) 'Failure mode: a failed FGPP query is reported, not indistinguishable from "none exist"'
+if ($fgpp.Count -ge 1) {
+    Check ($fgpp[0].Status -eq 'Not Assessed') 'Failure mode: failed FGPP query is Not Assessed'
+    Check ($fgpp[0].Detail -match "NOT the same as") 'Failure mode: FGPP row states that absence was not measured'
+}
+
+# Non-vacuity: the run must not have passed simply because nothing was assessed at all.
+$notAssessed3 = @($findings3 | Where-Object { $_.Status -eq 'Not Assessed' }).Count
+Check ($notAssessed3 -ge 4) ("Failure mode: non-vacuity - {0} Not Assessed findings actually present" -f $notAssessed3)
+# And crucially: no section may claim a Pass for something that could not be measured.
+$falsePass = @($findings3 | Where-Object { $_.Status -eq 'Pass' -and $_.Detail -match 'could not|failed|unreachable' })
+Check ($falsePass.Count -eq 0) ("Failure mode: nothing reports Pass off the back of a failure ({0})" -f $falsePass.Count)
+
+# The JSON must reflect the same story, so a machine-readable consumer is not misled either.
+if (Test-Path $result3.JsonPath) {
+    $doc3 = Get-Content $result3.JsonPath -Raw | ConvertFrom-Json
+    Check ([int]$doc3.summary.notAssessed -ge 4) ("Failure mode: JSON summary records the unassessed count ({0})" -f [int]$doc3.summary.notAssessed)
+}
+else { Check $false 'Failure mode: Assessment.json written' }
+
+Remove-Item -Recurse -Force $out3 -ErrorAction SilentlyContinue
+
 # cleanup
 Remove-Item -Recurse -Force $out2 -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue

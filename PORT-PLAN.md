@@ -51,12 +51,13 @@ verdict only.
 | --- | --- | --- | --- |
 | H1 | v1.7.0: JSON report (`Assessment.json`) with a self-reconciling summary; smoke-test SID stub fidelity | Done | 2026-09-21 |
 | H2 | Event-log coverage guard: a cleared or truncated Directory Service log must report `Not Assessed`, never `Pass` | Done | 2026-09-21 |
-| H3 | Empty-catch cause reporting — 7 real sites, incl. the three in `Invoke-Main`'s DC enumeration | Planned | |
+| H3 | Empty-catch cause reporting — 7 real sites, incl. the three in `Invoke-Main`'s DC enumeration; plus `[AllowEmptyCollection()]` on the five pre-v1.4.0 per-DC collectors, which aborted the run outright when DC enumeration failed | Done | 2026-09-21 |
 | H4 | `ExchangeSeReadiness`: FFL + DC OS vs the supported matrix, from a versioned config table | Done | 2026-09-21 |
 | H5 | SYSVOL/DFSR depth: backlog per member, SYSVOL+NETLOGON share per DC, `msDFSR-Options` D4/D2 | Planned | |
 | H6 | Replication convergence: parse `repadmin /replsummary` into findings; `/showutdvec` lag per DC per NC | Planned | |
 | H7 | Restore integrity: `msDS-GenerationId` / `invocationID`; dcdiag `CheckSecurityError` + `VerifyEnterpriseReferences` | Planned | |
 | H8 | `_msdcs` delegation; PDC external time source and Hyper-V time-sync conflict; per-site writeable-GC assertion | Planned | |
+| H9 | `Invoke-Main` calls `Get-ADForest` / `Get-ADDomain` **unguarded** while resolving which domains to scope, before any section runs. A forest where those throw aborts the run with a raw exception instead of reporting what it could reach — the opposite of fail-closed on exactly the damaged forest this track exists for. Found by the H3 failure-mode harness, which had to be narrowed to avoid it | Planned | |
 
 | Phase | Scope | Status | Date |
 | --- | --- | --- | --- |
@@ -82,6 +83,13 @@ rule is deliberately **not** applied. Running on the DC is the point.
 ## Backlog detail
 
 ### P2 — Analyzer suspensions
+
+**Count correction (2026-09-21).** The table below says nine `PSAvoidUsingEmptyCatchBlock` hits
+"all in the assessment script". Measured on the v1.7.0 tree there were **eleven** `catch { }`
+sites, of which **seven** were real debt and four are deliberate and remain: the log append in
+`Write-Log` (logging a logging failure would recurse), the `$p.Kill()` in the external-tool
+timeout path (best-effort), and `Start-Transcript` / `Stop-Transcript` (host-dependent and not
+worth failing a run over). H3 closed the seven. The rule stays excluded for those four.
 
 `PSScriptAnalyzerSettings.psd1` excludes nine rules. Only some are debt; the file records the
 split, and it matters because most of the volume is in the test harness, not the tool.

@@ -10,6 +10,57 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-09-21 (collection failures were swallowed; a failed DC enumeration aborted the run, tool v1.7.0)
+
+Seven `catch { }` blocks discarded the reason a collector failed, so "not installed", "access
+denied" and "it threw" were indistinguishable from a clean result. Each now reports its cause.
+Four remain and are deliberate: the log append in `Write-Log` (logging a logging failure would
+recurse), `$p.Kill()` in the external-tool timeout path, and `Start-Transcript` /
+`Stop-Transcript`.
+
+| Site | Was | Now |
+| --- | --- | --- |
+| DNS forwarders | the forwarders row vanished | `Not Assessed` naming the error |
+| Fine-grained password policies | no row at all — indistinguishable from "none exist" | `Not Assessed` saying absence was not measured |
+| Lingering-object scan | verdict already fail-closed, but the cause was lost | names whether the DSA inventory threw or simply had no match |
+| DSA inventory | a DC with an unreadable host name became a silent blank that would not correlate with the DNS checks | logged, naming the DSA and the consequence |
+| DC enumeration (`Invoke-Main`) | silent; every per-DC section then said "no DCs enumerated" | first-class `Not Assessed` finding carrying the cause |
+| Domain summary, per domain | the domain silently disappeared from the section | a row per failed domain |
+| FSMO roles, per domain | same | a row per failed domain |
+
+The last three are the ones that mattered: they sit in the orchestration every per-DC section
+depends on, and the failure shape — a collector throws, its rows quietly do not appear, the
+report looks complete — is the same one this repo already shipped once in v1.6.0.
+
+**And the more serious defect the new regression test exposed.** With `$dcNames` empty, the run
+did not merely report poorly — it **aborted**, with
+`Cannot bind argument to parameter 'DomainControllers' because it is an empty array`, before any
+report was written. Five collectors predating v1.4.0 declared `[Parameter(Mandatory)][string[]]`
+without `[AllowEmptyCollection()]`: `Get-AdfaReplicationHealth`, `Get-AdfaDcDiagnostic`,
+`Get-AdfaDnsHealth`, `Get-AdfaDcHardening` and `Get-AdfaSiteHealthFinding`. The recovery sections
+added in v1.4.0 already allowed an empty list; these did not. All five now accept one and report
+`Not Assessed` with a named cause, so a forest whose DC enumeration fails still produces a full
+report saying what it could not assess — which is the entire point of the tool on a damaged forest.
+
+A third smoke-test scenario runs `Invoke-Main` end to end with those collectors throwing and
+asserts 17 properties of the result: the run completes, findings are written, each failure appears
+as `Not Assessed` carrying its cause, and — the non-vacuity check — that **nothing reports `Pass`
+off the back of a failure**. Measured: 50 findings, 29 `Not Assessed`, 0 false passes. Before this
+change the same scenario produced no report at all.
+
+Both guards were demonstrated able to fail: restoring the silent catch turns the cause assertion
+red, and reverting one `[AllowEmptyCollection()]` reproduces the original abort. Script restored
+byte-for-byte after each, hash verified.
+
+Two things found and deliberately **not** fixed here, recorded as plan rows rather than widened
+into this change:
+
+- **H9** — `Invoke-Main` calls `Get-ADForest` / `Get-ADDomain` unguarded while resolving which
+  domains to scope, before any section runs. A forest where those throw still aborts with a raw
+  exception. The failure-mode harness had to be narrowed to avoid it, which is how it was found.
+- **PORT-PLAN P2 count** — the plan said nine `PSAvoidUsingEmptyCatchBlock` hits; there were
+  eleven, seven of them real. Corrected in place rather than restated.
+
 ### Added — 2026-09-21 (Exchange Server SE compatibility verdict, tool v1.7.0)
 
 `-Sections ExchangeSeReadiness` answers the two Exchange SE prerequisites the directory can
