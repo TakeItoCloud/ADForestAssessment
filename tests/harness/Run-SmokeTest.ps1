@@ -345,6 +345,49 @@ else { Check $false 'Failure mode: Assessment.json written' }
 
 Remove-Item -Recurse -Force $out3 -ErrorAction SilentlyContinue
 
+# ---- Scenario 4: the forest itself cannot be read (H9) ----------------------
+# Before this, Get-ADForest was called unguarded during scope resolution, so a forest that
+# could not be contacted killed the run with a raw exception and produced NO report. On a
+# damaged or partly-recovered forest - the case this tool exists for - that is the worst
+# possible outcome: the operator gets a stack trace instead of an artefact naming the cause.
+Write-Host ""
+Write-Host "== Running Invoke-Main with an unreadable forest ==" -ForegroundColor Cyan
+
+function Get-ADForest { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: forest not contactable' }
+
+$out4 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_noforest_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $out4
+$script:AllDomains = $false
+$noForestOk = $true
+$result4 = $null
+try { $result4 = Invoke-Main }
+catch { $noForestOk = $false; Write-Host ("    unexpected throw: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow }
+
+Check $noForestOk 'No forest: Invoke-Main completes instead of dying with a raw exception'
+Check ($null -ne $result4) 'No forest: a summary object is still returned'
+if ($null -ne $result4) {
+    Check (Test-Path $result4.FindingsFile) 'No forest: a findings bundle still lands on disk'
+    Check (Test-Path $result4.ReportPath) 'No forest: the HTML report is still written'
+    Check (Test-Path $result4.JsonPath) 'No forest: the JSON report is still written'
+    $findings4 = @(Import-Csv $result4.FindingsFile)
+    Check ($findings4.Count -gt 0) ("No forest: findings are not empty ({0} rows)" -f $findings4.Count)
+
+    $scope = @($findings4 | Where-Object { $_.Item -eq 'Forest resolution' })
+    Check ($scope.Count -eq 1) 'No forest: the failure is a single headline finding'
+    if ($scope.Count -eq 1) {
+        Check ($scope[0].Status -eq 'Fail') ("No forest: reported as Fail (got '{0}')" -f $scope[0].Status)
+        Check ($scope[0].Detail -match 'not contactable') 'No forest: the underlying cause is carried into the report'
+        Check ($scope[0].Detail -match 'NOTHING in this report was assessed') 'No forest: the finding refuses to imply anything was assessed'
+    }
+
+    # The critical property: with no forest, nothing may claim to have passed.
+    $passes4 = @($findings4 | Where-Object { $_.Status -eq 'Pass' })
+    Check ($passes4.Count -eq 0) ("No forest: nothing reports Pass when nothing could be read ({0})" -f $passes4.Count)
+    # Non-vacuity: the run really did evaluate sections rather than producing a single row.
+    Check ($findings4.Count -ge 5) ("No forest: non-vacuity - sections were evaluated and degraded ({0} rows)" -f $findings4.Count)
+}
+Remove-Item -Recurse -Force $out4 -ErrorAction SilentlyContinue
+
 # cleanup
 Remove-Item -Recurse -Force $out2 -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue

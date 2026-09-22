@@ -394,19 +394,19 @@ Assert-Equal 4 (@($notCovered).Count) 'Coverage: non-vacuity - four degraded inp
 Assert-Equal 0 (@($notCovered | Where-Object { $_ -eq 'Covered' }).Count) 'Coverage: no degraded input is ever reported as Covered'
 
 # The caveat sentence must name what limits the claim, not just say "unknown".
-Assert-Equal '' (Get-AdfaDsEventCoverageDetail -Coverage 'Covered' -OldestRecord $wStart -LookbackDays 14) 'Detail: Covered carries no caveat'
-$trunc = Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' -OldestRecord ([datetime]'2026-09-15 08:30') -LookbackDays 14
+Assert-Equal '' (Get-AdfaEventCoverageDetail -Coverage 'Covered' -OldestRecord $wStart -LookbackDays 14) 'Detail: Covered carries no caveat'
+$trunc = Get-AdfaEventCoverageDetail -Coverage 'Truncated' -OldestRecord ([datetime]'2026-09-15 08:30') -LookbackDays 14
 Assert-True ($trunc -match '2026-09-15 08:30') 'Detail: Truncated names where coverage actually begins'
 Assert-True ($trunc -match 'cleared or has wrapped') 'Detail: Truncated names the likely cause'
-$empty = Get-AdfaDsEventCoverageDetail -Coverage 'Empty' -OldestRecord $null -LookbackDays 14
+$empty = Get-AdfaEventCoverageDetail -Coverage 'Empty' -OldestRecord $null -LookbackDays 14
 Assert-True ($empty -match 'proves nothing') 'Detail: Empty says absence proves nothing'
-$unk = Get-AdfaDsEventCoverageDetail -Coverage 'Unknown' -OldestRecord $null -LookbackDays 14 -Reason 'Access is denied'
+$unk = Get-AdfaEventCoverageDetail -Coverage 'Unknown' -OldestRecord $null -LookbackDays 14 -Reason 'Access is denied'
 Assert-True ($unk -match 'Access is denied') 'Detail: Unknown carries the underlying cause'
 
 # The finding must carry guidance, and it must be the RIGHT guidance: recovering the evidence,
 # not resetting a secure channel. The map is first-match-wins, so ordering is behaviour.
 $covRec = Get-AdfaRecommendation -Section 'Directory Service Events' -Item 'Log coverage on dc1.contoso.com' `
-    -Detail (Get-AdfaDsEventCoverageDetail -Coverage 'Truncated' -OldestRecord (Get-Date) -LookbackDays 14)
+    -Detail (Get-AdfaEventCoverageDetail -Coverage 'Truncated' -OldestRecord (Get-Date) -LookbackDays 14)
 Assert-True (-not [string]::IsNullOrWhiteSpace($covRec)) 'Recommendation: a coverage finding carries guidance'
 Assert-True ($covRec -match 'UNASSESSED') 'Recommendation: says to treat the DC as unassessed, not healthy'
 Assert-True ($covRec -match 'evtx|SIEM') 'Recommendation: points at recovering the archived evidence'
@@ -552,6 +552,158 @@ Assert-True ($osRec -notmatch 'nltest /dsregdns') 'SE remediation: not hijacked 
 $rodcRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Read-only domain controllers' `
     -Detail '1 read-only DC(s): rodc1.contoso.com.'
 Assert-True ($rodcRec -match 'writeable global catalog') 'SE remediation: RODC advice names the real constraint'
+
+Write-Host ""
+Write-Host "== 16. SYSVOL / DFSR depth (shares, subscription state, log coverage) ==" -ForegroundColor Cyan
+
+# --- Share presence. The distinction that matters: "not shared" vs "could not look".
+Assert-Equal 'Shared'          (Get-AdfaSysvolShareOutcome -SmbReachable $true  -SysvolPresent $true  -NetlogonPresent $true)  'Shares: both present => Shared'
+Assert-Equal 'MissingBoth'     (Get-AdfaSysvolShareOutcome -SmbReachable $true  -SysvolPresent $false -NetlogonPresent $false) 'Shares: neither present => MissingBoth'
+Assert-Equal 'MissingSysvol'   (Get-AdfaSysvolShareOutcome -SmbReachable $true  -SysvolPresent $false -NetlogonPresent $true)  'Shares: SYSVOL absent => MissingSysvol'
+Assert-Equal 'MissingNetlogon' (Get-AdfaSysvolShareOutcome -SmbReachable $true  -SysvolPresent $true  -NetlogonPresent $false) 'Shares: NETLOGON absent => MissingNetlogon'
+Assert-Equal 'Unknown'         (Get-AdfaSysvolShareOutcome -SmbReachable $false -SysvolPresent $null  -NetlogonPresent $null)  'Shares: SMB unreachable => Unknown, never a missing share'
+Assert-Equal 'Unknown'         (Get-AdfaSysvolShareOutcome -SmbReachable $true  -SysvolPresent $null  -NetlogonPresent $true)  'Shares: unprobed SYSVOL => Unknown, not Shared'
+# An unreachable DC must never be reported as healthy just because nothing was measured.
+Assert-Equal 'Unknown'         (Get-AdfaSysvolShareOutcome -SmbReachable $false -SysvolPresent $true  -NetlogonPresent $true)  'Shares: unreachable wins over stale true values'
+
+# --- DFSR subscription state (KB 2218556). The cross-DC rule is the point of this verdict.
+function Get-SvRow {
+    param($Rows, [string]$Item)
+    $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+    if ($m.Count -eq 0) { return $null }
+    return $m[0]
+}
+$subsHealthy = @(
+    [pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $true; Options = $null },
+    [pscustomobject]@{ DcName = 'dc2.contoso.com'; Enabled = $true; Options = $null }
+)
+$vH = Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions $subsHealthy
+Assert-Equal 'Pass' ([string](Get-SvRow $vH 'DFSR SYSVOL replication enabled').Status) 'Subscription: all enabled, none authoritative => Pass'
+Assert-True ($null -eq (Get-SvRow $vH 'Authoritative SYSVOL member set')) 'Subscription: no authoritative row when msDFSR-options is unset'
+Assert-True ($null -eq (Get-SvRow $vH 'No Such Item')) 'Subscription: non-vacuity - the lookup returns null for an absent item'
+
+# msDFSR-Enabled=FALSE is only ever set by hand, so it means a rebuild was started.
+$subsDisabled = @(
+    [pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $true;  Options = $null },
+    [pscustomobject]@{ DcName = 'dc2.contoso.com'; Enabled = $false; Options = $null }
+)
+$vD = Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions $subsDisabled
+$dRow = Get-SvRow $vD 'DFSR SYSVOL replication disabled'
+Assert-True ($null -ne $dRow) 'Subscription: a disabled DC is reported'
+if ($null -ne $dRow) {
+    Assert-Equal 'Fail' ([string]$dRow.Status) 'Subscription: msDFSR-Enabled=FALSE => Fail'
+    Assert-True ($dRow.Detail -match 'dc2\.contoso\.com') 'Subscription: the disabled DC is named'
+    Assert-True ($dRow.Detail -notmatch 'dc1\.contoso\.com') 'Subscription: a healthy DC is not named as disabled'
+}
+
+# Exactly one authoritative member is the documented procedure; two is a conflict no single
+# DC could reveal, which is why this verdict is computed across the whole domain.
+$subsOneAuth = @(
+    [pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $true; Options = 1 },
+    [pscustomobject]@{ DcName = 'dc2.contoso.com'; Enabled = $true; Options = 0 }
+)
+$v1 = Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions $subsOneAuth
+Assert-Equal 'Warning' ([string](Get-SvRow $v1 'Authoritative SYSVOL member set').Status) 'Subscription: one authoritative member => Warning, not Fail'
+Assert-True ((Get-SvRow $v1 'Authoritative SYSVOL member set').Detail -match 'dc1\.contoso\.com') 'Subscription: the authoritative DC is named'
+
+$subsTwoAuth = @(
+    [pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $true; Options = 1 },
+    [pscustomobject]@{ DcName = 'dc2.contoso.com'; Enabled = $true; Options = 1 }
+)
+$v2 = Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions $subsTwoAuth
+$cRow = Get-SvRow $v2 'Conflicting authoritative SYSVOL members'
+Assert-True ($null -ne $cRow) 'Subscription: two authoritative members are reported'
+if ($null -ne $cRow) {
+    Assert-Equal 'Fail' ([string]$cRow.Status) 'Subscription: more than one authoritative member => Fail'
+    Assert-True ($cRow.Detail -match 'dc1' -and $cRow.Detail -match 'dc2') 'Subscription: both conflicting DCs are named'
+}
+Assert-True ($null -eq (Get-SvRow $v2 'Authoritative SYSVOL member set')) 'Subscription: the conflict replaces the single-member row rather than both appearing'
+
+# An unreadable subscription object is unverified, never healthy.
+$subsUnknown = @([pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $null; Options = $null })
+$vU = Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions $subsUnknown
+Assert-Equal 'Not Assessed' ([string](Get-SvRow $vU 'DFSR SYSVOL subscription - not readable').Status) 'Subscription: unreadable => Not Assessed'
+Assert-Equal 'Not Assessed' ([string](Get-SvRow (Get-AdfaDfsrSubscriptionVerdict -DomainName 'contoso.com' -Subscriptions @()) 'DFSR SYSVOL subscription state').Status) 'Subscription: nothing read at all => Not Assessed'
+
+# --- The coverage guard is now log-agnostic and must name the log it is talking about.
+$dfsrTrunc = Get-AdfaEventCoverageDetail -Coverage 'Truncated' -OldestRecord ([datetime]'2026-09-15 08:30') -LookbackDays 14 -LogName 'DFS Replication'
+Assert-True ($dfsrTrunc -match 'DFS Replication log only goes back') 'Coverage detail: names the DFS Replication log'
+Assert-True ($dfsrTrunc -match '2026-09-15 08:30') 'Coverage detail: still names where coverage begins'
+Assert-True ((Get-AdfaEventCoverageDetail -Coverage 'Empty' -OldestRecord $null -LookbackDays 14) -match 'Directory Service log holds no records') 'Coverage detail: defaults to the Directory Service log'
+
+# Remediation must be specific to each SYSVOL failure, not "perform a D4" for all of them -
+# the vendor's guidance is that reinitialising is a last resort that can lose data.
+$shareRec = Get-AdfaRecommendation -Section 'SYSVOL / DFSR' -Item 'Shares on dc1.contoso.com' `
+    -Detail 'Neither SYSVOL nor NETLOGON is shared. Group Policy and logon scripts are not being served by this DC.'
+Assert-True ($shareRec -match 'Do NOT jump to a D4') 'SYSVOL remediation: missing shares steers away from a blind rebuild'
+Assert-True ($shareRec -match '2213' -and $shareRec -match '4012') 'SYSVOL remediation: missing shares names the events to read first'
+
+$disRec = Get-AdfaRecommendation -Section 'SYSVOL / DFSR' -Item 'DFSR SYSVOL replication disabled' `
+    -Detail 'msDFSR-Enabled=FALSE on 1 of 2 DC(s): dc2.contoso.com.'
+Assert-True ($disRec -match 'dfsrdiag pollad') 'SYSVOL remediation: disabled membership names the completion step'
+Assert-True ($disRec -match '4604') 'SYSVOL remediation: disabled membership names the event that proves success'
+
+$confRec = Get-AdfaRecommendation -Section 'SYSVOL / DFSR' -Item 'Conflicting authoritative SYSVOL members' `
+    -Detail 'msDFSR-options=1 on 2 DCs: dc1.contoso.com, dc2.contoso.com.'
+Assert-True ($confRec -match 'Only ONE member may be authoritative') 'SYSVOL remediation: the conflict gets conflict-specific advice'
+
+$freshRec = Get-AdfaRecommendation -Section 'DFS Replication Events' -Item 'Event 4012 on dc1.contoso.com' `
+    -Detail '1 occurrence(s). Content freshness protection stopped replication - the folder has not replicated for longer than MaxOfflineTimeInDays.'
+Assert-True ($freshRec -match 'MaxOfflineTimeInDays') 'SYSVOL remediation: content freshness gets its own guidance'
+Assert-True ($freshRec -match 'EVERY DC has logged 4012') 'SYSVOL remediation: names the one case where authoritative is correct'
+
+$dirtyRec = Get-AdfaRecommendation -Section 'DFS Replication Events' -Item 'Event 2213 on dc1.contoso.com' `
+    -Detail '1 occurrence(s). Dirty shutdown detected - DFSR replication is PAUSED on this volume.'
+Assert-True ($dirtyRec -match 'ResumeReplication') 'SYSVOL remediation: a dirty shutdown routes to ResumeReplication, not a rebuild'
+Assert-True ($dirtyRec -notmatch 'Do NOT jump') 'SYSVOL remediation: entries do not bleed into each other'
+
+Write-Host ""
+Write-Host "== 17. SYSVOL backlog (the 100-record cap is the trap) ==" -ForegroundColor Cyan
+
+# Get-DfsrBacklog returns at most 100 records and the true total is only in its verbose stream,
+# so counting objects reports a FLOOR as a total once the backlog reaches the cap. The vendor's
+# documented message format is:
+#   The replicated folder has a backlog of files. Replicated folder: "RF01". Count: 2400
+$vmsg = 'The replicated folder has a backlog of files. Replicated folder: "SYSVOL Share". Count: 2400'
+$r1 = Get-AdfaDfsrBacklogCount -VerboseMessage $vmsg -ObjectCount 100 -DisplayCap 100
+Assert-Equal 2400 ([int]$r1.Count) 'Backlog: the verbose count beats the capped object count'
+Assert-True ([bool]$r1.Exact) 'Backlog: a verbose count is exact'
+Assert-Equal 'Verbose' ([string]$r1.Source) 'Backlog: source recorded as Verbose'
+
+# Without a verbose count, an at-cap result is a floor and must say so.
+$r2 = Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 100 -DisplayCap 100
+Assert-Equal 100 ([int]$r2.Count) 'Backlog: at the cap, the count is the cap'
+Assert-True (-not [bool]$r2.Exact) 'Backlog: at the cap WITHOUT a verbose count, the figure is NOT exact'
+
+# Below the cap the object count is the real answer.
+$r3 = Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 7 -DisplayCap 100
+Assert-Equal 7 ([int]$r3.Count) 'Backlog: below the cap the object count is used'
+Assert-True ([bool]$r3.Exact) 'Backlog: below the cap the figure is exact'
+Assert-Equal 0 ([int](Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 0 -DisplayCap 100).Count) 'Backlog: no objects and no verbose => 0'
+
+# A failed call is unmeasured, not zero - the distinction the whole tool turns on.
+$r4 = Get-AdfaDfsrBacklogCount -VerboseMessage '' -ObjectCount 0 -DisplayCap 100 -Succeeded $false
+Assert-Equal (-1) ([int]$r4.Count) 'Backlog: a failed call is -1 (unmeasured), never 0'
+
+# The parser must not read any trailing number as a backlog size.
+Assert-Equal 3 ([int](Get-AdfaDfsrBacklogCount -VerboseMessage 'Connected to partner over port 135. Count: 99' -ObjectCount 3 -DisplayCap 100).Count) 'Backlog: an unrelated verbose line is not mistaken for a count'
+
+# --- Verdicts
+Assert-Equal 'Pass' ([string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 0 -Exact $true -WarnAt 1 -FailAt 100).Status) 'Backlog verdict: zero => Pass'
+Assert-Equal 'Warning' ([string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 5 -Exact $true -WarnAt 1 -FailAt 100).Status) 'Backlog verdict: a small standing backlog => Warning'
+Assert-Equal 'Fail' ([string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 100 -Exact $false -WarnAt 1 -FailAt 100).Status) 'Backlog verdict: at or above FailAt => Fail'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count (-1) -Exact $true -Reason 'RPC failed').Status) 'Backlog verdict: unmeasured => Not Assessed, never Pass'
+
+# An inexact figure must never be presented as a total.
+$floorDetail = (Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 100 -Exact $false -WarnAt 1 -FailAt 100).Detail
+Assert-True ($floorDetail -match 'at least 100') 'Backlog verdict: a floor is reported as "at least"'
+Assert-True ($floorDetail -match 'floor, not a total') 'Backlog verdict: the caveat names the cap explicitly'
+$exactDetail = (Get-AdfaSysvolBacklogVerdict -SourceDc 'dc1' -DestinationDc 'dc2' -Count 100 -Exact $true -WarnAt 1 -FailAt 100).Detail
+Assert-True ($exactDetail -notmatch 'at least') 'Backlog verdict: an exact figure carries no floor caveat'
+Assert-True ($exactDetail -notmatch 'floor, not a total') 'Backlog verdict: non-vacuity - the caveat really is conditional'
+# The finding must not overstate the vendor position.
+Assert-True ($exactDetail -match 'indicates latency rather than a fault') 'Backlog verdict: states that a backlog alone is latency, not a fault'
+Assert-True ((Get-AdfaSysvolBacklogVerdict -SourceDc 'dcA' -DestinationDc 'dcB' -Count 5 -Exact $true).Detail -match 'dcA -> dcB') 'Backlog verdict: the direction is named'
 
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })

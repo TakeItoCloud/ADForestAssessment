@@ -53,11 +53,12 @@ verdict only.
 | H2 | Event-log coverage guard: a cleared or truncated Directory Service log must report `Not Assessed`, never `Pass` | Done | 2026-09-21 |
 | H3 | Empty-catch cause reporting — 7 real sites, incl. the three in `Invoke-Main`'s DC enumeration; plus `[AllowEmptyCollection()]` on the five pre-v1.4.0 per-DC collectors, which aborted the run outright when DC enumeration failed | Done | 2026-09-21 |
 | H4 | `ExchangeSeReadiness`: FFL + DC OS vs the supported matrix, from a versioned config table | Done | 2026-09-21 |
-| H5 | SYSVOL/DFSR depth: backlog per member, SYSVOL+NETLOGON share per DC, `msDFSR-Options` D4/D2 | Planned | |
+| H5a | SYSVOL/DFSR depth: SYSVOL+NETLOGON share presence per DC, `msDFSR-Enabled` / `msDFSR-options` per DC with the cross-DC "exactly one authoritative" rule, and a DFS Replication event scan reusing the H2 coverage guard | Done | 2026-09-21 |
+| H5b | SYSVOL **backlog** both ways against each domain's PDC emulator, opt-in via `-IncludeSysvolBacklog`. Handles `Get-DfsrBacklog`'s 100-record cap by preferring the verbose total and reporting a floor as "at least N" when it cannot be read | Done | 2026-09-21 |
 | H6 | Replication convergence: parse `repadmin /replsummary` into findings; `/showutdvec` lag per DC per NC | Planned | |
 | H7 | Restore integrity: `msDS-GenerationId` / `invocationID`; dcdiag `CheckSecurityError` + `VerifyEnterpriseReferences` | Planned | |
 | H8 | `_msdcs` delegation; PDC external time source and Hyper-V time-sync conflict; per-site writeable-GC assertion | Planned | |
-| H9 | `Invoke-Main` calls `Get-ADForest` / `Get-ADDomain` **unguarded** while resolving which domains to scope, before any section runs. A forest where those throw aborts the run with a raw exception instead of reporting what it could reach — the opposite of fail-closed on exactly the damaged forest this track exists for. Found by the H3 failure-mode harness, which had to be narrowed to avoid it | Planned | |
+| H9 | Forest and domain resolution guarded: an unreadable forest is now the report's headline `Fail` instead of a raw abort with no report; an unreadable current domain falls back to the forest root as a loud `Warning` naming the scope change | Done | 2026-09-21 |
 
 | Phase | Scope | Status | Date |
 | --- | --- | --- | --- |

@@ -10,6 +10,129 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-09-21 (SYSVOL backlog, opt-in, tool v1.8.0)
+
+`-IncludeSysvolBacklog` measures pending SYSVOL files **in both directions** between every DC and
+its domain's PDC emulator — the DC where Group Policy edits are normally written, and therefore
+the one the others should be catching up with. Both directions are measured because a backlog
+*to* the PDC and one *from* it are different faults and testing one would miss half of them.
+
+Opt-in, because it costs two RPC round trips per DC and needs the optional DFSR module. Absent
+module, unreachable DC or failed call all report `Not Assessed` with the cause, never zero.
+
+**The trap this check exists to avoid.** `Get-DfsrBacklog` returns **at most 100 records**, and
+the true total appears only in its verbose stream
+([docs](https://learn.microsoft.com/powershell/module/dfsr/get-dfsrbacklog), read 2026-09-21). So
+the obvious implementation — count the returned objects — silently reports **a floor as if it
+were a total**: a backlog of 2,400 and one of exactly 100 look identical. The verbose stream is
+captured and parsed for the real figure, anchored on the vendor's documented wording so an
+unrelated verbose line cannot be misread as a count. Where it cannot be read, the finding says
+**"at least 100"** and states plainly that the true figure may be far higher. A test pins that an
+exact figure carries no such caveat, so the wording stays meaningful.
+
+Thresholds are **ours, not the vendor's, and the finding says so.** Microsoft states a backlog
+"is not necessarily an indication of problems" and "indicates latency". The tighter bar applied
+here is reasoned rather than borrowed: SYSVOL changes only when Group Policy changes, so it should
+sit at or near zero, and a standing backlog means a policy edit is not reaching that DC. Both
+thresholds live in the config table so an operator can move them without touching code, and the
+`Fail` threshold is set at the cmdlet's own 100-record cap — the point beyond which the true size
+stops being observable from the object count at all.
+
+Demonstrated able to fail: marking an at-cap count as exact turns the floor assertion red.
+Restored byte-for-byte, hash verified.
+
+
+### Added — 2026-09-21 (SYSVOL/DFSR depth: shares, subscription state, DFSR events, tool v1.8.0)
+
+The SYSVOL section was one check — `dfsrmig /getglobalstate` — which says whether the domain
+migrated to DFSR years ago and nothing about whether SYSVOL is replicating *now*. Divergent or
+unshared SYSVOL after a restore is silent, breaks Group Policy delivery, and nothing here
+detected it.
+
+**SYSVOL and NETLOGON share presence, per DC.** The vendor's own first diagnostic for broken
+SYSVOL replication: DFSR does not share SYSVOL until the replicated folder has initialised, so a
+DC that never logged event 4604 silently serves no policy. SMB (445) is probed first, so an
+unreachable DC is `Not Assessed` — never reported as a missing share, and never as healthy.
+
+**The two attributes a D2/D4-equivalent rebuild edits by hand**, per
+[KB 2218556](https://learn.microsoft.com/troubleshoot/windows-server/group-policy/force-authoritative-non-authoritative-synchronization)
+(read 2026-09-21), on each DC's `CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,…`:
+
+| State | Verdict |
+| --- | --- |
+| `msDFSR-Enabled=FALSE` | `Fail` — SYSVOL replication is switched off on that DC; only ever set by hand, so a rebuild was started and not finished |
+| `msDFSR-options=1` on **more than one** DC | `Fail` — the procedure marks exactly one member authoritative; two means SYSVOL content depends on which initialises first |
+| `msDFSR-options=1` on exactly one DC | `Warning` — expected during a deliberate rebuild, unexpected otherwise |
+
+The conflict case is why this is a **domain-wide** verdict rather than a per-DC one: "exactly one
+member is authoritative" cannot be checked by looking at any single DC. Neither attribute appeared
+anywhere in this report before, and both are easy to leave behind after a recovery.
+
+**A DFS Replication event scan**, gated on log coverage by reusing the guard added for the
+Directory Service log — the coverage classifier and its caveat wording are now log-agnostic rather
+than duplicated. Events and meanings are taken from the vendor's troubleshooting articles, not
+inferred: 2213 (dirty shutdown, replication paused), 4012 (content freshness stop), 4114/4144
+(membership disabled), 4614 (waiting for initial sync), 4604 (initialised — the healthy end
+state), plus 2212/2214 and 5002/5014. Events whose meaning the vendor does not publish are absent
+rather than guessed.
+
+Note the deliberate asymmetry with the Directory Service scan: **finding no DFSR events is a
+`Warning`, not a `Pass`**, even over a fully covered window. SYSVOL health is proven by seeing
+4604, not by silence.
+
+**Remediation routes each failure to its own fix.** The pre-existing generic `sysvol|dfsr` entry
+answered everything with "perform a D4"; reinitialising is the vendor's last resort — unnecessary
+in most cases and able to lose data. A dirty shutdown now routes to the `ResumeReplication` WMI
+method, content freshness to non-authoritative recovery fanning out from a healthy DC (naming the
+one case where authoritative is correct: every DC logged 4012), a conflict to deciding which DC
+holds the content worth keeping, and missing shares to reading the DFSR log *before* rebuilding
+anything. Tests pin that these do not bleed into one another.
+
+Both new guards were demonstrated able to fail: classifying an unreachable DC as `Shared` turns
+two assertions red, and treating two authoritative members as one turns another red. Restored
+byte-for-byte after each, hash verified.
+
+**Backlog is deliberately not here** — split out as plan row **H5b**. It needs the optional DFSR
+module and O(n) member pairs, and `Get-DfsrBacklog` caps its output at 100 records with the true
+count only in the verbose stream, so a naive count would report a floor as a total. Microsoft also
+states a backlog "is not necessarily an indication of problems", so the verdict needs thought
+rather than a threshold picked here.
+
+
+### Fixed — 2026-09-21 (an unreadable forest aborted the run with no report, tool v1.8.0)
+
+`Invoke-Main` called `Get-ADForest` and `Get-ADDomain` **unguarded** while resolving which
+domains to scope, before any section ran. A forest that could not be contacted killed the run
+with a raw exception and produced **no report at all** — on a damaged or partly-recovered forest,
+which is the case this tool exists for, the operator got a stack trace instead of an artefact
+naming the cause. Recorded as PORT-PLAN H9 when the H3 harness had to be narrowed around it.
+
+Both calls are now guarded and the failure becomes the report's **headline finding**:
+
+- **Forest unreadable** → a `Fail` row leading the report, carrying the underlying error and
+  saying plainly that nothing in the report was assessed, plus what to check (ADWS 9389, LDAP
+  389, credentials, `-Server` pointed at a known-healthy DC). Every section then degrades around
+  it, which is only possible because the collectors were made to tolerate an empty domain and DC
+  list in the preceding change.
+- **Current domain unreadable but the forest readable** → the run falls back to the forest root
+  domain, which is a genuine recovery on a damaged forest. Because it **changes the scope**, it is
+  a `Warning` row naming the substitution and telling the reader to confirm it was the intended
+  domain — never done quietly.
+- **Forest readable but reporting no domains** → a `Fail` row, rather than a run that silently
+  assesses nothing.
+- `Import-Module ActiveDirectory` still terminates, since without it there is no directory access
+  and nothing to report on, but it now names the requirement instead of surfacing a raw
+  module-load error.
+
+A fourth smoke-test scenario runs `Invoke-Main` with `Get-ADForest` throwing and asserts the run
+completes, the HTML/JSON/CSV bundle still lands, the failure is a single `Fail` headline carrying
+its cause — and the property that matters, that **nothing reports `Pass` when nothing could be
+read**. Measured: 18 findings, 0 passes. Before this change the same scenario produced no report.
+
+Demonstrated able to fail: removing the guard reproduces the original abort and turns two
+assertions red. Restored byte-for-byte, hash verified.
+
+
 ### Fixed — 2026-09-21 (collection failures were swallowed; a failed DC enumeration aborted the run, tool v1.7.0)
 
 Seven `catch { }` blocks discarded the reason a collector failed, so "not installed", "access
