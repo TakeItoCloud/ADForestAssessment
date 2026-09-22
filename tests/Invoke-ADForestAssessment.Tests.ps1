@@ -1333,3 +1333,364 @@ Destination DSA     largest delta    fails/total %%   error
         }
     }
 }
+
+Describe '_msdcs delegation, time hierarchy, per-site GC coverage' {
+    BeforeAll {
+        # Declared in BeforeAll, not the Describe body: a Describe body runs during Pester's
+        # discovery phase, so a function declared there does not exist when It blocks execute.
+        function Get-H8TestRow {
+            param($Rows, [string]$Pattern)
+            $m = @($Rows | Where-Object { [string]$_.Item -match $Pattern })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
+        function New-H8TestDc {
+            param([string]$Name, [string]$Site, $Gc, $Ro)
+            return [pscustomobject]@{ HostName = $Name; Site = $Site; IsGlobalCatalog = $Gc; IsReadOnly = $Ro }
+        }
+        $script:H8Dcs = @('dc1.contoso.com', 'dc2.contoso.com')
+        $script:H8Healthy = @(
+            [pscustomobject]@{ Server = 'dc1.contoso.com'; SoaApex = @('_msdcs.contoso.com'); NsTargets = @('dc1.contoso.com', 'dc2.contoso.com'); GlueMissing = @(); GlueUnknown = @() }
+            [pscustomobject]@{ Server = 'dc2.contoso.com'; SoaApex = @('_msdcs.contoso.com'); NsTargets = @('dc1.contoso.com'); GlueMissing = @(); GlueUnknown = @() }
+        )
+    }
+
+    Context 'Get-AdfaDnsNameNormalised' {
+        It 'folds case and strips the root dot so two spellings compare equal' {
+            Get-AdfaDnsNameNormalised -Name 'DC1.Contoso.COM.' | Should -Be 'dc1.contoso.com'
+        }
+        It 'returns empty for null and whitespace rather than a literal' {
+            Get-AdfaDnsNameNormalised -Name $null | Should -Be ''
+            Get-AdfaDnsNameNormalised -Name '   ' | Should -Be ''
+        }
+    }
+
+    Context 'Get-AdfaMsdcsZoneVerdict' {
+        # Which zone answers an SOA query is the discriminator between a delegated _msdcs zone
+        # and a plain subdomain of the parent - the state a hand-rebuilt DNS server is left in.
+        It 'recognises its own apex as a delegated zone, whatever the spelling' {
+            Get-AdfaMsdcsZoneVerdict -ZoneName '_msdcs.contoso.com' -ParentZone 'contoso.com' -SoaApex @('_msdcs.contoso.com') | Should -Be 'DelegatedZone'
+            Get-AdfaMsdcsZoneVerdict -ZoneName '_msdcs.contoso.com' -ParentZone 'contoso.com' -SoaApex @('_MSDCS.CONTOSO.COM.') | Should -Be 'DelegatedZone'
+        }
+        It 'distinguishes the parent apex, a third zone and no answer' {
+            Get-AdfaMsdcsZoneVerdict -ZoneName '_msdcs.contoso.com' -ParentZone 'contoso.com' -SoaApex @('contoso.com') | Should -Be 'NotDelegated'
+            Get-AdfaMsdcsZoneVerdict -ZoneName '_msdcs.contoso.com' -ParentZone 'contoso.com' -SoaApex @('fabrikam.com') | Should -Be 'OtherApex'
+            Get-AdfaMsdcsZoneVerdict -ZoneName '_msdcs.contoso.com' -ParentZone 'contoso.com' -SoaApex @() | Should -Be 'NoAnswer'
+            Get-AdfaMsdcsZoneVerdict -ZoneName '_msdcs.contoso.com' -ParentZone 'contoso.com' -SoaApex @('', '  ') | Should -Be 'NoAnswer'
+        }
+        It 'genuinely separates its three declared apex cases' {
+            $v = @('_msdcs.contoso.com', 'contoso.com', 'fabrikam.com') | ForEach-Object {
+                Get-AdfaMsdcsZoneVerdict -ZoneName '_msdcs.contoso.com' -ParentZone 'contoso.com' -SoaApex @($_)
+            }
+            @($v).Count | Should -Be 3
+            @($v | Sort-Object -Unique).Count | Should -Be 3
+        }
+    }
+
+    Context 'Get-AdfaMsdcsDelegationVerdict' {
+        It 'reports a healthy view as passing on every checked property' {
+            $rows = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot 'contoso.com' -Observations $script:H8Healthy -AdDcHosts $script:H8Dcs)
+            @($rows).Count | Should -Be 4
+            @($rows | Where-Object { $_.Status -ne 'Pass' }).Count | Should -Be 0
+        }
+        It 'fails a _msdcs that is only a subdomain of its parent, and names the parent' {
+            $rows = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot 'contoso.com' -AdDcHosts $script:H8Dcs -Observations @(
+                    [pscustomobject]@{ Server = 'dc1.contoso.com'; SoaApex = @('contoso.com'); NsTargets = @('dc1.contoso.com'); GlueMissing = @(); GlueUnknown = @() }
+                ))
+            $r = Get-H8TestRow -Rows $rows -Pattern 'is not a delegated zone'
+            $r | Should -Not -BeNullOrEmpty
+            [string]$r.Status | Should -Be 'Fail'
+            $r.Detail | Should -Match 'PARENT zone contoso\.com'
+            # The Pass row must be withheld while any server disagrees.
+            @($rows | Where-Object { $_.Item -match 'is a delegated zone' }).Count | Should -Be 0
+        }
+        It 'fails a delegation with no NS record at all' {
+            $rows = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot 'contoso.com' -AdDcHosts $script:H8Dcs -Observations @(
+                    [pscustomobject]@{ Server = 'dc1.contoso.com'; SoaApex = @('_msdcs.contoso.com'); NsTargets = @(); GlueMissing = @(); GlueUnknown = @() }
+                ))
+            [string](Get-H8TestRow -Rows $rows -Pattern 'no NS records').Status | Should -Be 'Fail'
+        }
+        It 'fails an NS record with no glue, and names the target' {
+            $rows = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot 'contoso.com' -AdDcHosts $script:H8Dcs -Observations @(
+                    [pscustomobject]@{ Server = 'dc1.contoso.com'; SoaApex = @('_msdcs.contoso.com'); NsTargets = @('dc2.contoso.com'); GlueMissing = @('dc2.contoso.com'); GlueUnknown = @() }
+                ))
+            $r = Get-H8TestRow -Rows $rows -Pattern 'missing glue'
+            [string]$r.Status | Should -Be 'Fail'
+            $r.Detail | Should -Match 'dc2\.contoso\.com'
+            @($rows | Where-Object { $_.Item -match 'glue records resolvable' }).Count | Should -Be 0
+        }
+        It 'treats glue it could not query as unknown, never as missing' {
+            # The distinction the whole tool rests on: absence and silence are different claims.
+            $rows = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot 'contoso.com' -AdDcHosts $script:H8Dcs -Observations @(
+                    [pscustomobject]@{ Server = 'dc1.contoso.com'; SoaApex = @('_msdcs.contoso.com'); NsTargets = @('dc2.contoso.com'); GlueMissing = @(); GlueUnknown = @('dc2.contoso.com') }
+                ))
+            [string](Get-H8TestRow -Rows $rows -Pattern 'glue not readable').Status | Should -Be 'Not Assessed'
+            @($rows | Where-Object { $_.Item -match 'glue records resolvable' }).Count | Should -Be 0
+        }
+        It 'warns - not fails - on an NS host that is not a known DC' {
+            # A non-DC DNS server can legitimately be authoritative, so this names what to
+            # confirm rather than asserting a fault.
+            $rows = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot 'contoso.com' -AdDcHosts $script:H8Dcs -Observations @(
+                    [pscustomobject]@{ Server = 'dc1.contoso.com'; SoaApex = @('_msdcs.contoso.com'); NsTargets = @('dc1.contoso.com', 'oldDC.contoso.com'); GlueMissing = @(); GlueUnknown = @() }
+                ))
+            $r = Get-H8TestRow -Rows $rows -Pattern 'not a known DC'
+            [string]$r.Status | Should -Be 'Warning'
+            $r.Detail | Should -Match 'oldDC\.contoso\.com'
+        }
+        It 'says so when it had no inventory to cross-check the NS hosts against' {
+            $rows = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot 'contoso.com' -AdDcHosts @() -Observations $script:H8Healthy)
+            [string](Get-H8TestRow -Rows $rows -Pattern 'not cross-checked').Status | Should -Be 'Not Assessed'
+        }
+        It 'never passes when no DNS server answered' {
+            $rows = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot 'contoso.com' -Observations @() -AdDcHosts $script:H8Dcs -Unanswered @('dc1.contoso.com'))
+            @($rows).Count | Should -Be 1
+            [string]$rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match 'dc1\.contoso\.com'
+        }
+    }
+
+    Context 'ConvertFrom-AdfaW32tmConfiguration' {
+        # The key names are published; the line format of this command's output is not. So the
+        # parser is tolerant, and an unmatched key returns '' - which a caller must read as
+        # "not read", never as a value.
+        It 'reads Type and NtpServer and strips the source annotation' {
+            $cfg = ConvertFrom-AdfaW32tmConfiguration -Text "NtpClient (Local)`nType: NTP (Local)`nNtpServer: ntp.example.test,0x8 (Local)"
+            $cfg.Type | Should -Be 'NTP'
+            $cfg.NtpServer | Should -Be 'ntp.example.test,0x8'
+        }
+        It 'tolerates leading whitespace and a (Policy) annotation' {
+            (ConvertFrom-AdfaW32tmConfiguration -Text '  Type: NT5DS (Policy)').Type | Should -Be 'NT5DS'
+        }
+        It 'returns empty rather than a guess when the output is not recognised' {
+            (ConvertFrom-AdfaW32tmConfiguration -Text 'The following error occurred: Access is denied.').Type | Should -Be ''
+            (ConvertFrom-AdfaW32tmConfiguration -Text $null).Type | Should -Be ''
+        }
+    }
+
+    Context 'Get-AdfaTimeSourceVerdict' {
+        It 'never concludes anything from a source it could not read' {
+            $u = Get-AdfaTimeSourceVerdict -DomainController 'dc1.contoso.com' -Queried $false -ErrorText 'RPC (135) was not reachable' -DomainControllerHosts $script:H8Dcs
+            [string]$u.Status | Should -Be 'Not Assessed'
+            # Says why a denial is about rights, not about the clock.
+            $u.Detail | Should -Match 'Domain Admins'
+            [string](Get-AdfaTimeSourceVerdict -DomainController 'dc1.contoso.com' -Source '   ' -DomainControllerHosts $script:H8Dcs).Status | Should -Be 'Not Assessed'
+        }
+        It 'warns on host time sync on a member DC and names the documented consequence' {
+            $v = Get-AdfaTimeSourceVerdict -DomainController 'dc2.contoso.com' -Source 'VM IC Time Synchronization Provider' -DomainControllerHosts $script:H8Dcs
+            [string]$v.Status | Should -Be 'Warning'
+            $v.Detail | Should -Match 'lingering objects'
+            $v.Detail | Should -Match 'Integration Services'
+        }
+        It 'states that vendor guidance diverges for the root PDC rather than picking a side' {
+            $v = Get-AdfaTimeSourceVerdict -DomainController 'dc1.contoso.com' -IsPdcEmulator $true -IsForestRootPdc $true `
+                -Source 'VM IC Time Synchronization Provider' -DomainControllerHosts $script:H8Dcs
+            [string]$v.Status | Should -Be 'Warning'
+            $v.Detail | Should -Match 'guidance is split'
+            $v.Detail | Should -Match 'KB 976924'
+            $v.Detail | Should -Match 'Windows Server 2016'
+        }
+        It 'warns on a free-running clock, and says the forest has no upstream on the root PDC' {
+            $root = Get-AdfaTimeSourceVerdict -DomainController 'dc1.contoso.com' -IsPdcEmulator $true -IsForestRootPdc $true `
+                -Source 'Local CMOS Clock' -DomainControllerHosts $script:H8Dcs
+            [string]$root.Status | Should -Be 'Warning'
+            $root.Detail | Should -Match 'NO authoritative upstream'
+            [string](Get-AdfaTimeSourceVerdict -DomainController 'dc2.contoso.com' -Source 'Free-running System Clock' -DomainControllerHosts $script:H8Dcs).Status |
+                Should -Be 'Warning'
+        }
+        It 'warns when the root PDC takes time from the hierarchy it is the top of' {
+            $v = Get-AdfaTimeSourceVerdict -DomainController 'dc1.contoso.com' -IsPdcEmulator $true -IsForestRootPdc $true `
+                -Source 'dc2.contoso.com' -DomainControllerHosts $script:H8Dcs
+            [string]$v.Status | Should -Be 'Warning'
+            $v.Detail | Should -Match 'event ID 12'
+        }
+        It 'passes an external source on the root PDC, and says what it did not check' {
+            $v = Get-AdfaTimeSourceVerdict -DomainController 'dc1.contoso.com' -IsPdcEmulator $true -IsForestRootPdc $true `
+                -Source 'ntp.example.test' -DomainControllerHosts $script:H8Dcs
+            [string]$v.Status | Should -Be 'Pass'
+            $v.Detail | Should -Match 'does not verify'
+        }
+        It 'will not judge the root PDC external-vs-internal with no inventory to compare against' {
+            [string](Get-AdfaTimeSourceVerdict -DomainController 'dc1.contoso.com' -IsForestRootPdc $true `
+                    -Source 'ntp.example.test' -DomainControllerHosts @()).Status | Should -Be 'Not Assessed'
+        }
+        It 'passes a member DC on the domain hierarchy and flags an external source as Info' {
+            [string](Get-AdfaTimeSourceVerdict -DomainController 'dc2.contoso.com' -Source 'DC1.CONTOSO.COM' -DomainControllerHosts $script:H8Dcs).Status |
+                Should -Be 'Pass'
+            [string](Get-AdfaTimeSourceVerdict -DomainController 'dc2.contoso.com' -Source 'ntp.example.test' -DomainControllerHosts $script:H8Dcs).Status |
+                Should -Be 'Info'
+        }
+        It 'never passes any degraded source' {
+            $degraded = @(
+                (Get-AdfaTimeSourceVerdict -DomainController 'a' -Queried $false -DomainControllerHosts $script:H8Dcs),
+                (Get-AdfaTimeSourceVerdict -DomainController 'a' -Source 'VM IC Time Synchronization Provider' -DomainControllerHosts $script:H8Dcs),
+                (Get-AdfaTimeSourceVerdict -DomainController 'a' -Source 'Local CMOS Clock' -DomainControllerHosts $script:H8Dcs),
+                (Get-AdfaTimeSourceVerdict -DomainController 'a' -IsForestRootPdc $true -Source 'dc2.contoso.com' -DomainControllerHosts $script:H8Dcs)
+            )
+            @($degraded).Count | Should -Be 4
+            @($degraded | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaRootPdcClientTypeVerdict' {
+        It 'warns on NT5DS and cites the event the vendor logs for it' {
+            $v = Get-AdfaRootPdcClientTypeVerdict -DomainController 'dc1.contoso.com' -ClientType 'NT5DS'
+            [string]$v.Status | Should -Be 'Warning'
+            $v.Detail | Should -Match 'event ID 12'
+        }
+        It 'warns on NoSync' {
+            [string](Get-AdfaRootPdcClientTypeVerdict -DomainController 'dc1.contoso.com' -ClientType 'NoSync').Status | Should -Be 'Warning'
+        }
+        It 'passes an external type only when a peer list was actually read' {
+            [string](Get-AdfaRootPdcClientTypeVerdict -DomainController 'dc1.contoso.com' -ClientType 'NTP' -NtpServer 'ntp.example.test,0x8').Status | Should -Be 'Pass'
+            [string](Get-AdfaRootPdcClientTypeVerdict -DomainController 'dc1.contoso.com' -ClientType 'AllSync' -NtpServer 'ntp.example.test,0x8').Status | Should -Be 'Pass'
+            [string](Get-AdfaRootPdcClientTypeVerdict -DomainController 'dc1.contoso.com' -ClientType 'NTP').Status | Should -Be 'Not Assessed'
+        }
+        It 'never passes an unread or undocumented type' {
+            $degraded = @('', 'Something', 'NT5DS', 'NoSync') | ForEach-Object {
+                Get-AdfaRootPdcClientTypeVerdict -DomainController 'dc1.contoso.com' -ClientType $_
+            }
+            @($degraded).Count | Should -Be 4
+            @($degraded | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaSiteGcCoverage' {
+        It 'passes a site holding a writeable global catalog and names its population' {
+            $rows = @(Get-AdfaSiteGcCoverage -DomainControllers @((New-H8TestDc 'dc1.contoso.com' 'HQ' $true $false)))
+            @($rows).Count | Should -Be 1
+            [string]$rows[0].Status | Should -Be 'Pass'
+            $rows[0].Detail | Should -Match '1 of 1 site'
+        }
+        It 'does not accept a read-only GC as covering a site' {
+            $rows = @(Get-AdfaSiteGcCoverage -DomainControllers @((New-H8TestDc 'rodc1.contoso.com' 'Branch' $true $true)))
+            $r = Get-H8TestRow -Rows $rows -Pattern "Site 'Branch'"
+            [string]$r.Status | Should -Be 'Warning'
+            $r.Detail | Should -Match 'read-only GC: rodc1\.contoso\.com'
+            $r.Detail | Should -Match 'read-only directory servers'
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'does not accept a writeable non-GC as covering a site' {
+            $r = Get-H8TestRow -Rows @(Get-AdfaSiteGcCoverage -DomainControllers @((New-H8TestDc 'dc9.contoso.com' 'Branch' $false $false))) -Pattern "Site 'Branch'"
+            [string]$r.Status | Should -Be 'Warning'
+            $r.Detail | Should -Match 'writeable but not a GC'
+        }
+        It 'reports a covered and an uncovered site in the same run' {
+            $rows = @(Get-AdfaSiteGcCoverage -DomainControllers @(
+                    (New-H8TestDc 'dc1.contoso.com' 'HQ' $true $false),
+                    (New-H8TestDc 'rodc1.contoso.com' 'Branch' $true $true)
+                ))
+            @($rows | Where-Object { $_.Status -eq 'Warning' }).Count | Should -Be 1
+            $pass = @($rows | Where-Object { $_.Status -eq 'Pass' })
+            @($pass).Count | Should -Be 1
+            $pass[0].Detail | Should -Match '1 of 2 site'
+        }
+        It 'makes a site unknown, not uncovered, when the flags could not be read' {
+            [string](Get-H8TestRow -Rows @(Get-AdfaSiteGcCoverage -DomainControllers @((New-H8TestDc 'dc5.contoso.com' 'Branch' $null $null))) -Pattern 'not readable').Status |
+                Should -Be 'Not Assessed'
+            # A non-boolean value (the inventory writes 'Not Assessed' when enrichment fails)
+            # must not be coerced to $false.
+            $r = Get-H8TestRow -Rows @(Get-AdfaSiteGcCoverage -DomainControllers @((New-H8TestDc 'dc6.contoso.com' 'Branch' 'Not Assessed' $false))) -Pattern 'not readable'
+            $r | Should -Not -BeNullOrEmpty
+            [string]$r.Status | Should -Be 'Not Assessed'
+        }
+        It 'reports a DC with no site rather than dropping it from the count' {
+            [string](Get-H8TestRow -Rows @(Get-AdfaSiteGcCoverage -DomainControllers @((New-H8TestDc 'dc7.contoso.com' '' $true $false))) -Pattern 'no site').Status |
+                Should -Be 'Not Assessed'
+        }
+        It 'never passes an empty or degraded inventory' {
+            $empty = @(Get-AdfaSiteGcCoverage -DomainControllers @())
+            @($empty).Count | Should -Be 1
+            [string]$empty[0].Status | Should -Be 'Not Assessed'
+            $degraded = @(
+                @(Get-AdfaSiteGcCoverage -DomainControllers @((New-H8TestDc 'rodc1.contoso.com' 'Branch' $true $true))),
+                @(Get-AdfaSiteGcCoverage -DomainControllers @((New-H8TestDc 'dc5.contoso.com' 'Branch' $null $null))),
+                @(Get-AdfaSiteGcCoverage -DomainControllers @((New-H8TestDc 'dc7.contoso.com' '' $true $false))),
+                $empty
+            )
+            @($degraded).Count | Should -Be 4
+            @($degraded | ForEach-Object { $_ } | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Versioned configuration' {
+        It 'holds the volatile vendor strings as data, with their source recorded' {
+            [string]$script:Config.MsdcsZoneLabel | Should -Be '_msdcs'
+            [string]$script:Config.Time.DomainHierarchyType | Should -Be 'NT5DS'
+            @($script:Config.Time.ExternalTypes) | Should -Contain 'NTP'
+            @($script:Config.Time.ExternalTypes) | Should -Contain 'AllSync'
+            $script:Config.Time.RootPdcUrl | Should -Match '^https://learn\.microsoft\.com/'
+            $script:Config.Time.HypervisorUrl | Should -Match '^https://learn\.microsoft\.com/'
+            [string]$script:Config.Time.ReadDate | Should -Be '2026-09-22'
+        }
+        It 'matches the published source strings without matching an ordinary host name' {
+            'VM IC Time Synchronization Provider' | Should -Match $script:Config.Time.HypervisorPattern
+            'Local CMOS Clock' | Should -Match $script:Config.Time.LocalClockPattern
+            'dc1.contoso.com' | Should -Not -Match $script:Config.Time.LocalClockPattern
+        }
+    }
+
+    Context 'Remediation routing' {
+        It 'routes each new section to its own guidance and is not hijacked by the generic entries' {
+            $msdcs = Get-AdfaRecommendation -Section '_msdcs Zone Delegation' -Item '_msdcs.contoso.com is not a delegated zone' -Detail 'answered by the PARENT zone contoso.com'
+            $msdcs | Should -Match 'New Delegation'
+            $msdcs | Should -Not -Match 'scavenging'
+            Get-AdfaRecommendation -Section '_msdcs Zone Delegation' -Item '_msdcs.contoso.com delegation - missing glue records' -Detail 'no resolvable glue (A) record' |
+                Should -Match 'glue host'
+            Get-AdfaRecommendation -Section '_msdcs Zone Delegation' -Item '_msdcs.contoso.com delegation - NS host not a known DC' -Detail 'not domain controllers' |
+                Should -Match 'dsderegdns'
+            Get-AdfaRecommendation -Section 'Time Hierarchy' -Item 'Time source on dc2.contoso.com (domain controller)' -Detail "Source is the virtualisation host's time provider" |
+                Should -Match 'VMICTimeProvider'
+            $rootTime = Get-AdfaRecommendation -Section 'Time Hierarchy' -Item 'Time source on dc1.contoso.com (FOREST ROOT PDC emulator)' -Detail 'so the forest has NO authoritative upstream time'
+            $rootTime | Should -Match 'manualpeerlist'
+            $rootTime | Should -Match 'five minutes'
+            Get-AdfaRecommendation -Section 'Site Global Catalog Coverage' -Item "Site 'Branch' has no writeable global catalog" -Detail 'read-only GC: rodc1.contoso.com' |
+                Should -Match '\+IS_GC'
+        }
+    }
+
+    Context 'Section wiring' {
+        It 'declares the three new sections in the Sections ValidateSet' {
+            # A function with no ValidateSet entry can never be selected, and a ValidateSet entry
+            # with no branch in Invoke-Main silently produces no section at all.
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+            $text = $ast.Extent.Text
+            foreach ($s in @('MsdcsDelegation', 'TimeHierarchy', 'SiteGc')) {
+                $text | Should -Match ("'{0}'" -f $s)
+                $text | Should -Match ("Test-SectionSelected '{0}'" -f $s)
+            }
+        }
+    }
+
+    Context 'Resolve-AdfaDnsRecord record types' {
+        It 'accepts every record type these checks need' {
+            $set = @((Get-Command Resolve-AdfaDnsRecord).Parameters['Type'].Attributes |
+                    Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] } |
+                    Select-Object -First 1).ValidValues
+            foreach ($t in @('SRV', 'CNAME', 'NS', 'A', 'SOA')) { @($set) | Should -Contain $t }
+        }
+        It 'parses NS and A from the nslookup fallback, and refuses SOA' {
+            # Must run with nslookup PRESENT and Resolve-DnsName ABSENT, or the SOA assertion is
+            # vacuous: with no tool at all every type returns NoTool and the guard is never hit.
+            Mock Test-CommandAvailable { return ($Name -eq 'nslookup.exe') }
+            Mock Invoke-ExternalCommand {
+                $out = ''
+                if ($Arguments -match 'type=NS') {
+                    $out = "Server:  ns1.contoso.com`r`nAddress:  192.0.2.10`r`n`r`n_msdcs.contoso.com`tnameserver = dc1.contoso.com`r`n_msdcs.contoso.com`tnameserver = dc2.contoso.com`r`n"
+                }
+                elseif ($Arguments -match 'type=A') {
+                    $out = "Server:  ns1.contoso.com`r`nAddress:  192.0.2.10`r`n`r`nName:    dc1.contoso.com`r`nAddress:  192.0.2.11`r`n"
+                }
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $null; StdOut = $out }
+            }
+            $ns = Resolve-AdfaDnsRecord -Name '_msdcs.contoso.com' -Type NS
+            [string]$ns.Outcome | Should -Be 'Resolved'
+            @($ns.Targets).Count | Should -Be 2
+            @($ns.Targets) | Should -Contain 'dc1.contoso.com'
+            # The header Address line is the DNS server's own address, never the record's glue.
+            $a = Resolve-AdfaDnsRecord -Name 'dc1.contoso.com' -Type A
+            @($a.Targets).Count | Should -Be 1
+            [string]@($a.Targets)[0] | Should -Be '192.0.2.11'
+            [string](Resolve-AdfaDnsRecord -Name '_msdcs.contoso.com' -Type SOA).Outcome | Should -Be 'NoTool'
+        }
+    }
+}
