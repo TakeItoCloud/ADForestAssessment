@@ -1418,6 +1418,104 @@ $gridSrc = Get-Content -LiteralPath $target -Raw
 Assert-True ($gridSrc -match "'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS'") 'dcdiag grid: the DNS test is in the array the collector iterates'
 
 Write-Host ""
+Write-Host "== 23. Event lookback parameter, and measured clock offset ==" -ForegroundColor Cyan
+
+# --- H13. The lookback was a pair of constants with no runtime override, on the tool built for
+#     assessing a forest after a restore - so a restore older than 14 days was unreachable
+#     without editing the script.
+$lookParam = (Get-Command $target).Parameters['EventLookbackDays']
+Assert-True ($null -ne $lookParam) 'Lookback: -EventLookbackDays exists as a runtime parameter'
+if ($null -ne $lookParam) {
+    $range = @($lookParam.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] } | Select-Object -First 1)
+    Assert-True (@($range).Count -eq 1) 'Lookback: the parameter is range-validated'
+    if (@($range).Count -eq 1) {
+        Assert-Equal 1 ([int]$range[0].MinRange) 'Lookback: minimum is 1 day'
+        Assert-Equal 365 ([int]$range[0].MaxRange) 'Lookback: maximum is a year - enough to reach a restore months back'
+    }
+}
+$cfgSrc = Get-Content -LiteralPath $target -Raw
+Assert-True ($cfgSrc -match 'DsEventLookbackDays\s*=\s*\$EventLookbackDays') 'Lookback: the Directory Service window reads the parameter, not a constant'
+Assert-True ($cfgSrc -match 'DfsrEventLookbackDays\s*=\s*\$EventLookbackDays') 'Lookback: the DFS Replication window reads the parameter, not a constant'
+# The guard that makes a long lookback honest rather than a lie: a 180-day request over a
+# 30-day log must report Truncated, not a clean scan of a period the log never covered.
+Assert-Equal 'Truncated' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord (Get-Date).AddDays(-30) -WindowStart (Get-Date).AddDays(-180)) 'Lookback: a window longer than the log reports Truncated, so widening it cannot fabricate coverage'
+Assert-Equal 'Covered' (Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 -OldestRecord (Get-Date).AddDays(-200) -WindowStart (Get-Date).AddDays(-180)) 'Lookback: a log that does reach back reports Covered'
+
+# --- H14. w32tm /stripchart /rdtsc is the only external-tool output Microsoft publishes a
+#     schema for, which is exactly why it is used.
+$scCsv = @"
+Tracking dc1.contoso.com [192.0.2.11:123].
+RdtscStart, RdtscEnd, FileTime, RoundtripDelay, NtpOffset
+123, 456, 133000000000000000, 0.0021234, +0.0012218
+124, 457, 133000000000000001, 0.0022000, -0.0009000
+"@
+$scParsed = ConvertFrom-AdfaStripchartCsv -Text $scCsv
+Assert-Equal 2 (@($scParsed.Offsets).Count) 'Stripchart: both sample rows are parsed'
+Assert-Equal 2 ([int]$scParsed.RowsParsed) 'Stripchart: the parsed count matches'
+Assert-True ([Math]::Abs(([double]@($scParsed.Offsets)[0]) - 0.0012218) -lt 0.0000001) 'Stripchart: a signed offset is read as a number'
+Assert-Equal 2 (@($scParsed.Delays).Count) 'Stripchart: the round-trip delays are read too'
+# The header is not assumed to be the first line - w32tm prints a Tracking line before it.
+Assert-True (@(ConvertFrom-AdfaStripchartCsv -Text $scCsv).Offsets.Count -gt 0) 'Stripchart: a preamble line before the header does not defeat the parse'
+# A timed-out sample must be DROPPED, never coerced: zero would mean perfectly synchronised.
+$scTimeout = "Tracking dc9.contoso.com.`nRdtscStart, RdtscEnd, FileTime, RoundtripDelay, NtpOffset`nRequest timed out.`n"
+$scTo = ConvertFrom-AdfaStripchartCsv -Text $scTimeout
+Assert-Equal 0 (@($scTo.Offsets).Count) 'Stripchart: a timed-out sample yields no offset, rather than an offset of zero'
+# A row with the RIGHT number of columns but a non-numeric offset. The short-row above is
+# rejected by the column count before the number parse is reached, so without this fixture the
+# TryParse guard is never exercised - and it is the one that stops a junk value being read as an
+# offset of zero, i.e. as "perfectly synchronised".
+$scBadNum = ConvertFrom-AdfaStripchartCsv -Text @"
+RdtscStart, RdtscEnd, FileTime, RoundtripDelay, NtpOffset
+123, 456, 133000000000000000, 0.002, error
+124, 457, 133000000000000001, 0.002, +0.5
+"@
+Assert-Equal 1 (@($scBadNum.Offsets).Count) 'Stripchart: a full-width row with a non-numeric offset is dropped, not read as zero'
+Assert-Equal 2 ([int]$scBadNum.RowsSeen) 'Stripchart: the dropped row is still counted as seen, so the loss is visible'
+Assert-True ([Math]::Abs(([double]@($scBadNum.Offsets)[0]) - 0.5) -lt 0.0000001) 'Stripchart: the good row in the same output is still read'
+
+$scNoHeader = ConvertFrom-AdfaStripchartCsv -Text 'no csv here at all'
+Assert-Equal 0 (@($scNoHeader.Offsets).Count) 'Stripchart: output with no header yields nothing'
+$scNull = ConvertFrom-AdfaStripchartCsv -Text $null
+Assert-Equal 0 (@($scNull.Offsets).Count) 'Stripchart: null input yields nothing'
+
+# --- The verdict. Two thresholds, and the finding must say which is whose.
+$skFail = Get-AdfaClockOffsetVerdict -DomainController 'dc1.contoso.com' -Offsets @(400.0) -WarnSeconds 60 -FailSeconds 300
+Assert-Equal 'Fail' ([string]$skFail.Status) 'Offset: past the Kerberos maximum is a Fail'
+Assert-True ($skFail.Detail -match '300s Kerberos maximum') 'Offset: the Fail cites the vendor limit'
+$skWarn = Get-AdfaClockOffsetVerdict -DomainController 'dc1.contoso.com' -Offsets @(90.0) -WarnSeconds 60 -FailSeconds 300
+Assert-Equal 'Warning' ([string]$skWarn.Status) 'Offset: past our bar but inside the vendor limit is a Warning'
+Assert-True ($skWarn.Detail -match 'OURS and not a vendor threshold') 'Offset: the Warning says plainly whose threshold it is'
+$skPass = Get-AdfaClockOffsetVerdict -DomainController 'dc1.contoso.com' -Offsets @(0.4, -0.2) -WarnSeconds 60 -FailSeconds 300
+Assert-Equal 'Pass' ([string]$skPass.Status) 'Offset: a small offset passes'
+Assert-True ($skPass.Detail -match 'not proof the forest''s time is correct') 'Offset: the Pass states what it does NOT prove'
+# A negative offset is just as bad as a positive one.
+Assert-Equal 'Fail' ([string](Get-AdfaClockOffsetVerdict -DomainController 'a' -Offsets @(-400.0) -WarnSeconds 60 -FailSeconds 300).Status) 'Offset: a DC behind by 400s fails exactly as one ahead by 400s'
+# The WORST sample, not the mean - averaging +4 and -4 would report a swinging clock as perfect.
+$skSwing = Get-AdfaClockOffsetVerdict -DomainController 'a' -Offsets @(400.0, -400.0) -WarnSeconds 60 -FailSeconds 300
+Assert-Equal 'Fail' ([string]$skSwing.Status) 'Offset: a clock swinging either side is judged on its worst sample, not the mean'
+
+$skNone = Get-AdfaClockOffsetVerdict -DomainController 'a' -Offsets @() -ErrorText 'every NTP sample timed out'
+Assert-Equal 'Not Assessed' ([string]$skNone.Status) 'Offset: no usable sample is Not Assessed, never Pass'
+Assert-True ($skNone.Detail -match 'timed out') 'Offset: the cause is carried into the finding'
+Assert-True ($skNone.Detail -match 'zero would mean') 'Offset: says why a bad sample is discarded rather than read as zero'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaClockOffsetVerdict -DomainController 'a' -Queried $false -ErrorText 'RPC (135) was not reachable').Status) 'Offset: an unreachable DC is Not Assessed'
+Assert-True ((Get-AdfaClockOffsetVerdict -DomainController 'a' -Queried $false).Detail -match 'unmeasured offset is not a small one') 'Offset: refuses to imply an unmeasured clock is fine'
+
+$skDegraded = @($skNone,
+    (Get-AdfaClockOffsetVerdict -DomainController 'a' -Queried $false),
+    (Get-AdfaClockOffsetVerdict -DomainController 'a' -Offsets @('not a number')),
+    $skWarn, $skFail)
+Assert-Equal 5 (@($skDegraded).Count) 'Offset: non-vacuity - five declared degraded or failing cases evaluated'
+Assert-Equal 0 (@($skDegraded | Where-Object { $_.Status -eq 'Pass' }).Count) 'Offset: not one of them reports Pass'
+
+# --- Config: the vendor number and ours, kept apart and sourced.
+Assert-Equal 300 ([int]$script:Config.ClockSkew.KerberosMaxSeconds) 'Config: the Kerberos maximum is the vendor 300s'
+Assert-True ([double]$script:Config.ClockSkew.WarnSeconds -lt 300) 'Config: our warning bar sits below the vendor cliff'
+Assert-True ($script:Config.ClockSkew.KerberosUrl -match '^https://learn\.microsoft\.com/') 'Config: the Kerberos limit records its source'
+Assert-True ($script:Config.ClockSkew.StripchartUrl -match '^https://learn\.microsoft\.com/') 'Config: the stripchart contract records its source'
+Assert-Equal '2026-09-22' ([string]$script:Config.ClockSkew.ReadDate) 'Config: the read date is recorded'
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }

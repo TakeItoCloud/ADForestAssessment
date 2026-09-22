@@ -10,6 +10,56 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-09-22 (a runtime event-lookback window, and the clock offset H8 admitted it was not measuring, tool v1.14.0)
+
+**H13 — `-EventLookbackDays`.** The Directory Service and DFS Replication event scans looked
+back 14 days, from two constants in `$script:Config` with **no runtime override at all**. On the
+tool built for assessing a forest *after a restore*, a restore older than two weeks could not be
+reached without editing the script. It is now a validated parameter (1–365, default 14) feeding
+both windows.
+
+Widening it is safe rather than a licence to lie, because the H2 coverage guard already compares
+the oldest retained record against the requested window: ask for 180 days over a 30-day log and
+it reports `Truncated` naming where coverage actually begins, not a clean scan of a period the
+log never held. A test asserts exactly that.
+
+**H14 — the clock offset.** H8 reported where each DC takes time *from*, and said in its own
+finding text that it *"does not verify that the source is accurate"*. That was honest and it was
+a hole: a DC can have a perfect source and still be minutes out, and **Kerberos fails on the
+skew, not on the configuration**.
+
+Every DC now gets a measured offset, via:
+
+```
+w32tm /stripchart /computer:<dc> /dataonly /samples:3 /rdtsc
+```
+
+`/rdtsc` is chosen deliberately over `w32tm /monitor`. Learn documents `/monitor`'s *parameter*
+but never its *output*, whereas `/rdtsc` carries a published contract — *"prints comma-separated
+values along with the headers RdtscStart, RdtscEnd, FileTime, RoundtripDelay, and NtpOffset"*,
+with `NtpOffset` defined as the offset in seconds
+([Learn](https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings),
+read 2026-09-22). **This is the only external-tool output in this entire tool whose format the
+vendor publishes**, and that is the whole reason it was chosen: every other parser here matches
+undocumented console text and has to degrade on a wording or locale change.
+
+Three decisions the findings state rather than imply:
+
+- **Whose threshold is whose.** 300 seconds is Microsoft's documented Kerberos maximum, verified
+  in two independent places. The 60-second warning bar is **ours**, and the `Warning` text says
+  so outright — 300s is the cliff where authentication stops, not a level to run at.
+- **The worst sample, not the mean.** Averaging a `+400s` and a `-400s` sample would report a
+  wildly swinging clock as perfect. A mutation to the mean turns that assertion red.
+- **What it does not prove.** The offset is measured *from the host running the assessment*, so
+  it reports divergence between that host and each DC — not that the forest's time is correct.
+  If the measuring host is wrong, every DC agreeing with it still reads clean. Every finding
+  names the reference host rather than leaving that implied.
+
+A sample that will not parse as a number is **dropped, never coerced**: `Request timed out.`
+appears in this stream for an unreachable target, and reading it as an offset of zero would
+report a dead DC as perfectly synchronised. Zero usable samples is `Not Assessed` with the cause
+named — timed out, unparsed rows, no output, or no CSV header, each distinguished.
+
 ### Fixed — 2026-09-22 (the Intersite dcdiag column was a false Pass; the DNS test was never run, tool v1.13.0)
 
 **`Intersite` reported `Pass` without testing anything.** The grid invoked

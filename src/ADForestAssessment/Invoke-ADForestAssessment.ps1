@@ -204,6 +204,15 @@ param(
     [ValidateRange(1, 3650)][int]$StaleDays = 90,
     [ValidateRange(1, 3650)][int]$KrbtgtMaxAgeDays = 180,
 
+    # How far back the Directory Service and DFS Replication event scans look. Before v1.14.0
+    # this was a pair of constants in $script:Config with NO runtime override, so a restore that
+    # happened more than 14 days ago could not be reached without editing the script - on the
+    # exact tool built for assessing a forest after a restore. Widening it is safe because the
+    # coverage guard already compares the oldest retained record against the window and reports
+    # Truncated when the log does not reach back that far, so a 180-day request over a 30-day log
+    # says so rather than reporting a clean scan of a period it never saw.
+    [ValidateRange(1, 365)][int]$EventLookbackDays = 14,
+
     [ValidateRange(100, 60000)][int]$RpcPortTimeoutMs = 1200,
     [ValidateRange(5, 600)][int]$ExternalToolTimeoutSeconds = 90,
     [ValidateRange(1, 10)][int]$Retries = 2,
@@ -217,7 +226,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.13.0'
+    Version                 = '1.14.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -280,7 +289,7 @@ $script:Config = @{
         @{ Port = 3268; Name = 'Global Catalog LDAP'; Critical = $false }
         @{ Port = 9389; Name = 'ADWS';                Critical = $false }
     )
-    DsEventLookbackDays     = 14
+    DsEventLookbackDays     = $EventLookbackDays
     # --- DFS Replication log events that decide whether SYSVOL is actually replicating ------
     # Meanings are taken from the vendor's own troubleshooting articles, not inferred:
     #   https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-missing-sysvol-and-netlogon-shares
@@ -299,7 +308,7 @@ $script:Config = @{
         @{ Id = 5002; Severity = 'Warning'; Meaning = 'DFSR connection error with a replication partner.' }
         @{ Id = 5014; Severity = 'Warning'; Meaning = 'DFSR RPC communication problem with a replication partner.' }
     )
-    DfsrEventLookbackDays   = 14
+    DfsrEventLookbackDays   = $EventLookbackDays
     # --- SYSVOL backlog thresholds ---------------------------------------------------------
     # Microsoft is explicit that a DFSR backlog "is not necessarily an indication of problems"
     # and "indicates latency", so these are not vendor limits and are not presented as such:
@@ -403,6 +412,30 @@ $script:Config = @{
         DomainHierarchyType = 'NT5DS'
         # The client types that name an explicit upstream peer list.
         ExternalTypes       = @('NTP', 'AllSync')
+    }
+    # --- Clock offset ------------------------------------------------------------------------
+    # 300 seconds is Microsoft's, not ours: it is the default maximum Kerberos time skew, and it
+    # is published in two independent places, both read 2026-09-22:
+    #   "the time skew calculated between the servers to verify it's less than 300 seconds
+    #    (5 minutes) for Kerberos" - dcdiag CheckSecurityError
+    #    https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag
+    #   MaxAllowedPhaseOffset, default 300 for domain members
+    #    https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings
+    # The WARNING threshold below it is OURS, and the findings say so: 300s is the cliff where
+    # authentication stops, not a target to sit near. A DC drifting past a minute is already
+    # failing to keep time and will reach the cliff unattended.
+    ClockSkew               = @{
+        ReadDate            = '2026-09-22'
+        KerberosUrl         = 'https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag'
+        StripchartUrl       = 'https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings'
+        # Vendor value. Do not lower this thinking it is a tightening - it is the documented
+        # Kerberos limit and a finding quotes it as such.
+        KerberosMaxSeconds  = 300
+        # Ours.
+        WarnSeconds         = 60
+        # Samples per DC. More is steadier but every sample costs a poll interval; the default
+        # /period is 2 seconds, so 3 samples is a few seconds per DC.
+        Samples             = 3
     }
     # The forest-wide locator zone. Held as data because it is used to build a zone name, and a
     # typo there would produce a confident false negative.
@@ -4261,6 +4294,150 @@ function Get-AdfaRootPdcClientTypeVerdict {
         -Detail ("Type read as '{0}', which is not one of the documented values (NoSync, NTP, NT5DS, AllSync), so it was not interpreted.{1}" -f $t, $peerNote)
 }
 
+function ConvertFrom-AdfaStripchartCsv {
+    <#
+    .SYNOPSIS
+        Pure parse of 'w32tm /stripchart /rdtsc' CSV output into offset samples.
+    .DESCRIPTION
+        This is the ONLY external-tool output in this whole tool whose format Microsoft actually
+        publishes, and it is used for exactly that reason. Every other parser here matches
+        console text that the vendor never documented, which is why they all have to degrade to
+        Not Assessed on a wording or locale change.
+
+        "/rdtsc: For each sample, prints comma-separated values along with the headers
+         RdtscStart, RdtscEnd, FileTime, RoundtripDelay, and NtpOffset instead of the text
+         graphic."
+          - NtpOffset: "The time offset in seconds between the local computer and the NTP
+            server, computed as per NTP offset computations."
+          - RoundtripDelay: "The time elapsed in seconds between generating the NTP request and
+            processing the received NTP response."
+        https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings
+        Read: 2026-09-22.
+
+        The header row is located by name rather than assumed to be first, because w32tm prints
+        a line about the tracked computer before it. A row whose NtpOffset will not parse as a
+        number is DROPPED rather than coerced: "Request timed out." appears in this stream on an
+        unreachable target, and reading that as an offset of zero would report a dead DC as
+        perfectly synchronised.
+    .OUTPUTS
+        [pscustomobject] Offsets (double[]), Delays (double[]), RowsSeen (int), RowsParsed (int)
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][string]$Text)
+    $lines = @(("$Text") -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $offsets = @()
+    $delays = @()
+    $rowsSeen = 0
+    $headerIdx = -1
+    $offCol = -1
+    $delCol = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $cols = @($lines[$i] -split ',' | ForEach-Object { $_.Trim() })
+        # Match the documented header names, case-insensitively. A plain index loop rather than
+        # [array]::FindIndex with a [Predicate[T]] cast: scriptblock-to-delegate conversion is
+        # not something this script can verify on the Windows PowerShell 5.1 floor it targets,
+        # and there is nothing here worth that risk.
+        $o = -1
+        $d = -1
+        for ($c = 0; $c -lt $cols.Count; $c++) {
+            if ($cols[$c] -match '(?i)^NtpOffset$') { $o = $c }
+            elseif ($cols[$c] -match '(?i)^RoundtripDelay$') { $d = $c }
+        }
+        if ($o -ge 0) { $headerIdx = $i; $offCol = $o; $delCol = $d; break }
+    }
+    if ($headerIdx -lt 0) {
+        return [pscustomobject]@{ Offsets = @(); Delays = @(); RowsSeen = 0; RowsParsed = 0 }
+    }
+    for ($i = $headerIdx + 1; $i -lt $lines.Count; $i++) {
+        $cols = @($lines[$i] -split ',' | ForEach-Object { $_.Trim() })
+        if ($cols.Count -le $offCol) { continue }
+        $rowsSeen++
+        $val = 0.0
+        # 'Request timed out.' lands in this stream for an unreachable target. Dropping the row
+        # is the only safe reading: coercing it would report a dead DC as perfectly in sync.
+        if (-not [double]::TryParse($cols[$offCol], [ref]$val)) { continue }
+        $offsets += [double]$val
+        if ($delCol -ge 0 -and $cols.Count -gt $delCol) {
+            $dv = 0.0
+            if ([double]::TryParse($cols[$delCol], [ref]$dv)) { $delays += [double]$dv }
+        }
+    }
+    return [pscustomobject]@{
+        Offsets = @($offsets); Delays = @($delays)
+        RowsSeen = [int]$rowsSeen; RowsParsed = [int]@($offsets).Count
+    }
+}
+
+function Get-AdfaClockOffsetVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict on one DC's measured clock offset.
+    .DESCRIPTION
+        Closes the gap H8 left open and admitted to: that section reports where a DC takes time
+        FROM, and says in its own detail that it "does not verify that the source is accurate".
+        A DC can have a perfect source and still be minutes out, and Kerberos fails on the skew,
+        not on the configuration.
+
+        Two thresholds, and the finding is explicit about which is whose. 300 seconds is
+        Microsoft's documented Kerberos maximum. The warning threshold below it is OURS: 300 is
+        the cliff at which authentication stops, not a level to sit at, and a DC past a minute is
+        already not keeping time.
+
+        What this deliberately does NOT claim: that the forest's time is CORRECT. The offset is
+        measured from the host running the assessment, so it reports divergence between that host
+        and each DC. If the measuring host is itself wrong, every DC agreeing with it still reads
+        clean - which is why the detail names the reference rather than leaving it implied.
+    .OUTPUTS
+        [pscustomobject] A single finding row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainController,
+        [string]$Scope = '',
+        [string]$ReferenceHost = '(this host)',
+        [bool]$Queried = $true,
+        [AllowNull()][object[]]$Offsets = @(),
+        [string]$ErrorText = '',
+        [double]$WarnSeconds = 60,
+        [double]$FailSeconds = 300
+    )
+    $item = ("Clock offset on {0}" -f $DomainController)
+    if (-not $Queried) {
+        $why = 'the host was not reachable for an NTP sample'
+        if ($ErrorText) { $why = $ErrorText }
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.NotAssessed `
+            -Detail ("The clock offset could not be measured: {0}. Nothing can be concluded about this DC's time - an unmeasured offset is not a small one." -f $why)
+    }
+    $vals = @(@($Offsets) | Where-Object { $_ -is [double] -or $_ -is [int] -or $_ -is [decimal] } | ForEach-Object { [double]$_ })
+    if ($vals.Count -eq 0) {
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.NotAssessed `
+            -Detail ("w32tm returned no usable NTP offset sample for this DC{0}. A sample that did not parse is discarded rather than read as zero, because zero would mean 'perfectly synchronised'." -f $(if ($ErrorText) { ": $ErrorText" } else { '' }))
+    }
+    # The worst sample, not the mean: a clock that swings is a clock that is not disciplined,
+    # and averaging a +4s and a -4s sample would report it as perfect.
+    $worst = 0.0
+    foreach ($v in $vals) { if ([Math]::Abs($v) -gt [Math]::Abs($worst)) { $worst = $v } }
+    $abs = [Math]::Abs($worst)
+    $sampleNote = ("{0} sample(s), worst {1:0.###}s" -f $vals.Count, $worst)
+    $refNote = ("Measured from {0}, so this is divergence between that host and this DC - not proof the forest's time is correct." -f $ReferenceHost)
+
+    if ($abs -ge $FailSeconds) {
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Fail `
+            -Detail ("Offset is {0:0.###}s ({1}), at or beyond the {2}s Kerberos maximum time skew Microsoft documents. Authentication against this DC fails outright at this offset, and every timestamp it writes - replication metadata included - is wrong by that much. {3}" -f `
+                $worst, $sampleNote, $FailSeconds, $refNote)
+    }
+    if ($abs -ge $WarnSeconds) {
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Warning `
+            -Detail ("Offset is {0:0.###}s ({1}). That is inside Microsoft's {2}s Kerberos limit but past the {3}s bar this tool sets, which is OURS and not a vendor threshold: {2}s is the cliff where authentication stops, not a level to run at, and a DC drifting this far is not being disciplined by its time source. {4}" -f `
+                $worst, $sampleNote, $FailSeconds, $WarnSeconds, $refNote)
+    }
+    return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Pass `
+        -Detail ("Offset is {0:0.###}s ({1}), within the {2}s bar this tool sets and well inside Microsoft's {3}s Kerberos maximum. {4}" -f `
+            $worst, $sampleNote, $WarnSeconds, $FailSeconds, $refNote)
+}
+
 function Get-AdfaTimeHierarchyHealth {
     <#
     .SYNOPSIS
@@ -4280,8 +4457,14 @@ function Get-AdfaTimeHierarchyHealth {
         [hashtable]$PdcEmulators = @{},
         [string]$ForestRootPdc = '',
         [int]$RpcPortTimeoutMs = 1200,
-        [int]$TimeoutSeconds = 60
+        [int]$TimeoutSeconds = 60,
+        [int]$SkewSamples = 3,
+        [double]$WarnSeconds = 60,
+        [double]$FailSeconds = 300
     )
+    # Named once so every offset finding can say what it measured against. The offset is relative
+    # to THIS host; if this host's clock is wrong, every DC agreeing with it still reads clean.
+    $refHost = [Environment]::MachineName
     if (@($DomainControllers).Count -eq 0) {
         return @(New-Finding -Area 'TimeHierarchy' -Item 'Time hierarchy' -Status $script:Status.NotAssessed `
                 -Detail 'No domain controllers were enumerated, so no time source could be read. This is not a clean result.')
@@ -4309,6 +4492,10 @@ function Get-AdfaTimeHierarchyHealth {
             $rows += Get-AdfaTimeSourceVerdict -DomainController $dc -Scope $scope -IsPdcEmulator $isPdc `
                 -IsForestRootPdc $isRootPdc -Queried $false -DomainControllerHosts $DomainControllers `
                 -ErrorText 'RPC (135) was not reachable, so w32tm could not be queried remotely'
+            # An offset row too, so every DC carries one and a missing row never reads as clean.
+            $rows += Get-AdfaClockOffsetVerdict -DomainController $dc -Scope $scope -ReferenceHost $refHost `
+                -Queried $false -ErrorText 'RPC (135) was not reachable, so no NTP sample was taken' `
+                -WarnSeconds $WarnSeconds -FailSeconds $FailSeconds
             continue
         }
         $r = Invoke-ExternalCommand -FilePath 'w32tm.exe' -Arguments ("/query /computer:{0} /source" -f $dc) `
@@ -4331,6 +4518,29 @@ function Get-AdfaTimeHierarchyHealth {
         $rows += Get-AdfaTimeSourceVerdict -DomainController $dc -Scope $scope -IsPdcEmulator $isPdc `
             -IsForestRootPdc $isRootPdc -Queried $queried -Source $source -ErrorText $errText `
             -DomainControllerHosts $DomainControllers
+
+        # Measured offset, per DC. H8 reported where a DC takes time FROM and said in its own
+        # detail that it does not verify the source is accurate; this is that verification.
+        # Kerberos fails on skew, not on configuration.
+        $sc = Invoke-ExternalCommand -FilePath 'w32tm.exe' `
+            -Arguments ("/stripchart /computer:{0} /dataonly /samples:{1} /rdtsc" -f $dc, $SkewSamples) `
+            -TimeoutSeconds $TimeoutSeconds -Retries 1 -RetryDelaySeconds 1
+        $scOut = ''
+        $sop = $sc.PSObject.Properties['StdOut']
+        if ($null -ne $sop -and $null -ne $sop.Value) { $scOut = [string]$sop.Value }
+        $samples = ConvertFrom-AdfaStripchartCsv -Text $scOut
+        $skewErr = ''
+        if (@($samples.Offsets).Count -eq 0) {
+            # Name what actually happened rather than just "no samples": the timed-out case is
+            # the common one and reads very differently from a parse miss.
+            if ($scOut -match '(?i)timed out') { $skewErr = 'every NTP sample timed out (UDP 123 blocked, or the Windows Time service is not answering)' }
+            elseif ($samples.RowsSeen -gt 0) { $skewErr = ("{0} sample row(s) were returned but none carried a numeric NtpOffset" -f $samples.RowsSeen) }
+            elseif ([string]::IsNullOrWhiteSpace($scOut)) { $skewErr = 'w32tm produced no output' }
+            else { $skewErr = 'the /rdtsc CSV header was not found in the output' }
+        }
+        $rows += Get-AdfaClockOffsetVerdict -DomainController $dc -Scope $scope `
+            -ReferenceHost $refHost -Queried $true -Offsets @($samples.Offsets) -ErrorText $skewErr `
+            -WarnSeconds $WarnSeconds -FailSeconds $FailSeconds
 
         # The configured intent, for the root PDC only - it is the only role with a documented
         # required client type.
@@ -6364,7 +6574,10 @@ function Invoke-Main {
         }
         $timeRows = @(Get-AdfaTimeHierarchyHealth -DomainControllers $dcNames -PdcEmulators $pdcMap `
                 -ForestRootPdc $rootPdc -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
-                -TimeoutSeconds $script:Config.ExternalToolTimeoutSec)
+                -TimeoutSeconds $script:Config.ExternalToolTimeoutSec `
+                -SkewSamples $script:Config.ClockSkew.Samples `
+                -WarnSeconds $script:Config.ClockSkew.WarnSeconds `
+                -FailSeconds $script:Config.ClockSkew.KerberosMaxSeconds)
         if (@($pdcErrors).Count -gt 0) {
             $timeRows += New-Finding -Area 'TimeHierarchy' -Item 'PDC emulator resolution' -Status $script:Status.NotAssessed `
                 -Detail ("The PDC emulator could not be read for {0} domain(s), so the role-specific time rule was not applied there: {1}. Those DCs were graded as ordinary domain controllers, which is a partial result." -f @($pdcErrors).Count, (@($pdcErrors) -join '; '))
