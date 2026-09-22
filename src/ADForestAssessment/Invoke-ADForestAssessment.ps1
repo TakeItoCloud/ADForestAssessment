@@ -217,7 +217,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.11.0'
+    Version                 = '1.12.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1311,6 +1311,99 @@ function Get-AdfaSiteHealthFinding {
 # region DC diagnostics (parsed)
 # ===========================================================================
 
+function Get-AdfaDcdiagTestOutcome {
+    <#
+    .SYNOPSIS
+        Pure classification of one 'dcdiag /test:<name>' invocation.
+    .DESCRIPTION
+        Separates the three things a run can mean, which the caller previously collapsed into
+        two. 'dcdiag ran and said passed/failed' is a measurement. 'dcdiag ran and its output
+        contained neither verdict' and 'dcdiag did not run' are BOTH unassessed - but for
+        different reasons, and only one of them is about the directory.
+
+        The verdict strings are dcdiag's own, matched case-insensitively and with the test name
+        escaped, so a name containing regex metacharacters cannot silently widen the match.
+    .OUTPUTS
+        [string] Pass | Fail | Unparsed | ToolFailed
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$TestName,
+        [bool]$Success = $true,
+        [AllowNull()][string]$StdOut = ''
+    )
+    $escaped = [regex]::Escape($TestName)
+    $text = "$StdOut"
+    # The verdict is read before Success is consulted on purpose: dcdiag returns a non-zero exit
+    # code for a FAILED test, and treating that as "the tool did not run" would discard a real
+    # measurement. Only output with no verdict at all falls through to the Success check.
+    if ($text -match ("(?i)passed test\s+{0}\b" -f $escaped)) { return 'Pass' }
+    if ($text -match ("(?i)failed test\s+{0}\b" -f $escaped)) { return 'Fail' }
+    if (-not $Success) { return 'ToolFailed' }
+    return 'Unparsed'
+}
+
+function Get-AdfaDcdiagUnassessedCause {
+    <#
+    .SYNOPSIS
+        Pure: builds the human-readable cause for a dcdiag cell that could not be assessed.
+    .DESCRIPTION
+        This exists because the collector used to write 'Not Assessed' into the grid and keep
+        NOTHING about why - no exit code, no output, no error. On a live forest that made
+        several cells unassessed on every DC with no way to tell whether dcdiag had failed to
+        run, run and said something unrecognised, or been localised into a language the verdict
+        match does not know. CLAUDE.md requires a value that was not measured to be reported
+        with a NAMED CAUSE; an empty 'Not Assessed' is not that.
+
+        The stdout excerpt is deliberately short and stripped of blank lines: enough to identify
+        a localised verdict line or an access error, not enough to bloat a CSV cell. It is NOT
+        the first lines of output - those are dcdiag's banner ("Directory Server Diagnosis",
+        "Performing initial setup") and say nothing. Lines naming the test, or carrying a
+        verdict or error word, are preferred; failing that the LAST lines are taken, because
+        that is where dcdiag prints its summary and therefore where a localised verdict sits.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$TestName,
+        [Parameter(Mandatory)][ValidateSet('Unparsed', 'ToolFailed')][string]$Outcome,
+        [AllowNull()][string]$StdOut = '',
+        [AllowNull()][string]$ErrorText = '',
+        [AllowNull()]$ExitCode = $null,
+        [int]$ExcerptChars = 200
+    )
+    $lines = @(("$StdOut") -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $excerpt = ''
+    if ($lines.Count -gt 0) {
+        $escapedName = [regex]::Escape($TestName)
+        $interesting = @($lines | Where-Object {
+                $_ -match $escapedName -or $_ -match '(?i)\btest\b|error|warning|fail|cannot|could not|denied|unable'
+            } | Select-Object -Last 4)
+        # No line looked diagnostic, so take the END of the output rather than the start: the
+        # beginning is dcdiag's banner, the summary is at the bottom.
+        if (@($interesting).Count -eq 0) { $interesting = @($lines | Select-Object -Last 4) }
+        $joined = @($interesting) -join ' / '
+        if ($joined.Length -gt $ExcerptChars) { $joined = $joined.Substring(0, $ExcerptChars) + '...' }
+        $excerpt = $joined
+    }
+    $codeText = '(none)'
+    if ($null -ne $ExitCode) { $codeText = [string]$ExitCode }
+
+    if ($Outcome -eq 'ToolFailed') {
+        $why = "dcdiag did not complete (exit code {0})" -f $codeText
+        if (-not [string]::IsNullOrWhiteSpace($ErrorText)) { $why = "{0}: {1}" -f $why, ("$ErrorText").Trim() }
+        if ($excerpt) { $why = "{0}. Output: {1}" -f $why, $excerpt }
+        return ("{0}: NOT ASSESSED - {1}. The test did not run, so nothing is known about it on this DC." -f $TestName, $why)
+    }
+    if ([string]::IsNullOrWhiteSpace($excerpt)) {
+        return ("{0}: NOT ASSESSED - dcdiag exited {1} and produced NO output, so the test reported no verdict. Run 'dcdiag /test:{0} /s:<dc>' by hand on this DC to see what it says." -f $TestName, $codeText)
+    }
+    return ("{0}: NOT ASSESSED - dcdiag ran (exit code {1}) but its output contained neither 'passed test {0}' nor 'failed test {0}', so no verdict could be read. This is usually a test that did not execute on this DC, or a non-English Windows whose verdict line this build does not match. Output: {2}" -f $TestName, $codeText, $excerpt)
+}
+
 function Get-AdfaDcDiagnostic {
     <#
     .SYNOPSIS
@@ -1373,20 +1466,45 @@ function Get-AdfaDcDiagnostic {
         foreach ($t in $tests) {
             $r = Invoke-ExternalCommand -FilePath 'dcdiag.exe' -Arguments ("/test:{0} /s:{1}" -f $t, $dc) `
                 -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
-            if ($r.StdOut -match ("passed test {0}" -f $t)) {
-                $row["DCDIAG_$t"] = $script:Status.Pass
-            }
-            elseif ($r.StdOut -match ("failed test {0}" -f $t)) {
-                $row["DCDIAG_$t"] = $script:Status.Fail
-                # Capture the exact error/warning lines dcdiag emitted for this failing test.
-                $errLines = @($r.StdOut -split "`r?`n" |
-                    Where-Object { $_ -match 'error|warning|failed|could not|cannot|unable' -and $_ -notmatch 'passed test' } |
-                    ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -First 3)
-                $detail = if ($errLines.Count -gt 0) { $errLines -join ' / ' } else { 'no diagnostic lines captured' }
-                $failDetails.Add(("{0}: {1}" -f $t, $detail))
-            }
-            else {
-                $row["DCDIAG_$t"] = $script:Status.NotAssessed
+            # StrictMode-safe reads: Invoke-ExternalCommand's contract is fixed, but a stub or a
+            # future change must not be able to abort the run on a missing property.
+            $stdOut = ''
+            $sp = $r.PSObject.Properties['StdOut']
+            if ($null -ne $sp -and $null -ne $sp.Value) { $stdOut = [string]$sp.Value }
+            $ok = $true
+            $okp = $r.PSObject.Properties['Success']
+            if ($null -ne $okp -and $null -ne $okp.Value) { $ok = [bool]$okp.Value }
+            $exit = $null
+            $ep = $r.PSObject.Properties['ExitCode']
+            if ($null -ne $ep -and $null -ne $ep.Value) { $exit = $ep.Value }
+            $errText = ''
+            $erp = $r.PSObject.Properties['Error']
+            if ($null -ne $erp -and $null -ne $erp.Value) { $errText = [string]$erp.Value }
+
+            # Held in a variable rather than switched on inline: inside the switch body $_ is
+            # rebound by any Where-Object/ForEach-Object in a branch, and the default branch
+            # needs the outcome itself.
+            $outcome = Get-AdfaDcdiagTestOutcome -TestName $t -Success $ok -StdOut $stdOut
+            switch ($outcome) {
+                'Pass' { $row["DCDIAG_$t"] = $script:Status.Pass }
+                'Fail' {
+                    $row["DCDIAG_$t"] = $script:Status.Fail
+                    # Capture the exact error/warning lines dcdiag emitted for this failing test.
+                    $errLines = @($stdOut -split "`r?`n" |
+                        Where-Object { $_ -match 'error|warning|failed|could not|cannot|unable' -and $_ -notmatch 'passed test' } |
+                        ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -First 3)
+                    $detail = if ($errLines.Count -gt 0) { $errLines -join ' / ' } else { 'no diagnostic lines captured' }
+                    $failDetails.Add(("{0}: {1}" -f $t, $detail))
+                }
+                default {
+                    # 'Unparsed' or 'ToolFailed'. Both are Not Assessed, and BOTH now carry the
+                    # reason into Failures - which is the column the consolidated findings read,
+                    # so the cause reaches the HTML, the CSV and the log rather than being
+                    # dropped on the floor as it was before v1.12.0.
+                    $row["DCDIAG_$t"] = $script:Status.NotAssessed
+                    $failDetails.Add((Get-AdfaDcdiagUnassessedCause -TestName $t -Outcome $outcome `
+                                -StdOut $stdOut -ErrorText $errText -ExitCode $exit))
+                }
             }
         }
 
@@ -1403,6 +1521,52 @@ function Get-AdfaDcDiagnostic {
 # ===========================================================================
 # region DNS
 # ===========================================================================
+
+function Get-AdfaForwarderAddress {
+    <#
+    .SYNOPSIS
+        Pure: extracts the forwarder IP list from a Get-DnsServerForwarder result, tolerating
+        a DNS server that has none configured.
+    .DESCRIPTION
+        Fixes a defect found on the first live run (v1.11.0), where a DC with NO forwarders was
+        reported as 'Not Assessed - You cannot call a method on a null-valued expression'. The
+        previous code was:
+
+            ($fwd.IPAddress | ForEach-Object { $_.ToString() }) -join ', '
+
+        With no forwarders configured, IPAddress is $null. Piping $null into ForEach-Object
+        still runs the block once with $_ = $null, and $null.ToString() throws under
+        Set-StrictMode -Version Latest. The exception was caught upstream and turned into
+        'Not Assessed', so a MEASURED ABSENCE was reported as a FAILED MEASUREMENT - the exact
+        conflation this tool exists to prevent, running backwards.
+
+        Returns an empty array for "none configured", so the caller can say so plainly. Every
+        read is property-existence-checked, and null elements inside the collection are dropped
+        rather than stringified into empty entries.
+    .OUTPUTS
+        [string[]] Zero or more forwarder addresses.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([AllowNull()]$Forwarder)
+    $ips = @()
+    foreach ($f in @($Forwarder | Where-Object { $null -ne $_ })) {
+        # Load-bearing: when the property is absent this lookup returns $null, and reading
+        # .Value off $null throws "The property 'Value' cannot be found on this object" under
+        # Set-StrictMode -Version Latest. Measured, not assumed.
+        $p = $f.PSObject.Properties['IPAddress']
+        if ($null -eq $p) { continue }
+        # @($null) is a one-element array holding $null, and [string]$null is '', so the
+        # emptiness test below covers both "IPAddress is null" and "the collection holds a
+        # null". Separate null checks here would be unreachable - and an unreachable guard
+        # implies a coverage this function does not have.
+        foreach ($ip in @($p.Value)) {
+            $text = ([string]$ip).Trim()
+            if ($text) { $ips += $text }
+        }
+    }
+    return @($ips | Select-Object -Unique)
+}
 
 function Get-AdfaDnsHealth {
     <#
@@ -1440,11 +1604,23 @@ function Get-AdfaDnsHealth {
             }
             try {
                 $fwd = Get-DnsServerForwarder -ComputerName $dc -ErrorAction Stop
-                $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.Info -Detail (($fwd.IPAddress | ForEach-Object { $_.ToString() }) -join ', ')
+                $fwdIps = @(Get-AdfaForwarderAddress -Forwarder $fwd)
+                if ($fwdIps.Count -eq 0) {
+                    # A MEASURED absence, and it must not read as a failed measurement. Before
+                    # v1.12.0 this case threw (see Get-AdfaForwarderAddress) and was caught
+                    # below, so a DC with no forwarders was reported as "could not be read".
+                    $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.Info `
+                        -Detail 'No conditional or global forwarders are configured on this DNS server. It resolves names outside its own zones through root hints, or not at all. That is a valid design - confirm it is the intended one, because a DC that cannot resolve external names is a common post-recovery state.'
+                }
+                else {
+                    $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.Info `
+                        -Detail ("{0} forwarder(s): {1}" -f $fwdIps.Count, ($fwdIps -join ', '))
+                }
             }
             catch {
                 # Previously silent: the forwarders row simply vanished, so a reader could not
-                # tell "no forwarders configured" from "the query failed".
+                # tell "no forwarders configured" from "the query failed". Those two are now
+                # genuinely distinguished - this branch is a failed READ only.
                 $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.NotAssessed -Detail ("Forwarder list could not be read: {0}" -f $_.Exception.Message)
             }
             $insecureXfer = @($zones | Where-Object { $_.PSObject.Properties.Name -contains 'SecureSecondaries' -and $_.SecureSecondaries -eq 'TransferAnyServer' })
