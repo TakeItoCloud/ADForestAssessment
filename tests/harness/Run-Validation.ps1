@@ -1245,6 +1245,140 @@ Assert-True (@($aFallback.Targets) -notcontains '192.0.2.10') 'Resolver: the hea
 Assert-Equal 'NoTool' ([string](Resolve-AdfaDnsRecord -Name '_msdcs.contoso.com' -Type SOA).Outcome) 'Resolver: an SOA query is refused rather than guessed from nslookup output'
 
 Write-Host ""
+Write-Host "== 21. Live-run defects: dcdiag unassessed cause, DNS forwarders null ==" -ForegroundColor Cyan
+
+# --- dcdiag outcome classification. The live run produced cells that were Not Assessed with
+#     NOTHING recorded about why, on a tool whose own rule is that an unmeasured value carries
+#     a named cause. These four outcomes are what that cell can actually mean.
+Assert-Equal 'Pass' (Get-AdfaDcdiagTestOutcome -TestName 'Advertising' -StdOut '......................... DC1 passed test Advertising') 'dcdiag outcome: a passed verdict is read'
+Assert-Equal 'Fail' (Get-AdfaDcdiagTestOutcome -TestName 'Advertising' -StdOut '......................... DC1 failed test Advertising') 'dcdiag outcome: a failed verdict is read'
+Assert-Equal 'Unparsed' (Get-AdfaDcdiagTestOutcome -TestName 'VerifyEnterpriseReferences' -StdOut 'Doing initial required tests') 'dcdiag outcome: output with no verdict is Unparsed, not Pass'
+Assert-Equal 'Unparsed' (Get-AdfaDcdiagTestOutcome -TestName 'Advertising' -StdOut '') 'dcdiag outcome: empty output is Unparsed, not Pass'
+Assert-Equal 'ToolFailed' (Get-AdfaDcdiagTestOutcome -TestName 'Advertising' -Success $false -StdOut '') 'dcdiag outcome: a tool that did not run is ToolFailed'
+# A FAILED test makes dcdiag exit non-zero. Reading Success first would throw that measurement
+# away and report the DC as unassessed when dcdiag actually told us something.
+Assert-Equal 'Fail' (Get-AdfaDcdiagTestOutcome -TestName 'Advertising' -Success $false -StdOut '......................... DC1 failed test Advertising') 'dcdiag outcome: a real failure is kept even though dcdiag exits non-zero'
+# The verdict must belong to the test that was asked for.
+Assert-Equal 'Unparsed' (Get-AdfaDcdiagTestOutcome -TestName 'VerifyReferences' -StdOut '......................... DC1 passed test VerifyEnterpriseReferences') 'dcdiag outcome: a longer test name does not satisfy a shorter one'
+# The word boundary: a verdict for a test whose name merely STARTS with the one asked for must
+# not be claimed. Without \b, 'passed test Netlogons' would be satisfied by 'NetlogonsExtra'.
+Assert-Equal 'Unparsed' (Get-AdfaDcdiagTestOutcome -TestName 'Netlogons' -StdOut '..... DC1 passed test NetlogonsExtra') 'dcdiag outcome: a verdict for a longer-named test does not satisfy a prefix'
+Assert-Equal 'Unparsed' (Get-AdfaDcdiagTestOutcome -TestName 'Netlogons' -StdOut '..... DC1 failed test NetlogonsExtra') 'dcdiag outcome: the same boundary applies to a failed verdict'
+Assert-Equal 'Pass' (Get-AdfaDcdiagTestOutcome -TestName 'VerifyEnterpriseReferences' -StdOut '... DC1 PASSED TEST VerifyEnterpriseReferences') 'dcdiag outcome: the verdict match is case-insensitive'
+$dcdiagOutcomes = @(
+    (Get-AdfaDcdiagTestOutcome -TestName 'T' -StdOut 'passed test T'),
+    (Get-AdfaDcdiagTestOutcome -TestName 'T' -StdOut 'failed test T'),
+    (Get-AdfaDcdiagTestOutcome -TestName 'T' -StdOut 'nothing'),
+    (Get-AdfaDcdiagTestOutcome -TestName 'T' -Success $false -StdOut '')
+)
+Assert-Equal 4 (@($dcdiagOutcomes).Count) 'dcdiag outcome: non-vacuity - four declared outcomes evaluated'
+Assert-Equal 4 (@($dcdiagOutcomes | Sort-Object -Unique).Count) 'dcdiag outcome: all four are genuinely distinguished'
+
+# --- The cause text. This is the whole point of the fix: no unassessed cell may be silent.
+# The excerpt must carry the DIAGNOSTIC line, not dcdiag's banner. This fixture is the shape
+# the live run would have produced: banner first, the interesting line last. Excerpting the
+# first lines - as the first cut of this function did - would have returned pure boilerplate
+# and left the report no better off than the silent Not Assessed it replaced.
+$causeUnparsed = Get-AdfaDcdiagUnassessedCause -TestName 'VerifyEnterpriseReferences' -Outcome 'Unparsed' `
+    -StdOut "Directory Server Diagnosis`n`nPerforming initial setup:`n   Trying to find home server...`n   Home Server = DC1`n   * Identified AD Forest.`n   Ldap search capability attribute search failed on server DC1, return value = 81" -ExitCode 0
+Assert-True ($causeUnparsed -match 'VerifyEnterpriseReferences') 'dcdiag cause: names the test'
+Assert-True ($causeUnparsed -match 'NOT ASSESSED') 'dcdiag cause: says plainly that nothing was measured'
+Assert-True ($causeUnparsed -match 'neither') 'dcdiag cause: explains that no verdict line was found'
+Assert-True ($causeUnparsed -match 'non-English') 'dcdiag cause: names localisation as a candidate, which the verdict match cannot survive'
+Assert-True ($causeUnparsed -match 'return value = 81') 'dcdiag cause: carries the DIAGNOSTIC line from the output'
+Assert-True ($causeUnparsed -notmatch 'Directory Server Diagnosis') 'dcdiag cause: does not waste the excerpt on the banner'
+
+# With nothing diagnostic in the output, the END is taken - dcdiag prints its summary there.
+$causeTail = Get-AdfaDcdiagUnassessedCause -TestName 'T' -Outcome 'Unparsed' -ExitCode 0 `
+    -StdOut "Directory Server Diagnosis`nbanner two`nbanner three`nlast meaningful line"
+Assert-True ($causeTail -match 'last meaningful line') 'dcdiag cause: with no diagnostic line, the tail is excerpted, not the banner'
+
+$causeFailed = Get-AdfaDcdiagUnassessedCause -TestName 'CheckSecurityError' -Outcome 'ToolFailed' -StdOut '' -ErrorText 'timed out' -ExitCode 258
+Assert-True ($causeFailed -match 'did not complete') 'dcdiag cause: a tool failure is described as the tool not running'
+Assert-True ($causeFailed -match '258') 'dcdiag cause: carries the exit code'
+Assert-True ($causeFailed -match 'timed out') 'dcdiag cause: carries the error text'
+Assert-True ($causeFailed -notmatch 'non-English') 'dcdiag cause: does not blame localisation for a tool that never ran'
+
+$causeSilent = Get-AdfaDcdiagUnassessedCause -TestName 'KnowsOfRoleHolders' -Outcome 'Unparsed' -StdOut '' -ExitCode 0
+Assert-True ($causeSilent -match 'NO output') 'dcdiag cause: distinguishes no output from unrecognised output'
+Assert-True ($causeSilent -match 'dcdiag /test:KnowsOfRoleHolders') 'dcdiag cause: names the command to run by hand'
+
+# The excerpt must be bounded - a CSV cell is not a log file. Each line here is long enough
+# that four of them exceed the cap, so truncation is genuinely exercised.
+$longOut = (1..80 | ForEach-Object { "error line $_ with a great deal of padding text to make it comfortably long" }) -join "`n"
+$causeLong = Get-AdfaDcdiagUnassessedCause -TestName 'T' -Outcome 'Unparsed' -StdOut $longOut -ExitCode 0
+Assert-True ($causeLong.Length -lt 600) ("dcdiag cause: the excerpt is bounded (got {0} chars)" -f $causeLong.Length)
+Assert-True ($causeLong -match '\.\.\.') 'dcdiag cause: a truncated excerpt says it was truncated'
+
+$dcdiagCauses = @($causeUnparsed, $causeTail, $causeFailed, $causeSilent, $causeLong)
+Assert-Equal 5 (@($dcdiagCauses).Count) 'dcdiag cause: non-vacuity - five declared unassessed cases evaluated'
+Assert-Equal 0 (@($dcdiagCauses | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count) 'dcdiag cause: not one unassessed case produces an empty cause'
+
+# --- DNS forwarders. The live-run defect: a DC with NO forwarders threw
+#     "You cannot call a method on a null-valued expression" and was reported as unreadable.
+Assert-Equal 0 (@(Get-AdfaForwarderAddress -Forwarder ([pscustomobject]@{ IPAddress = $null })).Count) 'Forwarders: a null IPAddress yields none configured, and does NOT throw'
+Assert-Equal 0 (@(Get-AdfaForwarderAddress -Forwarder $null).Count) 'Forwarders: a null result yields none configured'
+Assert-Equal 0 (@(Get-AdfaForwarderAddress -Forwarder ([pscustomobject]@{ IPAddress = @() })).Count) 'Forwarders: an empty collection yields none configured'
+# Guarded, because the failure mode here is a THROW, not a wrong value: reading .Value off an
+# absent property raises "The property 'Value' cannot be found on this object" under StrictMode.
+# Asserting the count directly would abort the whole harness and hide every later assertion.
+$fwdNoProp = $null
+$fwdNoPropThrew = ''
+try { $fwdNoProp = @(Get-AdfaForwarderAddress -Forwarder ([pscustomobject]@{ Other = 'x' })) }
+catch { $fwdNoPropThrew = $_.Exception.Message }
+Assert-Equal '' $fwdNoPropThrew 'Forwarders: an object with no IPAddress property does not throw'
+Assert-Equal 0 (@($fwdNoProp).Count) 'Forwarders: an object with no IPAddress property yields none configured'
+$fwdTwo = @(Get-AdfaForwarderAddress -Forwarder ([pscustomobject]@{ IPAddress = @('192.0.2.53', '192.0.2.54') }))
+Assert-Equal 2 (@($fwdTwo).Count) 'Forwarders: both configured addresses are returned'
+Assert-Equal '192.0.2.53' ([string]@($fwdTwo)[0]) 'Forwarders: the address text is preserved'
+Assert-Equal 1 (@(Get-AdfaForwarderAddress -Forwarder ([pscustomobject]@{ IPAddress = @('192.0.2.53', $null, '192.0.2.53') })).Count) 'Forwarders: null elements are dropped and duplicates collapsed'
+# Non-vacuity over the degraded shapes: every one of them must be survivable.
+$fwdShapes = @(
+    ([pscustomobject]@{ IPAddress = $null }),
+    ([pscustomobject]@{ IPAddress = @() }),
+    ([pscustomobject]@{ Other = 'x' }),
+    $null
+)
+Assert-Equal 4 (@($fwdShapes).Count) 'Forwarders: non-vacuity - four declared degraded shapes evaluated'
+$fwdSurvived = 0
+foreach ($shape in $fwdShapes) {
+    try { Get-AdfaForwarderAddress -Forwarder $shape | Out-Null; $fwdSurvived++ } catch { }
+}
+Assert-Equal 4 $fwdSurvived 'Forwarders: not one degraded shape throws'
+
+# --- End to end through Get-AdfaDcDiagnostic. The classifier being correct is worth nothing if
+#     the cause does not reach Failures, which is the column the consolidated findings read -
+#     so this asserts the PLUMBING, not the logic. Stubs are local to this block and are the
+#     last thing in the file.
+function Test-CommandAvailable { param([string]$Name) return $true }
+function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+function Invoke-ExternalCommand {
+    param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
+    # 'Advertising' passes; everything else returns output with no verdict at all - the shape
+    # the live run hit on VerifyEnterpriseReferences, CheckSecurityError and KnowsOfRoleHolders.
+    if ($Arguments -match '/test:Advertising\b') {
+        return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile
+            StdOut = "Directory Server Diagnosis`n......................... DC1 passed test Advertising" }
+    }
+    return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile
+        StdOut = "Directory Server Diagnosis`nPerforming initial setup:`nLdap search capability attribute search failed on server DC1, return value = 81" }
+}
+$gridRows = @(Get-AdfaDcDiagnostic -DomainControllers @('dc1.contoso.com') -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)
+Assert-Equal 1 (@($gridRows).Count) 'dcdiag grid: one row per DC'
+$gridRow = @($gridRows)[0]
+Assert-Equal 'Pass' ([string]$gridRow.DCDIAG_Advertising) 'dcdiag grid: a parseable verdict is still read correctly'
+Assert-Equal 'Not Assessed' ([string]$gridRow.DCDIAG_VerifyEnterpriseReferences) 'dcdiag grid: an unreadable verdict is Not Assessed, never Pass'
+Assert-True ([string]$gridRow.Failures -match 'VerifyEnterpriseReferences: NOT ASSESSED') 'dcdiag grid: the unassessed cause REACHES the Failures column'
+Assert-True ([string]$gridRow.Failures -match 'return value = 81') 'dcdiag grid: the cause carries what dcdiag actually printed'
+Assert-True ([string]$gridRow.Failures -match 'CheckSecurityError') 'dcdiag grid: every unassessed test is named, not just the first'
+Assert-Equal 'Warning' ([string]$gridRow.Status) 'dcdiag grid: a row with unassessed cells is Warning, not Pass'
+# The regression this whole fix exists to prevent: an unassessed cell with nothing recorded.
+$unassessedCells = @('VerifyEnterpriseReferences', 'CheckSecurityError', 'KnowsOfRoleHolders', 'Netlogons', 'Services')
+Assert-Equal 5 (@($unassessedCells).Count) 'dcdiag grid: non-vacuity - five declared unassessed tests checked'
+$namedInFailures = @($unassessedCells | Where-Object { [string]$gridRow.Failures -match [regex]::Escape($_) })
+Assert-Equal 5 (@($namedInFailures).Count) 'dcdiag grid: not one unassessed cell is left without a recorded cause'
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }

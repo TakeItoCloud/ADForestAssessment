@@ -10,6 +10,71 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-09-22 (two defects found by the first run against a real forest, tool v1.12.0)
+
+v1.11.0 was run against a live four-DC forest — the first time any of this code touched a real
+directory. Two defects surfaced that no fixture had caught.
+
+**A `Not Assessed` dcdiag cell recorded no cause.** `VerifyEnterpriseReferences` came back
+unassessed on every DC, `KnowsOfRoleHolders` and `CheckSecurityError` on the PDC, and the report
+said nothing about why. The collector was:
+
+```powershell
+else { $row["DCDIAG_$t"] = $script:Status.NotAssessed }
+```
+
+No exit code, no output, no error — and `Failures` was only populated for a `Fail`, so nothing
+reached the consolidated findings either. That breaks this repository's own rule: *a value not
+measured is reported as not measured **with a named cause***. An empty `Not Assessed` is not
+that, and it left the one question a reader has — *did dcdiag fail, or did it say something we
+could not read?* — unanswerable from the report.
+
+New pure `Get-AdfaDcdiagTestOutcome` separates `Pass | Fail | Unparsed | ToolFailed`, and
+`Get-AdfaDcdiagUnassessedCause` builds the cause that now lands in `Failures` for every
+unassessed cell: the exit code, the error text, and an excerpt of what dcdiag actually printed.
+Two details that matter:
+
+- The **verdict is read before `Success`**. dcdiag exits non-zero for a *failed* test, so
+  checking the exit code first would have thrown away a real measurement and called the DC
+  unassessed.
+- The excerpt prefers lines naming the test or carrying a verdict/error word, and otherwise
+  takes the **last** lines, not the first. The first lines are dcdiag's banner
+  (`Directory Server Diagnosis`, `Performing initial setup`) and say nothing; the summary — and
+  therefore a localised verdict line — is at the bottom. The first cut of this function
+  excerpted the head and was caught by its own test.
+
+The cause names non-English Windows as a candidate explicitly, because the verdict match is the
+literal English `passed test <name>` and cannot survive localisation. That remains a real
+limitation; it is now a *stated* one.
+
+**A DNS server with no forwarders was reported as unreadable.** The live run produced
+`forwarders — Not Assessed: You cannot call a method on a null-valued expression`. Root cause:
+
+```powershell
+-Detail (($fwd.IPAddress | ForEach-Object { $_.ToString() }) -join ', ')
+```
+
+With no forwarders configured, `IPAddress` is `$null`. Piping `$null` into `ForEach-Object`
+still runs the block once with `$_ = $null`, and `$null.ToString()` throws under
+`Set-StrictMode -Version Latest`. The exception was caught upstream and became `Not Assessed`.
+
+So a **measured absence was reported as a failed measurement** — the exact conflation this tool
+exists to prevent, running backwards. A reader could not tell "this DC has no forwarders" from
+"we could not ask", and the first is a real finding on a recovered forest.
+
+New pure `Get-AdfaForwarderAddress` returns an empty list for that case, and the collector now
+says so plainly as `Info`. **This changes a status**: a DC with no forwarders moves from
+`Not Assessed` to `Info`. That is the point of the fix — it was never unassessed, it was
+measured as zero.
+
+Two null guards were **removed** rather than added while fixing this. Neither could be
+demonstrated able to fail, because a third check already covered them: `@($null)` is a
+one-element array holding `$null`, and `[string]$null` is `''`, so the emptiness test catches
+both. An unreachable guard implies a coverage the function does not have. The one guard that is
+load-bearing — the property-existence check — was measured, not assumed: reading `.Value` off an
+absent property throws *"The property 'Value' cannot be found on this object"* under StrictMode,
+and removing it turns three assertions red.
+
 ### Added — 2026-09-22 (`_msdcs` delegation, the time hierarchy, and per-site writeable-GC coverage, tool v1.11.0)
 
 Three checks a post-recovery forest needs and this tool did not have. Each is a pure classifier

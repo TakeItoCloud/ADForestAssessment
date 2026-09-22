@@ -1694,3 +1694,116 @@ Describe '_msdcs delegation, time hierarchy, per-site GC coverage' {
         }
     }
 }
+
+Describe 'Live-run defects (v1.11.0 first real forest run)' {
+    Context 'Get-AdfaDcdiagTestOutcome' {
+        # The live run produced dcdiag cells that were Not Assessed with NOTHING recorded about
+        # why, on a tool whose own rule is that an unmeasured value carries a named cause.
+        It 'reads a passed and a failed verdict' {
+            Get-AdfaDcdiagTestOutcome -TestName 'Advertising' -StdOut '..... DC1 passed test Advertising' | Should -Be 'Pass'
+            Get-AdfaDcdiagTestOutcome -TestName 'Advertising' -StdOut '..... DC1 failed test Advertising' | Should -Be 'Fail'
+        }
+        It 'never reports Pass for output it could not read' {
+            Get-AdfaDcdiagTestOutcome -TestName 'VerifyEnterpriseReferences' -StdOut 'Doing initial required tests' | Should -Be 'Unparsed'
+            Get-AdfaDcdiagTestOutcome -TestName 'Advertising' -StdOut '' | Should -Be 'Unparsed'
+            Get-AdfaDcdiagTestOutcome -TestName 'Advertising' -Success $false -StdOut '' | Should -Be 'ToolFailed'
+        }
+        It 'keeps a real failure even though dcdiag exits non-zero for one' {
+            # Reading Success before the verdict would throw a genuine measurement away.
+            Get-AdfaDcdiagTestOutcome -TestName 'Advertising' -Success $false -StdOut '..... DC1 failed test Advertising' |
+                Should -Be 'Fail'
+        }
+        It 'requires the verdict to name the test that was asked for' {
+            Get-AdfaDcdiagTestOutcome -TestName 'VerifyReferences' -StdOut '..... DC1 passed test VerifyEnterpriseReferences' |
+                Should -Be 'Unparsed'
+            Get-AdfaDcdiagTestOutcome -TestName 'VerifyEnterpriseReferences' -StdOut '... PASSED TEST VerifyEnterpriseReferences' |
+                Should -Be 'Pass'
+        }
+        It 'distinguishes all four declared outcomes' {
+            $o = @(
+                (Get-AdfaDcdiagTestOutcome -TestName 'T' -StdOut 'passed test T'),
+                (Get-AdfaDcdiagTestOutcome -TestName 'T' -StdOut 'failed test T'),
+                (Get-AdfaDcdiagTestOutcome -TestName 'T' -StdOut 'nothing'),
+                (Get-AdfaDcdiagTestOutcome -TestName 'T' -Success $false -StdOut '')
+            )
+            @($o).Count | Should -Be 4
+            @($o | Sort-Object -Unique).Count | Should -Be 4
+        }
+    }
+
+    Context 'Get-AdfaDcdiagUnassessedCause' {
+        It 'names the test, says nothing was measured, and carries the diagnostic line' {
+            $c = Get-AdfaDcdiagUnassessedCause -TestName 'VerifyEnterpriseReferences' -Outcome 'Unparsed' -ExitCode 0 `
+                -StdOut "Directory Server Diagnosis`nPerforming initial setup:`nHome Server = DC1`nLdap search capability attribute search failed on server DC1, return value = 81"
+            $c | Should -Match 'VerifyEnterpriseReferences'
+            $c | Should -Match 'NOT ASSESSED'
+            $c | Should -Match 'return value = 81'
+            # The banner is worthless here; excerpting the FIRST lines would return only that.
+            $c | Should -Not -Match 'Directory Server Diagnosis'
+        }
+        It 'falls back to the tail, where dcdiag prints its summary' {
+            Get-AdfaDcdiagUnassessedCause -TestName 'T' -Outcome 'Unparsed' -ExitCode 0 `
+                -StdOut "Directory Server Diagnosis`nbanner two`nbanner three`nlast meaningful line" |
+                Should -Match 'last meaningful line'
+        }
+        It 'describes a tool that never ran differently from output it could not parse' {
+            $f = Get-AdfaDcdiagUnassessedCause -TestName 'CheckSecurityError' -Outcome 'ToolFailed' -StdOut '' -ErrorText 'timed out' -ExitCode 258
+            $f | Should -Match 'did not complete'
+            $f | Should -Match '258'
+            $f | Should -Match 'timed out'
+            $f | Should -Not -Match 'non-English'
+            $s = Get-AdfaDcdiagUnassessedCause -TestName 'KnowsOfRoleHolders' -Outcome 'Unparsed' -StdOut '' -ExitCode 0
+            $s | Should -Match 'NO output'
+            $s | Should -Match 'dcdiag /test:KnowsOfRoleHolders'
+        }
+        It 'bounds the excerpt and says when it truncated' {
+            $long = (1..80 | ForEach-Object { "error line $_ with a great deal of padding text to make it comfortably long" }) -join "`n"
+            $c = Get-AdfaDcdiagUnassessedCause -TestName 'T' -Outcome 'Unparsed' -StdOut $long -ExitCode 0
+            $c.Length | Should -BeLessThan 600
+            $c | Should -Match '\.\.\.'
+        }
+        It 'never produces an empty cause for any unassessed case' {
+            $causes = @(
+                (Get-AdfaDcdiagUnassessedCause -TestName 'T' -Outcome 'Unparsed' -StdOut 'x' -ExitCode 0),
+                (Get-AdfaDcdiagUnassessedCause -TestName 'T' -Outcome 'Unparsed' -StdOut '' -ExitCode 0),
+                (Get-AdfaDcdiagUnassessedCause -TestName 'T' -Outcome 'ToolFailed' -StdOut '' -ExitCode 1)
+            )
+            @($causes).Count | Should -Be 3
+            @($causes | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaForwarderAddress' {
+        # The live-run defect: a DC with NO forwarders threw "You cannot call a method on a
+        # null-valued expression", which was caught upstream and reported as Not Assessed - a
+        # measured absence presented as a failed measurement.
+        It 'returns none configured instead of throwing, for every empty shape' {
+            @(Get-AdfaForwarderAddress -Forwarder ([pscustomobject]@{ IPAddress = $null })).Count | Should -Be 0
+            @(Get-AdfaForwarderAddress -Forwarder ([pscustomobject]@{ IPAddress = @() })).Count | Should -Be 0
+            @(Get-AdfaForwarderAddress -Forwarder ([pscustomobject]@{ Other = 'x' })).Count | Should -Be 0
+            @(Get-AdfaForwarderAddress -Forwarder $null).Count | Should -Be 0
+        }
+        It 'returns the configured addresses, dropping nulls and duplicates' {
+            $two = @(Get-AdfaForwarderAddress -Forwarder ([pscustomobject]@{ IPAddress = @('192.0.2.53', '192.0.2.54') }))
+            @($two).Count | Should -Be 2
+            [string]$two[0] | Should -Be '192.0.2.53'
+            @(Get-AdfaForwarderAddress -Forwarder ([pscustomobject]@{ IPAddress = @('192.0.2.53', $null, '192.0.2.53') })).Count |
+                Should -Be 1
+        }
+        It 'survives every declared degraded shape' {
+            $shapes = @(
+                ([pscustomobject]@{ IPAddress = $null }),
+                ([pscustomobject]@{ IPAddress = @() }),
+                ([pscustomobject]@{ Other = 'x' }),
+                $null
+            )
+            @($shapes).Count | Should -Be 4
+            $survived = 0
+            foreach ($s in $shapes) {
+                { Get-AdfaForwarderAddress -Forwarder $s } | Should -Not -Throw
+                $survived++
+            }
+            $survived | Should -Be 4
+        }
+    }
+}
