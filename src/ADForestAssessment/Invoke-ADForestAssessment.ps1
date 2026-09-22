@@ -217,7 +217,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.12.0'
+    Version                 = '1.13.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1311,6 +1311,44 @@ function Get-AdfaSiteHealthFinding {
 # region DC diagnostics (parsed)
 # ===========================================================================
 
+function Get-AdfaDcdiagArgument {
+    <#
+    .SYNOPSIS
+        Pure: builds the dcdiag argument string for one test against one DC.
+    .DESCRIPTION
+        Exists because two tests in the grid need more than '/test:<name> /s:<dc>', and getting
+        that wrong is silent rather than loud.
+
+        Intersite. The vendor is explicit: "The /a or /e parameter must be used as not providing
+        a site would allow the test to run but SKIPS ACTUAL TESTING." Every run of this tool
+        before v1.13.0 invoked it without either, so the Intersite column reported Pass while
+        dcdiag had tested nothing - a false Pass, which is the one outcome this tool is built to
+        make impossible. /a (this AD site) is used rather than /e (whole enterprise), because
+        Learn warns that run times with /e are significant and that offline DCs make them worse,
+        and this grid already iterates every DC.
+
+        DNS. Not run by default and must be requested explicitly; '/test:DNS' alone defaults to
+        /DnsAll, but the default is spelled out here so a change to it cannot silently narrow
+        what this tool checks. /DnsAll runs basic, forwarders, delegation, dynamic update and
+        record registration - everything except the external-name resolution test, which needs
+        internet egress and is not a directory-health question.
+
+        https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag
+        Read: 2026-09-22.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$TestName,
+        [Parameter(Mandatory)][string]$DomainController
+    )
+    if ($TestName -eq 'Intersite') { return ("/test:Intersite /s:{0} /a" -f $DomainController) }
+    if ($TestName -eq 'DNS') { return ("/test:DNS /DnsAll /s:{0}" -f $DomainController) }
+    return ("/test:{0} /s:{1}" -f $TestName, $DomainController)
+}
+
 function Get-AdfaDcdiagTestOutcome {
     <#
     .SYNOPSIS
@@ -1439,7 +1477,7 @@ function Get-AdfaDcDiagnostic {
     $tests = 'Netlogons', 'Services', 'Replications', 'FsmoCheck', 'Advertising', 'SysVolCheck',
         'MachineAccount', 'ObjectsReplicated', 'RidManager', 'KccEvent', 'VerifyReferences',
         'CrossRefValidation', 'KnowsOfRoleHolders', 'Intersite', 'DFSREvent',
-        'CheckSecurityError', 'VerifyEnterpriseReferences'
+        'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS'
     $haveDcdiag = Test-CommandAvailable -Name 'dcdiag.exe'
     $rows = foreach ($dc in $DomainControllers) {
         $row = [ordered]@{ DomainController = $dc; Status = $null; Ping = $null }
@@ -1464,7 +1502,7 @@ function Get-AdfaDcDiagnostic {
 
         $failDetails = New-Object System.Collections.Generic.List[string]
         foreach ($t in $tests) {
-            $r = Invoke-ExternalCommand -FilePath 'dcdiag.exe' -Arguments ("/test:{0} /s:{1}" -f $t, $dc) `
+            $r = Invoke-ExternalCommand -FilePath 'dcdiag.exe' -Arguments (Get-AdfaDcdiagArgument -TestName $t -DomainController $dc) `
                 -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
             # StrictMode-safe reads: Invoke-ExternalCommand's contract is fixed, but a stub or a
             # future change must not be able to abort the run on a missing property.
