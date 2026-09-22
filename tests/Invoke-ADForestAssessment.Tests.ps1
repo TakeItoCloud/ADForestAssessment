@@ -1211,3 +1211,125 @@ Describe 'Restore integrity' {
         }
     }
 }
+
+Describe 'Replication convergence' {
+    Context 'ConvertFrom-AdfaRepadminDelta' {
+        It 'parses the unit-token forms repadmin emits' {
+            ConvertFrom-AdfaRepadminDelta -Delta '04h:02m:16s' | Should -Be 242
+            ConvertFrom-AdfaRepadminDelta -Delta '15m:30s' | Should -Be 15
+            ConvertFrom-AdfaRepadminDelta -Delta '3d.04h:02m:16s' | Should -Be 4562
+            ConvertFrom-AdfaRepadminDelta -Delta '>60 days' | Should -Be 86400
+        }
+        It 'returns null rather than zero for an unreadable delta' {
+            # The classic version of this bug: "(unknown)" means the DSA has NO successful
+            # replication to measure from, which is worse than a large number, not better.
+            ConvertFrom-AdfaRepadminDelta -Delta '(unknown)' | Should -BeNullOrEmpty
+            ConvertFrom-AdfaRepadminDelta -Delta '' | Should -BeNullOrEmpty
+            ConvertFrom-AdfaRepadminDelta -Delta 'garbage' | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'ConvertFrom-AdfaReplsummary' {
+        BeforeAll {
+            # Layout per the vendor's own sample output in the error-8418 article.
+            $script:ReplsumFixture = @"
+Replication Summary Start Time: 2026-09-22 00:00:00
+
+Beginning data collection for replication summary, this may take a while:
+  .....
+
+Source DSA          largest delta    fails/total %%   error
+ DC1                      15m:30s     0 /  10    0
+ DC2                    (unknown)     5 /   5  100  (8524) The DSA operation is unable to proceed because of a DNS lookup failure.
+
+Destination DSA     largest delta    fails/total %%   error
+ DC1                      15m:30s     0 /  10    0
+"@
+        }
+        It 'attributes rows to the source and destination tables' {
+            $p = @(ConvertFrom-AdfaReplsummary -Text $script:ReplsumFixture)
+            $p.Count | Should -Be 3
+            @($p | Where-Object { $_.Direction -eq 'Source' }).Count | Should -Be 2
+            @($p | Where-Object { $_.Direction -eq 'Destination' }).Count | Should -Be 1
+        }
+        It 'carries fails, total, delta and the error code' {
+            $dc2 = @(ConvertFrom-AdfaReplsummary -Text $script:ReplsumFixture |
+                    Where-Object { $_.Dsa -eq 'DC2' })[0]
+            [int]$dc2.Fails | Should -Be 5
+            [int]$dc2.Total | Should -Be 5
+            $dc2.DeltaMinutes | Should -BeNullOrEmpty
+            $dc2.ErrorText | Should -Match '8524'
+        }
+        It 'does not read banner lines as DSA rows' {
+            @(ConvertFrom-AdfaReplsummary -Text $script:ReplsumFixture |
+                Where-Object { $_.Dsa -match 'Replication|Beginning' }).Count | Should -Be 0
+        }
+        It 'returns nothing for unrecognised text, so the caller can fail closed' {
+            # Localised, version-dependent console output with no CSV option: a parse miss will
+            # happen eventually and must not be mistaken for "no problems found".
+            @(ConvertFrom-AdfaReplsummary -Text 'not the output of anything').Count | Should -Be 0
+            @(ConvertFrom-AdfaReplsummary -Text '').Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaReplsummaryVerdict' {
+        It 'fails on any failures, and says so when every attempt fails' {
+            [string](Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC3' -Delta '04h' `
+                    -DeltaMinutes 240 -Fails 4 -Total 5).Status | Should -Be 'Fail'
+            $all = Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC2' -Delta '(unknown)' `
+                -DeltaMinutes $null -Fails 5 -Total 5
+            [string]$all.Status | Should -Be 'Fail'
+            $all.Detail | Should -Match 'EVERY replication attempt'
+        }
+        It 'treats no-failures-but-no-measurable-delta as unassessed, not a pass' {
+            $u = Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC4' -Delta '(unknown)' `
+                -DeltaMinutes $null -Fails 0 -Total 3
+            [string]$u.Status | Should -Be 'Not Assessed'
+            $u.Detail | Should -Match 'NOT a clean result'
+        }
+        It 'escalates on lag and does not pass our thresholds off as the vendors' {
+            [string](Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC5' -Delta '30h' `
+                    -DeltaMinutes 1800 -Fails 0 -Total 3 -WarnHours 24 -FailHours 168).Status |
+                Should -Be 'Warning'
+            $s = Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC6' -Delta '10d' `
+                -DeltaMinutes 14400 -Fails 0 -Total 3 -WarnHours 24 -FailHours 168
+            [string]$s.Status | Should -Be 'Fail'
+            $s.Detail | Should -Match 'stopped converging rather than lagged'
+            $s.Detail | Should -Match "tool's, not Microsoft's"
+            $s.Detail | Should -Match 'tombstone lifetime'
+        }
+    }
+
+    Context 'Get-AdfaReplicationLagVerdict' {
+        BeforeAll { $script:LagNow = [datetime]'2026-09-22 00:00:00' }
+        It 'fails a link with ZERO failures whose last success is weeks old' {
+            # The gap this closes: the cross-check judged links on failure count alone, so a
+            # silently stalled link - disabled connection object, KCC fault, partner no longer
+            # contacted - reported clean because nothing was being attempted to fail.
+            $s = Get-AdfaReplicationLagVerdict -Destination 'DC1' -Source 'DC2' `
+                -NamingContext 'DC=contoso,DC=com' -LastSuccess '2026-09-01 00:00:00' `
+                -Now $script:LagNow -WarnHours 24 -FailHours 168
+            [string]$s.Status | Should -Be 'Fail'
+            $s.Detail | Should -Match 'nothing is being attempted'
+            $s.Detail | Should -Match 'DC=contoso,DC=com'
+        }
+        It 'passes a recent success and warns past the threshold' {
+            [string](Get-AdfaReplicationLagVerdict -Destination 'DC1' -Source 'DC2' `
+                    -LastSuccess '2026-09-21 23:00:00' -Now $script:LagNow).Status | Should -Be 'Pass'
+            [string](Get-AdfaReplicationLagVerdict -Destination 'DC1' -Source 'DC2' `
+                    -LastSuccess '2026-09-20 12:00:00' -Now $script:LagNow -WarnHours 24 -FailHours 168).Status |
+                Should -Be 'Warning'
+        }
+        It 'never passes an unreadable or future timestamp' {
+            $degraded = @(
+                (Get-AdfaReplicationLagVerdict -Destination 'a' -Source 'b' -LastSuccess '' -Now $script:LagNow),
+                (Get-AdfaReplicationLagVerdict -Destination 'a' -Source 'b' -LastSuccess 'garbage' -Now $script:LagNow),
+                (Get-AdfaReplicationLagVerdict -Destination 'a' -Source 'b' -LastSuccess '2026-09-23 00:00:00' -Now $script:LagNow)
+            )
+            @($degraded).Count | Should -Be 3
+            @($degraded | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+            # A future timestamp is a clock problem, named as such rather than as convergence.
+            $degraded[2].Detail | Should -Match 'clock skew'
+        }
+    }
+}
