@@ -217,7 +217,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.9.0'
+    Version                 = '1.10.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -232,6 +232,15 @@ $script:Config = @{
     }
     BuiltinAdministrators   = 'S-1-5-32-544'
     ReplicationStaleMinutes = 180
+    # --- Replication convergence lag ------------------------------------------------------
+    # OURS, not vendor limits, and the findings say so. Reasoning: intra-site replication is
+    # notification-driven (seconds) and inter-site follows a site-link schedule whose default is
+    # 180 minutes, so a link that has not succeeded for a day is outside any normal schedule, and
+    # a week means it has stopped rather than lagged. The hard cliff is tombstone lifetime - past
+    # that, re-connecting a stale DC introduces lingering objects instead of converging - so the
+    # detail names it rather than these thresholds pretending to be it.
+    ReplLagWarnHours        = 24
+    ReplLagFailHours        = 168
     # Well-known extended-right GUIDs used to detect DCSync grants.
     DcSyncRightGuids        = @{
         'DS-Replication-Get-Changes'            = '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
@@ -2083,6 +2092,270 @@ function ConvertFrom-AdfaShowreplCsv {
     catch { return @() }
 }
 
+
+function ConvertFrom-AdfaRepadminDelta {
+    <#
+    .SYNOPSIS
+        Pure conversion of a repadmin "largest delta" token into minutes.
+    .DESCRIPTION
+        repadmin renders the delta as colon-joined unit tokens - "04h:02m:16s", "15m:30s",
+        "3d.04h:02m:16s" - and as "(unknown)" for a link that has never succeeded. Returns
+        $null for anything it cannot read, including (unknown), so an unreadable delta is never
+        silently treated as zero.
+    .OUTPUTS
+        [System.Nullable[int]] Minutes, or $null.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Nullable[int]])]
+    param([AllowNull()][AllowEmptyString()][string]$Delta = '')
+    if ([string]::IsNullOrWhiteSpace($Delta)) { return $null }
+    $t = $Delta.Trim()
+    if ($t -match '^\(') { return $null }              # (unknown), (never), ...
+    # ">60 days" and friends: take the number and treat the unit as days.
+    if ($t -match '^>\s*(\d+)\s*d') { return ([int]$Matches[1] * 1440) }
+    $total = 0
+    $matched = $false
+    foreach ($m in [regex]::Matches($t, '(\d+)\s*([dhms])')) {
+        $n = [int]$m.Groups[1].Value
+        switch ($m.Groups[2].Value) {
+            'd' { $total += $n * 1440; $matched = $true }
+            'h' { $total += $n * 60; $matched = $true }
+            'm' { $total += $n; $matched = $true }
+            's' { $matched = $true }   # sub-minute: contributes nothing but proves a parse
+        }
+    }
+    if (-not $matched) { return $null }
+    return [int]$total
+}
+
+function ConvertFrom-AdfaReplsummary {
+    <#
+    .SYNOPSIS
+        Pure parser for 'repadmin /replsummary' output.
+    .DESCRIPTION
+        The output is two tables - one keyed by source DSA, one by destination - each introduced
+        by a header carrying "largest delta" and "fails/total":
+
+            Source DSA          largest delta    fails/total %%   error
+             DC1                      15m:30s     0 /  10    0
+             DC2                    (unknown)     5 /   5  100  (8524) The DSA operation is unable...
+
+        Format per https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8418
+        (read 2026-09-22). This is localised, version-dependent console text with no CSV option,
+        so the parser is deliberately defensive and its caller treats "parsed nothing" as
+        Not Assessed rather than as a clean result.
+    .OUTPUTS
+        [pscustomobject[]] Direction (Source|Destination), Dsa, Delta, DeltaMinutes, Fails, Total, ErrorText
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([AllowEmptyString()][string]$Text = '')
+    if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
+    $out = @()
+    $direction = ''
+    foreach ($line in @($Text -split "`r?`n")) {
+        if ($line -match '(?i)largest\s+delta' -and $line -match '(?i)fails\s*/\s*total') {
+            if ($line -match '(?i)source\s+DSA') { $direction = 'Source' }
+            elseif ($line -match '(?i)destination\s+DSA') { $direction = 'Destination' }
+            else { $direction = '' }
+            continue
+        }
+        if (-not $direction) { continue }
+        # name  delta  fails / total  pct  [ (code) text ]
+        $m = [regex]::Match($line, '^\s+(\S+)\s+(\S+)\s+(\d+)\s*/\s*(\d+)\s+(\d+)\s*(.*)$')
+        if (-not $m.Success) { continue }
+        $delta = $m.Groups[2].Value
+        $out += [pscustomobject]@{
+            Direction    = $direction
+            Dsa          = $m.Groups[1].Value
+            Delta        = $delta
+            DeltaMinutes = (ConvertFrom-AdfaRepadminDelta -Delta $delta)
+            Fails        = [int]$m.Groups[3].Value
+            Total        = [int]$m.Groups[4].Value
+            ErrorText    = $m.Groups[6].Value.Trim()
+        }
+    }
+    # Plain return: `return @()` would hand the caller one element that IS the empty array.
+    return @($out)
+}
+
+function Get-AdfaReplsummaryVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict on one parsed /replsummary row.
+    .DESCRIPTION
+        Two independent signals. Failures are unambiguous. The delta is the convergence lag, and
+        an UNREADABLE delta is not zero: "(unknown)" means that DSA has no successful replication
+        to measure from, which is worse than a large number, not better.
+    .OUTPUTS
+        [pscustomobject] Status, Detail
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Direction,
+        [Parameter(Mandatory)][string]$Dsa,
+        [AllowNull()][AllowEmptyString()][string]$Delta = '',
+        [AllowNull()][Nullable[int]]$DeltaMinutes,
+        [int]$Fails = 0,
+        [int]$Total = 0,
+        [string]$ErrorText = '',
+        [int]$WarnHours = 24,
+        [int]$FailHours = 168
+    )
+    $side = 'as a replication source'
+    if ($Direction -eq 'Destination') { $side = 'as a replication destination' }
+    $errSuffix = ''
+    if (-not [string]::IsNullOrWhiteSpace($ErrorText)) { $errSuffix = (" Last error: {0}" -f $ErrorText) }
+
+    if ($Fails -gt 0 -and $Fails -ge $Total -and $Total -gt 0) {
+        return [pscustomobject]@{
+            Status = $script:Status.Fail
+            Detail = ("{0} fails EVERY replication attempt {1} ({2} of {3}). Nothing is flowing in that direction at all.{4}" -f $Dsa, $side, $Fails, $Total, $errSuffix)
+        }
+    }
+    if ($Fails -gt 0) {
+        return [pscustomobject]@{
+            Status = $script:Status.Fail
+            Detail = ("{0} fails {1} of {2} replication attempts {3}.{4}" -f $Dsa, $Fails, $Total, $side, $errSuffix)
+        }
+    }
+    # No failures. The delta decides, and an unreadable one is not a pass.
+    if ($null -eq $DeltaMinutes) {
+        return [pscustomobject]@{
+            Status = $script:Status.NotAssessed
+            Detail = ("{0} reports no failures {1}, but its largest delta reads '{2}', so there is no successful replication to measure from and convergence cannot be confirmed. This is NOT a clean result - a DSA that has never replicated successfully reports no failures too.{3}" -f $Dsa, $side, $Delta, $errSuffix)
+        }
+    }
+    $hours = [math]::Round($DeltaMinutes / 60.0, 1)
+    $lagNote = (" Thresholds are this tool's, not Microsoft's: intra-site replication is notification-driven and the default inter-site schedule is 180 minutes, so {0}h is outside any normal schedule. The hard limit is tombstone lifetime - past that, reconnecting a stale DC introduces lingering objects instead of converging." -f $WarnHours)
+    if ($DeltaMinutes -ge ($FailHours * 60)) {
+        return [pscustomobject]@{
+            Status = $script:Status.Fail
+            Detail = ("{0} reports no failures {1}, but its largest delta is {2} ({3}h) - it has stopped converging rather than lagged. A link with no errors and an old last success is the silent case: nothing reports an error because nothing is being attempted.{4}{5}" -f $Dsa, $side, $Delta, $hours, $lagNote, $errSuffix)
+        }
+    }
+    if ($DeltaMinutes -ge ($WarnHours * 60)) {
+        return [pscustomobject]@{
+            Status = $script:Status.Warning
+            Detail = ("{0} reports no failures {1}, but its largest delta is {2} ({3}h).{4}{5}" -f $Dsa, $side, $Delta, $hours, $lagNote, $errSuffix)
+        }
+    }
+    return [pscustomobject]@{
+        Status = $script:Status.Pass
+        Detail = ("{0}: no failures {1}, largest delta {2}." -f $Dsa, $side, $Delta)
+    }
+}
+
+function Get-AdfaReplsummaryHealth {
+    <#
+    .SYNOPSIS
+        Runs and parses 'repadmin /replsummary' into findings.
+    .DESCRIPTION
+        Previously this output was written to a raw file under -IncludeRepadmin and never read.
+        It is the only place the tool sees a per-DSA convergence delta rolled up across every
+        partition, in both directions.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([int]$TimeoutSeconds = 300, [int]$Retries = 2, [int]$RetryDelaySeconds = 2)
+    if (-not (Test-CommandAvailable -Name 'repadmin.exe')) {
+        return @(New-Finding -Area 'Replication' -Item 'repadmin /replsummary' -Status $script:Status.NotAssessed `
+                -Detail 'repadmin.exe not available on this host, so the replication summary could not be collected.')
+    }
+    $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments '/replsummary' `
+        -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
+    $rowsIn = @(ConvertFrom-AdfaReplsummary -Text $r.StdOut)
+    if ($rowsIn.Count -eq 0) {
+        # Fail-closed: unparsed console output is not evidence of health. This is localised,
+        # version-dependent text, so a parse miss is expected to happen eventually and must not
+        # be mistaken for "no problems found".
+        return @(New-Finding -Area 'Replication' -Item 'repadmin /replsummary' -Status $script:Status.NotAssessed `
+                -Detail ("Could not parse 'repadmin /replsummary' output, so replication convergence is unassessed - not clean. {0}" -f `
+                    $(if ($r.Error) { $r.Error } else { 'Re-run with -IncludeRepadmin and read raw\repadmin_replsummary.txt.' })))
+    }
+    $rows = @()
+    foreach ($row in $rowsIn) {
+        $v = Get-AdfaReplsummaryVerdict -Direction $row.Direction -Dsa $row.Dsa -Delta $row.Delta `
+            -DeltaMinutes $row.DeltaMinutes -Fails $row.Fails -Total $row.Total -ErrorText $row.ErrorText `
+            -WarnHours ([int]$script:Config.ReplLagWarnHours) -FailHours ([int]$script:Config.ReplLagFailHours)
+        $rows += New-Finding -Area 'Replication' -Item ("replsummary {0}: {1}" -f $row.Direction, $row.Dsa) `
+            -Status $v.Status -Detail $v.Detail
+    }
+    return @($rows)
+}
+
+function Get-AdfaReplicationLagVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict on how long ago a replication link last succeeded.
+    .DESCRIPTION
+        Closes a gap in the /showrepl cross-check, which judged links on failure COUNT alone: a
+        link with zero failures and a last success weeks old was reported as clean. That is the
+        silent stall - a disabled connection object, a KCC problem, or a partner that simply
+        stopped being contacted - where nothing errors because nothing is attempted.
+
+        An unparseable or absent last-success time is NOT treated as recent.
+    .OUTPUTS
+        [pscustomobject] Status, Detail
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Destination,
+        [Parameter(Mandatory)][string]$Source,
+        [string]$NamingContext = '',
+        [AllowNull()][AllowEmptyString()][string]$LastSuccess = '',
+        [AllowNull()][Nullable[datetime]]$Now,
+        [int]$WarnHours = 24,
+        [int]$FailHours = 168
+    )
+    $asOf = (Get-Date)
+    if ($null -ne $Now) { $asOf = $Now }
+    $link = ("{0} <- {1}" -f $Destination, $Source)
+    if (-not [string]::IsNullOrWhiteSpace($NamingContext)) { $link = ("{0} on {1}" -f $link, $NamingContext) }
+
+    $parsed = $null
+    if (-not [string]::IsNullOrWhiteSpace($LastSuccess)) {
+        try { $parsed = [datetime]::Parse($LastSuccess, [Globalization.CultureInfo]::InvariantCulture) }
+        catch {
+            try { $parsed = [datetime]$LastSuccess }
+            catch { $parsed = $null }
+        }
+    }
+    if ($null -eq $parsed) {
+        return [pscustomobject]@{
+            Status = $script:Status.NotAssessed
+            Detail = ("{0}: no readable last-success time ('{1}'), so convergence cannot be confirmed. A link that has never succeeded reports zero failures too, so this is not a clean result." -f $link, $LastSuccess)
+        }
+    }
+    $ageHours = [math]::Round((New-TimeSpan -Start $parsed -End $asOf).TotalHours, 1)
+    if ($ageHours -lt 0) {
+        return [pscustomobject]@{
+            Status = $script:Status.NotAssessed
+            Detail = ("{0}: last success is timestamped in the future ({1:yyyy-MM-dd HH:mm}), which means clock skew between the DCs. Fix time sync before drawing conclusions from any replication timestamp." -f $link, $parsed)
+        }
+    }
+    if ($ageHours -ge $FailHours) {
+        return [pscustomobject]@{
+            Status = $script:Status.Fail
+            Detail = ("{0}: last successful replication {1:yyyy-MM-dd HH:mm} - {2}h ago - with no failures reported. Nothing is erroring because nothing is being attempted: check the connection object is enabled, the site link schedule, and KCC health. Approaching tombstone lifetime, reconnecting this link introduces lingering objects rather than converging." -f $link, $parsed, $ageHours)
+        }
+    }
+    if ($ageHours -ge $WarnHours) {
+        return [pscustomobject]@{
+            Status = $script:Status.Warning
+            Detail = ("{0}: last successful replication {1:yyyy-MM-dd HH:mm} - {2}h ago - with no failures reported. Outside any normal schedule (the inter-site default is 180 minutes), so confirm this link is still being attempted." -f $link, $parsed, $ageHours)
+        }
+    }
+    return [pscustomobject]@{
+        Status = $script:Status.Pass
+        Detail = ("{0}: last successful replication {1:yyyy-MM-dd HH:mm} ({2}h ago)." -f $link, $parsed, $ageHours)
+    }
+}
+
 function Get-AdfaRepadminReplication {
     <#
     .SYNOPSIS
@@ -2124,11 +2397,42 @@ function Get-AdfaRepadminReplication {
                 -Detail ("{0} consecutive failure(s) on {1}; last failure status {2}; last success {3}." -f $failures, $nc, $status, $(if ($lastOk) { $lastOk } else { 'unknown' }))
         }
     }
-    if ($failing -eq 0) {
-        $rows += New-Finding -Area 'Replication' -Item 'repadmin cross-check' -Status $script:Status.Pass -Detail ("repadmin /showrepl reports {0} link(s), all with zero failures." -f @($links).Count)
+    # Convergence lag on EVERY link, including the ones reporting no failures. Judging on failure
+    # count alone was the gap: a link with zero failures and a last success weeks old was reported
+    # as clean, which is exactly the silent stall - a disabled connection object, a KCC problem, or
+    # a partner that stopped being contacted - where nothing errors because nothing is attempted.
+    $lagging = 0
+    $lagUnknown = 0
+    foreach ($l in $links) {
+        $names = $l.PSObject.Properties.Name
+        $failures = 0
+        if ($names -contains 'Number of Failures' -and "$($l.'Number of Failures')" -match '^\d+$') { $failures = [int]$l.'Number of Failures' }
+        if ($failures -gt 0) { continue }   # already reported above, with its error status
+        $src = ''; $dst = ''; $nc = ''; $lastOk = ''
+        if ($names -contains 'Source DSA') { $src = [string]$l.'Source DSA' }
+        if ($names -contains 'Destination DSA') { $dst = [string]$l.'Destination DSA' }
+        if ($names -contains 'Naming Context') { $nc = [string]$l.'Naming Context' }
+        if ($names -contains 'Last Success Time') { $lastOk = [string]$l.'Last Success Time' }
+        $v = Get-AdfaReplicationLagVerdict -Destination $dst -Source $src -NamingContext $nc -LastSuccess $lastOk `
+            -WarnHours ([int]$script:Config.ReplLagWarnHours) -FailHours ([int]$script:Config.ReplLagFailHours)
+        if ($v.Status -eq $script:Status.Pass) { continue }   # a converging link needs no row of its own
+        if ($v.Status -eq $script:Status.NotAssessed) { $lagUnknown++ } else { $lagging++ }
+        $rows += New-Finding -Area 'Replication' -Item ("repadmin lag: {0} <- {1}" -f $dst, $src) -Status $v.Status -Detail $v.Detail
+    }
+
+    if ($failing -eq 0 -and $lagging -eq 0 -and $lagUnknown -eq 0) {
+        $rows += New-Finding -Area 'Replication' -Item 'repadmin cross-check' -Status $script:Status.Pass `
+            -Detail ("repadmin /showrepl reports {0} link(s), all with zero failures AND a last success inside {1}h." -f @($links).Count, [int]$script:Config.ReplLagWarnHours)
     }
     else {
-        $rows += New-Finding -Area 'Replication' -Item 'repadmin cross-check summary' -Status $script:Status.Fail -Detail ("{0} of {1} replication link(s) report failures." -f $failing, @($links).Count)
+        $parts = @()
+        if ($failing -gt 0) { $parts += ("{0} with failures" -f $failing) }
+        if ($lagging -gt 0) { $parts += ("{0} not converging despite no failures" -f $lagging) }
+        if ($lagUnknown -gt 0) { $parts += ("{0} with no readable last-success time" -f $lagUnknown) }
+        $st = $script:Status.Fail
+        if ($failing -eq 0 -and $lagging -eq 0) { $st = $script:Status.NotAssessed }
+        $rows += New-Finding -Area 'Replication' -Item 'repadmin cross-check summary' -Status $st `
+            -Detail ("Of {0} replication link(s): {1}." -f @($links).Count, ($parts -join '; '))
     }
     return @($rows)
 }
@@ -4328,6 +4632,14 @@ $script:RecommendationMap = @(
        Text  = 'Replication has been stopped for longer than MaxOfflineTimeInDays, so DFSR will not resume without reinitialisation. Recover the affected DCs non-authoritatively (msDFSR-Enabled FALSE then TRUE, with "dfsrdiag pollad"), fanning out from a known-healthy DC through its direct partners. Only set a DC authoritative if EVERY DC has logged 4012 - that is the single case where an authoritative rebuild is correct.' }
     @{ Match = '(?i)WAITING to perform initial replication'
        Text  = 'This DC has not initialised SYSVOL and is not serving it. Run "dfsrdiag pollad" on it and wait for event 4604. If 4604 never arrives, its upstream partner is not serving SYSVOL either - fix the upstream DC first; initial sync cannot complete from a partner that has nothing to give.' }
+    # A link that is not converging WITHOUT erroring needs different advice from one that is
+    # failing: there is no error to chase, so the question is why nothing is being attempted.
+    @{ Match = '(?i)nothing is being attempted|stopped converging rather than lagged'
+       Text  = 'No error means nothing is being attempted, so look at the topology rather than the network. Check the connection object exists and is enabled (AD Sites and Services, or "repadmin /showconn <dc>"), the site link schedule and cost actually permit replication at this hour, and that the KCC is building the topology ("repadmin /kcc <dc>", then Directory Service events 1311/1865/1925). Then force a sync to prove the path works: "repadmin /replicate <dest> <source> <NC>". If the last success predates tombstone lifetime, do NOT simply reconnect it - that reintroduces lingering objects; run the advisory lingering-object scan first (-IncludeLingeringObjectScan).' }
+    @{ Match = '(?i)no readable last-success time|no successful replication to measure from'
+       Text  = 'This link or DSA has no successful replication on record, which reports as zero failures because nothing has been attempted since the counter reset. Confirm the DC is actually reachable on the replication ports (the port matrix section), then force a sync and watch the result: "repadmin /replicate <dest> <source> <NC>" followed by "repadmin /showrepl <dest>". A DC that has never replicated since being restored needs its secure channel and DNS records verified before anything else.' }
+    @{ Match = '(?i)clock skew'
+       Text  = 'A replication timestamp in the future means the DCs disagree about the time, and Kerberos fails beyond a five-minute skew. Fix time first - every other replication timestamp in this report is unreliable until you do. Check the PDC emulator''s external source ("w32tm /query /status /verbose" on it), then "w32tm /resync" on the others, and confirm no DC is taking time from a virtualisation host integration service while also using the domain hierarchy.' }
     # --- Unscoped entries: matched against "Section :: Item :: Detail" ---
     # Ahead of the event-specific entries: a log that cannot cover the window is a different
     # problem from an event found in it, and the fix is to recover the evidence, not the DC.
@@ -4863,6 +5175,8 @@ function Invoke-Main {
         $sectionData['Replication Health'] = Get-AdfaReplicationHealth -DomainControllers $dcNames -RepParams $repParams -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -StaleMinutes $script:Config.ReplicationStaleMinutes
         Write-Stage 'Replication cross-check (repadmin /showrepl * /csv)'
         $sectionData['Replication Cross-Check (repadmin)'] = Get-AdfaRepadminReplication -TimeoutSeconds 300 -Retries $script:Config.Retries -RetryDelaySeconds $script:Config.RetryDelaySeconds
+        Write-Stage 'Replication convergence summary (repadmin /replsummary)'
+        $sectionData['Replication Summary (repadmin)'] = Get-AdfaReplsummaryHealth -TimeoutSeconds 300 -Retries $script:Config.Retries -RetryDelaySeconds $script:Config.RetryDelaySeconds
     }
 
     $topology = $null

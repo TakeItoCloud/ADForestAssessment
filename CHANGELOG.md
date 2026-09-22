@@ -10,6 +10,64 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-09-22 (a replication link with no failures and a weeks-old last success reported Pass, tool v1.10.0)
+
+The `repadmin /showrepl * /csv` cross-check judged links on **failure count alone**:
+
+```powershell
+if ($failing -eq 0) { ... -Status Pass -Detail "all with zero failures." }
+```
+
+`Last Success Time` was already parsed for every link but only read on links that were failing.
+So a link that had simply **stopped being attempted** — a disabled connection object, a KCC fault,
+a site-link schedule that never fires, a partner no longer in the topology — reported clean. That
+is the silent case, and the one a post-restore forest produces: nothing errors because nothing is
+being tried. `repadmin /showrepl` shows two-way replication "occurring without error", which
+Microsoft itself notes makes the inconsistency *"difficult to detect"*.
+
+Lag is now evaluated on **every** link. A last success past 24h is a `Warning`, past 7 days a
+`Fail` naming the likely causes, and an unreadable or absent timestamp is `Not Assessed` — never
+treated as recent, because a link that has never succeeded reports zero failures too. A
+last-success timestamp **in the future** is reported as clock skew, not convergence, since every
+other replication timestamp in the report is unreliable until time is fixed.
+
+### Added — 2026-09-22 (repadmin /replsummary parsed into findings, tool v1.10.0)
+
+`/replsummary` was written to `raw\repadmin_replsummary.txt` under `-IncludeRepadmin` and never
+read. It is the only place the tool sees a per-DSA convergence delta rolled up across every
+partition, in both directions, so it is now parsed into findings.
+
+Layout per the vendor's own sample output
+([error 8418](https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8418),
+read 2026-09-22): two tables keyed by source and by destination DSA, each row carrying the largest
+delta, fails/total, a percentage and an optional error code.
+
+Two things the parser is careful about:
+
+- **An unreadable delta is `$null`, never `0`.** `(unknown)` means that DSA has no successful
+  replication to measure from, which is *worse* than a large number. Zero failures plus an unknown
+  delta is therefore `Not Assessed`, not `Pass`.
+- **A parse miss is `Not Assessed`, never "no problems found."** This is localised,
+  version-dependent console text with no CSV option, so the parser will eventually meet output it
+  cannot read, and that must not read as health. The caller says so and points at the raw capture.
+
+Thresholds are **this tool's, not Microsoft's, and the findings say so** — intra-site replication
+is notification-driven and the default inter-site schedule is 180 minutes, so a day is outside any
+normal schedule and a week means it has stopped. The hard cliff is tombstone lifetime, which the
+detail names rather than letting the thresholds imply.
+
+Remediation distinguishes a stall from a failure, because a stall has no error to chase: it points
+at the connection object, the site-link schedule and KCC health rather than at DNS and the network,
+and warns against reconnecting a link older than tombstone lifetime without running the
+lingering-object scan first.
+
+**`/showutdvec` was considered and not used.** Its output format is not documented on Microsoft
+Learn, and the `/showrepl * /csv` output already carries `Last Success Time` per link per naming
+context in a stable, parseable format. Building verdicts on undocumented console text when a
+documented source of the same signal was already being collected would have been the worse
+engineering choice — recorded on the plan row rather than left as an unexplained omission.
+
+
 ### Added — 2026-09-22 (restore integrity that survives a cleared event log, tool v1.9.0)
 
 Every restore-integrity signal the tool had came from the Directory Service log. On a forest

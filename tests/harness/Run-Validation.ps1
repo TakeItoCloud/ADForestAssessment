@@ -828,6 +828,116 @@ Assert-True ($genRec -match 'RID pool') 'Restore remediation: 2170 names what AD
 Assert-True ($genRec -match 'not supported') 'Restore remediation: 2170 still says snapshots are not a restore method'
 
 Write-Host ""
+Write-Host "== 19. Replication convergence (/replsummary parse, silent-stall lag) ==" -ForegroundColor Cyan
+
+# --- Delta token parsing. An unreadable delta must be $null, never 0: "(unknown)" means the DSA
+# has NO successful replication to measure from, which is worse than a large number.
+Assert-Equal 242  (ConvertFrom-AdfaRepadminDelta -Delta '04h:02m:16s') 'Delta: h:m:s parsed to minutes'
+Assert-Equal 15   (ConvertFrom-AdfaRepadminDelta -Delta '15m:30s')     'Delta: m:s parsed to minutes'
+Assert-Equal 4562 (ConvertFrom-AdfaRepadminDelta -Delta '3d.04h:02m:16s') 'Delta: days included'
+Assert-Equal 86400 (ConvertFrom-AdfaRepadminDelta -Delta '>60 days')   'Delta: ">60 days" handled'
+Assert-True ($null -eq (ConvertFrom-AdfaRepadminDelta -Delta '(unknown)')) 'Delta: (unknown) => null, never 0'
+Assert-True ($null -eq (ConvertFrom-AdfaRepadminDelta -Delta ''))          'Delta: empty => null'
+Assert-True ($null -eq (ConvertFrom-AdfaRepadminDelta -Delta 'garbage'))   'Delta: unparseable => null, never 0'
+Assert-Equal 0 (ConvertFrom-AdfaRepadminDelta -Delta '45s') 'Delta: sub-minute parses to 0 rather than null'
+
+# --- /replsummary parse against the documented layout.
+$replsum = @"
+Replication Summary Start Time: 2026-09-22 00:00:00
+
+Beginning data collection for replication summary, this may take a while:
+  .....
+
+Source DSA          largest delta    fails/total %%   error
+ DC1                      15m:30s     0 /  10    0
+ DC2                    (unknown)     5 /   5  100  (8524) The DSA operation is unable to proceed because of a DNS lookup failure.
+ DC3                  04h:02m:16s     4 /   5   80  (8418) The replication operation failed because of a schema mismatch.
+
+Destination DSA     largest delta    fails/total %%   error
+ DC1                      15m:30s     0 /  10    0
+ DC3                  04h:02m:16s     4 /   5   80  (8418) The replication operation failed because of a schema mismatch.
+"@
+$parsed = @(ConvertFrom-AdfaReplsummary -Text $replsum)
+Assert-Equal 5 ($parsed.Count) 'replsummary: all five rows across both tables parsed'
+Assert-Equal 3 (@($parsed | Where-Object { $_.Direction -eq 'Source' }).Count) 'replsummary: source rows attributed to the source table'
+Assert-Equal 2 (@($parsed | Where-Object { $_.Direction -eq 'Destination' }).Count) 'replsummary: destination rows attributed to the destination table'
+$dc2 = @($parsed | Where-Object { $_.Dsa -eq 'DC2' -and $_.Direction -eq 'Source' })[0]
+Assert-Equal 5 ([int]$dc2.Fails) 'replsummary: fails parsed'
+Assert-Equal 5 ([int]$dc2.Total) 'replsummary: total parsed'
+Assert-True ($null -eq $dc2.DeltaMinutes) 'replsummary: (unknown) delta stays null'
+Assert-True ($dc2.ErrorText -match '8524') 'replsummary: the error code is carried'
+$dc1 = @($parsed | Where-Object { $_.Dsa -eq 'DC1' -and $_.Direction -eq 'Source' })[0]
+Assert-Equal 0 ([int]$dc1.Fails) 'replsummary: a clean row parses with zero fails'
+Assert-Equal 15 ([int]$dc1.DeltaMinutes) 'replsummary: a clean row carries its delta'
+Assert-Equal '' ([string]$dc1.ErrorText) 'replsummary: a clean row has no error text'
+# Banner and blank lines must not become rows.
+Assert-Equal 0 (@($parsed | Where-Object { $_.Dsa -match 'Replication|Beginning|^\.+$' }).Count) 'replsummary: banner lines are not parsed as DSAs'
+# Fail-closed: unparseable input yields nothing, and the caller turns that into Not Assessed.
+Assert-Equal 0 (@(ConvertFrom-AdfaReplsummary -Text 'not the output of anything').Count) 'replsummary: unrecognised text => no rows'
+Assert-Equal 0 (@(ConvertFrom-AdfaReplsummary -Text '').Count) 'replsummary: empty input => no rows'
+
+# --- Verdicts. Zero failures is not the same as converged.
+Assert-Equal 'Pass' ([string](Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC1' -Delta '15m:30s' -DeltaMinutes 15 -Fails 0 -Total 10).Status) 'replsummary verdict: no failures, small delta => Pass'
+Assert-Equal 'Fail' ([string](Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC2' -Delta '(unknown)' -DeltaMinutes $null -Fails 5 -Total 5).Status) 'replsummary verdict: failing every attempt => Fail'
+Assert-True ((Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC2' -Delta '(unknown)' -DeltaMinutes $null -Fails 5 -Total 5).Detail -match 'EVERY replication attempt') 'replsummary verdict: total failure is called out as such'
+Assert-Equal 'Fail' ([string](Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC3' -Delta '04h' -DeltaMinutes 240 -Fails 4 -Total 5).Status) 'replsummary verdict: partial failures => Fail'
+# The key case: no failures but no measurable convergence.
+$unk = Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC4' -Delta '(unknown)' -DeltaMinutes $null -Fails 0 -Total 3
+Assert-Equal 'Not Assessed' ([string]$unk.Status) 'replsummary verdict: no failures + unknown delta => Not Assessed, never Pass'
+Assert-True ($unk.Detail -match 'NOT a clean result') 'replsummary verdict: says an unknown delta is not clean'
+Assert-Equal 'Warning' ([string](Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC5' -Delta '30h' -DeltaMinutes 1800 -Fails 0 -Total 3 -WarnHours 24 -FailHours 168).Status) 'replsummary verdict: lag past the warn threshold => Warning'
+$stalled = Get-AdfaReplsummaryVerdict -Direction 'Source' -Dsa 'DC6' -Delta '10d' -DeltaMinutes 14400 -Fails 0 -Total 3 -WarnHours 24 -FailHours 168
+Assert-Equal 'Fail' ([string]$stalled.Status) 'replsummary verdict: lag past the fail threshold => Fail'
+Assert-True ($stalled.Detail -match 'stopped converging rather than lagged') 'replsummary verdict: names the silent-stall case'
+Assert-True ($stalled.Detail -match "tool's, not Microsoft's") 'replsummary verdict: does not pass our thresholds off as vendor limits'
+Assert-True ($stalled.Detail -match 'tombstone lifetime') 'replsummary verdict: names the real cliff'
+
+# --- Link lag: the gap this closes is a link with ZERO failures and an old last success.
+$now = [datetime]'2026-09-22 00:00:00'
+Assert-Equal 'Pass' ([string](Get-AdfaReplicationLagVerdict -Destination 'DC1' -Source 'DC2' -LastSuccess '2026-09-21 23:00:00' -Now $now).Status) 'Lag: an hour ago => Pass'
+Assert-Equal 'Warning' ([string](Get-AdfaReplicationLagVerdict -Destination 'DC1' -Source 'DC2' -LastSuccess '2026-09-20 12:00:00' -Now $now -WarnHours 24 -FailHours 168).Status) 'Lag: 36h ago => Warning'
+$stall = Get-AdfaReplicationLagVerdict -Destination 'DC1' -Source 'DC2' -NamingContext 'DC=contoso,DC=com' -LastSuccess '2026-09-01 00:00:00' -Now $now -WarnHours 24 -FailHours 168
+Assert-Equal 'Fail' ([string]$stall.Status) 'Lag: three weeks ago => Fail even with zero failures'
+Assert-True ($stall.Detail -match 'nothing is being attempted') 'Lag: names why nothing errored'
+Assert-True ($stall.Detail -match 'DC=contoso,DC=com') 'Lag: names the naming context'
+# An unreadable timestamp must not be treated as recent.
+$noTime = Get-AdfaReplicationLagVerdict -Destination 'DC1' -Source 'DC2' -LastSuccess '' -Now $now
+Assert-Equal 'Not Assessed' ([string]$noTime.Status) 'Lag: no last-success time => Not Assessed, never Pass'
+Assert-True ($noTime.Detail -match 'never succeeded reports zero failures too') 'Lag: explains why a blank is not clean'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaReplicationLagVerdict -Destination 'DC1' -Source 'DC2' -LastSuccess 'not a date' -Now $now).Status) 'Lag: unparseable time => Not Assessed'
+# Clock skew: a future timestamp is a time problem, not a converged link.
+$future = Get-AdfaReplicationLagVerdict -Destination 'DC1' -Source 'DC2' -LastSuccess '2026-09-23 00:00:00' -Now $now
+Assert-Equal 'Not Assessed' ([string]$future.Status) 'Lag: a future last-success => Not Assessed, not Pass'
+Assert-True ($future.Detail -match 'clock skew') 'Lag: names clock skew as the cause'
+
+# Fail-closed in the round over every degraded lag input.
+$lagDegraded = @(
+    (Get-AdfaReplicationLagVerdict -Destination 'a' -Source 'b' -LastSuccess ''           -Now $now),
+    (Get-AdfaReplicationLagVerdict -Destination 'a' -Source 'b' -LastSuccess 'garbage'    -Now $now),
+    (Get-AdfaReplicationLagVerdict -Destination 'a' -Source 'b' -LastSuccess '2026-09-23 00:00:00' -Now $now)
+)
+Assert-Equal 3 (@($lagDegraded).Count) 'Lag: non-vacuity - three degraded inputs evaluated'
+Assert-Equal 0 (@($lagDegraded | Where-Object { $_.Status -eq 'Pass' }).Count) 'Lag: no degraded input is ever reported as Pass'
+
+# A silent stall needs different advice from a failing link: there is no error to chase.
+$stallRec = Get-AdfaRecommendation -Section 'Replication Cross-Check (repadmin)' -Item 'repadmin lag: DC1 <- DC2' `
+    -Detail 'last successful replication 2026-09-01 00:00 - 504h ago - with no failures reported. Nothing is erroring because nothing is being attempted.'
+Assert-True ($stallRec -match 'topology rather than the network') 'Lag remediation: points at topology, not the network'
+Assert-True ($stallRec -match 'repadmin /showconn|connection object') 'Lag remediation: names the connection object check'
+Assert-True ($stallRec -match 'lingering objects') 'Lag remediation: warns against blindly reconnecting a stale link'
+Assert-True ($stallRec -notmatch 'Fix the DNS findings first') 'Lag remediation: not hijacked by the generic replication entry'
+
+$skewRec = Get-AdfaRecommendation -Section 'Replication Cross-Check (repadmin)' -Item 'repadmin lag: DC1 <- DC2' `
+    -Detail 'last success is timestamped in the future, which means clock skew between the DCs.'
+Assert-True ($skewRec -match 'Fix time first') 'Skew remediation: time before replication'
+Assert-True ($skewRec -match 'five-minute skew') 'Skew remediation: names the Kerberos limit'
+
+# A genuinely failing link must still get the replication guidance, not the stall guidance.
+$failRec = Get-AdfaRecommendation -Section 'Replication Cross-Check (repadmin)' -Item 'repadmin: DC1 <- DC2' `
+    -Detail '5 consecutive failure(s) on DC=contoso,DC=com; last failure status 1722; last success unknown.'
+Assert-True ($failRec -match 'Fix the DNS findings first') 'Lag remediation: a real failure still routes to replication guidance'
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }
