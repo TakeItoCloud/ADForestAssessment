@@ -10,6 +10,75 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-09-22 (`_msdcs` delegation, the time hierarchy, and per-site writeable-GC coverage, tool v1.11.0)
+
+Three checks a post-recovery forest needs and this tool did not have. Each is a pure classifier
+plus a thin collector, so all of the decision logic is unit-tested without a directory.
+
+**`_msdcs` zone delegation** — new section `MsdcsDelegation`, `-Sections MsdcsDelegation`.
+
+The forest-wide locator records live in their own AD-integrated zone, replicated to every DNS
+server in the forest through the forest-wide DNS application directory partition
+([Learn](https://learn.microsoft.com/windows-server/identity/ad-ds/plan/integrating-ad-ds-into-an-existing-dns-infrastructure),
+read 2026-09-22). After a hand-rebuilt DNS server that is easy to get wrong, and nothing in the
+report would have shown it. Four separable properties, each its own finding because each has a
+different fix:
+
+| Property | Verdict |
+| --- | --- |
+| `_msdcs.<forest>` answers its own SOA | `Pass`; the **parent** answering is `Fail` (a plain subdomain, not a delegated zone) |
+| The parent zone holds delegation NS records | `Pass` / `Fail` |
+| Each NS target has a resolvable glue (A) record | `Pass` / `Fail`; a glue query that got no answer is `Not Assessed`, never `Fail` |
+| Each NS host is a DC this run inventoried | `Pass` / `Warning` — a non-DC DNS server can legitimately be authoritative |
+
+The forest recovery guide is explicit on two of these: *"Ensure that the parent DNS zone contains
+delegation resource records (name server (NS) and glue host (A) resource records) for the child
+zone"*, and *"In the `_msdcs` and domain DNS zones, delete NS records of DCs that no longer exist
+after metadata cleanup"*. Every property is measured **per DNS server** rather than merged — the
+zone is AD-integrated, so with replication broken the answer genuinely differs between servers.
+
+**Time hierarchy** — new section `TimeHierarchy`, `-Sections TimeHierarchy`. The existing
+`TimeSync` section reads the **local** host's `w32tm /query /source` and is unchanged. This one
+reads every DC's source with the documented remote form `w32tm /query /computer:<target> /source`,
+and applies the two role-specific rules the vendor publishes:
+
+- A DC whose source is `VM IC Time Synchronization Provider` is taking time from its
+  virtualisation host. Per KB 976924 a DC with two time sources can jump, which *"can cause
+  lingering objects to be left in caches, and may cause replication to stop"* — both of which
+  this report checks for elsewhere. `Warning`, naming the Integration Services fix.
+- The forest root PDC emulator must not synchronise from the domain hierarchy it is the top of;
+  W32Time logs **event ID 12** for exactly that. So a root PDC whose source is one of this
+  forest's own DCs is a `Warning`, and its configured client `Type` gets its own row — `NT5DS`
+  or `NoSync` is a `Warning`, `NTP`/`AllSync` **with a peer list actually read** is a `Pass`.
+
+Where Microsoft's own guidance diverges — the Windows Server 2016 timekeeping guidance says *"For
+the PDC, you don't want to disable the entry because the Hyper-V host delivers the most stable
+time source"*, against KB 976924 — the finding names **both** positions and says the operator must
+decide. It does not pick a side silently.
+
+**Per-site writeable global catalog** — new section `SiteGc`, `-Sections SiteGc`. Joins `Site`,
+`IsGlobalCatalog` and `IsReadOnly`, which the DC inventory already collected and never correlated.
+A site holding DCs but no DC that is **both** writeable and a GC is a `Warning` naming what is
+actually there (read-only GC / writeable non-GC), because Microsoft requires the AD site hosting
+an Exchange server to contain at least one writeable domain controller that is also a global
+catalog server, and states that an Exchange server cannot be deployed in a site containing only
+read-only directory servers. A `Warning` rather than a `Fail` because a site with no GC-dependent
+application is a design choice, and this tool does not know what is deployed there. This closes
+the gap the v1.7.0 Exchange SE section explicitly disclaimed.
+
+**Resolver**: `Resolve-AdfaDnsRecord` and `Get-AdfaDnsRecordView` now accept `NS`, `A` and `SOA`
+alongside `SRV` and `CNAME`. For an `SOA` query `Targets` holds the **zone apex that answered**,
+not the primary server — that is the only thing an SOA query is asked for here, and it is how a
+delegated child zone is told apart from a subdomain of its parent. `SOA` is deliberately **not**
+attempted through the `nslookup` fallback: its output does not label the answering zone in any
+documented way, and a guessed apex would turn a healthy delegation into a confident `Fail`, so it
+returns `NoTool`. The `nslookup` `A` parser skips the header `Address:` line, which is the DNS
+server's own address and not the record's glue.
+
+Fixed in passing, found by the new tests rather than reported: nothing. Every existing finding
+keeps its status — the three sections are new `ValidateSet` entries writing new `$sectionData`
+keys, and no existing collector's logic was touched.
+
 ### Fixed — 2026-09-22 (a replication link with no failures and a weeks-old last success reported Pass, tool v1.10.0)
 
 The `repadmin /showrepl * /csv` cross-check judged links on **failure count alone**:

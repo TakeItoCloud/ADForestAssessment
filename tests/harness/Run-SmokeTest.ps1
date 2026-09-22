@@ -158,6 +158,24 @@ if (Test-Path $repCsv) {
 }
 else { Check $false 'Replication Health CSV exists' }
 
+# The three sections added in v1.11.0 must be wired, not merely present as functions: a
+# ValidateSet entry with no branch in Invoke-Main produces no section at all, and nothing else
+# in this harness would notice.
+$smokeFindings = @(Import-Csv $result.FindingsFile)
+foreach ($sec in @('_msdcs Zone Delegation', 'Time Hierarchy', 'Site Global Catalog Coverage')) {
+    $n = @($smokeFindings | Where-Object { $_.Section -eq $sec }).Count
+    Check ($n -gt 0) ("Section '{0}' is wired into Invoke-Main and reached the findings ({1} rows)" -f $sec, $n)
+}
+# With no DNS or time tools on this host, those two must degrade honestly rather than pass.
+foreach ($sec in @('_msdcs Zone Delegation', 'Time Hierarchy')) {
+    $rows = @($smokeFindings | Where-Object { $_.Section -eq $sec })
+    Check (@($rows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0) ("Section '{0}' reports no Pass when the query tools are absent" -f $sec)
+    Check (@($rows | Where-Object { $_.Status -eq 'Not Assessed' }).Count -gt 0) ("Section '{0}' reports Not Assessed with a named cause" -f $sec)
+}
+# Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
+$gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
+Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
+
 Write-Host ""
 Write-Host ("Output bundle: {0}" -f $result.OutputRoot)
 Get-ChildItem -Recurse $result.OutputRoot | Select-Object -First 30 FullName | ForEach-Object { Write-Host ("   {0}" -f $_.FullName) }

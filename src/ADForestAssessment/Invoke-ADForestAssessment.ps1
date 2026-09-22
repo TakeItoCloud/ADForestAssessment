@@ -175,7 +175,7 @@ param(
         'Pki', 'Acl', 'Kerberos', 'PrivilegedHygiene', 'DcHardening', 'Backup', 'TimeSync',
         'DnsDepth', 'Redundancy', 'ExchangeSchema', 'ExchangeSeReadiness',
         'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
-        'DsEvents', 'RestoreIntegrity')]
+        'DsEvents', 'RestoreIntegrity', 'MsdcsDelegation', 'TimeHierarchy', 'SiteGc')]
     [string[]]$Sections = @('All'),
 
     [switch]$IncludeDcdiag,
@@ -217,7 +217,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.10.0'
+    Version                 = '1.11.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -373,6 +373,43 @@ $script:Config = @{
     )
     # NTDS-DSA options bit 0 = this DSA is a Global Catalog.
     NtdsDsaOptionIsGc       = 1
+    # --- Windows Time hierarchy ------------------------------------------------------------
+    # Every pattern and type name below is the vendor's own published string, kept here as data
+    # so a wording change is a config edit. Sources and read dates:
+    #   Type values (NoSync | NTP | NT5DS | AllSync) and the w32tm /query syntax:
+    #     https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings
+    #   "VM IC Time Synchronization Provider" as a published Source string, and the guidance that
+    #   a virtualised DC taking time from its host can leave lingering objects and stop
+    #   replication (KB 976924):
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/windows-time-service-event-ids-24-29-38
+    #   The forest root PDC emulator must not synchronise from the domain hierarchy (W32Time
+    #   logs event ID 12 for exactly this), and should use an external authoritative source:
+    #     https://learn.microsoft.com/services-hub/microsoft-engage-center/health/remediation-steps-ad/configure-the-root-pdc-with-an-authoritative-time-source-and-avoid-widespread-time-skew
+    #   The one place the vendor carves out the PDC from "disable host time sync":
+    #     https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-server-2016-improvements#best-practices-for-accurate-timekeeping
+    # Read: 2026-09-22.
+    Time                    = @{
+        ReadDate            = '2026-09-22'
+        SourceUrl           = 'https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings'
+        HypervisorUrl       = 'https://learn.microsoft.com/troubleshoot/windows-server/active-directory/windows-time-service-event-ids-24-29-38'
+        RootPdcUrl          = 'https://learn.microsoft.com/services-hub/microsoft-engage-center/health/remediation-steps-ad/configure-the-root-pdc-with-an-authoritative-time-source-and-avoid-widespread-time-skew'
+        # No upstream at all: the machine is running on its own oscillator.
+        LocalClockPattern   = '(?i)local cmos clock|free[- ]running'
+        # The hypervisor integration-service provider. Matching the provider name and the
+        # registry provider key covers both the /source and the /dumpreg spellings.
+        HypervisorPattern   = '(?i)vm ic time synchronization provider|vmictimeprovider'
+        # "NT5DS: The time service synchronizes with the domain hierarchy" - invalid on the
+        # forest root PDC emulator, which sits at the top of that hierarchy.
+        DomainHierarchyType = 'NT5DS'
+        # The client types that name an explicit upstream peer list.
+        ExternalTypes       = @('NTP', 'AllSync')
+    }
+    # The forest-wide locator zone. Held as data because it is used to build a zone name, and a
+    # typo there would produce a confident false negative.
+    #   https://learn.microsoft.com/windows-server/identity/ad-ds/plan/integrating-ad-ds-into-an-existing-dns-infrastructure
+    #   https://learn.microsoft.com/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-configure-dns
+    # Read: 2026-09-22.
+    MsdcsZoneLabel          = '_msdcs'
 }
 
 # Status vocabulary (fail-closed).
@@ -3033,12 +3070,26 @@ function Get-AdfaDnsQueryOutcome {
 function Resolve-AdfaDnsRecord {
     <#
     .SYNOPSIS
-        Resolves a DNS record (SRV or CNAME) with Resolve-DnsName, falling back to
+        Resolves a DNS record (SRV, CNAME, NS, A or SOA) with Resolve-DnsName, falling back to
         nslookup where the DnsClient module is absent. -Server queries a specific DNS
         server, so AD-integrated zone content can be compared PER SERVER - in a forest
         with broken replication the _msdcs content genuinely differs between DCs, and
         one resolver's view is not forest truth. Fail-closed: "no tool", "no record"
         and "no answer" are reported as distinct outcomes, never conflated.
+
+        What Targets holds per type, because it is not uniform and a caller that assumed
+        otherwise would draw a confident wrong conclusion:
+          SRV   -> NameTarget, the host each SRV record points at.
+          CNAME -> NameHost, the alias target.
+          NS    -> NameHost, each name server named for the zone.
+          A     -> IPAddress, used here as the GLUE record behind an NS target.
+          SOA   -> the zone APEX that answered, i.e. the record's own Name, NOT the primary
+                   server. That is deliberate: the only question this tool asks of an SOA
+                   query is "which zone is authoritative for this name", which is how a
+                   delegated child zone is told apart from a plain subdomain of its parent.
+        nslookup cannot be parsed for SOA reliably - its output does not label the answering
+        zone in a documented way - so an SOA query with no DnsClient module returns NoTool
+        rather than a guess.
     .OUTPUTS
         [pscustomobject] Available (bool), Targets (string[]), Error (string),
         Outcome (NoTool|Resolved|NoRecord|NoAnswer)
@@ -3047,7 +3098,7 @@ function Resolve-AdfaDnsRecord {
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][ValidateSet('SRV', 'CNAME')][string]$Type,
+        [Parameter(Mandatory)][ValidateSet('SRV', 'CNAME', 'NS', 'A', 'SOA')][string]$Type,
         [string]$Server
     )
     $targets = @()
@@ -3058,8 +3109,17 @@ function Resolve-AdfaDnsRecord {
             if ($Server) { $rp.Server = $Server }
             $ans = @(Resolve-DnsName @rp)
             foreach ($a in $ans) {
+                # Every record type carries a Name, so an SOA answer MUST be filtered by record
+                # type or an unrelated additional-section record would be read as the zone apex.
+                if ($Type -eq 'SOA') {
+                    $tProp = $a.PSObject.Properties['Type']   # $null when absent - StrictMode-safe
+                    if ($null -eq $tProp -or "$($tProp.Value)" -ne 'SOA') { continue }
+                }
                 if ($Type -eq 'SRV' -and $a.PSObject.Properties['NameTarget'] -and $a.NameTarget) { $targets += [string]$a.NameTarget }
                 elseif ($Type -eq 'CNAME' -and $a.PSObject.Properties['NameHost'] -and $a.NameHost) { $targets += [string]$a.NameHost }
+                elseif ($Type -eq 'NS' -and $a.PSObject.Properties['NameHost'] -and $a.NameHost) { $targets += [string]$a.NameHost }
+                elseif ($Type -eq 'A' -and $a.PSObject.Properties['IPAddress'] -and $a.IPAddress) { $targets += [string]$a.IPAddress }
+                elseif ($Type -eq 'SOA' -and $a.PSObject.Properties['Name'] -and $a.Name) { $targets += [string]$a.Name }
             }
         }
         catch { $err = $_.Exception.Message }
@@ -3069,14 +3129,32 @@ function Resolve-AdfaDnsRecord {
             Outcome   = Get-AdfaDnsQueryOutcome -Available $true -TargetCount @($targets).Count -ErrorText $err
         }
     }
+    # SOA is deliberately NOT attempted through nslookup: the answering zone is not labelled in
+    # its output in any documented way, and a wrong apex here would turn a healthy delegation
+    # into a confident Fail. No tool is an honest answer; a guessed one is not.
+    if ($Type -eq 'SOA') {
+        return [pscustomobject]@{
+            Available = $false; Targets = @()
+            Error     = 'Resolve-DnsName is not available on this host, and an SOA query cannot be read reliably from nslookup output, so the authoritative zone for this name was not determined.'
+            Outcome   = 'NoTool'
+        }
+    }
     if (Test-CommandAvailable -Name 'nslookup.exe') {
         $lookupArgs = "-type={0} {1}" -f $Type, $Name
         if ($Server) { $lookupArgs = "{0} {1}" -f $lookupArgs, $Server }
         $r = Invoke-ExternalCommand -FilePath 'nslookup.exe' -Arguments $lookupArgs -TimeoutSeconds 20 -Retries 1
         if ($r.StdOut) {
+            # nslookup prints its OWN server's address in the header, before the answer:
+            #   Server:  ns.example  / Address:  <server ip>  / (blank) / Name: <query> / Address: <answer>
+            # so an Address line is only an answer once a Name line has been seen. Reading the
+            # header would report the DNS server's own address as the record's glue.
+            $inAnswer = $false
             foreach ($line in ($r.StdOut -split "`r?`n")) {
+                if ($line -match '^\s*Name:') { $inAnswer = $true }
                 if ($Type -eq 'SRV' -and $line -match 'svr hostname\s*=\s*(\S+)') { $targets += $Matches[1].TrimEnd('.') }
                 elseif ($Type -eq 'CNAME' -and $line -match 'canonical name\s*=\s*(\S+)') { $targets += $Matches[1].TrimEnd('.') }
+                elseif ($Type -eq 'NS' -and $line -match 'nameserver\s*=\s*(\S+)') { $targets += $Matches[1].TrimEnd('.') }
+                elseif ($Type -eq 'A' -and $inAnswer -and $line -match '^\s*Address(?:es)?:\s*(\S+)') { $targets += $Matches[1].TrimEnd('.') }
             }
         }
         $err = ''
@@ -3202,7 +3280,7 @@ function Get-AdfaDnsRecordView {
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][ValidateSet('SRV', 'CNAME')][string]$Type,
+        [Parameter(Mandatory)][ValidateSet('SRV', 'CNAME', 'NS', 'A', 'SOA')][string]$Type,
         [AllowEmptyCollection()][string[]]$DnsServers = @()
     )
     $views = @{}
@@ -3490,6 +3568,677 @@ function Get-AdfaGcConsistency {
     }
     else {
         $rows += New-Finding -Area 'GcConsistency' -Item ("SRV {0} - divergence summary" -f $rec) -Status $script:Status.Fail -Detail ("{0} of {1} answering DNS server(s) diverge from AD: {2}. Forest-wide logons and Exchange address-book lookups behave differently per DNS server.{3}" -f @($sum.DivergentServers).Count, $sum.ServersQueried, ($sum.DivergentServers -join ', '), $unansweredNote)
+    }
+    return @($rows)
+}
+
+# ===========================================================================
+# region _msdcs delegation, time hierarchy, per-site GC coverage
+# ===========================================================================
+
+function Get-AdfaDnsNameNormalised {
+    <#
+    .SYNOPSIS
+        Lower-cases a DNS name and strips the root dot, so two spellings of the same name
+        compare equal. Separate and tested because every comparison below depends on it and
+        a mismatch here reads as a missing record.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][string]$Name)
+    if ($null -eq $Name) { return '' }
+    return ([string]$Name).Trim().TrimEnd('.').ToLowerInvariant()
+}
+
+function Get-AdfaMsdcsZoneVerdict {
+    <#
+    .SYNOPSIS
+        Pure classification of whether _msdcs.<forest> is a delegated zone of its own.
+    .DESCRIPTION
+        The forest-wide locator records live in a zone of their own, replicated to every DNS
+        server in the forest through the forest-wide DNS application directory partition:
+        "Configure the zone containing the Active Directory forest-wide locator records (that
+        is, the _msdcs.forestname zone) to replicate to every DNS server in the forest by using
+        the forest-wide DNS application directory partition."
+        https://learn.microsoft.com/windows-server/identity/ad-ds/plan/integrating-ad-ds-into-an-existing-dns-infrastructure
+
+        The discriminator is which zone answers an SOA query for the name. If _msdcs.<forest> is
+        its own zone, that zone's apex answers. If it is only a subdomain of the parent zone -
+        the pre-delegation arrangement, and a state a hand-rebuilt DNS server after a recovery
+        can easily be left in - the PARENT apex answers instead. Both spellings are compared
+        normalised, so a trailing dot or capitalisation never decides the verdict.
+    .OUTPUTS
+        [string] DelegatedZone | NotDelegated | OtherApex | NoAnswer
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$ZoneName,
+        [Parameter(Mandatory)][string]$ParentZone,
+        [AllowEmptyCollection()][string[]]$SoaApex = @()
+    )
+    $apex = @(@($SoaApex) | ForEach-Object { Get-AdfaDnsNameNormalised -Name $_ } | Where-Object { $_ })
+    if ($apex.Count -eq 0) { return 'NoAnswer' }
+    $want = Get-AdfaDnsNameNormalised -Name $ZoneName
+    $parent = Get-AdfaDnsNameNormalised -Name $ParentZone
+    if ($apex -contains $want) { return 'DelegatedZone' }
+    if ($apex -contains $parent) { return 'NotDelegated' }
+    return 'OtherApex'
+}
+
+function Get-AdfaMsdcsDelegationVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict on the _msdcs.<forest> delegation, from one observation per DNS server.
+    .DESCRIPTION
+        Three separable failures, each its own row, because they have different fixes:
+
+        1. _msdcs.<forest> is not a zone in its own right (see Get-AdfaMsdcsZoneVerdict).
+        2. The parent zone carries no delegation records for it. The forest recovery guide's
+           DNS step is explicit: "Ensure that the parent DNS zone contains delegation resource
+           records (name server (NS) and glue host (A) resource records) for the child zone that
+           is hosted on this DNS server."
+           https://learn.microsoft.com/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-configure-dns
+        3. An NS record has no glue A record, so the name in it cannot be resolved to an address
+           and the referral is a dead end. The vendor names both halves as one requirement: the
+           NS record "to effect the delegation", and "a host (A or AAAA) resource record, which
+           is also known as a glue record. This record must be present to resolve the name of
+           the server that's specified in the NS resource record to its IP address."
+           https://learn.microsoft.com/windows-server/identity/ad-ds/deploy/ad-ds-installation-and-removal-wizard-page-descriptions
+
+        Plus a fourth row that is a recovery artefact rather than a delegation fault: NS records
+        naming hosts that are not domain controllers Active Directory knows about. The recovery
+        guide instructs "In the _msdcs and domain DNS zones, delete NS records of DCs that no
+        longer exist after metadata cleanup" - stale NS records after a rebuild send resolvers to
+        servers that are gone.
+        https://learn.microsoft.com/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-perform-initial-recovery
+        Read: 2026-09-22.
+
+        Every row is per DNS server rather than merged, for the same reason the rest of this
+        report queries each server separately: the zone is AD-integrated, so with replication
+        broken the answer genuinely differs between servers and one answer is not forest truth.
+        A host that is not a DC is a Warning, not a Fail, because a non-DC DNS server can
+        legitimately be authoritative - the finding says what to confirm, it does not assert a
+        fault.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$ForestRoot,
+        # One object per answering DNS server: Server, SoaApex, NsTargets, GlueMissing,
+        # GlueUnknown. Supplied by the collector so this verdict needs no directory or resolver.
+        [AllowNull()][AllowEmptyCollection()]$Observations = @(),
+        [AllowEmptyCollection()][string[]]$AdDcHosts = @(),
+        [AllowEmptyCollection()][string[]]$Unanswered = @()
+    )
+    $zone = "{0}.{1}" -f $script:Config.MsdcsZoneLabel, $ForestRoot
+    $rows = @()
+    $obs = @(@($Observations) | Where-Object { $null -ne $_ })
+    $unansweredNote = ''
+    if (@($Unanswered).Count -gt 0) {
+        $unansweredNote = (' {0} DNS server(s) did not answer and are unverified, not clean: {1}.' -f @($Unanswered).Count, (@($Unanswered) -join ', '))
+    }
+    if ($obs.Count -eq 0) {
+        return @(New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation" -f $zone) -Status $script:Status.NotAssessed `
+                -Detail ("No DNS server answered for {0}, so nothing can be concluded about the forest-wide locator zone or its delegation.{1}" -f $zone, $unansweredNote))
+    }
+
+    $knownDcs = @(@($AdDcHosts) | ForEach-Object { Get-AdfaDnsNameNormalised -Name $_ } | Where-Object { $_ })
+
+    $apexOk = @(); $apexNotDelegated = @(); $apexOther = @(); $apexNoAnswer = @()
+    $noNs = @(); $glueBad = @(); $glueUnknown = @(); $notDcs = @()
+    foreach ($o in $obs) {
+        $server = '(unnamed)'
+        $sProp = $o.PSObject.Properties['Server']          # $null when absent - StrictMode-safe
+        if ($null -ne $sProp -and $null -ne $sProp.Value) { $server = [string]$sProp.Value }
+
+        $apexVals = @()
+        $aProp = $o.PSObject.Properties['SoaApex']
+        if ($null -ne $aProp -and $null -ne $aProp.Value) { $apexVals = @($aProp.Value) }
+        switch (Get-AdfaMsdcsZoneVerdict -ZoneName $zone -ParentZone $ForestRoot -SoaApex $apexVals) {
+            'DelegatedZone' { $apexOk += $server }
+            'NotDelegated' { $apexNotDelegated += $server }
+            'OtherApex' { $apexOther += ("{0} (apex: {1})" -f $server, ((@($apexVals) | Select-Object -First 2) -join ', ')) }
+            default { $apexNoAnswer += $server }
+        }
+
+        $ns = @()
+        $nProp = $o.PSObject.Properties['NsTargets']
+        if ($null -ne $nProp -and $null -ne $nProp.Value) { $ns = @(@($nProp.Value) | Where-Object { $_ }) }
+        if ($ns.Count -eq 0) { $noNs += $server }
+
+        $gm = @()
+        $gProp = $o.PSObject.Properties['GlueMissing']
+        if ($null -ne $gProp -and $null -ne $gProp.Value) { $gm = @(@($gProp.Value) | Where-Object { $_ }) }
+        if ($gm.Count -gt 0) { $glueBad += ("{0} -> {1}" -f $server, ($gm -join ', ')) }
+
+        $gu = @()
+        $uProp = $o.PSObject.Properties['GlueUnknown']
+        if ($null -ne $uProp -and $null -ne $uProp.Value) { $gu = @(@($uProp.Value) | Where-Object { $_ }) }
+        if ($gu.Count -gt 0) { $glueUnknown += ("{0} -> {1}" -f $server, ($gu -join ', ')) }
+
+        if ($knownDcs.Count -gt 0) {
+            $strays = @(@($ns) | Where-Object { $knownDcs -notcontains (Get-AdfaDnsNameNormalised -Name $_) })
+            if ($strays.Count -gt 0) { $notDcs += ("{0} -> {1}" -f $server, ($strays -join ', ')) }
+        }
+    }
+
+    # 1. Is it a zone of its own?
+    if (@($apexNotDelegated).Count -gt 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} is not a delegated zone" -f $zone) -Status $script:Status.Fail `
+            -Detail ("On {0} of {1} answering DNS server(s) an SOA query for {2} is answered by the PARENT zone {3}, which means {2} is a plain subdomain there rather than the forest-wide locator zone. Servers: {4}. The forest-wide locator records must live in their own AD-integrated zone replicated to every DNS server in the forest through the forest-wide DNS application directory partition.{5}" -f `
+                @($apexNotDelegated).Count, $obs.Count, $zone, $ForestRoot, (@($apexNotDelegated) -join ', '), $unansweredNote)
+    }
+    if (@($apexOther).Count -gt 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} answered by an unexpected zone" -f $zone) -Status $script:Status.Fail `
+            -Detail ("An SOA query for {0} was answered by neither {0} nor {1} on: {2}. Something other than this forest's DNS is authoritative for the forest-wide locator name on those servers." -f `
+                $zone, $ForestRoot, (@($apexOther) -join '; '))
+    }
+    if (@($apexNoAnswer).Count -gt 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} zone - SOA not readable" -f $zone) -Status $script:Status.NotAssessed `
+            -Detail ("No SOA answer for {0} from: {1}. Whether the locator zone is delegated is UNKNOWN on those servers, not clean." -f $zone, (@($apexNoAnswer) -join ', '))
+    }
+    if (@($apexOk).Count -gt 0 -and @($apexNotDelegated).Count -eq 0 -and @($apexOther).Count -eq 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} is a delegated zone" -f $zone) -Status $script:Status.Pass `
+            -Detail ("{0} of {1} answering DNS server(s) report {2} as its own authoritative zone.{3}" -f @($apexOk).Count, $obs.Count, $zone, $unansweredNote)
+    }
+
+    # 2. Delegation NS records in the parent.
+    if (@($noNs).Count -gt 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation - no NS records" -f $zone) -Status $script:Status.Fail `
+            -Detail ("No NS record for {0} on {1} of {2} answering DNS server(s): {3}. Without a delegation NS record a resolver cannot be referred to the forest-wide locator zone, which is how replication partners and clients find global catalog servers." -f `
+                $zone, @($noNs).Count, $obs.Count, (@($noNs) -join ', '))
+    }
+    else {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation - NS records present" -f $zone) -Status $script:Status.Pass `
+            -Detail ("Every one of the {0} answering DNS server(s) returned at least one NS record for {1}.{2}" -f $obs.Count, $zone, $unansweredNote)
+    }
+
+    # 3. Glue behind each NS record.
+    if (@($glueBad).Count -gt 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation - missing glue records" -f $zone) -Status $script:Status.Fail `
+            -Detail ("NS records for {0} name hosts with no resolvable glue (A) record: {1}. A delegation needs both the NS record and the glue host record; without the glue the referral cannot be followed to an address." -f `
+                $zone, (@($glueBad) -join '; '))
+    }
+    elseif (@($glueUnknown).Count -eq 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation - glue records resolvable" -f $zone) -Status $script:Status.Pass `
+            -Detail ("Every NS target returned for {0} resolved to an address on the server that named it." -f $zone)
+    }
+    if (@($glueUnknown).Count -gt 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation - glue not readable" -f $zone) -Status $script:Status.NotAssessed `
+            -Detail ("The glue record behind these NS targets could not be queried (the server did not answer, so absence cannot be distinguished from silence): {0}. Unverified, not clean." -f (@($glueUnknown) -join '; '))
+    }
+
+    # 4. NS records naming hosts AD does not know as DCs.
+    if (@($notDcs).Count -gt 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation - NS host not a known DC" -f $zone) -Status $script:Status.Warning `
+            -Detail ("NS records for {0} name hosts that are not domain controllers in this forest's inventory: {1}. After a recovery with metadata cleanup, NS records of DCs that no longer exist must be deleted, or resolvers keep being referred to servers that are gone. Confirm each host above is a DNS server you intend to be authoritative for this zone; if it is a decommissioned DC, remove the record." -f `
+                $zone, (@($notDcs) -join '; '))
+    }
+    elseif ($knownDcs.Count -eq 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation - NS hosts not cross-checked" -f $zone) -Status $script:Status.NotAssessed `
+            -Detail ("No domain controller inventory was available, so the NS records for {0} were not compared against the DCs Active Directory knows about. Stale NS records left by a metadata cleanup would not have been detected." -f $zone)
+    }
+    else {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation - NS hosts are known DCs" -f $zone) -Status $script:Status.Pass `
+            -Detail ("Every NS host returned for {0} matches one of the {1} domain controller(s) in this forest's inventory." -f $zone, $knownDcs.Count)
+    }
+    return @($rows)
+}
+
+function Get-AdfaMsdcsDelegation {
+    <#
+    .SYNOPSIS
+        Collects the _msdcs.<forest> delegation as each DNS server sees it, then classifies.
+    .DESCRIPTION
+        Thin collector over Get-AdfaMsdcsDelegationVerdict. Three query types per DNS server:
+        SOA for the zone name (which zone is authoritative), NS for the zone name (the
+        delegation records), and one A query per NS target ON THE SAME SERVER (the glue). Glue
+        is queried from the server that named the target, because that is the referral a
+        resolver using that server would actually have to follow.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$ForestRoot,
+        [AllowEmptyCollection()][string[]]$DnsServers = @(),
+        [AllowEmptyCollection()][string[]]$AdDcHosts = @()
+    )
+    $zone = "{0}.{1}" -f $script:Config.MsdcsZoneLabel, $ForestRoot
+    $soaView = Get-AdfaDnsRecordView -Name $zone -Type SOA -DnsServers $DnsServers
+    if (-not $soaView.ToolAvailable) {
+        return @(New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation" -f $zone) -Status $script:Status.NotAssessed -Detail $soaView.Error)
+    }
+    $nsView = Get-AdfaDnsRecordView -Name $zone -Type NS -DnsServers $DnsServers
+
+    # Every server that answered either query is worth an observation: a server that answers NS
+    # but not SOA still tells us about the delegation records, and vice versa.
+    $servers = @(@(@($soaView.Views.Keys) + @($nsView.Views.Keys)) | Where-Object { $_ } | Sort-Object -Unique)
+    $unanswered = @(@($soaView.Unanswered) | Where-Object { $servers -notcontains $_ } | Sort-Object -Unique)
+
+    $observations = @()
+    foreach ($srv in $servers) {
+        $apex = @()
+        if ($soaView.Views.ContainsKey($srv)) { $apex = @($soaView.Views[$srv]) }
+        $ns = @()
+        if ($nsView.Views.ContainsKey($srv)) { $ns = @(@($nsView.Views[$srv]) | Where-Object { $_ }) }
+
+        $missing = @()
+        $unknown = @()
+        foreach ($target in $ns) {
+            # '(local resolver)' is this collector's own label for a query with no -Server, so it
+            # must not be passed back as a server name.
+            $glue = $null
+            if ($srv -eq '(local resolver)') { $glue = Resolve-AdfaDnsRecord -Name $target -Type A }
+            else { $glue = Resolve-AdfaDnsRecord -Name $target -Type A -Server $srv }
+            if ($glue.Outcome -eq 'Resolved') { continue }
+            if ($glue.Outcome -eq 'NoRecord') { $missing += $target }
+            else { $unknown += $target }
+        }
+        $observations += [pscustomobject]@{
+            Server      = $srv
+            SoaApex     = @($apex)
+            NsTargets   = @($ns)
+            GlueMissing = @($missing)
+            GlueUnknown = @($unknown)
+        }
+    }
+    return @(Get-AdfaMsdcsDelegationVerdict -ForestRoot $ForestRoot -Observations $observations `
+            -AdDcHosts $AdDcHosts -Unanswered $unanswered)
+}
+
+function ConvertFrom-AdfaW32tmConfiguration {
+    <#
+    .SYNOPSIS
+        Pure, tolerant parse of "w32tm /query /configuration" for the NTP client Type and
+        NtpServer values.
+    .DESCRIPTION
+        The KEY NAMES are published - Type takes NoSync, NTP, NT5DS or AllSync, and NtpServer
+        holds the peer list - but the LINE FORMAT of this command's output is not published on
+        Microsoft Learn. So the parser is deliberately tolerant of leading whitespace and of a
+        trailing "(Local)" / "(Policy)" source annotation, and an unmatched key is returned as
+        '' rather than assumed. A caller must treat '' as "not read", never as a value.
+        https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings
+        Read: 2026-09-22.
+    .OUTPUTS
+        [pscustomobject] Type (string), NtpServer (string)
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][string]$Text)
+    $type = ''
+    $peers = ''
+    foreach ($line in (("$Text") -split "`r?`n")) {
+        if ($type -eq '' -and $line -match '^\s*Type:\s*(\S+)') { $type = $Matches[1] }
+        elseif ($peers -eq '' -and $line -match '^\s*NtpServer:\s*(.+?)\s*$') { $peers = $Matches[1] }
+    }
+    # Strip the source annotation the command appends to each value, when present.
+    $type = ($type -replace '\((?i:local|policy)\)\s*$', '').Trim()
+    $peers = ($peers -replace '\s*\((?i:local|policy)\)\s*$', '').Trim()
+    return [pscustomobject]@{ Type = $type; NtpServer = $peers }
+}
+
+function Get-AdfaTimeSourceVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict on one domain controller's time source.
+    .DESCRIPTION
+        Two documented rules, and nothing invented beyond them.
+
+        (1) The forest root PDC emulator sits at the TOP of the domain time hierarchy, so
+        synchronising it from that hierarchy is not valid - W32Time logs event ID 12 for exactly
+        this condition - and it should take time from an external authoritative source.
+        https://learn.microsoft.com/services-hub/microsoft-engage-center/health/remediation-steps-ad/configure-the-root-pdc-with-an-authoritative-time-source-and-avoid-widespread-time-skew
+        Which is why a root PDC whose reported source is one of this forest's own DCs is a
+        finding, while any other host is taken as an external source.
+
+        (2) A domain controller that takes time from its virtualisation host has TWO time
+        sources, and the vendor is explicit about the consequence: "If domain controllers
+        synchronize time from their own source and synchronize time from the host, the domain
+        controller time can change frequently. Because many domain controller tasks are tied to
+        the system time, a jump in the system time can cause lingering objects to be left in
+        caches, and may cause replication to stop." The published fix is to clear Time
+        Synchronization in the VM's Integration Services.
+        https://learn.microsoft.com/troubleshoot/windows-server/active-directory/windows-time-service-event-ids-24-29-38
+
+        Microsoft's guidance diverges for the PDC specifically - the Windows Server 2016 timekeeping
+        guidance says "For the PDC, you don't want to disable the entry because the Hyper-V host
+        delivers the most stable time source" - so on the root PDC this is reported as a decision
+        to confirm with both positions named, not as a defect.
+        https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-server-2016-improvements#best-practices-for-accurate-timekeeping
+        Read: 2026-09-22.
+
+        Grading note: a host-supplied or free-running clock is a Warning rather than a Fail
+        because the clock may still be correct - what is wrong is where it comes from. Kerberos
+        breaks on the resulting skew, not on the configuration, and this function measures the
+        configuration. It never returns Pass for a source it could not read.
+    .OUTPUTS
+        [pscustomobject] A single finding row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainController,
+        [string]$Scope = '',
+        [bool]$IsPdcEmulator = $false,
+        [bool]$IsForestRootPdc = $false,
+        [bool]$Queried = $true,
+        [string]$Source = '',
+        [string]$ErrorText = '',
+        [AllowEmptyCollection()][string[]]$DomainControllerHosts = @()
+    )
+    $role = 'domain controller'
+    if ($IsForestRootPdc) { $role = 'FOREST ROOT PDC emulator' }
+    elseif ($IsPdcEmulator) { $role = 'domain PDC emulator' }
+    $item = ("Time source on {0} ({1})" -f $DomainController, $role)
+
+    if (-not $Queried) {
+        $why = 'the host was not reachable for a w32tm query'
+        if ($ErrorText) { $why = $ErrorText }
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.NotAssessed `
+            -Detail ("The time source could not be read: {0}. Note that w32tm requires Domain Admins membership to query a remote computer, so an access failure here is about rights or reachability, not about the DC's clock - nothing can be concluded either way." -f $why)
+    }
+    $src = ("$Source").Trim()
+    if ([string]::IsNullOrWhiteSpace($src)) {
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.NotAssessed `
+            -Detail 'w32tm returned no time source line, so the source is unknown. This is not a clean result.'
+    }
+
+    if ($src -match $script:Config.Time.HypervisorPattern) {
+        if ($IsForestRootPdc) {
+            return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Warning `
+                -Detail ("Source is the virtualisation host's time provider ('{0}'). Microsoft's guidance is split for this role specifically: KB 976924 says to clear Time Synchronization in Integration Services on a virtualised DC because a DC with two time sources can jump, leave lingering objects in caches and stop replicating, while the Windows Server 2016 timekeeping guidance says not to disable it on the PDC because the host is the most stable source. Decide deliberately and record the decision - and note that on a DC restored from backup or a snapshot, the host clock is exactly how a wrong forest-wide time arrives. If the host is kept as the source, the host itself must be synchronised to the same authoritative source." -f $src)
+        }
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Warning `
+            -Detail ("Source is the virtualisation host's time provider ('{0}') rather than the domain hierarchy. Per KB 976924 a DC that synchronises from both its own source and its host can have its time change frequently, which 'can cause lingering objects to be left in caches, and may cause replication to stop' - both of which this report checks for elsewhere. Clear Time Synchronization in the VM's Integration Services and let W32Time use the domain hierarchy." -f $src)
+    }
+
+    if ($src -match $script:Config.Time.LocalClockPattern) {
+        if ($IsForestRootPdc) {
+            return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Warning `
+                -Detail ("Source is this machine's own clock ('{0}'), so the forest has NO authoritative upstream time: every domain member ultimately derives its time from this BIOS clock, and if this DC goes offline members cannot synchronise at all. Point the forest root PDC emulator at an external authoritative NTP source." -f $src)
+        }
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Warning `
+            -Detail ("Source is this machine's own clock ('{0}'), which means it is not synchronising from the domain hierarchy at all. This can also be reported transiently just after the W32Time service starts, so confirm it persists - then fix it, because Kerberos rejects a ticket whose timestamp is outside the permitted skew." -f $src)
+    }
+
+    $srcHost = Get-AdfaDnsNameNormalised -Name ($src -replace ',.*$', '')
+    $known = @(@($DomainControllerHosts) | ForEach-Object { Get-AdfaDnsNameNormalised -Name $_ } | Where-Object { $_ })
+    $sourceIsDc = ($known -contains $srcHost)
+
+    if ($IsForestRootPdc) {
+        if ($sourceIsDc) {
+            return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Warning `
+                -Detail ("Source is '{0}', which is a domain controller in this forest - so the forest root PDC emulator is taking time from the domain hierarchy it is itself the top of. Microsoft states this is not a valid configuration and W32Time logs event ID 12 for it. Configure an external authoritative source: 'w32tm /config /syncfromflags:manual /manualpeerlist:<ntp host>,0x8 /reliable:yes /update'." -f $src)
+        }
+        if ($known.Count -eq 0) {
+            return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("Source is '{0}', but with no domain controller inventory available it could not be established whether that is an external source or one of this forest's own DCs - and only the latter is a fault for this role. Unverified, not clean." -f $src)
+        }
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Pass `
+            -Detail ("Source is '{0}', which is not a domain controller in this forest, so the forest root PDC emulator is taking time from outside the domain hierarchy as it should. This check does not verify that the source is accurate or that the last synchronisation succeeded." -f $src)
+    }
+    if ($sourceIsDc) {
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Pass `
+            -Detail ("Source is '{0}', a domain controller in this forest, which is the expected NT5DS domain-hierarchy behaviour for this role." -f $src)
+    }
+    return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Info `
+        -Detail ("Source is '{0}', which is not a domain controller in this forest. Microsoft's documented norm is that every DC except the forest root PDC emulator synchronises from the domain hierarchy, so this is a deliberate deviation rather than a fault - common where all DCs are pointed at a network time appliance. Confirm it was intended, and that the appliance and the root PDC agree." -f $src)
+}
+
+function Get-AdfaRootPdcClientTypeVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict on the forest root PDC emulator's W32Time client type.
+    .DESCRIPTION
+        Complements Get-AdfaTimeSourceVerdict, which reads the source in effect; this reads the
+        configured intent. NT5DS means "the time service synchronizes with the domain hierarchy",
+        which is the configuration Microsoft calls invalid for this role. NoSync means the service
+        does not synchronise at all. NTP and AllSync name an explicit peer list.
+        https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings
+        Read: 2026-09-22.
+
+        An unparsed value is Not Assessed, never a pass: the key names are published but this
+        command's line format is not, so a non-match means the parser did not recognise the
+        output, which says nothing about the configuration.
+    .OUTPUTS
+        [pscustomobject] A single finding row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainController,
+        [string]$Scope = '',
+        [string]$ClientType = '',
+        [string]$NtpServer = ''
+    )
+    $item = ("Forest root PDC time client type on {0}" -f $DomainController)
+    $t = ("$ClientType").Trim()
+    if ([string]::IsNullOrWhiteSpace($t)) {
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.NotAssessed `
+            -Detail "The W32Time client Type could not be read from 'w32tm /query /configuration'. The key name is documented but the output line format is not published, so this means the value was not recognised - not that it is wrong. Read it on the DC itself, or from HKLM\SYSTEM\CurrentControlSet\Services\W32Time\Parameters."
+    }
+    $peerNote = ' No NtpServer peer list was read.'
+    if (-not [string]::IsNullOrWhiteSpace($NtpServer)) { $peerNote = (" Peer list: {0}." -f ("$NtpServer").Trim()) }
+
+    if ($t -eq $script:Config.Time.DomainHierarchyType) {
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Warning `
+            -Detail ("Type is {0}, which means this DC synchronises with the domain hierarchy - and it is the top of that hierarchy. Microsoft states this is not a valid configuration for the forest root PDC emulator and that W32Time logs event ID 12 for it. Configure an external source with 'w32tm /config /syncfromflags:manual /manualpeerlist:<ntp host>,0x8 /reliable:yes /update', then restart W32Time.{1}" -f $t, $peerNote)
+    }
+    if ($t -match '(?i)^NoSync$') {
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Warning `
+            -Detail ("Type is NoSync, so the time service does not synchronise with any source on the DC that the whole forest's time derives from. Its clock will drift freely.{0}" -f $peerNote)
+    }
+    if (@($script:Config.Time.ExternalTypes) -contains $t) {
+        if ([string]::IsNullOrWhiteSpace($NtpServer)) {
+            return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("Type is {0}, which names an explicit peer list - but no NtpServer value was read, so it is unknown whether a peer is actually configured. Unverified, not clean." -f $t)
+        }
+        return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.Pass `
+            -Detail ("Type is {0} with an explicit peer list, which is the documented configuration for the forest root PDC emulator.{1} This check does not verify the peer is reachable or accurate." -f $t, $peerNote)
+    }
+    return New-Finding -Scope $Scope -Area 'TimeHierarchy' -Item $item -Status $script:Status.NotAssessed `
+        -Detail ("Type read as '{0}', which is not one of the documented values (NoSync, NTP, NT5DS, AllSync), so it was not interpreted.{1}" -f $t, $peerNote)
+}
+
+function Get-AdfaTimeHierarchyHealth {
+    <#
+    .SYNOPSIS
+        Per-DC time source, with the PDC emulator roles resolved so the role-specific rules apply.
+    .DESCRIPTION
+        Thin collector over Get-AdfaTimeSourceVerdict and Get-AdfaRootPdcClientTypeVerdict.
+        Uses the documented remote form 'w32tm /query /computer:<target> /source'; RPC (135) is
+        probed first so an unreachable DC reports Not Assessed rather than a missing source.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        # Hashtable of DC host name -> domain DNS name, for the PDC emulator of each domain.
+        [hashtable]$PdcEmulators = @{},
+        [string]$ForestRootPdc = '',
+        [int]$RpcPortTimeoutMs = 1200,
+        [int]$TimeoutSeconds = 60
+    )
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'TimeHierarchy' -Item 'Time hierarchy' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so no time source could be read. This is not a clean result.')
+    }
+    if (-not (Test-CommandAvailable -Name 'w32tm.exe')) {
+        return @(New-Finding -Area 'TimeHierarchy' -Item 'Time hierarchy' -Status $script:Status.NotAssessed `
+                -Detail 'w32tm.exe is not available on this host, so no domain controller time source could be queried. Run this assessment from a domain-joined Windows host with the Windows Time tools present.')
+    }
+    $rootPdc = Get-AdfaDnsNameNormalised -Name $ForestRootPdc
+    $pdcMap = @{}
+    foreach ($k in @($PdcEmulators.Keys)) {
+        $nk = Get-AdfaDnsNameNormalised -Name $k
+        if ($nk) { $pdcMap[$nk] = [string]$PdcEmulators[$k] }
+    }
+    $rows = @()
+    foreach ($dc in @($DomainControllers)) {
+        $norm = Get-AdfaDnsNameNormalised -Name $dc
+        $isPdc = $pdcMap.ContainsKey($norm)
+        $isRootPdc = ($rootPdc -ne '' -and $norm -eq $rootPdc)
+        $scope = ''
+        if ($isPdc) { $scope = [string]$pdcMap[$norm] }
+
+        $reachable = Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
+        if (-not $reachable) {
+            $rows += Get-AdfaTimeSourceVerdict -DomainController $dc -Scope $scope -IsPdcEmulator $isPdc `
+                -IsForestRootPdc $isRootPdc -Queried $false -DomainControllerHosts $DomainControllers `
+                -ErrorText 'RPC (135) was not reachable, so w32tm could not be queried remotely'
+            continue
+        }
+        $r = Invoke-ExternalCommand -FilePath 'w32tm.exe' -Arguments ("/query /computer:{0} /source" -f $dc) `
+            -TimeoutSeconds $TimeoutSeconds -Retries 1 -RetryDelaySeconds 1
+        $source = ''
+        if ($r.StdOut) {
+            $source = [string](@(("$($r.StdOut)") -split "`r?`n" | Where-Object { $_.Trim() }) | Select-Object -First 1)
+        }
+        # w32tm prints its errors on stdout too, so a line that is an error message must not be
+        # taken for a source name. Absence of output and an error are both "not read".
+        $queried = $true
+        $errText = ''
+        if (-not $r.Success -or $source -match '(?i)^the following error|error:|access is denied|0x[0-9a-f]{8}') {
+            $queried = $false
+            $errText = ("w32tm reported: {0}" -f ("$source").Trim())
+            if ([string]::IsNullOrWhiteSpace($source)) {
+                $errText = ("w32tm exited with code {0} and no output" -f $r.ExitCode)
+            }
+        }
+        $rows += Get-AdfaTimeSourceVerdict -DomainController $dc -Scope $scope -IsPdcEmulator $isPdc `
+            -IsForestRootPdc $isRootPdc -Queried $queried -Source $source -ErrorText $errText `
+            -DomainControllerHosts $DomainControllers
+
+        # The configured intent, for the root PDC only - it is the only role with a documented
+        # required client type.
+        if ($isRootPdc) {
+            $cfgText = ''
+            $c = Invoke-ExternalCommand -FilePath 'w32tm.exe' -Arguments ("/query /computer:{0} /configuration" -f $dc) `
+                -TimeoutSeconds $TimeoutSeconds -Retries 1 -RetryDelaySeconds 1
+            if ($c.Success -and $c.StdOut) { $cfgText = [string]$c.StdOut }
+            $cfg = ConvertFrom-AdfaW32tmConfiguration -Text $cfgText
+            $rows += Get-AdfaRootPdcClientTypeVerdict -DomainController $dc -Scope $scope `
+                -ClientType $cfg.Type -NtpServer $cfg.NtpServer
+        }
+    }
+    if ($rootPdc -eq '') {
+        $rows += New-Finding -Area 'TimeHierarchy' -Item 'Forest root PDC emulator' -Status $script:Status.NotAssessed `
+            -Detail 'The forest root domain''s PDC emulator could not be identified, so the role-specific rule (it must not take time from the domain hierarchy) was not applied to any DC. The per-DC rows above are therefore graded as ordinary DCs.'
+    }
+    elseif (-not (@($DomainControllers | ForEach-Object { Get-AdfaDnsNameNormalised -Name $_ }) -contains $rootPdc)) {
+        $rows += New-Finding -Area 'TimeHierarchy' -Item 'Forest root PDC emulator' -Status $script:Status.NotAssessed `
+            -Detail ("The forest root PDC emulator ({0}) is not in the list of domain controllers queried, so the one DC with a role-specific time requirement was not assessed. Re-run with -AllDomains, or with -Server pointed into the forest root domain." -f $ForestRootPdc)
+    }
+    return @($rows)
+}
+
+function Get-AdfaSiteGcCoverage {
+    <#
+    .SYNOPSIS
+        Pure per-site verdict on writeable global catalog coverage, from the DC inventory.
+    .DESCRIPTION
+        Joins three attributes the inventory already collects and never correlates: Site,
+        IsGlobalCatalog and IsReadOnly. The rule is the vendor's, stated for the site where an
+        Exchange server is installed: "The Active Directory site where you install the Exchange
+        Server must contain at least one writeable domain controller that's also a global catalog
+        server; or else, the installation will fail. Furthermore, you can't install the Exchange
+        server and then remove the domain controller from the Active Directory site."
+        https://learn.microsoft.com/exchange/plan-and-deploy/system-requirements#network-and-directory-server-requirements-for-exchange-server
+        And: "You can't deploy an Exchange server in any site that contains only read-only
+        directory servers."
+        https://learn.microsoft.com/exchange/plan-and-deploy/active-directory/ad-access
+        Read: 2026-09-22.
+
+        A site with no writeable GC is a Warning, not a Fail: it is a legitimate design for a
+        site that hosts no GC-dependent application, and whether it is a defect depends on what
+        is deployed there - which this tool does not know. The finding names the consequence and
+        what to confirm. Read-only is judged from IsReadOnly rather than inferred from anything
+        else, and a DC whose site or flags could not be read makes its site UNKNOWN rather than
+        quietly dropping out of the count.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @()
+    )
+    $dcs = @(@($DomainControllers) | Where-Object { $null -ne $_ })
+    if ($dcs.Count -eq 0) {
+        return @(New-Finding -Area 'SiteGc' -Item 'Writeable global catalog per site' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controller inventory was available, so global catalog coverage per site could not be derived. This is not a clean result.')
+    }
+    $rows = @()
+    $bySite = @{}
+    $noSite = @()
+    foreach ($dc in $dcs) {
+        $name = '(unnamed)'
+        $hProp = $dc.PSObject.Properties['HostName']       # $null when absent - StrictMode-safe
+        if ($null -ne $hProp -and $null -ne $hProp.Value) { $name = [string]$hProp.Value }
+        $site = ''
+        $sProp = $dc.PSObject.Properties['Site']
+        if ($null -ne $sProp -and $null -ne $sProp.Value) { $site = ([string]$sProp.Value).Trim() }
+        if ([string]::IsNullOrWhiteSpace($site)) { $noSite += $name; continue }
+
+        # Tri-state on purpose: $null means "not readable", which must not count as $false.
+        $isGc = $null
+        $gProp = $dc.PSObject.Properties['IsGlobalCatalog']
+        if ($null -ne $gProp -and $gProp.Value -is [bool]) { $isGc = [bool]$gProp.Value }
+        $isRo = $null
+        $rProp = $dc.PSObject.Properties['IsReadOnly']
+        if ($null -ne $rProp -and $rProp.Value -is [bool]) { $isRo = [bool]$rProp.Value }
+
+        if (-not $bySite.ContainsKey($site)) {
+            $bySite[$site] = [pscustomobject]@{
+                WriteableGc = @(); ReadOnlyGc = @(); WriteableNonGc = @(); ReadOnlyNonGc = @(); Unknown = @()
+            }
+        }
+        $b = $bySite[$site]
+        if ($null -eq $isGc -or $null -eq $isRo) { $b.Unknown += $name }
+        elseif ($isGc -and -not $isRo) { $b.WriteableGc += $name }
+        elseif ($isGc -and $isRo) { $b.ReadOnlyGc += $name }
+        elseif (-not $isGc -and -not $isRo) { $b.WriteableNonGc += $name }
+        else { $b.ReadOnlyNonGc += $name }
+    }
+
+    $covered = @()
+    foreach ($site in @($bySite.Keys | Sort-Object)) {
+        $b = $bySite[$site]
+        if (@($b.WriteableGc).Count -gt 0) { $covered += $site; continue }
+        $present = @()
+        if (@($b.ReadOnlyGc).Count -gt 0) { $present += ("read-only GC: {0}" -f (@($b.ReadOnlyGc) -join ', ')) }
+        if (@($b.WriteableNonGc).Count -gt 0) { $present += ("writeable but not a GC: {0}" -f (@($b.WriteableNonGc) -join ', ')) }
+        if (@($b.ReadOnlyNonGc).Count -gt 0) { $present += ("read-only, not a GC: {0}" -f (@($b.ReadOnlyNonGc) -join ', ')) }
+        if (@($b.Unknown).Count -gt 0) { $present += ("flags not readable: {0}" -f (@($b.Unknown) -join ', ')) }
+
+        if (@($b.Unknown).Count -gt 0 -and $present.Count -eq 1) {
+            $rows += New-Finding -Area 'SiteGc' -Item ("Site '{0}' - GC coverage not readable" -f $site) -Status $script:Status.NotAssessed `
+                -Detail ("Every DC in this site had an unreadable global catalog or read-only flag ({0}), so whether the site has a writeable global catalog is UNKNOWN, not absent." -f (@($b.Unknown) -join ', '))
+            continue
+        }
+        $rows += New-Finding -Area 'SiteGc' -Item ("Site '{0}' has no writeable global catalog" -f $site) -Status $script:Status.Warning `
+            -Detail ("This site contains domain controllers but none of them is both writeable and a global catalog - {0}. Clients in this site must cross a site link for global catalog lookups, and no Exchange server can be installed here: Microsoft requires that the AD site hosting an Exchange server contain at least one writeable domain controller that is also a global catalog server, and states that an Exchange server cannot be deployed in a site containing only read-only directory servers. If nothing in this site depends on a local GC, this is a design choice rather than a fault - confirm which it is. To fix, set the GC flag on a writeable DC in this site (AD Sites and Services, or 'repadmin /options <dc> +IS_GC') and let the partial attribute set replicate." -f ($present -join '; '))
+    }
+
+    if (@($noSite).Count -gt 0) {
+        $rows += New-Finding -Area 'SiteGc' -Item 'Domain controllers with no site' -Status $script:Status.NotAssessed `
+            -Detail ("{0} domain controller(s) reported no site, so they were not counted towards any site's global catalog coverage: {1}. Those sites' coverage is therefore a partial result." -f @($noSite).Count, (@($noSite) -join ', '))
+    }
+    # A Pass row only where something actually passed. With no covered site the warnings above
+    # are the whole result, and a "0 of N" row carrying a Pass status would be read as clean.
+    if (@($covered).Count -gt 0) {
+        $rows += New-Finding -Area 'SiteGc' -Item 'Writeable global catalog per site' -Status $script:Status.Pass `
+            -Detail ("{0} of {1} site(s) holding domain controllers contain at least one writeable global catalog: {2}." -f `
+                @($covered).Count, @($bySite.Keys).Count, (@($covered) -join ', '))
     }
     return @($rows)
 }
@@ -4611,6 +5360,23 @@ $script:RecommendationMap = @(
        Text  = 'Every domain controller in the forest must run a supported Windows Server version, not only the ones in the Exchange site. Upgrade or decommission the named DCs before Setup, transferring any FSMO roles they hold first. Where the OS could not be read, re-run with credentials able to read the DC computer objects - an unreadable value is not a pass.' }
     @{ Section = '(?i)exchange se'; Match = '(?i)read-only domain controller'
        Text  = 'Exchange does not use a read-only DC or a read-only global catalog. No action is needed for an RODC in a site where no Exchange server will be installed; for any site that WILL host one, confirm it also contains a writeable global catalog, or Setup fails in that site alone.' }
+    # --- Section-scoped: _msdcs delegation. Ahead of the generic DNS entries, which would
+    #     otherwise answer a broken delegation with "enable scavenging".
+    @{ Section = '(?i)msdcs'; Match = '(?i)is not a delegated zone|unexpected zone'
+       Text  = 'Create _msdcs.<forest> as its own AD-integrated zone and delegate it from the parent. In DNS Manager: create the zone, store it in AD DS, set replication to "All DNS servers in this forest" (the forest-wide application directory partition), then right-click the parent zone -> New Delegation and point it at the DNS servers hosting the child zone. Move the existing _msdcs records across before removing the subdomain, and confirm with "nltest /dsgetdc:<forest> /force" plus "Resolve-DnsName _msdcs.<forest> -Type SOA" against each DNS server. Until this is right, replication partners and clients cannot find global catalog servers reliably.' }
+    @{ Section = '(?i)msdcs'; Match = '(?i)no NS records|missing glue'
+       Text  = 'Recreate the delegation records in the PARENT zone: an NS record naming each DNS server authoritative for _msdcs.<forest>, and a glue host (A/AAAA) record for each of those names. DNS Manager: right-click the parent zone -> New Delegation, or repair an existing delegation by editing the NS records and adding the missing glue. A delegation with an NS record but no glue is a dead referral - the resolver has a name it cannot turn into an address.' }
+    @{ Section = '(?i)msdcs'; Match = '(?i)not a known DC'
+       Text  = 'Compare each NS host against the DCs this report inventoried. For a decommissioned DC, delete the NS record from the _msdcs zone (and from the domain zone) as the forest recovery guide instructs after metadata cleanup, then run "nltest.exe /dsderegdns:<oldhost>" to clear its remaining SRV records. For a non-DC DNS server that is genuinely authoritative, no change is needed - record why, so the next run is not re-investigated.' }
+    # --- Section-scoped: time hierarchy. Must precede the unscoped time entry, which assumes
+    #     the finding is about the local host.
+    @{ Section = '(?i)time hierarchy'; Match = "(?i)virtualisation host's time provider"
+       Text  = 'Give the DC one time source, not two. On a non-PDC virtualised DC, clear Time Synchronization in the VM''s Integration Services (or set HKLM\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\VMICTimeProvider\Enabled to 0 and restart W32Time), then confirm with "w32tm /query /source" that it now names a DC. Where the host is kept as the source on the PDC, the host itself must be synchronised to the same authoritative source, or the divergence simply moves up a layer.' }
+    @{ Section = '(?i)time hierarchy'; Match = '(?i)no authoritative upstream|not synchronising from the domain hierarchy|Type is NoSync|not a valid configuration|top of that hierarchy|domain hierarchy it is itself the top of'
+       Text  = 'Configure the forest root PDC emulator against an external authoritative source: "w32tm.exe /config /syncfromflags:manual /manualpeerlist:<ntp host>,0x8 /reliable:yes /update", then "net stop w32time & net start w32time" and verify with "w32tm /query /source" and "w32tm /query /status". Use three or more peers where you can - with only two, flag the second ,0x2 (UseAsFallbackOnly). Leave every other DC on the domain hierarchy (Type NT5DS). Fix time before chasing Kerberos or replication errors: a skew beyond five minutes fails authentication outright.' }
+    # --- Section-scoped: per-site GC coverage.
+    @{ Section = '(?i)site global catalog|sitegc'; Match = '.'
+       Text  = 'Set the global catalog flag on a writeable DC in the affected site - AD Sites and Services -> the DC''s NTDS Settings -> Global Catalog, or "repadmin /options <dc> +IS_GC" - then wait for the partial attribute set to replicate (Directory Service event 1119 confirms it) and check the _gc._tcp SRV records register. A read-only DC does not satisfy this: Exchange Setup fails in a site containing only read-only directory servers. If no application in the site needs a local GC, record the decision instead of changing anything.' }
     # --- SYSVOL / DFSR specifics, ahead of the generic sysvol|dfsr entry below, which would
     #     otherwise answer every one of these with "perform a D4". Reinitialising is the LAST
     #     resort: the vendor's own guidance is that it is unnecessary in most cases and can lose
@@ -5345,6 +6111,55 @@ function Invoke-Main {
     if (Test-SectionSelected 'GcConsistency' $Sections) {
         Write-Stage 'Global Catalog consistency (AD flag vs DNS, per DNS server)'
         $sectionData['Global Catalog Consistency'] = Get-AdfaGcConsistency -ForestRoot $forest.Name -AdParams $adParams -DnsServers $dcNames
+    }
+    if (Test-SectionSelected 'MsdcsDelegation' $Sections) {
+        Write-Stage 'Forest-wide locator zone delegation (_msdcs, per DNS server)'
+        # Without a forest name there is no zone name to query, and building one from the
+        # placeholder would put a nonsense zone in the report.
+        if ($forestError) {
+            $sectionData['_msdcs Zone Delegation'] = @(New-Finding -Area 'MsdcsDelegation' -Item 'Forest-wide locator zone' -Status $script:Status.NotAssessed `
+                    -Detail 'The forest name could not be read, so the name of the forest-wide locator zone is unknown and its delegation was not queried.')
+        }
+        else {
+            $sectionData['_msdcs Zone Delegation'] = @(Get-AdfaMsdcsDelegation -ForestRoot $forest.Name `
+                    -DnsServers $dcNames -AdDcHosts $dcNames)
+        }
+    }
+    if (Test-SectionSelected 'TimeHierarchy' $Sections) {
+        Write-Stage 'Time hierarchy (per-DC source, PDC emulator roles)'
+        # The PDC emulator of each scoped domain, plus the forest root's, so the role-specific
+        # rules can be applied. A domain whose PDC cannot be read leaves its DCs graded as
+        # ordinary DCs, and the collector says so rather than assuming.
+        $pdcMap = @{}
+        $rootPdc = ''
+        $pdcErrors = @()
+        $pdcDomains = @($targetDomains)
+        if ($rootDomain -and $pdcDomains -notcontains $rootDomain) { $pdcDomains += $rootDomain }
+        foreach ($d in $pdcDomains) {
+            try {
+                $pdc = [string](Get-ADDomain -Identity $d @adParams).PDCEmulator
+                if ($pdc) {
+                    $pdcMap[$pdc] = $d
+                    if ($d -eq $rootDomain) { $rootPdc = $pdc }
+                }
+            }
+            catch {
+                $pdcErrors += ("{0}: {1}" -f $d, $_.Exception.Message)
+                Write-Log -Level ERROR -Section $d -Message ("PDC emulator lookup failed, so the time-hierarchy role rules could not be applied to that domain: {0}" -f $_.Exception.Message)
+            }
+        }
+        $timeRows = @(Get-AdfaTimeHierarchyHealth -DomainControllers $dcNames -PdcEmulators $pdcMap `
+                -ForestRootPdc $rootPdc -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                -TimeoutSeconds $script:Config.ExternalToolTimeoutSec)
+        if (@($pdcErrors).Count -gt 0) {
+            $timeRows += New-Finding -Area 'TimeHierarchy' -Item 'PDC emulator resolution' -Status $script:Status.NotAssessed `
+                -Detail ("The PDC emulator could not be read for {0} domain(s), so the role-specific time rule was not applied there: {1}. Those DCs were graded as ordinary domain controllers, which is a partial result." -f @($pdcErrors).Count, (@($pdcErrors) -join '; '))
+        }
+        $sectionData['Time Hierarchy'] = @($timeRows)
+    }
+    if (Test-SectionSelected 'SiteGc' $Sections) {
+        Write-Stage 'Writeable global catalog coverage per site'
+        $sectionData['Site Global Catalog Coverage'] = @(Get-AdfaSiteGcCoverage -DomainControllers $allDcInventory)
     }
     if (Test-SectionSelected 'PortMatrix' $Sections) {
         Write-Stage 'Port reachability matrix (replication port set)'
