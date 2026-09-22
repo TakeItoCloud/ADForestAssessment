@@ -1847,3 +1847,111 @@ Describe 'dcdiag arguments (Intersite false Pass, DNS test)' {
             Should -Match "'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS'"
     }
 }
+
+Describe 'Event lookback parameter and measured clock offset' {
+    Context '-EventLookbackDays' {
+        # Before v1.14.0 the window was a pair of constants in $script:Config with no runtime
+        # override - on the tool built for assessing a forest AFTER a restore, so a restore
+        # older than 14 days could not be reached without editing the script.
+        It 'exists and is range-validated to a year' {
+            $p = (Get-Command $script:Target).Parameters['EventLookbackDays']
+            $p | Should -Not -BeNullOrEmpty
+            $r = @($p.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] })
+            @($r).Count | Should -Be 1
+            [int]$r[0].MinRange | Should -Be 1
+            [int]$r[0].MaxRange | Should -Be 365
+        }
+        It 'feeds both event windows, which no longer hold constants' {
+            $src = Get-Content -LiteralPath $script:Target -Raw
+            $src | Should -Match 'DsEventLookbackDays\s*=\s*\$EventLookbackDays'
+            $src | Should -Match 'DfsrEventLookbackDays\s*=\s*\$EventLookbackDays'
+        }
+        It 'cannot fabricate coverage when the window outruns the log' {
+            # This is what makes widening the window safe rather than a lie.
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord (Get-Date).AddDays(-30) -WindowStart (Get-Date).AddDays(-180) |
+                Should -Be 'Truncated'
+            Get-AdfaEventLogCoverage -Inspected $true -RecordCount 500 `
+                -OldestRecord (Get-Date).AddDays(-200) -WindowStart (Get-Date).AddDays(-180) |
+                Should -Be 'Covered'
+        }
+    }
+
+    Context 'ConvertFrom-AdfaStripchartCsv' {
+        # The only external-tool output whose format Microsoft publishes, which is why it is used.
+        BeforeAll {
+            $script:ScCsv = @"
+Tracking dc1.contoso.com [192.0.2.11:123].
+RdtscStart, RdtscEnd, FileTime, RoundtripDelay, NtpOffset
+123, 456, 133000000000000000, 0.0021234, +0.0012218
+124, 457, 133000000000000001, 0.0022000, -0.0009000
+"@
+        }
+        It 'parses the documented headers, past a preamble line' {
+            $r = ConvertFrom-AdfaStripchartCsv -Text $script:ScCsv
+            @($r.Offsets).Count | Should -Be 2
+            @($r.Delays).Count | Should -Be 2
+            [Math]::Abs(([double]@($r.Offsets)[0]) - 0.0012218) | Should -BeLessThan 0.0000001
+        }
+        It 'drops a sample it cannot read rather than calling it zero' {
+            # Zero would mean "perfectly synchronised" - the worst possible misreading.
+            $bad = ConvertFrom-AdfaStripchartCsv -Text @"
+RdtscStart, RdtscEnd, FileTime, RoundtripDelay, NtpOffset
+123, 456, 133000000000000000, 0.002, error
+124, 457, 133000000000000001, 0.002, +0.5
+"@
+            @($bad.Offsets).Count | Should -Be 1
+            [int]$bad.RowsSeen | Should -Be 2
+            $timeout = ConvertFrom-AdfaStripchartCsv -Text "Tracking dc9.contoso.com.`nRdtscStart, RdtscEnd, FileTime, RoundtripDelay, NtpOffset`nRequest timed out.`n"
+            @($timeout.Offsets).Count | Should -Be 0
+        }
+        It 'yields nothing for output with no header, and for null' {
+            @((ConvertFrom-AdfaStripchartCsv -Text 'no csv here').Offsets).Count | Should -Be 0
+            @((ConvertFrom-AdfaStripchartCsv -Text $null).Offsets).Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaClockOffsetVerdict' {
+        It 'separates the vendor threshold from ours, and says which is which' {
+            $f = Get-AdfaClockOffsetVerdict -DomainController 'dc1.contoso.com' -Offsets @(400.0) -WarnSeconds 60 -FailSeconds 300
+            [string]$f.Status | Should -Be 'Fail'
+            $f.Detail | Should -Match '300s Kerberos maximum'
+            $w = Get-AdfaClockOffsetVerdict -DomainController 'dc1.contoso.com' -Offsets @(90.0) -WarnSeconds 60 -FailSeconds 300
+            [string]$w.Status | Should -Be 'Warning'
+            $w.Detail | Should -Match 'OURS and not a vendor threshold'
+        }
+        It 'passes a small offset while stating what it does not prove' {
+            $p = Get-AdfaClockOffsetVerdict -DomainController 'dc1.contoso.com' -Offsets @(0.4, -0.2) -WarnSeconds 60 -FailSeconds 300
+            [string]$p.Status | Should -Be 'Pass'
+            # The offset is measured from the host running the assessment.
+            $p.Detail | Should -Match "not proof the forest's time is correct"
+        }
+        It 'judges on the worst sample and ignores the sign' {
+            [string](Get-AdfaClockOffsetVerdict -DomainController 'a' -Offsets @(-400.0) -WarnSeconds 60 -FailSeconds 300).Status |
+                Should -Be 'Fail'
+            # Averaging +400 and -400 would report a swinging clock as perfect.
+            [string](Get-AdfaClockOffsetVerdict -DomainController 'a' -Offsets @(400.0, -400.0) -WarnSeconds 60 -FailSeconds 300).Status |
+                Should -Be 'Fail'
+        }
+        It 'never passes an offset it could not measure' {
+            $degraded = @(
+                (Get-AdfaClockOffsetVerdict -DomainController 'a' -Offsets @() -ErrorText 'every NTP sample timed out'),
+                (Get-AdfaClockOffsetVerdict -DomainController 'a' -Queried $false),
+                (Get-AdfaClockOffsetVerdict -DomainController 'a' -Offsets @('not a number'))
+            )
+            @($degraded).Count | Should -Be 3
+            @($degraded | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+            $degraded[1].Detail | Should -Match 'unmeasured offset is not a small one'
+        }
+    }
+
+    Context 'Clock-skew configuration' {
+        It 'keeps the vendor number and ours apart, each with a source' {
+            [int]$script:Config.ClockSkew.KerberosMaxSeconds | Should -Be 300
+            [double]$script:Config.ClockSkew.WarnSeconds | Should -BeLessThan 300
+            $script:Config.ClockSkew.KerberosUrl | Should -Match '^https://learn\.microsoft\.com/'
+            $script:Config.ClockSkew.StripchartUrl | Should -Match '^https://learn\.microsoft\.com/'
+            [string]$script:Config.ClockSkew.ReadDate | Should -Be '2026-09-22'
+        }
+    }
+}
