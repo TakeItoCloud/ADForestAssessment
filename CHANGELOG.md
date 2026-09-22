@@ -10,6 +10,44 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-09-22 (the Intersite dcdiag column was a false Pass; the DNS test was never run, tool v1.13.0)
+
+**`Intersite` reported `Pass` without testing anything.** The grid invoked
+`dcdiag /test:Intersite /s:<dc>` with neither `/a` nor `/e`. Microsoft is explicit:
+
+> *"The `/a` or `/e` parameter must be used as not providing a site would allow the test to run
+> but **skips actual testing**."*
+> — [dcdiag](https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag), read 2026-09-22
+
+So dcdiag ran, tested nothing, printed `passed test Intersite`, and the column has read `Pass`
+on every DC of every run since the R2 15-test grid. **A false Pass is the one outcome this tool
+exists to make impossible**, and this one has been shipping the whole time. Intersite now carries
+`/a` — this site, rather than `/e` for the whole enterprise, because Learn warns enterprise run
+times are significant and offline DCs make them worse, and the grid already iterates every DC.
+
+**This deliberately changes statuses.** A forest with genuine intersite replication problems will
+now show `Fail` where it showed `Pass`. That is the fix working.
+
+**The DNS test was never run.** The grid's 17 tests contained no `DNS` entry, on a tool built for
+a post-recovery engagement whose stated problem is DNS. `DNS` is not run by default and must be
+requested explicitly. It is now the 18th test, invoked as `/test:DNS /DnsAll` — `/DnsAll` spelled
+out rather than relied on as the default, so a change to that default cannot silently narrow what
+this tool checks. It covers basic connectivity and service checks, forwarders, **delegations**,
+dynamic update and **record registration** — the exact failure classes a restored DC produces.
+`/DnsResolveExtName` is deliberately excluded: it needs internet egress and is not a directory
+question.
+
+Both changes go through a new pure `Get-AdfaDcdiagArgument`, so the per-test argument is asserted
+rather than assumed — a test proves exactly two of the eighteen deviate from the plain form, and
+spraying `/a` across all of them turns three assertions red.
+
+Two caveats recorded rather than glossed: the DNS test needs **Enterprise Admins** minimum and
+uses WMI as well as DNS and RPC, so it will report `Not Assessed` with a named cause (via v1.12.0's
+H10 work) where rights or WMI are missing. And `dcdiag /test:DNS` supports `/x:<XMLLog.xml>` for
+structured output, which would remove the localisation fragility every console parser here
+carries — but **the XML schema is not published on Learn**, so it is not parsed. That is a plan
+row, not a silent omission.
+
 ### Fixed — 2026-09-22 (two defects found by the first run against a real forest, tool v1.12.0)
 
 v1.11.0 was run against a live four-DC forest — the first time any of this code touched a real

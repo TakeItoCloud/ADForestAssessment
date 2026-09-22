@@ -1379,6 +1379,45 @@ $namedInFailures = @($unassessedCells | Where-Object { [string]$gridRow.Failures
 Assert-Equal 5 (@($namedInFailures).Count) 'dcdiag grid: not one unassessed cell is left without a recorded cause'
 
 Write-Host ""
+Write-Host "== 22. dcdiag arguments: the Intersite false Pass, and the DNS test ==" -ForegroundColor Cyan
+
+# Intersite without /a or /e "would allow the test to run but SKIPS ACTUAL TESTING" - so every
+# run before v1.13.0 reported Pass on a test that had checked nothing. A false Pass is the one
+# outcome this tool exists to make impossible, so the argument is asserted, not assumed.
+#   https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag (2026-09-22)
+$argIntersite = Get-AdfaDcdiagArgument -TestName 'Intersite' -DomainController 'dc1.contoso.com'
+Assert-True ($argIntersite -match '(?i)(^|\s)/a(\s|$)') 'dcdiag args: Intersite carries /a, without which dcdiag skips the actual testing'
+Assert-True ($argIntersite -match '/test:Intersite') 'dcdiag args: Intersite still names its test'
+Assert-True ($argIntersite -match '/s:dc1\.contoso\.com') 'dcdiag args: Intersite still targets the DC'
+
+$argDns = Get-AdfaDcdiagArgument -TestName 'DNS' -DomainController 'dc1.contoso.com'
+Assert-True ($argDns -match '/test:DNS') 'dcdiag args: the DNS test is requested explicitly - it does not run by default'
+Assert-True ($argDns -match '/DnsAll') 'dcdiag args: /DnsAll is spelled out so a change to the default cannot silently narrow coverage'
+Assert-True ($argDns -notmatch 'DnsResolveExtName') 'dcdiag args: external-name resolution is not requested - it needs internet egress and is not a directory question'
+
+# Every other test keeps the plain form: a builder that quietly added flags everywhere would
+# change what 15 existing columns measure.
+$argPlain = Get-AdfaDcdiagArgument -TestName 'Advertising' -DomainController 'dc1.contoso.com'
+Assert-Equal '/test:Advertising /s:dc1.contoso.com' $argPlain 'dcdiag args: an ordinary test is unchanged'
+Assert-True ($argPlain -notmatch '/a\b') 'dcdiag args: /a is not sprayed onto tests that do not need it'
+
+# Non-vacuity over the declared population: every test in the grid must build an argument that
+# names itself and its DC, and only the two special cases may differ from the plain form.
+$gridTests = @('Netlogons', 'Services', 'Replications', 'FsmoCheck', 'Advertising', 'SysVolCheck',
+    'MachineAccount', 'ObjectsReplicated', 'RidManager', 'KccEvent', 'VerifyReferences',
+    'CrossRefValidation', 'KnowsOfRoleHolders', 'Intersite', 'DFSREvent',
+    'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS')
+Assert-Equal 18 (@($gridTests).Count) 'dcdiag args: non-vacuity - the declared grid is 18 tests'
+$argRows = @($gridTests | ForEach-Object { Get-AdfaDcdiagArgument -TestName $_ -DomainController 'dc1.contoso.com' })
+Assert-Equal 18 (@($argRows | Where-Object { $_ -match '/s:dc1\.contoso\.com' }).Count) 'dcdiag args: every test targets the DC'
+Assert-Equal 2 (@($argRows | Where-Object { $_ -notmatch ("^/test:\S+ /s:dc1\.contoso\.com$") }).Count) 'dcdiag args: exactly two tests deviate from the plain form'
+
+# The grid itself must actually contain the DNS test - a builder that handles 'DNS' is worth
+# nothing if nothing ever asks for it. Read from the source, so the list cannot drift.
+$gridSrc = Get-Content -LiteralPath $target -Raw
+Assert-True ($gridSrc -match "'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS'") 'dcdiag grid: the DNS test is in the array the collector iterates'
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }

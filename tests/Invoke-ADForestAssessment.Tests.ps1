@@ -1807,3 +1807,43 @@ Describe 'Live-run defects (v1.11.0 first real forest run)' {
         }
     }
 }
+
+Describe 'dcdiag arguments (Intersite false Pass, DNS test)' {
+    # Learn, dcdiag page, Intersite row (read 2026-09-22): "The /a or /e parameter must be used
+    # as not providing a site would allow the test to run but SKIPS ACTUAL TESTING." Every run
+    # before v1.13.0 omitted both, so the Intersite column reported Pass on a test that had
+    # checked nothing.
+    It 'gives Intersite the /a it needs to actually test anything' {
+        $a = Get-AdfaDcdiagArgument -TestName 'Intersite' -DomainController 'dc1.contoso.com'
+        $a | Should -Match '(^|\s)/a(\s|$)'
+        $a | Should -Match '/test:Intersite'
+        $a | Should -Match '/s:dc1\.contoso\.com'
+    }
+    It 'requests the DNS test explicitly with /DnsAll, and not the external-name test' {
+        $a = Get-AdfaDcdiagArgument -TestName 'DNS' -DomainController 'dc1.contoso.com'
+        $a | Should -Match '/test:DNS'
+        $a | Should -Match '/DnsAll'
+        $a | Should -Not -Match 'DnsResolveExtName'
+    }
+    It 'leaves every other test on the plain form' {
+        $a = Get-AdfaDcdiagArgument -TestName 'Advertising' -DomainController 'dc1.contoso.com'
+        $a | Should -Be '/test:Advertising /s:dc1.contoso.com'
+    }
+    It 'deviates from the plain form for exactly two of the eighteen grid tests' {
+        $grid = @('Netlogons', 'Services', 'Replications', 'FsmoCheck', 'Advertising', 'SysVolCheck',
+            'MachineAccount', 'ObjectsReplicated', 'RidManager', 'KccEvent', 'VerifyReferences',
+            'CrossRefValidation', 'KnowsOfRoleHolders', 'Intersite', 'DFSREvent',
+            'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS')
+        @($grid).Count | Should -Be 18
+        # Not $args: that is an automatic variable, and assigning to it inside a scriptblock
+        # shadows the block's own argument array.
+        $argList = @($grid | ForEach-Object { Get-AdfaDcdiagArgument -TestName $_ -DomainController 'dc1.contoso.com' })
+        @($argList | Where-Object { $_ -match '/s:dc1\.contoso\.com' }).Count | Should -Be 18
+        @($argList | Where-Object { $_ -notmatch '^/test:\S+ /s:dc1\.contoso\.com$' }).Count | Should -Be 2
+    }
+    It 'has the DNS test in the array the collector actually iterates' {
+        # A builder that handles 'DNS' is worth nothing if nothing asks for it.
+        (Get-Content -LiteralPath $script:Target -Raw) |
+            Should -Match "'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS'"
+    }
+}
