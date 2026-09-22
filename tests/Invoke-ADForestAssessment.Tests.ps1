@@ -1069,3 +1069,145 @@ Describe 'SYSVOL backlog' {
         }
     }
 }
+
+Describe 'Restore integrity' {
+    BeforeAll {
+        # In BeforeAll, not the Describe body: a Describe body runs during Pester's discovery
+        # phase, so a function declared there is gone when It blocks execute.
+        function Get-RiTestRow {
+            param($Rows, [string]$Item)
+            $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
+    }
+
+    Context 'Get-AdfaUsnRollbackVerdict' {
+        # Microsoft names this registry value as the fallback when Directory Service event 2095
+        # "may be overwritten before [it is] observed" - which is the ransomware-recovery case
+        # exactly, and the reason this is the one restore signal not tied to the event log.
+        It 'reports the documented value 4 as a rollback' {
+            Get-AdfaUsnRollbackVerdict -Readable $true -Present $true -Value 4 | Should -Be 'Rollback'
+            Get-AdfaUsnRollbackVerdict -Readable $true -Present $true -Value '4' | Should -Be 'Rollback'
+        }
+        It 'reports an undocumented value as found rather than interpreting it' {
+            Get-AdfaUsnRollbackVerdict -Readable $true -Present $true -Value 1 | Should -Be 'OtherValue'
+        }
+        It 'distinguishes an absent marker from an unreadable registry' {
+            Get-AdfaUsnRollbackVerdict -Readable $true -Present $false -Value $null | Should -Be 'NoEvidence'
+            Get-AdfaUsnRollbackVerdict -Readable $false -Present $null -Value $null | Should -Be 'Unknown'
+            Get-AdfaUsnRollbackVerdict -Readable $true -Present $null -Value $null | Should -Be 'Unknown'
+        }
+        It 'never reports NoEvidence for any degraded input' {
+            # Fail-open here would be the worst possible defect: a DC that could not be read
+            # would be reported as carrying no evidence of a rollback.
+            $degraded = @(
+                (Get-AdfaUsnRollbackVerdict -Readable $false -Present $true -Value 4),
+                (Get-AdfaUsnRollbackVerdict -Readable $false -Present $false -Value $null),
+                (Get-AdfaUsnRollbackVerdict -Readable $true -Present $null -Value 4)
+            )
+            @($degraded).Count | Should -Be 3
+            @($degraded | Where-Object { $_ -eq 'NoEvidence' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaUsnRollbackDetail' {
+        It 'states the quarantine effect and warns against clearing the marker' {
+            $d = Get-AdfaUsnRollbackDetail -Verdict 'Rollback' -Value 4
+            $d | Should -Match 'USN ROLLBACK'
+            $d | Should -Match 'Net Logon is paused'
+            $d | Should -Match 'Do NOT delete or edit'
+            $d | Should -Match 'overwritten'
+        }
+        It 'says what an absent marker does not prove' {
+            $d = Get-AdfaUsnRollbackDetail -Verdict 'NoEvidence' -Value $null
+            $d | Should -Match 'operating-system installation only'
+            $d | Should -Not -Match 'healthy'
+        }
+        It 'carries the cause when the registry could not be read' {
+            Get-AdfaUsnRollbackDetail -Verdict 'Unknown' -Value $null -Reason 'Access is denied' |
+                Should -Match 'Access is denied'
+        }
+    }
+
+    Context 'Get-AdfaInvocationIdVerdict' {
+        It 'fails when two DSAs share an invocationId' {
+            # The one conclusion a single point-in-time read supports: a shared value means one
+            # database was cloned from the other, because it is unique per instantiation.
+            $v = Get-AdfaInvocationIdVerdict -DsaInventory @(
+                [pscustomobject]@{ DnsHostName = 'dc1.contoso.com'; ServerDn = 'CN=DC1'; InvocationId = 'aaaa' },
+                [pscustomobject]@{ DnsHostName = 'dc2.contoso.com'; ServerDn = 'CN=DC2'; InvocationId = 'aaaa' })
+            $row = Get-RiTestRow $v 'Duplicate database instantiation (invocationId)'
+            [string]$row.Status | Should -Be 'Fail'
+            $row.Detail | Should -Match 'CLONED'
+            $row.Detail | Should -Match 'dc1'
+            $row.Detail | Should -Match 'dc2'
+            Get-RiTestRow $v 'Database instantiation (invocationId)' | Should -BeNullOrEmpty
+        }
+        It 'passes on distinct values while stating what it cannot conclude' {
+            $v = Get-AdfaInvocationIdVerdict -DsaInventory @(
+                [pscustomobject]@{ DnsHostName = 'dc1.contoso.com'; ServerDn = 'CN=DC1'; InvocationId = 'aaaa' },
+                [pscustomobject]@{ DnsHostName = 'dc2.contoso.com'; ServerDn = 'CN=DC2'; InvocationId = 'bbbb' })
+            $row = Get-RiTestRow $v 'Database instantiation (invocationId)'
+            [string]$row.Status | Should -Be 'Pass'
+            # A rollback needs the value compared against a previous run; the pass must say so
+            # rather than implying the check rules one out.
+            $row.Detail | Should -Match 'cannot detect a rollback on its own'
+            Get-RiTestRow $v 'No Such Item' | Should -BeNullOrEmpty   # non-vacuity
+        }
+        It 'emits the per-DC value as a baseline for a later comparison' {
+            $v = Get-AdfaInvocationIdVerdict -DsaInventory @(
+                [pscustomobject]@{ DnsHostName = 'dc1.contoso.com'; ServerDn = 'CN=DC1'; InvocationId = 'aaaa' })
+            Get-RiTestRow $v 'invocationId of dc1.contoso.com' | Should -Not -BeNullOrEmpty
+        }
+        It 'reports an unreadable value and says the clone check is partial' {
+            $v = Get-AdfaInvocationIdVerdict -DsaInventory @(
+                [pscustomobject]@{ DnsHostName = 'dc1.contoso.com'; ServerDn = 'CN=DC1'; InvocationId = 'aaaa' },
+                [pscustomobject]@{ DnsHostName = 'dc2.contoso.com'; ServerDn = 'CN=DC2'; InvocationId = '' })
+            $row = Get-RiTestRow $v 'invocationId - not readable'
+            [string]$row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match 'partial result, not a clean one'
+        }
+        It 'reports Not Assessed when nothing could be read' {
+            [string](Get-RiTestRow (Get-AdfaInvocationIdVerdict -DsaInventory @()) `
+                    'Database instantiation (invocationId)').Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'Post-restore dcdiag tests and VM-revert events' {
+        It 'adds CheckSecurityError and VerifyEnterpriseReferences to the grid' {
+            $src = Get-Content $script:Target -Raw
+            $src | Should -Match "'CheckSecurityError'"
+            $src | Should -Match "'VerifyEnterpriseReferences'"
+        }
+        It 'tracks the VM-revert events with vendor-sourced meanings' {
+            $ids = @($script:Config.DsEventsOfInterest | ForEach-Object { [int]$_.Id })
+            $ids | Should -Contain 2170
+            $ids | Should -Contain 2181
+            $e = @($script:Config.DsEventsOfInterest | Where-Object { [int]$_.Id -eq 2170 })[0]
+            $e.Meaning | Should -Match 'snapshot'
+            $e.Meaning | Should -Match 'not a supported procedure'
+        }
+    }
+
+    Context 'Remediation' {
+        It 'no longer advises the retired dcpromo command anywhere in the map' {
+            # dcpromo /forceremoval is Windows 2000 / Server 2003 era. Every OS this tool
+            # supports uses Uninstall-ADDSDomainController.
+            @($script:RecommendationMap | Where-Object { [string]$_.Text -match 'dcpromo\s*/forceremoval' }).Count |
+                Should -Be 0
+            @($script:RecommendationMap).Count | Should -BeGreaterThan 10   # non-vacuity
+            @($script:RecommendationMap | Where-Object { [string]$_.Text -match 'Uninstall-ADDSDomainController' }).Count |
+                Should -BeGreaterOrEqual 2
+        }
+        It 'routes each restore-integrity finding to its own fix' {
+            $dnw = Get-AdfaRecommendation -Section 'Restore Integrity' -Item 'USN rollback marker on dc1' `
+                -Detail (Get-AdfaUsnRollbackDetail -Verdict 'Rollback' -Value 4)
+            $dnw | Should -Match 'Do NOT delete or change'
+            $clone = Get-AdfaRecommendation -Section 'Restore Integrity' -Item 'Duplicate database instantiation (invocationId)' `
+                -Detail '2 DCs share invocationId aaaa - database was CLONED from the other'
+            $clone | Should -Match 'Do not leave both in service'
+            $clone | Should -Not -Match 'Dsa Not Writable'
+        }
+    }
+}

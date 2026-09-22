@@ -175,7 +175,7 @@ param(
         'Pki', 'Acl', 'Kerberos', 'PrivilegedHygiene', 'DcHardening', 'Backup', 'TimeSync',
         'DnsDepth', 'Redundancy', 'ExchangeSchema', 'ExchangeSeReadiness',
         'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
-        'DsEvents')]
+        'DsEvents', 'RestoreIntegrity')]
     [string[]]$Sections = @('All'),
 
     [switch]$IncludeDcdiag,
@@ -217,7 +217,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.8.0'
+    Version                 = '1.9.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -348,6 +348,13 @@ $script:Config = @{
         @{ Id = 2042; Severity = 'Fail';    Meaning = 'Replication stopped - tombstone lifetime exceeded; will not resume without intervention.' }
         @{ Id = 2095; Severity = 'Fail';    Meaning = 'USN rollback detected - the directory is silently diverging.' }
         @{ Id = 2103; Severity = 'Fail';    Meaning = 'AD DS database restored using an unsupported restore procedure.' }
+        # VM-revert markers. 2170 is the safe path - the hypervisor supplied a new VM-Generation
+        # ID, AD noticed, and reset the invocation ID and RID pool itself - but it still means a
+        # snapshot or import was applied to a DC, which is not a supported way to restore one.
+        # https://learn.microsoft.com/windows-server/identity/ad-ds/manage/virtual-dc/virtualized-domain-controller-troubleshooting
+        # Read: 2026-09-21.
+        @{ Id = 2170; Severity = 'Warning'; Meaning = 'VM Generation ID change detected - a snapshot, import or live migration was applied to this DC. AD recovered itself (new invocation ID, RID pool invalidated, SYSVOL resynced), but restoring a DC from a VM snapshot is not a supported procedure.' }
+        @{ Id = 2181; Severity = 'Warning'; Meaning = 'A transaction was aborted because the VM was reverted to a previous state (snapshot, import or live migration).' }
         @{ Id = 2087; Severity = 'Fail';    Meaning = 'DNS lookup failure resolving a source DC GUID - direct cause of RPC 1722 replication errors.' }
         @{ Id = 2088; Severity = 'Warning'; Meaning = 'DNS lookup failed but a fallback succeeded - DNS is broken and replication is masking it.' }
         @{ Id = 1311; Severity = 'Warning'; Meaning = 'KCC could not build a replication topology.' }
@@ -1287,9 +1294,13 @@ function Get-AdfaDcDiagnostic {
     # converged), RidManager (RID pool reachable), KccEvent (topology errors), Intersite,
     # VerifyReferences/CrossRefValidation (FSMO + partition cross-refs intact),
     # KnowsOfRoleHolders, DFSREvent (SYSVOL replication errors).
+    # CheckSecurityError and VerifyEnterpriseReferences are the two post-restore tests: the first
+    # surfaces the Kerberos/secure-channel faults that follow a machine-account or krbtgt reset,
+    # the second checks the FRS/DFSR and FSMO references a restored DC's objects must still hold.
     $tests = 'Netlogons', 'Services', 'Replications', 'FsmoCheck', 'Advertising', 'SysVolCheck',
         'MachineAccount', 'ObjectsReplicated', 'RidManager', 'KccEvent', 'VerifyReferences',
-        'CrossRefValidation', 'KnowsOfRoleHolders', 'Intersite', 'DFSREvent'
+        'CrossRefValidation', 'KnowsOfRoleHolders', 'Intersite', 'DFSREvent',
+        'CheckSecurityError', 'VerifyEnterpriseReferences'
     $haveDcdiag = Test-CommandAvailable -Name 'dcdiag.exe'
     $rows = foreach ($dc in $DomainControllers) {
         $row = [ordered]@{ DomainController = $dc; Status = $null; Ping = $null }
@@ -3017,7 +3028,7 @@ function Get-AdfaDsaInventory {
     param([hashtable]$AdParams = @{})
     $out = @()
     $cfg = (Get-ADRootDSE @AdParams).configurationNamingContext
-    $dsas = @(Get-ADObject -LDAPFilter '(objectClass=nTDSDSA)' -SearchBase $cfg -Properties objectGUID @AdParams)
+    $dsas = @(Get-ADObject -LDAPFilter '(objectClass=nTDSDSA)' -SearchBase $cfg -Properties objectGUID, invocationId @AdParams)
     foreach ($dsa in $dsas) {
         $dsaDn = ''
         if ($dsa.PSObject.Properties['DistinguishedName'] -and $dsa.DistinguishedName) { $dsaDn = [string]$dsa.DistinguishedName }
@@ -3036,7 +3047,19 @@ function Get-AdfaDsaInventory {
             # CNAME and GC checks downstream, and that is worth a line in the run log.
             Write-Log -Level WARN -Section 'DsaInventory' -Message ("Server object {0} could not be read, so DSA {1} has no host name and will not correlate with the DNS checks: {2}" -f $serverDn, $dsaGuid, $_.Exception.Message)
         }
-        $out += [pscustomobject]@{ DsaGuid = $dsaGuid; ServerDn = $serverDn; DnsHostName = $dcHost }
+        # invocationId identifies the INSTANTIATION of the database, as distinct from objectGUID
+        # which identifies the DSA. A supported restore resets it; an unsupported one does not,
+        # which is what makes a duplicate across two DCs evidence of a cloned database.
+        $invId = ''
+        $iProp = $dsa.PSObject.Properties['invocationId']   # $null when absent - StrictMode-safe
+        if ($null -ne $iProp -and $null -ne $iProp.Value) {
+            try {
+                if ($iProp.Value -is [byte[]]) { $invId = ([guid][byte[]]$iProp.Value).ToString() }
+                else { $invId = [string]$iProp.Value }
+            }
+            catch { $invId = '' }
+        }
+        $out += [pscustomobject]@{ DsaGuid = $dsaGuid; ServerDn = $serverDn; DnsHostName = $dcHost; InvocationId = $invId }
     }
     # Plain return on purpose: callers wrap with @(...); `return @()` would hand them
     # one element that IS the empty array and StrictMode then chokes on it (PORT-PLAN P3).
@@ -4044,6 +4067,219 @@ function Get-AdfaDsEventLog {
 }
 
 # ===========================================================================
+# region Restore integrity (USN rollback forensics, database instantiation)
+# ===========================================================================
+
+function Get-AdfaUsnRollbackVerdict {
+    <#
+    .SYNOPSIS
+        Pure classification of the "Dsa Not Writable" registry marker on a DC.
+    .DESCRIPTION
+        This is the check that does not depend on the event log surviving. When a DC is rolled
+        back by an unsupported method - a VM snapshot revert, a VHD copy, a disk image, a P2V
+        without decommissioning the original - replication quarantines it and logs Directory
+        Service event 2095. Microsoft is explicit that the event "may be overwritten before
+        [it is] observed by an administrator", and names the registry entry as the fallback:
+
+            HKLM\System\CurrentControlSet\Services\NTDS\Parameters
+            Dsa Not Writable = 0x4     "provides forensic evidence that a USN rollback has occurred"
+
+        https://learn.microsoft.com/troubleshoot/windows-server/active-directory/detect-and-recover-from-usn-rollback
+        https://learn.microsoft.com/windows-server/identity/ad-ds/introduction-to-active-directory-domain-services-ad-ds-virtualization-level-100
+        Read: 2026-09-21.
+
+        That is exactly the situation this tool is aimed at: a forest recovered from an incident,
+        where the Directory Service log may have been cleared or wrapped long before anyone looked.
+        The marker persists in the registry regardless.
+
+        Note what absence does and does not prove. No marker means no forensic evidence of a
+        rollback on THIS operating-system installation - it does not prove no rollback ever
+        happened, because a rebuilt or reinstalled DC carries no history. Reported as a pass with
+        that limit stated, rather than as proof of health.
+    .OUTPUTS
+        [string] Rollback | OtherValue | NoEvidence | Unknown
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [bool]$Readable = $true,
+        [AllowNull()][Nullable[bool]]$Present,
+        [AllowNull()]$Value
+    )
+    if (-not $Readable) { return 'Unknown' }
+    if ($null -eq $Present) { return 'Unknown' }
+    if (-not $Present) { return 'NoEvidence' }
+    # The documented value is 4. Anything else is present-but-undocumented: reported as itself
+    # rather than silently treated as either clean or as a confirmed rollback.
+    if ($null -ne $Value -and ([string]$Value) -eq '4') { return 'Rollback' }
+    return 'OtherValue'
+}
+
+function Get-AdfaUsnRollbackDetail {
+    <#
+    .SYNOPSIS
+        The sentence that goes with a Dsa Not Writable verdict.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][ValidateSet('Rollback', 'OtherValue', 'NoEvidence', 'Unknown')][string]$Verdict,
+        [AllowNull()]$Value,
+        [string]$Reason = ''
+    )
+    if ($Verdict -eq 'Rollback') {
+        return ('"Dsa Not Writable" = 4 in the NTDS Parameters registry key. Microsoft documents this as forensic evidence that a USN ROLLBACK has occurred on this DC - an unsupported restore (VM snapshot revert, VHD or disk-image copy, or a P2V whose original was left running). Replication has quarantined this DC: Net Logon is paused and inbound and outbound replication are disabled, so accounts and passwords originating here do not reach the rest of the forest. This marker survives even when Directory Service event 2095 has been overwritten. Do NOT delete or edit the value - doing so removes the quarantine and permanently diverges this DC from the forest.')
+    }
+    if ($Verdict -eq 'OtherValue') {
+        return ('"Dsa Not Writable" is present in the NTDS Parameters registry key with value {0}. Microsoft documents only 4, so this value is undocumented and is reported as found rather than interpreted. Its presence at all means the directory has flagged itself non-writable at some point - read Directory Service events 2095, 2103 and 1113/1115 on this DC and confirm replication is inbound and outbound before trusting it.' -f $Value)
+    }
+    if ($Verdict -eq 'NoEvidence') {
+        return ('No "Dsa Not Writable" value in the NTDS Parameters registry key, so there is no forensic evidence of a USN rollback on this DC. Note the limit of that claim: it covers this operating-system installation only - a DC that was rebuilt or reinstalled after an incident carries no such history either way.')
+    }
+    $suffix = ''
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) { $suffix = (' Cause: {0}' -f $Reason) }
+    return ('The NTDS Parameters registry key could not be read, so the USN-rollback forensic marker is unknown. This is the one check that does not depend on the event log, so it is worth completing by hand: read "Dsa Not Writable" under HKLM\System\CurrentControlSet\Services\NTDS\Parameters on the DC itself.{0}' -f $suffix)
+}
+
+function Get-AdfaUsnRollbackForensics {
+    <#
+    .SYNOPSIS
+        Reads the "Dsa Not Writable" USN-rollback marker from each DC's registry.
+    .DESCRIPTION
+        Thin collector over Get-AdfaUsnRollbackVerdict, using the same remote-registry approach as
+        the DC hardening checks and the same NTDS Parameters key.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        [int]$RpcPortTimeoutMs = 1200
+    )
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'RestoreIntegrity' -Item 'USN rollback forensics' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so the USN-rollback marker could not be read on any of them. This is not a clean result.')
+    }
+    $rows = @()
+    foreach ($dc in $DomainControllers) {
+        if (-not (Test-TcpPort -ComputerName $dc -Port 445 -TimeoutMs $RpcPortTimeoutMs)) {
+            $rows += New-Finding -Area 'RestoreIntegrity' -Item ("USN rollback marker on {0}" -f $dc) -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaUsnRollbackDetail -Verdict 'Unknown' -Value $null -Reason 'SMB (445) not reachable, so the remote registry could not be opened.')
+            continue
+        }
+        $readable = $false
+        $present = $null
+        $value = $null
+        $reason = ''
+        try {
+            $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $dc)
+            $key = $reg.OpenSubKey('SYSTEM\CurrentControlSet\Services\NTDS\Parameters')
+            if ($null -eq $key) {
+                $reason = 'The NTDS Parameters key does not exist - is this host actually a domain controller?'
+            }
+            else {
+                $readable = $true
+                $names = @($key.GetValueNames())
+                $present = [bool]($names -contains 'Dsa Not Writable')
+                if ($present) { $value = $key.GetValue('Dsa Not Writable') }
+            }
+        }
+        catch { $reason = $_.Exception.Message }
+
+        $verdict = Get-AdfaUsnRollbackVerdict -Readable $readable -Present $present -Value $value
+        $status = $script:Status.NotAssessed
+        if ($verdict -eq 'Rollback') { $status = $script:Status.Fail }
+        elseif ($verdict -eq 'OtherValue') { $status = $script:Status.Warning }
+        elseif ($verdict -eq 'NoEvidence') { $status = $script:Status.Pass }
+        $rows += New-Finding -Area 'RestoreIntegrity' -Item ("USN rollback marker on {0}" -f $dc) -Status $status `
+            -Detail (Get-AdfaUsnRollbackDetail -Verdict $verdict -Value $value -Reason $reason)
+    }
+    return @($rows)
+}
+
+function Get-AdfaInvocationIdVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict on database-instantiation identity across the forest's DSAs.
+    .DESCRIPTION
+        invocationId identifies the INSTANTIATION of a DC's database, where objectGUID identifies
+        the DSA itself. A supported restore resets invocationId; an unsupported one leaves it
+        intact, which is precisely what lets a rolled-back DC go unnoticed.
+
+        Only one thing about it is concludable from a single point-in-time read, and this is it:
+        two DSAs sharing an invocationId means one database was CLONED from the other - a copied
+        VHD or disk image - because the value is meant to be unique per instantiation. Every
+        replication partner then believes both DCs have already received each other's changes.
+
+        What this deliberately does NOT claim: a rollback cannot be detected from one read of a
+        single DC, because that needs the value compared against a previous one. The value is
+        emitted per DC so that comparison is possible - a re-run and a diff of Assessment.json
+        between runs will show an invocationId that changed, which means a restore happened
+        between them.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DsaInventory = @()
+    )
+    $rows = @()
+    $dsas = @($DsaInventory | Where-Object { $null -ne $_ })
+    if ($dsas.Count -eq 0) {
+        return @(New-Finding -Area 'RestoreIntegrity' -Item 'Database instantiation (invocationId)' -Status $script:Status.NotAssessed `
+                -Detail 'No DSA objects could be read, so database instantiation identity is unknown. This is not a clean result.')
+    }
+
+    $withId = @()
+    $withoutId = @()
+    foreach ($d in $dsas) {
+        $name = ''
+        $nProp = $d.PSObject.Properties['DnsHostName']
+        if ($null -ne $nProp -and $null -ne $nProp.Value) { $name = [string]$nProp.Value }
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            $sProp = $d.PSObject.Properties['ServerDn']
+            if ($null -ne $sProp -and $null -ne $sProp.Value) { $name = [string]$sProp.Value }
+        }
+        $id = ''
+        $iProp = $d.PSObject.Properties['InvocationId']
+        if ($null -ne $iProp -and $null -ne $iProp.Value) { $id = [string]$iProp.Value }
+        if ([string]::IsNullOrWhiteSpace($id)) { $withoutId += $name }
+        else { $withId += [pscustomobject]@{ Name = $name; Id = $id } }
+    }
+
+    # The one conclusion a single read supports.
+    $dupes = @($withId | Group-Object -Property Id | Where-Object { $_.Count -gt 1 })
+    if ($dupes.Count -gt 0) {
+        foreach ($g in $dupes) {
+            $who = (@($g.Group | ForEach-Object { $_.Name }) -join ', ')
+            $rows += New-Finding -Area 'RestoreIntegrity' -Item 'Duplicate database instantiation (invocationId)' -Status $script:Status.Fail `
+                -Detail ("{0} DCs share invocationId {1}: {2}. That value is unique per database instantiation, so a shared one means one DC's database was CLONED from the other - a copied VHD or disk image rather than a supported restore. Every replication partner now believes both DCs have already received each other's changes, so originating updates on either can be silently dropped. Demote and rebuild the copy, or restore it from a proper system-state backup; do not leave both running." -f `
+                    $g.Count, $g.Name, $who)
+        }
+    }
+    else {
+        $rows += New-Finding -Area 'RestoreIntegrity' -Item 'Database instantiation (invocationId)' -Status $script:Status.Pass `
+            -Detail ("All {0} DSA(s) with a readable invocationId have a distinct value, so no DC's database is a clone of another's. Note this cannot detect a rollback on its own - that needs the value compared with a previous run. The per-DC values are in the report so that comparison is possible: re-run before and after each change window and diff Assessment.json, where an invocationId that has changed means a restore happened in between." -f $withId.Count)
+    }
+
+    if ($withoutId.Count -gt 0) {
+        $rows += New-Finding -Area 'RestoreIntegrity' -Item 'invocationId - not readable' -Status $script:Status.NotAssessed `
+            -Detail ("{0} DSA(s) returned no invocationId: {1}. Those DCs are excluded from the clone check above, so it is a partial result, not a clean one." -f $withoutId.Count, ($withoutId -join ', '))
+    }
+
+    # The baseline itself, as Info, so the values are in the report and in the JSON.
+    foreach ($w in $withId) {
+        $rows += New-Finding -Area 'RestoreIntegrity' -Item ("invocationId of {0}" -f $w.Name) -Status $script:Status.Info `
+            -Detail ("{0} - baseline for comparison against a later run; a change means this DC's database was restored or reinstantiated." -f $w.Id)
+    }
+    return @($rows)
+}
+
+# ===========================================================================
 # region Best-practice recommendations
 # ===========================================================================
 
@@ -4109,8 +4345,20 @@ $script:RecommendationMap = @(
        Text  = 'Remove lingering objects rather than forcing replication through: "repadmin /removelingeringobjects <dc> <authoritative-dc-dsa-guid> <NC> /advisory_mode" first to preview, then without /advisory_mode. Do not disable strict replication consistency.' }
     @{ Match = '(?i)tombstone lifetime'
        Text  = 'Replication was stopped longer than tombstone lifetime; restarting it blindly risks lingering objects. Preferred fix: forcibly demote the divergent DC, clean its metadata, and repromote it. Only consider "allow replication with divergent and corrupt partner" after a full lingering-object scan.' }
+    # NOTE: this previously advised "dcpromo /forceremoval", which is the Windows 2000 / Server
+    # 2003 era command - the KB that documents it is scoped to those releases. On every OS this
+    # tool supports (WS2012 R2 and later) the command is Uninstall-ADDSDomainController.
+    # https://learn.microsoft.com/powershell/module/addsdeployment/uninstall-addsdomaincontroller
+    # https://learn.microsoft.com/windows-server/identity/ad-ds/deploy/demoting-domain-controllers-and-domains--level-200-
+    # Read: 2026-09-21.
+    @{ Match = '(?i)dsa not writable'
+       Text  = 'Do NOT delete or change the "Dsa Not Writable" value - that removes the quarantine and permanently diverges this DC from the forest. Pick one of the two supported recoveries. (1) Restore this DC''s system state from a backup taken BEFORE the bad restore, using an AD-aware backup application, which resets the invocation ID properly. (2) Demote and rebuild: "Uninstall-ADDSDomainController -ForceRemoval -DemoteOperationMasterRole", then clean its metadata on a surviving DC (ntdsutil "metadata cleanup", or delete the server object in AD Sites and Services), seize any FSMO roles it held, and repromote. Forced demotion loses every change that originated here and had not replicated out, so capture what you need first. Re-add the Global Catalog afterwards if it held one.' }
     @{ Match = '(?i)usn rollback|unsupported restore'
-       Text  = 'This DC was restored by snapshot/image, which is unsupported. Forcibly demote it (dcpromo /forceremoval), clean its metadata, and repromote. Recover DCs only via system-state restore or by rebuilding and repromoting.' }
+       Text  = 'This DC was restored by snapshot or disk image, which is not a supported way to restore a DC. Either restore its system state from a backup taken before the bad restore with an AD-aware backup application, or demote and rebuild it: "Uninstall-ADDSDomainController -ForceRemoval -DemoteOperationMasterRole", then metadata cleanup on a surviving DC, seize any FSMO roles it held, and repromote. Forced demotion discards every unreplicated change that originated on it. Recover DCs only by system-state restore or by rebuilding and repromoting.' }
+    @{ Match = '(?i)share invocationId|database was CLONED'
+       Text  = 'Two DCs are running the same database instantiation, which means one was copied from the other (a duplicated VHD, disk image, or a P2V whose original kept running) rather than restored. Do not leave both in service: decide which is authoritative, then demote and rebuild the other with "Uninstall-ADDSDomainController -ForceRemoval -DemoteOperationMasterRole", clean its metadata, and repromote it. Until then, replication partners believe both DCs already hold each other''s changes, so originating updates on either can be dropped without any replication error being reported.' }
+    @{ Match = '(?i)generation id change|reverted to a previous state'
+       Text  = 'A snapshot, import or live migration was applied to this DC. Where the hypervisor supplies a VM-Generation ID, AD detects it and protects itself - new invocation ID, RID pool invalidated, SYSVOL resynced non-authoritatively - so no rollback follows, but the practice still is not supported and on a hypervisor without VM-Generation ID the same action causes a silent USN rollback. Confirm this DC replicates inbound and outbound, check its RID pool, and confirm SYSVOL is shared. Stop using snapshots to roll DCs back: use system-state backup instead.' }
     @{ Match = '(?i)replication'
        Text  = 'Fix the DNS findings first (stale records, DSA GUID CNAMEs) - most post-restore RPC 1722 replication errors are DNS, not the network. Then: "repadmin /replsummary", "repadmin /showrepl <dc>", force with "repadmin /replicate <dest> <source> <NC>", and re-run this assessment to confirm.' }
     @{ Match = '(?i)no a record|does not resolve'
@@ -4802,6 +5050,24 @@ function Invoke-Main {
         $sectionData['Directory Service Events'] = Get-AdfaDsEventLog -DomainControllers $dcNames -Credential $Credential `
             -LookbackDays $script:Config.DsEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
     }
+    if (Test-SectionSelected 'RestoreIntegrity' $Sections) {
+        Write-Stage 'Restore integrity (USN rollback forensics, database instantiation)'
+        $riRows = @()
+        # The registry marker first: it is the only restore-integrity signal that does not depend
+        # on the Directory Service log still holding the event, which on a recovered forest it
+        # frequently does not.
+        $riRows += @(Get-AdfaUsnRollbackForensics -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs)
+        try {
+            $riRows += @(Get-AdfaInvocationIdVerdict -DsaInventory (Get-AdfaDsaInventory -AdParams $adParams))
+        }
+        catch {
+            Write-Log -Level ERROR -Section 'RestoreIntegrity' -Message ("DSA inventory failed, so database instantiation could not be checked: {0}" -f $_.Exception.Message)
+            $riRows += New-Finding -Area 'RestoreIntegrity' -Item 'Database instantiation (invocationId)' -Status $script:Status.NotAssessed `
+                -Detail ("The DSA inventory could not be read, so database instantiation identity is unknown: {0}" -f $_.Exception.Message)
+        }
+        $sectionData['Restore Integrity'] = @($riRows)
+    }
+
     if ($IncludeLingeringObjectScan) {
         Write-Stage 'Lingering object scan (repadmin advisory mode - no changes)'
         $loRows = foreach ($d in $targetDomains) {

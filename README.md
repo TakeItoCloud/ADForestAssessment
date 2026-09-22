@@ -24,7 +24,7 @@ Extracted from
 | Domain controllers | OS, GC, site, IP, read-only status |
 | Replication | Partner metadata, failures, queue; sites, subnets, site links, connection objects; `repadmin /showrepl * /csv` cross-check (catches links the AD cmdlets miss when a partner is unreachable) |
 | **Trusts** | Forest and domain trusts with per-direction secure-channel verification — outbound from the local side, **inbound executed on a partner-domain DC over WinRM** (a direction that cannot be tested from the correct side is `Not Assessed`, never `Verified`) — plus SID filtering, selective authentication, TGT delegation, encryption posture |
-| Diagnostics | `dcdiag` parsed to PASS/FAIL across 15 tests (Netlogons, Services, Replications, FsmoCheck, Advertising, SysVolCheck, MachineAccount, ObjectsReplicated, RidManager, KccEvent, VerifyReferences, CrossRefValidation, KnowsOfRoleHolders, Intersite, DFSREvent) |
+| Diagnostics | `dcdiag` parsed to PASS/FAIL across 17 tests (Netlogons, Services, Replications, FsmoCheck, Advertising, SysVolCheck, MachineAccount, ObjectsReplicated, RidManager, KccEvent, VerifyReferences, CrossRefValidation, KnowsOfRoleHolders, Intersite, DFSREvent, **CheckSecurityError**, **VerifyEnterpriseReferences** — the last two specifically post-restore) |
 | DNS | Zones, scavenging, forwarders, zone transfer, critical SRV records, secure dynamic updates |
 | **SYSVOL / DFSR** | DFSR migration state; **SYSVOL and NETLOGON share presence per DC** (SMB-unreachable is reported as unknown, never as a missing share); and the two attributes a D2/D4-equivalent rebuild edits by hand — `msDFSR-Enabled=FALSE` (replication switched off) and `msDFSR-options=1` (authoritative member), with **more than one authoritative member reported as a conflict**, which no single DC can reveal |
 | **SYSVOL backlog** | Opt-in (`-IncludeSysvolBacklog`): pending SYSVOL files **in both directions** between every DC and its domain's PDC emulator. `Get-DfsrBacklog` shows at most 100 records with the true total only in its verbose stream, so where that cannot be read the figure is reported as **"at least N"**, never as a total |
@@ -44,6 +44,7 @@ Extracted from
 | **Recovery: lingering objects** | Opt-in (`-IncludeLingeringObjectScan`) advisory-mode `repadmin /removelingeringobjects` pass per DC against the domain PDC — finds lingering objects before they block replication; changes nothing in the directory |
 | **Recovery: port matrix** | Per-DC reachability on the replication port set (88/135/389/445 critical; 636/3268/9389 optional), separating "unresolvable" from "port closed" |
 | **Recovery: secure channels** | DC machine-account password age from the replicated `pwdLastSet` (collected centrally) and per-DC `nltest /sc_verify` over WinRM where reachable |
+| **Recovery: restore integrity** | `-Sections RestoreIntegrity`: the **`Dsa Not Writable` registry marker** per DC — the forensic evidence of a USN rollback that Microsoft names as the fallback when event 2095 *"may be overwritten before [it is] observed"*, so it is the one restore signal that does not depend on the event log surviving. Plus `invocationId` per DSA: a **shared value across two DCs is a cloned database** (`Fail`), and the per-DC values are emitted as a baseline so diffing `Assessment.json` between runs shows a DC that was restored in between |
 | **Recovery: DS events** | Per-DC Directory Service log scan for lingering objects (1988), tombstone-lifetime exceeded (2042), USN rollback (2095), unsupported restore (2103), source-GUID DNS failures (2087/2088), KCC failures (1311/1865/1925/1084) — **gated on log coverage**: the oldest retained record is compared against the lookback window, and a clean scan over a cleared, wrapped or unreadable log reports `Not Assessed` naming where coverage begins, never `Pass`. A count taken from a partial log is reported as a minimum |
 | Identity export | Full user and computer export with every populated attribute (CSV; HTML shows a summary) |
 | Exchange | Schema markers |
@@ -93,7 +94,7 @@ checks (CIM / registry) and `dcdiag` need administrative rights on the domain co
 # including the advisory-mode lingering-object scan (writes events on target DCs, changes nothing)
 # and the SYSVOL backlog (two RPC round trips per DC, read-only)
 .\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -AllDomains -IncludeLingeringObjectScan -IncludeSysvolBacklog -Sections `
-    DnsAdConsistency,DsaCname,GcConsistency,PortMatrix,Replication,Trusts,DcSecureChannel,DsEvents,TimeSync,Sysvol,Backup
+    DnsAdConsistency,DsaCname,GcConsistency,PortMatrix,Replication,Trusts,DcSecureChannel,DsEvents,RestoreIntegrity,TimeSync,Sysvol,Backup
 ```
 
 The report bundle lands in the logged-on user's Documents:

@@ -56,7 +56,7 @@ verdict only.
 | H5a | SYSVOL/DFSR depth: SYSVOL+NETLOGON share presence per DC, `msDFSR-Enabled` / `msDFSR-options` per DC with the cross-DC "exactly one authoritative" rule, and a DFS Replication event scan reusing the H2 coverage guard | Done | 2026-09-21 |
 | H5b | SYSVOL **backlog** both ways against each domain's PDC emulator, opt-in via `-IncludeSysvolBacklog`. Handles `Get-DfsrBacklog`'s 100-record cap by preferring the verbose total and reporting a floor as "at least N" when it cannot be read | Done | 2026-09-21 |
 | H6 | Replication convergence: parse `repadmin /replsummary` into findings; `/showutdvec` lag per DC per NC | Planned | |
-| H7 | Restore integrity: `msDS-GenerationId` / `invocationID`; dcdiag `CheckSecurityError` + `VerifyEnterpriseReferences` | Planned | |
+| H7 | Restore integrity: the `Dsa Not Writable` registry marker (USN-rollback forensics that survive the event log being cleared), `invocationId` clone detection plus a per-DC baseline, DS events 2170/2181, dcdiag `CheckSecurityError` + `VerifyEnterpriseReferences`. `msDS-GenerationId` was dropped: nothing about it is concludable from a single read, and events 2170/2181 carry the same signal actionably | Done | 2026-09-22 |
 | H8 | `_msdcs` delegation; PDC external time source and Hyper-V time-sync conflict; per-site writeable-GC assertion | Planned | |
 | H9 | Forest and domain resolution guarded: an unreadable forest is now the report's headline `Fail` instead of a raw abort with no report; an unreadable current domain falls back to the forest root as a loud `Warning` naming the scope change | Done | 2026-09-21 |
 
