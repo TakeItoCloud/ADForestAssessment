@@ -10,6 +10,72 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-09-22 (restore integrity that survives a cleared event log, tool v1.9.0)
+
+Every restore-integrity signal the tool had came from the Directory Service log. On a forest
+recovered from a ransomware incident that log is exactly what cannot be trusted — v1.7.0 stopped
+the tool *reporting `Pass`* from a wiped log, but it could still only say "unassessed". This adds
+a signal that does not depend on the log at all.
+
+**The `Dsa Not Writable` registry marker.** Microsoft documents event 2095 as the USN-rollback
+signal, then says plainly that it *"may be overwritten before [it is] observed by an
+administrator"* and names the fallback:
+
+> `HKLM\System\CurrentControlSet\Services\NTDS\Parameters` → `Dsa Not Writable = 0x4`
+> "provides forensic evidence that a USN rollback has occurred"
+
+— [detect and recover from USN rollback](https://learn.microsoft.com/troubleshoot/windows-server/active-directory/detect-and-recover-from-usn-rollback),
+[safely virtualizing AD DS](https://learn.microsoft.com/windows-server/identity/ad-ds/introduction-to-active-directory-domain-services-ad-ds-virtualization-level-100) (read 2026-09-21).
+
+Read per DC over remote registry, the same mechanism the DC-hardening checks already use, against
+the same NTDS key. Value 4 → `Fail`, naming the quarantine that follows (Net Logon paused, inbound
+and outbound replication disabled) and warning that deleting the value removes the quarantine and
+permanently diverges the DC. An undocumented value → `Warning`, reported as found rather than
+interpreted. Unreadable → `Not Assessed`.
+
+Absence is a `Pass` **with its limit stated**: no marker means no forensic evidence of a rollback
+*on this operating-system installation*, which is not the same as proving none ever happened — a
+DC rebuilt after an incident carries no history either way. A test asserts the wording does not
+claim health.
+
+**`invocationId`, and exactly one conclusion drawn from it.** The attribute identifies the
+*instantiation* of a DC's database; a supported restore resets it, an unsupported one does not.
+From a single read one thing is safe to conclude and it is worth having: **two DSAs sharing an
+invocationId means one database was cloned from the other** — a copied VHD, disk image, or a P2V
+whose original kept running — so every replication partner believes both DCs already hold each
+other's changes and originating updates on either can be dropped with no replication error at all.
+That is a `Fail`.
+
+What is deliberately **not** claimed: a rollback cannot be detected from one read, because that
+needs the value compared with a previous one. So the per-DC values are emitted as an `Info`
+baseline, which is what makes the v1.7.0 JSON output pay off — re-run before and after a change
+window, diff `Assessment.json`, and an `invocationId` that moved means that DC was restored in
+between. The passing finding says this rather than implying the check rules a rollback out.
+
+**Also:** Directory Service events **2170** (VM-Generation ID change) and **2181** (VM reverted)
+added with vendor-sourced meanings — 2170 is the *safe* path, where the hypervisor supplied a new
+generation ID and AD reset its own invocation ID and RID pool, but it still means a snapshot was
+applied to a DC. And dcdiag gains **`CheckSecurityError`** and **`VerifyEnterpriseReferences`**,
+the two post-restore tests, taking the grid from 15 to 17.
+
+**`msDS-GenerationId` was considered and dropped.** Nothing about it is concludable from a single
+point-in-time read, and events 2170/2181 carry the same signal in an actionable form. Adding an
+attribute the tool could only echo would have looked like coverage without being any.
+
+### Fixed — 2026-09-22 (remediation advised a retired demotion command, tool v1.9.0)
+
+The USN-rollback remediation advised `dcpromo /forceremoval`. That is the Windows 2000 / Server
+2003 era command — the KB documenting it is scoped to those releases — and it does not exist on
+any OS this tool supports (WS2012 R2 and later, per the Exchange SE matrix the tool itself
+encodes). Replaced with `Uninstall-ADDSDomainController -ForceRemoval -DemoteOperationMasterRole`
+([ADDSDeployment](https://learn.microsoft.com/powershell/module/addsdeployment/uninstall-addsdomaincontroller),
+read 2026-09-21), plus what the vendor says around it: forced demotion discards every change that
+originated on that DC and had not replicated out, and metadata cleanup must follow immediately.
+
+A test asserts no entry in the recommendation map advises the retired command — checked against
+the advice text rather than the file, so the comment recording why it changed can stay.
+
+
 ### Added — 2026-09-21 (SYSVOL backlog, opt-in, tool v1.8.0)
 
 `-IncludeSysvolBacklog` measures pending SYSVOL files **in both directions** between every DC and

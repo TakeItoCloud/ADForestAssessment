@@ -706,6 +706,128 @@ Assert-True ($exactDetail -match 'indicates latency rather than a fault') 'Backl
 Assert-True ((Get-AdfaSysvolBacklogVerdict -SourceDc 'dcA' -DestinationDc 'dcB' -Count 5 -Exact $true).Detail -match 'dcA -> dcB') 'Backlog verdict: the direction is named'
 
 Write-Host ""
+Write-Host "== 18. Restore integrity (USN rollback forensics, database instantiation) ==" -ForegroundColor Cyan
+
+# The registry marker is the only restore-integrity signal that survives the event log being
+# cleared, which Microsoft names explicitly as the fallback when event 2095 has been overwritten.
+Assert-Equal 'Rollback'   (Get-AdfaUsnRollbackVerdict -Readable $true  -Present $true  -Value 4)     'Rollback: "Dsa Not Writable"=4 => Rollback'
+Assert-Equal 'Rollback'   (Get-AdfaUsnRollbackVerdict -Readable $true  -Present $true  -Value '4')   'Rollback: the documented value matches as a string too'
+Assert-Equal 'OtherValue' (Get-AdfaUsnRollbackVerdict -Readable $true  -Present $true  -Value 1)     'Rollback: an undocumented value is reported as found, not interpreted'
+Assert-Equal 'NoEvidence' (Get-AdfaUsnRollbackVerdict -Readable $true  -Present $false -Value $null) 'Rollback: absent marker => NoEvidence'
+Assert-Equal 'Unknown'    (Get-AdfaUsnRollbackVerdict -Readable $false -Present $null  -Value $null) 'Rollback: unreadable registry => Unknown'
+Assert-Equal 'Unknown'    (Get-AdfaUsnRollbackVerdict -Readable $true  -Present $null  -Value $null) 'Rollback: readable but presence unknown => Unknown, never NoEvidence'
+# Fail-closed: an unreachable DC must never be reported as having no evidence of a rollback.
+$rbDegraded = @(
+    (Get-AdfaUsnRollbackVerdict -Readable $false -Present $true  -Value 4),
+    (Get-AdfaUsnRollbackVerdict -Readable $false -Present $false -Value $null),
+    (Get-AdfaUsnRollbackVerdict -Readable $true  -Present $null  -Value 4)
+)
+Assert-Equal 3 (@($rbDegraded).Count) 'Rollback: non-vacuity - three degraded inputs evaluated'
+Assert-Equal 0 (@($rbDegraded | Where-Object { $_ -eq 'NoEvidence' }).Count) 'Rollback: no degraded input is ever reported as NoEvidence'
+
+# The wording has to carry the quarantine consequence and the do-not-touch warning.
+$rbDetail = Get-AdfaUsnRollbackDetail -Verdict 'Rollback' -Value 4
+Assert-True ($rbDetail -match 'USN ROLLBACK') 'Rollback detail: names the condition'
+Assert-True ($rbDetail -match 'Net Logon is paused') 'Rollback detail: states the quarantine effect'
+Assert-True ($rbDetail -match 'Do NOT delete or edit') 'Rollback detail: warns against clearing the marker'
+Assert-True ($rbDetail -match 'overwritten') 'Rollback detail: explains why this beats the event log'
+# Absence must be honest about what it does not prove.
+$rbNone = Get-AdfaUsnRollbackDetail -Verdict 'NoEvidence' -Value $null
+Assert-True ($rbNone -match 'operating-system installation only') 'Rollback detail: absence states its own limit'
+Assert-True ($rbNone -notmatch 'healthy') 'Rollback detail: absence does not claim health'
+Assert-True ((Get-AdfaUsnRollbackDetail -Verdict 'Unknown' -Value $null -Reason 'Access is denied') -match 'Access is denied') 'Rollback detail: unknown carries the cause'
+Assert-True ((Get-AdfaUsnRollbackDetail -Verdict 'OtherValue' -Value 9) -match '9') 'Rollback detail: an undocumented value is quoted back'
+
+# --- invocationId: exactly one conclusion is safe from a single read - a cloned database.
+function Get-RiRow {
+    param($Rows, [string]$Item)
+    $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+    if ($m.Count -eq 0) { return $null }
+    return $m[0]
+}
+$invDistinct = @(
+    [pscustomobject]@{ DnsHostName = 'dc1.contoso.com'; ServerDn = 'CN=DC1'; InvocationId = '11111111-1111-1111-1111-111111111111' },
+    [pscustomobject]@{ DnsHostName = 'dc2.contoso.com'; ServerDn = 'CN=DC2'; InvocationId = '22222222-2222-2222-2222-222222222222' }
+)
+$vD = Get-AdfaInvocationIdVerdict -DsaInventory $invDistinct
+Assert-Equal 'Pass' ([string](Get-RiRow $vD 'Database instantiation (invocationId)').Status) 'invocationId: distinct values => Pass'
+Assert-True ((Get-RiRow $vD 'Database instantiation (invocationId)').Detail -match 'cannot detect a rollback on its own') 'invocationId: the pass states what it cannot conclude'
+Assert-True ($null -ne (Get-RiRow $vD 'invocationId of dc1.contoso.com')) 'invocationId: per-DC baseline is emitted for later comparison'
+Assert-True ($null -eq (Get-RiRow $vD 'No Such Item')) 'invocationId: non-vacuity - the lookup returns null for an absent item'
+
+$invCloned = @(
+    [pscustomobject]@{ DnsHostName = 'dc1.contoso.com'; ServerDn = 'CN=DC1'; InvocationId = '11111111-1111-1111-1111-111111111111' },
+    [pscustomobject]@{ DnsHostName = 'dc2.contoso.com'; ServerDn = 'CN=DC2'; InvocationId = '11111111-1111-1111-1111-111111111111' }
+)
+$vC = Get-AdfaInvocationIdVerdict -DsaInventory $invCloned
+$cRow = Get-RiRow $vC 'Duplicate database instantiation (invocationId)'
+Assert-True ($null -ne $cRow) 'invocationId: a shared value is reported'
+if ($null -ne $cRow) {
+    Assert-Equal 'Fail' ([string]$cRow.Status) 'invocationId: a cloned database => Fail'
+    Assert-True ($cRow.Detail -match 'dc1' -and $cRow.Detail -match 'dc2') 'invocationId: both DCs are named'
+    Assert-True ($cRow.Detail -match 'CLONED') 'invocationId: names what a shared value means'
+}
+Assert-True ($null -eq (Get-RiRow $vC 'Database instantiation (invocationId)')) 'invocationId: the clone finding replaces the clean row'
+
+# A DSA with no readable invocationId is excluded and said to be excluded.
+$invPartial = @(
+    [pscustomobject]@{ DnsHostName = 'dc1.contoso.com'; ServerDn = 'CN=DC1'; InvocationId = '11111111-1111-1111-1111-111111111111' },
+    [pscustomobject]@{ DnsHostName = 'dc2.contoso.com'; ServerDn = 'CN=DC2'; InvocationId = '' }
+)
+$vP = Get-AdfaInvocationIdVerdict -DsaInventory $invPartial
+$pRow = Get-RiRow $vP 'invocationId - not readable'
+Assert-True ($null -ne $pRow) 'invocationId: an unreadable value gets its own row'
+if ($null -ne $pRow) {
+    Assert-Equal 'Not Assessed' ([string]$pRow.Status) 'invocationId: unreadable => Not Assessed'
+    Assert-True ($pRow.Detail -match 'partial result, not a clean one') 'invocationId: says the clone check is partial'
+}
+Assert-Equal 'Not Assessed' ([string](Get-RiRow (Get-AdfaInvocationIdVerdict -DsaInventory @()) 'Database instantiation (invocationId)').Status) 'invocationId: nothing read => Not Assessed'
+
+# --- The two post-restore dcdiag tests must actually be in the grid.
+$dcdiagSrc = Get-Content (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'src/ADForestAssessment/Invoke-ADForestAssessment.ps1') -Raw
+Assert-True ($dcdiagSrc -match "'CheckSecurityError'") 'dcdiag: CheckSecurityError added to the grid'
+Assert-True ($dcdiagSrc -match "'VerifyEnterpriseReferences'") 'dcdiag: VerifyEnterpriseReferences added to the grid'
+
+# --- The VM-revert events must be in the Directory Service table with vendor meanings.
+$dsIds = @($script:Config.DsEventsOfInterest | ForEach-Object { [int]$_.Id })
+Assert-True ($dsIds -contains 2170) 'DS events: 2170 (VM Generation ID change) present'
+Assert-True ($dsIds -contains 2181) 'DS events: 2181 (VM reverted) present'
+$e2170 = @($script:Config.DsEventsOfInterest | Where-Object { [int]$_.Id -eq 2170 })[0]
+Assert-True ($e2170.Meaning -match 'snapshot') 'DS events: 2170 meaning names the snapshot cause'
+Assert-True ($e2170.Meaning -match 'not a supported procedure') 'DS events: 2170 says a snapshot restore is unsupported'
+
+# Remediation for the new findings, and a correctness fix to an existing one.
+$dnwRec = Get-AdfaRecommendation -Section 'Restore Integrity' -Item 'USN rollback marker on dc1.contoso.com' `
+    -Detail (Get-AdfaUsnRollbackDetail -Verdict 'Rollback' -Value 4)
+Assert-True ($dnwRec -match 'Do NOT delete or change') 'Restore remediation: leads with not touching the marker'
+Assert-True ($dnwRec -match 'Uninstall-ADDSDomainController') 'Restore remediation: uses the current demotion cmdlet'
+Assert-True ($dnwRec -match 'metadata cleanup') 'Restore remediation: names metadata cleanup'
+Assert-True ($dnwRec -match 'loses every change') 'Restore remediation: warns forced demotion loses unreplicated changes'
+
+# The old text recommended dcpromo /forceremoval, which is Windows 2000 / Server 2003 era - not
+# valid on any OS this tool supports. It must be gone from every entry, not just the new one.
+# Asserted against the recommendation TEXT, not the whole file: a comment recording why the
+# advice changed is worth keeping, and banning the word everywhere would forbid that.
+$adviceWithDcpromo = @($script:RecommendationMap | Where-Object { [string]$_.Text -match 'dcpromo\s*/forceremoval' })
+Assert-Equal 0 (@($adviceWithDcpromo).Count) 'Restore remediation: no recommendation advises the retired dcpromo command'
+# Non-vacuity: the map really is inspectable this way and really does contain advice.
+Assert-True (@($script:RecommendationMap).Count -gt 10) ("Restore remediation: non-vacuity - {0} recommendation entries were inspected" -f @($script:RecommendationMap).Count)
+Assert-True (@($script:RecommendationMap | Where-Object { [string]$_.Text -match 'Uninstall-ADDSDomainController' }).Count -ge 2) 'Restore remediation: the current cmdlet is what the map now advises'
+$usnRec = Get-AdfaRecommendation -Section 'Directory Service Events' -Item 'Event 2095 on dc1' `
+    -Detail 'USN rollback detected - the directory is silently diverging.'
+Assert-True ($usnRec -match 'Uninstall-ADDSDomainController') 'Restore remediation: the 2095 entry uses the current cmdlet too'
+
+$cloneRec = Get-AdfaRecommendation -Section 'Restore Integrity' -Item 'Duplicate database instantiation (invocationId)' `
+    -Detail '2 DCs share invocationId 1111: dc1, dc2. ... database was CLONED from the other'
+Assert-True ($cloneRec -match 'Do not leave both in service') 'Restore remediation: a clone gets clone-specific advice'
+Assert-True ($cloneRec -notmatch 'Dsa Not Writable') 'Restore remediation: entries do not bleed into each other'
+
+$genRec = Get-AdfaRecommendation -Section 'Directory Service Events' -Item 'Event 2170 on dc1' `
+    -Detail 'VM Generation ID change detected - a snapshot, import or live migration was applied to this DC.'
+Assert-True ($genRec -match 'RID pool') 'Restore remediation: 2170 names what AD reset for you'
+Assert-True ($genRec -match 'not supported') 'Restore remediation: 2170 still says snapshots are not a restore method'
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }
