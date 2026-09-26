@@ -1972,12 +1972,20 @@ Describe 'Cross-domain DC enrichment (live four-domain forest, 2026-09-26)' {
 
     Context 'An enrichment failure carries its cause' {
         It 'keeps the DC, reports the OS unassessed, and records why' {
-            Mock Get-ADDomainController {
+            # Defined, not Mocked. Pester's Mock requires the command to already exist, and the
+            # ActiveDirectory module is not present on the CI runner - "Could not find Command
+            # Get-ADDomainController". Defining the stub in this scope is what the dependency-free
+            # harness does, and it works with or without RSAT.
+            function Get-ADDomainController {
+                param([Parameter(ValueFromRemainingArguments)]$a)
                 [pscustomobject]@{ HostName = 'dc9.contoso.com'; Name = 'DC9'; Site = 'HQ'; IPv4Address = '192.0.2.9'
                     IsGlobalCatalog = $true; IsReadOnly = $false
                     ComputerObjectDN = 'CN=DC9,OU=Domain Controllers,DC=child,DC=contoso,DC=com' }
             }
-            Mock Get-ADComputer { throw 'A referral was returned from the server' }
+            function Get-ADComputer {
+                param([Parameter(ValueFromRemainingArguments)]$a)
+                throw 'A referral was returned from the server'
+            }
             $inv = @(Get-AdfaDomainControllerInventory -DomainName 'child.contoso.com' -AdParams @{} -WarningAction SilentlyContinue)
             @($inv).Count | Should -Be 1
             [string]$inv[0].OperatingSystem | Should -Be 'Not Assessed'
