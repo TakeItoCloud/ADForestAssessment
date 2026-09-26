@@ -67,13 +67,14 @@ throws `A referral was returned from the server` when called without `-Server`, 
 directory did. Reverting the fix turns three smoke assertions and two harness assertions red.
 
 **Separately, a client domain label was removed from the test fixtures.** A leak check run
-before committing this change found `epal` used as a "fictional" domain in
-`Run-SmokeTest.ps1` and `Invoke-ADForestAssessment.Tests.ps1`. It is not fictional: it is a real
-domain label belonging to the forest this tool was being run against, and it has been in the
-repository since v1.6.0. `CLAUDE.md` is unambiguous - *no client ever appears in this
-repository, not in code, not in tests* - and *if a value could plausibly be a real client's, it
-is the wrong value*. Replaced with `south`, mirroring the existing `north`. Note this does not
-remove the string from git history, which would need a rewrite of published commits.
+before committing this change found one of the third-level domain labels from the forest this
+tool was being run against, used as a "fictional" domain in `Run-SmokeTest.ps1` and
+`Invoke-ADForestAssessment.Tests.ps1`, where it had been since v1.6.0. `CLAUDE.md` is
+unambiguous - *no client ever appears in this repository, not in code, not in tests* - and *if
+a value could plausibly be a real client's, it is the wrong value*. Replaced with `south`,
+mirroring the existing `north`. The label itself is deliberately not repeated here, for the
+same reason it had to leave the fixtures. Note this does not remove it from git history, which
+would need a rewrite of published commits.
 
 ### Added — 2026-09-22 (a runtime event-lookback window, and the clock offset H8 admitted it was not measuring, tool v1.14.0)
 
