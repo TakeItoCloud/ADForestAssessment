@@ -10,6 +10,71 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-09-26 (the DC inventory asked the wrong domain controller, so every child-domain DC lost its OS, tool v1.15.0)
+
+**Found by the first run against a live multi-domain forest** — four domains — which is the
+exact path R5 named as the highest-risk untested one. It failed on first contact.
+
+`Get-AdfaDomainControllerInventory` makes two calls per domain. The first targeted the right
+server; the second did not:
+
+```powershell
+$p = @{} + $AdParams; $p.Server = $DomainName       # Get-ADDomainController -> correct DC
+$cp = @{} + $AdParams; $cp.Identity = $id           # Get-ADComputer -> NO -Server
+```
+
+`$id` is the DC's `ComputerObjectDN`, a DN in the domain being enumerated. With no `-Server`,
+`Get-ADComputer` asked whatever DC the tool was running against — in the forest root. That DC
+does not hold a child domain's naming context, so LDAP answered with a **referral**, and
+`Get-ADComputer` does not chase referrals.
+
+Every domain controller outside the tool's own domain came back as:
+
+```
+WARNING: DC enrichment failed for <dc>: A referral was returned from the server
+```
+
+and lost `OperatingSystem`, `OperatingSystemVersion` and `Enabled`.
+
+**What that cost.** The Exchange SE check reads exactly that field and treats the literal
+`Not Assessed` as unreadable, so it reported those DCs *"unverified, not compatible"*. On a
+four-domain forest that made the SE readiness verdict — the single thing that section exists to
+answer — wrong for three domains out of four. A single-domain run never showed it, because
+there the default server and the target domain are the same host.
+
+Not affected: `SiteGc`, `Topology` and everything else reading `Site`, `IsGlobalCatalog` or
+`IsReadOnly`, because those come from `Get-ADDomainController`, which did set `-Server`.
+
+The fix is to splat the per-domain `$p`, which already carries the right `-Server`.
+
+**Two further defects fixed alongside it, both of the same family.**
+
+The cause went to `Write-Warning` and nowhere else. A reader of `Assessment.html` saw
+`Not Assessed` with no explanation anywhere in the report — the same defect H10 fixed for
+dcdiag and this collector was missed. The inventory row now carries an `EnrichmentError`
+column.
+
+And the "OS not readable" finding gave one fixed line whatever had gone wrong: *"Re-run with
+credentials that can read the DC computer objects."* For a referral that is simply **wrong** —
+credentials had nothing to do with it, and the advice sent an operator somewhere there was
+nothing to find. New pure `Get-AdfaEnrichmentFailureAdvice` matches the advice to the cause:
+a referral is named as a referral, an access failure keeps the credentials advice, both are
+given when both occur, and an error the tool does not recognise is **quoted verbatim rather
+than interpreted**. A wrong cause is worse than no cause.
+
+The regression guard is the field failure itself: `Run-SmokeTest`'s `Get-ADComputer` stub now
+throws `A referral was returned from the server` when called without `-Server`, exactly as the
+directory did. Reverting the fix turns three smoke assertions and two harness assertions red.
+
+**Separately, a client domain label was removed from the test fixtures.** A leak check run
+before committing this change found `epal` used as a "fictional" domain in
+`Run-SmokeTest.ps1` and `Invoke-ADForestAssessment.Tests.ps1`. It is not fictional: it is a real
+domain label belonging to the forest this tool was being run against, and it has been in the
+repository since v1.6.0. `CLAUDE.md` is unambiguous - *no client ever appears in this
+repository, not in code, not in tests* - and *if a value could plausibly be a real client's, it
+is the wrong value*. Replaced with `south`, mirroring the existing `north`. Note this does not
+remove the string from git history, which would need a rewrite of published commits.
+
 ### Added — 2026-09-22 (a runtime event-lookback window, and the clock offset H8 admitted it was not measuring, tool v1.14.0)
 
 **H13 — `-EventLookbackDays`.** The Directory Service and DFS Replication event scans looked

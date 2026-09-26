@@ -52,7 +52,14 @@ function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a)
 function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ HostName='dc1.contoso.com'; Name='DC1'; Site='Default-First-Site-Name'
         IPv4Address='10.0.0.1'; IsGlobalCatalog=$true; IsReadOnly=$false; ComputerObjectDN='CN=DC1,OU=DCs,DC=contoso,DC=com' } }
-function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a)
+# Reproduces the failure a real multi-domain forest produced on 2026-09-26: the DC inventory
+# enriched via Get-ADComputer WITHOUT -Server, so a child-domain DN was asked of a forest-root
+# DC, which answers with an LDAP referral rather than the object. Every child-domain DC lost its
+# OperatingSystem, and the Exchange SE verdict called them "unverified, not compatible".
+# The stub refuses exactly as the directory did, so the bug cannot come back unnoticed.
+function Get-ADComputer {
+    param([string]$Identity, [string]$Server, [string[]]$Properties, [Parameter(ValueFromRemainingArguments)]$a)
+    if ([string]::IsNullOrWhiteSpace($Server)) { throw 'A referral was returned from the server' }
     [pscustomobject]@{ OperatingSystem='Windows Server 2019'; OperatingSystemVersion='10.0'; Enabled=$true; whenCreated=$now } }
 function Get-ADReplicationPartnerMetadata { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ Partner='dc2.contoso.com'; ConsecutiveReplicationFailures=0; LastReplicationSuccess=$now } }
@@ -158,10 +165,34 @@ if (Test-Path $repCsv) {
 }
 else { Check $false 'Replication Health CSV exists' }
 
+# The DC inventory must actually be ENRICHED. The stub refuses a Get-ADComputer call that
+# carries no -Server, exactly as a real forest-root DC refuses a child-domain DN with an LDAP
+# referral. If the enrichment regresses, OperatingSystem goes to 'Not Assessed' here and the
+# Exchange SE verdict silently downgrades every affected DC to "unverified, not compatible".
+$dcInvCsv = Join-Path $result.CsvPath 'Domain Controllers.csv'
+if (Test-Path $dcInvCsv) {
+    $dcInv = @(Import-Csv $dcInvCsv)
+    Check (@($dcInv).Count -ge 1) ("DC inventory has rows ({0})" -f @($dcInv).Count)
+    $enriched = @($dcInv | Where-Object { $_.OperatingSystem -and $_.OperatingSystem -ne 'Not Assessed' })
+    Check (@($enriched).Count -eq @($dcInv).Count) ("DC inventory enrichment succeeded for every DC ({0}/{1} carry a real OperatingSystem)" -f @($enriched).Count, @($dcInv).Count)
+    $withErr = @($dcInv | Where-Object { $_.EnrichmentError })
+    Check (@($withErr).Count -eq 0) ("No DC row carries an EnrichmentError ({0})" -f @($withErr).Count)
+    Check ($dcInv[0].PSObject.Properties.Name -contains 'EnrichmentError') 'DC inventory exposes EnrichmentError so an unreadable OS carries its cause into the report'
+}
+else { Check $false 'Domain Controllers CSV exists' }
+
+
 # The three sections added in v1.11.0 must be wired, not merely present as functions: a
 # ValidateSet entry with no branch in Invoke-Main produces no section at all, and nothing else
 # in this harness would notice.
 $smokeFindings = @(Import-Csv $result.FindingsFile)
+
+# The Exchange SE verdict must not be degraded by a failed enrichment: an unreadable OS makes
+# this tool call a DC "unverified, not compatible", which is the wrong answer to the one
+# question the SE section exists to answer.
+$seRows = @($smokeFindings | Where-Object { $_.Section -eq 'Exchange SE Compatibility' })
+Check (@($seRows).Count -gt 0) ("Exchange SE section produced findings ({0})" -f @($seRows).Count)
+Check (@($seRows | Where-Object { $_.Item -match 'not readable' }).Count -eq 0) 'Exchange SE: no DC is reported as having an unreadable OS'
 foreach ($sec in @('_msdcs Zone Delegation', 'Time Hierarchy', 'Site Global Catalog Coverage')) {
     $n = @($smokeFindings | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Section '{0}' is wired into Invoke-Main and reached the findings ({1} rows)" -f $sec, $n)
@@ -193,10 +224,10 @@ Get-ChildItem -Recurse $result.OutputRoot | Select-Object -First 30 FullName | F
 Write-Host ""
 Write-Host "== Running Invoke-Main against a THREE-DOMAIN stubbed forest ==" -ForegroundColor Cyan
 
-$multiDomains = @('contoso.com', 'north.contoso.com', 'epal.contoso.com')
+$multiDomains = @('contoso.com', 'north.contoso.com', 'south.contoso.com')
 function Get-ADForest { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ Name='contoso.com'; RootDomain='contoso.com'; ForestMode='Windows2016Forest'
-        Domains=@('contoso.com','north.contoso.com','epal.contoso.com')
+        Domains=@('contoso.com','north.contoso.com','south.contoso.com')
         Sites=@('Default-First-Site-Name'); GlobalCatalogs=@('dc1.contoso.com')
         SchemaMaster='dc1.contoso.com'; DomainNamingMaster='dc1.contoso.com'; UPNSuffixes=@() } }
 

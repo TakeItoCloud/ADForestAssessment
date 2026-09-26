@@ -226,7 +226,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.14.0'
+    Version                 = '1.15.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1169,13 +1169,28 @@ function Get-AdfaDomainControllerInventory {
     $dcs = Get-ADDomainController -Filter * @p
     $inv = foreach ($dc in $dcs) {
         $comp = $null
+        $enrichError = ''
         try {
             $id = if ($dc.ComputerObjectDN) { $dc.ComputerObjectDN } else { $dc.HostName }
-            $cp = @{} + $AdParams; $cp.Identity = $id
+            # $p, NOT $AdParams: $p already carries -Server for THIS domain. Before v1.15.0 this
+            # copied $AdParams instead, so Get-ADComputer had no -Server and asked whatever DC
+            # the tool was running against - while $id is a DN in the domain being enumerated.
+            # On a multi-domain forest that is a cross-naming-context lookup, the root DC answers
+            # with an LDAP referral rather than the object, Get-ADComputer does not chase
+            # referrals, and EVERY child-domain DC lost its OperatingSystem. The Exchange SE
+            # verdict then called those DCs "unverified, not compatible" - so a forest-wide
+            # readiness answer was wrong for every domain but the one the tool happened to run
+            # in. Found on a live four-domain forest, 2026-09-26; single-domain runs never showed
+            # it, because there the default server and the target domain are the same.
+            $cp = @{} + $p
+            $cp.Identity = $id
             $cp.Properties = @('OperatingSystem', 'OperatingSystemVersion', 'Enabled', 'whenCreated')
             $comp = Get-ADComputer @cp
         }
-        catch { Write-Warning ("DC enrichment failed for {0}: {1}" -f $dc.HostName, $_.Exception.Message) }
+        catch {
+            $enrichError = [string]$_.Exception.Message
+            Write-Warning ("DC enrichment failed for {0}: {1}" -f $dc.HostName, $enrichError)
+        }
 
         [pscustomobject]@{
             Scope                  = $DomainName
@@ -1188,6 +1203,10 @@ function Get-AdfaDomainControllerInventory {
             OperatingSystem        = $(if ($comp) { $comp.OperatingSystem } else { $script:Status.NotAssessed })
             OperatingSystemVersion = $(if ($comp) { $comp.OperatingSystemVersion } else { $script:Status.NotAssessed })
             Enabled                = $(if ($comp) { $comp.Enabled } else { $script:Status.NotAssessed })
+            # Why the three fields above are unreadable, carried into the row rather than left in
+            # the warning stream. A reader of Assessment.html previously saw 'Not Assessed' with
+            # no cause anywhere in the report - the same defect H10 fixed for dcdiag, missed here.
+            EnrichmentError        = $enrichError
         }
     }
     return @($inv)
@@ -3114,6 +3133,41 @@ function Import-AdfaExchangeSeConfig {
     return (Merge-AdfaExchangeSeConfig -BaseConfig $BaseConfig -Override $obj -OverrideSource $Path)
 }
 
+function Get-AdfaEnrichmentFailureAdvice {
+    <#
+    .SYNOPSIS
+        Pure: turns the errors a DC-inventory enrichment hit into advice that matches them.
+    .DESCRIPTION
+        Before v1.15.0 the "OS not readable" finding gave one fixed line - "re-run with
+        credentials that can read the DC computer objects" - whatever had actually gone wrong.
+        On a live four-domain forest the real cause was an LDAP REFERRAL: the enrichment queried
+        a forest-root DC for a DN in a child domain, and Get-ADComputer does not chase referrals.
+        Credentials had nothing to do with it, so the advice sent the operator somewhere there
+        was nothing to find. A wrong cause is worse than no cause.
+
+        The referral case is now named specifically, because it is the one that means THIS TOOL
+        had a bug rather than the directory having a problem. Access errors keep the credentials
+        advice, which is right for them. Anything else is quoted verbatim rather than
+        interpreted - an unrecognised error is reported, never guessed at.
+    .OUTPUTS
+        [string] A leading-space-prefixed sentence, or '' when there is nothing to say.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyCollection()][string[]]$Causes = @())
+    $seen = @(@($Causes) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
+    if ($seen.Count -eq 0) { return '' }
+    $parts = @()
+    if (@($seen | Where-Object { $_ -match '(?i)referral' }).Count -gt 0) {
+        $parts += "An LDAP referral was returned, which means the computer object was looked up against a domain controller that does not hold that domain's naming context - not a credentials problem. On this build the per-domain lookup is targeted correctly; if you still see this, the DC serving the query cannot reach a DC in the affected domain."
+    }
+    if (@($seen | Where-Object { $_ -match '(?i)access is denied|insufficient access|authentication' }).Count -gt 0) {
+        $parts += 'Access was denied, so re-run with credentials that can read the DC computer objects in that domain.'
+    }
+    $parts += ("Reported by the directory: {0}." -f (($seen | Select-Object -First 3) -join ' | '))
+    return (' ' + ($parts -join ' '))
+}
+
 function Get-AdfaExchangeSeCompatibility {
     <#
     .SYNOPSIS
@@ -3196,6 +3250,7 @@ function Get-AdfaExchangeSeCompatibility {
     else {
         $unsupported = @()
         $unknown = @()
+        $unknownCauses = @()
         $supported = @()
         foreach ($dc in $dcs) {
             $hostProp = $dc.PSObject.Properties['HostName']
@@ -3209,6 +3264,14 @@ function Get-AdfaExchangeSeCompatibility {
             # Get-ADComputer enrichment failed. That is an absent measurement, not a bad OS.
             if ([string]::IsNullOrWhiteSpace($os) -or $os -eq $script:Status.NotAssessed) {
                 $unknown += $dcName
+                # The inventory records WHY it could not read the computer object. Without it
+                # this finding guessed, and guessed wrong: a cross-domain LDAP referral is not a
+                # credentials problem, and telling an operator to re-run with other credentials
+                # sends them somewhere there is nothing to find.
+                $eProp = $dc.PSObject.Properties['EnrichmentError']
+                if ($null -ne $eProp -and -not [string]::IsNullOrWhiteSpace([string]$eProp.Value)) {
+                    $unknownCauses += [string]$eProp.Value
+                }
                 continue
             }
             $label = Test-AdfaOsSupported -OperatingSystem $os -SupportedOs $supportedOs
@@ -3235,8 +3298,8 @@ function Get-AdfaExchangeSeCompatibility {
         # An unreadable OS is reported on its own, so a partial pass above can never hide it.
         if ($unknown.Count -gt 0) {
             $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller OS - not readable' -Status $script:Status.NotAssessed `
-                -Detail ("{0} of {1} DC(s) did not return an operating system: {2}. Re-run with credentials that can read the DC computer objects; until then these DCs are unverified, not compatible." -f `
-                    $unknown.Count, $dcs.Count, ($unknown -join ', '))
+                -Detail ("{0} of {1} DC(s) did not return an operating system: {2}.{3} Until this is resolved these DCs are unverified, NOT compatible - and a forest-wide readiness verdict cannot be given while any DC is unread, because every DC in the forest must run a supported version." -f `
+                    $unknown.Count, $dcs.Count, ($unknown -join ', '), (Get-AdfaEnrichmentFailureAdvice -Causes $unknownCauses))
         }
 
         # Read-only DCs. The same table says read-only DCs and GCs are not supported; Exchange

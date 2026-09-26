@@ -423,7 +423,7 @@ Describe 'Multi-domain aggregation contract (regression: 12 sections silently di
             )
             return @($rows)
         }
-        $agg = foreach ($d in @('root.local', 'north.local', 'epal.local')) { Get-AdfaFakeSection -DomainName $d }
+        $agg = foreach ($d in @('root.local', 'north.local', 'south.local')) { Get-AdfaFakeSection -DomainName $d }
         $section = @($agg)
         $section.Count | Should -Be 6
         $section[0].PSObject.Properties.Name | Should -Contain 'Status'
@@ -1952,6 +1952,82 @@ RdtscStart, RdtscEnd, FileTime, RoundtripDelay, NtpOffset
             $script:Config.ClockSkew.KerberosUrl | Should -Match '^https://learn\.microsoft\.com/'
             $script:Config.ClockSkew.StripchartUrl | Should -Match '^https://learn\.microsoft\.com/'
             [string]$script:Config.ClockSkew.ReadDate | Should -Be '2026-09-22'
+        }
+    }
+}
+
+Describe 'Cross-domain DC enrichment (live four-domain forest, 2026-09-26)' {
+    # The inventory enriched via Get-ADComputer with no -Server, so a child-domain DN was asked
+    # of a forest-root DC, which answers with an LDAP referral. Every child-domain DC lost its
+    # OperatingSystem and the Exchange SE verdict called them "unverified, not compatible" -
+    # a forest-wide readiness answer that was wrong for every domain but the one it ran in.
+    # Single-domain runs never showed it: there the default server IS the target domain.
+    Context 'The collector targets the domain being enumerated' {
+        It 'splats the per-domain $p, which carries -Server, not the bare $AdParams' {
+            $src = Get-Content -LiteralPath $script:Target -Raw
+            $src | Should -Match '\$cp = @\{\} \+ \$p'
+            $src | Should -Not -Match '\$cp = @\{\} \+ \$AdParams'
+        }
+    }
+
+    Context 'An enrichment failure carries its cause' {
+        It 'keeps the DC, reports the OS unassessed, and records why' {
+            # Defined, not Mocked. Pester's Mock requires the command to already exist, and the
+            # ActiveDirectory module is not present on the CI runner - "Could not find Command
+            # Get-ADDomainController". Defining the stub in this scope is what the dependency-free
+            # harness does, and it works with or without RSAT.
+            function Get-ADDomainController {
+                param([Parameter(ValueFromRemainingArguments)]$a)
+                [pscustomobject]@{ HostName = 'dc9.contoso.com'; Name = 'DC9'; Site = 'HQ'; IPv4Address = '192.0.2.9'
+                    IsGlobalCatalog = $true; IsReadOnly = $false
+                    ComputerObjectDN = 'CN=DC9,OU=Domain Controllers,DC=child,DC=contoso,DC=com' }
+            }
+            function Get-ADComputer {
+                param([Parameter(ValueFromRemainingArguments)]$a)
+                throw 'A referral was returned from the server'
+            }
+            $inv = @(Get-AdfaDomainControllerInventory -DomainName 'child.contoso.com' -AdParams @{} -WarningAction SilentlyContinue)
+            @($inv).Count | Should -Be 1
+            [string]$inv[0].OperatingSystem | Should -Be 'Not Assessed'
+            [string]$inv[0].EnrichmentError | Should -Match 'referral'
+            # What Get-ADDomainController supplied must survive - SiteGc reads these, which is
+            # why per-site GC coverage kept working on the live forest while the OS did not.
+            [bool]$inv[0].IsGlobalCatalog | Should -BeTrue
+            [string]$inv[0].Site | Should -Be 'HQ'
+        }
+    }
+
+    Context 'Get-AdfaEnrichmentFailureAdvice' {
+        It 'names a referral as a referral and rules out credentials' {
+            $a = Get-AdfaEnrichmentFailureAdvice -Causes @('A referral was returned from the server')
+            $a | Should -Match 'LDAP referral'
+            $a | Should -Match "does not hold that domain's naming context"
+            $a | Should -Match 'not a credentials problem'
+            # The old fixed advice sent operators to check credentials, which had nothing to do
+            # with it. Wrong advice is worse than none.
+            $a | Should -Not -Match 're-run with credentials'
+        }
+        It 'keeps the credentials advice for an access failure, and gives both when both occur' {
+            $d = Get-AdfaEnrichmentFailureAdvice -Causes @('Access is denied')
+            $d | Should -Match 're-run with credentials'
+            $d | Should -Not -Match 'LDAP referral'
+            $b = Get-AdfaEnrichmentFailureAdvice -Causes @('A referral was returned from the server', 'Access is denied')
+            $b | Should -Match 'LDAP referral'
+            $b | Should -Match 're-run with credentials'
+        }
+        It 'quotes an unrecognised error rather than interpreting it' {
+            $o = Get-AdfaEnrichmentFailureAdvice -Causes @('The server is not operational')
+            $o | Should -Match 'Reported by the directory'
+            $o | Should -Match 'The server is not operational'
+            $o | Should -Not -Match 'LDAP referral'
+            $o | Should -Not -Match 're-run with credentials'
+        }
+        It 'says nothing when there is nothing to say, and does not repeat a shared cause' {
+            Get-AdfaEnrichmentFailureAdvice -Causes @() | Should -Be ''
+            Get-AdfaEnrichmentFailureAdvice -Causes @('', '   ') | Should -Be ''
+            Get-AdfaEnrichmentFailureAdvice -Causes $null | Should -Be ''
+            $dupe = Get-AdfaEnrichmentFailureAdvice -Causes @('A referral was returned from the server', 'A referral was returned from the server')
+            [regex]::Matches($dupe, 'A referral was returned from the server').Count | Should -Be 1
         }
     }
 }
