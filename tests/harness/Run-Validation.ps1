@@ -1516,6 +1516,74 @@ Assert-True ($script:Config.ClockSkew.StripchartUrl -match '^https://learn\.micr
 Assert-Equal '2026-09-22' ([string]$script:Config.ClockSkew.ReadDate) 'Config: the read date is recorded'
 
 Write-Host ""
+Write-Host "== 24. Cross-domain DC enrichment: the referral, and advice that matches the cause ==" -ForegroundColor Cyan
+
+# Found on a live four-domain forest: the inventory enriched via Get-ADComputer without -Server,
+# so a child-domain DN was asked of a forest-root DC, which answers with an LDAP referral.
+# Every child-domain DC lost its OperatingSystem and the SE verdict called them "unverified,
+# not compatible". The collector fix is guarded end-to-end by Run-SmokeTest, whose Get-ADComputer
+# stub refuses a call with no -Server exactly as the directory did. These are the pure parts.
+$srcEnrich = Get-Content -LiteralPath $target -Raw
+Assert-True ($srcEnrich -match '\$cp = @\{\} \+ \$p') 'Enrichment: the Get-ADComputer splat inherits $p, which carries -Server for the domain being enumerated'
+Assert-True ($srcEnrich -notmatch '\$cp = @\{\} \+ \$AdParams') 'Enrichment: it no longer copies $AdParams, which had no -Server'
+
+# The advice must match what actually happened. A referral is NOT a credentials problem, and
+# telling an operator to re-run with other credentials sends them where there is nothing to find.
+$advRef = Get-AdfaEnrichmentFailureAdvice -Causes @('A referral was returned from the server')
+Assert-True ($advRef -match 'LDAP referral') 'Advice: a referral is named as a referral'
+Assert-True ($advRef -match "does not hold that domain's naming context") 'Advice: explains what a referral actually means'
+Assert-True ($advRef -match 'not a credentials problem') 'Advice: rules out the wrong cause explicitly'
+Assert-True ($advRef -notmatch 're-run with credentials') 'Advice: a referral does NOT get the credentials advice'
+
+$advDenied = Get-AdfaEnrichmentFailureAdvice -Causes @('Access is denied')
+Assert-True ($advDenied -match 're-run with credentials') 'Advice: an access failure DOES get the credentials advice'
+Assert-True ($advDenied -notmatch 'LDAP referral') 'Advice: an access failure is not described as a referral'
+
+# Both at once - a forest can produce both, and neither may be dropped.
+$advBoth = Get-AdfaEnrichmentFailureAdvice -Causes @('A referral was returned from the server', 'Access is denied')
+Assert-True ($advBoth -match 'LDAP referral') 'Advice: with both causes, the referral is still named'
+Assert-True ($advBoth -match 're-run with credentials') 'Advice: with both causes, the credentials advice is still given'
+
+# An error the tool does not recognise is QUOTED, never interpreted.
+$advOther = Get-AdfaEnrichmentFailureAdvice -Causes @('The server is not operational')
+Assert-True ($advOther -match 'Reported by the directory') 'Advice: an unrecognised error is attributed to the directory'
+Assert-True ($advOther -match 'The server is not operational') 'Advice: an unrecognised error is quoted verbatim, not guessed at'
+Assert-True ($advOther -notmatch 'LDAP referral' -and $advOther -notmatch 're-run with credentials') 'Advice: an unrecognised error attracts neither canned explanation'
+
+Assert-Equal '' (Get-AdfaEnrichmentFailureAdvice -Causes @()) 'Advice: no cause yields no advice, rather than an empty sentence'
+Assert-Equal '' (Get-AdfaEnrichmentFailureAdvice -Causes @('', '   ')) 'Advice: blank causes yield no advice'
+Assert-Equal '' (Get-AdfaEnrichmentFailureAdvice -Causes $null) 'Advice: a null cause list is survivable'
+# Repeated identical errors across many DCs must not repeat in the text.
+$advDupe = Get-AdfaEnrichmentFailureAdvice -Causes @('A referral was returned from the server', 'A referral was returned from the server')
+Assert-Equal 1 ([regex]::Matches($advDupe, 'A referral was returned from the server').Count) 'Advice: an identical cause on many DCs is reported once, not once per DC'
+
+$advCases = @($advRef, $advDenied, $advBoth, $advOther)
+Assert-Equal 4 (@($advCases).Count) 'Advice: non-vacuity - four declared cause shapes evaluated'
+Assert-Equal 0 (@($advCases | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count) 'Advice: every declared cause shape produces advice'
+
+# --- The FAILURE path through the collector. Run-SmokeTest proves the success path, where
+#     EnrichmentError is empty either way - so without this the "carry the cause" fix is
+#     untested and a mutation removing it survives. These stubs are last in the file.
+function Get-ADDomainController {
+    param([Parameter(ValueFromRemainingArguments)]$a)
+    [pscustomobject]@{ HostName = 'dc9.contoso.com'; Name = 'DC9'; Site = 'HQ'; IPv4Address = '192.0.2.9'
+        IsGlobalCatalog = $true; IsReadOnly = $false; ComputerObjectDN = 'CN=DC9,OU=Domain Controllers,DC=child,DC=contoso,DC=com' }
+}
+function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a) throw 'A referral was returned from the server' }
+$invFail = @(Get-AdfaDomainControllerInventory -DomainName 'child.contoso.com' -AdParams @{} -WarningAction SilentlyContinue)
+Assert-Equal 1 (@($invFail).Count) 'Enrichment failure: the DC is still inventoried, not dropped'
+if (@($invFail).Count -eq 1) {
+    $rowFail = @($invFail)[0]
+    Assert-Equal 'Not Assessed' ([string]$rowFail.OperatingSystem) 'Enrichment failure: the OS is Not Assessed, never invented'
+    Assert-True ($rowFail.PSObject.Properties.Name -contains 'EnrichmentError') 'Enrichment failure: the row exposes EnrichmentError'
+    Assert-True ([string]$rowFail.EnrichmentError -match 'referral') 'Enrichment failure: the CAUSE is carried into the row, not left in the warning stream'
+    # The facts that come from Get-ADDomainController must survive an enrichment failure -
+    # they are what SiteGc reads, and it kept working on the live forest for this reason.
+    Assert-Equal $true ([bool]$rowFail.IsGlobalCatalog) 'Enrichment failure: IsGlobalCatalog still populated, so per-site GC coverage is unaffected'
+    Assert-Equal 'HQ' ([string]$rowFail.Site) 'Enrichment failure: Site still populated'
+}
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }
