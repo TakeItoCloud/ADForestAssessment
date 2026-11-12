@@ -10,6 +10,114 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-11-12 (a forest above the supported functional levels was told to raise its level, tool v1.15.1)
+
+**PORT-PLAN H17.** The Exchange SE section judged the forest functional level by asking whether
+the `ForestMode` *name* was in a list:
+
+```powershell
+elseif ($supportedModes -contains $ForestMode) { ... Pass ... }
+else { ... "Setup will not proceed until the forest functional level is raised." }
+```
+
+A list can only answer "listed" or "not listed". Everything not listed was treated as too low,
+and the recommendation map matched on the item name alone, so a Windows Server 2025 level forest
+was reported as:
+
+```
+Windows2025Forest is NOT supported for Exchange Server SE. ... Setup will not proceed until the
+forest functional level is raised.
+FIX: ... "Set-ADForestMode -Identity <forest> -ForestMode Windows2016Forest" ...
+```
+
+That advice points the wrong way. The config table's comment had the same error in words: it
+said Windows Server 2016 is the highest forest functional level Microsoft has ever shipped.
+
+**What Microsoft Learn says, read 2026-11-12:**
+
+- A Windows Server 2025 forest and domain functional level exists; Windows Server 2019 and 2022
+  "use Windows Server 2016 as the most recent functional level"
+  ([functional levels](https://learn.microsoft.com/windows-server/identity/ad-ds/active-directory-functional-levels)).
+- The Exchange Server SE row lists forest functional levels Windows Server 2016 and Windows
+  Server 2012 R2, and no other
+  ([supportability matrix](https://learn.microsoft.com/exchange/plan-and-deploy/supportability-matrix#supported-active-directory-environments)).
+- The 2025 level "maps to the value of `DomainLevel 10` and `ForestLevel 10`"
+  ([what's new in Windows Server 2025](https://learn.microsoft.com/windows-server/get-started/whats-new-windows-server-2025)).
+- 6 is Windows Server 2012 R2 and 7 is Windows Server 2016
+  ([Install-ADDSForest](https://learn.microsoft.com/powershell/module/addsdeployment/install-addsforest)).
+- The forest level is `msDS-Behavior-Version` on `CN=Partitions,CN=Configuration`
+  ([raise functional levels](https://learn.microsoft.com/troubleshoot/windows-server/active-directory/raise-active-directory-domain-forest-functional-levels)).
+- `Windows2025Forest` is a published `ADForestMode` name
+  ([Set-ADForestMode](https://learn.microsoft.com/powershell/module/activedirectory/set-adforestmode)).
+
+**The fix.** The verdict is now taken from the number, read by the new
+`Get-AdfaForestBehaviorVersion` (one read-only `Get-ADObject` of the Partitions container, whose
+DN comes from `Get-ADForest`'s own `PartitionsContainer`). A new pure
+`Get-AdfaForestLevelClass` places it relative to the supported levels:
+
+| Level | Result |
+| --- | --- |
+| Supported (6, 7) | `Pass` |
+| Below | `Fail`, with the existing "raise" wording and advice |
+| Above (10) | `Fail`: not listed in the supportability matrix, with the matrix URL and **no remediation command** |
+| Not a known level (8, 9, `abc`) | `Not Assessed`, raw value shown |
+| Not read | `Not Assessed`, with the directory's own error |
+
+The `ForestMode` name is still shown, labelled as information only. It never decides anything:
+what an older ActiveDirectory module prints for a level-10 forest is not published, so it is not
+relied on. A test passes level 10 with the names `UnknownForest`, `Windows2016Forest` and an
+empty string and requires the same result each time.
+
+An attribute that is **not returned** is reported as not read. Learn says "0 or not set" means
+the Windows 2000 level, but an unset attribute and an unreadable one look the same from this
+read, so no level is assumed.
+
+An explicit **empty** recommendation entry, scoped to this section and placed first, is what
+keeps the *above* finding free of advice. It blocks the raise entry, and it blocks every later
+unscoped entry: under a config override the finding cites the override file's path, and a path
+containing a word such as `Backup` would otherwise attract the backup advice. The raise advice
+itself no longer names `Windows2016Forest` as the target, because the supported set can be
+overridden; it refers to the supported modes the finding lists.
+
+**Found by an independent review of the diff before commit, and fixed in it:**
+
+- The raise advice named `Windows2016Forest` even when an override made that the level the
+  forest was already at.
+- The *above* wording said "the supportability matrix" when the list had come from an override
+  file, attributing the operator's table to Microsoft. It now says "the supplied config table"
+  unless the source is Microsoft Learn.
+- A comment claimed the vendor publishes no step for a forest above the matrix. Learn publishes
+  a procedure for lowering a functional level; the comment now says so and points at H18.
+- Overriding only `ForestFunctionalLevels` replaces the whole table, and the resulting error
+  blamed a mode name the override had not mentioned. The message now says the table is replaced
+  whole, the README says the same, and an empty table is refused like any other empty gate.
+- The JSON form of the level table and the "no supported mode resolves to a level" guard had no
+  test. Both have one now.
+
+**Guards shown able to fail** (each mutation applied alone, then the file restored and verified
+by SHA-256) are listed in the pull request evidence with the test counts that went red.
+
+**Config.** `ExchangeSe` gains a `ForestFunctionalLevels` table (level, mode name, label) with
+its sources. `SupportedForestModes` keeps its shape, so existing override files still load. An
+override naming a mode that table does not know is now a terminating error, because that name
+would otherwise drop out of the supported set and fail a supported forest. A test confirms that
+adding `Windows2025Forest` to an override turns a level-10 forest into a `Pass` with no code
+change.
+
+**Other uses of `ForestMode` / `DomainMode` checked.** The forest summary, the domain summary and
+the SE section's per-domain `Info` rows print the name and compare nothing. No other comparison
+exists in the script.
+
+**Not verified.** This has run **only against stubs**. The real `Get-ADObject` read, on Windows
+PowerShell 5.1, against a real Partitions container has not been exercised; that is PORT-PLAN
+H17-R, owned by the operator. Learn documents values 0-4 as values of the attribute and
+5, 6, 7 and 10 as `ForestMode` / `ForestLevel` integers; treating them as one number line is an
+inference, not a quoted statement.
+
+**Found and not changed (PORT-PLAN H18).** The raise advice still says the change "cannot be
+reverted without a forest recovery". Learn now has a page on lowering functional levels. Only
+its search excerpt was read, so the wording was left alone and given its own plan row.
+
 ### Fixed — 2026-09-26 (the DC inventory asked the wrong domain controller, so every child-domain DC lost its OS, tool v1.15.0)
 
 **Found by the first run against a live multi-domain forest** — four domains — which is the
