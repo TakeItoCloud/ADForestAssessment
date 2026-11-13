@@ -3291,3 +3291,1782 @@ Describe 'DC system: OS lifecycle and patch level (C1)' {
         }
     }
 }
+
+Describe 'DC disk space, and the generic config override (C2)' {
+    BeforeAll {
+        $script:Ddc = $script:Config.DcDisk
+        # Held in variables: PSAvoidUsingComputerNameHardcoded flags a literal -ComputerName.
+        $script:C2Dc1 = 'dc1.contoso.com'
+        $script:C2Dc2 = 'dc2.contoso.com'
+        $script:C2Dc3 = 'dc3.fabrikam.com'
+        $script:C2GB = [double]1073741824
+        # Declared population of this section: the three roles a DC's volumes are judged for.
+        $script:C2Roles = @('NTDS database', 'NTDS logs', 'SYSVOL')
+        $script:C2NtdsKey = 'SYSTEM\CurrentControlSet\Services\NTDS\Parameters'
+        $script:C2NetlogonKey = 'SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+
+        function Get-C2Row {
+            param($Rows, [string]$Item)
+            $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
+        # A Win32_Volume instance in the shape the class returns: Name is the mount path,
+        # DeviceID the volume GUID path, DriveType a uint32, Capacity and FreeSpace uint64 bytes.
+        function New-C2Volume {
+            param([string]$Name, [double]$CapacityGB, [double]$FreeGB, [int]$DriveType = 3, [string]$DeviceID = '')
+            if ($DeviceID -eq '') { $DeviceID = ('\\?\Volume{{{0}}}\' -f ($Name -replace '[^A-Za-z0-9]', '')) }
+            [pscustomobject]@{ Name = $Name; DeviceID = $DeviceID; DriveType = [uint32]$DriveType
+                Capacity = [uint64]($CapacityGB * $script:C2GB); FreeSpace = [uint64]($FreeGB * $script:C2GB) }
+        }
+        # One registry read result, in the shape Get-AdfaDcDiskRaw returns it.
+        function New-C2Path {
+            param([string]$Role, [string]$Value = '', $ReturnValue = 0, [string]$Err = '', [string]$Code = '', $ExpandedReturnValue = $null, [string]$Method = 'GetStringValue')
+            $key = $script:C2NtdsKey
+            $name = 'DSA Database File'
+            if ($Role -eq 'NTDS logs') { $name = 'Database Log Files Path' }
+            if ($Role -eq 'SYSVOL') { $key = $script:C2NetlogonKey; $name = 'SysVol' }
+            $read = ($Err -eq '' -and $null -ne $ReturnValue -and [int64]$ReturnValue -eq 0 -and $Value -ne '')
+            [pscustomobject]@{ Role = $Role; Key = $key; ValueName = $name; Read = $read; ReturnValue = $ReturnValue; Value = $Value
+                Method = $Method; Error = $Err; ErrorCode = $Code; ExpandedReturnValue = $ExpandedReturnValue }
+        }
+        function New-C2Raw {
+            param($Paths, $Volumes = @(), [bool]$VolumesOk = $true, [string]$VolumeError = '', [string]$VolumeErrorCode = '', [string]$Protocol = 'Wsman')
+            [pscustomobject]@{ Ok = $true; Protocol = $Protocol; Error = ''; ErrorCode = ''; Paths = @($Paths)
+                VolumesOk = $VolumesOk; Volumes = @($Volumes); VolumeError = $VolumeError; VolumeErrorCode = $VolumeErrorCode }
+        }
+        # The default layout: database, logs and SYSVOL all under %systemroot% on C:.
+        function New-C2DefaultPaths {
+            @(
+                (New-C2Path -Role 'NTDS database' -Value 'C:\Windows\NTDS\ntds.dit'),
+                (New-C2Path -Role 'NTDS logs' -Value 'C:\Windows\NTDS'),
+                (New-C2Path -Role 'SYSVOL' -Value 'C:\Windows\SYSVOL\sysvol')
+            )
+        }
+        # How many rows name each role. Every reachable DC must account for each role exactly once.
+        function Get-C2RoleCount {
+            param($Rows, [string]$Dc, [string]$Role)
+            $pattern = [regex]::Escape($Role)
+            return @($Rows | Where-Object { [string]$_.Item -like ("Disk space: {0} *" -f $Dc) -and [string]$_.Item -match $pattern }).Count
+        }
+        function Get-C2FailedRaw {
+            param([string]$Protocol, [string]$Message, [string]$Code = '')
+            [pscustomobject]@{ Ok = $false; Protocol = $Protocol; Error = $Message; ErrorCode = $Code; Paths = @()
+                VolumesOk = $false; Volumes = @(); VolumeError = ''; VolumeErrorCode = '' }
+        }
+        $script:C2Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C2Main = @($script:C2Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        $script:C2Commands = @($script:C2Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+        function Get-C2Parameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+    }
+
+    Context 'Section wiring' {
+        It 'is a value of the -Sections ValidateSet, read from the parsed parameter and not from the text' {
+            $param = @($script:C2Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $param.Count | Should -Be 1
+            $set = @($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+            $set.Count | Should -Be 1
+            $values = @($set[0].PositionalArguments | ForEach-Object { $_.Value })
+            $values | Should -Contain 'DcDisk'
+            $values | Should -Contain 'DcSystem'   # non-vacuity: the list really was read
+        }
+        It 'is part of the default All run' {
+            Test-SectionSelected 'DcDisk' @('All') | Should -BeTrue
+            Test-SectionSelected 'DcDisk' @('DcSystem') | Should -BeFalse
+        }
+        It 'has a branch in Invoke-Main that calls the collector with the config, the inventory failures and the enumeration error, and stores the rows' {
+            $script:C2Main.Count | Should -Be 1
+            $branches = @($script:C2Main[0].FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $n.Clauses[0].Item1.Extent.Text -match "^Test-SectionSelected 'DcDisk' \`$Sections$" }, $true))
+            # Declared population: the one branch for this section.
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $calls = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcDiskSpace' }, $true))
+            $calls.Count | Should -Be 1
+            # WHAT each parameter is given, not only that it is given: an -EnumerationError of ''
+            # or a -Credential of $null is still "a parameter", and would pass a presence check.
+            $expected = [ordered]@{
+                DomainControllers   = '$dcDiskTargets'
+                Config              = '$dcDiskConfig'
+                Credential          = '$Credential'
+                PortTimeoutMs       = '$script:Config.RpcPortTimeoutMs'
+                OperationTimeoutSec = '$script:Config.ExternalToolTimeoutSec'
+                InventoryFailures   = '$dcDiskFailures'
+                EnumerationError    = '$script:DcEnumerationError'
+                ScopedDomains       = '$targetDomains'
+            }
+            # Declared population: the eight parameters the collector is called with.
+            @($expected.Keys).Count | Should -Be 8
+            foreach ($p in @($expected.Keys)) {
+                $given = Get-C2Parameter -Call $calls[0] -Name $p
+                $given | Should -Not -BeNullOrEmpty -Because "the collector must be given -$p"
+                $given.Extent.Text | Should -Be $expected[$p] -Because "-$p must carry that value"
+            }
+            $assign = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['DC Disk Space']" }, $true))
+            $assign.Count | Should -Be 1
+            # The override reaches the collector. Read from the parsed branch, not from its text:
+            # the collector is given $dcDiskConfig, which starts as the built-in table and is
+            # replaced by the file's table inside an if that tests for the file's DcDisk key.
+            (Get-C2Parameter -Call $calls[0] -Name 'Config').Extent.Text | Should -Be '$dcDiskConfig'
+            $configAssigns = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcDiskConfig' }, $true))
+            # Declared population: the built-in table, then the override.
+            $configAssigns.Count | Should -Be 2
+            $configAssigns[0].Right.Extent.Text | Should -Be '$script:Config.DcDisk'
+            $configAssigns[1].Right.Extent.Text | Should -Be "`$configOverrides['DcDisk']"
+            $guard = $configAssigns[1].Parent
+            while ($null -ne $guard -and $guard -isnot [System.Management.Automation.Language.IfStatementAst]) { $guard = $guard.Parent }
+            $guard.Clauses[0].Item1.Extent.Text | Should -Be "`$configOverrides.ContainsKey('DcDisk')"
+        }
+        It 'takes its targets from the DC inventory, from its own per-domain enumeration when there is no inventory, and from the unscoped fallback only last' {
+            $branches = @($script:C2Main[0].FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $n.Clauses[0].Item1.Extent.Text -match "^Test-SectionSelected 'DcDisk' \`$Sections$" }, $true))
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            function Get-C2Guard {
+                param($Node)
+                $g = $Node.Parent
+                while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+                return $g.Clauses[0].Item1.Extent.Text
+            }
+            $targets = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcDiskTargets' }, $true))
+            # Declared population: the inventory, the section's own enumeration, the fallback - in that order.
+            $targets.Count | Should -Be 3
+            $targets[0].Right.Extent.Text | Should -Be '@($allDcInventory)'
+            Get-C2Guard $targets[0] | Should -Be "Test-SectionSelected 'DcDisk' `$Sections"
+            $targets[1].Right.Extent.Text | Should -Be '@($dcDiskEnumeration.Targets)'
+            Get-C2Guard $targets[1] | Should -Be '-not $dcInventoryCollected'
+            $targets[2].Right.Extent.Text | Should -Be '@($dcNames)'
+            Get-C2Guard $targets[2] | Should -Be '$dcDiskTargets.Count -eq 0'
+            $failures = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcDiskFailures' }, $true))
+            $failures.Count | Should -Be 2
+            $failures[0].Right.Extent.Text | Should -Be '@($dcInventoryFailures)'
+            $failures[1].Right.Extent.Text | Should -Be '@($dcDiskEnumeration.Failures)'
+            Get-C2Guard $failures[1] | Should -Be '-not $dcInventoryCollected'
+            # The section's own enumeration is asked for every scoped domain, with the run's AD parameters.
+            $own = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcTargetsByDomain' }, $true))
+            $own.Count | Should -Be 1
+            (Get-C2Parameter -Call $own[0] -Name 'Domains').Extent.Text | Should -Be '$targetDomains'
+            (Get-C2Parameter -Call $own[0] -Name 'AdParams').Extent.Text | Should -Be '$adParams'
+            Get-C2Guard $own[0] | Should -Be '-not $dcInventoryCollected'
+            # $dcInventoryCollected is true only where the DomainControllers section ran.
+            $flag = @($script:C2Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcInventoryCollected' }, $true))
+            $flag.Count | Should -Be 2
+            $flag[0].Right.Extent.Text | Should -Be '$false'
+            $flag[1].Right.Extent.Text | Should -Be '$true'
+            Get-C2Guard $flag[1] | Should -Be "Test-SectionSelected 'DomainControllers' `$Sections"
+            $flag[0].Extent.StartLineNumber | Should -BeLessThan $flag[1].Extent.StartLineNumber
+        }
+        It 'declares -ConfigOverridePath as a string that may not be empty, and leaves the two older override parameters in place' {
+            $p = @($script:C2Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'ConfigOverridePath' })
+            $p.Count | Should -Be 1
+            $p[0].StaticType.Name | Should -Be 'String'
+            @($p[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateNotNullOrEmpty' }).Count | Should -Be 1
+            foreach ($older in @('ExchangeSeConfigPath', 'DcSystemConfigPath')) {
+                @($script:C2Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq $older }).Count | Should -Be 1 -Because "-$older must keep working"
+            }
+        }
+        It 'loads the override file once, before any section runs, so a bad file stops the run before any work' {
+            $loads = @($script:C2Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Import-AdfaConfigOverride' }, $true))
+            $loads.Count | Should -Be 1
+            (Get-C2Parameter -Call $loads[0] -Name 'Path').Extent.Text | Should -Be '$ConfigOverridePath'
+            # It runs when, and only when, the parameter was given: the nearest enclosing if tests it.
+            $when = $loads[0].Parent
+            while ($null -ne $when -and $when -isnot [System.Management.Automation.Language.IfStatementAst]) { $when = $when.Parent }
+            $when.Clauses[0].Item1.Extent.Text | Should -Be '$ConfigOverridePath'
+            # And what it returns is what the section branches read.
+            $kept = $loads[0].Parent
+            while ($null -ne $kept -and $kept -isnot [System.Management.Automation.Language.AssignmentStatementAst]) { $kept = $kept.Parent }
+            $kept.Left.Extent.Text | Should -Be '$configOverrides'
+            # A refusal STOPS the run: the load sits in a try whose catch rethrows. A catch that
+            # only logged would let the run go on against the built-in thresholds.
+            $guarded = $loads[0].Parent
+            while ($null -ne $guarded -and $guarded -isnot [System.Management.Automation.Language.TryStatementAst]) { $guarded = $guarded.Parent }
+            $guarded | Should -Not -BeNullOrEmpty
+            @($guarded.CatchClauses).Count | Should -Be 1
+            $rethrow = @($guarded.CatchClauses[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.ThrowStatementAst] }, $true))
+            $rethrow.Count | Should -Be 1 -Because 'the catch must rethrow what the loader threw'
+            $rethrow[0].IsRethrow | Should -BeTrue
+            # The rethrow is the catch block's last statement, not something an earlier return skips.
+            $last = @($guarded.CatchClauses[0].Body.Statements)[-1]
+            $last.Extent.Text | Should -Be 'throw'
+            $sections =@($script:C2Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-SectionSelected' }, $true))
+            # Non-vacuity: the section branches really were found (there are dozens).
+            $sections.Count | Should -BeGreaterThan 30
+            $first = ($sections | ForEach-Object { $_.Extent.StartLineNumber } | Measure-Object -Minimum).Minimum
+            $loads[0].Extent.StartLineNumber | Should -BeLessThan $first
+            # And before the directory is touched at all.
+            $adImport = @($script:C2Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Import-Module' }, $true))
+            $adImport.Count | Should -Be 1
+            $loads[0].Extent.StartLineNumber | Should -BeLessThan $adImport[0].Extent.StartLineNumber
+        }
+        It 'documents the section and the parameter in the comment-based help, and the help is readable at all' {
+            # Read the way Get-Help reads it. Until v1.19.0 the licence banner sat directly above
+            # the help block with no blank line, which made the two one comment: this returned
+            # $null and Get-Help showed only the auto-generated syntax, for every parameter.
+            $help = $script:C2Ast.GetHelpContent()
+            $help | Should -Not -BeNullOrEmpty -Because 'a comment touching the help block hides the whole of it from Get-Help'
+            [string]$help.Synopsis | Should -Match 'Active Directory forest assessment'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'DcDisk'
+            [string]$help.Parameters['SECTIONS'] | Should -Match 'DcDisk'
+            [string]$help.Description | Should -Match 'GetStringValue'
+        }
+        It 'has one row in the README Coverage table' {
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            @($readme | Where-Object { $_ -match '^\| \*\*DC disk space\*\* \|' }).Count | Should -Be 1
+            @($readme | Where-Object { $_ -match '^\| \*\*DC system\*\* \|' }).Count | Should -Be 1   # non-vacuity: the table was read
+        }
+    }
+
+    Context 'Read-only guard' {
+        It 'invokes no CIM method except a literal StdRegProv Get* read' {
+            $calls = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Invoke-CimMethod' })
+            # Declared population: one GetStringValue call and one GetExpandedStringValue call.
+            $calls.Count | Should -Be 2
+            $allowed = @('GetStringValue', 'GetExpandedStringValue')
+            $seen = @()
+            foreach ($call in $calls) {
+                $line = $call.Extent.StartLineNumber
+                $class = Get-C2Parameter -Call $call -Name 'ClassName'
+                $class | Should -BeOfType ([System.Management.Automation.Language.StringConstantExpressionAst]) -Because "line $line must name the class literally"
+                $class.Value | Should -Be 'StdRegProv' -Because "line $line"
+                $method = Get-C2Parameter -Call $call -Name 'MethodName'
+                $method | Should -BeOfType ([System.Management.Automation.Language.StringConstantExpressionAst]) -Because "a computed -MethodName on line $line could name a method that writes"
+                $allowed | Should -Contain $method.Value -Because "line $line calls '$($method.Value)', which is not a registry read on the allow-list"
+                $seen += [string]$method.Value
+                $ns = Get-C2Parameter -Call $call -Name 'Namespace'
+                $ns | Should -BeOfType ([System.Management.Automation.Language.StringConstantExpressionAst])
+                $ns.Value | Should -Be 'root/cimv2'
+            }
+            (@($seen | Sort-Object) -join ',') | Should -Be 'GetExpandedStringValue,GetStringValue'
+        }
+        It 'forces -WhatIf and -Confirm off on those reads, so neither preference can silently skip one or stop to ask' {
+            $calls = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Invoke-CimMethod' })
+            $calls.Count | Should -Be 2
+            foreach ($call in $calls) {
+                foreach ($switch in @('WhatIf', 'Confirm')) {
+                    $w = @($call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $switch })
+                    $w.Count | Should -Be 1 -Because "line $($call.Extent.StartLineNumber) must carry -$switch"
+                    $w[0].Argument | Should -Not -BeNullOrEmpty -Because "-$switch must be given a value, not left as a bare switch"
+                    $w[0].Argument.Extent.Text | Should -Be '$false'
+                }
+            }
+        }
+        It 'forces -WhatIf and -Confirm off where a CIM session is closed, so a preference cannot leave sessions open' {
+            $closes = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Remove-CimSession' })
+            # Declared population: the DcSystem seam and the DcDisk seam, the two places a CIM session is opened.
+            $closes.Count | Should -Be 2
+            @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'New-CimSession' }).Count | Should -Be 2
+            foreach ($call in $closes) {
+                foreach ($switch in @('WhatIf', 'Confirm')) {
+                    $w = @($call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $switch })
+                    $w.Count | Should -Be 1 -Because "line $($call.Extent.StartLineNumber) must carry -$switch"
+                    $w[0].Argument | Should -Not -BeNullOrEmpty
+                    $w[0].Argument.Extent.Text | Should -Be '$false'
+                }
+            }
+        }
+        It 'bounds every operation of the seam with the caller''s timeout: the session, each method call and the volume query' {
+            $fn = @($script:C2Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and @('Get-AdfaDcDiskRaw', 'Get-AdfaStdRegStringValue') -contains $n.Name }, $true))
+            $fn.Count | Should -Be 2
+            $bounded = @()
+            foreach ($f in $fn) {
+                $bounded += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and @('Invoke-CimMethod', 'Get-CimInstance') -contains $n.GetCommandName() }, $true))
+            }
+            # Declared population: GetStringValue, GetExpandedStringValue and the Win32_Volume query.
+            $bounded.Count | Should -Be 3
+            foreach ($call in $bounded) {
+                $t = Get-C2Parameter -Call $call -Name 'OperationTimeoutSec'
+                $t | Should -Not -BeNullOrEmpty -Because "$($call.GetCommandName()) on line $($call.Extent.StartLineNumber) must be bounded"
+                $t.Extent.Text | Should -Match '\$OperationTimeoutSec' -Because 'the bound must be the caller''s, not a constant'
+            }
+        }
+        It 'uses no cmdlet that writes through CIM or WMI' {
+            $names = @($script:C2Commands | ForEach-Object { [string]$_.GetCommandName() })
+            foreach ($banned in @('Set-CimInstance', 'New-CimInstance', 'Remove-CimInstance', 'Invoke-WmiMethod', 'Set-WmiInstance', 'Remove-WmiObject')) {
+                $names | Should -Not -Contain $banned
+            }
+            # Non-vacuity, declared population: the four instance reads this script makes -
+            # MSFT_SmbServerConfiguration, Win32_OperatingSystem, Win32_QuickFixEngineering, Win32_Volume.
+            @($names | Where-Object { $_ -eq 'Get-CimInstance' }).Count | Should -Be 4
+        }
+        It 'reads Win32_Volume as instances only, naming the properties it wants' {
+            $vol = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Get-CimInstance' -and $_.Extent.Text -match 'Win32_Volume' })
+            $vol.Count | Should -Be 1
+            $vol[0].Extent.Text | Should -Match "-Property 'Name', 'DeviceID', 'DriveType', 'Capacity', 'FreeSpace'"
+        }
+    }
+
+    Context 'Config table' {
+        It 'labels its thresholds as tool defaults and records where the vendor facts were read' {
+            [string]$script:Ddc.ThresholdSource | Should -Be 'tool default, not a Microsoft value'
+            [string]$script:Ddc.SourceUrl | Should -Match '^https://learn\.microsoft\.com/'
+            [string]$script:Ddc.ReadDate | Should -Be '2026-11-13'
+            $script:Ddc.WarnBelowPercent | Should -Be 20
+            $script:Ddc.FailBelowPercent | Should -Be 10
+            $script:Ddc.WarnBelowFreeGB | Should -BeGreaterThan $script:Ddc.FailBelowFreeGB
+            $script:Ddc.FailBelowFreeGB | Should -BeGreaterThan 0
+        }
+        It 'names the three registry values, one per role' {
+            $paths = @($script:Ddc.Paths)
+            # Declared population: NTDS database, NTDS logs, SYSVOL.
+            $paths.Count | Should -Be 3
+            (@($paths | ForEach-Object { [string]$_.Role }) -join '|') | Should -Be ($script:C2Roles -join '|')
+            ($paths | Where-Object { $_.Role -eq 'NTDS database' }).ValueName | Should -Be 'DSA Database File'
+            ($paths | Where-Object { $_.Role -eq 'NTDS logs' }).ValueName | Should -Be 'Database Log Files Path'
+            ($paths | Where-Object { $_.Role -eq 'SYSVOL' }).ValueName | Should -Be 'SysVol'
+            ($paths | Where-Object { $_.Role -eq 'NTDS database' }).Key | Should -Be $script:C2NtdsKey
+            ($paths | Where-Object { $_.Role -eq 'NTDS logs' }).Key | Should -Be $script:C2NtdsKey
+            ($paths | Where-Object { $_.Role -eq 'SYSVOL' }).Key | Should -Be $script:C2NetlogonKey
+        }
+    }
+
+    Context 'Get-AdfaDiskSpaceVerdict' {
+        BeforeAll {
+            function Get-C2Verdict {
+                param([double]$CapacityGB, [double]$FreeGB, [double]$WarnGB = 0, [double]$FailGB = 0)
+                Get-AdfaDiskSpaceVerdict -CapacityBytes ([uint64]($CapacityGB * $script:C2GB)) -FreeBytes ([uint64]($FreeGB * $script:C2GB)) `
+                    -WarnBelowPercent 20 -FailBelowPercent 10 -WarnBelowFreeGB $WarnGB -FailBelowFreeGB $FailGB
+            }
+        }
+        It 'passes a volume with plenty of space and states the figures' {
+            $v = Get-C2Verdict -CapacityGB 120 -FreeGB 60
+            $v.Status | Should -Be 'Pass'
+            $v.Trigger | Should -Be 'None'
+            $v.Detail | Should -Match '50\.00 % free'
+            $v.Detail | Should -Match '60\.00 GB free of 120\.00 GB'
+        }
+        It 'fails below 10 %, warns from exactly 10 % up to but not including 20 %, and passes at exactly 20 %' {
+            (Get-C2Verdict -CapacityGB 1000 -FreeGB 99.9).Status | Should -Be 'Fail'
+            (Get-C2Verdict -CapacityGB 1000 -FreeGB 100).Status | Should -Be 'Warning'
+            (Get-C2Verdict -CapacityGB 1000 -FreeGB 199.9).Status | Should -Be 'Warning'
+            (Get-C2Verdict -CapacityGB 1000 -FreeGB 200).Status | Should -Be 'Pass'
+            (Get-C2Verdict -CapacityGB 1000 -FreeGB 0).Status | Should -Be 'Fail'
+        }
+        It 'says which threshold was crossed' {
+            $f = Get-C2Verdict -CapacityGB 1000 -FreeGB 50
+            $f.Trigger | Should -Be 'Percent'
+            $f.Detail | Should -Match 'Below the Fail threshold of 10 % free'
+            $w = Get-C2Verdict -CapacityGB 1000 -FreeGB 150
+            $w.Trigger | Should -Be 'Percent'
+            $w.Detail | Should -Match 'Below the Warning threshold of 20 % free'
+        }
+        It 'applies the absolute floor on a small volume whose percentage looks healthy' {
+            # 4.9 GB of 20 GB is 24.5 % free: fine by percentage, under a 5 GB floor.
+            $w = Get-C2Verdict -CapacityGB 20 -FreeGB 4.9 -WarnGB 5 -FailGB 2
+            $w.Status | Should -Be 'Warning'
+            $w.Trigger | Should -Be 'Floor'
+            $w.Detail | Should -Match 'Below the Warning floor of 5 GB free'
+            # Exactly on the floor is not below it.
+            (Get-C2Verdict -CapacityGB 20 -FreeGB 5 -WarnGB 5 -FailGB 2).Status | Should -Be 'Pass'
+            $f = Get-C2Verdict -CapacityGB 8 -FreeGB 1.9 -WarnGB 5 -FailGB 2
+            $f.Status | Should -Be 'Fail'
+            $f.Trigger | Should -Be 'Floor'
+            (Get-C2Verdict -CapacityGB 8 -FreeGB 2 -WarnGB 5 -FailGB 2).Status | Should -Be 'Warning'
+        }
+        It 'reports both triggers when both fired, and takes the worse of the two verdicts' {
+            $b = Get-C2Verdict -CapacityGB 30 -FreeGB 1 -WarnGB 5 -FailGB 2
+            $b.Status | Should -Be 'Fail'
+            $b.Trigger | Should -Be 'Both'
+            # Percentage says Warning (15 %), the floor says Fail (1.5 GB < 2 GB): Fail wins.
+            $mixed = Get-C2Verdict -CapacityGB 10 -FreeGB 1.5 -WarnGB 5 -FailGB 2
+            $mixed.Status | Should -Be 'Fail'
+            $mixed.Trigger | Should -Be 'Floor'
+        }
+        It 'never prints a figure that reaches the threshold it says the volume is below' {
+            # One byte short of 10 % of 100 GB: 9.99999999906868 %. Rounding prints "10.00 %
+            # free ... Below the Fail threshold of 10 % free"; so did the earlier floor with a
+            # 0.0000001 addend.
+            $oneByteShort = Get-AdfaDiskSpaceVerdict -CapacityBytes ([uint64]107374182400) -FreeBytes ([uint64]10737418239) -WarnBelowPercent 20 -FailBelowPercent 10 -WarnBelowFreeGB 5 -FailBelowFreeGB 2
+            $oneByteShort.Status | Should -Be 'Fail'
+            $oneByteShort.Detail | Should -Be '9.99 % free: 9.99 GB free of 100.00 GB. Below the Fail threshold of 10 % free.'
+            $decimalDisk = Get-AdfaDiskSpaceVerdict -CapacityBytes ([uint64]1000000000000) -FreeBytes ([uint64]99999999999) -WarnBelowPercent 20 -FailBelowPercent 10
+            $decimalDisk.Status | Should -Be 'Fail'
+            $decimalDisk.Detail | Should -Match '^9\.99 % free: 93\.13 GB free of 931\.32 GB\.'
+            $warn = Get-AdfaDiskSpaceVerdict -CapacityBytes ([uint64]10000000000000) -FreeBytes ([uint64]1999999999999) -WarnBelowPercent 20 -FailBelowPercent 10
+            $warn.Status | Should -Be 'Warning'
+            $warn.Detail | Should -Match '^19\.99 % free'
+            $warn.Detail | Should -Not -Match '^20\.00'
+            # One byte short of the 5 GB floor on a 10 GB volume, and of the 2 GB floor.
+            $floor = Get-AdfaDiskSpaceVerdict -CapacityBytes ([uint64]10737418240) -FreeBytes ([uint64]5368709119) -WarnBelowPercent 20 -FailBelowPercent 10 -WarnBelowFreeGB 5 -FailBelowFreeGB 2
+            $floor.Status | Should -Be 'Warning'
+            $floor.Detail | Should -Be '49.99 % free: 4.99 GB free of 10.00 GB. Below the Warning floor of 5 GB free.'
+            $failFloor = Get-AdfaDiskSpaceVerdict -CapacityBytes ([uint64]10737418240) -FreeBytes ([uint64]2147483647) -WarnBelowPercent 20 -FailBelowPercent 10 -WarnBelowFreeGB 5 -FailBelowFreeGB 2
+            $failFloor.Detail | Should -Match '1\.99 GB free of 10\.00 GB\. Below the Fail floor of 2 GB free\.$'
+        }
+        It 'truncates a figure to two decimals without rounding it up or shaving a cent off an exact value' {
+            $cases = @(
+                @{ V = [double]9.99999999906868; T = '9.99' }
+                @{ V = [double]9.99999999999; T = '9.99' }
+                @{ V = [double]9.99; T = '9.99' }     # 9.99 * 100 is 998.9999999999999 in binary
+                @{ V = [double]19.999; T = '19.99' }
+                @{ V = [double]2.675; T = '2.67' }
+                @{ V = [double]0.005; T = '0.00' }
+                @{ V = [double]10; T = '10.00' }
+                @{ V = [double]50; T = '50.00' }
+                @{ V = [double]0; T = '0.00' }
+            )
+            # Declared population: the nine values above.
+            $cases.Count | Should -Be 9
+            foreach ($c in $cases) { ConvertTo-AdfaFixedText -Value $c.V | Should -Be $c.T -Because "$($c.V) truncated to two decimals" }
+            ConvertTo-AdfaFixedText -Value 1.23456 -Decimals 4 | Should -Be '1.2345'
+            ConvertTo-AdfaFixedText -Value 7.9 -Decimals 0 | Should -Be '7'
+            # Too large for a decimal: still a number, not an exception.
+            ConvertTo-AdfaFixedText -Value 1e30 | Should -Match '^1\d{30}\.00$'
+        }
+        It 'does not apply a floor of 0' {
+            (Get-C2Verdict -CapacityGB 20 -FreeGB 4.9 -WarnGB 0 -FailGB 0).Status | Should -Be 'Pass'
+        }
+        It 'gives the same answer for UInt64, Int64, Double and deserialized string values' {
+            $cap = [uint64](500 * $script:C2GB)
+            $free = [uint64](40 * $script:C2GB)   # 8 %
+            $shapes = @(
+                @{ C = $cap; F = $free }
+                @{ C = [int64]$cap; F = [int64]$free }
+                @{ C = [double]$cap; F = [double]$free }
+                @{ C = [string]$cap; F = [string]$free }
+            )
+            # Declared population: the four numeric shapes a CIM value can arrive in.
+            $shapes.Count | Should -Be 4
+            foreach ($s in $shapes) {
+                $v = Get-AdfaDiskSpaceVerdict -CapacityBytes $s.C -FreeBytes $s.F -WarnBelowPercent 20 -FailBelowPercent 10
+                $v.Status | Should -Be 'Fail' -Because ("a {0} value must be read like any other" -f $s.C.GetType().Name)
+                $v.Detail | Should -Match '8\.00 % free'
+            }
+            $max = Get-AdfaDiskSpaceVerdict -CapacityBytes ([uint64]::MaxValue) -FreeBytes ([uint64]([uint64]::MaxValue / 2)) -WarnBelowPercent 20 -FailBelowPercent 10
+            $max.Status | Should -Be 'Pass'
+        }
+        It 'is Not Assessed, never Pass and never 0 %, when capacity or free space is missing, zero or inconsistent' {
+            $cases = @(
+                @{ C = $null; F = 100; Why = 'no capacity' }
+                @{ C = 0; F = 0; Why = 'capacity is zero' }
+                @{ C = 'abc'; F = 100; Why = 'not a number' }
+                @{ C = 1000; F = $null; Why = 'no free space' }
+                @{ C = 1000; F = 'n/a'; Why = 'not a number' }
+                @{ C = 1000; F = -1; Why = 'negative' }
+                @{ C = 1000; F = 2000; Why = 'larger than the capacity' }
+                @{ C = $true; F = 100; Why = 'not a number' }
+            )
+            # Declared population: the eight unusable shapes above.
+            $cases.Count | Should -Be 8
+            foreach ($c in $cases) {
+                $v = Get-AdfaDiskSpaceVerdict -CapacityBytes $c.C -FreeBytes $c.F -WarnBelowPercent 20 -FailBelowPercent 10 -WarnBelowFreeGB 5 -FailBelowFreeGB 2
+                $v.Status | Should -Be 'Not Assessed' -Because $c.Why
+                $v.Detail | Should -Match $c.Why
+                $v.PercentFree | Should -BeNullOrEmpty
+            }
+            (Get-AdfaDiskSpaceVerdict -CapacityBytes $null -FreeBytes 5 -WarnBelowPercent 20 -FailBelowPercent 10).Detail | Should -Match "FreeSpace '5'"
+        }
+    }
+
+    Context 'Resolve-AdfaVolumeForPath' {
+        BeforeAll {
+            $script:C2Vols = @(
+                (New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60),
+                (New-C2Volume -Name 'D:\' -CapacityGB 200 -FreeGB 100),
+                (New-C2Volume -Name 'D:\Mount\NTDS\' -CapacityGB 50 -FreeGB 25),
+                (New-C2Volume -Name '\\?\Volume{11111111-2222-3333-4444-555555555555}\' -CapacityGB 0.5 -FreeGB 0.1),
+                (New-C2Volume -Name 'E:\' -CapacityGB 4 -FreeGB 0 -DriveType 5)
+            )
+        }
+        It 'maps a path to the volume whose mount path is its longest prefix' {
+            (Resolve-AdfaVolumeForPath -Path 'C:\Windows\NTDS\ntds.dit' -Volumes $script:C2Vols).Volume.Name | Should -Be 'C:\'
+            (Resolve-AdfaVolumeForPath -Path 'D:\Logs' -Volumes $script:C2Vols).Volume.Name | Should -Be 'D:\'
+            (Resolve-AdfaVolumeForPath -Path 'D:\Mount\NTDS\ntds.dit' -Volumes $script:C2Vols).Volume.Name | Should -Be 'D:\Mount\NTDS\'
+            (Resolve-AdfaVolumeForPath -Path 'D:\Mount\NTDS' -Volumes $script:C2Vols).Volume.Name | Should -Be 'D:\Mount\NTDS\'
+            # A folder that merely starts with the same letters is not under the mounted folder.
+            (Resolve-AdfaVolumeForPath -Path 'D:\Mount\NTDSX\ntds.dit' -Volumes $script:C2Vols).Volume.Name | Should -Be 'D:\'
+        }
+        It 'ignores case and the direction of the slashes' {
+            (Resolve-AdfaVolumeForPath -Path 'c:\windows\sysvol\sysvol' -Volumes $script:C2Vols).Volume.Name | Should -Be 'C:\'
+            (Resolve-AdfaVolumeForPath -Path 'd:/mount/ntds/ntds.dit' -Volumes $script:C2Vols).Volume.Name | Should -Be 'D:\Mount\NTDS\'
+        }
+        It 'does not resolve a path to a volume that is not a local disk, or one with no mount path' {
+            $r = Resolve-AdfaVolumeForPath -Path 'E:\NTDS\ntds.dit' -Volumes $script:C2Vols
+            $r.Resolved | Should -BeFalse
+            $r.Volume | Should -BeNullOrEmpty
+            $r.Reason | Should -Match 'C:\\'   # the volumes that were candidates are listed
+            $r.Reason | Should -Not -Match 'Volume\{'
+            (Resolve-AdfaVolumeForPath -Path '\\?\Volume{11111111-2222-3333-4444-555555555555}\x' -Volumes $script:C2Vols).Resolved | Should -BeFalse
+        }
+        It 'reports why when nothing can be resolved' {
+            (Resolve-AdfaVolumeForPath -Path '' -Volumes $script:C2Vols).Resolved | Should -BeFalse
+            (Resolve-AdfaVolumeForPath -Path '' -Volumes $script:C2Vols).Reason | Should -Match 'empty'
+            $none = Resolve-AdfaVolumeForPath -Path 'C:\Windows\NTDS' -Volumes @()
+            $none.Resolved | Should -BeFalse
+            $none.Reason | Should -Match 'no local-disk volume'
+            (Resolve-AdfaVolumeForPath -Path 'C:\Windows\NTDS' -Volumes $null).Resolved | Should -BeFalse
+        }
+        It 'accepts a mount path given without its trailing backslash' {
+            $v = @((New-C2Volume -Name 'F:' -CapacityGB 10 -FreeGB 5))
+            (Resolve-AdfaVolumeForPath -Path 'F:\NTDS' -Volumes $v).Resolved | Should -BeTrue
+        }
+    }
+
+    Context 'Get-AdfaDcDiskFinding (pure: one DC''s raw read to rows)' {
+        It 'gives one row for a volume that holds all three roles, with the figures, the thresholds and their label' {
+            $raw = New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60))
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw $raw -Config $script:Ddc)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'Disk space: dc1.contoso.com C:\ (NTDS database, NTDS logs, SYSVOL)'
+            $rows[0].Status | Should -Be 'Pass'
+            $rows[0].Scope | Should -Be 'contoso.com'
+            $rows[0].Area | Should -Be 'DcDisk'
+            $rows[0].Detail | Should -Match '50\.00 % free'
+            $rows[0].Detail | Should -Match 'C:\\Windows\\NTDS\\ntds\.dit'
+            $rows[0].Detail | Should -Match 'Warning below 20 % free or below 5 GB free'
+            $rows[0].Detail | Should -Match 'Fail below 10 % free or below 2 GB free'
+            $rows[0].Detail | Should -Match 'tool default, not a Microsoft value'
+            $rows[0].Detail | Should -Match 'Read over Wsman'
+        }
+        It 'gives one row per distinct volume and a mixed result when the three roles sit on three volumes' {
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value 'D:\NTDS\ntds.dit'),
+                (New-C2Path -Role 'NTDS logs' -Value 'E:\Logs'),
+                (New-C2Path -Role 'SYSVOL' -Value 'C:\Windows\SYSVOL_DFSR\sysvol')
+            )
+            $vols = @(
+                (New-C2Volume -Name 'C:\' -CapacityGB 100 -FreeGB 50),
+                (New-C2Volume -Name 'D:\' -CapacityGB 100 -FreeGB 15),
+                (New-C2Volume -Name 'E:\' -CapacityGB 100 -FreeGB 5)
+            )
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes $vols) -Config $script:Ddc)
+            $rows.Count | Should -Be 3
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com C:\ (SYSVOL)').Status | Should -Be 'Pass'
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com D:\ (NTDS database)').Status | Should -Be 'Warning'
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com E:\ (NTDS logs)').Status | Should -Be 'Fail'
+            foreach ($role in $script:C2Roles) { Get-C2RoleCount -Rows $rows -Dc $script:C2Dc1 -Role $role | Should -Be 1 -Because "$role must be accounted for by exactly one row" }
+        }
+        It 'states the documented consequence on a failing database or log volume, and not on a SYSVOL-only volume' {
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value 'D:\NTDS\ntds.dit'),
+                (New-C2Path -Role 'NTDS logs' -Value 'D:\NTDS'),
+                (New-C2Path -Role 'SYSVOL' -Value 'E:\SYSVOL\sysvol')
+            )
+            $vols = @((New-C2Volume -Name 'D:\' -CapacityGB 100 -FreeGB 3), (New-C2Volume -Name 'E:\' -CapacityGB 100 -FreeGB 3))
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes $vols) -Config $script:Ddc)
+            $db = Get-C2Row $rows 'Disk space: dc1.contoso.com D:\ (NTDS database, NTDS logs)'
+            $db.Status | Should -Be 'Fail'
+            $db.Detail | Should -Match 'event 1393'
+            $db.Detail | Should -Match 'Net Logon'
+            $sv = Get-C2Row $rows 'Disk space: dc1.contoso.com E:\ (SYSVOL)'
+            $sv.Status | Should -Be 'Fail'
+            $sv.Detail | Should -Not -Match '1393'
+        }
+        It 'states that consequence for each of the two roles on its own: a volume with only the logs, and one with only the database' {
+            # The test above has the database and the logs on one volume, so either role alone
+            # would satisfy it. Here each sits alone on a failing volume.
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value 'D:\NTDS\ntds.dit'),
+                (New-C2Path -Role 'NTDS logs' -Value 'L:\Logs'),
+                (New-C2Path -Role 'SYSVOL' -Value 'E:\SYSVOL\sysvol')
+            )
+            $vols = @(
+                (New-C2Volume -Name 'D:\' -CapacityGB 100 -FreeGB 3),
+                (New-C2Volume -Name 'L:\' -CapacityGB 100 -FreeGB 3),
+                (New-C2Volume -Name 'E:\' -CapacityGB 100 -FreeGB 3)
+            )
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes $vols) -Config $script:Ddc)
+            # Declared population: one failing row per volume.
+            $rows.Count | Should -Be 3
+            @($rows | Where-Object { $_.Status -eq 'Fail' }).Count | Should -Be 3
+            $logs = Get-C2Row $rows 'Disk space: dc1.contoso.com L:\ (NTDS logs)'
+            $logs.Detail | Should -Match 'event 1393' -Because 'a full log volume stops database updates as a full database volume does'
+            $logs.Detail | Should -Match 'Net Logon'
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com D:\ (NTDS database)').Detail | Should -Match 'event 1393'
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com E:\ (SYSVOL)').Detail | Should -Not -Match '1393'
+            # And it is the consequence of a FAIL: a log volume that only warns does not carry it.
+            $warnVols = @(
+                (New-C2Volume -Name 'D:\' -CapacityGB 100 -FreeGB 50),
+                (New-C2Volume -Name 'L:\' -CapacityGB 100 -FreeGB 15),
+                (New-C2Volume -Name 'E:\' -CapacityGB 100 -FreeGB 50)
+            )
+            $warnRows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes $warnVols) -Config $script:Ddc)
+            $warnLogs = Get-C2Row $warnRows 'Disk space: dc1.contoso.com L:\ (NTDS logs)'
+            $warnLogs.Status | Should -Be 'Warning'
+            $warnLogs.Detail | Should -Not -Match '1393'
+        }
+        It 'keeps the note about Microsoft''s 110 % figure out of the detail, in NotRun, on the database volume only' {
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value 'D:\NTDS\ntds.dit'),
+                (New-C2Path -Role 'NTDS logs' -Value 'C:\Logs'),
+                (New-C2Path -Role 'SYSVOL' -Value 'C:\Windows\SYSVOL\sysvol')
+            )
+            $vols = @((New-C2Volume -Name 'C:\' -CapacityGB 100 -FreeGB 50), (New-C2Volume -Name 'D:\' -CapacityGB 100 -FreeGB 50))
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes $vols) -Config $script:Ddc)
+            $db = Get-C2Row $rows 'Disk space: dc1.contoso.com D:\ (NTDS database)'
+            [string]$db.NotRun | Should -Match '110 %'
+            [string]$db.NotRun | Should -Match 'not measured'
+            [string]$db.Detail | Should -Not -Match '110 %'
+            [string](Get-C2Row $rows 'Disk space: dc1.contoso.com C:\ (NTDS logs, SYSVOL)').NotRun | Should -Be ''
+        }
+        It 'reports a registry value that is not set (provider return 1) as Not found for that role only, and assumes no default path' {
+            # The return the provider gives for a value that does not exist under a key that
+            # does: 1, not 2. Measured on a workstation, not published - and the row says so.
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value 'C:\Windows\NTDS\ntds.dit'),
+                (New-C2Path -Role 'NTDS logs' -Value 'C:\Windows\NTDS'),
+                (New-C2Path -Role 'SYSVOL' -Value '' -ReturnValue 1 -ExpandedReturnValue 1)
+            )
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60))) -Config $script:Ddc)
+            $rows.Count | Should -Be 2
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com C:\ (NTDS database, NTDS logs)').Status | Should -Be 'Pass'
+            $gap = Get-C2Row $rows 'Disk space: dc1.contoso.com - SYSVOL path'
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Detail | Should -Match '^Not found: StdRegProv returned 1,'
+            $gap.Detail | Should -Match 'the value not being set on this DC'
+            $gap.Detail | Should -Match 'measured, not published by Microsoft'
+            $gap.Detail | Should -Match 'not a domain controller'
+            $gap.Detail | Should -Match 'Netlogon\\Parameters'
+            $gap.Detail | Should -Match 'SysVol'
+            $gap.Detail | Should -Match 'No default location is assumed'
+            $gap.Detail | Should -Match 'GetExpandedStringValue was also tried and returned 1'
+            $gap.Detail | Should -Not -Match '^Read failed'
+            $gap.Detail | Should -Not -Match '(?i)access denied'
+            foreach ($role in $script:C2Roles) { Get-C2RoleCount -Rows $rows -Dc $script:C2Dc1 -Role $role | Should -Be 1 }
+        }
+        It 'reports a registry key that does not exist (provider return 2) as Not found, and says it is the key' {
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value 'C:\Windows\NTDS\ntds.dit'),
+                (New-C2Path -Role 'NTDS logs' -Value 'C:\Windows\NTDS'),
+                (New-C2Path -Role 'SYSVOL' -Value '' -ReturnValue 2 -ExpandedReturnValue 2)
+            )
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60))) -Config $script:Ddc)
+            $gap = Get-C2Row $rows 'Disk space: dc1.contoso.com - SYSVOL path'
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Detail | Should -Match '^Not found: StdRegProv returned 2,'
+            $gap.Detail | Should -Match 'ERROR_FILE_NOT_FOUND'
+            $gap.Detail | Should -Match 'the registry key not existing on this DC'
+            $gap.Detail | Should -Match 'measured, not published by Microsoft'
+            $gap.Detail | Should -Match 'No default location is assumed'
+            $gap.Detail | Should -Not -Match 'the value not being set'
+        }
+        It 'reads the two WbemErrorEnum codes Microsoft defines for a refusal and a type mismatch, and no others' {
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value '' -ReturnValue ([uint32]2147749891)),
+                (New-C2Path -Role 'NTDS logs' -Value '' -ReturnValue ([uint32]2147749893) -ExpandedReturnValue ([uint32]2147749893)),
+                (New-C2Path -Role 'SYSVOL' -Value '' -ReturnValue ([uint32]2147749890) -ExpandedReturnValue ([uint32]2147749890))
+            )
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60))) -Config $script:Ddc)
+            # Declared population: one Not Assessed row per role.
+            $rows.Count | Should -Be 3
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            $denied = Get-C2Row $rows 'Disk space: dc1.contoso.com - NTDS database path'
+            $denied.Detail | Should -Match '^Access denied: StdRegProv returned 2147749891 \(0x80041003\)'
+            $denied.Detail | Should -Match 'wbemErrAccessDenied'
+            $denied.Detail | Should -Match 'Administrators'
+            $typed = Get-C2Row $rows 'Disk space: dc1.contoso.com - NTDS logs path'
+            $typed.Detail | Should -Match '^The value is present but is not a string: StdRegProv returned 2147749893 \(0x80041005\)'
+            $typed.Detail | Should -Match 'wbemErrTypeMismatch'
+            # 0x80041002 is wbemErrNotFound in the enumeration, but nothing measured shows this
+            # provider returning it, so it is quoted with its hex form and not given a meaning.
+            $other = Get-C2Row $rows 'Disk space: dc1.contoso.com - SYSVOL path'
+            $other.Detail | Should -Match '^Read failed: StdRegProv returned 2147749890 \(0x80041002\)\.'
+            $other.Detail | Should -Match 'not interpreted'
+        }
+        It 'reports a refused registry read as access denied, not as absent' {
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value '' -ReturnValue 5),
+                (New-C2Path -Role 'NTDS logs' -Value '' -ReturnValue 5),
+                (New-C2Path -Role 'SYSVOL' -Value 'C:\Windows\SYSVOL\sysvol')
+            )
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60))) -Config $script:Ddc)
+            $denied = Get-C2Row $rows 'Disk space: dc1.contoso.com - NTDS database path'
+            $denied.Status | Should -Be 'Not Assessed'
+            $denied.Detail | Should -Match '^Access denied'
+            $denied.Detail | Should -Match 'ERROR_ACCESS_DENIED'
+            $denied.Detail | Should -Match 'Administrators'
+            $denied.Detail | Should -Not -Match '^Not found'
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com - NTDS logs path').Detail | Should -Match '^Access denied'
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com C:\ (SYSVOL)').Status | Should -Be 'Pass'
+        }
+        It 'quotes any other return code without interpreting it, and a thrown error by its class' {
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value '' -ReturnValue 87 -ExpandedReturnValue 87),
+                (New-C2Path -Role 'NTDS logs' -Value '' -ReturnValue $null -Err 'The operation has timed out.' -Code 'Failed'),
+                (New-C2Path -Role 'SYSVOL' -Value '' -ReturnValue $null -Err 'Acesso negado.' -Code 'AccessDenied')
+            )
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60))) -Config $script:Ddc)
+            # Declared population: one Not Assessed row per role, none of them judged.
+            $rows.Count | Should -Be 3
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            $code = Get-C2Row $rows 'Disk space: dc1.contoso.com - NTDS database path'
+            $code.Detail | Should -Match '^Read failed'
+            $code.Detail | Should -Match 'returned 87 \(0x00000057\)\.'
+            $code.Detail | Should -Match 'not interpreted'
+            $code.Detail | Should -Match 'WinError\.h or WbemErrorEnum'
+            $code.Detail | Should -Match 'GetExpandedStringValue was also tried and returned 87'
+            $thrown = Get-C2Row $rows 'Disk space: dc1.contoso.com - NTDS logs path'
+            $thrown.Detail | Should -Match '^Read failed'
+            $thrown.Detail | Should -Match 'timed out'
+            $refused = Get-C2Row $rows 'Disk space: dc1.contoso.com - SYSVOL path'
+            $refused.Detail | Should -Match '^Access denied'
+            $refused.Detail | Should -Match 'Acesso negado'
+        }
+        It 'reports an empty value, and a value with an unexpanded environment variable, as not resolvable' {
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value '' -ReturnValue 0),
+                (New-C2Path -Role 'NTDS logs' -Value '%SystemRoot%\NTDS'),
+                (New-C2Path -Role 'SYSVOL' -Value 'C:\Windows\SYSVOL\sysvol')
+            )
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60))) -Config $script:Ddc)
+            $empty = Get-C2Row $rows 'Disk space: dc1.contoso.com - NTDS database path'
+            $empty.Status | Should -Be 'Not Assessed'
+            $empty.Detail | Should -Match 'present but empty'
+            $env = Get-C2Row $rows 'Disk space: dc1.contoso.com - NTDS logs path'
+            $env.Status | Should -Be 'Not Assessed'
+            $env.Detail | Should -Match '%SystemRoot%\\NTDS'
+            $env.Detail | Should -Match 'not expanded'
+            foreach ($role in $script:C2Roles) { Get-C2RoleCount -Rows $rows -Dc $script:C2Dc1 -Role $role | Should -Be 1 }
+        }
+        It 'reports a path that is on no returned volume as Not Assessed, naming the path and the volumes' {
+            $paths = @(
+                (New-C2Path -Role 'NTDS database' -Value 'C:\Windows\NTDS\ntds.dit'),
+                (New-C2Path -Role 'NTDS logs' -Value 'C:\Windows\NTDS'),
+                (New-C2Path -Role 'SYSVOL' -Value 'S:\SYSVOL\sysvol')
+            )
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60))) -Config $script:Ddc)
+            $gap = Get-C2Row $rows 'Disk space: dc1.contoso.com - SYSVOL path'
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Detail | Should -Match 'S:\\SYSVOL\\sysvol'
+            $gap.Detail | Should -Match 'C:\\'
+        }
+        It 'reports every role as Not Assessed, with the cause, when the volume list could not be read' {
+            $raw = New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @() -VolumesOk $false -VolumeError 'The operation has timed out.'
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw $raw -Config $script:Ddc)
+            $rows.Count | Should -Be 3
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            $rows[0].Detail | Should -Match 'timed out'
+            $rows[0].Detail | Should -Match 'C:\\Windows\\NTDS\\ntds\.dit'
+            $deniedRaw = New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @() -VolumesOk $false -VolumeError 'Acesso negado.' -VolumeErrorCode 'AccessDenied'
+            $deniedRows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw $deniedRaw -Config $script:Ddc)
+            $deniedRows[0].Detail | Should -Match '(?i)access denied'
+        }
+        It 'does not pass a volume that returned no capacity (unformatted or offline)' {
+            $vol = [pscustomobject]@{ Name = 'C:\'; DeviceID = '\\?\Volume{c}\'; DriveType = [uint32]3; Capacity = $null; FreeSpace = $null }
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @($vol)) -Config $script:Ddc)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Item | Should -Be 'Disk space: dc1.contoso.com C:\ (NTDS database, NTDS logs, SYSVOL)'
+        }
+        It 'reports a role the raw read holds no result for, instead of leaving it out' {
+            $paths = @((New-C2Path -Role 'NTDS database' -Value 'C:\Windows\NTDS\ntds.dit'))
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw (New-C2Raw -Paths $paths -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60))) -Config $script:Ddc)
+            foreach ($role in $script:C2Roles) { Get-C2RoleCount -Rows $rows -Dc $script:C2Dc1 -Role $role | Should -Be 1 }
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com - SYSVOL path').Status | Should -Be 'Not Assessed'
+        }
+        It 'applies thresholds from an override and cites the file for them' {
+            $cfg = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WarnBelowPercent = 60; FailBelowPercent = 55 } -OverrideSource 'C:\cfg\disk.json'
+            $raw = New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60))
+            $row = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw $raw -Config $cfg)[0]
+            $row.Status | Should -Be 'Fail'   # 50 % free, below the file's 55 %
+            $row.Detail | Should -Match 'C:\\cfg\\disk\.json'
+            $row.Detail | Should -Match 'Fail below 55 % free'
+        }
+    }
+
+    Context 'Get-AdfaDcDiskSpace (collector)' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            $script:C2Reads = @()
+        }
+        It 'reads every DC, not only the first, and gives each its own rows and domain' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                $script:C2Reads += $ComputerName
+                $free = 60
+                if ($ComputerName -eq $script:C2Dc2) { $free = 6 }
+                if ($ComputerName -eq $script:C2Dc3) { $free = 18 }
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB $free)) -Protocol $Protocol
+            }
+            $dcs = @(
+                [pscustomobject]@{ Scope = 'contoso.com'; HostName = $script:C2Dc1 },
+                [pscustomobject]@{ Scope = 'contoso.com'; HostName = $script:C2Dc2 },
+                [pscustomobject]@{ Scope = 'fabrikam.com'; HostName = $script:C2Dc3 }
+            )
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers $dcs -Config $script:Ddc)
+            # Declared population: three DCs, one shared volume each.
+            $rows.Count | Should -Be 3
+            ($script:C2Reads -join ',') | Should -Be 'dc1.contoso.com,dc2.contoso.com,dc3.fabrikam.com'
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com C:\ (NTDS database, NTDS logs, SYSVOL)').Status | Should -Be 'Pass'
+            (Get-C2Row $rows 'Disk space: dc2.contoso.com C:\ (NTDS database, NTDS logs, SYSVOL)').Status | Should -Be 'Fail'
+            $third = Get-C2Row $rows 'Disk space: dc3.fabrikam.com C:\ (NTDS database, NTDS logs, SYSVOL)'
+            $third.Status | Should -Be 'Warning'
+            $third.Scope | Should -Be 'fabrikam.com'
+            @($rows | Where-Object { $_.Scope -eq 'contoso.com' }).Count | Should -Be 2
+        }
+        It 'accepts plain host names as well as inventory rows' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1, $script:C2Dc2) -Config $script:Ddc)
+            $rows.Count | Should -Be 2
+            (Get-C2Row $rows 'Disk space: dc2.contoso.com C:\ (NTDS database, NTDS logs, SYSVOL)').Status | Should -Be 'Pass'
+            [string]$rows[0].Scope | Should -Be ''
+        }
+        It 'reports Not Assessed, never a clean result, when there are no DCs, and carries the enumeration error' {
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @() -Config $script:Ddc)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'Disk space'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match 'not a clean result'
+            $why = @(Get-AdfaDcDiskSpace -DomainControllers $null -Config $script:Ddc -EnumerationError 'The server is not operational')
+            $why.Count | Should -Be 1
+            $why[0].Status | Should -Be 'Not Assessed'
+            $why[0].Detail | Should -Match 'not operational'
+        }
+        It 'gives a domain whose inventory failed its own Not Assessed row, beside the DCs that were read' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            $failed = @([pscustomobject]@{ Domain = 'child.contoso.com'; Error = 'The server is not operational' })
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @([pscustomobject]@{ Scope = 'contoso.com'; HostName = $script:C2Dc1 }) -Config $script:Ddc -InventoryFailures $failed)
+            $rows.Count | Should -Be 2
+            $gap = Get-C2Row $rows 'Disk space - child.contoso.com'
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Scope | Should -Be 'child.contoso.com'
+            $gap.Detail | Should -Match 'not operational'
+            # The DC that was read belongs to another domain, so for this one the statement holds.
+            $gap.Detail | Should -Match 'None of its volumes was read\.$'
+        }
+        It 'does not say "none of its volumes was read" for a failed domain when DCs without a domain follow it' {
+            # The inventory of the only scoped domain threw, and the unscoped fallback
+            # enumeration still returned a DC. The domain row used to claim nothing was read,
+            # directly above a Pass row for that DC.
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            $failed = @([pscustomobject]@{ Domain = 'contoso.com'; Error = 'ADWS down' })
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1, $script:C2Dc2) -Config $script:Ddc -InventoryFailures $failed -ScopedDomains @('contoso.com'))
+            # Declared population: the domain row, then one volume row for each of the two DCs.
+            $rows.Count | Should -Be 3
+            $gap = Get-C2Row $rows 'Disk space - contoso.com'
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Detail | Should -Match 'ADWS down'
+            $gap.Detail | Should -Not -Match '(?i)none of (its|their) volumes was read'
+            $gap.Detail | Should -Match 'The 2 domain controller\(s\) listed in this section without a domain came from the fallback enumeration'
+            $gap.Detail | Should -Match 'not shown as read'
+            @($rows | Where-Object { $_.Status -eq 'Pass' -and [string]$_.Scope -eq '' }).Count | Should -Be 2
+        }
+        It 'accounts for every scoped domain: a domain with no DC row gets a Not Assessed row of its own, never a gap' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            $scoped = @('contoso.com', 'north.contoso.com', 'south.contoso.com', 'fabrikam.com')
+            $dcs = @(
+                [pscustomobject]@{ Scope = 'contoso.com'; HostName = $script:C2Dc1 },
+                [pscustomobject]@{ Scope = 'CONTOSO.com'; HostName = $script:C2Dc2 },
+                [pscustomobject]@{ Scope = 'fabrikam.com'; HostName = $script:C2Dc3 }
+            )
+            $failed = @([pscustomobject]@{ Domain = 'south.contoso.com'; Error = 'The server is not operational' })
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers $dcs -Config $script:Ddc -InventoryFailures $failed -ScopedDomains $scoped)
+            # Declared population: the four scoped domains. Two are covered by DC rows (three
+            # DCs), one failed, one returned no DC.
+            $rows.Count | Should -Be 5
+            foreach ($d in $scoped) {
+                @($rows | Where-Object { [string]$_.Scope -eq $d }).Count | Should -BeGreaterThan 0 -Because "scoped domain $d must appear in the section"
+            }
+            (Get-C2Row $rows 'Disk space - contoso.com') | Should -BeNullOrEmpty
+            (Get-C2Row $rows 'Disk space - fabrikam.com') | Should -BeNullOrEmpty
+            $south = Get-C2Row $rows 'Disk space - south.contoso.com'
+            $south.Status | Should -Be 'Not Assessed'
+            $south.Detail | Should -Match 'could not be enumerated\. Cause: The server is not operational'
+            $south.Detail | Should -Match 'None of its volumes was read\.$'
+            $north = Get-C2Row $rows 'Disk space - north.contoso.com'
+            $north.Status | Should -Be 'Not Assessed'
+            $north.Scope | Should -Be 'north.contoso.com'
+            $north.Detail | Should -Match 'returned no domain controller for this domain'
+            $north.Detail | Should -Match 'None of its volumes was read\.$'
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 3
+            # With no DC at all, every scoped domain still has its row, and nothing passes.
+            $none = @(Get-AdfaDcDiskSpace -DomainControllers @() -Config $script:Ddc -ScopedDomains $scoped)
+            $none.Count | Should -Be 5   # four domain rows and the section's own "no DC enumerated" row
+            @($none | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            foreach ($d in $scoped) { (Get-C2Row $none ("Disk space - {0}" -f $d)).Status | Should -Be 'Not Assessed' }
+        }
+        It 'passes the run''s credential to the seam for every DC and transport, and none when there is none' {
+            $script:C2Creds = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                $user = '(none)'
+                if ($PSBoundParameters.ContainsKey('Credential') -and $null -ne $Credential) { $user = [string]$Credential.UserName }
+                $script:C2Creds += ("{0}/{1}/{2}/{3}" -f $ComputerName, $Protocol, $user, $OperationTimeoutSec)
+                if ($Protocol -eq 'Wsman') { return (Get-C2FailedRaw -Protocol $Protocol -Message 'The WinRM client cannot process the request.' -Code 'Failed') }
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            $secret = New-Object System.Security.SecureString
+            foreach ($ch in 'stub'.ToCharArray()) { $secret.AppendChar($ch) }
+            $cred = New-Object System.Management.Automation.PSCredential -ArgumentList 'CONTOSO\reader', $secret
+            Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1, $script:C2Dc2) -Config $script:Ddc -Credential $cred -OperationTimeoutSec 45 | Out-Null
+            # Declared population: two DCs, two transports each.
+            ($script:C2Creds -join ',') | Should -Be 'dc1.contoso.com/Wsman/CONTOSO\reader/45,dc1.contoso.com/Dcom/CONTOSO\reader/45,dc2.contoso.com/Wsman/CONTOSO\reader/45,dc2.contoso.com/Dcom/CONTOSO\reader/45'
+            Clear-AdfaDcPortCache
+            $script:C2Creds = @()
+            Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $script:Ddc | Out-Null
+            ($script:C2Creds -join ',') | Should -Be 'dc1.contoso.com/Wsman/(none)/90,dc1.contoso.com/Dcom/(none)/90'
+        }
+        It 'reports an unreachable DC as unreachable, without attempting a read' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $false }
+            function Get-AdfaDcDiskRaw { param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths) $script:C2Reads += $ComputerName }
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $script:Ddc)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'Disk space: dc1.contoso.com'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '^Unreachable'
+            $rows[0].Detail | Should -Match '5985'
+            $rows[0].Detail | Should -Match '135'
+            @($script:C2Reads).Count | Should -Be 0
+        }
+        It 'reports access denied as access denied, not as unreachable, and does not retry it over DCOM' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                $script:C2Reads += $Protocol
+                Get-C2FailedRaw -Protocol $Protocol -Message 'Acesso negado.' -Code 'AccessDenied'
+            }
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $script:Ddc)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '^Access denied'
+            $rows[0].Detail | Should -Match 'Administrators'
+            $rows[0].Detail | Should -Match 'Acesso negado'
+            $rows[0].Detail | Should -Not -Match '(?i)unreachable'
+            ($script:C2Reads -join ',') | Should -Be 'Wsman'
+        }
+        It 'recognises a refusal by its English text when no error code came with it' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                Get-C2FailedRaw -Protocol $Protocol -Message 'Access is denied.'
+            }
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $script:Ddc)
+            $rows[0].Detail | Should -Match '^Access denied'
+        }
+        It 'reports any other failure as a read failure, with both attempts quoted, and not as a refusal' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                Get-C2FailedRaw -Protocol $Protocol -Message "The RPC server is unavailable ($Protocol)." -Code 'Failed'
+            }
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $script:Ddc)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '^Read failed'
+            $rows[0].Detail | Should -Not -Match '^Access denied'
+            $rows[0].Detail | Should -Match 'unavailable \(Wsman\)'
+            $rows[0].Detail | Should -Match 'unavailable \(Dcom\)'
+        }
+        It 'tries WinRM first and DCOM second, and reports which one answered' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                $script:C2Reads += $Protocol
+                if ($Protocol -eq 'Wsman') { return (Get-C2FailedRaw -Protocol $Protocol -Message 'The WinRM client cannot process the request.' -Code 'Failed') }
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $script:Ddc)
+            ($script:C2Reads -join ',') | Should -Be 'Wsman,Dcom'
+            $rows[0].Status | Should -Be 'Pass'
+            $rows[0].Detail | Should -Match 'Read over Dcom'
+        }
+        It 'uses only the transport whose port answered, and the ports the config names' {
+            $script:C2Probed = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C2Probed += $Port; return ($Port -eq 1135) }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                $script:C2Reads += $Protocol
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            $cfg = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WsmanPort = 5986; RpcPort = 1135 }
+            Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $cfg | Out-Null
+            ($script:C2Reads -join ',') | Should -Be 'Dcom'
+            (@($script:C2Probed | Sort-Object) -join ',') | Should -Be '1135,5986'
+        }
+        It 'hands the seam the registry values the config names' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                $script:C2Reads += (@($Paths | ForEach-Object { [string]$_.ValueName }) -join '|')
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $script:Ddc | Out-Null
+            $script:C2Reads[0] | Should -Be 'DSA Database File|Database Log Files Path|SysVol'
+        }
+        It 'handles a mixed set: one DC read, one unreachable, one refused - and passes nothing it did not read' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($ComputerName -ne $script:C2Dc2) }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                if ($ComputerName -eq $script:C2Dc3) { return (Get-C2FailedRaw -Protocol $Protocol -Message 'Access is denied.' -Code 'AccessDenied') }
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1, $script:C2Dc2, $script:C2Dc3) -Config $script:Ddc)
+            # Declared population: one row for each of the three DCs.
+            $rows.Count | Should -Be 3
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com C:\ (NTDS database, NTDS logs, SYSVOL)').Status | Should -Be 'Pass'
+            $down = Get-C2Row $rows 'Disk space: dc2.contoso.com'
+            $down.Status | Should -Be 'Not Assessed'
+            $down.Detail | Should -Match '^Unreachable'
+            $refused = Get-C2Row $rows 'Disk space: dc3.fabrikam.com'
+            $refused.Status | Should -Be 'Not Assessed'
+            $refused.Detail | Should -Match '^Access denied'
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 1
+        }
+        It 'never reports Info: a row is a verdict or it is Not Assessed' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($ComputerName -ne $script:C2Dc2) }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                $paths = @((New-C2Path -Role 'NTDS database' -Value 'C:\Windows\NTDS\ntds.dit'), (New-C2Path -Role 'NTDS logs' -Value '' -ReturnValue 2), (New-C2Path -Role 'SYSVOL' -Value 'D:\SYSVOL\sysvol'))
+                New-C2Raw -Paths $paths -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60), (New-C2Volume -Name 'D:\' -CapacityGB 100 -FreeGB 1)) -Protocol $Protocol
+            }
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1, $script:C2Dc2) -Config $script:Ddc)
+            # Declared population: dc1 gives C: (Pass), D: (Fail) and the logs path (Not Assessed); dc2 one row.
+            $rows.Count | Should -Be 4
+            @($rows | Where-Object { @('Pass', 'Warning', 'Fail', 'Not Assessed') -notcontains [string]$_.Status }).Count | Should -Be 0
+            (@($rows | ForEach-Object { [string]$_.Status } | Sort-Object) -join ',') | Should -Be 'Fail,Not Assessed,Not Assessed,Pass'
+        }
+        It 'shares the per-run probe cache, and never probes a port directly' {
+            $script:C2ProbeCount = 0
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C2ProbeCount++; return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1, $script:C2Dc2) -Config $script:Ddc | Out-Null
+            Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1, $script:C2Dc2) -Config $script:Ddc | Out-Null
+            # Two DCs, two ports each, asked once per run however many times the section reads them.
+            $script:C2ProbeCount | Should -Be 4
+            $fn = @($script:C2Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AdfaDcDiskSpace' }, $true))
+            $fn.Count | Should -Be 1
+            $inner = @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            $inner | Should -Contain 'Test-AdfaDcPort'
+            $inner | Should -Not -Contain 'Test-TcpPort'
+        }
+        It 'gives a low-space row its own advice, which no later generic entry or file path can replace' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 3)) -Protocol $Protocol
+            }
+            # A file path full of words the unscoped entries match on.
+            $cfg = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WarnBelowPercent = 25 } -OverrideSource 'C:\Backup\replication\sysvol-dfsr-stale-clock.json'
+            $row = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $cfg)[0]
+            $row.Status | Should -Be 'Fail'
+            $row.Item | Should -Match 'SYSVOL'
+            $rec = Get-AdfaRecommendation -Section 'DC Disk Space' -Item ([string]$row.Item) -Detail ([string]$row.Detail)
+            $rec | Should -Match 'Move unrelated files'
+            $rec | Should -Match 'system state backup'
+            $rec | Should -Not -Match 'D4|dfsrmig|repadmin|wbadmin|w32tm|scavenging|Disable first'
+            # The section's own entry is what answered, not a coincidence of wording.
+            (Get-AdfaRecommendation -Section 'SYSVOL / DFSR' -Item ([string]$row.Item) -Detail ([string]$row.Detail)) | Should -Not -Be $rec
+        }
+        It 'chooses the advice before the not-measured note is added to the finding' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 18)) -Protocol $Protocol
+            }
+            $row = @(Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $script:Ddc)[0]
+            $row.Status | Should -Be 'Warning'
+            $f = ConvertTo-AdfaConsolidatedFinding -Section 'DC Disk Space' -Row $row -StatusColumn 'Status'
+            $f.Recommendation | Should -Match 'Move unrelated files'
+            $f.Detail | Should -Match '110 %'
+            $f.Status | Should -Be 'Warning'
+            # A Pass row and a Not Assessed row carry no advice.
+            $pass = [pscustomobject]@{ Scope = ''; Area = 'DcDisk'; Item = 'Disk space: x C:\ (SYSVOL)'; Status = 'Pass'; Detail = 'd'; NotRun = '' }
+            (ConvertTo-AdfaConsolidatedFinding -Section 'DC Disk Space' -Row $pass -StatusColumn 'Status').Recommendation | Should -Be ''
+        }
+    }
+
+    Context 'Get-AdfaDcTargetsByDomain (the section''s own enumeration, when there is no DC inventory)' {
+        BeforeEach {
+            $script:C2Asked = @()
+            # Get-ADDomainController in the shape the cmdlet returns: one object per DC with a
+            # HostName. It answers per -Server, so a call that carried none is visible.
+            function Get-ADDomainController {
+                param($Filter, [string]$Server, [pscredential]$Credential)
+                $user = '(none)'
+                if ($null -ne $Credential) { $user = [string]$Credential.UserName }
+                $script:C2Asked += ("{0}|{1}|{2}" -f $Server, [string]$Filter, $user)
+                if ($Server -eq 'north.contoso.com') { throw 'The server is not operational' }
+                if ($Server -eq 'contoso.com') { return @([pscustomobject]@{ HostName = 'dc1.contoso.com' }, [pscustomobject]@{ HostName = 'dc2.contoso.com' }) }
+                if ($Server -eq 'south.contoso.com') { return @([pscustomobject]@{ HostName = 'dc1.south.contoso.com' }) }
+                if ($Server -eq 'empty.contoso.com') { return @() }
+                return @([pscustomobject]@{ HostName = 'dc-of-the-default-server.contoso.com' })
+            }
+        }
+        It 'asks each scoped domain for its own DCs and gives each DC its domain' {
+            $domains = @('contoso.com', 'north.contoso.com', 'south.contoso.com', 'empty.contoso.com')
+            $r = Get-AdfaDcTargetsByDomain -Domains $domains
+            # Declared population: the four domains, each asked once, by name.
+            ($script:C2Asked -join ',') | Should -Be 'contoso.com|*|(none),north.contoso.com|*|(none),south.contoso.com|*|(none),empty.contoso.com|*|(none)'
+            @($r.Targets).Count | Should -Be 3
+            (@($r.Targets | ForEach-Object { "{0}={1}" -f $_.Scope, $_.HostName }) -join ',') | Should -Be 'contoso.com=dc1.contoso.com,contoso.com=dc2.contoso.com,south.contoso.com=dc1.south.contoso.com'
+            # The DC of the default server was never returned: no call went out without -Server.
+            @($r.Targets | Where-Object { $_.HostName -like 'dc-of-the-default-server*' }).Count | Should -Be 0
+            @($r.Failures).Count | Should -Be 1
+            $r.Failures[0].Domain | Should -Be 'north.contoso.com'
+            $r.Failures[0].Error | Should -Match 'not operational'
+        }
+        It 'carries the run''s AD parameters, with the domain replacing any -Server' {
+            $secret = New-Object System.Security.SecureString
+            foreach ($ch in 'stub'.ToCharArray()) { $secret.AppendChar($ch) }
+            $cred = New-Object System.Management.Automation.PSCredential -ArgumentList 'CONTOSO\reader', $secret
+            $adParams = @{ Server = 'dc9.contoso.com'; Credential = $cred }
+            $r = Get-AdfaDcTargetsByDomain -Domains @('contoso.com', 'south.contoso.com') -AdParams $adParams
+            ($script:C2Asked -join ',') | Should -Be 'contoso.com|*|CONTOSO\reader,south.contoso.com|*|CONTOSO\reader'
+            @($r.Targets).Count | Should -Be 3
+            # The caller's table is not changed by the call.
+            $adParams.Server | Should -Be 'dc9.contoso.com'
+        }
+        It 'returns nothing, and does not throw, for no domains' {
+            $r = Get-AdfaDcTargetsByDomain -Domains @()
+            @($r.Targets).Count | Should -Be 0
+            @($r.Failures).Count | Should -Be 0
+            @($script:C2Asked).Count | Should -Be 0
+            $n = Get-AdfaDcTargetsByDomain -Domains $null
+            @($n.Targets).Count | Should -Be 0
+        }
+        It 'feeds the collector so that every scoped domain is in the section, with the failed and the empty one as Not Assessed' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcDiskRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
+                New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
+            }
+            Clear-AdfaDcPortCache
+            $domains = @('contoso.com', 'north.contoso.com', 'south.contoso.com', 'empty.contoso.com')
+            $r = Get-AdfaDcTargetsByDomain -Domains $domains
+            $rows = @(Get-AdfaDcDiskSpace -DomainControllers $r.Targets -Config $script:Ddc -InventoryFailures $r.Failures -ScopedDomains $domains)
+            # Declared population: three DC rows and one row each for the failed and the empty domain.
+            $rows.Count | Should -Be 5
+            foreach ($d in $domains) { @($rows | Where-Object { [string]$_.Scope -eq $d }).Count | Should -BeGreaterThan 0 -Because "$d was scoped" }
+            @($rows | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Status -eq 'Pass' }).Count | Should -Be 2
+            @($rows | Where-Object { $_.Scope -eq 'south.contoso.com' -and $_.Status -eq 'Pass' }).Count | Should -Be 1
+            (Get-C2Row $rows 'Disk space - north.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C2Row $rows 'Disk space - empty.contoso.com').Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'Get-AdfaDcDiskRaw (the CIM seam)' {
+        BeforeAll {
+            function New-CimSessionOption { param([string]$Protocol) [pscustomobject]@{ Protocol = $Protocol } }
+            # Simple functions on purpose, with -WhatIf and -Confirm NOT declared: the values the
+            # caller passes for them then arrive in $args as '-WhatIf:' followed by the value.
+            function Get-C2Switch {
+                param($Arguments, [string]$Name)
+                for ($i = 0; $i -lt @($Arguments).Count; $i++) {
+                    if ([string]$Arguments[$i] -eq ("-{0}:" -f $Name) -and ($i + 1) -lt @($Arguments).Count) { return $Arguments[$i + 1] }
+                }
+                return $null
+            }
+            function Remove-CimSession {
+                param($CimSession)
+                $script:C2Closed++
+                $script:C2CloseCalls += [pscustomobject]@{ WhatIf = (Get-C2Switch -Arguments $args -Name 'WhatIf'); Confirm = (Get-C2Switch -Arguments $args -Name 'Confirm') }
+            }
+            function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
+                $p = 'none'; if ($null -ne $SessionOption) { $p = [string]$SessionOption.Protocol }; $script:C2Opts += $p
+                $user = '(none)'
+                if ($PSBoundParameters.ContainsKey('Credential') -and $null -ne $Credential) { $user = [string]$Credential.UserName }
+                $script:C2Sessions += [pscustomobject]@{ ComputerName = $ComputerName; User = $user; OperationTimeoutSec = $OperationTimeoutSec }
+                [pscustomobject]@{ ComputerName = $ComputerName } }
+            # StdRegProv through Invoke-CimMethod returns an object with ReturnValue (uint32) and the
+            # method's [out] parameter, sValue.
+            # The return codes are the ones MEASURED from the real provider on 2026-11-13 (one
+            # Windows 11 workstation, not a DC; both methods, both PowerShell editions):
+            #   1  a value that does not exist under a key that does
+            #   2  a key that does not exist
+            # An earlier version of this stub answered 2 for an absent value, which the real
+            # provider does not, so every "Not found" test was green over a shape that could
+            # not occur. The stub's registry holds the three keys a DC has; a value it does not
+            # hold answers 1, and a key listed in $script:C2AbsentKeys answers 2.
+            function Invoke-CimMethod {
+                param($CimSession, [string]$Namespace, [string]$ClassName, [string]$MethodName, $Arguments, [uint32]$OperationTimeoutSec, $ErrorAction)
+                $bounded = $PSBoundParameters.ContainsKey('OperationTimeoutSec')
+                $script:C2Calls += [pscustomobject]@{ Namespace = $Namespace; ClassName = $ClassName; MethodName = $MethodName
+                    Hive = $Arguments['hDefKey']; Key = [string]$Arguments['sSubKeyName']; ValueName = [string]$Arguments['sValueName']
+                    WhatIf = (Get-C2Switch -Arguments $args -Name 'WhatIf'); Confirm = (Get-C2Switch -Arguments $args -Name 'Confirm')
+                    Bounded = $bounded; OperationTimeoutSec = $OperationTimeoutSec }
+                if (@($script:C2AbsentKeys) -contains [string]$Arguments['sSubKeyName']) { return [pscustomobject]@{ ReturnValue = [uint32]2; sValue = $null; PSComputerName = 'x' } }
+                $answer = $script:C2Registry[("{0}|{1}" -f $MethodName, [string]$Arguments['sValueName'])]
+                if ($null -eq $answer) { return [pscustomobject]@{ ReturnValue = [uint32]1; sValue = $null; PSComputerName = 'x' } }
+                if ($answer -is [System.Exception]) { throw $answer }
+                return [pscustomobject]@{ ReturnValue = [uint32]$answer.Code; sValue = $answer.Value; PSComputerName = 'x' }
+            }
+            function Get-CimInstance {
+                param($CimSession, [string]$Namespace, [string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $ErrorAction)
+                $script:C2Queries += $ClassName
+                $script:C2QueryCalls += [pscustomobject]@{ ClassName = $ClassName; Bounded = $PSBoundParameters.ContainsKey('OperationTimeoutSec'); OperationTimeoutSec = $OperationTimeoutSec }
+                if ($null -ne $script:C2VolumeError) { throw $script:C2VolumeError }
+                return $script:C2VolumeAnswer
+            }
+            $script:C2Paths = $script:Config.DcDisk.Paths
+        }
+        BeforeEach {
+            $script:C2Closed = 0
+            $script:C2CloseCalls = @()
+            $script:C2Sessions = @()
+            $script:C2AbsentKeys = @()
+            $script:C2QueryCalls = @()
+            $script:C2Opts = @()
+            $script:C2Calls = @()
+            $script:C2Queries = @()
+            $script:C2VolumeError = $null
+            $script:C2VolumeAnswer = @(
+                (New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60),
+                (New-C2Volume -Name '\\?\Volume{11111111-2222-3333-4444-555555555555}\' -CapacityGB 0.5 -FreeGB 0.1)
+            )
+            $script:C2Registry = @{
+                'GetStringValue|DSA Database File'       = @{ Code = 0; Value = 'C:\Windows\NTDS\ntds.dit' }
+                'GetStringValue|Database Log Files Path' = @{ Code = 0; Value = 'C:\Windows\NTDS' }
+                'GetStringValue|SysVol'                  = @{ Code = 0; Value = 'C:\Windows\SYSVOL\sysvol' }
+            }
+        }
+        It 'reads the three values from HKLM with GetStringValue, then the volumes, and closes the session' {
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $r.Ok | Should -BeTrue
+            $r.Protocol | Should -Be 'Wsman'
+            # Declared population: one read per role.
+            @($r.Paths).Count | Should -Be 3
+            @($script:C2Calls).Count | Should -Be 3
+            foreach ($c in $script:C2Calls) {
+                $c.ClassName | Should -Be 'StdRegProv'
+                $c.MethodName | Should -Be 'GetStringValue'
+                $c.Namespace | Should -Be 'root/cimv2'
+                [uint32]$c.Hive | Should -Be ([uint32]2147483650)   # HKEY_LOCAL_MACHINE
+                # Given, and given as $false: $null here would mean the switch was not passed.
+                ($null -ne $c.WhatIf) | Should -BeTrue -Because '-WhatIf must be passed'
+                $c.WhatIf | Should -Be $false
+                ($null -ne $c.Confirm) | Should -BeTrue -Because '-Confirm must be passed'
+                $c.Confirm | Should -Be $false
+                # Bounded by the caller's timeout, not left to the session default.
+                $c.Bounded | Should -BeTrue
+                $c.OperationTimeoutSec | Should -Be 30
+            }
+            # The volume query is bounded by the same timeout, and so is the session.
+            @($script:C2QueryCalls).Count | Should -Be 1
+            $script:C2QueryCalls[0].Bounded | Should -BeTrue
+            $script:C2QueryCalls[0].OperationTimeoutSec | Should -Be 30
+            @($script:C2Sessions).Count | Should -Be 1
+            $script:C2Sessions[0].OperationTimeoutSec | Should -Be 30
+            $script:C2Sessions[0].User | Should -Be '(none)'
+            # Closing the session is not left to a WhatIf or Confirm preference either.
+            @($script:C2CloseCalls).Count | Should -Be 1
+            ($null -ne $script:C2CloseCalls[0].WhatIf) | Should -BeTrue -Because '-WhatIf must be passed'
+            $script:C2CloseCalls[0].WhatIf | Should -Be $false
+            ($null -ne $script:C2CloseCalls[0].Confirm) | Should -BeTrue -Because '-Confirm must be passed'
+            $script:C2CloseCalls[0].Confirm | Should -Be $false
+            (@($script:C2Calls | ForEach-Object { "{0}\{1}" -f $_.Key, $_.ValueName }) -join '|') | Should -Be (
+                'SYSTEM\CurrentControlSet\Services\NTDS\Parameters\DSA Database File|SYSTEM\CurrentControlSet\Services\NTDS\Parameters\Database Log Files Path|SYSTEM\CurrentControlSet\Services\Netlogon\Parameters\SysVol')
+            $db = @($r.Paths | Where-Object { $_.Role -eq 'NTDS database' })[0]
+            $db.Read | Should -BeTrue
+            $db.Value | Should -Be 'C:\Windows\NTDS\ntds.dit'
+            $db.ReturnValue | Should -Be 0
+            $db.Method | Should -Be 'GetStringValue'
+            $r.VolumesOk | Should -BeTrue
+            @($r.Volumes).Count | Should -Be 2
+            $r.Volumes[0].Name | Should -Be 'C:\'
+            $r.Volumes[0].Capacity | Should -Be ([uint64](120 * $script:C2GB))
+            $r.Volumes[0].DriveType | Should -Be 3
+            ($script:C2Queries -join ',') | Should -Be 'Win32_Volume'
+            $script:C2Closed | Should -Be 1
+        }
+        It 'feeds the pure layer a result it can judge' {
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw $r -Config $script:Ddc)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Pass'
+        }
+        It 'keeps the return code of a value that is not set (1), still reads the other two, and the row names it Not found' {
+            $script:C2Registry.Remove('GetStringValue|SysVol')   # the stub, like the provider, answers 1 for a value its key does not hold
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $r.Ok | Should -BeTrue
+            $sv = @($r.Paths | Where-Object { $_.Role -eq 'SYSVOL' })[0]
+            $sv.Read | Should -BeFalse
+            $sv.ReturnValue | Should -Be 1
+            $sv.ExpandedReturnValue | Should -Be 1
+            @($r.Paths | Where-Object { $_.Read }).Count | Should -Be 2
+            # The string read failed, so the expanded-string read was tried for that one value only.
+            (@($script:C2Calls | ForEach-Object { "{0}:{1}" -f $_.MethodName, $_.ValueName }) -join '|') | Should -Be (
+                'GetStringValue:DSA Database File|GetStringValue:Database Log Files Path|GetStringValue:SysVol|GetExpandedStringValue:SysVol')
+            # Seam to row: the not-configured case reaches the operator as Not found, not as an
+            # uninterpreted read failure.
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw $r -Config $script:Ddc)
+            $gap = Get-C2Row $rows 'Disk space: dc1.contoso.com - SYSVOL path'
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Detail | Should -Match '^Not found: StdRegProv returned 1,'
+            $gap.Detail | Should -Match 'the value not being set'
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com C:\ (NTDS database, NTDS logs)').Status | Should -Be 'Pass'
+        }
+        It 'keeps the return code of a key that does not exist (2), for both values under it, and the rows say it is the key' {
+            $script:C2AbsentKeys = @($script:C2NtdsKey)
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $r.Ok | Should -BeTrue
+            # Declared population: the two values under NTDS\Parameters.
+            $under = @($r.Paths | Where-Object { $_.Key -eq $script:C2NtdsKey })
+            $under.Count | Should -Be 2
+            foreach ($p in $under) {
+                $p.Read | Should -BeFalse
+                $p.ReturnValue | Should -Be 2
+                $p.ExpandedReturnValue | Should -Be 2
+            }
+            @($r.Paths | Where-Object { $_.Role -eq 'SYSVOL' })[0].Read | Should -BeTrue
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw $r -Config $script:Ddc)
+            foreach ($role in @('NTDS database', 'NTDS logs')) {
+                $row = Get-C2Row $rows ("Disk space: dc1.contoso.com - {0} path" -f $role)
+                $row.Status | Should -Be 'Not Assessed'
+                $row.Detail | Should -Match '^Not found: StdRegProv returned 2,'
+                $row.Detail | Should -Match 'the registry key not existing'
+            }
+            (Get-C2Row $rows 'Disk space: dc1.contoso.com C:\ (SYSVOL)').Status | Should -Be 'Pass'
+        }
+        It 'tries the expanded read for a value that came back empty with a return of 0' {
+            # Return 0 with nothing in it is not a path. The other triggers (a nonzero return, a
+            # %VARIABLE%) have their own tests; without this one the "empty value" trigger could
+            # be removed unnoticed.
+            $script:C2Registry['GetStringValue|Database Log Files Path'] = @{ Code = 0; Value = '   ' }
+            $script:C2Registry['GetExpandedStringValue|Database Log Files Path'] = @{ Code = 0; Value = 'E:\Logs' }
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $lg = @($r.Paths | Where-Object { $_.Role -eq 'NTDS logs' })[0]
+            (@($script:C2Calls | ForEach-Object { "{0}:{1}" -f $_.MethodName, $_.ValueName }) -join '|') | Should -Be (
+                'GetStringValue:DSA Database File|GetStringValue:Database Log Files Path|GetExpandedStringValue:Database Log Files Path|GetStringValue:SysVol')
+            $lg.Read | Should -BeTrue
+            $lg.Value | Should -Be 'E:\Logs'
+            $lg.Method | Should -Be 'GetExpandedStringValue'
+            $lg.ExpandedReturnValue | Should -Be 0
+        }
+        It 'opens the session with the credential it was given, and with none when it was given none' {
+            $secret = New-Object System.Security.SecureString
+            foreach ($ch in 'stub'.ToCharArray()) { $secret.AppendChar($ch) }
+            $cred = New-Object System.Management.Automation.PSCredential -ArgumentList 'CONTOSO\reader', $secret
+            Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths -Credential $cred | Out-Null
+            Get-AdfaDcDiskRaw -ComputerName $script:C2Dc2 -Protocol 'Dcom' -OperationTimeoutSec 30 -Paths $script:C2Paths -Credential $cred | Out-Null
+            Get-AdfaDcDiskRaw -ComputerName $script:C2Dc3 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths | Out-Null
+            # Declared population: the three sessions opened above.
+            (@($script:C2Sessions | ForEach-Object { "{0}={1}" -f $_.ComputerName, $_.User }) -join ',') | Should -Be 'dc1.contoso.com=CONTOSO\reader,dc2.contoso.com=CONTOSO\reader,dc3.fabrikam.com=(none)'
+        }
+        It 'does not ask a second time after the refusal WbemErrorEnum defines either' {
+            $script:C2Registry['GetStringValue|SysVol'] = @{ Code = [uint32]2147749891; Value = $null }
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $sv = @($r.Paths | Where-Object { $_.Role -eq 'SYSVOL' })[0]
+            $sv.Read | Should -BeFalse
+            $sv.ReturnValue | Should -Be 2147749891
+            @($script:C2Calls | Where-Object { $_.MethodName -eq 'GetExpandedStringValue' }).Count | Should -Be 0
+            # Non-vacuity: the three string reads did happen.
+            @($script:C2Calls).Count | Should -Be 3
+        }
+        It 'is Ok, with one row per role, when all three registry reads threw and only the volume list answered' {
+            $e = New-Object System.Exception 'Acesso negado.'
+            $e | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+            foreach ($k in @($script:C2Registry.Keys)) { $script:C2Registry[$k] = $e }
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            # The DC answered one of the four operations, so this is not a whole-DC failure and
+            # the other transport is not tried on the strength of it.
+            $r.Ok | Should -BeTrue
+            $r.Error | Should -Be ''
+            $r.VolumesOk | Should -BeTrue
+            @($r.Volumes).Count | Should -Be 2
+            @($r.Paths).Count | Should -Be 3
+            @($r.Paths | Where-Object { $_.Read }).Count | Should -Be 0
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw $r -Config $script:Ddc)
+            # Declared population: one Access denied row per role, each naming its registry value.
+            $rows.Count | Should -Be 3
+            foreach ($role in $script:C2Roles) {
+                $row = Get-C2Row $rows ("Disk space: dc1.contoso.com - {0} path" -f $role)
+                $row.Status | Should -Be 'Not Assessed'
+                $row.Detail | Should -Match '^Access denied'
+            }
+        }
+        It 'does not ask a second time after a refusal' {
+            $script:C2Registry['GetStringValue|SysVol'] = @{ Code = 5; Value = $null }
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $sv = @($r.Paths | Where-Object { $_.Role -eq 'SYSVOL' })[0]
+            $sv.Read | Should -BeFalse
+            $sv.ReturnValue | Should -Be 5
+            @($script:C2Calls | Where-Object { $_.MethodName -eq 'GetExpandedStringValue' }).Count | Should -Be 0
+        }
+        It 'reads an expandable value through GetExpandedStringValue and says so' {
+            $script:C2Registry['GetStringValue|Database Log Files Path'] = @{ Code = 0; Value = '%SystemRoot%\NTDS' }
+            $script:C2Registry['GetExpandedStringValue|Database Log Files Path'] = @{ Code = 0; Value = 'C:\Windows\NTDS' }
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $lg = @($r.Paths | Where-Object { $_.Role -eq 'NTDS logs' })[0]
+            $lg.Read | Should -BeTrue
+            $lg.Value | Should -Be 'C:\Windows\NTDS'
+            $lg.Method | Should -Be 'GetExpandedStringValue'
+            @($script:C2Calls | Where-Object { $_.MethodName -eq 'GetExpandedStringValue' }).Count | Should -Be 1
+        }
+        It 'keeps the unexpanded value, for the row to report, when the expanded read does not help' {
+            $script:C2Registry['GetStringValue|Database Log Files Path'] = @{ Code = 0; Value = '%NoSuchVar%\NTDS' }
+            $script:C2Registry['GetExpandedStringValue|Database Log Files Path'] = @{ Code = 0; Value = '%NoSuchVar%\NTDS' }
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $rows = @(Get-AdfaDcDiskFinding -DomainController $script:C2Dc1 -Scope 'contoso.com' -Raw $r -Config $script:Ddc)
+            $row = Get-C2Row $rows 'Disk space: dc1.contoso.com - NTDS logs path'
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match '%NoSuchVar%'
+        }
+        It 'does not discard two values because the read of the third threw' {
+            $e = New-Object System.Exception 'The operation has timed out.'
+            $script:C2Registry['GetStringValue|Database Log Files Path'] = $e
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $r.Ok | Should -BeTrue
+            $lg = @($r.Paths | Where-Object { $_.Role -eq 'NTDS logs' })[0]
+            $lg.Read | Should -BeFalse
+            $lg.Error | Should -Match 'timed out'
+            @($r.Paths | Where-Object { $_.Read }).Count | Should -Be 2
+            $r.VolumesOk | Should -BeTrue
+        }
+        It 'keeps the paths when only the volume query failed, and carries its error code' {
+            $e = New-Object System.Exception 'Acesso negado.'
+            $e | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+            $script:C2VolumeError = $e
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Dcom' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $r.Ok | Should -BeTrue
+            $r.VolumesOk | Should -BeFalse
+            $r.VolumeError | Should -Match 'Acesso negado'
+            $r.VolumeErrorCode | Should -Be 'AccessDenied'
+            @($r.Paths | Where-Object { $_.Read }).Count | Should -Be 3
+        }
+        It 'reports the read as failed, with the first error and its code, when nothing at all answered' {
+            $e = New-Object System.Exception 'Acesso negado.'
+            $e | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+            foreach ($k in @($script:C2Registry.Keys)) { $script:C2Registry[$k] = $e }
+            $script:C2VolumeError = $e
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Match 'Acesso negado'
+            $r.ErrorCode | Should -Be 'AccessDenied'
+            $script:C2Closed | Should -Be 1
+        }
+        It 'returns the error text and code, not an exception, when the session cannot be opened' {
+            function New-CimSession { param([Parameter(ValueFromRemainingArguments)]$a)
+                $e = New-Object System.Exception 'Acesso negado.'
+                $e | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+                throw $e }
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Match 'Acesso negado'
+            $r.ErrorCode | Should -Be 'AccessDenied'
+            @($script:C2Calls).Count | Should -Be 0
+        }
+        It 'asks for a DCOM session option only for DCOM' {
+            Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths | Out-Null
+            Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Dcom' -OperationTimeoutSec 30 -Paths $script:C2Paths | Out-Null
+            ($script:C2Opts -join ',') | Should -Be 'none,Dcom'
+        }
+        It 'reads the RAW capacity and free space where the instance carries an unadapted store' {
+            $script:C2VolumeAnswer = @([pscustomobject]@{
+                    Name = 'C:\'; DeviceID = '\\?\Volume{c}\'; DriveType = [uint32]3; Capacity = 'adapted'; FreeSpace = 'adapted'
+                    CimInstanceProperties = @{
+                        Name = [pscustomobject]@{ Value = 'C:\' }; DeviceID = [pscustomobject]@{ Value = '\\?\Volume{c}\' }; DriveType = [pscustomobject]@{ Value = [uint32]3 }
+                        Capacity = [pscustomobject]@{ Value = [uint64](100 * $script:C2GB) }; FreeSpace = [pscustomobject]@{ Value = [uint64](40 * $script:C2GB) }
+                    } })
+            $r = Get-AdfaDcDiskRaw -ComputerName $script:C2Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Paths $script:C2Paths
+            $r.Volumes[0].Capacity | Should -Be ([uint64](100 * $script:C2GB))
+            $r.Volumes[0].FreeSpace | Should -Be ([uint64](40 * $script:C2GB))
+        }
+    }
+
+    Context 'Merge-AdfaDcDiskConfig (the DcDisk validator)' {
+        It 'replaces only the keys the override names, and leaves the built-in table untouched' {
+            $o = '{ "WarnBelowPercent": 25, "FailBelowFreeGB": 1.5 }' | ConvertFrom-Json
+            $m = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override $o -OverrideSource 'C:\cfg\disk.json'
+            $m.WarnBelowPercent | Should -Be 25
+            $m.FailBelowFreeGB | Should -Be 1.5
+            $m.FailBelowPercent | Should -Be 10
+            $m.WarnBelowFreeGB | Should -Be 5
+            @($m.Paths).Count | Should -Be 3
+            $script:Ddc.WarnBelowPercent | Should -Be 20
+            [string]$script:Ddc.ThresholdSource | Should -Be 'tool default, not a Microsoft value'
+        }
+        It 'cites the file for the thresholds it supplied and goes on labelling the others as tool defaults' {
+            $m = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WarnBelowPercent = 25 } -OverrideSource 'C:\cfg\disk.json'
+            [string]$m.ThresholdSource | Should -Match 'C:\\cfg\\disk\.json'
+            [string]$m.ThresholdSource | Should -Match 'for WarnBelowPercent;'
+            [string]$m.ThresholdSource | Should -Match 'tool default, not a Microsoft value, for FailBelowPercent, WarnBelowFreeGB, FailBelowFreeGB'
+            $all = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WarnBelowPercent = 25; FailBelowPercent = 5; WarnBelowFreeGB = 8; FailBelowFreeGB = 4 } -OverrideSource 'C:\cfg\disk.json'
+            [string]$all.ThresholdSource | Should -Match 'C:\\cfg\\disk\.json'
+            [string]$all.ThresholdSource | Should -Not -Match 'tool default'
+        }
+        It 'goes on calling the thresholds tool defaults when the override changes only a port' {
+            $m = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WsmanPort = 5986 } -OverrideSource 'C:\cfg\disk.json'
+            $m.WsmanPort | Should -Be 5986
+            [string]$m.ThresholdSource | Should -Be 'tool default, not a Microsoft value'
+        }
+        It 'returns the built-in table when there is no override' {
+            $m = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override $null
+            $m.WarnBelowPercent | Should -Be 20
+            [string]$m.ThresholdSource | Should -Be 'tool default, not a Microsoft value'
+        }
+        It 'accepts a floor of 0 as "no floor", and equal Warning and Fail thresholds' {
+            $m = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WarnBelowFreeGB = 0; FailBelowFreeGB = 0 }
+            $m.WarnBelowFreeGB | Should -Be 0
+            (Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WarnBelowPercent = 10 }).WarnBelowPercent | Should -Be 10
+        }
+        It 'refuses an override that is not one object with known keys' {
+            $asArray = @([pscustomobject]@{ WarnBelowPercent = 25 }, [pscustomobject]@{ WarnBelowPercent = 30 })
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override $asArray } | Should -Throw -ExpectedMessage '*single object*'
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override 'abc' } | Should -Throw -ExpectedMessage '*single object*'
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override 5 } | Should -Throw -ExpectedMessage '*single object*'
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override ('{}' | ConvertFrom-Json) } | Should -Throw -ExpectedMessage '*empty object*'
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override ('{ "WarnBelowPercents": 25 }' | ConvertFrom-Json) } | Should -Throw -ExpectedMessage '*WarnBelowPercents*'
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override ('{ "WarnBelowPercent": null }' | ConvertFrom-Json) } | Should -Throw -ExpectedMessage '*null*'
+        }
+        It 'refuses to let a file change what the tool reads or where the facts are cited from' {
+            foreach ($fixed in @('Paths', 'SourceUrl', 'ReadDate', 'ThresholdSource')) {
+                { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ $fixed = 'x' } } | Should -Throw -ExpectedMessage "*unknown key '$fixed'*"
+            }
+        }
+        It 'refuses a threshold that is not a number in range' {
+            $bad = @(
+                @{ O = @{ WarnBelowPercent = 'abc' }; Msg = '*WarnBelowPercent*' }
+                @{ O = @{ WarnBelowPercent = '25' }; Msg = '*WarnBelowPercent*number*' }
+                @{ O = @{ WarnBelowPercent = $true }; Msg = '*WarnBelowPercent*' }
+                @{ O = @{ WarnBelowPercent = @(20, 30) }; Msg = '*WarnBelowPercent*' }
+                @{ O = @{ WarnBelowPercent = 101 }; Msg = '*WarnBelowPercent*0 to 100*' }
+                @{ O = @{ FailBelowPercent = -1 }; Msg = '*FailBelowPercent*0 to 100*' }
+                @{ O = @{ WarnBelowFreeGB = -5 }; Msg = '*WarnBelowFreeGB*' }
+                @{ O = @{ FailBelowFreeGB = 'two' }; Msg = '*FailBelowFreeGB*' }
+            )
+            # Declared population: the eight malformed threshold values above.
+            $bad.Count | Should -Be 8
+            foreach ($b in $bad) { { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override $b.O } | Should -Throw -ExpectedMessage $b.Msg }
+        }
+        It 'refuses thresholds that contradict each other, judged on the merged table' {
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WarnBelowPercent = 10; FailBelowPercent = 20 } } | Should -Throw -ExpectedMessage '*FailBelowPercent*WarnBelowPercent*'
+            # The file names only one key; it is above the built-in Warning threshold of 20.
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ FailBelowPercent = 25 } } | Should -Throw -ExpectedMessage '*FailBelowPercent*WarnBelowPercent*'
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ FailBelowFreeGB = 6 } } | Should -Throw -ExpectedMessage '*FailBelowFreeGB*WarnBelowFreeGB*'
+            # One step inside the rule is accepted, so the refusals above are the rule and not a blanket.
+            (Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ FailBelowPercent = 20 }).FailBelowPercent | Should -Be 20
+        }
+        It 'refuses a table with no threshold left, which would pass every volume' {
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WarnBelowPercent = 0; FailBelowPercent = 0; WarnBelowFreeGB = 0; FailBelowFreeGB = 0 } } | Should -Throw -ExpectedMessage '*no threshold*'
+        }
+        It 'refuses a port that is not a port' {
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WsmanPort = 'abc' } } | Should -Throw -ExpectedMessage '*WsmanPort*'
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ RpcPort = 0 } } | Should -Throw -ExpectedMessage '*RpcPort*'
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ RpcPort = 70000 } } | Should -Throw -ExpectedMessage '*RpcPort*'
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ RpcPort = 135.5 } } | Should -Throw -ExpectedMessage '*RpcPort*'
+        }
+    }
+
+    Context 'Generic -ConfigOverridePath (Resolve- and Import-AdfaConfigOverride)' {
+        BeforeAll {
+            function New-C2File {
+                param([string]$Text)
+                $f = Join-Path ([IO.Path]::GetTempPath()) ("adfa_c2_{0}.json" -f [guid]::NewGuid().ToString('N'))
+                $Text | Out-File -LiteralPath $f -Encoding UTF8
+                return $f
+            }
+        }
+        It 'registers DcDisk with its own validator, which exists' {
+            @($script:ConfigOverrideSections.Keys) | Should -Contain 'DcDisk'
+            [string]$script:ConfigOverrideSections['DcDisk'].Merge | Should -Be 'Merge-AdfaDcDiskConfig'
+            [string]$script:ConfigOverrideSections['DcDisk'].ConfigKey | Should -Be 'DcDisk'
+            $param = @($script:C2Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $sectionValues = @(@($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })[0].PositionalArguments | ForEach-Object { $_.Value })
+            foreach ($k in @($script:ConfigOverrideSections.Keys)) {
+                Get-Command -Name ([string]$script:ConfigOverrideSections[$k].Merge) -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+                $script:Config.ContainsKey([string]$script:ConfigOverrideSections[$k].ConfigKey) | Should -BeTrue
+                # The -Sections value that uses the table must be one that exists.
+                $sectionValues | Should -Contain ([string]$script:ConfigOverrideSections[$k].Section)
+            }
+        }
+        It 'returns a merged table for the sections the file supplied, and nothing for the others' {
+            $o = '{ "DcDisk": { "WarnBelowPercent": 30 } }' | ConvertFrom-Json
+            $r = Resolve-AdfaConfigOverride -Override $o -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
+            @($r.Keys).Count | Should -Be 1
+            $r['DcDisk'].WarnBelowPercent | Should -Be 30
+            $r['DcDisk'].FailBelowPercent | Should -Be 10
+            [string]$r['DcDisk'].ThresholdSource | Should -Match 'C:\\cfg\\all\.json'
+            # The built-in table still says what it said.
+            $script:Config.DcDisk.WarnBelowPercent | Should -Be 20
+        }
+        It 'sends each section to its own validator, so a later row adds one registry line and one function' {
+            function Merge-C2FakeSection {
+                param([hashtable]$BaseConfig, $Override, [string]$OverrideSource)
+                if ($null -ne $Override.PSObject.Properties['Bad']) { throw 'fake section refuses Bad' }
+                return @{ From = $OverrideSource; Limit = $Override.Limit; Base = $BaseConfig['Limit'] }
+            }
+            $registry = [ordered]@{
+                DcDisk = @{ ConfigKey = 'DcDisk'; Merge = 'Merge-AdfaDcDiskConfig' }
+                Later  = @{ ConfigKey = 'Later'; Merge = 'Merge-C2FakeSection' }
+            }
+            $base = @{ DcDisk = $script:Ddc; Later = @{ Limit = 1 } }
+            $o = '{ "Later": { "Limit": 7 }, "DcDisk": { "FailBelowPercent": 5 } }' | ConvertFrom-Json
+            $r = Resolve-AdfaConfigOverride -Override $o -BaseConfig $base -Sections $registry -OverrideSource 'C:\cfg\all.json'
+            # Declared population: the two sections the file names.
+            @($r.Keys).Count | Should -Be 2
+            $r['Later'].Limit | Should -Be 7
+            $r['Later'].Base | Should -Be 1
+            $r['Later'].From | Should -Be 'C:\cfg\all.json'
+            $r['DcDisk'].FailBelowPercent | Should -Be 5
+            # Only the section the file named is returned.
+            $only = Resolve-AdfaConfigOverride -Override ('{ "Later": { "Limit": 9 } }' | ConvertFrom-Json) -BaseConfig $base -Sections $registry
+            (@($only.Keys) -join ',') | Should -Be 'Later'
+            # A section's own refusal is passed on, named.
+            { Resolve-AdfaConfigOverride -Override ('{ "Later": { "Bad": 1 } }' | ConvertFrom-Json) -BaseConfig $base -Sections $registry } | Should -Throw -ExpectedMessage "*section 'Later'*fake section refuses Bad*"
+        }
+        It 'refuses a file that is not one object, is empty, names an unknown section, or sets a section to null' {
+            $asArray = @([pscustomobject]@{ DcDisk = @{} }, [pscustomobject]@{ DcDisk = @{} })
+            { Resolve-AdfaConfigOverride -Override $asArray -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage '*single object*'
+            { Resolve-AdfaConfigOverride -Override 'abc' -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage '*single object*'
+            { Resolve-AdfaConfigOverride -Override 5 -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage '*single object*'
+            { Resolve-AdfaConfigOverride -Override $null -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage '*null*'
+            { Resolve-AdfaConfigOverride -Override ('{}' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage '*empty object*'
+            { Resolve-AdfaConfigOverride -Override ('{ "DcDisks": { "WarnBelowPercent": 30 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*unknown section 'DcDisks'*DcDisk*"
+            # A threshold written at the top level, outside its section, is an unknown section too.
+            { Resolve-AdfaConfigOverride -Override ('{ "WarnBelowPercent": 30 }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*unknown section 'WarnBelowPercent'*"
+            { Resolve-AdfaConfigOverride -Override ('{ "DcDisk": null }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*'DcDisk'*null*"
+        }
+        It 'passes on a malformed value inside a section, naming the section' {
+            { Resolve-AdfaConfigOverride -Override ('{ "DcDisk": { "WarnBelowPercent": "high" } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*section 'DcDisk'*WarnBelowPercent*"
+            { Resolve-AdfaConfigOverride -Override ('{ "DcDisk": { "Typo": 1 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*section 'DcDisk'*unknown key 'Typo'*"
+            { Resolve-AdfaConfigOverride -Override ('{ "DcDisk": [ 1, 2 ] }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*section 'DcDisk'*single object*"
+            { Resolve-AdfaConfigOverride -Override ('{ "DcDisk": {} }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*section 'DcDisk'*empty object*"
+        }
+        It 'does not let Exchange SE or DC system be set from this file: they keep their own parameters' {
+            { Resolve-AdfaConfigOverride -Override ('{ "DcSystem": { "WsmanPort": 5986 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*unknown section 'DcSystem'*"
+            { Resolve-AdfaConfigOverride -Override ('{ "ExchangeSe": { "ReadOnlySupported": true } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*unknown section 'ExchangeSe'*"
+        }
+        It 'loads a valid file and cites it' {
+            $f = New-C2File '{ "DcDisk": { "WarnBelowPercent": 35, "FailBelowPercent": 15 } }'
+            try {
+                $r = Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections
+                $r['DcDisk'].WarnBelowPercent | Should -Be 35
+                $r['DcDisk'].FailBelowPercent | Should -Be 15
+                [string]$r['DcDisk'].ThresholdSource | Should -Match ([regex]::Escape($f))
+            }
+            finally { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+        }
+        It 'throws for a missing, empty or malformed file instead of falling back to the built-in tables' {
+            { Import-AdfaConfigOverride -Path (Join-Path ([IO.Path]::GetTempPath()) 'adfa-no-such-override.json') -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage '*not found*'
+            $cases = @(
+                @{ Text = '   '; Msg = '*empty*' }
+                @{ Text = 'not json {'; Msg = '*not valid JSON*' }
+                @{ Text = 'null'; Msg = '*JSON null*' }
+                @{ Text = '"abc"'; Msg = '*single object*' }
+                @{ Text = '{ "Typo": { "x": 1 } }'; Msg = "*unknown section 'Typo'*" }
+                @{ Text = '{ "DcDisk": { "WarnBelowPercent": 500 } }'; Msg = '*0 to 100*' }
+            )
+            # Declared population: the six malformed files above.
+            $cases.Count | Should -Be 6
+            foreach ($c in $cases) {
+                $f = New-C2File $c.Text
+                try {
+                    { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage $c.Msg
+                    # Every refusal names the file it came from.
+                    { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*$([IO.Path]::GetFileName($f))*"
+                }
+                finally { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+            }
+            # A top-level array: Windows PowerShell 5.1 hands it over whole, PowerShell 7 unrolls it. Either way it stops.
+            $arr = New-C2File '[]'
+            try { { Import-AdfaConfigOverride -Path $arr -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw }
+            finally { Remove-Item $arr -Force -ErrorAction SilentlyContinue }
+        }
+        It 'refuses a top-level array on both PowerShell editions, even when it holds exactly one valid object' {
+            # PowerShell 7 unrolls a one-element array on the pipeline, so the loader used to
+            # see the inner object and apply the file; Windows PowerShell 5.1 refused it. The
+            # message is asserted, not only the throw, so the two editions must refuse it the
+            # same way and for this reason.
+            $arrays = @(
+                '[{"DcDisk":{"WarnBelowPercent":25}}]'
+                '[ { "DcDisk": { "WarnBelowPercent": 99, "FailBelowPercent": 98 } } ]'
+                "`r`n  [ { `"DcDisk`": { `"WarnBelowPercent`": 25 } }, { `"DcDisk`": { `"WarnBelowPercent`": 30 } } ]"
+            )
+            # Declared population: the three array files above.
+            $arrays.Count | Should -Be 3
+            foreach ($text in $arrays) {
+                $f = New-C2File $text
+                try {
+                    { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage '*single object*not a JSON array*'
+                    { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*$([IO.Path]::GetFileName($f))*"
+                }
+                finally { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+            }
+            # The same content as one object is accepted: the refusal is of the array, not of the keys.
+            $ok = New-C2File '{"DcDisk":{"WarnBelowPercent":25}}'
+            try { (Import-AdfaConfigOverride -Path $ok -BaseConfig $script:Config -Sections $script:ConfigOverrideSections)['DcDisk'].WarnBelowPercent | Should -Be 25 }
+            finally { Remove-Item $ok -Force -ErrorAction SilentlyContinue }
+        }
+        It 'refuses a file that names a key or a section twice, instead of applying the last one silently' {
+            $cases = @(
+                @{ Text = '{"DcDisk":{"WarnBelowPercent":25,"WarnBelowPercent":90}}'; Msg = "*'DcDisk.WarnBelowPercent' more than once*" }
+                @{ Text = '{"DcDisk":{"WarnBelowPercent":25},"DcDisk":{"WarnBelowPercent":90}}'; Msg = "*'DcDisk' more than once*" }
+                @{ Text = '{"DcDisk":{"WarnBelowPercent":25,"WarnBelowPercent":90},"DcDisk":{"WarnBelowPercent":30}}'; Msg = "*'DcDisk.WarnBelowPercent', 'DcDisk' more than once*" }
+                @{ Text = "{`r`n  `"DcDisk`": {`r`n    `"FailBelowPercent`": 5,`r`n    `"WsmanPort`": 5985,`r`n    `"FailBelowPercent`": 15`r`n  }`r`n}"; Msg = "*'DcDisk.FailBelowPercent' more than once*" }
+            )
+            # Declared population: the four contradictory files above.
+            $cases.Count | Should -Be 4
+            foreach ($c in $cases) {
+                $f = New-C2File $c.Text
+                try {
+                    { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage $c.Msg
+                    { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*$([IO.Path]::GetFileName($f))*"
+                }
+                finally { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+            }
+            # Keys that differ only by case are a repeat too. ConvertFrom-Json refuses those itself.
+            $mixed = New-C2File '{"DcDisk":{"WarnBelowPercent":25,"warnbelowpercent":90}}'
+            try { { Import-AdfaConfigOverride -Path $mixed -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw }
+            finally { Remove-Item $mixed -Force -ErrorAction SilentlyContinue }
+            # The same key in two different sections of one document is not a repeat.
+            Get-AdfaJsonDuplicateKey -Text '{"DcDisk":{"WsmanPort":5986},"Later":{"WsmanPort":1}}' | Should -BeNullOrEmpty
+        }
+        It 'finds a repeated key in the text, and only a real one (Get-AdfaJsonDuplicateKey)' {
+            $cases = @(
+                @{ T = '{"a":1,"a":2}'; D = 'a' }
+                @{ T = '{"a":1,"A":2}'; D = 'A' }
+                @{ T = '{"A":1,"a":2}'; D = 'a' }                        # an escaped key is the same key
+                @{ T = '{"x":{"a":1,"b":{"c":1,"c":2}}}'; D = 'x.b.c' }
+                @{ T = '{"a":1,"a":2,"a":3}'; D = 'a' }                       # reported once
+                @{ T = '{"a":{"b":1},"c":{"b":2}}'; D = '' }                  # same name, different objects
+                @{ T = '{"a":[{"x":1},{"x":2}]}'; D = '' }                    # same name, different array elements
+                @{ T = '{"a":"a","b":"a"}'; D = '' }                          # a value is not a key
+                @{ T = '{"a":"x\"y","b":"{\"a\":1,\"a\":2}"}'; D = '' }       # JSON inside a string is a string
+                @{ T = '{"a":"\\","b":1}'; D = '' }                           # an escaped backslash ends the string
+                @{ T = "{ // `"a`": 0`n `"a`": 1 /* `"a`": 2 */ }"; D = '' }  # comments, which PowerShell 7 accepts
+                @{ T = ''; D = '' }
+            )
+            # Declared population: the twelve documents above.
+            $cases.Count | Should -Be 12
+            foreach ($c in $cases) { (@(Get-AdfaJsonDuplicateKey -Text $c.T) -join '|') | Should -Be $c.D -Because $c.T }
+            (@(Get-AdfaJsonDuplicateKey -Text '{"a":1,"a":2,"b":{"c":1,"c":2}}') -join '|') | Should -Be 'a|b.c'
+        }
+        It 'reads what a JSON text holds at its top level from the text (Get-AdfaJsonTopLevelKind)' {
+            Get-AdfaJsonTopLevelKind -Text '{"a":1}' | Should -Be 'Object'
+            Get-AdfaJsonTopLevelKind -Text "`r`n`t {`"a`":1}" | Should -Be 'Object'
+            Get-AdfaJsonTopLevelKind -Text ([string][char]0xFEFF + '{"a":1}') | Should -Be 'Object'
+            Get-AdfaJsonTopLevelKind -Text '[{"a":1}]' | Should -Be 'Array'
+            Get-AdfaJsonTopLevelKind -Text '  []' | Should -Be 'Array'
+            Get-AdfaJsonTopLevelKind -Text '"abc"' | Should -Be 'String'
+            Get-AdfaJsonTopLevelKind -Text '5' | Should -Be 'Other'
+            Get-AdfaJsonTopLevelKind -Text 'null' | Should -Be 'Other'
+            Get-AdfaJsonTopLevelKind -Text '   ' | Should -Be 'Empty'
+            Get-AdfaJsonTopLevelKind -Text '' | Should -Be 'Empty'
+            Get-AdfaJsonTopLevelKind -Text ([string][char]0xFEFF) | Should -Be 'Empty'
+        }
+    }
+}

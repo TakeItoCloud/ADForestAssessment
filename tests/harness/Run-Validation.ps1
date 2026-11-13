@@ -1665,6 +1665,221 @@ if (@($invFail).Count -eq 1) {
 }
 
 Write-Host ""
+Write-Host "== 25. DC disk space (verdict, path-to-volume, rows, config override) ==" -ForegroundColor Cyan
+
+# PORT-PLAN C2. Pure logic only: nothing here opens a session, and the AD stubs defined just
+# above are not used. The collector and the CIM seam are covered by the Pester suite and by
+# Run-SmokeTest, which runs them through Invoke-Main.
+function Assert-Throws {
+    param([Parameter(Mandatory)][scriptblock]$Script, [Parameter(Mandatory)][string]$Pattern, [Parameter(Mandatory)][string]$Name)
+    $message = $null
+    try { & $Script | Out-Null } catch { $message = [string]$_.Exception.Message }
+    if ($null -eq $message) { $script:Failures++; Write-Host ("  [FAIL] {0} (nothing was thrown)" -f $Name) -ForegroundColor Red; return }
+    if ($message -match $Pattern) { $script:Passed++; Write-Host ("  [PASS] {0}" -f $Name) -ForegroundColor Green }
+    else { $script:Failures++; Write-Host ("  [FAIL] {0} (threw '{1}', expected to match '{2}')" -f $Name, $message, $Pattern) -ForegroundColor Red }
+}
+
+$diskCfg = $script:Config.DcDisk
+$gb = [double]1073741824
+function Get-DiskVerdict {
+    param([double]$CapacityGB, [double]$FreeGB, [double]$WarnGB = 0, [double]$FailGB = 0)
+    Get-AdfaDiskSpaceVerdict -CapacityBytes ([uint64]($CapacityGB * $gb)) -FreeBytes ([uint64]($FreeGB * $gb)) `
+        -WarnBelowPercent 20 -FailBelowPercent 10 -WarnBelowFreeGB $WarnGB -FailBelowFreeGB $FailGB
+}
+
+# --- Config table: the thresholds are labelled for what they are.
+Assert-Equal 'tool default, not a Microsoft value' ([string]$diskCfg.ThresholdSource) 'Disk config: thresholds are labelled as tool defaults, not Microsoft values'
+Assert-Equal 3 (@($diskCfg.Paths).Count) 'Disk config: declared population - three registry values, one per role'
+Assert-Equal 'NTDS database|NTDS logs|SYSVOL' (@($diskCfg.Paths | ForEach-Object { [string]$_.Role }) -join '|') 'Disk config: the three roles are the database, the logs and SYSVOL'
+Assert-Equal 'DSA Database File|Database Log Files Path|SysVol' (@($diskCfg.Paths | ForEach-Object { [string]$_.ValueName }) -join '|') 'Disk config: the three value names are the ones Microsoft documents'
+
+# --- Verdict boundaries. "Below" is strict.
+Assert-Equal 'Fail' ([string](Get-DiskVerdict 1000 99.9).Status) 'Disk verdict: 9.99 % free is Fail'
+Assert-Equal 'Warning' ([string](Get-DiskVerdict 1000 100).Status) 'Disk verdict: exactly 10 % free is Warning, not Fail'
+Assert-Equal 'Warning' ([string](Get-DiskVerdict 1000 199.9).Status) 'Disk verdict: 19.99 % free is Warning'
+Assert-Equal 'Pass' ([string](Get-DiskVerdict 1000 200).Status) 'Disk verdict: exactly 20 % free is Pass'
+Assert-Equal 'Warning' ([string](Get-DiskVerdict 20 4.9 5 2).Status) 'Disk verdict: 24.5 % free but under the 5 GB floor is Warning'
+Assert-Equal 'Floor' ([string](Get-DiskVerdict 20 4.9 5 2).Trigger) 'Disk verdict: the floor is named as what fired'
+Assert-Equal 'Pass' ([string](Get-DiskVerdict 20 5 5 2).Status) 'Disk verdict: exactly on the floor is not below it'
+Assert-Equal 'Fail' ([string](Get-DiskVerdict 8 1.9 5 2).Status) 'Disk verdict: under the 2 GB floor is Fail whatever the percentage'
+Assert-Equal 'Pass' ([string](Get-DiskVerdict 20 4.9 0 0).Status) 'Disk verdict: a floor of 0 is not applied'
+Assert-Equal 'Both' ([string](Get-DiskVerdict 30 1 5 2).Trigger) 'Disk verdict: both tests failing is reported as both'
+Assert-True ([string](Get-DiskVerdict 120 60).Detail -match '50\.00 % free: 60\.00 GB free of 120\.00 GB') 'Disk verdict: the figures are stated, with a point as the decimal separator on any host'
+
+# --- Fail closed: nothing unusable is ever a Pass.
+$diskBad = @(
+    (Get-AdfaDiskSpaceVerdict -CapacityBytes $null -FreeBytes 100 -WarnBelowPercent 20 -FailBelowPercent 10),
+    (Get-AdfaDiskSpaceVerdict -CapacityBytes 0 -FreeBytes 0 -WarnBelowPercent 20 -FailBelowPercent 10),
+    (Get-AdfaDiskSpaceVerdict -CapacityBytes 'abc' -FreeBytes 100 -WarnBelowPercent 20 -FailBelowPercent 10),
+    (Get-AdfaDiskSpaceVerdict -CapacityBytes 1000 -FreeBytes $null -WarnBelowPercent 20 -FailBelowPercent 10),
+    (Get-AdfaDiskSpaceVerdict -CapacityBytes 1000 -FreeBytes 2000 -WarnBelowPercent 20 -FailBelowPercent 10)
+)
+Assert-Equal 5 (@($diskBad).Count) 'Disk verdict: non-vacuity - five declared unusable shapes evaluated'
+Assert-Equal 5 (@($diskBad | Where-Object { [string]$_.Status -eq 'Not Assessed' }).Count) 'Disk verdict: a missing, zero, non-numeric or inconsistent figure is Not Assessed, never Pass'
+Assert-Equal 'Fail' ([string](Get-AdfaDiskSpaceVerdict -CapacityBytes '536870912000' -FreeBytes '42949672960' -WarnBelowPercent 20 -FailBelowPercent 10).Status) 'Disk verdict: a deserialized string value is read like a number (8 % free)'
+
+# --- Path to volume: longest mount path wins.
+$diskVols = @(
+    [pscustomobject]@{ Name = 'C:\'; DeviceID = '\\?\Volume{c}\'; DriveType = [uint32]3; Capacity = [uint64](120 * $gb); FreeSpace = [uint64](60 * $gb) }
+    [pscustomobject]@{ Name = 'D:\'; DeviceID = '\\?\Volume{d}\'; DriveType = [uint32]3; Capacity = [uint64](100 * $gb); FreeSpace = [uint64](15 * $gb) }
+    [pscustomobject]@{ Name = 'D:\Mount\NTDS\'; DeviceID = '\\?\Volume{m}\'; DriveType = [uint32]3; Capacity = [uint64](100 * $gb); FreeSpace = [uint64](5 * $gb) }
+    [pscustomobject]@{ Name = '\\?\Volume{r}\'; DeviceID = '\\?\Volume{r}\'; DriveType = [uint32]3; Capacity = [uint64](1 * $gb); FreeSpace = [uint64](0) }
+    [pscustomobject]@{ Name = 'E:\'; DeviceID = '\\?\Volume{e}\'; DriveType = [uint32]5; Capacity = $null; FreeSpace = $null }
+)
+Assert-Equal 'C:\' ([string](Resolve-AdfaVolumeForPath -Path 'c:\windows\ntds\ntds.dit' -Volumes $diskVols).Volume.Name) 'Disk volume: a path maps to its drive, ignoring case'
+Assert-Equal 'D:\Mount\NTDS\' ([string](Resolve-AdfaVolumeForPath -Path 'D:\Mount\NTDS\ntds.dit' -Volumes $diskVols).Volume.Name) 'Disk volume: a mounted folder beats the drive it is mounted on'
+Assert-Equal 'D:\' ([string](Resolve-AdfaVolumeForPath -Path 'D:\Mount\NTDSX\ntds.dit' -Volumes $diskVols).Volume.Name) 'Disk volume: a folder that only starts with the same letters is not under the mounted folder'
+Assert-True (-not (Resolve-AdfaVolumeForPath -Path 'E:\NTDS' -Volumes $diskVols).Resolved) 'Disk volume: a volume that is not a local disk is never matched'
+Assert-True (-not (Resolve-AdfaVolumeForPath -Path 'C:\Windows\NTDS' -Volumes @()).Resolved) 'Disk volume: with no volumes nothing is matched'
+
+# --- One DC, mixed result: three volumes, three verdicts, and each role exactly once.
+function New-DiskPath {
+    param([string]$Role, [string]$Value, $ReturnValue = 0)
+    [pscustomobject]@{ Role = $Role; Key = 'k'; ValueName = 'v'; Read = ($ReturnValue -eq 0 -and $Value -ne ''); ReturnValue = $ReturnValue; Value = $Value
+        Method = 'GetStringValue'; Error = ''; ErrorCode = ''; ExpandedReturnValue = $null }
+}
+$diskRaw = [pscustomobject]@{ Ok = $true; Protocol = 'Wsman'; Error = ''; ErrorCode = ''; VolumesOk = $true; Volumes = $diskVols; VolumeError = ''; VolumeErrorCode = ''
+    Paths = @((New-DiskPath 'NTDS database' 'D:\Mount\NTDS\ntds.dit'), (New-DiskPath 'NTDS logs' 'D:\Logs'), (New-DiskPath 'SYSVOL' 'C:\Windows\SYSVOL\sysvol')) }
+$diskRows = @(Get-AdfaDcDiskFinding -DomainController 'dc1.contoso.com' -Scope 'contoso.com' -Raw $diskRaw -Config $diskCfg)
+Assert-Equal 3 (@($diskRows).Count) 'Disk rows: one row per distinct volume (declared population: three volumes)'
+Assert-Equal 'Fail,Pass,Warning' ((@($diskRows | ForEach-Object { [string]$_.Status }) | Sort-Object) -join ',') 'Disk rows: a mixed result is reported as mixed'
+foreach ($role in @('NTDS database', 'NTDS logs', 'SYSVOL')) {
+    Assert-Equal 1 (@($diskRows | Where-Object { [string]$_.Item -match [regex]::Escape($role) }).Count) ("Disk rows: role '{0}' is accounted for by exactly one row" -f $role)
+}
+$diskDb = @($diskRows | Where-Object { [string]$_.Item -match 'NTDS database' })[0]
+Assert-Equal 'Fail' ([string]$diskDb.Status) 'Disk rows: the database volume at 5 % free is Fail'
+Assert-True ([string]$diskDb.Detail -match 'tool default, not a Microsoft value') 'Disk rows: the finding text labels the thresholds as tool defaults'
+Assert-True ([string]$diskDb.Detail -match 'event 1393') 'Disk rows: a failing database volume states the documented consequence'
+Assert-True ([string]$diskDb.NotRun -match '110 %' -and [string]$diskDb.Detail -notmatch '110 %') 'Disk rows: the not-measured note is in NotRun, never in the text the advice is chosen from'
+Assert-Equal 'contoso.com' ([string]$diskDb.Scope) 'Disk rows: the row carries its domain'
+
+# --- An absent value, a refusal and an unreadable volume list are three different results.
+$diskGap = [pscustomobject]@{ Ok = $true; Protocol = 'Wsman'; Error = ''; ErrorCode = ''; VolumesOk = $true; Volumes = $diskVols; VolumeError = ''; VolumeErrorCode = ''
+    Paths = @((New-DiskPath 'NTDS database' 'C:\Windows\NTDS\ntds.dit'), (New-DiskPath 'NTDS logs' '' 5), (New-DiskPath 'SYSVOL' '' 2)) }
+$gapRows = @(Get-AdfaDcDiskFinding -DomainController 'dc1.contoso.com' -Scope 'contoso.com' -Raw $diskGap -Config $diskCfg)
+$gapLogs = @($gapRows | Where-Object { [string]$_.Item -match 'NTDS logs path' })[0]
+$gapSysvol = @($gapRows | Where-Object { [string]$_.Item -match 'SYSVOL path' })[0]
+Assert-True ([string]$gapLogs.Status -eq 'Not Assessed' -and [string]$gapLogs.Detail -match '^Access denied') 'Disk rows: a refused registry read (5) is Not Assessed as access denied'
+Assert-True ([string]$gapSysvol.Status -eq 'Not Assessed' -and [string]$gapSysvol.Detail -match '^Not found: StdRegProv returned 2,' -and [string]$gapSysvol.Detail -match 'the registry key not existing') 'Disk rows: an absent registry KEY (2) is Not Assessed as not found, not as access denied'
+Assert-True ([string]$gapSysvol.Detail -match 'No default location is assumed') 'Disk rows: an absent value is not replaced by a default path'
+# The provider was measured to return 1, not 2, for a value that does not exist under a key that
+# does - the case a DC with an unset value produces. It must be named, not left as a bare code.
+$diskUnset = [pscustomobject]@{ Ok = $true; Protocol = 'Wsman'; Error = ''; ErrorCode = ''; VolumesOk = $true; Volumes = $diskVols; VolumeError = ''; VolumeErrorCode = ''
+    Paths = @((New-DiskPath 'NTDS database' 'C:\Windows\NTDS\ntds.dit'), (New-DiskPath 'NTDS logs' '' 1), (New-DiskPath 'SYSVOL' '' ([uint32]2147749893))) }
+$unsetRows = @(Get-AdfaDcDiskFinding -DomainController 'dc1.contoso.com' -Scope 'contoso.com' -Raw $diskUnset -Config $diskCfg)
+$unsetLogs = @($unsetRows | Where-Object { [string]$_.Item -match 'NTDS logs path' })[0]
+$unsetSysvol = @($unsetRows | Where-Object { [string]$_.Item -match 'SYSVOL path' })[0]
+Assert-True ([string]$unsetLogs.Status -eq 'Not Assessed' -and [string]$unsetLogs.Detail -match '^Not found: StdRegProv returned 1,' -and [string]$unsetLogs.Detail -match 'the value not being set') 'Disk rows: a registry value that is not set (1) is Not Assessed as not found, not as an uninterpreted read failure'
+Assert-True ([string]$unsetLogs.Detail -match 'measured, not published by Microsoft') 'Disk rows: the reading of 1 and 2 is labelled as measured, not as a Microsoft statement'
+Assert-True ([string]$unsetLogs.Detail -match 'No default location is assumed') 'Disk rows: a value that is not set is not replaced by a default path'
+Assert-True ([string]$unsetSysvol.Status -eq 'Not Assessed' -and [string]$unsetSysvol.Detail -match '^The value is present but is not a string' -and [string]$unsetSysvol.Detail -match 'wbemErrTypeMismatch') 'Disk rows: a WbemErrorEnum type mismatch is named as a value that is not a string'
+$otherCode = Resolve-AdfaDcDiskPathRead -Entry (New-DiskPath 'SYSVOL' '' 87)
+Assert-True (-not $otherCode.Usable -and [string]$otherCode.Cause -match '^Read failed: StdRegProv returned 87 \(0x00000057\)\.' -and [string]$otherCode.Cause -match 'not interpreted') 'Disk rows: any other return code is quoted, decimal and hex, and not interpreted'
+$wbemDenied = Resolve-AdfaDcDiskPathRead -Entry (New-DiskPath 'SYSVOL' '' ([uint32]2147749891))
+Assert-True (-not $wbemDenied.Usable -and [string]$wbemDenied.Cause -match '^Access denied: StdRegProv returned 2147749891 \(0x80041003\)') 'Disk rows: the WbemErrorEnum refusal code is access denied, as 5 is'
+Assert-Equal 1 (@($gapRows | Where-Object { [string]$_.Status -eq 'Pass' }).Count) 'Disk rows: only the role that was read is judged'
+# --- A failing volume that holds ONLY the logs carries the documented consequence too.
+$diskLogsOnly = [pscustomobject]@{ Ok = $true; Protocol = 'Wsman'; Error = ''; ErrorCode = ''; VolumesOk = $true; VolumeError = ''; VolumeErrorCode = ''
+    Volumes = @(
+        [pscustomobject]@{ Name = 'C:\'; DeviceID = 'vc'; DriveType = [uint32]3; Capacity = [uint64](100 * $gb); FreeSpace = [uint64](50 * $gb) }
+        [pscustomobject]@{ Name = 'L:\'; DeviceID = 'vl'; DriveType = [uint32]3; Capacity = [uint64](100 * $gb); FreeSpace = [uint64](3 * $gb) }
+        [pscustomobject]@{ Name = 'S:\'; DeviceID = 'vs'; DriveType = [uint32]3; Capacity = [uint64](100 * $gb); FreeSpace = [uint64](3 * $gb) }
+    )
+    Paths = @((New-DiskPath 'NTDS database' 'C:\Windows\NTDS\ntds.dit'), (New-DiskPath 'NTDS logs' 'L:\Logs'), (New-DiskPath 'SYSVOL' 'S:\SYSVOL\sysvol')) }
+$logsOnlyRows = @(Get-AdfaDcDiskFinding -DomainController 'dc1.contoso.com' -Scope 'contoso.com' -Raw $diskLogsOnly -Config $diskCfg)
+$logsOnly = @($logsOnlyRows | Where-Object { [string]$_.Item -match 'L:\\ \(NTDS logs\)' })
+$sysvolOnly = @($logsOnlyRows | Where-Object { [string]$_.Item -match 'S:\\ \(SYSVOL\)' })
+Assert-True (@($logsOnly).Count -eq 1 -and [string]$logsOnly[0].Status -eq 'Fail' -and [string]$logsOnly[0].Detail -match 'event 1393') 'Disk rows: a failing volume that holds only the logs states the documented consequence'
+Assert-True (@($sysvolOnly).Count -eq 1 -and [string]$sysvolOnly[0].Status -eq 'Fail' -and [string]$sysvolOnly[0].Detail -notmatch '1393') 'Disk rows: a failing volume that holds only SYSVOL does not claim it'
+
+$diskNoVol = [pscustomobject]@{ Ok = $true; Protocol = 'Wsman'; Error = ''; ErrorCode = ''; VolumesOk = $false; Volumes = @(); VolumeError = 'The operation has timed out.'; VolumeErrorCode = ''
+    Paths = $diskRaw.Paths }
+$noVolRows = @(Get-AdfaDcDiskFinding -DomainController 'dc1.contoso.com' -Scope 'contoso.com' -Raw $diskNoVol -Config $diskCfg)
+Assert-Equal 3 (@($noVolRows | Where-Object { [string]$_.Status -eq 'Not Assessed' }).Count) 'Disk rows: with no volume list every role is Not Assessed, none is Pass'
+
+# --- Advice: the section's own entry answers, whatever words the row or a file path contains.
+$diskRec = Get-AdfaRecommendation -Section 'DC Disk Space' -Item 'Disk space: dc1.contoso.com C:\ (NTDS database, NTDS logs, SYSVOL)' -Detail 'Threshold source: C:\Backup\replication\sysvol-dfsr.json'
+Assert-True ($diskRec -match 'Move unrelated files') 'Disk advice: a low-space row gets the steps Microsoft gives for a database volume short of space'
+Assert-True ($diskRec -notmatch 'D4|dfsrmig|repadmin|wbadmin') 'Disk advice: a row naming SYSVOL is not answered with the DFSR restore advice'
+
+# --- The DcDisk validator.
+$diskMerged = Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ WarnBelowPercent = 25 } -OverrideSource 'C:\cfg\disk.json'
+Assert-Equal 25 ([double]$diskMerged.WarnBelowPercent) 'Disk override: a supplied threshold replaces the built-in one'
+Assert-Equal 10 ([double]$diskMerged.FailBelowPercent) 'Disk override: a threshold the file omits keeps its built-in value'
+Assert-True ([string]$diskMerged.ThresholdSource -match 'C:\\cfg\\disk\.json.* for WarnBelowPercent; tool default, not a Microsoft value, for FailBelowPercent') 'Disk override: the file is cited for the key it supplied and the rest stay labelled tool defaults'
+Assert-Equal 20 ([double]$diskCfg.WarnBelowPercent) 'Disk override: the built-in table is not modified by a merge'
+Assert-Equal 'tool default, not a Microsoft value' ([string](Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ RpcPort = 1135 } -OverrideSource 'C:\cfg\disk.json').ThresholdSource) 'Disk override: a file that changes only a port leaves the threshold label alone'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override 'abc' } 'single object' 'Disk override: a string is refused'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @(1, 2) } 'single object' 'Disk override: an array is refused'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override ('{}' | ConvertFrom-Json) } 'empty object' 'Disk override: an empty object is refused'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ Typo = 1 } } "unknown key 'Typo'" 'Disk override: an unknown key is refused'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ Paths = @() } } "unknown key 'Paths'" 'Disk override: the registry values the tool reads cannot be redirected from a file'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override ('{ "WarnBelowPercent": null }' | ConvertFrom-Json) } 'null' 'Disk override: a null is refused'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ WarnBelowPercent = '25' } } 'JSON number' 'Disk override: a number written as a string is refused'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ WarnBelowPercent = 101 } } '0 to 100' 'Disk override: a percentage above 100 is refused'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ FailBelowPercent = 25 } } 'FailBelowPercent.*WarnBelowPercent' 'Disk override: Fail above the built-in Warning threshold is refused on the merged table'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ FailBelowFreeGB = 6 } } 'FailBelowFreeGB.*WarnBelowFreeGB' 'Disk override: a Fail floor above the Warning floor is refused'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ WarnBelowPercent = 0; FailBelowPercent = 0; WarnBelowFreeGB = 0; FailBelowFreeGB = 0 } } 'no threshold' 'Disk override: a table with no threshold left is refused'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ RpcPort = 70000 } } 'RpcPort' 'Disk override: a port that is not a port is refused'
+
+# --- The generic file: one top-level key per section, each to its own validator.
+$ovr = Resolve-AdfaConfigOverride -Override ('{ "DcDisk": { "FailBelowPercent": 5 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
+Assert-Equal 'DcDisk' (@($ovr.Keys) -join ',') 'Config override: only the section the file names is returned'
+Assert-Equal 5 ([double]$ovr['DcDisk'].FailBelowPercent) 'Config override: the section value went through the DcDisk validator'
+Assert-Throws { Resolve-AdfaConfigOverride -Override $null -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } 'null' 'Config override: null is refused'
+Assert-Throws { Resolve-AdfaConfigOverride -Override @(1, 2) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } 'single object' 'Config override: an array is refused'
+Assert-Throws { Resolve-AdfaConfigOverride -Override ('{}' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } 'empty object' 'Config override: an empty object is refused'
+Assert-Throws { Resolve-AdfaConfigOverride -Override ('{ "Nope": {} }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } "unknown section 'Nope'" 'Config override: an unknown section is refused'
+Assert-Throws { Resolve-AdfaConfigOverride -Override ('{ "DcDisk": null }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } "'DcDisk' to null" 'Config override: a section set to null is refused'
+Assert-Throws { Resolve-AdfaConfigOverride -Override ('{ "DcDisk": { "WarnBelowPercent": "high" } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } "section 'DcDisk'.*WarnBelowPercent" 'Config override: a malformed value is refused, naming its section'
+Assert-Throws { Resolve-AdfaConfigOverride -Override ('{ "DcSystem": { "WsmanPort": 5986 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } "unknown section 'DcSystem'" 'Config override: the DC system table keeps its own parameter and cannot be set here'
+Assert-Throws { Import-AdfaConfigOverride -Path (Join-Path ([IO.Path]::GetTempPath()) 'adfa-no-such-override.json') -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } 'not found' 'Config override: a missing file stops the run'
+
+# --- Figures are truncated, never rounded up across the threshold they are printed beside.
+Assert-Equal '9.99' (ConvertTo-AdfaFixedText -Value 9.99999999906868) 'Fixed text: a value just under 10 prints as 9.99, not 10.00'
+Assert-Equal '9.99' (ConvertTo-AdfaFixedText -Value 9.99) 'Fixed text: an exact 9.99 is not shaved to 9.98 by binary error'
+Assert-Equal '19.99' (ConvertTo-AdfaFixedText -Value 19.999) 'Fixed text: 19.999 truncates to 19.99'
+Assert-Equal '10.00' (ConvertTo-AdfaFixedText -Value 10) 'Fixed text: an exact 10 prints as 10.00'
+Assert-Equal '0.00' (ConvertTo-AdfaFixedText -Value 0.005) 'Fixed text: 0.005 truncates to 0.00'
+$oneByteShort = Get-AdfaDiskSpaceVerdict -CapacityBytes ([uint64]107374182400) -FreeBytes ([uint64]10737418239) -WarnBelowPercent 20 -FailBelowPercent 10 -WarnBelowFreeGB 5 -FailBelowFreeGB 2
+Assert-Equal 'Fail' ([string]$oneByteShort.Status) 'Disk verdict: one byte short of 10 % is Fail'
+Assert-Equal '9.99 % free: 9.99 GB free of 100.00 GB. Below the Fail threshold of 10 % free.' ([string]$oneByteShort.Detail) 'Disk verdict: the figure printed beside "below 10 %" is 9.99, not 10.00'
+$floorShort = Get-AdfaDiskSpaceVerdict -CapacityBytes ([uint64]10737418240) -FreeBytes ([uint64]5368709119) -WarnBelowPercent 20 -FailBelowPercent 10 -WarnBelowFreeGB 5 -FailBelowFreeGB 2
+Assert-Equal '49.99 % free: 4.99 GB free of 10.00 GB. Below the Warning floor of 5 GB free.' ([string]$floorShort.Detail) 'Disk verdict: one byte short of the 5 GB floor prints 4.99 GB, not 5.00'
+
+# --- The section accounts for every scoped domain, and does not contradict itself.
+# No DC is given here, so nothing is probed or read: only the population rows are produced.
+$scopedDomains = @('contoso.com', 'north.contoso.com', 'south.contoso.com')
+$popRows = @(Get-AdfaDcDiskSpace -DomainControllers @() -Config $diskCfg -ScopedDomains $scopedDomains `
+        -InventoryFailures @([pscustomobject]@{ Domain = 'north.contoso.com'; Error = 'The server is not operational' }))
+Assert-Equal 4 (@($popRows).Count) 'Disk population: with no DC, each of the three scoped domains has a row, plus the section row (declared population: three domains)'
+Assert-Equal 0 (@($popRows | Where-Object { [string]$_.Status -ne 'Not Assessed' }).Count) 'Disk population: with no DC read, nothing is anything but Not Assessed'
+foreach ($d in $scopedDomains) {
+    Assert-Equal 1 (@($popRows | Where-Object { [string]$_.Item -eq ("Disk space - {0}" -f $d) -and [string]$_.Scope -eq $d }).Count) ("Disk population: scoped domain '{0}' has its own row" -f $d)
+}
+$popNorth = @($popRows | Where-Object { [string]$_.Scope -eq 'north.contoso.com' })[0]
+$popSouth = @($popRows | Where-Object { [string]$_.Scope -eq 'south.contoso.com' })[0]
+Assert-True ([string]$popNorth.Detail -match 'could not be enumerated\. Cause: The server is not operational') 'Disk population: a domain whose enumeration threw carries the cause'
+Assert-True ([string]$popSouth.Detail -match 'returned no domain controller for this domain') 'Disk population: a domain that returned no DC says so, and is not confused with one that threw'
+
+# --- The override file: faults that only the text shows.
+Assert-Equal 'Array' (Get-AdfaJsonTopLevelKind -Text '[{"DcDisk":{"WarnBelowPercent":25}}]') 'Override text: an array holding one object is an array, whatever the parser makes of it'
+Assert-Equal 'Object' (Get-AdfaJsonTopLevelKind -Text '  {"DcDisk":{"WarnBelowPercent":25}}') 'Override text: an object is an object'
+Assert-Equal 'DcDisk.WarnBelowPercent' (@(Get-AdfaJsonDuplicateKey -Text '{"DcDisk":{"WarnBelowPercent":25,"WarnBelowPercent":90}}') -join '|') 'Override text: a key written twice in a section is found, with its path'
+Assert-Equal 'DcDisk' (@(Get-AdfaJsonDuplicateKey -Text '{"DcDisk":{"WarnBelowPercent":25},"DcDisk":{"WarnBelowPercent":90}}') -join '|') 'Override text: a section written twice is found'
+Assert-Equal '' (@(Get-AdfaJsonDuplicateKey -Text '{"DcDisk":{"WsmanPort":5986},"Later":{"WsmanPort":1},"s":"{\"a\":1,\"a\":2}"}') -join '|') 'Override text: the same key in two sections, or inside a string, is not a repeat'
+$overrideProbe = Join-Path ([IO.Path]::GetTempPath()) ("adfa_validation_override_{0}.json" -f [guid]::NewGuid().ToString('N'))
+try {
+    '[{"DcDisk":{"WarnBelowPercent":25}}]' | Out-File -LiteralPath $overrideProbe -Encoding UTF8
+    Assert-Throws { Import-AdfaConfigOverride -Path $overrideProbe -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } 'not a JSON array' 'Override file: an array holding one valid object is refused on this PowerShell edition too'
+    '{"DcDisk":{"WarnBelowPercent":25,"WarnBelowPercent":90}}' | Out-File -LiteralPath $overrideProbe -Encoding UTF8
+    Assert-Throws { Import-AdfaConfigOverride -Path $overrideProbe -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } "'DcDisk.WarnBelowPercent' more than once" 'Override file: a key written twice is refused, not reduced to its last value'
+    '{"DcDisk":{"WarnBelowPercent":25}}' | Out-File -LiteralPath $overrideProbe -Encoding UTF8
+    Assert-Equal 25 ([double](Import-AdfaConfigOverride -Path $overrideProbe -BaseConfig $script:Config -Sections $script:ConfigOverrideSections)['DcDisk'].WarnBelowPercent) 'Override file: non-vacuity - the same content as one object, written once, is accepted'
+}
+finally { Remove-Item -LiteralPath $overrideProbe -Force -ErrorAction SilentlyContinue }
+
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }

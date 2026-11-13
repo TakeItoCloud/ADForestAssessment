@@ -5,6 +5,7 @@
 #  Licensed, not sold. Unauthorised copying, redistribution, or commercial use
 #  is prohibited. See LICENSE at the repository root.
 # ------------------------------------------------------------------------------
+
 <#
 .SYNOPSIS
     Near-enterprise-grade Active Directory forest assessment with two-way trust health.
@@ -41,6 +42,10 @@
           directory against a table of Microsoft lifecycle dates; and per-DC inventory of OS
           build, uptime and latest update install date (remote CIM, needs local admin on the
           DC; reported as Info or Not Assessed, never graded)
+        - DC disk space: free space on the volumes that hold the NTDS database, the NTDS
+          logs and SYSVOL, per DC. The three paths are read from each DC's registry and the
+          volumes from Win32_Volume (remote CIM, needs local admin on the DC). Judged against
+          thresholds that are tool defaults, not Microsoft values, and are labelled as such
         - Directory backup status (repadmin /showbackup), time synchronization (w32tm)
         - DNS depth: critical SRV records, secure dynamic updates
         - Redundancy: DC count, GPO central store, duplicate SPNs
@@ -94,6 +99,15 @@
     reads over WinRM, CIM, the remote registry, the DNS cmdlets and the event log) are used as
     queries, but have not each been audited for a documented side effect. PORT-PLAN H20a.
 
+    One of those reads is a CIM METHOD call, and it is the only one in the script. The DcDisk
+    section reads three registry values on each DC through the WMI registry provider,
+    StdRegProv, which exposes no instances and can be read only by calling a method. It calls
+    GetStringValue and, where that gives nothing usable, GetExpandedStringValue - the two
+    methods Microsoft documents as getting a string value - each named literally in the source,
+    and no other. StdRegProv's writing methods (Create*, Delete*, Set*) are never called.
+    Microsoft does not state in so many words that the Get* methods have no side effect; the
+    decision rests on their documented purpose and signature.
+
 .PARAMETER OutputPath
     Root folder for the assessment bundle. A timestamped sub-folder is always created inside it.
     Default: <MyDocuments>\AdAssessment
@@ -116,6 +130,28 @@
     DcSystem judges each DC's operating system against Microsoft's lifecycle dates and lists
     its build, uptime and latest update install date. The lifecycle verdict reads the DC
     inventory, so name DomainControllers with it: -Sections DomainControllers,DcSystem
+
+    DcDisk judges the free space on each DC's NTDS database, NTDS log and SYSVOL volumes. It
+    reads each DC over remote CIM and needs local Administrators rights there. It covers the
+    DCs of every scoped domain, each row carrying its domain: from the DC inventory when
+    DomainControllers is also selected, and otherwise from its own enumeration of each scoped
+    domain. A scoped domain whose DCs could not be enumerated gets a Not Assessed row of its
+    own; it is never left out.
+
+.PARAMETER ConfigOverridePath
+    Path to a JSON file that replaces built-in config tables, one top-level key per section.
+    The only section so far is DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
+
+        { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
+
+    Keys a section omits keep their built-in value, and findings cite the file only for the
+    values it supplied. Each section's value is checked by that section's own rules. The run
+    stops, before anything is collected, on a missing or malformed file, a file that is not one
+    JSON object (an array is refused even when it holds one object), a key written twice, an
+    unknown section, an unknown key, a null, or a value that cannot be used.
+    The file is checked even when the section it names is not among -Sections.
+    -ExchangeSeConfigPath and -DcSystemConfigPath are separate and unchanged.
 
 .PARAMETER DcSystemConfigPath
     Path to a JSON file that replaces the built-in DC system table, whose OsLifecycle list
@@ -234,7 +270,7 @@ param(
         'DnsDepth', 'Redundancy', 'ExchangeSchema', 'ExchangeSeReadiness',
         'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
         'DsEvents', 'RestoreIntegrity', 'MsdcsDelegation', 'TimeHierarchy', 'SiteGc',
-        'DcSystem')]
+        'DcSystem', 'DcDisk')]
     [string[]]$Sections = @('All'),
 
     [switch]$IncludeDcdiag,
@@ -280,6 +316,16 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$DcSystemConfigPath,
 
+    # One JSON file that replaces built-in config tables section by section. Its top-level keys
+    # are section config names - "DcDisk" so far - and each value is checked by that section's
+    # own validator. Keys a section omits keep their built-in value, and a finding cites the
+    # file only for the values the file supplied. A missing or malformed file, an unknown
+    # section, an unknown key, a null or a value that cannot be used is a terminating error,
+    # raised before anything is collected. -ExchangeSeConfigPath and -DcSystemConfigPath are
+    # separate and unchanged; their tables cannot be set from this file.
+    [ValidateNotNullOrEmpty()]
+    [string]$ConfigOverridePath,
+
     [ValidateRange(1, 3650)][int]$StaleDays = 90,
     [ValidateRange(1, 3650)][int]$KrbtgtMaxAgeDays = 180,
 
@@ -305,7 +351,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.18.0'
+    Version                 = '1.19.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -531,6 +577,70 @@ $script:Config = @{
             @{ Label = 'Windows Server 2016';    Build = 14393; Pattern = '(?i)windows server\s*2016';             ExtendedEnd = '2027-01-12'; EsuEnd = '2030-01-08' }
             @{ Label = 'Windows Server 2012 R2'; Build = $null; Pattern = '(?i)windows server\s*2012\s*r2';        ExtendedEnd = '2023-10-10'; EsuEnd = '2026-10-13' }
             @{ Label = 'Windows Server 2012';    Build = $null; Pattern = '(?i)windows server\s*2012(?!\s*r2)';    ExtendedEnd = '2023-10-10'; EsuEnd = '2026-10-13' }
+        )
+    }
+    # --- DC disk space: NTDS database, NTDS log and SYSVOL volumes (PORT-PLAN C2) ----------
+    # THE FOUR THRESHOLDS ARE TOOL DEFAULTS, NOT MICROSOFT VALUES, and every finding says so.
+    # Microsoft publishes no percentage and no absolute free-space threshold for the volumes
+    # that hold the directory database, its logs or SYSVOL. The capacity planning page says that
+    # space available "is irrelevant for most AD environments", and the three sizing figures it
+    # gives are all relative to the DATABASE size, not to the volume:
+    #   "To enable offline defrag, make sure the free space you have available is 110% of the
+    #    NTDS.dit size."
+    #   "If you have the storage for it, allocating enough free space to equal 300% of the DIT
+    #    size is a safe way to accommodate growth and defragging."
+    #   For a fixed VHD: "The disk should be at least 210% the size of the DIT ... This fixed
+    #    VHD size includes 100% of the DIT size plus 110% free space."
+    #   https://learn.microsoft.com/windows-server/administration/performance-tuning/role/active-directory-server/capacity-planning-for-active-directory-domain-services
+    #   Read: 2026-11-13
+    # Each needs the size of the ntds.dit FILE, which this section does not read, so none is
+    # evaluated. The finding names the 110 % one, the minimum of the three, as not measured
+    # (PORT-PLAN C2a).
+    #
+    # How the defaults were chosen. 20 % / 10 % is the pair the AdAssessment26 catalogue lists
+    # for this check as operator-set (ADA-DISK-001). The absolute floor is this tool's addition,
+    # because a percentage alone misleads on a small volume - 25 % of an 8 GB volume is 2 GB.
+    # The floor is kept low (5 GB / 2 GB) so that a dedicated database or log volume of 10 to
+    # 20 GB, a common and correct design, is not flagged while its percentage is healthy. A
+    # volume smaller than the floor can never pass it; set both floors to 0 to switch them off.
+    # Either test is enough: the worse of the two results is reported, with which one fired.
+    #
+    # Replaceable from a file via -ConfigOverridePath, under the key "DcDisk": the four
+    # thresholds and the two ports. Paths, SourceUrl and ReadDate are not replaceable.
+    DcDisk                  = @{
+        ThresholdSource  = 'tool default, not a Microsoft value'
+        WarnBelowPercent = 20
+        FailBelowPercent = 10
+        # 1 GB = 1024^3 bytes. 0 = no floor.
+        WarnBelowFreeGB  = 5
+        FailBelowFreeGB  = 2
+        # Ports probed before a remote read: WinRM over HTTP, then the RPC endpoint mapper for
+        # the DCOM fallback. The same two values the DcSystem section uses.
+        WsmanPort        = 5985
+        RpcPort          = 135
+        # Vendor facts: the registry values that name the three locations. No LDAP attribute
+        # publishes them; they exist only in the registry of each DC.
+        #   "NTDS database files: The registry key HKEY_LOCAL_MACHINE\System\CurrentControlSet\
+        #    Services\NTDS\Parameters\DSA Database File specifies the location." and
+        #   "AD DS transaction log files: ... \NTDS\Parameters\Database Log Files Path specifies
+        #    the location.":
+        #     https://learn.microsoft.com/defender-endpoint/microsoft-defender-antivirus-exclusions-windows-server
+        #   "... the Netlogon service's SysVol registry key: HKEY_LOCAL_MACHINE\System\
+        #    CurrentControlSet\Services\NetLogon\Parameters\SysVol". After a migration to DFSR
+        #    the value points at the SYSVOL_DFSR copy, so it is used as read:
+        #     https://learn.microsoft.com/windows/win32/vss/backing-up-and-restoring-an-frs-replicated-sysvol-folder
+        #   Read: 2026-11-13 (both)
+        # The first page prints the SysVol value under ControlSet001; the second prints it under
+        # CurrentControlSet, which is what is read here. The registry TYPE of the three values
+        # (REG_SZ or REG_EXPAND_SZ) is not published, and neither is the meaning of an absent
+        # value: an absent value is reported as not found, never replaced by a default path.
+        # "DSA Database File" is the path of a FILE; the other two are folders.
+        SourceUrl        = 'https://learn.microsoft.com/defender-endpoint/microsoft-defender-antivirus-exclusions-windows-server and https://learn.microsoft.com/windows/win32/vss/backing-up-and-restoring-an-frs-replicated-sysvol-folder'
+        ReadDate         = '2026-11-13'
+        Paths            = @(
+            @{ Role = 'NTDS database'; Kind = 'Database'; Key = 'SYSTEM\CurrentControlSet\Services\NTDS\Parameters';     ValueName = 'DSA Database File' }
+            @{ Role = 'NTDS logs';     Kind = 'Logs';     Key = 'SYSTEM\CurrentControlSet\Services\NTDS\Parameters';     ValueName = 'Database Log Files Path' }
+            @{ Role = 'SYSVOL';        Kind = 'Sysvol';   Key = 'SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'; ValueName = 'SysVol' }
         )
     }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
@@ -3246,7 +3356,10 @@ function Get-AdfaDcSystemRaw {
     }
     finally {
         if ($null -ne $session) {
-            try { Remove-CimSession -CimSession $session -ErrorAction SilentlyContinue } catch { }
+            # -WhatIf and -Confirm forced off: under a WhatIf preference in the caller's session
+            # Remove-CimSession is not run, and the session opened above would stay open until
+            # the process ends (found by the review of PORT-PLAN C2; see Get-AdfaDcDiskRaw).
+            try { Remove-CimSession -CimSession $session -WhatIf:$false -Confirm:$false -ErrorAction SilentlyContinue } catch { }
         }
     }
     return $out
@@ -3509,6 +3622,1409 @@ function Import-AdfaDcSystemConfig {
     # (PowerShell 7 also arrives here for an empty top-level array, which it unrolls to nothing.)
     if ($null -eq $obj) { throw ("DC system config holds JSON null or an empty array, not an object: {0}" -f $Path) }
     try { return (Merge-AdfaDcSystemConfig -BaseConfig $BaseConfig -Override $obj -OverrideSource $Path) }
+    catch { throw ("{0} (file: {1})" -f $_.Exception.Message, $Path) }
+}
+
+# ---------------------------------------------------------------------------
+# DC disk space: NTDS database, NTDS log and SYSVOL volumes (PORT-PLAN C2)
+# ---------------------------------------------------------------------------
+
+function ConvertTo-AdfaByteCount {
+    <#
+    .SYNOPSIS
+        Pure: a CIM byte count as a [double], or $null when it is not a number.
+    .DESCRIPTION
+        Win32_Volume types Capacity and FreeSpace as uint64. They reach this function as UInt64
+        from a live session, and as Int64, Double or a string once an object has been
+        serialised, so every shape goes through one invariant-culture parse. A Boolean is not a
+        number here: $true would otherwise be read as one byte.
+    .OUTPUTS
+        [double] or $null
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+    if ($null -eq $Value -or $Value -is [bool]) { return $null }
+    $text = ([string]$Value).Trim()
+    if ($text -eq '') { return $null }
+    $d = [double]0
+    if (-not [double]::TryParse($text, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$d)) { return $null }
+    if ([double]::IsNaN($d) -or [double]::IsInfinity($d)) { return $null }
+    return $d
+}
+
+function ConvertTo-AdfaFixedText {
+    <#
+    .SYNOPSIS
+        Pure: a number as text with a fixed number of decimals - truncated, culture-invariant.
+    .DESCRIPTION
+        Truncated and not rounded, so the figure printed beside a "below 10 %" verdict never
+        reads "10.00": a value one byte short of a threshold prints below it, however close.
+        Invariant, so one run does not print 9,98 on one host and 9.98 on another.
+
+        How. The value is written with 17 significant digits (enough to tell any two doubles
+        apart), read back as a decimal, and cut off there. Decimal arithmetic is exact at this
+        size, so nothing is added to absorb binary error - an earlier version added 0.0000001
+        before taking the floor, which printed 9.99999999906868 as "10.00". Multiplying the
+        double itself by 100 is not used either: 9.99 * 100 is 998.9999999999999 in binary
+        and would print as "9.98".
+
+        A value too large for a decimal (beyond about 7.9E+28) or not a number falls back to
+        the floor of the double. Values are expected to be zero or more.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][double]$Value, [ValidateRange(0, 6)][int]$Decimals = 2)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $format = ('F{0}' -f $Decimals)
+    $exact = [decimal]0
+    if ([decimal]::TryParse($Value.ToString('G17', $inv), [System.Globalization.NumberStyles]::Float, $inv, [ref]$exact)) {
+        try {
+            $unit = [decimal]1
+            for ($i = 0; $i -lt $Decimals; $i++) { $unit = $unit * 10 }
+            return ([decimal]::Truncate($exact * $unit) / $unit).ToString($format, $inv)
+        }
+        catch [System.OverflowException] { $exact = [decimal]0 }
+    }
+    $scale = [math]::Pow(10, $Decimals)
+    return ([math]::Floor($Value * $scale) / $scale).ToString($format, $inv)
+}
+
+function Get-AdfaDiskSpaceVerdict {
+    <#
+    .SYNOPSIS
+        Pure: Pass, Warning, Fail or Not Assessed for one volume, from its capacity and free
+        bytes and four thresholds.
+    .DESCRIPTION
+        Two tests are applied and the worse result is reported: free space as a percentage of
+        the volume, and free space in GB against an absolute floor (1 GB = 1024^3 bytes). The
+        floor exists because a percentage alone misleads on a small volume: 25 % of an 8 GB
+        volume is 2 GB. A threshold of 0 is never crossed, which is how a floor is switched off.
+
+        "Below" is strict: exactly 10 % is not below 10 %.
+
+        NONE of the four thresholds is a Microsoft value. Microsoft publishes no percentage or
+        absolute free-space threshold for the volumes that hold the directory database, its
+        logs or SYSVOL; the caller's text says so (see $script:Config.DcDisk).
+
+        Fail-closed. A capacity or free-space value that is missing, not a number, zero,
+        negative or inconsistent is Not Assessed with the values as returned - Win32_Volume
+        returns unformatted and offline volumes too, and those carry no figures. It is never a
+        Pass and never reported as 0 %.
+    .OUTPUTS
+        [pscustomobject] Status, PercentFree, FreeGB, CapacityGB ($null when Not Assessed),
+        Trigger (None | Percent | Floor | Both - what produced the reported status), Detail.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$CapacityBytes,
+        [AllowNull()]$FreeBytes,
+        [Parameter(Mandatory)][double]$WarnBelowPercent,
+        [Parameter(Mandatory)][double]$FailBelowPercent,
+        [double]$WarnBelowFreeGB = 0,
+        [double]$FailBelowFreeGB = 0
+    )
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $capacity = ConvertTo-AdfaByteCount -Value $CapacityBytes
+    $free = ConvertTo-AdfaByteCount -Value $FreeBytes
+    $reason = ''
+    if ($null -eq $CapacityBytes) { $reason = 'the volume returned no capacity' }
+    elseif ($null -eq $capacity) { $reason = 'the capacity is not a number' }
+    elseif ($capacity -eq 0) { $reason = 'the capacity is zero' }
+    elseif ($capacity -lt 0) { $reason = 'the capacity is negative' }
+    elseif ($null -eq $FreeBytes) { $reason = 'the volume returned no free space value' }
+    elseif ($null -eq $free) { $reason = 'the free space is not a number' }
+    elseif ($free -lt 0) { $reason = 'the free space is negative' }
+    elseif ($free -gt $capacity) { $reason = 'the free space is larger than the capacity' }
+    if ($reason -ne '') {
+        $capacityText = 'not returned'
+        if ($null -ne $CapacityBytes) { $capacityText = ("'{0}'" -f [string]$CapacityBytes) }
+        $freeText = 'not returned'
+        if ($null -ne $FreeBytes) { $freeText = ("'{0}'" -f [string]$FreeBytes) }
+        return [pscustomobject]@{
+            Status = $script:Status.NotAssessed; PercentFree = $null; FreeGB = $null; CapacityGB = $null; Trigger = 'None'
+            Detail = ("Free space could not be judged: {0}. Returned values: Capacity {1}, FreeSpace {2}." -f $reason, $capacityText, $freeText)
+        }
+    }
+
+    $bytesPerGb = [double]1073741824
+    $percent = ($free / $capacity) * 100
+    $freeGb = $free / $bytesPerGb
+    $capacityGb = $capacity / $bytesPerGb
+
+    $status = $script:Status.Pass
+    $level = ''
+    $byPercent = $false
+    $byFloor = $false
+    $percentLimit = [double]0
+    $floorLimit = [double]0
+    if (($percent -lt $FailBelowPercent) -or ($freeGb -lt $FailBelowFreeGB)) {
+        $status = $script:Status.Fail
+        $level = 'Fail'
+        $byPercent = ($percent -lt $FailBelowPercent)
+        $byFloor = ($freeGb -lt $FailBelowFreeGB)
+        $percentLimit = $FailBelowPercent
+        $floorLimit = $FailBelowFreeGB
+    }
+    elseif (($percent -lt $WarnBelowPercent) -or ($freeGb -lt $WarnBelowFreeGB)) {
+        $status = $script:Status.Warning
+        $level = 'Warning'
+        $byPercent = ($percent -lt $WarnBelowPercent)
+        $byFloor = ($freeGb -lt $WarnBelowFreeGB)
+        $percentLimit = $WarnBelowPercent
+        $floorLimit = $WarnBelowFreeGB
+    }
+    $trigger = 'None'
+    if ($byPercent -and $byFloor) { $trigger = 'Both' }
+    elseif ($byPercent) { $trigger = 'Percent' }
+    elseif ($byFloor) { $trigger = 'Floor' }
+
+    $detail = ("{0} % free: {1} GB free of {2} GB." -f (ConvertTo-AdfaFixedText -Value $percent), (ConvertTo-AdfaFixedText -Value $freeGb), (ConvertTo-AdfaFixedText -Value $capacityGb))
+    $percentText = $percentLimit.ToString('0.##', $inv)
+    $floorText = $floorLimit.ToString('0.##', $inv)
+    if ($trigger -eq 'Both') { $detail = ("{0} Below the {1} threshold of {2} % free and the {1} floor of {3} GB free." -f $detail, $level, $percentText, $floorText) }
+    elseif ($trigger -eq 'Percent') { $detail = ("{0} Below the {1} threshold of {2} % free." -f $detail, $level, $percentText) }
+    elseif ($trigger -eq 'Floor') { $detail = ("{0} Below the {1} floor of {2} GB free." -f $detail, $level, $floorText) }
+
+    return [pscustomobject]@{
+        Status = $status; PercentFree = $percent; FreeGB = $freeGb; CapacityGB = $capacityGb; Trigger = $trigger; Detail = $detail
+    }
+}
+
+function Resolve-AdfaVolumeForPath {
+    <#
+    .SYNOPSIS
+        Pure: the volume a path is on - the one whose mount path is the longest prefix of it.
+    .DESCRIPTION
+        Longest prefix is the Win32 rule for mapping a path to its volume ("returns a full path
+        whose prefix is the longest prefix that represents a volume"):
+          https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getvolumepathnamew
+          Read: 2026-11-13.
+        It matters because the database, the logs or SYSVOL can sit under a mounted folder, in
+        which case the drive letter alone names the wrong volume.
+
+        MEASURED, NOT PUBLISHED: this relies on Win32_Volume.Name holding the volume's mount
+        path (C:\ or D:\Mount\NTDS\). Learn describes Name only as "Label by which the object is
+        known", so the first run against a real DC (PORT-PLAN C17) has to confirm it. Until
+        then the function fails closed: a path under no returned mount path resolves to nothing,
+        with the candidate names listed, and is never matched to a "nearest" volume.
+
+        Only local disks (DriveType 3) with a mount path are candidates. A volume whose Name is
+        a volume GUID path (\\?\Volume{...}\) has no mount path and cannot hold a path read
+        from the registry. Comparison ignores case and the direction of the slashes; a trailing
+        backslash is added to both sides so D:\Mount\NTDSX is not taken to be under D:\Mount\NTDS.
+    .OUTPUTS
+        [pscustomobject] Resolved, Volume ($null when not resolved), Reason ('' when resolved).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Path,
+        [AllowNull()][AllowEmptyCollection()]$Volumes = @()
+    )
+    $out = [pscustomobject]@{ Resolved = $false; Volume = $null; Reason = '' }
+    if ([string]::IsNullOrWhiteSpace($Path)) { $out.Reason = 'the path is empty'; return $out }
+    $target = $Path.Trim().Replace('/', '\')
+    if (-not $target.EndsWith('\')) { $target = $target + '\' }
+
+    $candidates = @()
+    foreach ($v in @($Volumes)) {
+        if ($null -eq $v) { continue }
+        $name = [string](Get-AdfaConfigValue -Entry $v -Name 'Name')
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        $type = Get-AdfaConfigValue -Entry $v -Name 'DriveType'
+        $typeNumber = 0
+        if ($null -eq $type -or -not [int]::TryParse([string]$type, [ref]$typeNumber) -or $typeNumber -ne 3) { continue }
+        $mount = $name.Trim().Replace('/', '\')
+        if ($mount.StartsWith('\\?\')) { continue }
+        if (-not $mount.EndsWith('\')) { $mount = $mount + '\' }
+        $candidates += [pscustomobject]@{ Mount = $mount; Volume = $v }
+    }
+    if ($candidates.Count -eq 0) {
+        $out.Reason = 'no local-disk volume (DriveType 3) with a mount path was returned by the DC'
+        return $out
+    }
+    $best = $null
+    foreach ($c in $candidates) {
+        if (-not $target.StartsWith([string]$c.Mount, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ($null -eq $best -or ([string]$c.Mount).Length -gt ([string]$best.Mount).Length) { $best = $c }
+    }
+    if ($null -eq $best) {
+        $out.Reason = ("it is under none of the local-disk volumes the DC returned ({0})" -f (@($candidates | ForEach-Object { [string]$_.Mount }) -join ', '))
+        return $out
+    }
+    $out.Resolved = $true
+    $out.Volume = $best.Volume
+    return $out
+}
+
+function Get-AdfaDcDiskThresholdText {
+    <#
+    .SYNOPSIS
+        Pure: the thresholds in force and where each came from, as one sentence for a finding.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][hashtable]$Config)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $parts = @()
+    foreach ($level in @('Warn', 'Fail')) {
+        $label = 'Warning'
+        if ($level -eq 'Fail') { $label = 'Fail' }
+        $percent = [double]$Config[("{0}BelowPercent" -f $level)]
+        $floor = [double]$Config[("{0}BelowFreeGB" -f $level)]
+        $bits = @()
+        if ($percent -gt 0) { $bits += ("below {0} % free" -f $percent.ToString('0.##', $inv)) }
+        if ($floor -gt 0) { $bits += ("below {0} GB free" -f $floor.ToString('0.##', $inv)) }
+        if ($bits.Count -eq 0) { $parts += ("no {0} threshold" -f $label) }
+        else { $parts += ("{0} {1}" -f $label, ($bits -join ' or ')) }
+    }
+    return ("Thresholds: {0}. Threshold source: {1}." -f ($parts -join '; '), [string]$Config['ThresholdSource'])
+}
+
+function Resolve-AdfaDcDiskPathRead {
+    <#
+    .SYNOPSIS
+        Pure: whether one registry read produced a usable path, and if not, the named cause.
+    .DESCRIPTION
+        Four outcomes are kept apart, because each sends the operator somewhere different:
+
+          Access denied  the read threw a refusal, or StdRegProv returned 5 or 0x80041003.
+          Not found      StdRegProv returned 1 (the value is not set) or 2 (its key does not
+                         exist). MEASURED, NOT PUBLISHED - see below.
+          Read failed    the read threw anything else, or returned any other nonzero code.
+          Unusable       the value was read but is empty, or still holds an unexpanded
+                         environment variable; or StdRegProv returned 0x80041005, so the value
+                         exists and is not a string.
+
+        WHAT MICROSOFT PUBLISHES. The return value is 0 for success. Otherwise, for C++
+        callers, "a nonzero error code that is defined in WinError.h" ("You can also look up
+        return values under the WMI Error Constants"), and for scripting callers "a nonzero
+        error code that you can look up in WbemErrorEnum":
+          https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getstringvalue-method-in-class-stdregprov
+          https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getexpandedstringvalue-method-in-class-stdregprov
+        WinError.h defines 1 as ERROR_INVALID_FUNCTION, 2 as ERROR_FILE_NOT_FOUND and 5 as
+        ERROR_ACCESS_DENIED:
+          https://learn.microsoft.com/windows/win32/debug/system-error-codes--0-499-
+        WbemErrorEnum defines 0x80041003 as wbemErrAccessDenied ("The current user does not
+        have permission to perform the action") and 0x80041005 as wbemErrTypeMismatch ("A
+        type mismatch occurred"):
+          https://learn.microsoft.com/windows/win32/api/wbemdisp/ne-wbemdisp-wbemerrorenum
+          Read: 2026-11-13 (all four).
+        Microsoft does NOT publish which of those codes this provider returns for which
+        condition.
+
+        WHAT WAS MEASURED. On 2026-11-13, with the same two methods this script calls, on ONE
+        host - a Windows 11 (build 26100) workstation, not a domain controller, over a local
+        CIM session and over a DCOM session to itself, under Windows PowerShell 5.1 and
+        PowerShell 7 - both methods returned:
+          0            a string value that exists (REG_SZ and REG_EXPAND_SZ alike)
+          1            a value that does not exist, under a key that does
+          2            a key that does not exist
+          5            a key the account may not read
+          2147749893   (0x80041005) a value that exists and is a REG_DWORD
+        So an absent VALUE comes back as 1, not as 2, and WinError.h's name for 1 does not
+        describe it. The findings name 1 and 2 as "Not found" on that measurement and say so;
+        whether a domain controller, a server release or a remote session answers the same
+        way has not been measured (PORT-PLAN C17). Any other code is quoted, not interpreted.
+        Whatever the code means, the role stays Not Assessed.
+
+        An absent value is NOT replaced by the default location. Microsoft states that "the
+        default locations ... might be different from the locations on your servers", and
+        publishes no meaning for an absent value, so the role is reported as not measured.
+    .OUTPUTS
+        [pscustomobject] Usable, Path ('' when not usable), Cause ('' when usable).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Entry)
+    $out = [pscustomobject]@{ Usable = $false; Path = ''; Cause = '' }
+    if ($null -eq $Entry) {
+        $out.Cause = 'Read failed: no result was returned for this registry value.'
+        return $out
+    }
+    $rights = 'Local Administrators rights on the DC are needed for this read.'
+    $errorText = [string](Get-AdfaConfigValue -Entry $Entry -Name 'Error')
+    $errorCode = [string](Get-AdfaConfigValue -Entry $Entry -Name 'ErrorCode')
+    if ($errorText -ne '') {
+        if ((Get-AdfaRemoteReadErrorClass -Message $errorText -ErrorCode $errorCode) -eq 'AccessDenied') {
+            $out.Cause = ("Access denied: the registry read was refused. {0} Reported by the DC - {1}" -f $rights, $errorText)
+        }
+        else {
+            $out.Cause = ("Read failed: the registry read did not complete. Reported by the DC - {0}" -f $errorText)
+        }
+        return $out
+    }
+    $code = Get-AdfaConfigValue -Entry $Entry -Name 'ReturnValue'
+    $number = [int64]0
+    if ($null -eq $code -or -not [int64]::TryParse([string]$code, [ref]$number)) {
+        $out.Cause = 'Read failed: the registry provider returned no return code, so whether the value was read is not known.'
+        return $out
+    }
+    $also = ''
+    $expanded = Get-AdfaConfigValue -Entry $Entry -Name 'ExpandedReturnValue'
+    if ($null -ne $expanded -and [string]$expanded -ne '') { $also = (" GetExpandedStringValue was also tried and returned {0}." -f [string]$expanded) }
+    # Where the 1 / 2 reading comes from, said in the row because it is not a vendor statement.
+    $measured = 'This reading is measured, not published by Microsoft: on the one host where it was measured (a Windows 11 workstation, not a domain controller) the provider returns 1 for a value that is not set under a key that exists, and 2 for a key that does not exist.'
+    if ($number -eq 5) {
+        $out.Cause = ("Access denied: StdRegProv returned 5, which WinError.h defines as ERROR_ACCESS_DENIED. {0}" -f $rights)
+        return $out
+    }
+    if ($number -eq 2147749891) {
+        $out.Cause = ("Access denied: StdRegProv returned 2147749891 (0x80041003), which WbemErrorEnum defines as wbemErrAccessDenied. {0}" -f $rights)
+        return $out
+    }
+    if ($number -eq 1) {
+        $out.Cause = ("Not found: StdRegProv returned 1, read here as the value not being set on this DC. {0} WinError.h defines 1 as ERROR_INVALID_FUNCTION, which does not describe it. No default location is assumed in its place.{1}" -f $measured, $also)
+        return $out
+    }
+    if ($number -eq 2) {
+        $out.Cause = ("Not found: StdRegProv returned 2, which WinError.h defines as ERROR_FILE_NOT_FOUND, read here as the registry key not existing on this DC. {0} No default location is assumed in its place.{1}" -f $measured, $also)
+        return $out
+    }
+    if ($number -eq 2147749893) {
+        $out.Cause = ("The value is present but is not a string: StdRegProv returned 2147749893 (0x80041005), which WbemErrorEnum defines as wbemErrTypeMismatch, so it names no path.{0}" -f $also)
+        return $out
+    }
+    if ($number -ne 0) {
+        $hex = ''
+        if ($number -gt 0 -and $number -le 4294967295) { $hex = (" (0x{0})" -f $number.ToString('X8', [System.Globalization.CultureInfo]::InvariantCulture)) }
+        $out.Cause = ("Read failed: StdRegProv returned {0}{1}. Microsoft documents a nonzero return as an error code from WinError.h or WbemErrorEnum and does not publish which code this provider returns for which condition, so the code is quoted and not interpreted.{2}" -f $number, $hex, $also)
+        return $out
+    }
+    $value = ([string](Get-AdfaConfigValue -Entry $Entry -Name 'Value')).Trim()
+    if ($value -eq '') {
+        $out.Cause = ("The value is present but empty, so it names no path.{0}" -f $also)
+        return $out
+    }
+    if ($value -match '%[^%\\]+%') {
+        $method = [string](Get-AdfaConfigValue -Entry $Entry -Name 'Method')
+        if ($method -eq '') { $method = 'GetStringValue' }
+        $out.Cause = ("The value holds an environment variable that was not expanded ('{0}', read with {1}), so it names no volume.{2}" -f $value, $method, $also)
+        return $out
+    }
+    $out.Usable = $true
+    $out.Path = $value
+    return $out
+}
+
+function New-AdfaDcDiskRow {
+    <#
+    .SYNOPSIS
+        Pure: one DcDisk finding row. Every row of the section has the same columns, NotRun
+        included, so a consumer never has to test whether the column exists.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$NotRun = ''
+    )
+    $row = New-Finding -Scope $Scope -Area 'DcDisk' -Item $Item -Status $Status -Detail $Detail
+    $row | Add-Member -NotePropertyName 'NotRun' -NotePropertyValue $NotRun
+    return $row
+}
+
+function Get-AdfaDcDiskFinding {
+    <#
+    .SYNOPSIS
+        Pure: one DC's raw read (Get-AdfaDcDiskRaw) as finding rows.
+    .DESCRIPTION
+        One row per DISTINCT volume, listing the roles it holds, because the default layout puts
+        the database, the logs and SYSVOL on one volume and three identical verdicts would say
+        nothing more than one. A role whose path could not be read, or could not be matched to
+        a volume, gets its own Not Assessed row naming the cause. Every role in the config table
+        is therefore accounted for by exactly one row - a role is never silently absent.
+
+        The volume a role is judged on is the volume of the path the registry names. For SYSVOL
+        that is the replica set root the SysVol value points at; whether DFSR staging or a
+        junction target sits on another volume is not examined.
+
+        Microsoft's sizing figures for the database volume are all relative to the size of
+        ntds.dit - free space of 110 % of it to allow offline defragmentation, 300 % as "a safe
+        way to accommodate growth and defragging", and 210 % of it as the size of a fixed VHD.
+        None can be evaluated here, because the database FILE size is not read:
+          https://learn.microsoft.com/windows-server/administration/performance-tuning/role/active-directory-server/capacity-planning-for-active-directory-domain-services
+          Read: 2026-11-13.
+        The row for the database volume says so in its NotRun column, not in its Detail: the
+        recommendation is chosen from the Detail, and a note about what was not measured must
+        not choose it.
+
+        The consequence stated on a failing database or log volume is Microsoft's own, from
+        NTDS General event 1393 ("Attempts to update the Directory Service database are failing
+        with error 112 ... the NetLogon service is being paused"):
+          https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8456-8457
+          Read: 2026-11-13.
+        Nothing equivalent is published for a volume that holds only SYSVOL, so none is claimed.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows (Scope, Area, Item, Status, Detail, NotRun).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainController,
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)]$Raw,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rows = @()
+    $protocol = [string](Get-AdfaConfigValue -Entry $Raw -Name 'Protocol')
+    $rawPaths = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Paths') | Where-Object { $null -ne $_ })
+    $volumes = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Volumes') | Where-Object { $null -ne $_ })
+    $volumesOk = [bool](Get-AdfaConfigValue -Entry $Raw -Name 'VolumesOk')
+    $thresholds = Get-AdfaDcDiskThresholdText -Config $Config
+
+    # volume key -> the volume and the roles that resolved to it, in first-seen order.
+    $groups = [ordered]@{}
+    foreach ($definition in @($Config['Paths'])) {
+        $role = [string](Get-AdfaConfigValue -Entry $definition -Name 'Role')
+        $kind = [string](Get-AdfaConfigValue -Entry $definition -Name 'Kind')
+        $registry = ("HKLM\{0}\{1}" -f [string](Get-AdfaConfigValue -Entry $definition -Name 'Key'), [string](Get-AdfaConfigValue -Entry $definition -Name 'ValueName'))
+        $item = ("Disk space: {0} - {1} path" -f $DomainController, $role)
+
+        $entry = $null
+        foreach ($p in $rawPaths) {
+            if ([string](Get-AdfaConfigValue -Entry $p -Name 'Role') -eq $role) { $entry = $p; break }
+        }
+        $read = Resolve-AdfaDcDiskPathRead -Entry $entry
+        if (-not $read.Usable) {
+            $rows += New-AdfaDcDiskRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("{0} Registry value: {1}. The volume that holds the {2} is therefore not known, and its free space was not judged." -f [string]$read.Cause, $registry, $role)
+            continue
+        }
+        if (-not $volumesOk) {
+            $volumeError = [string](Get-AdfaConfigValue -Entry $Raw -Name 'VolumeError')
+            $volumeCode = [string](Get-AdfaConfigValue -Entry $Raw -Name 'VolumeErrorCode')
+            $lead = 'Read failed: the volume list (Win32_Volume) could not be read.'
+            if ((Get-AdfaRemoteReadErrorClass -Message $volumeError -ErrorCode $volumeCode) -eq 'AccessDenied') {
+                $lead = 'Access denied: the volume list (Win32_Volume) could not be read. Local Administrators rights on the DC are needed for this read.'
+            }
+            $rows += New-AdfaDcDiskRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("{0} Reported by the DC - {1} The {2} path was read as '{3}' ({4}), but without the volume list its volume is not known, and its free space was not judged." -f $lead, $volumeError, $role, [string]$read.Path, $registry)
+            continue
+        }
+        $resolved = Resolve-AdfaVolumeForPath -Path ([string]$read.Path) -Volumes $volumes
+        if (-not $resolved.Resolved) {
+            $rows += New-AdfaDcDiskRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("The {0} path '{1}' ({2}) could not be matched to a volume: {3}. Its free space was not judged." -f $role, [string]$read.Path, $registry, [string]$resolved.Reason)
+            continue
+        }
+        # One row per distinct volume: DeviceID is the volume's unique identifier; the mount
+        # path stands in where it was not returned.
+        $key = [string](Get-AdfaConfigValue -Entry $resolved.Volume -Name 'DeviceID')
+        if ([string]::IsNullOrWhiteSpace($key)) { $key = [string](Get-AdfaConfigValue -Entry $resolved.Volume -Name 'Name') }
+        $key = $key.ToLowerInvariant()
+        if (-not $groups.Contains($key)) { $groups[$key] = @{ Volume = $resolved.Volume; Roles = @() } }
+        $groups[$key]['Roles'] = @($groups[$key]['Roles']) + [pscustomobject]@{ Role = $role; Kind = $kind; Path = [string]$read.Path }
+    }
+
+    foreach ($key in @($groups.Keys)) {
+        $volume = $groups[$key]['Volume']
+        $roles = @($groups[$key]['Roles'])
+        $name = [string](Get-AdfaConfigValue -Entry $volume -Name 'Name')
+        $roleNames = (@($roles | ForEach-Object { [string]$_.Role }) -join ', ')
+        $holds = (@($roles | ForEach-Object { "{0} ({1})" -f [string]$_.Role, [string]$_.Path }) -join ', ')
+        $kinds = @($roles | ForEach-Object { [string]$_.Kind })
+        $item = ("Disk space: {0} {1} ({2})" -f $DomainController, $name, $roleNames)
+
+        $verdict = Get-AdfaDiskSpaceVerdict -CapacityBytes (Get-AdfaConfigValue -Entry $volume -Name 'Capacity') `
+            -FreeBytes (Get-AdfaConfigValue -Entry $volume -Name 'FreeSpace') `
+            -WarnBelowPercent ([double]$Config['WarnBelowPercent']) -FailBelowPercent ([double]$Config['FailBelowPercent']) `
+            -WarnBelowFreeGB ([double]$Config['WarnBelowFreeGB']) -FailBelowFreeGB ([double]$Config['FailBelowFreeGB'])
+
+        if ($verdict.Status -eq $script:Status.NotAssessed) {
+            $rows += New-AdfaDcDiskRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("{0} Volume {1} holds: {2}. Read over {3}." -f [string]$verdict.Detail, $name, $holds, $protocol)
+            continue
+        }
+        $consequence = ''
+        if ($verdict.Status -eq $script:Status.Fail -and ($kinds -contains 'Database' -or $kinds -contains 'Logs')) {
+            $consequence = 'When the volume that holds the directory database or its log files is full, Microsoft documents that database updates fail with error 112 and the Net Logon service is paused, so the DC stops logging on users (NTDS General event 1393). '
+        }
+        $notRun = ''
+        if ($kinds -contains 'Database') {
+            $notRun = 'Free space relative to the size of ntds.dit was not measured: this section does not read the database file size. Microsoft''s published sizing figures are relative to that size - free space of 110 % of the ntds.dit size to allow offline defragmentation, and 300 % where the storage allows - and meeting the thresholds above does not show either is met (PORT-PLAN C2a).'
+        }
+        $rows += New-AdfaDcDiskRow -Scope $Scope -Item $item -Status ([string]$verdict.Status) -NotRun $notRun `
+            -Detail ("{0} Volume {1} holds: {2}. {3}{4} Read over {5}." -f [string]$verdict.Detail, $name, $holds, $consequence, $thresholds, $protocol)
+    }
+    return @($rows)
+}
+
+function Get-AdfaCimRawValue {
+    <#
+    .SYNOPSIS
+        Pure: one property of a CIM instance as the DC returned it, not as a type adapter
+        presents it.
+    .DESCRIPTION
+        Windows PowerShell 5.1 ships type data that replaces some CIM properties with script
+        properties (C1 measured this on Win32_QuickFixEngineering.InstalledOn). Whether any is
+        applied to Win32_Volume has not been measured, so the unadapted store,
+        CimInstanceProperties, is read first and the member is the fallback for an object that
+        has no such store.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Instance, [Parameter(Mandatory)][string]$Name)
+    if ($null -eq $Instance) { return $null }
+    $store = $Instance.PSObject.Properties['CimInstanceProperties']
+    if ($null -ne $store -and $null -ne $store.Value) {
+        $raw = $store.Value[$Name]
+        if ($null -ne $raw) { return $raw.Value }
+    }
+    $member = $Instance.PSObject.Properties[$Name]
+    if ($null -ne $member) { return $member.Value }
+    return $null
+}
+
+function Get-AdfaStdRegStringValue {
+    <#
+    .SYNOPSIS
+        Reads ONE string value from HKEY_LOCAL_MACHINE on a DC through the WMI registry
+        provider. The only place this script invokes a CIM method.
+    .DESCRIPTION
+        READ-ONLY DECISION (PORT-PLAN C2). The house rule is "no CIM method invocation". This
+        function is the one deliberate exception, and it is bounded:
+
+          - StdRegProv has no instances to enumerate: a registry value can be read through it
+            only by calling a method. It "is preinstalled in the WMI namespaces root\default and
+            root\cimv2".
+          - Microsoft lists the class's 20 methods in ONE table, and describes the class as
+            able to "Read, write, and delete data values". It does not sort them into reading
+            and writing methods; that sorting is this tool's, made from each method's own
+            description. GetStringValue "Gets the string data value of a named value" and
+            GetExpandedStringValue "Gets the expanded string data value of a named value";
+            their only [out] parameter is the value. The methods Microsoft describes as
+            creating, deleting or setting have other names: CreateKey, DeleteKey, DeleteValue,
+            the seven Set* methods.
+              https://learn.microsoft.com/previous-versions/windows/desktop/regprov/stdregprov
+              https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getstringvalue-method-in-class-stdregprov
+              https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getexpandedstringvalue-method-in-class-stdregprov
+              Read: 2026-11-13 (all three).
+          - Only those two Get* methods are called, each with a LITERAL -MethodName on a literal
+            -ClassName. A test reads every Invoke-CimMethod in this script from the parsed
+            source and fails on any other method name, a computed name, or another class.
+            EnumValues is not used: it is not a Get* method.
+
+        What Microsoft does NOT say: no page read states that these methods have no side
+        effect. The decision rests on their documented purpose and signature, and on the
+        creating, deleting and setting methods having names of their own. That is recorded
+        here rather than presented as a vendor statement.
+
+        Invoke-CimMethod supports -WhatIf, and under it "The cmdlet is not run":
+          https://learn.microsoft.com/powershell/module/cimcmdlets/invoke-cimmethod?view=powershell-5.1
+          Read: 2026-11-13.
+        A WhatIf preference in the caller's session would therefore skip the read and leave
+        nothing to judge, so -WhatIf and -Confirm are forced off on these two calls. That is
+        safe only because both are reads.
+
+        GetStringValue is documented for REG_SZ and GetExpandedStringValue for REG_EXPAND_SZ.
+        The registry type of the three values this section reads is not published, which is why
+        the caller tries the second where the first gives nothing usable.
+
+        The session's operation timeout is passed to each call as well, so one registry read
+        that never answers is bounded on its own and cannot hold the run.
+
+        Never throws. A call that raised comes back with Answered = $false and the error text
+        and CIM error code; a call that returned comes back with the provider's ReturnValue,
+        whatever it is.
+    .OUTPUTS
+        [pscustomobject] Answered, ReturnValue ($null when not answered), Value, Method, Error,
+        ErrorCode.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$CimSession,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$ValueName,
+        [switch]$Expanded,
+        [int]$OperationTimeoutSec = 90
+    )
+    $out = [pscustomobject]@{ Answered = $false; ReturnValue = $null; Value = ''; Method = 'GetStringValue'; Error = ''; ErrorCode = '' }
+    # 2147483650 is HKEY_LOCAL_MACHINE, as the method pages list it (defined in WinReg.h).
+    $arguments = @{ hDefKey = [uint32]2147483650; sSubKeyName = $Key; sValueName = $ValueName }
+    try {
+        $result = $null
+        if ($Expanded) {
+            $out.Method = 'GetExpandedStringValue'
+            $result = Invoke-CimMethod -CimSession $CimSession -Namespace 'root/cimv2' -ClassName 'StdRegProv' -MethodName 'GetExpandedStringValue' `
+                -Arguments $arguments -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -WhatIf:$false -Confirm:$false -ErrorAction Stop
+        }
+        else {
+            $result = Invoke-CimMethod -CimSession $CimSession -Namespace 'root/cimv2' -ClassName 'StdRegProv' -MethodName 'GetStringValue' `
+                -Arguments $arguments -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -WhatIf:$false -Confirm:$false -ErrorAction Stop
+        }
+        if ($null -eq $result) { throw 'The registry provider returned no result.' }
+        $codeProp = $result.PSObject.Properties['ReturnValue']
+        if ($null -eq $codeProp -or $null -eq $codeProp.Value) { throw 'The registry provider returned no ReturnValue.' }
+        $out.ReturnValue = [int64]$codeProp.Value
+        $valueProp = $result.PSObject.Properties['sValue']
+        if ($null -ne $valueProp -and $null -ne $valueProp.Value) { $out.Value = [string]$valueProp.Value }
+        $out.Answered = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        if ($out.Error -eq '') { $out.Error = 'The registry read failed without an error message.' }
+        $nativeCode = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $nativeCode -and $null -ne $nativeCode.Value) { $out.ErrorCode = [string]$nativeCode.Value }
+    }
+    return $out
+}
+
+function Get-AdfaDcDiskRaw {
+    <#
+    .SYNOPSIS
+        The one place C2 touches a DC: three registry reads and one volume query, in one
+        bounded CIM session.
+    .DESCRIPTION
+        The three paths, from the registry of the DC itself - no LDAP attribute publishes them:
+          NTDS database   HKLM\SYSTEM\CurrentControlSet\Services\NTDS\Parameters, "DSA Database File"
+                          (the path of the database FILE, not a folder)
+          NTDS logs       same key, "Database Log Files Path"
+          SYSVOL          HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters, "SysVol"
+        Sources and read date are beside $script:Config.DcDisk, which holds the names.
+
+        Then Win32_Volume in root/cimv2 for Name, DeviceID, DriveType, Capacity and FreeSpace
+        ("Size of the volume in bytes"; "Space, in bytes, available on the logical disk"):
+          https://learn.microsoft.com/previous-versions/windows/desktop/legacy/aa394515(v=vs.85)
+          Read: 2026-11-13.
+        The class also has methods that change a volume (Format, Dismount, Chkdsk, Defrag,
+        AddMountPoint ...) and three read/write properties. None is used: instances are
+        enumerated with Get-CimInstance and five properties are read. Nothing is written.
+
+        Each value is read with GetStringValue. Where that gives nothing usable - a nonzero
+        return, an empty value, or a value still holding %VARIABLE% - GetExpandedStringValue
+        is tried for that value, because the registry type of these values is not published.
+        It is not tried after a refusal (a return of 5, ERROR_ACCESS_DENIED, or of 0x80041003,
+        wbemErrAccessDenied): the same account would be refused again.
+
+        Never throws. One value that cannot be read does not discard the other two, and a
+        failed volume query does not discard the paths. Ok is $false only when the session could
+        not be opened, or when not one of the four operations got an answer from the DC - which
+        is what lets the caller try the other transport. A DC whose three registry reads all
+        threw but whose volume list was read is therefore Ok, and gets one row per role.
+
+        The session is always closed. Remove-CimSession supports -WhatIf and under it "The
+        cmdlet is not run":
+          https://learn.microsoft.com/powershell/module/cimcmdlets/remove-cimsession?view=powershell-5.1
+          Read: 2026-11-13.
+        A WhatIf or Confirm preference in the caller's session would therefore leave one
+        session open per DC per transport, so both are forced off on that call. It closes a
+        session this function opened; it changes nothing on the DC.
+    .OUTPUTS
+        [pscustomobject] Ok, Protocol, Error, ErrorCode,
+        Paths (one per requested value: Role, Key, ValueName, Read, ReturnValue, Value, Method,
+        Error, ErrorCode, ExpandedReturnValue),
+        VolumesOk, Volumes (Name, DeviceID, DriveType, Capacity, FreeSpace - raw), VolumeError,
+        VolumeErrorCode.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [ValidateSet('Wsman', 'Dcom')][string]$Protocol = 'Wsman',
+        [pscredential]$Credential,
+        [int]$OperationTimeoutSec = 90,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Paths
+    )
+    $out = [pscustomobject]@{
+        Ok = $false; Protocol = $Protocol; Error = ''; ErrorCode = ''; Paths = @()
+        VolumesOk = $false; Volumes = @(); VolumeError = ''; VolumeErrorCode = ''
+    }
+    $session = $null
+    try {
+        $sessionArgs = @{ ComputerName = $ComputerName; OperationTimeoutSec = [uint32]$OperationTimeoutSec; ErrorAction = 'Stop' }
+        if ($Protocol -eq 'Dcom') { $sessionArgs.SessionOption = New-CimSessionOption -Protocol Dcom }
+        if ($Credential) { $sessionArgs.Credential = $Credential }
+        $session = New-CimSession @sessionArgs
+
+        $answered = $false
+        $firstError = ''
+        $firstCode = ''
+        $entries = New-Object System.Collections.ArrayList
+        foreach ($definition in @($Paths)) {
+            if ($null -eq $definition) { continue }
+            $key = [string](Get-AdfaConfigValue -Entry $definition -Name 'Key')
+            $valueName = [string](Get-AdfaConfigValue -Entry $definition -Name 'ValueName')
+            $entry = [pscustomobject]@{
+                Role = [string](Get-AdfaConfigValue -Entry $definition -Name 'Role'); Key = $key; ValueName = $valueName
+                Read = $false; ReturnValue = $null; Value = ''; Method = 'GetStringValue'; Error = ''; ErrorCode = ''; ExpandedReturnValue = $null
+            }
+            $first = Get-AdfaStdRegStringValue -CimSession $session -Key $key -ValueName $valueName -OperationTimeoutSec $OperationTimeoutSec
+            if (-not $first.Answered) {
+                $entry.Error = [string]$first.Error
+                $entry.ErrorCode = [string]$first.ErrorCode
+                if ($firstError -eq '') { $firstError = $entry.Error; $firstCode = $entry.ErrorCode }
+            }
+            else {
+                $answered = $true
+                $entry.ReturnValue = $first.ReturnValue
+                $entry.Value = [string]$first.Value
+                $usable = ($first.ReturnValue -eq 0 -and $entry.Value.Trim() -ne '' -and $entry.Value -notmatch '%[^%\\]+%')
+                $refused = ($first.ReturnValue -eq 5 -or $first.ReturnValue -eq 2147749891)
+                if (-not $usable -and -not $refused) {
+                    $second = Get-AdfaStdRegStringValue -CimSession $session -Key $key -ValueName $valueName -Expanded -OperationTimeoutSec $OperationTimeoutSec
+                    if ($second.Answered) {
+                        $entry.ExpandedReturnValue = $second.ReturnValue
+                        if ($second.ReturnValue -eq 0 -and ([string]$second.Value).Trim() -ne '') {
+                            $entry.ReturnValue = $second.ReturnValue
+                            $entry.Value = [string]$second.Value
+                            $entry.Method = 'GetExpandedStringValue'
+                        }
+                    }
+                }
+                $entry.Read = ($entry.ReturnValue -eq 0 -and $entry.Value.Trim() -ne '')
+            }
+            [void]$entries.Add($entry)
+        }
+        $out.Paths = $entries.ToArray()
+
+        try {
+            $instances = @(Get-CimInstance -CimSession $session -Namespace 'root/cimv2' -ClassName 'Win32_Volume' `
+                    -Property 'Name', 'DeviceID', 'DriveType', 'Capacity', 'FreeSpace' -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -ErrorAction Stop)
+            $list = New-Object System.Collections.ArrayList
+            foreach ($instance in $instances) {
+                if ($null -eq $instance) { continue }
+                [void]$list.Add([pscustomobject]@{
+                        Name      = Get-AdfaCimRawValue -Instance $instance -Name 'Name'
+                        DeviceID  = Get-AdfaCimRawValue -Instance $instance -Name 'DeviceID'
+                        DriveType = Get-AdfaCimRawValue -Instance $instance -Name 'DriveType'
+                        Capacity  = Get-AdfaCimRawValue -Instance $instance -Name 'Capacity'
+                        FreeSpace = Get-AdfaCimRawValue -Instance $instance -Name 'FreeSpace'
+                    })
+            }
+            $out.Volumes = $list.ToArray()
+            $out.VolumesOk = $true
+            $answered = $true
+        }
+        catch {
+            $out.VolumeError = [string]$_.Exception.Message
+            if ($out.VolumeError -eq '') { $out.VolumeError = 'The volume query failed without an error message.' }
+            $volumeCode = $_.Exception.PSObject.Properties['NativeErrorCode']
+            if ($null -ne $volumeCode -and $null -ne $volumeCode.Value) { $out.VolumeErrorCode = [string]$volumeCode.Value }
+            if ($firstError -eq '') { $firstError = $out.VolumeError; $firstCode = $out.VolumeErrorCode }
+        }
+
+        $out.Ok = $answered
+        if (-not $answered) {
+            $out.Error = $firstError
+            $out.ErrorCode = $firstCode
+        }
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $codeProp = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $out.ErrorCode = [string]$codeProp.Value }
+    }
+    finally {
+        if ($null -ne $session) {
+            try { Remove-CimSession -CimSession $session -WhatIf:$false -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+    return $out
+}
+
+function Get-AdfaDcTargetsByDomain {
+    <#
+    .SYNOPSIS
+        The domain controllers of each scoped domain, as (Scope, HostName) rows, with the
+        domains that could not be asked returned beside them.
+    .DESCRIPTION
+        For a per-DC section that has to run when the DomainControllers section was not
+        selected, so there is no inventory to take its targets from. Without this, such a
+        section fell back to one unscoped Get-ADDomainController call against the default
+        server, which returns the current domain's DCs only: on a run with -AllDomains every
+        other scoped domain was missing from the section, with no row to say so.
+
+        One Get-ADDomainController -Filter * per domain, with -Server set to that domain - the
+        call the DC inventory makes, without its per-DC Get-ADComputer enrichment, which a
+        section that only needs host names has no use for. Read-only.
+
+        Never throws. A domain whose call threw is returned in Failures with the error text, so
+        the caller can give it a Not Assessed row; a DC returned with no host name is kept, for
+        the caller to report, not dropped.
+    .OUTPUTS
+        [pscustomobject] Targets (Scope, HostName), Failures (Domain, Error).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][string[]]$Domains = @(),
+        [hashtable]$AdParams = @{}
+    )
+    $targets = New-Object System.Collections.ArrayList
+    $failures = New-Object System.Collections.ArrayList
+    foreach ($domain in @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        try {
+            $p = @{} + $AdParams
+            $p.Server = $domain
+            foreach ($dc in @(Get-ADDomainController -Filter * @p)) {
+                if ($null -eq $dc) { continue }
+                $hostName = ''
+                $hostProp = $dc.PSObject.Properties['HostName']
+                if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $hostName = [string]$hostProp.Value }
+                [void]$targets.Add([pscustomobject]@{ Scope = [string]$domain; HostName = $hostName })
+            }
+        }
+        catch {
+            [void]$failures.Add([pscustomobject]@{ Domain = [string]$domain; Error = [string]$_.Exception.Message })
+        }
+    }
+    return [pscustomobject]@{ Targets = $targets.ToArray(); Failures = $failures.ToArray() }
+}
+
+function Get-AdfaDcDiskSpace {
+    <#
+    .SYNOPSIS
+        Per-DC free space on the volumes that hold the NTDS database, the NTDS logs and SYSVOL.
+    .DESCRIPTION
+        A DC is probed once per port through the shared cache (Test-AdfaDcPort). WinRM is tried
+        first and DCOM second where the RPC endpoint mapper answers; a refusal is not retried
+        over the other transport, because the same account would be refused again. Three
+        outcomes are kept apart for a DC that gave nothing: unreachable (no port answered, no
+        read attempted), access denied, and any other read failure, quoted as the DC reported it.
+
+        Needs local Administrators rights on each DC: "By default, only members of the
+        Administrators group can access the WMI namespace remotely."
+          https://learn.microsoft.com/troubleshoot/windows-server/system-management-components/scenario-guide-troubleshoot-wmi-connectivity-access-issues
+          Read: 2026-11-13.
+        The registry permission StdRegProv needs on the two keys is not published.
+
+        Accepts DC rows (HostName, Scope) so each finding carries its domain, or plain host
+        names where the caller has only those.
+
+        DECLARED POPULATION: the domains named in -ScopedDomains. Each of them ends up in the
+        section one of two ways - as the Scope of at least one DC row, or as its own
+        "Disk space - <domain>" Not Assessed row saying why none of its DCs is shown as read
+        (the enumeration threw, or returned no DC for it). A domain is never simply missing.
+        A domain named only in -InventoryFailures gets the same row. That row does not claim
+        "nothing was read" when DCs without a domain follow it: those came from a fallback
+        enumeration that does not say which domain each belongs to, and the row says that
+        instead. No row is ever Info, and none is Pass unless both figures were read.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90,
+        # Domains whose DC enumeration threw: objects with Domain and Error.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        # Why no DC could be enumerated at all, where the caller knows.
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        # The domains this run was scoped to: the declared population of the section.
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+    )
+    $rows = @()
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+
+    # Which domains the targets account for, and how many targets carry no domain at all.
+    $domainsSeen = @{}
+    $withoutDomain = 0
+    foreach ($target in $targets) {
+        $targetScope = ''
+        if ($target -isnot [string]) {
+            $targetScopeProp = $target.PSObject.Properties['Scope']
+            if ($null -ne $targetScopeProp -and $null -ne $targetScopeProp.Value) { $targetScope = ([string]$targetScopeProp.Value).Trim() }
+        }
+        if ($targetScope -eq '') { $withoutDomain++ } else { $domainsSeen[$targetScope.ToLowerInvariant()] = $true }
+    }
+    $failureCause = [ordered]@{}
+    foreach ($failure in @($InventoryFailures | Where-Object { $null -ne $_ })) {
+        $failedDomain = ([string]$failure.Domain).Trim()
+        if (-not $failureCause.Contains($failedDomain.ToLowerInvariant())) { $failureCause[$failedDomain.ToLowerInvariant()] = @{ Domain = $failedDomain; Error = [string]$failure.Error } }
+    }
+    $population = New-Object System.Collections.ArrayList
+    foreach ($name in @($ScopedDomains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if (@($population | Where-Object { $_ -eq $name.Trim() }).Count -eq 0) { [void]$population.Add($name.Trim()) }
+    }
+    foreach ($k in @($failureCause.Keys)) {
+        $failedName = [string]$failureCause[$k]['Domain']
+        if (@($population | Where-Object { $_ -eq $failedName }).Count -eq 0) { [void]$population.Add($failedName) }
+    }
+    foreach ($domain in $population) {
+        $key = $domain.ToLowerInvariant()
+        $failed = $failureCause.Contains($key)
+        if ($domainsSeen.ContainsKey($key) -and -not $failed) { continue }
+        $cause = 'The enumeration returned no domain controller for this domain.'
+        if ($failed) { $cause = ("The domain controllers of this domain could not be enumerated. Cause: {0}" -f ([string]$failureCause[$key]['Error']).Trim()) }
+        $coverage = 'None of its volumes was read.'
+        if ($domainsSeen.ContainsKey($key)) {
+            $coverage = 'The domain controllers listed under this domain came from another enumeration; whether they are all of them is not known.'
+        }
+        elseif ($withoutDomain -gt 0) {
+            $coverage = ("The {0} domain controller(s) listed in this section without a domain came from the fallback enumeration against the default server, which does not say which domain each belongs to. Whether they include this domain's is not known, so this domain is not shown as read." -f $withoutDomain)
+        }
+        $rows += New-AdfaDcDiskRow -Scope $domain -Item ("Disk space - {0}" -f $domain) -Status $script:Status.NotAssessed `
+            -Detail ("{0} {1}" -f $cause, $coverage)
+    }
+    if ($targets.Count -eq 0) {
+        $why = ''
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = (" Domain controller enumeration failed: {0}." -f $EnumerationError.Trim().TrimEnd('.')) }
+        $rows += New-AdfaDcDiskRow -Item 'Disk space' -Status $script:Status.NotAssessed `
+            -Detail ("No domain controllers were enumerated, so no volume was read.{0} This is not a clean result." -f $why)
+        return @($rows)
+    }
+    $wsmanPort = [int]$Config['WsmanPort']
+    $rpcPort = [int]$Config['RpcPort']
+    foreach ($target in $targets) {
+        $dc = ''
+        $scope = ''
+        if ($target -is [string]) { $dc = $target }
+        else {
+            $hostProp = $target.PSObject.Properties['HostName']
+            if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $dc = [string]$hostProp.Value }
+            $scopeProp = $target.PSObject.Properties['Scope']
+            if ($null -ne $scopeProp -and $null -ne $scopeProp.Value) { $scope = [string]$scopeProp.Value }
+        }
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-AdfaDcDiskRow -Scope $scope -Item 'Disk space: (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no volume was read.'
+            continue
+        }
+        $item = ("Disk space: {0}" -f $dc)
+        $wsman = Test-AdfaDcPort -ComputerName $dc -Port $wsmanPort -TimeoutMs $PortTimeoutMs
+        $rpc = Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs
+        if (-not $wsman -and -not $rpc) {
+            $rows += New-AdfaDcDiskRow -Scope $scope -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so no read was attempted." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
+            continue
+        }
+        $protocols = @()
+        if ($wsman) { $protocols += 'Wsman' }
+        if ($rpc) { $protocols += 'Dcom' }
+        $raw = $null
+        $attempts = @()
+        $denied = $false
+        foreach ($protocol in $protocols) {
+            $readArgs = @{ ComputerName = $dc; Protocol = $protocol; OperationTimeoutSec = $OperationTimeoutSec; Paths = $Config['Paths'] }
+            if ($Credential) { $readArgs.Credential = $Credential }
+            $raw = Get-AdfaDcDiskRaw @readArgs
+            if ($null -ne $raw -and $raw.Ok) { break }
+            $message = ''
+            $code = ''
+            if ($null -ne $raw) {
+                $message = [string]$raw.Error
+                $codeProp = $raw.PSObject.Properties['ErrorCode']
+                if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $code = [string]$codeProp.Value }
+            }
+            $attempts += ("{0}: {1}" -f $protocol, $message)
+            if ((Get-AdfaRemoteReadErrorClass -Message $message -ErrorCode $code) -eq 'AccessDenied') { $denied = $true; break }
+        }
+        if ($null -eq $raw -or -not $raw.Ok) {
+            $lead = 'Read failed: a port answered, but neither the registry values nor the volume list could be read. If the text below is a refusal in another language, local Administrators rights on the DC are what is missing.'
+            if ($denied) { $lead = 'Access denied: the account running the assessment could not read the registry or the volume list of this DC. Local Administrators rights on the DC are needed for this read.' }
+            $rows += New-AdfaDcDiskRow -Scope $scope -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("{0} Reported by the DC - {1}" -f $lead, ($attempts -join ' | '))
+            continue
+        }
+        $rows += @(Get-AdfaDcDiskFinding -DomainController $dc -Scope $scope -Raw $raw -Config $Config)
+    }
+    return @($rows)
+}
+
+function Merge-AdfaDcDiskConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in DC disk table, with validation. The DcDisk
+        validator for -ConfigOverridePath.
+    .DESCRIPTION
+        Only the keys the override names are replaced. The keys that can be named are the four
+        thresholds and the two ports. Paths, SourceUrl and ReadDate cannot: they are what the
+        tool reads and where the vendor documents it, not a volatile value, and a file that
+        redirected the registry reads would make every finding describe something else.
+
+        Anything this tool could not use is refused with the reason: an override that is not one
+        object, an empty object, an unknown key, a null, a value that is not a JSON number, a
+        percentage outside 0 to 100, a negative floor, a port that is not a port. The MERGED
+        table is then checked as a whole, so a file that names only FailBelowPercent is still
+        refused when that puts Fail above the built-in Warning threshold, and a table left with
+        no threshold at all - which would pass every volume - is refused too.
+
+        Provenance follows the thresholds key by key. ThresholdSource is rewritten to name the
+        override's source for exactly the thresholds it supplied, and goes on calling the rest
+        tool defaults. A file that changes only a port leaves it untouched.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+
+    # ONE object with named keys. A JSON array, string or number also arrives as a .NET object,
+    # and its own properties (Length, Count ...) must not be read as config keys.
+    $isTable = ($Override -is [System.Collections.IDictionary])
+    $isObject = ($Override -is [System.Management.Automation.PSCustomObject])
+    if (-not $isTable -and -not $isObject) {
+        throw ("DC disk config override must be a single object with named keys (for example {{ ""WarnBelowPercent"": 25 }}), not a {0}." -f $Override.GetType().Name)
+    }
+    $names = @()
+    if ($isTable) { $names = @($Override.Keys) }
+    else { $names = @($Override.PSObject.Properties | ForEach-Object { $_.Name }) }
+    if ($names.Count -eq 0) {
+        throw 'DC disk config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    $thresholdKeys = @('WarnBelowPercent', 'FailBelowPercent', 'WarnBelowFreeGB', 'FailBelowFreeGB')
+    $portKeys = @('WsmanPort', 'RpcPort')
+    $known = @($thresholdKeys + $portKeys)
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $supplied = @()
+    foreach ($k in $names) {
+        $given = [string]$k
+        # A misspelt key would otherwise be accepted, ignored, and leave the operator believing
+        # their threshold was applied.
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("DC disk config override names an unknown key '{0}'. Known keys: {1}." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        # Reachable only from an object built in memory with keys that differ by case. A key
+        # written twice in a FILE never gets here: ConvertFrom-Json has already reduced it to
+        # its last value, which is why Import-AdfaConfigOverride looks for it in the text.
+        if ($supplied -contains $name) { throw ("DC disk config override names '{0}' more than once." -f $name) }
+        $value = $null
+        if ($isTable) { $value = $Override[$k] }
+        else { $value = $Override.PSObject.Properties[$given].Value }
+        if ($null -eq $value) {
+            throw ("DC disk config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name)
+        }
+        # A JSON number only. "25" in quotes is refused rather than parsed: how a string becomes
+        # a number depends on the culture of the host, and a threshold must not.
+        if ($numericTypes -notcontains $value.GetType()) {
+            throw ("DC disk config override sets '{0}' to a {1} ('{2}'). It must be a JSON number, written without quotes." -f $name, $value.GetType().Name, [string]$value)
+        }
+        $number = [double]$value
+        if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) {
+            throw ("DC disk config override sets '{0}' to a value that is not a finite number." -f $name)
+        }
+        $shown = $number.ToString('0.####', $inv)
+        if ($portKeys -contains $name) {
+            if ($number -ne [math]::Floor($number) -or $number -lt 1 -or $number -gt 65535) {
+                throw ("DC disk config override sets '{0}' to {1}, which is not a TCP port number between 1 and 65535." -f $name, $shown)
+            }
+            $merged[$name] = [int]$number
+        }
+        elseif ($name -like '*Percent') {
+            if ($number -lt 0 -or $number -gt 100) {
+                throw ("DC disk config override sets '{0}' to {1}. A percentage of free space must be in the range 0 to 100." -f $name, $shown)
+            }
+            $merged[$name] = $number
+        }
+        else {
+            if ($number -lt 0) {
+                throw ("DC disk config override sets '{0}' to {1}. A free-space floor in GB cannot be negative; use 0 for no floor." -f $name, $shown)
+            }
+            $merged[$name] = $number
+        }
+        $supplied += $name
+    }
+
+    # The table as a whole, built-in values included.
+    $warnPercent = [double]$merged['WarnBelowPercent']
+    $failPercent = [double]$merged['FailBelowPercent']
+    $warnFloor = [double]$merged['WarnBelowFreeGB']
+    $failFloor = [double]$merged['FailBelowFreeGB']
+    if ($failPercent -gt $warnPercent) {
+        throw ("DC disk config: FailBelowPercent ({0}) is above WarnBelowPercent ({1}) once the override is applied. A volume would fail at a level of free space at which it does not yet warn; set both." -f $failPercent.ToString('0.####', $inv), $warnPercent.ToString('0.####', $inv))
+    }
+    if ($failFloor -gt $warnFloor) {
+        throw ("DC disk config: FailBelowFreeGB ({0}) is above WarnBelowFreeGB ({1}) once the override is applied. Set both; to switch the floor off, set both to 0." -f $failFloor.ToString('0.####', $inv), $warnFloor.ToString('0.####', $inv))
+    }
+    if ($warnPercent -le 0 -and $failPercent -le 0 -and $warnFloor -le 0 -and $failFloor -le 0) {
+        throw 'DC disk config leaves no threshold in force: all four are 0, so every volume would pass whatever its free space.'
+    }
+
+    $fromOverride = @($thresholdKeys | Where-Object { $supplied -contains $_ })
+    if ($fromOverride.Count -gt 0) {
+        $from = 'an override whose source was not recorded'
+        if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+        $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+        $builtIn = @($thresholdKeys | Where-Object { $supplied -notcontains $_ })
+        if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
+        $merged['ThresholdSource'] = $text
+    }
+    return $merged
+}
+
+# ---------------------------------------------------------------------------
+# -ConfigOverridePath: one JSON file, one top-level key per section (PORT-PLAN C2)
+# ---------------------------------------------------------------------------
+# The sections whose built-in table that file can replace. A top-level key of the file is one of
+# these names, and its value goes to that section's own validator. A later plan row adds ONE
+# line here and writes its Merge-* function; nothing in the two loader functions changes.
+#
+#   ConfigKey  the key of the section's built-in table in $script:Config
+#   Section    the -Sections value that uses the table, so a run that was given a file for a
+#              section it did not select can say so in its log
+#   Merge      the validator. Contract: -BaseConfig <hashtable> -Override <object>
+#              -OverrideSource <string>; returns the merged table; throws on anything it cannot
+#              use; rewrites provenance only for what the override supplied.
+#
+# Exchange SE and DC system are deliberately NOT here. They keep -ExchangeSeConfigPath and
+# -DcSystemConfigPath, unchanged. A row that adds either must first decide what happens when
+# both sources name the same section.
+$script:ConfigOverrideSections = [ordered]@{
+    DcDisk = @{ ConfigKey = 'DcDisk'; Section = 'DcDisk'; Merge = 'Merge-AdfaDcDiskConfig' }
+}
+
+function Resolve-AdfaConfigOverride {
+    <#
+    .SYNOPSIS
+        Pure: validates a parsed -ConfigOverridePath document and returns the merged table of
+        every section it names.
+    .DESCRIPTION
+        The document must be ONE object whose keys are section names from the registry. Each
+        value is handed to that section's own validator; a refusal comes back prefixed with the
+        section's name. An unknown section is refused with the known ones listed - a threshold
+        written at the top level, outside its section, is the usual way to get there.
+
+        Only the sections the document names are returned. A section it does not name is absent
+        from the result, so its caller keeps the built-in table and that table's provenance.
+    .OUTPUTS
+        [hashtable] section name -> merged config table.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [AllowNull()]$Override,
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Sections,
+        [string]$OverrideSource = ''
+    )
+    if ($null -eq $Override) {
+        throw 'Config override is null. It must be a single object whose keys are section names.'
+    }
+    $isTable = ($Override -is [System.Collections.IDictionary])
+    $isObject = ($Override -is [System.Management.Automation.PSCustomObject])
+    if (-not $isTable -and -not $isObject) {
+        throw ("Config override must be a single object whose keys are section names (for example {{ ""DcDisk"": {{ ""WarnBelowPercent"": 25 }} }}), not a {0}." -f $Override.GetType().Name)
+    }
+    $names = @()
+    if ($isTable) { $names = @($Override.Keys) }
+    else { $names = @($Override.PSObject.Properties | ForEach-Object { $_.Name }) }
+    if ($names.Count -eq 0) {
+        throw 'Config override is an empty object. It names no section, so it would change nothing while appearing to be in force.'
+    }
+    $known = @($Sections.Keys | ForEach-Object { [string]$_ })
+    $result = @{}
+    foreach ($k in $names) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("Config override names an unknown section '{0}'. Known sections: {1}." -f $given, ($known -join ', '))
+        }
+        $section = [string]$match[0]
+        # As in the section validators: reachable from an in-memory object only. A section
+        # written twice in a file is found in the text by Import-AdfaConfigOverride.
+        if ($result.ContainsKey($section)) { throw ("Config override names section '{0}' more than once." -f $section) }
+        $value = $null
+        if ($isTable) { $value = $Override[$k] }
+        else { $value = $Override.PSObject.Properties[$given].Value }
+        if ($null -eq $value) {
+            throw ("Config override sets section '{0}' to null. Remove the key to keep the built-in table." -f $section)
+        }
+        $definition = $Sections[$section]
+        $configKey = [string](Get-AdfaConfigValue -Entry $definition -Name 'ConfigKey')
+        $merge = [string](Get-AdfaConfigValue -Entry $definition -Name 'Merge')
+        # A registry line that points at nothing is a defect in this tool, not in the file.
+        if ($configKey -eq '' -or -not $BaseConfig.ContainsKey($configKey) -or $BaseConfig[$configKey] -isnot [hashtable]) {
+            throw ("Config override: section '{0}' is registered against a built-in table '{1}' that does not exist. This is a defect in the tool, not in the file." -f $section, $configKey)
+        }
+        if ($merge -eq '' -or $null -eq (Get-Command -Name $merge -CommandType Function -ErrorAction SilentlyContinue)) {
+            throw ("Config override: section '{0}' is registered with a validator '{1}' that does not exist. This is a defect in the tool, not in the file." -f $section, $merge)
+        }
+        try { $result[$section] = & $merge -BaseConfig $BaseConfig[$configKey] -Override $value -OverrideSource $OverrideSource }
+        catch { throw ("Config override, section '{0}': {1}" -f $section, $_.Exception.Message) }
+    }
+    return $result
+}
+
+function Get-AdfaJsonTopLevelKind {
+    <#
+    .SYNOPSIS
+        Pure: what a JSON text holds at its top level, read from its first character.
+    .DESCRIPTION
+        Object, Array, String, Empty or Other (a number, true, false, null - or anything else,
+        a comment included). Read from the text and not from what ConvertFrom-Json returned,
+        because the two PowerShell editions return different things for the same array.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return 'Empty' }
+    # A byte order mark that survived the read is not part of the document.
+    $body = $Text.TrimStart([char[]]@([char]0xFEFF, [char]32, [char]9, [char]13, [char]10))
+    if ($body.Length -eq 0) { return 'Empty' }
+    $first = [string]$body[0]
+    if ($first -ceq '{') { return 'Object' }
+    if ($first -ceq '[') { return 'Array' }
+    if ($first -ceq '"') { return 'String' }
+    return 'Other'
+}
+
+function Get-AdfaJsonDuplicateKey {
+    <#
+    .SYNOPSIS
+        Pure: the keys a JSON text names more than once inside one object.
+    .DESCRIPTION
+        ConvertFrom-Json cannot report this. Measured on Windows PowerShell 5.1 and PowerShell
+        7.6: for { "a": 1, "a": 2 } both return a = 2 with no error, and for keys that differ
+        only by case both refuse the document. So a repeated key has to be found in the text.
+
+        A single pass over the characters, tracking only what is needed for that: where
+        strings begin and end (with their escapes decoded, so "a" and "a" are one key),
+        which objects and arrays are open, and whether the next string in an object is a key.
+        Comments (// and /* */), which PowerShell 7 accepts, are skipped. Keys are compared
+        without regard to case, as PowerShell reads them. It is meant for text that
+        ConvertFrom-Json has already accepted, and does not validate JSON.
+    .OUTPUTS
+        [string[]] One entry per repeated key, as its dotted path (DcDisk.WarnBelowPercent),
+        each path once. Empty when nothing is repeated.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+    $found = New-Object System.Collections.ArrayList
+    if ([string]::IsNullOrEmpty($Text)) { return @() }
+    # Open containers, innermost last: IsObject, Keys (case-insensitive), ExpectKey, Name.
+    $open = New-Object System.Collections.ArrayList
+    $nextName = ''
+    $length = $Text.Length
+    $i = 0
+    while ($i -lt $length) {
+        $c = $Text[$i]
+        if ($c -eq [char]'"') {
+            $builder = New-Object System.Text.StringBuilder
+            $i++
+            while ($i -lt $length -and $Text[$i] -ne [char]'"') {
+                if ($Text[$i] -eq [char]'\' -and ($i + 1) -lt $length) {
+                    $escape = $Text[$i + 1]
+                    $i += 2
+                    if ($escape -ceq [char]'u' -and ($i + 4) -le $length) {
+                        $code = 0
+                        if ([int]::TryParse($Text.Substring($i, 4), [System.Globalization.NumberStyles]::HexNumber, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$code)) {
+                            [void]$builder.Append([char]$code)
+                            $i += 4
+                        }
+                        continue
+                    }
+                    if ($escape -ceq [char]'n') { [void]$builder.Append("`n") }
+                    elseif ($escape -ceq [char]'r') { [void]$builder.Append("`r") }
+                    elseif ($escape -ceq [char]'t') { [void]$builder.Append("`t") }
+                    elseif ($escape -ceq [char]'b') { [void]$builder.Append([char]8) }
+                    elseif ($escape -ceq [char]'f') { [void]$builder.Append([char]12) }
+                    else { [void]$builder.Append($escape) }
+                    continue
+                }
+                [void]$builder.Append($Text[$i])
+                $i++
+            }
+            $i++
+            if ($open.Count -gt 0) {
+                $top = $open[$open.Count - 1]
+                if ($top['IsObject'] -and $top['ExpectKey']) {
+                    $key = $builder.ToString()
+                    if ($top['Keys'].ContainsKey($key)) {
+                        $path = @(@($open | ForEach-Object { [string]$_['Name'] } | Where-Object { $_ -ne '' }) + $key) -join '.'
+                        if (-not $found.Contains($path)) { [void]$found.Add($path) }
+                    }
+                    else { $top['Keys'][$key] = $true }
+                    $top['ExpectKey'] = $false
+                    $nextName = $key
+                }
+            }
+            continue
+        }
+        if ($c -eq [char]'/' -and ($i + 1) -lt $length) {
+            if ($Text[$i + 1] -eq [char]'/') {
+                while ($i -lt $length -and $Text[$i] -ne [char]10) { $i++ }
+                continue
+            }
+            if ($Text[$i + 1] -eq [char]'*') {
+                $end = $Text.IndexOf('*/', $i + 2, [System.StringComparison]::Ordinal)
+                if ($end -lt 0) { break }
+                $i = $end + 2
+                continue
+            }
+        }
+        if ($c -eq [char]'{') { [void]$open.Add(@{ IsObject = $true; Keys = @{}; ExpectKey = $true; Name = $nextName }); $nextName = '' }
+        elseif ($c -eq [char]'[') { [void]$open.Add(@{ IsObject = $false; Keys = @{}; ExpectKey = $false; Name = $nextName }); $nextName = '' }
+        elseif ($c -eq [char]'}' -or $c -eq [char]']') { if ($open.Count -gt 0) { $open.RemoveAt($open.Count - 1) } }
+        elseif ($c -eq [char]',') { if ($open.Count -gt 0 -and $open[$open.Count - 1]['IsObject']) { $open[$open.Count - 1]['ExpectKey'] = $true } }
+        $i++
+    }
+    return @($found.ToArray())
+}
+
+function Import-AdfaConfigOverride {
+    <#
+    .SYNOPSIS
+        Loads the -ConfigOverridePath file and returns the merged table of every section it names.
+    .DESCRIPTION
+        A missing, empty or malformed file throws, and so does anything the document or one of
+        its sections holds that could not be used: judging a forest against built-in values
+        while the operator believes their own are in force is worse than stopping. Every
+        refusal names the file.
+
+        Two faults are found in the file's text, because the parsed document hides them: a
+        top-level array holding one object, which PowerShell 7 would unwrap and apply while
+        Windows PowerShell 5.1 refused it, and a key written twice in one object, which both
+        editions reduce to its last value without an error.
+    .OUTPUTS
+        [hashtable] section name -> merged config table.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Sections
+    )
+    if (-not (Test-Path -LiteralPath $Path)) { throw ("Config override file not found: {0}" -f $Path) }
+    $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace($raw)) { throw ("Config override file is empty: {0}" -f $Path) }
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw ("Config override file is not valid JSON ({0}): {1}" -f $Path, $_.Exception.Message) }
+    # The JSON literal null parses without error. A file that was named must change something or
+    # stop the run. (PowerShell 7 also arrives here for an empty top-level array, which it
+    # unrolls to nothing; Windows PowerShell 5.1 hands that array on, and it is refused below.)
+    if ($null -eq $obj) { throw ("Config override file holds JSON null or an empty array, not an object: {0}" -f $Path) }
+    # The two checks below read the TEXT, because the parsed object cannot show either fault.
+    # 1. A top-level array holding one object. PowerShell 7 unrolls it on the pipeline, so $obj
+    #    is the inner object and the file would be applied; Windows PowerShell 5.1 hands the
+    #    array on and refuses it. The same file must get the same answer on both.
+    $kind = Get-AdfaJsonTopLevelKind -Text $raw
+    if ($kind -ne 'Object') {
+        throw ("Config override must be a single object whose keys are section names (for example {{ ""DcDisk"": {{ ""WarnBelowPercent"": 25 }} }}), not a JSON {0}. The file must begin with '{{'; an array is refused even when it holds one object. (file: {1})" -f $kind.ToLowerInvariant(), $Path)
+    }
+    # 2. A key written twice in one object. ConvertFrom-Json keeps the last one and drops the
+    #    rest without a word on both editions, so the "more than once" checks in the validators
+    #    never see it: a file that contradicts itself would be applied, and cited as the source.
+    $twice = @(Get-AdfaJsonDuplicateKey -Text $raw)
+    if ($twice.Count -gt 0) {
+        throw ("Config override names {0} more than once. A JSON parser keeps only the last of them, so which value was meant cannot be known and the file is refused. (file: {1})" -f (@($twice | ForEach-Object { "'{0}'" -f $_ }) -join ', '), $Path)
+    }
+    try { return (Resolve-AdfaConfigOverride -Override $obj -BaseConfig $BaseConfig -Sections $Sections -OverrideSource $Path) }
     catch { throw ("{0} (file: {1})" -f $_.Exception.Message, $Path) }
 }
 
@@ -7194,6 +8710,19 @@ $script:RecommendationMap = @(
     #     https://learn.microsoft.com/lifecycle/faq/extended-security-updates (read 2026-11-13).
     @{ Section = '(?i)^dc system'; Match = '(?i)past extended support'
        Text  = 'Upgrade or replace this domain controller so that it runs a supported Windows Server release. Microsoft describes Extended Security Updates as a last-resort paid option that is a temporary bridge and does not extend the product lifecycle; where one is published for this release, confirm separately whether this DC is enrolled, because this report does not assess that.' }
+    # --- Section-scoped: DC disk space (PORT-PLAN C2). One entry answers every Warning and Fail
+    #     row of the section, and it sits ahead of the unscoped entries because such a row names
+    #     SYSVOL, a host and - under an override - a file path, any of which an unscoped entry
+    #     ('sysvol|dfsr', 'replication', 'backup', 'stale') would otherwise answer with the fix
+    #     for a different fault. A full disk is not cured by a D4 restore. A test pins it.
+    #     The steps are Microsoft's own for a database volume short of space, in their order:
+    #       https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-event-id-2108-1084
+    #     The 110 % figure is from the AD DS capacity planning page:
+    #       https://learn.microsoft.com/windows-server/administration/performance-tuning/role/active-directory-server/capacity-planning-for-active-directory-domain-services
+    #     Read: 2026-11-13 (both). Nothing is advised for a SYSVOL-only volume beyond freeing or
+    #     extending it, because nothing more specific was found published.
+    @{ Section = '(?i)^dc disk space'; Match = '.'
+       Text  = 'Free space on the named volume, or extend it. For a volume that holds the directory database or its log files, Microsoft''s steps are, in this order: 1. Move unrelated files to another volume. 2. Perform a system state backup, which reduces the size of the transaction log files. 3. Perform an offline defragmentation of the database; Microsoft''s sizing guidance asks for free space of 110 % of the ntds.dit size to allow it, which this report does not measure. Also confirm that NTFS compression is not turned on for the drives that hold ntds.dit and the log files. The thresholds this finding was judged against are this tool''s defaults or your own override, not Microsoft values.' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
     # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
@@ -7697,8 +9226,8 @@ function Invoke-Main {
 
     Write-Log -Level INFO ("Runtime: PowerShell {0} on {1}; user {2}\{3}" -f `
         $PSVersionTable.PSVersion, [Environment]::MachineName, $env:USERDOMAIN, $env:USERNAME)
-    Write-Log -Level INFO ("Parameters: AllDomains={0} Sections={1} IncludeDcdiag={2} IncludeRepadmin={3} SkipTrustVerification={4} Server={5} IncludeSecureChannelVerify={6}" -f `
-        $AllDomains.IsPresent, ($Sections -join ','), $IncludeDcdiag.IsPresent, $IncludeRepadmin.IsPresent, $SkipTrustVerification.IsPresent, $Server, $IncludeSecureChannelVerify.IsPresent)
+    Write-Log -Level INFO ("Parameters: AllDomains={0} Sections={1} IncludeDcdiag={2} IncludeRepadmin={3} SkipTrustVerification={4} Server={5} IncludeSecureChannelVerify={6} ConfigOverridePath={7}" -f `
+        $AllDomains.IsPresent, ($Sections -join ','), $IncludeDcdiag.IsPresent, $IncludeRepadmin.IsPresent, $SkipTrustVerification.IsPresent, $Server, $IncludeSecureChannelVerify.IsPresent, $ConfigOverridePath)
     # Said in the log as well as in the findings: this run can change a secure channel.
     if ($IncludeSecureChannelVerify) {
         Write-Log -Level WARN -Section 'SecureChannel' -Message 'IncludeSecureChannelVerify is set: nltest /sc_verify will run, and it resets any secure channel it finds not working. This run is not read-only.'
@@ -7708,6 +9237,29 @@ function Invoke-Main {
     }
     if ($IncludeDcdiagActiveTests) {
         Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiagActiveTests is set: the dcdiag DNS test will register and delete a DNS test record on each DC, and the dcdiag Intersite test will trigger a replication. This run is not read-only.'
+    }
+    # -ConfigOverridePath is read and validated ONCE, here, before the directory is touched and
+    # before any section runs: a file that cannot be used must stop the run before any work is
+    # done, not after an hour of collection. It is validated in full even when the section it
+    # names was not selected - a file is right or wrong regardless of this run's -Sections -
+    # and the log says which of its sections this run will not use.
+    $configOverrides = @{}
+    if ($ConfigOverridePath) {
+        try {
+            $configOverrides = Import-AdfaConfigOverride -Path $ConfigOverridePath -BaseConfig $script:Config -Sections $script:ConfigOverrideSections
+        }
+        catch {
+            Write-Log -Level ERROR ("Config override refused, nothing was collected: {0}" -f $_.Exception.Message)
+            try { Stop-Transcript | Out-Null } catch { }
+            throw
+        }
+        foreach ($name in @($configOverrides.Keys | Sort-Object)) {
+            Write-Log -Level INFO ("Config override: section {0} taken from {1}" -f $name, $ConfigOverridePath)
+            $usedBy = [string]$script:ConfigOverrideSections[[string]$name]['Section']
+            if (-not (Test-SectionSelected -Name $usedBy -Selected $Sections)) {
+                Write-Log -Level WARN -Message ("Config override: section {0} was validated but is not used by this run, because -Sections does not include {1}." -f $name, $usedBy)
+            }
+        }
     }
     # A fresh run starts with no remembered port probes; within the run each DC is probed once.
     Clear-AdfaDcPortCache
@@ -7795,7 +9347,11 @@ function Invoke-Main {
     # Domains whose inventory call threw. Their DCs are in no list, so a section that reports
     # per DC must be told, or it looks complete while a whole domain is missing from it.
     $dcInventoryFailures = @()
+    # Whether the inventory was asked for at all. A per-DC section that needs every scoped
+    # domain's DCs (DcDisk) enumerates them itself when it was not.
+    $dcInventoryCollected = $false
     if (Test-SectionSelected 'DomainControllers' $Sections) {
+        $dcInventoryCollected = $true
         $inv = @()
         foreach ($d in $targetDomains) {
             try { $inv += Get-AdfaDomainControllerInventory -DomainName $d -AdParams $adParams }
@@ -8018,6 +9574,32 @@ function Invoke-Main {
         $dcSystemRows += Get-AdfaDcPatchLevel -DomainControllers $dcNames -Config $dcSystemConfig -Credential $Credential `
             -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec
         $sectionData['DC System'] = @($dcSystemRows)
+    }
+    if (Test-SectionSelected 'DcDisk' $Sections) {
+        Write-Stage 'DC disk space (NTDS database, NTDS log and SYSVOL volumes, per DC)'
+        # The table the file supplied where it supplied one, otherwise the built-in table. The
+        # file was validated before any section ran.
+        $dcDiskConfig = $script:Config.DcDisk
+        if ($configOverrides.ContainsKey('DcDisk')) { $dcDiskConfig = $configOverrides['DcDisk'] }
+        # The DCs of EVERY scoped domain, each carrying its domain. Where the DomainControllers
+        # section ran, that is its inventory. Where it did not, $allDcInventory is empty and
+        # $dcNames holds only what one unscoped call against the default server returned - the
+        # current domain's DCs - so on a run with -AllDomains every other domain would be
+        # missing from this section with no row to say so. The section therefore enumerates the
+        # scoped domains itself in that case.
+        $dcDiskTargets = @($allDcInventory)
+        $dcDiskFailures = @($dcInventoryFailures)
+        if (-not $dcInventoryCollected) {
+            $dcDiskEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+            $dcDiskTargets = @($dcDiskEnumeration.Targets)
+            $dcDiskFailures = @($dcDiskEnumeration.Failures)
+        }
+        # Last resort, when no scoped domain gave a single DC: the host names the fallback
+        # enumeration found. They carry no domain, and the section says so for each domain.
+        if ($dcDiskTargets.Count -eq 0) { $dcDiskTargets = @($dcNames) }
+        $sectionData['DC Disk Space'] = @(Get-AdfaDcDiskSpace -DomainControllers $dcDiskTargets -Config $dcDiskConfig -Credential $Credential `
+                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
+                -InventoryFailures $dcDiskFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
     }
     if (Test-SectionSelected 'Backup' $Sections) {
         Write-Stage 'Directory backup status (per DC)'

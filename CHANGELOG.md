@@ -10,6 +10,323 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-11-13 (DC disk space, and one override file for section config, tool v1.19.0)
+
+**PORT-PLAN C2.** New `-Sections DcDisk`, included in the default `All` run, and a new
+parameter `-ConfigOverridePath`. It closes one row of the gap analysis (ADA-DISK-001): the tool
+read nothing about the disks a domain controller's database, logs and SYSVOL sit on.
+
+**This has run only against stubs.** No part of it has been executed against a real directory
+or a real domain controller. No `Invoke-CimMethod`, `Get-CimInstance` or registry read in it has
+met a real DC. The first run against a real forest is PORT-PLAN C17, owned by the operator.
+
+**What it reads, per DC.** Three registry values, then the volume list, in one CIM session
+(WinRM first, DCOM second):
+
+| Role | Value under `HKLM\SYSTEM\CurrentControlSet\Services` |
+| --- | --- |
+| NTDS database | `NTDS\Parameters`, `DSA Database File` (a file path) |
+| NTDS logs | `NTDS\Parameters`, `Database Log Files Path` |
+| SYSVOL | `Netlogon\Parameters`, `SysVol` |
+
+Each path is matched to the `Win32_Volume` whose mount path is its longest prefix, so a
+database under a mounted folder is judged on the right volume. One row per distinct volume,
+listing the roles it holds; a DC with everything on `C:` gives one row, not three.
+
+**Thresholds: tool defaults, not Microsoft values.**
+
+| Result | Free space, share of the volume | Or free space, absolute |
+| --- | --- | --- |
+| `Fail` | below 10 % | below 2 GB |
+| `Warning` | below 20 % | below 5 GB |
+
+Either test is enough and the finding says which fired; "below" is strict. Microsoft publishes
+no free-space threshold for these volumes. The three figures it does publish are relative to
+the database, not the volume: "make sure the free space you have available is 110% of the
+`NTDS.dit` size", for offline defragmentation; "allocating enough free space to equal 300% of
+the DIT size is a safe way to accommodate growth and defragging"; and, for a fixed VHD, "at
+least 210% the size of the DIT". This section does not read the database file size, so none of
+them is **evaluated**, and the row for the database volume says so in its `NotRun` column
+(PORT-PLAN C2a). Figures in a finding are cut off after two decimals, never rounded. 20 % and 10 % are the pair the AdAssessment26 catalogue lists for this check
+as operator-set. The absolute floor is this tool's addition, because 25 % of an 8 GB volume is
+2 GB; it is kept low so a correctly sized 10 to 20 GB dedicated volume is not flagged. Every
+finding prints the thresholds in force and "tool default, not a Microsoft value".
+
+**Results that are kept apart.** Every role is accounted for by exactly one row. Where it could
+not be judged the row is `Not Assessed` and says which of these happened:
+
+| Situation | Row |
+| --- | --- |
+| Neither port answered | `Unreachable`, no read attempted |
+| The DC refused the session or the read, or the provider returned 5 or `0x80041003` | `Access denied`: local Administrators rights needed |
+| The provider returned 1 | `Not found`, read as the value not being set. **No default path is assumed** |
+| The provider returned 2 | `Not found`, read as the registry key not existing |
+| The provider returned `0x80041005` | The value is present but is not a string |
+| Any other error or return code | `Read failed`, quoted, not interpreted |
+| Value empty, or still holding `%VARIABLE%` | Says so, with the value |
+| Path under no volume the DC returned | Names the path and the volumes |
+| Volume list could not be read | Every role `Not Assessed`, with the cause |
+| Volume returned no capacity | `Not Assessed` for that volume, with the values returned |
+
+No row is `Info`. No row is `Pass` unless both the capacity and the free space were read.
+
+5, `0x80041003` and `0x80041005` are read by the names WinError.h and WbemErrorEnum give them.
+**1 and 2 are read on a measurement, not on a Microsoft statement**: on one Windows 11
+workstation (not a domain controller), with the same two methods, the provider returned 1 for a
+value that does not exist under a key that does and 2 for a key that does not exist. Each
+`Not found` row says so.
+
+**Every scoped domain is in the section.** With `DomainControllers` selected the DCs come from
+the inventory; without it the section enumerates each scoped domain itself, so `-Sections
+DcDisk -AllDomains` covers every domain and every row carries its domain. A domain whose DCs
+could not be enumerated, or that returned none, gets its own `Not Assessed` row.
+
+**The registry is read with a CIM method call - the first, and the only, in this script.** The
+house rule is "no CIM method invocation". `StdRegProv` exposes no instances, so a value can be
+read through it only by calling a method, and it rides the same session as the volume query,
+so one transport, one timeout and one WinRM-to-DCOM fallback cover both; the older
+`OpenRemoteBaseKey` route used elsewhere in the script is a separate connection with no
+fallback of its own. Decision: `GetStringValue` and `GetExpandedStringValue` are
+accepted as reads. Microsoft describes them as "Gets the string data value of a named value" and
+"Gets the expanded string data value of a named value", with the value as their only output.
+It lists the class's 20 methods in one table and does not sort them into reading and writing
+methods; that sorting is this tool's, made from each method's own description, and the ones
+described as creating, deleting or setting (`CreateKey`, `DeleteKey`, `DeleteValue`, the `Set*`
+methods) are never called. **Microsoft does not state that the `Get*` methods have no
+side effect**; the decision rests on their documented purpose and signature, and the script
+says so. Only `Get*` methods are used: `EnumValues`, which the reference tool calls first, is
+not. Each call names its class and method literally, and a test reads every `Invoke-CimMethod`
+from the parsed script and fails on any other method, a computed method name, or another class;
+a second test fails on `Set-CimInstance`, `New-CimInstance`, `Remove-CimInstance` or any WMI
+write cmdlet. `Win32_Volume` has methods that change a volume (`Format`, `Dismount`, `Chkdsk`,
+`Defrag`); none is called, only instances are read.
+
+`Invoke-CimMethod` honours `-WhatIf`, and under it "The cmdlet is not run". A `WhatIf`
+preference in the caller's session would have skipped the read and left nothing to judge, so
+`-WhatIf` and `-Confirm` are forced off on these two calls, which is safe only because both are
+reads. They are forced off on `Remove-CimSession` as well, so a preference cannot leave a
+session open on each DC.
+
+The registry type of the three values is not published. `GetStringValue` is documented for
+`REG_SZ`, so where it returns nothing usable the value is read again with
+`GetExpandedStringValue`; that second read is not made after a refusal (5 or `0x80041003`).
+
+**`-ConfigOverridePath`: one file, one key per section.** A JSON object whose top-level keys
+are section names; each value goes to that section's own validator. `DcDisk` is the only
+section so far:
+
+```json
+{ "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15, "WarnBelowFreeGB": 10, "FailBelowFreeGB": 5 } }
+```
+
+It is built so a later check adds one line to `$script:ConfigOverrideSections` and writes its
+own `Merge-*` function; the two loader functions do not change, and a test proves that with a
+second, made-up section. The file is read once, **before the directory is contacted**, and
+anything wrong with it stops the run before anything is collected: a missing or empty file,
+text that is not JSON, JSON `null`, an array or a string, an empty object, a key or a section
+written twice, an unknown section, a section set to `null`, an unknown key, or a value its
+section cannot use. An array is refused even when it holds one valid object, and a repeated
+key is found in the file's text, because the parser hides both: PowerShell 7 unwraps a
+one-element array, and both editions keep the last of two equal keys without an error. For
+`DcDisk` that
+means a value that is not a JSON number (a number in quotes is refused, not parsed), a
+percentage outside 0 to 100, a negative floor, `Fail` above `Warning` once the file is merged
+with the built-in values, a table left with no threshold at all, or a port that is not a port.
+`Paths`, `SourceUrl` and `ReadDate` cannot be set from the file: a file that redirected the
+registry reads would make every finding describe something else. The file is validated in full
+even when `-Sections` leaves out the section it names, and the log then says so.
+
+Provenance moves key by key. A file that supplies only `WarnBelowPercent` produces findings
+that cite the file for that key and go on calling the other three "tool default, not a
+Microsoft value". A file that changes only a port leaves the label alone.
+
+`-ExchangeSeConfigPath` and `-DcSystemConfigPath` are unchanged and keep their own files.
+`"DcSystem"` or `"ExchangeSe"` as a top-level key of the new file is refused as an unknown
+section; folding them in is PORT-PLAN C2d, because it has to decide what happens when both
+sources name the same section.
+
+**Advice.** One section-scoped entry answers every `Warning` and `Fail` row, placed ahead of
+the unscoped entries. A row of this section names SYSVOL, and without that entry the unscoped
+`sysvol|dfsr` entry would have advised an authoritative DFSR restore for a full disk. The text
+is Microsoft's own order of steps for a database volume short of space: move unrelated files to
+another volume, take a system state backup, defragment offline. A test pins that neither the
+row's wording nor an override file path full of other entries' keywords can replace it. The
+note about the 110 % figure is in `NotRun`, so it is added to the finding after the advice has
+been chosen.
+
+**Found while building, and fixed: `Get-Help` could not read this script's help at all.** The
+licence banner sat directly above the help block with no blank line between them, which makes
+the two one comment. `Get-Help .\Invoke-ADForestAssessment.ps1` showed only the auto-generated
+syntax line, for every parameter. The same was true at v1.18.0, the only earlier version
+checked. One blank line fixes it. A test now reads the help the way `Get-Help` does and fails if it comes back empty.
+
+**The guards were shown able to fail.** Against a green baseline, 32 single changes were made
+to the new code one at a time, the new tests run after each, and the script restored and
+verified by SHA-256 after each. All 32 turned at least one test red: a reversed verdict; an
+unusable figure or an unread registry value reported as `Pass`; an unreachable DC treated as
+reachable; a refusal reported as a read failure, at the DC and at the value; an absent value
+no longer told apart; six validation checks removed, one at a time; the section branch, the
+file load and the hand-over of the file's table each dropped; both thresholds off by one; a
+loop that handled only the first DC; `SetStringValue` planted in place of a read, and a
+computed method name; `-WhatIf` no longer forced off; first-match in place of longest-prefix;
+non-local volumes admitted; file thresholds still labelled tool defaults; the advice entry
+detached; and the not-measured note moved into the detail. Two of them, the file never being
+loaded and its table never reaching the section, would have passed the first draft of the
+Pester wiring tests, which matched text; those tests were rewritten to read the parsed script
+before the run, and the smoke harness also catches both.
+
+**Found by an independent review of the diff before commit, and fixed in it.** Twenty-two
+findings, several of them the same defect seen by more than one reviewer.
+
+- *A registry value that is not set was never reported as `Not found`.* The code and every stub
+  took the provider's return for an absent value to be 2. Measured on a workstation, it is 1;
+  2 is an absent key. So the not-configured case fell into "Read failed: StdRegProv returned
+  1 ... not interpreted", and the tests were green over a shape the provider does not produce.
+  1 is now `Not found` (value not set) and 2 `Not found` (key does not exist), each labelled
+  as measured and not published; the stubs answer as the provider was measured to.
+- *`-Sections DcDisk -AllDomains` without `DomainControllers` read one domain's DCs and said
+  nothing about the others.* The section now enumerates every scoped domain itself when there
+  is no inventory, and gives each scoped domain with no DC row a `Not Assessed` row. The other
+  per-DC sections still use the unscoped fallback: PORT-PLAN C2e.
+- *A domain row said "none of their volumes was read" directly above a `Pass` row* when the
+  inventory failed and the fallback enumeration still returned DCs. It now says that those DCs
+  carry no domain and that the domain is not shown as read.
+- *A figure could print as the threshold it was said to be below* ("10.00 % free ... Below the
+  Fail threshold of 10 % free"), because 0.0000001 was added before truncating. Figures are now
+  truncated in decimal arithmetic with nothing added. Plain rounding passed every earlier test.
+- *PowerShell 7 accepted a top-level array holding one object* as an override file, and Windows
+  PowerShell 5.1 refused it. Both refuse it now.
+- *A key or a section written twice in the override file was applied with its last value.* The
+  "more than once" checks could not fire for a file. It is now found in the text and refused.
+- *A `WhatIf` preference left a CIM session open per DC per transport,* in this section and in
+  the `DcSystem` seam added by C1. Both now force `-WhatIf` and `-Confirm` off when closing.
+- *Tests that could not fail.* Each of these was applied to the script and left every test
+  green; each now turns at least one test red: the credential dropped from the CIM session, or
+  from the collector's call to the seam; `-Confirm:$false` removed from the method calls; the
+  operation timeout removed from the method calls, or from the volume query; the event 1393
+  consequence limited to the database, dropping the logs; an empty value no longer triggering
+  the expanded read; a DC whose registry reads all threw reported as a whole-DC failure
+  although its volume list was read; the collector handed the unscoped DC names in place of
+  its targets; the enumeration error replaced by an empty string; and the `throw` removed
+  where a refused override file stops the run.
+- *Three statements attributed to Microsoft were the tool's own.* "Microsoft lists its methods
+  in two groups": it lists them in one table. The return value "only" as a WinError.h code: the
+  same pages send script callers to WbemErrorEnum, and the provider does return such codes.
+  "Its one published figure" of 110 %: the page gives three. All three are corrected in the
+  script, this file, the README and the plan.
+
+After the fixes, 23 single changes were applied one at a time to a copy of the script - the
+eleven above, plain rounding and the old addend in the figure formatting, and ten that undo a
+fix - and the DcDisk Pester block run against each copy. Every one turned at least one test
+red, against a baseline of 110 passed and none failed. The repository's script was never the
+file changed, and its SHA-256 was the same before and after.
+
+Existing tests that changed, each because the behaviour or the stub did. None was removed or
+weakened.
+
+- `quotes any other return code without interpreting it` used return code 1 as its example of
+  an uninterpreted code. 1 now has a meaning, so the test uses 87.
+- The two tests of an absent registry value (one on the pure layer, one on the CIM seam) used
+  2. They now use 1, the return the provider gives for a value that is not set, and a new
+  test beside each covers 2 for a key that does not exist. The Pester stub and the smoke stub
+  answer 1 for a value they do not hold and 2 only for a key they do not hold.
+- Four wiring and guard tests were tightened: the branch test asserts what each of the
+  collector's eight parameters is given, not only that it is given; the inventory test asserts
+  the three sources of the section's targets and their order; the load test asserts the
+  rethrow; and the `-WhatIf` test asserts `-Confirm` as well.
+
+**Vendor sources, all read on Microsoft Learn 2026-11-13.**
+
+- Registry values for the database and log locations, and the `SysVol` value:
+  [Microsoft Defender Antivirus exclusions on Windows Server](https://learn.microsoft.com/defender-endpoint/microsoft-defender-antivirus-exclusions-windows-server).
+  That page prints the `SysVol` value under `ControlSet001`.
+- The `SysVol` value under `CurrentControlSet\Services\NetLogon\Parameters`, and that after a
+  migration to DFSR it points at the `SYSVOL_DFSR` copy:
+  [Backing up and restoring an FRS-replicated SYSVOL folder](https://learn.microsoft.com/windows/win32/vss/backing-up-and-restoring-an-frs-replicated-sysvol-folder).
+- `StdRegProv`, its namespaces, its single table of 20 methods and "Read, write, and delete
+  data values":
+  [StdRegProv class](https://learn.microsoft.com/previous-versions/windows/desktop/regprov/stdregprov).
+- `GetStringValue`: signature, `HKEY_LOCAL_MACHINE` = 2147483650, and the return value: 0 if
+  successful; for C++ "a nonzero error code that is defined in WinError.h ... You can also
+  look up return values under the WMI Error Constants"; for scripting "a nonzero error code
+  that you can look up in WbemErrorEnum":
+  [GetStringValue method](https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getstringvalue-method-in-class-stdregprov).
+- `GetExpandedStringValue`, with the same return value text:
+  [GetExpandedStringValue method](https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getexpandedstringvalue-method-in-class-stdregprov).
+- 1 is `ERROR_INVALID_FUNCTION`, 2 is `ERROR_FILE_NOT_FOUND` and 5 is `ERROR_ACCESS_DENIED`:
+  [System Error Codes (0-499)](https://learn.microsoft.com/windows/win32/debug/system-error-codes--0-499-).
+- `0x80041003` is `wbemErrAccessDenied` and `0x80041005` is `wbemErrTypeMismatch`:
+  [WbemErrorEnum](https://learn.microsoft.com/windows/win32/api/wbemdisp/ne-wbemdisp-wbemerrorenum).
+- `Remove-CimSession` and `-WhatIf` ("The cmdlet is not run"):
+  [Remove-CimSession](https://learn.microsoft.com/powershell/module/cimcmdlets/remove-cimsession?view=powershell-5.1).
+- `Win32_Volume`: `Capacity` and `FreeSpace` in bytes, `DriveType` 3 = Local Disk, `DeviceID`,
+  and that the class returns unformatted and offline volumes:
+  [Win32_Volume class](https://learn.microsoft.com/previous-versions/windows/desktop/legacy/aa394515(v=vs.85)).
+- Longest prefix as the rule for mapping a path to its volume:
+  [GetVolumePathNameW](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getvolumepathnamew).
+- `Invoke-CimMethod` and `-WhatIf`:
+  [Invoke-CimMethod](https://learn.microsoft.com/powershell/module/cimcmdlets/invoke-cimmethod?view=powershell-5.1).
+- "By default, only members of the Administrators group can access the WMI namespace remotely":
+  [Troubleshoot WMI connectivity and access issues](https://learn.microsoft.com/troubleshoot/windows-server/system-management-components/scenario-guide-troubleshoot-wmi-connectivity-access-issues).
+- The 110 %, 300 % and 210 % of `NTDS.dit` figures, and no volume threshold:
+  [Capacity planning for Active Directory Domain Services](https://learn.microsoft.com/windows-server/administration/performance-tuning/role/active-directory-server/capacity-planning-for-active-directory-domain-services).
+- NTDS General event 1393 (updates fail with error 112, Net Logon is paused), quoted on a
+  failing database or log volume:
+  [Replication error 8456 or 8457](https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8456-8457).
+- The remediation steps and their order:
+  [Replication event IDs 2108 and 1084](https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-event-id-2108-1084).
+
+The `GetStringValue` and replication-event pages were read in full in the session that wrote
+the code; the system error code list was read from a Learn search excerpt of the page; the
+other facts were read on Learn earlier the same day by the research step of this row and are
+used as that step recorded them. In the session that fixed the review findings, the
+`StdRegProv`, `GetStringValue`, `GetExpandedStringValue`, `WbemErrorEnum` and
+`Remove-CimSession` pages were read in full, and the capacity planning figures and the error
+code names 1, 2 and 5 from Learn search excerpts of their pages.
+
+**Measured, not published.** On 2026-11-13, on one Windows 11 (build 26100) workstation that
+is not a domain controller, over a local CIM session and a DCOM session to itself, under
+Windows PowerShell 5.1 and PowerShell 7.6, `GetStringValue` and `GetExpandedStringValue` each returned: 0 for a string
+value that exists; 1 for a value that does not exist under a key that does; 2 for a key that
+does not exist; 5 for a key the account may not read; 2147749893 (`0x80041005`) for a value
+that is a `REG_DWORD`. Nothing was written, and no domain controller was contacted. On the
+same two editions `ConvertFrom-Json` returned the last value for a key written twice, and
+refused keys that differ only by case. The seam function was also run once against that
+workstation itself, before and after the fix, with a `WhatIf` preference set: one CIM session
+was left open before, none after, and the three values came back 2, 2 and 1 (the workstation
+has no `NTDS\Parameters` key, and a `Netlogon\Parameters` key with no `SysVol` value). That is
+the only time any part of this section has met a real provider, and it was not a DC.
+
+**Not verified. Each of these is something Microsoft does not publish, or that only a real DC
+can show.**
+
+- That `Win32_Volume.Name` holds the mount path (`C:\`, `D:\Mount\NTDS\`). Learn describes it
+  only as "Label by which the object is known". The mapping rests on it. If a real DC returns
+  something else, the affected roles report `Not Assessed` naming the volumes returned.
+- The registry type of the three values, and what `GetStringValue` returns for a
+  `REG_EXPAND_SZ` value.
+- Which return code the provider gives for an absent value, an absent key or a refusal **on a
+  domain controller**. 1 and 2 are read as measured on one workstation, 5 by its WinError.h
+  name; Microsoft publishes none of it. Not measured: Windows Server, a DC, a remote session
+  over WinRM or DCOM. Any other code is quoted, not interpreted.
+- That the section's own per-domain enumeration (`Get-ADDomainController -Filter * -Server
+  <domain>`) returns every DC of a domain on a real forest. It is the call the DC inventory
+  already makes; it has run only against a stub here.
+- The rights needed. "Administrators" for remote WMI is Microsoft's default; the registry
+  permission `StdRegProv` needs on the two keys is not published.
+- Whether Windows PowerShell 5.1 applies a type adapter to `Win32_Volume` properties. The raw
+  value is read first in case it does.
+- Whether `Win32_Volume.FreeSpace` is affected by disk quotas for the account that asks.
+- How a CIM operation behaves under the timeout over DCOM. One DC involves up to seven
+  operations per transport.
+- SYSVOL is judged on the volume of the path the `SysVol` value names. Whether DFSR staging or
+  a junction target sits on another volume is not examined (PORT-PLAN C2c).
+
+**Not done, and recorded as plan rows.** Free space against the 110 % of `ntds.dit` figure
+(C2a). Telling an absent value from an absent key, and reading the value's type, which needs
+`EnumValues` - not a `Get*` method (C2b). `DSA Working Directory` and the other SYSVOL
+locations (C2c). Moving the Exchange SE and DC system tables into the new file (C2d).
+
 ### Fixed — 2026-11-13 (two dcdiag tests in every default run changed state, tool v1.18.0)
 
 **PORT-PLAN H20. This changes what a default run tests. Read this before comparing a v1.18.0
