@@ -38,6 +38,7 @@ Extracted from
 | Dangerous ACLs | Non-default principals holding DCSync rights on the domain head |
 | Kerberos exposure | Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation |
 | DC hardening | Print Spooler, SMBv1, LDAP signing requirement (remote CIM / registry) |
+| **DC system** | `-Sections DcSystem`. **OS lifecycle**: each DC's operating system against Microsoft's extended support end date, from a versioned table. Past the date is a `Fail` whose text says whether an Extended Security Updates (ESU) programme is still running, has also ended, or was never published — and always that **ESU enrolment is not assessed**. An OS the table does not list, or one that could not be read, is `Not Assessed` with the raw values, never `Pass`. Reads only the directory, so it needs no rights on any DC. **Patch level**: per DC, OS build, uptime and the latest update install date over remote CIM. This half is **inventory** (`Info` or `Not Assessed`, never `Pass`): Microsoft publishes no maximum uptime or update age for a DC, so none is applied. Unreachable, access denied and other read failures are three different results |
 | Resilience | Directory backup status (`repadmin /showbackup`), time sync (`w32tm`), DC count, duplicate SPNs |
 | **Recovery: DNS vs AD** | DC locator SRV records compared against the DCs the directory actually contains — **on every DC's DNS server separately**, with a divergence summary ("3 of 7 answering servers advertise a DC that no longer exists"); plus the PDC locator record per server |
 | **Recovery: DSA CNAMEs** | Per-DC `<DSA-GUID>._msdcs` alias verification (missing / wrong target, per DNS server) — the usual cause of RPC 1722 after metadata cleanup or restore — and orphaned NTDS Settings objects |
@@ -75,7 +76,9 @@ mapped, never invented.
 ## Permissions
 
 Domain read access is enough for most sections. Trust verification, remote DC hardening
-checks (CIM / registry) and `dcdiag` need administrative rights on the domain controllers.
+checks (CIM / registry), the patch-level half of `DcSystem` (CIM) and `dcdiag` need
+administrative rights on the domain controllers. The OS lifecycle half of `DcSystem` needs
+domain read only.
 
 ## Usage
 
@@ -190,6 +193,68 @@ cite the file rather than Microsoft Learn.
 object versions, the requirement that each Exchange site hold a writeable global catalog,
 Exchange server inventory and coexistence build levels are out of scope here and belong to
 `ExchangeAssessment`. The section says so in its own output rather than leaving you to infer it.
+
+## DC operating system lifecycle and patch level
+
+`-Sections DomainControllers,DcSystem` (or the default `All`). The lifecycle verdict reads the
+operating system the `DomainControllers` section collected, so name both.
+
+| Release | Extended support ends | ESU programme ends |
+| --- | --- | --- |
+| Windows Server 2025 | 2034-11-14 | not published |
+| Windows Server 2022 | 2031-10-14 | not published |
+| Windows Server 2019 | 2029-01-09 | not published |
+| Windows Server 2016 | 2027-01-12 | 2030-01-08 |
+| Windows Server 2012 R2, 2012 | 2023-10-10 | 2026-10-13 |
+
+Dates are from the
+[Windows Server release information](https://learn.microsoft.com/windows-server/get-started/windows-server-release-info)
+and [Extended Security Updates FAQ](https://learn.microsoft.com/lifecycle/faq/extended-security-updates)
+pages, read 2026-11-13. The end date itself counts as supported; the day after is past. The
+tool does not warn ahead of a date: a DC is `Pass` until the date and `Fail` after it, and the
+`Pass` text states the date.
+
+A release is identified only when its name and its build number agree. A build number alone is
+not enough: the Semi-Annual Channel release "Windows Server, version 1809" shares build 17763
+with Windows Server 2019 and does not share its dates. A DC whose name and build point at
+different releases, or whose name is not recognised, reports `Not Assessed` with both raw
+values. Where the version carries no build, or the table lists none (2012, 2012 R2), the name
+decides. Windows Server 2008 R2 and older are not in the table and report `Not Assessed`; add
+them, or a release newer than this build knows, with a JSON file:
+
+```json
+{
+  "OsLifecycle": [
+    { "Label": "Windows Server 2025", "Build": 26100, "Pattern": "(?i)windows server\\s*2025",
+      "ExtendedEnd": "2034-11-14", "EsuEnd": null }
+  ]
+}
+```
+
+```powershell
+.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -Sections DomainControllers,DcSystem `
+    -DcSystemConfigPath C:\Scripts\dc-system.json
+```
+
+A file that supplies `OsLifecycle` replaces the whole list, so include every release you want
+judged. The file must be one JSON object, and its only keys are `OsLifecycle`, `WsmanPort` and
+`RpcPort`. Anything else stops the run: a missing or malformed file, a top-level array, an
+empty object, a misspelt key, a `null` value, a row with a bad date or nothing to match on, or
+a port that is not a port. A finding cites your file for its dates only when the file supplied
+them.
+
+The patch-level rows need local Administrators rights on each DC. They try WinRM (5985) first
+and DCOM (RPC 135) second, and each DC is probed once per port. Each CIM operation is given
+`-ExternalToolTimeoutSeconds` as its timeout; one DC involves up to three operations per
+transport, so a DC that answers slowly on both can take several times that value. How DCOM
+behaves under that timeout has not been measured. Two limits to keep in mind when reading the
+rows:
+
+- The latest update date comes from `Win32_QuickFixEngineering`, which Microsoft documents as
+  listing only updates supplied by Component Based Servicing. It is the latest of those.
+- That class returns install dates as text with no stated culture. A date such as `11/10/2026`
+  is read only when another record from the same DC proves the day/month order; otherwise the
+  row says how many records could not be read, and does not guess.
 
 ## Verdict model
 

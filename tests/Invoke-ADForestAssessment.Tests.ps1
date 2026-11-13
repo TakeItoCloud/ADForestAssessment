@@ -2250,3 +2250,571 @@ Describe 'Cross-domain DC enrichment (live four-domain forest, 2026-09-26)' {
         }
     }
 }
+
+Describe 'DC system: OS lifecycle and patch level (C1)' {
+    BeforeAll {
+        $script:Dsc = $script:Config.DcSystem
+        $script:Life = $script:Dsc.OsLifecycle
+        $script:Today = [datetime]'2026-11-13'
+        # Held in a variable: PSAvoidUsingComputerNameHardcoded flags a literal -ComputerName.
+        $script:C1Dc = 'dc1.contoso.com'
+        function Get-C1Row {
+            param($Rows, [string]$Item)
+            $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
+        function New-C1Dc {
+            param([string]$Name, [string]$Os, [string]$Ver, [string]$Err = '')
+            [pscustomobject]@{ Scope = 'contoso.com'; HostName = $Name; OperatingSystem = $Os; OperatingSystemVersion = $Ver; EnrichmentError = $Err }
+        }
+    }
+
+    Context 'Section wiring' {
+        It 'is a value of the -Sections ValidateSet, read from the parsed parameter and not from the text' {
+            # A text match for 'DcSystem' passes on any of a dozen other uses of the word. The
+            # parameter attribute is what decides whether -Sections DcSystem binds at all.
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+            $param = @($ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $param.Count | Should -Be 1
+            $set = @($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+            $set.Count | Should -Be 1
+            $values = @($set[0].PositionalArguments | ForEach-Object { $_.Value })
+            $values | Should -Contain 'DcSystem'
+            $values | Should -Contain 'DomainControllers'   # non-vacuity: the list really was read
+        }
+        It 'has a branch in Invoke-Main' {
+            (Get-Content -LiteralPath $script:Target -Raw) | Should -Match "Test-SectionSelected 'DcSystem'"
+        }
+    }
+
+    Context 'Config table' {
+        It 'records its source and read date, and one row per supported release' {
+            [string]$script:Dsc.SourceUrl | Should -Match '^https://learn\.microsoft\.com/'
+            [string]$script:Dsc.ReadDate | Should -Match '^\d{4}-\d{2}-\d{2}$'
+            $labels = @($script:Life | ForEach-Object { [string]$_.Label })
+            # Declared population: the six releases the table is meant to hold.
+            foreach ($l in @('Windows Server 2025', 'Windows Server 2022', 'Windows Server 2019', 'Windows Server 2016', 'Windows Server 2012 R2', 'Windows Server 2012')) {
+                $labels | Should -Contain $l
+            }
+            $labels.Count | Should -Be 6
+        }
+        It 'holds $null, not a guessed date, where no ESU programme is published' {
+            foreach ($l in @('Windows Server 2025', 'Windows Server 2022', 'Windows Server 2019')) {
+                ($script:Life | Where-Object { $_.Label -eq $l }).EsuEnd | Should -BeNullOrEmpty -Because "$l has no published ESU end date"
+            }
+            ($script:Life | Where-Object { $_.Label -eq 'Windows Server 2016' }).EsuEnd | Should -Be '2030-01-08'
+        }
+    }
+
+    Context 'Get-AdfaOsBuild' {
+        It 'reads the build from the parenthesised part and nothing else' {
+            Get-AdfaOsBuild -OperatingSystemVersion '10.0 (17763)' | Should -Be 17763
+            Get-AdfaOsBuild -OperatingSystemVersion '6.3 (9600)' | Should -Be 9600
+            Get-AdfaOsBuild -OperatingSystemVersion '10.0' | Should -BeNullOrEmpty
+            Get-AdfaOsBuild -OperatingSystemVersion '' | Should -BeNullOrEmpty
+            Get-AdfaOsBuild -OperatingSystemVersion 'Not Assessed' | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'Get-AdfaOsLifecycleVerdict' {
+        It 'passes an OS inside extended support and states the end date' {
+            $v = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2019 Datacenter' -OperatingSystemVersion '10.0 (17763)' -Today $script:Today -Entries $script:Life
+            $v.Status | Should -Be 'Pass'
+            $v.Detail | Should -Match '2029-01-09'
+        }
+        It 'fails an OS past extended support whose ESU window is still open, and says ESU enrolment is not assessed' {
+            $after = [datetime]'2027-02-01'   # 2016: extended ended 2027-01-12, ESU runs to 2030-01-08
+            $v = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2016 Standard' -OperatingSystemVersion '10.0 (14393)' -Today $after -Entries $script:Life
+            $v.Status | Should -Be 'Fail'
+            $v.Detail | Should -Match '2027-01-12'
+            $v.Detail | Should -Match '2030-01-08'
+            $v.Detail | Should -Match 'not assessed'
+        }
+        It 'fails an OS whose ESU programme has also ended, and says so' {
+            $v = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2012 R2 Standard' -OperatingSystemVersion '6.3 (9600)' -Today $script:Today -Entries $script:Life
+            $v.Status | Should -Be 'Fail'
+            $v.Detail | Should -Match '2023-10-10'
+            $v.Detail | Should -Match 'ended on 2026-10-13'
+        }
+        It 'fails past extended support with no published ESU date, and says the date is not published' {
+            $far = [datetime]'2030-06-01'   # 2019: extended ended 2029-01-09, no ESU published
+            $v = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2019' -OperatingSystemVersion '10.0 (17763)' -Today $far -Entries $script:Life
+            $v.Status | Should -Be 'Fail'
+            $v.Detail | Should -Match 'ESU end date not published'
+        }
+        It 'treats the end date itself as still supported and the next day as past' {
+            $on = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2016' -OperatingSystemVersion '10.0 (14393)' -Today ([datetime]'2027-01-12') -Entries $script:Life
+            $on.Status | Should -Be 'Pass'
+            $next = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2016' -OperatingSystemVersion '10.0 (14393)' -Today ([datetime]'2027-01-13') -Entries $script:Life
+            $next.Status | Should -Be 'Fail'
+        }
+        It 'does not identify a release from the build alone: a Semi-Annual Channel DC sharing build 17763 is not passed as 2019' {
+            # "Windows Server, version 1809" reports no year in its name and shares build 17763
+            # with Windows Server 2019, whose dates are not its dates.
+            $v = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server Datacenter' -OperatingSystemVersion '10.0 (17763)' -Today $script:Today -Entries $script:Life
+            $v.Status | Should -Be 'Not Assessed'
+            $v.Detail | Should -Match 'Windows Server Datacenter'
+            $v.Detail | Should -Match '10\.0 \(17763\)'
+            $v.Detail | Should -Match 'build number alone does not identify'
+        }
+        It 'refuses to pick a side when the name and the build point at different releases' {
+            $v = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2012 R2 Standard' -OperatingSystemVersion '10.0 (26100)' -Today $script:Today -Entries $script:Life
+            $v.Status | Should -Be 'Not Assessed'   # by name alone this is a Fail, by build alone a Pass
+            $v.Detail | Should -Match 'Windows Server 2025'
+            $v.Detail | Should -Match 'Windows Server 2012 R2'
+            $w = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2019 Standard' -OperatingSystemVersion '10.0 (99999)' -Today $script:Today -Entries $script:Life
+            $w.Status | Should -Be 'Not Assessed'
+            $w.Detail | Should -Match '99999'
+        }
+        It 'identifies a release when name and build agree' {
+            $v = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2022 Datacenter' -OperatingSystemVersion '10.0 (20348)' -Today $script:Today -Entries $script:Life
+            $v.Status | Should -Be 'Pass'
+            $v.Detail | Should -Match 'Windows Server 2022 \('
+        }
+        It 'falls back to the name when the version carries no build, and keeps 2012 apart from 2012 R2' {
+            (Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2019' -OperatingSystemVersion '10.0' -Today $script:Today -Entries $script:Life).Status | Should -Be 'Pass'
+            (Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2012 Standard' -OperatingSystemVersion '6.2 (9200)' -Today $script:Today -Entries $script:Life).Detail | Should -Match 'Windows Server 2012 \('
+            (Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2012 R2 Standard' -OperatingSystemVersion '6.3 (9600)' -Today $script:Today -Entries $script:Life).Detail | Should -Match 'Windows Server 2012 R2 \('
+        }
+        It 'reports an OS that is not in the table as Not Assessed with the raw values, never Pass and never Fail' {
+            $v = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2008 R2 Enterprise' -OperatingSystemVersion '6.1 (7601)' -Today $script:Today -Entries $script:Life
+            $v.Status | Should -Be 'Not Assessed'
+            $v.Detail | Should -Match 'Windows Server 2008 R2 Enterprise'
+            $v.Detail | Should -Match '6\.1 \(7601\)'
+        }
+        It 'reports an unreadable OS as Not Assessed with the cause the inventory recorded' {
+            $v = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Not Assessed' -OperatingSystemVersion 'Not Assessed' -EnrichmentError 'Access is denied' -Today $script:Today -Entries $script:Life
+            $v.Status | Should -Be 'Not Assessed'
+            $v.Detail | Should -Match 'Access is denied'
+            (Get-AdfaOsLifecycleVerdict -OperatingSystem '' -OperatingSystemVersion '' -Today $script:Today -Entries $script:Life).Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'Get-AdfaDcOsLifecycle' {
+        It 'gives one row per DC, carries the domain as Scope, and handles a mixed set' {
+            $dcs = @(
+                (New-C1Dc 'dc1.contoso.com' 'Windows Server 2022 Standard' '10.0 (20348)'),
+                (New-C1Dc 'dc2.contoso.com' 'Windows Server 2012 R2 Standard' '6.3 (9600)'),
+                (New-C1Dc 'dc3.contoso.com' 'Not Assessed' 'Not Assessed' 'A referral was returned from the server')
+            )
+            $rows = @(Get-AdfaDcOsLifecycle -DomainControllers $dcs -Config $script:Dsc -Today $script:Today)
+            $rows.Count | Should -Be 3
+            (Get-C1Row $rows 'OS lifecycle: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C1Row $rows 'OS lifecycle: dc2.contoso.com').Status | Should -Be 'Fail'
+            $r3 = Get-C1Row $rows 'OS lifecycle: dc3.contoso.com'
+            $r3.Status | Should -Be 'Not Assessed'
+            $r3.Detail | Should -Match 'referral'
+            @($rows | Where-Object { $_.Scope -eq 'contoso.com' }).Count | Should -Be 3
+        }
+        It 'gives a domain whose inventory failed its own Not Assessed row, beside the DCs that were read' {
+            $dcs = @((New-C1Dc 'dc1.contoso.com' 'Windows Server 2022 Standard' '10.0 (20348)'))
+            $failed = @([pscustomobject]@{ Domain = 'child.contoso.com'; Error = 'The server is not operational' })
+            $rows = @(Get-AdfaDcOsLifecycle -DomainControllers $dcs -Config $script:Dsc -Today $script:Today -InventoryFailures $failed)
+            $rows.Count | Should -Be 2
+            $gap = Get-C1Row $rows 'OS lifecycle - child.contoso.com'
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Scope | Should -Be 'child.contoso.com'
+            $gap.Detail | Should -Match 'not operational'
+            (Get-C1Row $rows 'OS lifecycle: dc1.contoso.com').Status | Should -Be 'Pass'
+        }
+        It 'cites both source pages, because neither holds every date' {
+            $row = @(Get-AdfaDcOsLifecycle -DomainControllers @((New-C1Dc 'dc1.contoso.com' 'Windows Server 2019' '10.0 (17763)')) -Config $script:Dsc -Today $script:Today)[0]
+            $row.Detail | Should -Match 'windows-server-release-info'
+            $row.Detail | Should -Match 'extended-security-updates'
+        }
+        It 'reports Not Assessed, naming the section to add, when there is no DC inventory' {
+            $rows = @(Get-AdfaDcOsLifecycle -DomainControllers @() -Config $script:Dsc -Today $script:Today)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match 'DomainControllers'
+        }
+        It 'gives a failing DC a recommendation and does not let a later generic entry answer for it' {
+            $dcs = @((New-C1Dc 'dc2.contoso.com' 'Windows Server 2012 R2 Standard' '6.3 (9600)'))
+            $row = @(Get-AdfaDcOsLifecycle -DomainControllers $dcs -Config $script:Dsc -Today $script:Today)[0]
+            $rec = Get-AdfaRecommendation -Section 'DC System' -Item ([string]$row.Item) -Detail ([string]$row.Detail)
+            $rec | Should -Match 'supported Windows Server'
+            $rec | Should -Not -Match 'backup|scavenging|w32tm'
+        }
+    }
+
+    Context 'Hotfix install dates' {
+        It 'converts a DateTime, an ISO date and a hex FILETIME' {
+            ConvertTo-AdfaHotfixDate -Value ([datetime]'2026-11-10') | Should -Be ([datetime]'2026-11-10')
+            ConvertTo-AdfaHotfixDate -Value '2026-11-10' | Should -Be ([datetime]'2026-11-10')
+            $ft = ([datetime]::SpecifyKind([datetime]'2026-11-10', 'Utc')).ToFileTimeUtc().ToString('x16')
+            (ConvertTo-AdfaHotfixDate -Value $ft).ToString('yyyy-MM-dd') | Should -Be '2026-11-10'
+        }
+        It 'refuses to guess an ambiguous day/month order, and returns nothing for junk' {
+            ConvertTo-AdfaHotfixDate -Value '11/10/2026' | Should -BeNullOrEmpty
+            ConvertTo-AdfaHotfixDate -Value '11/10/2026' -Order 'MonthFirst' | Should -Be ([datetime]'2026-11-10')
+            ConvertTo-AdfaHotfixDate -Value '11/10/2026' -Order 'DayFirst' | Should -Be ([datetime]'2026-10-11')
+            ConvertTo-AdfaHotfixDate -Value '23-10-2013' | Should -Be ([datetime]'2013-10-23')   # day > 12 settles it
+            ConvertTo-AdfaHotfixDate -Value '10/23/2013' | Should -Be ([datetime]'2013-10-23')
+            foreach ($junk in @('', $null, 'abc', '13/13/2020', '0/0/0')) { ConvertTo-AdfaHotfixDate -Value $junk | Should -BeNullOrEmpty }
+        }
+        It 'infers the order for a whole set from its unambiguous members, and refuses when they disagree' {
+            Get-AdfaHotfixDateOrder -Values @('11/10/2026', '10/23/2026') | Should -Be 'MonthFirst'
+            Get-AdfaHotfixDateOrder -Values @('11/10/2026', '23/10/2026') | Should -Be 'DayFirst'
+            Get-AdfaHotfixDateOrder -Values @('11/10/2026', '10/11/2026') | Should -Be 'Unknown'
+            Get-AdfaHotfixDateOrder -Values @('10/23/2026', '23/10/2026') | Should -Be 'Unknown'
+        }
+        It 'summarises a set: latest date, and how many could not be read' {
+            $s = Get-AdfaHotfixSummary -InstalledOn @('11/10/2026', '10/23/2026', 'garbage')
+            $s.Total | Should -Be 3
+            $s.Parsed | Should -Be 2
+            $s.Unparsed | Should -Be 1
+            $s.Latest.ToString('yyyy-MM-dd') | Should -Be '2026-11-10'
+            $none = Get-AdfaHotfixSummary -InstalledOn @()
+            $none.Total | Should -Be 0
+            $none.Latest | Should -BeNullOrEmpty
+            $amb = Get-AdfaHotfixSummary -InstalledOn @('11/10/2026', '01/02/2026')
+            $amb.Parsed | Should -Be 0
+            $amb.Latest | Should -BeNullOrEmpty
+            (Get-AdfaHotfixSummary -InstalledOn $null).Total | Should -Be 0
+        }
+    }
+
+    Context 'Remote read failure classes' {
+        It 'separates access denied from every other failure' {
+            Get-AdfaRemoteReadErrorClass -Message 'Access is denied.' | Should -Be 'AccessDenied'
+            Get-AdfaRemoteReadErrorClass -Message 'Access denied ' | Should -Be 'AccessDenied'
+            Get-AdfaRemoteReadErrorClass -Message 'HRESULT 0x80070005' | Should -Be 'AccessDenied'
+            Get-AdfaRemoteReadErrorClass -Message 'The WinRM client cannot process the request.' | Should -Be 'Error'
+            Get-AdfaRemoteReadErrorClass -Message '' | Should -Be 'Error'
+        }
+        It 'recognises a refusal by its error code when the message is not in English' {
+            Get-AdfaRemoteReadErrorClass -Message 'Acesso negado.' | Should -Be 'Error'   # text alone cannot tell
+            Get-AdfaRemoteReadErrorClass -Message 'Acesso negado.' -ErrorCode 'AccessDenied' | Should -Be 'AccessDenied'
+            Get-AdfaRemoteReadErrorClass -Message 'Zugriff verweigert' -ErrorCode 'Failed' | Should -Be 'Error'
+        }
+    }
+
+    Context 'Test-AdfaDcPort probes a DC once per port' {
+        It 'asks the network once and answers from the cache afterwards' {
+            $script:C1Probes = 0
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C1Probes++; return ($Port -eq 135) }
+            Clear-AdfaDcPortCache
+            Test-AdfaDcPort -ComputerName $script:C1Dc -Port 135 -TimeoutMs 100 | Should -BeTrue
+            Test-AdfaDcPort -ComputerName $script:C1Dc.ToUpperInvariant() -Port 135 -TimeoutMs 100 | Should -BeTrue
+            Test-AdfaDcPort -ComputerName $script:C1Dc -Port 5985 -TimeoutMs 100 | Should -BeFalse
+            Test-AdfaDcPort -ComputerName $script:C1Dc -Port 5985 -TimeoutMs 100 | Should -BeFalse
+            $script:C1Probes | Should -Be 2
+            Clear-AdfaDcPortCache
+            Test-AdfaDcPort -ComputerName $script:C1Dc -Port 135 -TimeoutMs 100 | Out-Null
+            $script:C1Probes | Should -Be 3
+        }
+    }
+
+    Context 'Get-AdfaDcPatchLevel' {
+        BeforeEach { Clear-AdfaDcPortCache }
+        It 'reports build, uptime and last update for a DC that answers' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                [pscustomobject]@{ Ok = $true; Protocol = $Protocol; LastBootUpTime = [datetime]'2026-11-01 06:00:00'; BuildNumber = '20348'; Version = '10.0.20348'
+                    HotfixOk = $true; InstalledOn = @('11/10/2026', '10/23/2026'); Error = ''; HotfixError = '' }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @('dc1.contoso.com') -Config $script:Dsc -Now ([datetime]'2026-11-13 06:00:00'))
+            $os = Get-C1Row $rows 'OS build and uptime: dc1.contoso.com'
+            $os.Status | Should -Be 'Info'
+            $os.Detail | Should -Match '20348'
+            $os.Detail | Should -Match '12 day'
+            $hf = Get-C1Row $rows 'Last update installed: dc1.contoso.com'
+            $hf.Status | Should -Be 'Info'
+            $hf.Detail | Should -Match '2026-11-10'
+        }
+        It 'reports Not Assessed, never a clean result, when there are no DCs' {
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @() -Config $script:Dsc -Now $script:Today)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'reports an unreachable DC as unreachable, without attempting a read' {
+            $script:C1Reads = 0
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $false }
+            function Get-AdfaDcSystemRaw { param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec) $script:C1Reads++ }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @('dc9.contoso.com') -Config $script:Dsc -Now $script:Today)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '(?i)unreachable'
+            $rows[0].Detail | Should -Match '5985'
+            $script:C1Reads | Should -Be 0
+        }
+        It 'reports access denied as access denied, not as unreachable' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                [pscustomobject]@{ Ok = $false; Protocol = $Protocol; LastBootUpTime = $null; BuildNumber = ''; Version = ''; HotfixOk = $false; InstalledOn = @(); Error = 'Access is denied.'; HotfixError = '' }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @('dc1.contoso.com') -Config $script:Dsc -Now $script:Today)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '(?i)access denied'
+            $rows[0].Detail | Should -Not -Match '(?i)unreachable'
+            $rows[0].Detail | Should -Match 'Access is denied\.'
+        }
+        It 'handles a mixed set: one DC read, one unreachable, one with no update records' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($ComputerName -ne 'dc2.contoso.com') }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                $dates = @('2026-11-10')
+                if ($ComputerName -eq 'dc3.contoso.com') { $dates = @() }
+                [pscustomobject]@{ Ok = $true; Protocol = $Protocol; LastBootUpTime = [datetime]'2026-11-12'; BuildNumber = '17763'; Version = '10.0.17763'
+                    HotfixOk = $true; InstalledOn = $dates; Error = ''; HotfixError = '' }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @('dc1.contoso.com', 'dc2.contoso.com', 'dc3.contoso.com') -Config $script:Dsc -Now $script:Today)
+            (Get-C1Row $rows 'Last update installed: dc1.contoso.com').Status | Should -Be 'Info'
+            (Get-C1Row $rows 'Patch level: dc2.contoso.com').Status | Should -Be 'Not Assessed'
+            $zero = Get-C1Row $rows 'Last update installed: dc3.contoso.com'
+            $zero.Status | Should -Be 'Not Assessed'
+            $zero.Detail | Should -Match '0 records'
+            (Get-C1Row $rows 'OS build and uptime: dc3.contoso.com').Status | Should -Be 'Info'
+            # No row in this section is ever a Pass: it is inventory.
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'tries WinRM first and DCOM second, and reports which one answered' {
+            $script:C1Calls = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                $script:C1Calls += $Protocol
+                if ($Protocol -eq 'Wsman') {
+                    return [pscustomobject]@{ Ok = $false; Protocol = $Protocol; LastBootUpTime = $null; BuildNumber = ''; Version = ''; HotfixOk = $false; InstalledOn = @(); Error = 'The WinRM client cannot process the request.'; ErrorCode = 'Failed'; HotfixError = '' }
+                }
+                [pscustomobject]@{ Ok = $true; Protocol = $Protocol; LastBootUpTime = [datetime]'2026-11-12'; BuildNumber = '17763'; Version = '10.0.17763'
+                    HotfixOk = $true; InstalledOn = @('2026-11-10'); Error = ''; ErrorCode = ''; HotfixError = '' }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @('dc1.contoso.com') -Config $script:Dsc -Now $script:Today)
+            ($script:C1Calls -join ',') | Should -Be 'Wsman,Dcom'
+            (Get-C1Row $rows 'OS build and uptime: dc1.contoso.com').Detail | Should -Match 'Read over Dcom'
+        }
+        It 'does not retry a refusal over the second transport, even when the refusal is not in English' {
+            $script:C1Calls = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                $script:C1Calls += $Protocol
+                [pscustomobject]@{ Ok = $false; Protocol = $Protocol; LastBootUpTime = $null; BuildNumber = ''; Version = ''; HotfixOk = $false; InstalledOn = @(); Error = 'Acesso negado.'; ErrorCode = 'AccessDenied'; HotfixError = '' }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @('dc1.contoso.com') -Config $script:Dsc -Now $script:Today)
+            ($script:C1Calls -join ',') | Should -Be 'Wsman'
+            $rows[0].Detail | Should -Match '(?i)^Access denied'
+            $rows[0].Detail | Should -Match 'Acesso negado'
+        }
+        It 'reports any other failure as a read failure, with both attempts quoted, and not as a refusal' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                [pscustomobject]@{ Ok = $false; Protocol = $Protocol; LastBootUpTime = $null; BuildNumber = ''; Version = ''; HotfixOk = $false; InstalledOn = @(); Error = "The RPC server is unavailable ($Protocol)."; ErrorCode = 'Failed'; HotfixError = '' }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @('dc1.contoso.com') -Config $script:Dsc -Now $script:Today)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '^Read failed'
+            $rows[0].Detail | Should -Not -Match '^Access denied'
+            $rows[0].Detail | Should -Match 'unavailable \(Wsman\)'
+            $rows[0].Detail | Should -Match 'unavailable \(Dcom\)'
+        }
+        It 'uses only the transport whose port answered' {
+            $script:C1Calls = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($Port -eq 135) }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                $script:C1Calls += $Protocol
+                [pscustomobject]@{ Ok = $true; Protocol = $Protocol; LastBootUpTime = [datetime]'2026-11-12'; BuildNumber = '17763'; Version = '10.0.17763'
+                    HotfixOk = $true; InstalledOn = @('2026-11-10'); Error = ''; ErrorCode = ''; HotfixError = '' }
+            }
+            Get-AdfaDcPatchLevel -DomainControllers @('dc1.contoso.com') -Config $script:Dsc -Now $script:Today | Out-Null
+            ($script:C1Calls -join ',') | Should -Be 'Dcom'
+        }
+        It 'reports Not Assessed, not Info, when the class answered but returned neither build nor boot time' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                [pscustomobject]@{ Ok = $true; Protocol = $Protocol; LastBootUpTime = $null; BuildNumber = ''; Version = ''; HotfixOk = $true; InstalledOn = @('2026-11-10'); Error = ''; ErrorCode = ''; HotfixError = '' }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @('dc1.contoso.com') -Config $script:Dsc -Now $script:Today)
+            (Get-C1Row $rows 'OS build and uptime: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+        }
+        It 'never grades: every row in every outcome above is Info or Not Assessed' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($ComputerName -ne 'dc2.contoso.com') }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                if ($ComputerName -eq 'dc3.contoso.com') { return [pscustomobject]@{ Ok = $false; Protocol = $Protocol; LastBootUpTime = $null; BuildNumber = ''; Version = ''; HotfixOk = $false; InstalledOn = @(); Error = 'Access is denied.'; ErrorCode = 'AccessDenied'; HotfixError = '' } }
+                $dates = @('11/10/2026', '10/23/2026')
+                if ($ComputerName -eq 'dc4.contoso.com') { $dates = @() }
+                if ($ComputerName -eq 'dc5.contoso.com') { $dates = @('11/10/2026') }
+                [pscustomobject]@{ Ok = $true; Protocol = $Protocol; LastBootUpTime = [datetime]'2020-01-01'; BuildNumber = '14393'; Version = '10.0.14393'
+                    HotfixOk = $true; InstalledOn = $dates; Error = ''; ErrorCode = ''; HotfixError = '' }
+            }
+            $names = @('dc1.contoso.com', 'dc2.contoso.com', 'dc3.contoso.com', 'dc4.contoso.com', 'dc5.contoso.com')
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers $names -Config $script:Dsc -Now $script:Today)
+            # Declared population: 2 rows for each of dc1, dc4, dc5 that were read; 1 each for dc2, dc3.
+            $rows.Count | Should -Be 8
+            @($rows | Where-Object { @('Info', 'Not Assessed') -notcontains [string]$_.Status }).Count | Should -Be 0
+            # A six-year uptime is still Info: no threshold exists to grade it against.
+            (Get-C1Row $rows 'OS build and uptime: dc1.contoso.com').Status | Should -Be 'Info'
+        }
+        It 'keeps the OS row when only the update query failed, and says which half failed' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                [pscustomobject]@{ Ok = $true; Protocol = $Protocol; LastBootUpTime = [datetime]'2026-11-12'; BuildNumber = '26100'; Version = '10.0.26100'
+                    HotfixOk = $false; InstalledOn = @(); Error = ''; HotfixError = 'The operation has timed out.' }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @('dc1.contoso.com') -Config $script:Dsc -Now $script:Today)
+            (Get-C1Row $rows 'OS build and uptime: dc1.contoso.com').Status | Should -Be 'Info'
+            $hf = Get-C1Row $rows 'Last update installed: dc1.contoso.com'
+            $hf.Status | Should -Be 'Not Assessed'
+            $hf.Detail | Should -Match 'timed out'
+        }
+    }
+
+    Context 'Get-AdfaDcSystemRaw (the CIM seam)' {
+        BeforeAll {
+            function New-CimSessionOption { param([string]$Protocol) [pscustomobject]@{ Protocol = $Protocol } }
+            function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) }
+        }
+        It 'returns the two classes in one shape, and closes the session' {
+            $script:C1Closed = 0
+            function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction) [pscustomobject]@{ ComputerName = $ComputerName } }
+            function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) $script:C1Closed++ }
+            function Get-CimInstance {
+                param($CimSession, [string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $ErrorAction)
+                if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [datetime]'2026-11-01'; BuildNumber = '17763'; Version = '10.0.17763' } }
+                return @([pscustomobject]@{ HotFixID = 'KB1'; InstalledOn = [datetime]'2026-11-10' }, [pscustomobject]@{ HotFixID = 'KB2'; InstalledOn = $null })
+            }
+            $r = Get-AdfaDcSystemRaw -ComputerName $script:C1Dc -Protocol 'Wsman' -OperationTimeoutSec 30
+            $r.Ok | Should -BeTrue
+            $r.BuildNumber | Should -Be '17763'
+            $r.HotfixOk | Should -BeTrue
+            @($r.InstalledOn).Count | Should -Be 2
+            $script:C1Closed | Should -Be 1
+        }
+        It 'reads the RAW InstalledOn, not the DateTime the 5.1 type adapter puts in its place' {
+            # Shape measured on a real Get-CimInstance result under Windows PowerShell 5.1: the
+            # InstalledOn member is a DateTime produced by [DateTime]::Parse, and the string the
+            # DC actually returned is in CimInstanceProperties. The adapter guesses month-first
+            # and yields nothing for a day-first date, so only the raw value may be used.
+            function New-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ ComputerName = 'x' } }
+            function Get-CimInstance {
+                param($CimSession, [string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $ErrorAction)
+                if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [datetime]'2026-11-01'; BuildNumber = '17763'; Version = '10.0.17763' } }
+                return @(
+                    [pscustomobject]@{ HotFixID = 'KB1'; InstalledOn = [datetime]'2026-11-10'; CimInstanceProperties = @{ InstalledOn = [pscustomobject]@{ Value = '10/11/2026' } } }
+                    [pscustomobject]@{ HotFixID = 'KB2'; InstalledOn = $null; CimInstanceProperties = @{ InstalledOn = [pscustomobject]@{ Value = '23/11/2026' } } }
+                )
+            }
+            $r = Get-AdfaDcSystemRaw -ComputerName $script:C1Dc -Protocol 'Wsman' -OperationTimeoutSec 30
+            @($r.InstalledOn) | Should -Be @('10/11/2026', '23/11/2026')
+            # And the set then proves day-first, which the adapter's guess contradicted.
+            $s = Get-AdfaHotfixSummary -InstalledOn @($r.InstalledOn)
+            $s.Order | Should -Be 'DayFirst'
+            $s.Latest.ToString('yyyy-MM-dd') | Should -Be '2026-11-23'
+        }
+        It 'asks for a DCOM session option only for DCOM' {
+            $script:C1Opts = @()
+            function New-CimSessionOption { param([string]$Protocol) [pscustomobject]@{ Protocol = $Protocol } }
+            function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
+                $p = 'none'; if ($null -ne $SessionOption) { $p = [string]$SessionOption.Protocol }; $script:C1Opts += $p; [pscustomobject]@{ ComputerName = $ComputerName } }
+            function Get-CimInstance { param($CimSession, [string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $ErrorAction)
+                if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [datetime]'2026-11-01'; BuildNumber = '17763'; Version = '10.0.17763' } }
+                return @() }
+            Get-AdfaDcSystemRaw -ComputerName $script:C1Dc -Protocol 'Wsman' -OperationTimeoutSec 30 | Out-Null
+            Get-AdfaDcSystemRaw -ComputerName $script:C1Dc -Protocol 'Dcom' -OperationTimeoutSec 30 | Out-Null
+            ($script:C1Opts -join ',') | Should -Be 'none,Dcom'
+        }
+        It 'carries the CIM error code of a failure, for the refusal check' {
+            function New-CimSession { param([Parameter(ValueFromRemainingArguments)]$a)
+                $e = New-Object System.Exception 'Acesso negado.'
+                $e | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+                throw $e }
+            $r = Get-AdfaDcSystemRaw -ComputerName $script:C1Dc -Protocol 'Wsman' -OperationTimeoutSec 30
+            $r.Ok | Should -BeFalse
+            $r.ErrorCode | Should -Be 'AccessDenied'
+        }
+        It 'returns the error text, not an exception, when the session cannot be opened' {
+            function New-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) throw 'Access is denied.' }
+            $r = Get-AdfaDcSystemRaw -ComputerName $script:C1Dc -Protocol 'Wsman' -OperationTimeoutSec 30
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Match 'Access is denied'
+        }
+        It 'keeps the OS data when only the update class fails' {
+            function New-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ ComputerName = 'x' } }
+            function Get-CimInstance {
+                param($CimSession, [string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $ErrorAction)
+                if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [datetime]'2026-11-01'; BuildNumber = '17763'; Version = '10.0.17763' } }
+                throw 'The operation has timed out.'
+            }
+            $r = Get-AdfaDcSystemRaw -ComputerName $script:C1Dc -Protocol 'Dcom' -OperationTimeoutSec 30
+            $r.Ok | Should -BeTrue
+            $r.HotfixOk | Should -BeFalse
+            $r.HotfixError | Should -Match 'timed out'
+        }
+    }
+
+    Context 'Config override' {
+        It 'replaces the lifecycle table and rewrites provenance' {
+            $o = '{ "OsLifecycle": [ { "Label": "Windows Server 2099", "Build": 99999, "Pattern": "(?i)windows server\\s*2099", "ExtendedEnd": "2099-01-01", "EsuEnd": null } ] }' | ConvertFrom-Json
+            $m = Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override $o -OverrideSource 'C:\cfg\dcsystem.json'
+            @($m.OsLifecycle).Count | Should -Be 1
+            [string]$m.SourceUrl | Should -Be 'C:\cfg\dcsystem.json'
+            $v = Get-AdfaOsLifecycleVerdict -OperatingSystem 'Windows Server 2099 Standard' -OperatingSystemVersion '10.0 (99999)' -Today $script:Today -Entries $m.OsLifecycle
+            $v.Status | Should -Be 'Pass'
+            # The built-in table is untouched.
+            @($script:Dsc.OsLifecycle).Count | Should -Be 6
+        }
+        It 'refuses an empty table, a bad date, and a row that can match nothing' {
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ OsLifecycle = @() } } | Should -Throw
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ OsLifecycle = @(@{ Label = 'X'; Build = 1; ExtendedEnd = 'next year' }) } } | Should -Throw -ExpectedMessage '*ExtendedEnd*'
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ OsLifecycle = @(@{ Label = 'X'; ExtendedEnd = '2030-01-01' }) } } | Should -Throw -ExpectedMessage '*Build*'
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ OsLifecycle = @(@{ Label = 'X'; Build = 1; ExtendedEnd = '2030-01-01'; EsuEnd = 'soon' }) } } | Should -Throw -ExpectedMessage '*EsuEnd*'
+        }
+        It 'refuses an override that is not one object with known keys' {
+            # Each of these used to be accepted: the built-in dates were judged and the report
+            # cited the operator's file for them.
+            # Built as an array directly: Windows PowerShell 5.1 hands a top-level JSON array to the
+            # merge as one Object[], while PowerShell 7 unrolls it, so the JSON text would test
+            # a different thing on each.
+            $asArray = @([pscustomobject]@{ OsLifecycle = @() }, [pscustomobject]@{ OsLifecycle = @() })
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override $asArray -OverrideSource 'C:\cfg\x.json' } | Should -Throw -ExpectedMessage '*single object*'
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override 'abc' } | Should -Throw -ExpectedMessage '*single object*'
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override 5 } | Should -Throw -ExpectedMessage '*single object*'
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override ('{}' | ConvertFrom-Json) } | Should -Throw -ExpectedMessage '*empty object*'
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override ('{ "OsLifecycles": [] }' | ConvertFrom-Json) } | Should -Throw -ExpectedMessage '*OsLifecycles*'
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override ('{ "OsLifecycle": null }' | ConvertFrom-Json) } | Should -Throw -ExpectedMessage '*null*'
+        }
+        It 'refuses a port that is not a port' {
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ WsmanPort = 'abc' } } | Should -Throw -ExpectedMessage '*WsmanPort*'
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ RpcPort = -1 } } | Should -Throw -ExpectedMessage '*RpcPort*'
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ RpcPort = 70000 } } | Should -Throw -ExpectedMessage '*RpcPort*'
+        }
+        It 'goes on citing Microsoft when the override changes a port and leaves the dates alone' {
+            $m = Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ WsmanPort = 5986 } -OverrideSource 'C:\cfg\dcsystem.json'
+            $m.WsmanPort | Should -Be 5986
+            [string]$m.SourceUrl | Should -Match '^https://learn\.microsoft\.com/'
+            @($m.OsLifecycle).Count | Should -Be 6
+        }
+        It 'throws for a file holding JSON null, and names the file in any merge error' {
+            $f = Join-Path ([IO.Path]::GetTempPath()) ("adfa_dcs_{0}.json" -f [guid]::NewGuid().ToString('N'))
+            try {
+                'null' | Out-File -LiteralPath $f -Encoding UTF8
+                { Import-AdfaDcSystemConfig -BaseConfig $script:Dsc -Path $f } | Should -Throw -ExpectedMessage '*JSON null*'
+                '[]' | Out-File -LiteralPath $f -Encoding UTF8
+                { Import-AdfaDcSystemConfig -BaseConfig $script:Dsc -Path $f } | Should -Throw
+                '{ "Typo": 1 }' | Out-File -LiteralPath $f -Encoding UTF8
+                { Import-AdfaDcSystemConfig -BaseConfig $script:Dsc -Path $f } | Should -Throw -ExpectedMessage "*$([IO.Path]::GetFileName($f))*"
+            }
+            finally { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+        }
+        It 'throws for a missing or malformed file instead of falling back to the built-in table' {
+            { Import-AdfaDcSystemConfig -BaseConfig $script:Dsc -Path (Join-Path ([IO.Path]::GetTempPath()) 'adfa-no-such-dcsystem.json') } | Should -Throw
+            $bad = Join-Path ([IO.Path]::GetTempPath()) ("adfa_baddcs_{0}.json" -f [guid]::NewGuid().ToString('N'))
+            try {
+                'not json {' | Out-File -LiteralPath $bad -Encoding UTF8
+                { Import-AdfaDcSystemConfig -BaseConfig $script:Dsc -Path $bad } | Should -Throw
+            }
+            finally { Remove-Item $bad -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}

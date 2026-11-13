@@ -61,7 +61,29 @@ function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]
 function Get-ADComputer {
     param([string]$Identity, [string]$Server, [string[]]$Properties, [Parameter(ValueFromRemainingArguments)]$a)
     if ([string]::IsNullOrWhiteSpace($Server)) { throw 'A referral was returned from the server' }
-    [pscustomobject]@{ OperatingSystem='Windows Server 2019'; OperatingSystemVersion='10.0'; Enabled=$true; whenCreated=$now } }
+    [pscustomobject]@{ OperatingSystem='Windows Server 2019'; OperatingSystemVersion='10.0 (17763)'; Enabled=$true; whenCreated=$now } }
+# C1 (DcSystem): the CIM cmdlets, stubbed in the shape the real ones return for the two classes
+# the section reads. Any other class throws, so the DcHardening SMB read keeps degrading to
+# Not Assessed exactly as it did before these stubs existed, instead of quietly "succeeding"
+# against an object that has none of its properties. InstalledOn is given as the string Learn
+# documents, in a form whose day/month order the set itself proves (23 > 12).
+function New-CimSessionOption { param([string]$Protocol) [pscustomobject]@{ Protocol = $Protocol } }
+function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
+    [pscustomobject]@{ ComputerName = $ComputerName; Protocol = 'WSMAN' } }
+function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) }
+function Get-CimInstance {
+    param($CimSession, [string]$ComputerName, [string]$ClassName, [string]$Namespace, [string[]]$Property, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
+    if ($ClassName -eq 'Win32_OperatingSystem') {
+        return [pscustomobject]@{ LastBootUpTime = $now.AddDays(-9); BuildNumber = '17763'; Version = '10.0.17763' }
+    }
+    if ($ClassName -eq 'Win32_QuickFixEngineering') {
+        return @(
+            [pscustomobject]@{ HotFixID = 'KB0000001'; InstalledOn = '10/23/2026' }
+            [pscustomobject]@{ HotFixID = 'KB0000002'; InstalledOn = '11/10/2026' }
+        )
+    }
+    throw ("STUB: CIM class '{0}' is not stubbed" -f $ClassName)
+}
 function Get-ADReplicationPartnerMetadata { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ Partner='dc2.contoso.com'; ConsecutiveReplicationFailures=0; LastReplicationSuccess=$now } }
 function Get-ADReplicationFailure { param([Parameter(ValueFromRemainingArguments)]$a) @() }
@@ -211,6 +233,18 @@ foreach ($sec in @('_msdcs Zone Delegation', 'Time Hierarchy')) {
     Check (@($rows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0) ("Section '{0}' reports no Pass when the query tools are absent" -f $sec)
     Check (@($rows | Where-Object { $_.Status -eq 'Not Assessed' }).Count -gt 0) ("Section '{0}' reports Not Assessed with a named cause" -f $sec)
 }
+# C1: the DcSystem section must be wired, must judge the stub DC's OS from the inventory, and
+# must report the patch-level inventory read through the CIM stubs - as Info, never as Pass.
+$dcsRows = @($smokeFindings | Where-Object { $_.Section -eq 'DC System' })
+Check (@($dcsRows).Count -gt 0) ("Section 'DC System' is wired into Invoke-Main and reached the findings ({0} rows)" -f @($dcsRows).Count)
+$lifeRows = @($dcsRows | Where-Object { $_.Item -like 'OS lifecycle:*' })
+Check (@($lifeRows).Count -eq 1 -and $lifeRows[0].Status -eq 'Pass' -and $lifeRows[0].Detail -match 'Windows Server 2019' -and $lifeRows[0].Detail -match '2029-01-09') 'DC System: the stub DC (build 17763) is judged in support, with the end date stated'
+Check ([string]$lifeRows[0].Scope -eq 'contoso.com') 'DC System: the lifecycle row carries its domain as Scope'
+$osRow = @($dcsRows | Where-Object { $_.Item -like 'OS build and uptime:*' })
+Check (@($osRow).Count -eq 1 -and $osRow[0].Status -eq 'Info' -and $osRow[0].Detail -match 'Build 17763' -and $osRow[0].Detail -match 'up 9 day') 'DC System: build and uptime are read through the CIM stub and reported as Info'
+$hfRow = @($dcsRows | Where-Object { $_.Item -like 'Last update installed:*' })
+Check (@($hfRow).Count -eq 1 -and $hfRow[0].Status -eq 'Info' -and $hfRow[0].Detail -match '2026-11-10') 'DC System: the latest update date is the later of the two stub records, with the day/month order proven by the set'
+Check (@($dcsRows | Where-Object { $_.Status -eq 'Pass' -and $_.Item -notlike 'OS lifecycle:*' }).Count -eq 0) 'DC System: no patch-level row is ever a Pass - it is inventory'
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
@@ -252,9 +286,16 @@ Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scop
 $findings2 = @(Import-Csv (Join-Path $result2.CsvPath 'Findings-Consolidated.csv'))
 Check ($findings2.Count -gt 0) ("Multi-domain: consolidated findings are not empty ({0} rows)" -f $findings2.Count)
 
-foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords')) {
+foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System')) {
     $n = @($findings2 | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Multi-domain: section '{0}' reached the consolidated findings ({1} rows)" -f $sec, $n)
+}
+# C1: one lifecycle row per DC per domain, each carrying its own domain - not three copies of
+# the first domain, and not one row for the forest.
+$life2 = @($findings2 | Where-Object { $_.Section -eq 'DC System' -and $_.Item -like 'OS lifecycle:*' })
+Check (@($life2).Count -eq 3) ("Multi-domain: DC System has one OS lifecycle row per domain's DC ({0})" -f @($life2).Count)
+foreach ($d in $multiDomains) {
+    Check (@($life2 | Where-Object { $_.Scope -eq $d }).Count -eq 1) ("Multi-domain: DC System lifecycle row carries scope '{0}'" -f $d)
 }
 
 # Every scoped domain must actually appear - not just the first one.
@@ -386,6 +427,13 @@ if ($fgpp.Count -ge 1) {
     Check ($fgpp[0].Status -eq 'Not Assessed') 'Failure mode: failed FGPP query is Not Assessed'
     Check ($fgpp[0].Detail -match "NOT the same as") 'Failure mode: FGPP row states that absence was not measured'
 }
+
+# C1: with DC enumeration failing there is no inventory and no DC list. Both halves of the
+# DcSystem section must say so as Not Assessed; neither may be silent and neither may pass.
+$dcs3 = @($findings3 | Where-Object { $_.Section -eq 'DC System' })
+Check (@($dcs3 | Where-Object { $_.Item -eq 'OS lifecycle' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode: DC System reports the OS lifecycle check as Not Assessed when there is no DC inventory'
+Check (@($dcs3 | Where-Object { $_.Item -eq 'Patch level' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode: DC System reports patch level as Not Assessed when no DC was enumerated'
+Check (@($dcs3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC System reports nothing but Not Assessed ({0} rows)" -f @($dcs3).Count)
 
 # Non-vacuity: the run must not have passed simply because nothing was assessed at all.
 $notAssessed3 = @($findings3 | Where-Object { $_.Status -eq 'Not Assessed' }).Count
