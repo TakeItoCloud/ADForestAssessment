@@ -77,7 +77,7 @@ verdict only.
 
 ## Coverage track (gaps against the AdAssessment26 finding catalogue)
 
-**Proposed 2026-11-13, awaiting operator approval of scope and order.** Source:
+**Approved by the operator 2026-11-13, scope and order as listed.** Source:
 [docs/GAP-ANALYSIS.md](docs/GAP-ANALYSIS.md), which maps all 89 catalogue rows to this tool
 (15 Covered, 44 Partly, 30 Missing) with evidence per row. One row per group of checks; one
 branch and one pull request per row. C1 to C8 are in the operator's stated priority order; C9 to
@@ -89,7 +89,9 @@ the reference repository's recorded facts are a starting point, not a source.
 
 | Phase | Scope | Status | Date |
 | --- | --- | --- | --- |
-| C1 | DC operating system past end of support, and patch level (build, last update date, uptime). Catalogue: OSL-001, INV-003. Sections: `DomainControllers`, new `DcSystem` | Planned | |
+| C1 | v1.16.0: new `-Sections DcSystem`. **OS lifecycle** per DC from the directory against a versioned table of Microsoft extended-support and ESU end dates (read 2026-11-13), with a `-DcSystemConfigPath` override: past extended support is `Fail`, stating whether an ESU programme is running, ended or unpublished and that enrolment is not assessed; an unlisted or unreadable OS is `Not Assessed` with the raw values. **Patch level** per DC over remote CIM (build, uptime, latest update install date) as inventory only - by operator decision no threshold is applied, because Microsoft publishes none. Adds a per-run port-probe cache so a DC is probed once per port. Catalogue: OSL-001, INV-003. **Run against stubs only** - first real run is C17 | Done | 2026-11-13 |
+| C1a | Update revision within the build (the fourth part of a version such as 17763.9487) is not read by C1: `Win32_OperatingSystem` does not carry it, and the registry value that does was not verified on Microsoft Learn. Verify the value name and meaning on Learn, then add it to the `DcSystem` patch-level row. **Owner: operator to confirm it is wanted** | Planned | |
+| C1b | Existing per-DC sections (`DcHardening`, `RestoreIntegrity`, `PortMatrix` and others) still probe each DC themselves; only `DcSystem` uses the shared probe cache added in C1. Move them onto `Test-AdfaDcPort` as each is touched by C3 and later rows, not as one sweep | Planned | |
 | C2 | Free disk space on the NTDS database, NTDS log and SYSVOL volumes. Catalogue: DISK-001. New section `DcDisk` | Planned | |
 | C3 | LDAP channel binding, LDAP signing enforcement, SMB server and client signing, LmCompatibilityLevel. Catalogue: LDAP-001..003, SMB-001..002, NTLM-001, INV-019. Section: `DcHardening` | Planned | |
 | C4 | Windows LAPS: DSRM password management, and enabled non-DC computers without LAPS. Catalogue: LAPS-001..002. New section `Laps` | Planned | |

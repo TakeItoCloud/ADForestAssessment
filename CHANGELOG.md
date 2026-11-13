@@ -10,6 +10,119 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-11-13 (DC operating system lifecycle, and patch-level inventory, tool v1.16.0)
+
+**PORT-PLAN C1.** New `-Sections DcSystem`, included in the default `All` run. It closes two
+rows of the gap analysis: the tool collected each DC's operating system and judged it only
+against the Exchange SE compatibility table, and it read nothing about uptime or updates.
+
+**This has run only against stubs.** No part of it has been executed against a real directory
+or a real domain controller. The first run against a real forest is PORT-PLAN C17, owned by the
+operator.
+
+**OS lifecycle, one row per DC.** The verdict is taken from the `OperatingSystem` and
+`OperatingSystemVersion` the `DomainControllers` section already reads from the directory, so
+it needs no rights on any DC.
+
+| Situation | Result |
+| --- | --- |
+| On or before the extended support end date | `Pass`, with the date stated |
+| Past it, ESU programme still running | `Fail`: programme end date stated, **enrolment not assessed** |
+| Past it, ESU programme also ended | `Fail`, saying so |
+| Past it, no ESU date published | `Fail`: "ESU end date not published" |
+| OS not in the table (for example Windows Server 2008 R2) | `Not Assessed`, raw name and version shown |
+| OS could not be read | `Not Assessed`, with the cause the inventory recorded |
+
+A release is identified only when its name and its build number agree. A first draft matched
+on the build alone; a review pointed out that the Semi-Annual Channel release "Windows Server,
+version 1809" shares build 17763 with Windows Server 2019, so that draft would have passed it on
+2019's dates. A DC whose name and build disagree, or whose name is not recognised, is now
+`Not Assessed` with both raw values. Windows Server 2012 and 2012 R2, which the table lists
+without a build, are kept apart by name.
+
+**Dates, read on Microsoft Learn 2026-11-13.** Extended support end: 2025 `2034-11-14`, 2022
+`2031-10-14`, 2019 `2029-01-09`, 2016 `2027-01-12`
+([release information](https://learn.microsoft.com/windows-server/get-started/windows-server-release-info));
+2012 and 2012 R2 `2023-10-10`, and ESU Year 3 end dates 2016 `2030-01-08`, 2012/R2 `2026-10-13`
+([ESU FAQ](https://learn.microsoft.com/lifecycle/faq/extended-security-updates)). No ESU
+programme is published for 2019, 2022 or 2025, so the table holds `$null` for them and the
+finding says the date is not published.
+
+Two things about those sources that the table's comments record:
+
+- The product lifecycle pages print the same instants as Pacific Time timestamps on the *next*
+  calendar day (`1/13/2027 6:59:59 AM` for 2027-01-12). The table uses the calendar dates of the
+  two pages above and does not mix conventions. The end date itself counts as supported.
+- The ESU FAQ contradicts itself for Windows Server 2016: its table says extended support ends
+  January 12, 2027 and one prose answer says January 12, 2026. The table agrees with the two
+  other pages, so 2027 is used.
+
+The AdAssessment26 plan recorded no ESU date for Windows Server 2016 when it was written
+(2026-09-24). Learn publishes one now, which is why this table differs from that record.
+
+**Patch level, two rows per DC, inventory only.** `Win32_OperatingSystem` for build and last
+boot time, `Win32_QuickFixEngineering` for the latest install date, in one bounded CIM session:
+WinRM first, DCOM second. Every row is `Info` or `Not Assessed`, never `Pass`. Microsoft
+publishes no maximum uptime and no maximum update age for a domain controller, and the operator
+chose not to set one, so none is applied.
+
+Three results are kept apart: **unreachable** (neither port answered, no read attempted),
+**access denied** (the row says local Administrators rights are needed), and **any other read
+failure**, quoted as the DC reported it. A failure of the update query alone keeps the build and
+uptime row.
+
+Install dates need care. Learn types `InstalledOn` as a string with no stated culture, and says
+it may be a hexadecimal FILETIME. `11/10/2026` is 10 November or 11 October depending on the
+host, so it is read only when another record from the same DC proves the order (a day above 12).
+Where nothing proves it, the row reports how many records could not be read and gives no date.
+Zero records is `Not Assessed`, not "no updates installed". The row also states Learn's own
+limit: the class lists only updates supplied by Component Based Servicing.
+
+**Config.** `$script:Config.DcSystem` holds the table with its sources; `-DcSystemConfigPath`
+replaces it from JSON on the same contract as `-ExchangeSeConfigPath`. A missing or malformed
+file is a terminating error, and so is an empty table, a date not in `yyyy-MM-dd` form, a row
+with neither a build nor a pattern, or a pattern that is not a valid regular expression.
+
+**A DC is probed once per port.** New `Test-AdfaDcPort` caches each answer for the run. Only
+`DcSystem` uses it so far; moving the older per-DC sections onto it is PORT-PLAN C1b.
+
+**Not done, and recorded as plan rows.** The update revision within the build is not read
+(C1a). No warning is raised ahead of an end date: by operator decision a DC is `Pass` until the
+date and `Fail` after it.
+
+**Found by an independent review of the diff before commit, and fixed in it.** Twenty findings
+were confirmed. The ones that would have produced a wrong report:
+
+- **A wrongly shaped override file was accepted in silence.** A top-level JSON array, a string,
+  `null`, or a misspelt key left the built-in dates in force while every finding cited the
+  operator's file for them. The override must now be one object whose keys are known; anything
+  else stops the run, and provenance is rewritten only when the file supplied the dates.
+- **Windows PowerShell 5.1 converts `InstalledOn` before the script sees it.** Its type data
+  replaces the member with `[DateTime]::Parse`, which guesses month-first and returns nothing
+  for a day-first date or a hexadecimal FILETIME. Measured on a real `Get-CimInstance` result on
+  the build machine: the member is a `DateTime`, the raw property a `String` shaped
+  `99/99/9999`. The raw value is now read from `CimInstanceProperties`. The stubs had hidden
+  this by returning plain objects.
+- **A refusal was recognised only in English.** The message is in the UI language of the host
+  running the assessment. The CIM error code is now carried alongside it and checked first.
+- **A domain whose DC inventory failed produced no row at all**, so the section looked complete.
+  It now gets its own `Not Assessed` row naming the domain and the cause.
+- **Findings cited one page for dates that are on another.** Both source pages are now cited.
+- **A build-and-uptime row was `Info` when the class returned neither value.** It is
+  `Not Assessed`.
+
+Tests the review showed could not fail were replaced: the section's presence in the
+`ValidateSet` is now read from the parsed parameter instead of matched as text; the transport
+order, the DCOM fallback, the DCOM session option and the plain "read failed" result each have a
+test; and "never graded" is asserted as "only `Info` or `Not Assessed`" over a five-DC population,
+not as "no `Pass`".
+
+**Not verified.** The `InstalledOn` shape was measured on the local machine, not on a domain
+controller, and not over a remote session. The CIM error code of a real refusal was not
+observed: only that the exception type carries one. The layout of `operatingSystemVersion` (`10.0 (17763)`) is not documented on Learn;
+the build is taken from the parentheses and anything else falls back to the name. DCOM
+connection behaviour under the timeout was not measured.
+
 ### Docs — 2026-11-13 (gap analysis against the AdAssessment26 finding catalogue; no code change)
 
 [docs/GAP-ANALYSIS.md](docs/GAP-ANALYSIS.md) maps all 89 rows of the AdAssessment26 finding

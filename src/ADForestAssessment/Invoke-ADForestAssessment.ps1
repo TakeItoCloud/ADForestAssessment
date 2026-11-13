@@ -37,6 +37,10 @@
         - Kerberos exposure: Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation
         - Privileged hygiene: adminCount orphans, SPNs on privileged accounts, Protected Users
         - DC hardening: Print Spooler, SMBv1, LDAP signing requirement (remote CIM/registry)
+        - DC system: operating system past end of extended support, judged per DC from the
+          directory against a table of Microsoft lifecycle dates; and per-DC inventory of OS
+          build, uptime and latest update install date (remote CIM, needs local admin on the
+          DC; reported as Info or Not Assessed, never graded)
         - Directory backup status (repadmin /showbackup), time synchronization (w32tm)
         - DNS depth: critical SRV records, secure dynamic updates
         - Redundancy: DC count, GPO central store, duplicate SPNs
@@ -90,6 +94,19 @@
     Recovery sections (post-incident): DnsAdConsistency, DsaCname, GcConsistency, PortMatrix,
     DcSecureChannel, DsEvents. For a focused post-restore triage run:
     -Sections DnsAdConsistency,DsaCname,GcConsistency,PortMatrix,Replication,Trusts,DcSecureChannel,DsEvents,TimeSync,Sysvol,Backup
+
+    DcSystem judges each DC's operating system against Microsoft's lifecycle dates and lists
+    its build, uptime and latest update install date. The lifecycle verdict reads the DC
+    inventory, so name DomainControllers with it: -Sections DomainControllers,DcSystem
+
+.PARAMETER DcSystemConfigPath
+    Path to a JSON file that replaces the built-in DC system table, whose OsLifecycle list
+    holds, per Windows Server release, a Label, a Build and/or a name Pattern, an ExtendedEnd
+    date and an EsuEnd date (yyyy-MM-dd, or null where Microsoft publishes none). Use it when
+    Microsoft ships a release or publishes an Extended Security Updates date this build does
+    not know. Keys the file omits keep their built-in value; a file that supplies OsLifecycle
+    replaces the whole list. A missing or malformed file, or a row that could not be used,
+    stops the run.
 
 .PARAMETER IncludeDcdiag
     Also capture raw 'dcdiag /c /v' output per DC under raw\.
@@ -175,7 +192,8 @@ param(
         'Pki', 'Acl', 'Kerberos', 'PrivilegedHygiene', 'DcHardening', 'Backup', 'TimeSync',
         'DnsDepth', 'Redundancy', 'ExchangeSchema', 'ExchangeSeReadiness',
         'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
-        'DsEvents', 'RestoreIntegrity', 'MsdcsDelegation', 'TimeHierarchy', 'SiteGc')]
+        'DsEvents', 'RestoreIntegrity', 'MsdcsDelegation', 'TimeHierarchy', 'SiteGc',
+        'DcSystem')]
     [string[]]$Sections = @('All'),
 
     [switch]$IncludeDcdiag,
@@ -200,6 +218,14 @@ param(
     # would be worse than one that stopped.
     [ValidateNotNullOrEmpty()]
     [string]$ExchangeSeConfigPath,
+
+    # Replaces the built-in DC system table (the operating system lifecycle dates the DcSystem
+    # section judges against) from a JSON file, so a new Windows Server release or a newly
+    # published Extended Security Updates date is a config edit. Same contract as
+    # -ExchangeSeConfigPath: keys omitted keep their built-in value, and a missing or malformed
+    # file is a terminating error, never a silent fall back.
+    [ValidateNotNullOrEmpty()]
+    [string]$DcSystemConfigPath,
 
     [ValidateRange(1, 3650)][int]$StaleDays = 90,
     [ValidateRange(1, 3650)][int]$KrbtgtMaxAgeDays = 180,
@@ -226,7 +252,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.15.1'
+    Version                 = '1.16.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -393,6 +419,49 @@ $script:Config = @{
         )
         # "Read-only GCs and read-only DCs aren't supported" - same source.
         ReadOnlySupported           = $false
+    }
+    # --- DC system: OS lifecycle, and patch-level inventory (PORT-PLAN C1) ------------------
+    # Volatile vendor facts, replaceable from a file via -DcSystemConfigPath.
+    #
+    # Dates are CALENDAR dates as Microsoft prints them on the two pages below. The product
+    # lifecycle pages print the same instants as Pacific Time timestamps that fall on the next
+    # calendar day ("1/13/2027 6:59:59 AM" for the date both pages below call 2027-01-12), so
+    # the two conventions must not be mixed. The end date itself counts as still supported; the
+    # day after it is past.
+    #
+    #   Extended support end, 2016 / 2019 / 2022 / 2025, and their builds (14393 / 17763 /
+    #   20348 / 26100):
+    #     https://learn.microsoft.com/windows-server/get-started/windows-server-release-info
+    #   Extended support end for 2012 and 2012 R2 (one row, "Windows Server 2012/R2"), and every
+    #   Extended Security Updates (ESU) end date:
+    #     https://learn.microsoft.com/lifecycle/faq/extended-security-updates
+    #   Read: 2026-11-13 (both)
+    #
+    # EsuEnd is the Year 3 end date where an ESU programme is published, and $null where none
+    # is: no ESU row exists for 2019, 2022 or 2025, so no date is invented for them. The ESU FAQ
+    # contradicts itself for 2016 - its table says extended support ends January 12, 2027 and
+    # one prose answer says January 12, 2026. The table agrees with the release-information
+    # page and with the product lifecycle page, so the table's date is the one used.
+    #
+    # 2012 and 2012 R2 carry no Build: the release-information page has no section for them, so
+    # they are matched by name. The 2012 pattern must not match 2012 R2.
+    DcSystem                = @{
+        # Both pages, because a finding cites this for every date it states and neither page
+        # holds them all: the first has no 2012 rows, the second no 2019, 2022 or 2025 rows.
+        SourceUrl   = 'https://learn.microsoft.com/windows-server/get-started/windows-server-release-info and https://learn.microsoft.com/lifecycle/faq/extended-security-updates'
+        ReadDate    = '2026-11-13'
+        # Ports probed before a remote read: WinRM over HTTP, then the RPC endpoint mapper for
+        # the DCOM fallback. The same two values the rest of this script already uses.
+        WsmanPort   = 5985
+        RpcPort     = 135
+        OsLifecycle = @(
+            @{ Label = 'Windows Server 2025';    Build = 26100; Pattern = '(?i)windows server\s*2025';             ExtendedEnd = '2034-11-14'; EsuEnd = $null }
+            @{ Label = 'Windows Server 2022';    Build = 20348; Pattern = '(?i)windows server\s*2022';             ExtendedEnd = '2031-10-14'; EsuEnd = $null }
+            @{ Label = 'Windows Server 2019';    Build = 17763; Pattern = '(?i)windows server\s*2019';             ExtendedEnd = '2029-01-09'; EsuEnd = $null }
+            @{ Label = 'Windows Server 2016';    Build = 14393; Pattern = '(?i)windows server\s*2016';             ExtendedEnd = '2027-01-12'; EsuEnd = '2030-01-08' }
+            @{ Label = 'Windows Server 2012 R2'; Build = $null; Pattern = '(?i)windows server\s*2012\s*r2';        ExtendedEnd = '2023-10-10'; EsuEnd = '2026-10-13' }
+            @{ Label = 'Windows Server 2012';    Build = $null; Pattern = '(?i)windows server\s*2012(?!\s*r2)';    ExtendedEnd = '2023-10-10'; EsuEnd = '2026-10-13' }
+        )
     }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
     DsEventsOfInterest      = @(
@@ -2402,6 +2471,782 @@ function Get-AdfaDcHardening {
         catch { $rows += New-Finding -Area 'DCHardening' -Item ("{0}: LDAP signing required" -f $dc) -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
     }
     return @($rows)
+}
+
+# ---------------------------------------------------------------------------
+# DC system: OS lifecycle verdict and patch-level inventory (PORT-PLAN C1)
+# ---------------------------------------------------------------------------
+
+# One reachability answer per DC and port for the whole run. Every per-DC section before C1
+# probed for itself; a section that uses Test-AdfaDcPort shares the answer instead.
+$script:DcPortCache = @{}
+
+function Clear-AdfaDcPortCache {
+    <#
+    .SYNOPSIS
+        Forgets every cached port probe. Called at the start of a run.
+    #>
+    [CmdletBinding()]
+    param()
+    $script:DcPortCache = @{}
+}
+
+function Test-AdfaDcPort {
+    <#
+    .SYNOPSIS
+        Test-TcpPort with a per-run cache, so a DC is probed once per port, not once per section.
+    .OUTPUTS
+        [bool]
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][int]$Port,
+        [int]$TimeoutMs = 1200
+    )
+    $key = ('{0}:{1}' -f $ComputerName.ToLowerInvariant(), $Port)
+    if (-not $script:DcPortCache.ContainsKey($key)) {
+        $script:DcPortCache[$key] = [bool](Test-TcpPort -ComputerName $ComputerName -Port $Port -TimeoutMs $TimeoutMs)
+    }
+    return [bool]$script:DcPortCache[$key]
+}
+
+function Get-AdfaConfigValue {
+    <#
+    .SYNOPSIS
+        Pure: reads one named value from a config row that is a hashtable (built-in table) or
+        an object (a row loaded from JSON). $null when the name is absent.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Entry, [Parameter(Mandatory)][string]$Name)
+    if ($null -eq $Entry) { return $null }
+    if ($Entry -is [System.Collections.IDictionary]) {
+        if ($Entry.Contains($Name)) { return $Entry[$Name] }
+        return $null
+    }
+    $p = $Entry.PSObject.Properties[$Name]
+    if ($null -eq $p) { return $null }
+    return $p.Value
+}
+
+function ConvertTo-AdfaConfigDate {
+    <#
+    .SYNOPSIS
+        Pure: a yyyy-MM-dd config value as a date, or $null. No other format is accepted, so a
+        date cannot be read differently on a host with a different culture.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+    if ($null -eq $Value) { return $null }
+    $s = ([string]$Value).Trim()
+    if ($s -eq '') { return $null }
+    $d = [datetime]::MinValue
+    if ([datetime]::TryParseExact($s, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$d)) { return $d }
+    return $null
+}
+
+function Get-AdfaOsBuild {
+    <#
+    .SYNOPSIS
+        Pure: the build number from an operatingSystemVersion value such as "10.0 (17763)".
+    .DESCRIPTION
+        Learn documents the attribute only as "the operating system version string" and does not
+        publish the "major.minor (build)" layout, so this is tolerant: it takes the digits inside
+        the parentheses and returns $null for anything else. A caller that gets $null falls back
+        to the OS name; it never assumes a build.
+    .OUTPUTS
+        [int] or $null
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$OperatingSystemVersion)
+    if ([string]::IsNullOrWhiteSpace($OperatingSystemVersion)) { return $null }
+    $m = [regex]::Match($OperatingSystemVersion, '\((\d+)\)')
+    if (-not $m.Success) { return $null }
+    $b = 0
+    if ([int]::TryParse($m.Groups[1].Value, [ref]$b)) { return $b }
+    return $null
+}
+
+function Resolve-AdfaOsLifecycleEntry {
+    <#
+    .SYNOPSIS
+        Pure: the lifecycle table row for a DC's operating system, or $null when none matches.
+    .DESCRIPTION
+        A release is identified only when the name and the build number AGREE. Where the version
+        value carries no build, or the table lists none for the release (2012, 2012 R2), the
+        name alone decides. Where the two point at different releases, or only one of them is
+        recognised, nothing is matched and the reason is returned - a wrong release would apply
+        the wrong dates, and a Pass on the wrong dates is the worst outcome this check has.
+
+        Whether the directory's operatingSystem string is ever localised is not documented on
+        Learn. If it is, a localised DC is reported Not Assessed with its raw values; it is
+        never matched on the build alone.
+    .OUTPUTS
+        [pscustomobject] Entry ($null when not identified), Reason ('' when identified).
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$OperatingSystem,
+        [AllowNull()][AllowEmptyString()][string]$OperatingSystemVersion,
+        [AllowNull()][AllowEmptyCollection()]$Entries = @()
+    )
+    $build = Get-AdfaOsBuild -OperatingSystemVersion $OperatingSystemVersion
+    $byName = $null
+    if (-not [string]::IsNullOrWhiteSpace($OperatingSystem)) {
+        foreach ($e in @($Entries)) {
+            $pattern = [string](Get-AdfaConfigValue -Entry $e -Name 'Pattern')
+            if ($pattern -ne '' -and $OperatingSystem -match $pattern) { $byName = $e; break }
+        }
+    }
+    $byBuild = $null
+    if ($null -ne $build) {
+        foreach ($e in @($Entries)) {
+            $eb = Get-AdfaConfigValue -Entry $e -Name 'Build'
+            $parsed = 0
+            if ($null -ne $eb -and [int]::TryParse([string]$eb, [ref]$parsed) -and $parsed -eq $build) { $byBuild = $e; break }
+        }
+    }
+    $nameLabel = ''
+    if ($null -ne $byName) { $nameLabel = [string](Get-AdfaConfigValue -Entry $byName -Name 'Label') }
+    $buildLabel = ''
+    if ($null -ne $byBuild) { $buildLabel = [string](Get-AdfaConfigValue -Entry $byBuild -Name 'Label') }
+
+    # No build in the version value: the name is all there is.
+    if ($null -eq $build) {
+        if ($null -ne $byName) { return [pscustomobject]@{ Entry = $byName; Reason = '' } }
+        return [pscustomobject]@{ Entry = $null; Reason = 'the name matches no release in the OS lifecycle table, and the version value carries no build number' }
+    }
+    # A build is present. It must not contradict the name, and the name must not contradict it.
+    if ($null -ne $byBuild -and $null -ne $byName) {
+        if ($buildLabel -eq $nameLabel) { return [pscustomobject]@{ Entry = $byBuild; Reason = '' } }
+        return [pscustomobject]@{ Entry = $null; Reason = ("the build number is the one listed for {0} but the name is the one listed for {1}, so neither release's dates are applied" -f $buildLabel, $nameLabel) }
+    }
+    if ($null -ne $byBuild) {
+        # Build known, name not recognised. Releases can share a build: Semi-Annual Channel
+        # "Windows Server, version 1809" carries build 17763 like Windows Server 2019 and has
+        # different support dates, so a build alone does not identify the release.
+        return [pscustomobject]@{ Entry = $null; Reason = ("the build number is the one listed for {0} but the name is not, and a build number alone does not identify a release" -f $buildLabel) }
+    }
+    if ($null -ne $byName) {
+        $listed = Get-AdfaConfigValue -Entry $byName -Name 'Build'
+        if ($null -eq $listed -or [string]$listed -eq '') { return [pscustomobject]@{ Entry = $byName; Reason = '' } }
+        return [pscustomobject]@{ Entry = $null; Reason = ("the name is the one listed for {0} but its build number is {1}, not the {2} the table lists for that release" -f $nameLabel, $build, [string]$listed) }
+    }
+    return [pscustomobject]@{ Entry = $null; Reason = 'neither the name nor the build number matches a release in the OS lifecycle table' }
+}
+
+function Get-AdfaOsLifecycleVerdict {
+    <#
+    .SYNOPSIS
+        Pure: whether one DC's operating system is inside or past extended support on a date.
+    .DESCRIPTION
+        Fail when the date is past the release's extended support end. The text then says which
+        of three situations applies - an Extended Security Updates (ESU) programme still
+        running, one that has also ended, or none published - and always says that ESU
+        ENROLMENT is not assessed: a published programme says nothing about whether this DC is
+        in it.
+
+        Fail-closed. An OS that could not be read, and an OS the table does not list, are both
+        Not Assessed with the raw values. Neither is a Pass, and an unlisted OS is not a Fail
+        either: the table has no date for it, so no date is claimed.
+    .OUTPUTS
+        [pscustomobject] Status, Detail, Label.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$OperatingSystem,
+        [AllowNull()][AllowEmptyString()][string]$OperatingSystemVersion,
+        [AllowNull()][AllowEmptyString()][string]$EnrichmentError,
+        [Parameter(Mandatory)][datetime]$Today,
+        [AllowNull()][AllowEmptyCollection()]$Entries = @()
+    )
+    if ([string]::IsNullOrWhiteSpace($OperatingSystem) -or $OperatingSystem -eq $script:Status.NotAssessed) {
+        $cause = 'No cause was recorded.'
+        if (-not [string]::IsNullOrWhiteSpace($EnrichmentError)) { $cause = ("Cause: {0}" -f $EnrichmentError.Trim()) }
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; Label = ''
+            Detail = ("The operating system could not be read from this DC's computer object, so its support status is not known. {0}" -f $cause) }
+    }
+    $seen = ("reported as '{0}', version '{1}'" -f $OperatingSystem, $OperatingSystemVersion)
+    $resolved = Resolve-AdfaOsLifecycleEntry -OperatingSystem $OperatingSystem -OperatingSystemVersion $OperatingSystemVersion -Entries $Entries
+    $entry = $resolved.Entry
+    if ($null -eq $entry) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; Label = ''
+            Detail = ("'{0}' (version '{1}') could not be identified as a release in the OS lifecycle table: {2}. No support date is applied, and this is not a statement that it is supported. A release the table does not hold can be added with -DcSystemConfigPath." -f $OperatingSystem, $OperatingSystemVersion, [string]$resolved.Reason) }
+    }
+    $label = [string](Get-AdfaConfigValue -Entry $entry -Name 'Label')
+    $extended = ConvertTo-AdfaConfigDate -Value (Get-AdfaConfigValue -Entry $entry -Name 'ExtendedEnd')
+    if ($null -eq $extended) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; Label = $label
+            Detail = ("{0} ({1}) is in the OS lifecycle table but its extended support end date is missing or not in yyyy-MM-dd form, so it cannot be judged." -f $label, $seen) }
+    }
+    $day = $Today.Date
+    $extText = $extended.ToString('yyyy-MM-dd')
+    if ($day -le $extended) {
+        return [pscustomobject]@{ Status = $script:Status.Pass; Label = $label
+            Detail = ("{0} ({1}) is in support: extended support ends on {2}." -f $label, $seen, $extText) }
+    }
+    $esuRaw = Get-AdfaConfigValue -Entry $entry -Name 'EsuEnd'
+    $esu = ConvertTo-AdfaConfigDate -Value $esuRaw
+    $tail = ''
+    if ($null -eq $esu) {
+        $tail = 'ESU end date not published for this release. Whether this DC is enrolled in any Extended Security Updates programme is not assessed.'
+    }
+    elseif ($day -le $esu) {
+        $tail = ("An Extended Security Updates programme is published for this release until {0}. Whether this DC is enrolled in it is not assessed, and the programme does not extend the support lifecycle." -f $esu.ToString('yyyy-MM-dd'))
+    }
+    else {
+        $tail = ("The Extended Security Updates programme for this release also ended on {0}. Whether this DC was enrolled in it is not assessed." -f $esu.ToString('yyyy-MM-dd'))
+    }
+    return [pscustomobject]@{ Status = $script:Status.Fail; Label = $label
+        Detail = ("{0} ({1}) is past extended support, which ended on {2}. {3}" -f $label, $seen, $extText, $tail) }
+}
+
+function Get-AdfaDcOsLifecycle {
+    <#
+    .SYNOPSIS
+        One OS lifecycle finding per domain controller, from the DC inventory.
+    .DESCRIPTION
+        Reads nothing: OperatingSystem and OperatingSystemVersion were already collected from the
+        directory by the DomainControllers section, so this needs no rights on any DC. With no
+        inventory it reports Not Assessed and names the section that supplies it.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][datetime]$Today,
+        # Domains whose DC inventory call threw: objects with Domain and Error. Their DCs are in
+        # no list, so without a row here the section would look complete while a whole domain
+        # went unjudged.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @()
+    )
+    $rows = @()
+    foreach ($failure in @($InventoryFailures | Where-Object { $null -ne $_ })) {
+        $rows += New-Finding -Scope ([string]$failure.Domain) -Area 'DcSystem' -Item ("OS lifecycle - {0}" -f [string]$failure.Domain) -Status $script:Status.NotAssessed `
+            -Detail ("The domain controllers of this domain could not be inventoried, so none of them was checked against the lifecycle table. Cause: {0}" -f [string]$failure.Error)
+    }
+    $dcs = @($DomainControllers | Where-Object { $null -ne $_ })
+    if ($dcs.Count -eq 0) {
+        $rows += New-Finding -Area 'DcSystem' -Item 'OS lifecycle' -Status $script:Status.NotAssessed `
+            -Detail 'No domain controller inventory was available, so no operating system could be checked against the lifecycle table. The operating system is read by the DomainControllers section: run with -Sections DomainControllers,DcSystem (or All). This is not a clean result.'
+        return @($rows)
+    }
+    $provenance = ("Dates per {0} (read {1})." -f [string]$Config['SourceUrl'], [string]$Config['ReadDate'])
+    foreach ($dc in $dcs) {
+        $values = @{}
+        foreach ($n in @('HostName', 'Scope', 'OperatingSystem', 'OperatingSystemVersion', 'EnrichmentError')) {
+            $p = $dc.PSObject.Properties[$n]
+            $values[$n] = ''
+            if ($null -ne $p -and $null -ne $p.Value) { $values[$n] = [string]$p.Value }
+        }
+        $name = $values['HostName']
+        if ($name -eq '') { $name = '(unnamed)' }
+        $v = Get-AdfaOsLifecycleVerdict -OperatingSystem $values['OperatingSystem'] -OperatingSystemVersion $values['OperatingSystemVersion'] `
+            -EnrichmentError $values['EnrichmentError'] -Today $Today -Entries $Config['OsLifecycle']
+        $rows += New-Finding -Scope $values['Scope'] -Area 'DcSystem' -Item ("OS lifecycle: {0}" -f $name) -Status $v.Status `
+            -Detail ("{0} {1}" -f $v.Detail, $provenance)
+    }
+    return @($rows)
+}
+
+function ConvertTo-AdfaHotfixDate {
+    <#
+    .SYNOPSIS
+        Pure: one Win32_QuickFixEngineering InstalledOn value as a date, or $null.
+    .DESCRIPTION
+        Learn types InstalledOn as a STRING, not a datetime, gives '23-10-2013' as an example,
+        names no culture for it, and says it may instead be a 64-bit hexadecimal FILETIME. So
+        this accepts: a value that is already a DateTime; a year-first date; a 16-digit
+        hexadecimal FILETIME; and a year-last date whose day/month order is certain.
+
+        A year-last date such as '11/10/2026' is NOT certain - it is 10 November or 11 October
+        depending on the host's culture - and is returned as $null unless the caller supplies
+        the order (see Get-AdfaHotfixDateOrder). A wrong date is worse than no date.
+    .OUTPUTS
+        [datetime] or $null
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Value,
+        [ValidateSet('Unknown', 'MonthFirst', 'DayFirst')][string]$Order = 'Unknown'
+    )
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value }
+    $s = ([string]$Value).Trim()
+    if ($s -eq '') { return $null }
+    if ($s -match '^(0x)?[0-9a-fA-F]{16}$') {
+        try {
+            $ticks = [Convert]::ToInt64(($s -replace '^0x', ''), 16)
+            if ($ticks -le 0) { return $null }
+            return [datetime]::FromFileTimeUtc($ticks)
+        }
+        catch { return $null }
+    }
+    $m = [regex]::Match($s, '^(\d{1,4})[/\-.](\d{1,2})[/\-.](\d{1,4})$')
+    if (-not $m.Success) { return $null }
+    $a = [int]$m.Groups[1].Value
+    $b = [int]$m.Groups[2].Value
+    $c = [int]$m.Groups[3].Value
+    $year = 0; $month = 0; $dayOfMonth = 0
+    if ($m.Groups[1].Value.Length -eq 4) { $year = $a; $month = $b; $dayOfMonth = $c }
+    elseif ($m.Groups[3].Value.Length -eq 4) {
+        $year = $c
+        if ($a -gt 12 -and $b -le 12) { $dayOfMonth = $a; $month = $b }
+        elseif ($b -gt 12 -and $a -le 12) { $month = $a; $dayOfMonth = $b }
+        elseif ($a -eq $b) { $month = $a; $dayOfMonth = $b }
+        elseif ($Order -eq 'MonthFirst') { $month = $a; $dayOfMonth = $b }
+        elseif ($Order -eq 'DayFirst') { $dayOfMonth = $a; $month = $b }
+        else { return $null }
+    }
+    else { return $null }
+    try { return (New-Object -TypeName datetime -ArgumentList $year, $month, $dayOfMonth) }
+    catch { return $null }
+}
+
+function Get-AdfaHotfixDateOrder {
+    <#
+    .SYNOPSIS
+        Pure: the day/month order of a set of year-last dates, where the set itself proves it.
+    .DESCRIPTION
+        Every value in one DC's update list was written by the same host, so one value with a
+        day above 12 settles the order for all of them. MonthFirst or DayFirst is returned only
+        when at least one value proves it and none proves the opposite; otherwise Unknown, and
+        the ambiguous values stay unread.
+    .OUTPUTS
+        [string] Unknown | MonthFirst | DayFirst
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyCollection()][object[]]$Values = @())
+    $monthFirst = 0; $dayFirst = 0
+    foreach ($v in @($Values)) {
+        if ($null -eq $v -or $v -is [datetime]) { continue }
+        $m = [regex]::Match(([string]$v).Trim(), '^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$')
+        if (-not $m.Success) { continue }
+        $a = [int]$m.Groups[1].Value
+        $b = [int]$m.Groups[2].Value
+        if ($a -gt 12 -and $b -le 12) { $dayFirst++ }
+        elseif ($b -gt 12 -and $a -le 12) { $monthFirst++ }
+    }
+    if ($monthFirst -gt 0 -and $dayFirst -eq 0) { return 'MonthFirst' }
+    if ($dayFirst -gt 0 -and $monthFirst -eq 0) { return 'DayFirst' }
+    return 'Unknown'
+}
+
+function Get-AdfaHotfixSummary {
+    <#
+    .SYNOPSIS
+        Pure: the latest readable install date in one DC's update list, and how much of the
+        list could not be read.
+    .OUTPUTS
+        [pscustomobject] Total, Parsed, Unparsed, Latest ($null when none), Order, UnparsedSamples.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][AllowEmptyCollection()][object[]]$InstalledOn = @())
+    $values = @()
+    if ($null -ne $InstalledOn) { $values = @($InstalledOn) }
+    $order = Get-AdfaHotfixDateOrder -Values $values
+    $latest = $null
+    $parsed = 0
+    $samples = @()
+    foreach ($v in $values) {
+        $d = ConvertTo-AdfaHotfixDate -Value $v -Order $order
+        if ($null -eq $d) {
+            $text = ''
+            if ($null -ne $v) { $text = ([string]$v).Trim() }
+            if ($text -ne '' -and $samples -notcontains $text -and $samples.Count -lt 3) { $samples += $text }
+            continue
+        }
+        $parsed++
+        if ($null -eq $latest -or $d -gt $latest) { $latest = $d }
+    }
+    return [pscustomobject]@{
+        Total = $values.Count; Parsed = $parsed; Unparsed = ($values.Count - $parsed)
+        Latest = $latest; Order = $order; UnparsedSamples = $samples
+    }
+}
+
+function Get-AdfaRemoteReadErrorClass {
+    <#
+    .SYNOPSIS
+        Pure: AccessDenied or Error, from the text of a remote-read failure.
+    .DESCRIPTION
+        "Could not connect" is decided before any read, by the port probe. What is left once a
+        port answered is either a refusal, which more rights would fix, or something else, which
+        they would not - and the report must not send an operator after credentials for the
+        second kind. Anything not recognised as a refusal is Error and is quoted, not interpreted.
+    .OUTPUTS
+        [string] AccessDenied | Error
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Message,
+        # The CIM error code name where the exception carried one (CimException.NativeErrorCode).
+        # Checked first because the message is in the UI language of the host running the
+        # assessment: on a non-English host "access is denied" is not what the text says.
+        [AllowNull()][AllowEmptyString()][string]$ErrorCode
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ErrorCode) -and $ErrorCode -match '(?i)^AccessDenied$') { return 'AccessDenied' }
+    if ([string]::IsNullOrWhiteSpace($Message)) { return 'Error' }
+    if ($Message -match '(?i)access is denied|access denied|0x80070005|unauthorizedaccess') { return 'AccessDenied' }
+    return 'Error'
+}
+
+function Get-AdfaDcSystemRaw {
+    <#
+    .SYNOPSIS
+        The one place C1 touches a DC: two read-only CIM queries in one bounded session.
+    .DESCRIPTION
+        Win32_OperatingSystem for LastBootUpTime, BuildNumber and Version, then
+        Win32_QuickFixEngineering for InstalledOn. Nothing is written and no method is invoked.
+
+        Never throws. A failure to open the session or read the OS class comes back as Ok =
+        $false with the error text; a failure of the update query alone comes back as Ok = $true
+        with HotfixOk = $false, so one half is not thrown away because the other failed.
+
+        The timeout is the caller's. Learn notes that a value under three minutes means a
+        network failure longer than the timeout is not recovered from - which is the intended
+        behaviour here: a DC that does not answer is reported, not waited for.
+    .OUTPUTS
+        [pscustomobject] Ok, Protocol, LastBootUpTime, BuildNumber, Version, HotfixOk,
+        InstalledOn (one entry per record, $null where the record carries none), Error, HotfixError.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [ValidateSet('Wsman', 'Dcom')][string]$Protocol = 'Wsman',
+        [pscredential]$Credential,
+        [int]$OperationTimeoutSec = 90
+    )
+    $out = [pscustomobject]@{
+        Ok = $false; Protocol = $Protocol; LastBootUpTime = $null; BuildNumber = ''; Version = ''
+        HotfixOk = $false; InstalledOn = @(); Error = ''; ErrorCode = ''; HotfixError = ''
+    }
+    $session = $null
+    try {
+        $sessionArgs = @{ ComputerName = $ComputerName; OperationTimeoutSec = [uint32]$OperationTimeoutSec; ErrorAction = 'Stop' }
+        if ($Protocol -eq 'Dcom') { $sessionArgs.SessionOption = New-CimSessionOption -Protocol Dcom }
+        if ($Credential) { $sessionArgs.Credential = $Credential }
+        $session = New-CimSession @sessionArgs
+
+        $os = @(Get-CimInstance -CimSession $session -ClassName 'Win32_OperatingSystem' `
+                -Property 'LastBootUpTime', 'BuildNumber', 'Version' -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -ErrorAction Stop)
+        if ($os.Count -eq 0 -or $null -eq $os[0]) { throw 'Win32_OperatingSystem returned no instance.' }
+        foreach ($n in @('LastBootUpTime', 'BuildNumber', 'Version')) {
+            $p = $os[0].PSObject.Properties[$n]
+            if ($null -eq $p -or $null -eq $p.Value) { continue }
+            if ($n -eq 'LastBootUpTime') { $out.LastBootUpTime = $p.Value } else { $out.$n = [string]$p.Value }
+        }
+        $out.Ok = $true
+
+        try {
+            $qfe = @(Get-CimInstance -CimSession $session -ClassName 'Win32_QuickFixEngineering' `
+                    -Property 'HotFixID', 'InstalledOn' -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -ErrorAction Stop)
+            $dates = New-Object System.Collections.ArrayList
+            foreach ($q in $qfe) {
+                if ($null -eq $q) { continue }
+                # The RAW value, not the InstalledOn member. Windows PowerShell 5.1 ships type
+                # data for this class that replaces InstalledOn with a script property doing
+                # [DateTime]::Parse: it guesses month-first for '11/10/2026', and returns nothing
+                # at all for a day-first date or a hexadecimal FILETIME. Measured on a real
+                # Get-CimInstance result: the member is a DateTime, the raw property a String.
+                # CimInstanceProperties is the unadapted store; the member is the fallback for
+                # an object that has no such store.
+                $value = $null
+                $store = $q.PSObject.Properties['CimInstanceProperties']
+                $rawProp = $null
+                if ($null -ne $store -and $null -ne $store.Value) { $rawProp = $store.Value['InstalledOn'] }
+                if ($null -ne $rawProp) { $value = $rawProp.Value }
+                else {
+                    $p = $q.PSObject.Properties['InstalledOn']
+                    if ($null -ne $p) { $value = $p.Value }
+                }
+                [void]$dates.Add($value)
+            }
+            $out.InstalledOn = $dates.ToArray()
+            $out.HotfixOk = $true
+        }
+        catch { $out.HotfixError = $_.Exception.Message }
+    }
+    catch {
+        $out.Error = $_.Exception.Message
+        $codeProp = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $out.ErrorCode = [string]$codeProp.Value }
+    }
+    finally {
+        if ($null -ne $session) {
+            try { Remove-CimSession -CimSession $session -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+    return $out
+}
+
+function Get-AdfaDcPatchLevel {
+    <#
+    .SYNOPSIS
+        Per-DC patch-level inventory: OS build, uptime, and the latest update install date.
+    .DESCRIPTION
+        Inventory, not a verdict: every row is Info or Not Assessed, never Pass. Microsoft
+        publishes no maximum uptime and no maximum age of the last update for a domain
+        controller, so none is applied.
+
+        A DC is probed once per port (shared cache). WinRM is tried first and DCOM second where
+        the RPC endpoint mapper answers; a refusal is not retried over the other transport,
+        because the same account would be refused again. Three outcomes are kept apart in the
+        row: unreachable (no port answered, no read attempted), access denied, and any other
+        read failure, quoted as the DC reported it.
+
+        Needs local Administrators rights on each DC. Without them every DC comes back
+        Not Assessed with "Access denied", while the OS lifecycle rows, which read only the
+        directory, are unaffected.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90,
+        [datetime]$Now = (Get-Date)
+    )
+    if (@($DomainControllers).Count -eq 0) {
+        return @(New-Finding -Area 'DcSystem' -Item 'Patch level' -Status $script:Status.NotAssessed `
+                -Detail 'No domain controllers were enumerated, so no build, uptime or update date could be read. This is not a clean result.')
+    }
+    $wsmanPort = [int]$Config['WsmanPort']
+    $rpcPort = [int]$Config['RpcPort']
+    $rows = @()
+    foreach ($dc in $DomainControllers) {
+        $wsman = Test-AdfaDcPort -ComputerName $dc -Port $wsmanPort -TimeoutMs $PortTimeoutMs
+        $rpc = Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs
+        if (-not $wsman -and -not $rpc) {
+            $rows += New-Finding -Area 'DcSystem' -Item ("Patch level: {0}" -f $dc) -Status $script:Status.NotAssessed `
+                -Detail ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so no read was attempted." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
+            continue
+        }
+        $protocols = @()
+        if ($wsman) { $protocols += 'Wsman' }
+        if ($rpc) { $protocols += 'Dcom' }
+        $raw = $null
+        $attempts = @()
+        $denied = $false
+        foreach ($protocol in $protocols) {
+            $readArgs = @{ ComputerName = $dc; Protocol = $protocol; OperationTimeoutSec = $OperationTimeoutSec }
+            if ($Credential) { $readArgs.Credential = $Credential }
+            $raw = Get-AdfaDcSystemRaw @readArgs
+            if ($null -ne $raw -and $raw.Ok) { break }
+            $message = ''
+            $code = ''
+            if ($null -ne $raw) {
+                $message = [string]$raw.Error
+                $codeProp = $raw.PSObject.Properties['ErrorCode']
+                if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $code = [string]$codeProp.Value }
+            }
+            $attempts += ("{0}: {1}" -f $protocol, $message)
+            if ((Get-AdfaRemoteReadErrorClass -Message $message -ErrorCode $code) -eq 'AccessDenied') { $denied = $true; break }
+        }
+        if ($null -eq $raw -or -not $raw.Ok) {
+            $lead = 'Read failed: a port answered, but system information could not be read. If the text below is a refusal in another language, local Administrators rights on the DC are what is missing.'
+            if ($denied) { $lead = 'Access denied: the account running the assessment could not read system information from this DC. Local Administrators rights on the DC are needed for this read.' }
+            $rows += New-Finding -Area 'DcSystem' -Item ("Patch level: {0}" -f $dc) -Status $script:Status.NotAssessed `
+                -Detail ("{0} Reported by the DC - {1}" -f $lead, ($attempts -join ' | '))
+            continue
+        }
+
+        # ---- OS build and uptime ----
+        $boot = 'Last boot time was not returned.'
+        if ($null -ne $raw.LastBootUpTime -and $raw.LastBootUpTime -is [datetime]) {
+            $span = $Now - [datetime]$raw.LastBootUpTime
+            if ($span.TotalSeconds -lt 0) {
+                $boot = ("Last boot {0:yyyy-MM-dd HH:mm} is later than the clock of the host running the assessment, so uptime is not computed." -f [datetime]$raw.LastBootUpTime)
+            }
+            else {
+                $boot = ("Last boot {0:yyyy-MM-dd HH:mm}; up {1} day(s), measured against the clock of the host running the assessment." -f [datetime]$raw.LastBootUpTime, [int][math]::Floor($span.TotalDays))
+            }
+        }
+        $build = 'Build number was not returned.'
+        $hasBuild = (-not [string]::IsNullOrWhiteSpace([string]$raw.BuildNumber))
+        if ($hasBuild) { $build = ("Build {0} (version {1})." -f [string]$raw.BuildNumber, [string]$raw.Version) }
+        # The class answered but gave neither value: nothing was measured, so it is not Info.
+        $osStatus = $script:Status.Info
+        if (-not $hasBuild -and -not ($raw.LastBootUpTime -is [datetime])) { $osStatus = $script:Status.NotAssessed }
+        $rows += New-Finding -Area 'DcSystem' -Item ("OS build and uptime: {0}" -f $dc) -Status $osStatus `
+            -Detail ("{0} {1} The update revision within the build is not part of this read. Read over {2}." -f $build, $boot, [string]$raw.Protocol)
+
+        # ---- Latest update install date ----
+        $hfItem = ("Last update installed: {0}" -f $dc)
+        if (-not $raw.HotfixOk) {
+            $rows += New-Finding -Area 'DcSystem' -Item $hfItem -Status $script:Status.NotAssessed `
+                -Detail ("The update list could not be read: {0}" -f [string]$raw.HotfixError)
+            continue
+        }
+        $summary = Get-AdfaHotfixSummary -InstalledOn @($raw.InstalledOn)
+        $cbs = 'Win32_QuickFixEngineering lists only updates supplied by Component Based Servicing, so this is the latest of those and not necessarily the latest update of any kind.'
+        if ($summary.Total -eq 0) {
+            $rows += New-Finding -Area 'DcSystem' -Item $hfItem -Status $script:Status.NotAssessed `
+                -Detail '0 records were returned by Win32_QuickFixEngineering, so no install date is known. This is not a statement that no update is installed.'
+        }
+        elseif ($summary.Parsed -eq 0) {
+            $rows += New-Finding -Area 'DcSystem' -Item $hfItem -Status $script:Status.NotAssessed `
+                -Detail ("{0} record(s) were returned, but none carries an install date that can be read without guessing the day/month order (examples: {1})." -f $summary.Total, (@($summary.UnparsedSamples) -join ', '))
+        }
+        else {
+            $caveat = ''
+            if ($summary.Unparsed -gt 0) { $caveat = (" {0} record(s) had no date or one that could not be read without guessing, and any of them may be newer." -f $summary.Unparsed) }
+            $rows += New-Finding -Area 'DcSystem' -Item $hfItem -Status $script:Status.Info `
+                -Detail ("Latest update install date {0:yyyy-MM-dd}, from {1} of {2} record(s).{3} {4}" -f $summary.Latest, $summary.Parsed, $summary.Total, $caveat, $cbs)
+        }
+    }
+    return @($rows)
+}
+
+function Merge-AdfaDcSystemConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in DC system table, with validation.
+    .DESCRIPTION
+        Same rules as Merge-AdfaExchangeSeConfig: only the keys the override names are replaced,
+        and provenance is rewritten to the override's source so a finding does not cite Microsoft
+        Learn for dates that came from a file.
+
+        An override that replaces OsLifecycle replaces the whole table. Every row is checked,
+        and a row this tool could not use is refused with the reason: an empty table, a row with
+        no Label, an ExtendedEnd or EsuEnd that is not yyyy-MM-dd, a row with neither a Build nor
+        a Pattern (it could match nothing), or a Pattern that is not a valid regular expression.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+
+    # The override must be ONE object with named keys. A JSON array, string or number also
+    # reaches this point as a .NET object, and its own properties (Length, Count, Rank ...)
+    # would otherwise be merged as if they were config keys while the real table went
+    # untouched - the built-in dates judged, and cited to the operator's file.
+    $isTable = ($Override -is [hashtable])
+    $isObject = ($Override -is [System.Management.Automation.PSCustomObject])
+    if (-not $isTable -and -not $isObject) {
+        throw ("DC system config override must be a single object with named keys (for example {{ ""OsLifecycle"": [ ... ] }}), not a {0}." -f $Override.GetType().Name)
+    }
+    $names = @()
+    if ($isTable) { $names = @($Override.Keys) }
+    else { $names = @($Override.PSObject.Properties | ForEach-Object { $_.Name }) }
+    if ($names.Count -eq 0) {
+        throw 'DC system config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    # Only keys this tool reads. A misspelt key ("OsLifecycles") would otherwise be accepted,
+    # ignored, and leave the operator believing their table was applied.
+    $known = @('OsLifecycle', 'WsmanPort', 'RpcPort')
+    $replacedTable = $false
+    foreach ($k in $names) {
+        if ($known -notcontains [string]$k) {
+            throw ("DC system config override names an unknown key '{0}'. Known keys: {1}." -f [string]$k, ($known -join ', '))
+        }
+        # Read inline, not through Get-AdfaConfigValue: a function returning an empty array
+        # hands back $null, which would turn "an empty table" into "key not supplied" and let
+        # the empty-table check below pass silently.
+        $value = $null
+        if ($isTable) { $value = $Override[$k] }
+        else { $value = $Override.PSObject.Properties[$k].Value }
+        if ($null -eq $value) {
+            throw ("DC system config override sets '{0}' to null. Remove the key to keep the built-in value." -f [string]$k)
+        }
+        if ($k -eq 'OsLifecycle') {
+            if (@($value).Count -eq 0) {
+                throw "DC system config override sets 'OsLifecycle' to an empty list. An empty table would leave every DC unjudged - remove the key to keep the built-in table."
+            }
+            $replacedTable = $true
+        }
+        else {
+            $port = 0
+            if (-not [int]::TryParse([string]$value, [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
+                throw ("DC system config override sets '{0}' to '{1}', which is not a TCP port number between 1 and 65535." -f [string]$k, [string]$value)
+            }
+            $value = $port
+        }
+        $merged[$k] = $value
+    }
+
+    $index = 0
+    foreach ($row in @($merged['OsLifecycle'])) {
+        $index++
+        $label = [string](Get-AdfaConfigValue -Entry $row -Name 'Label')
+        if ([string]::IsNullOrWhiteSpace($label)) { throw ("DC system config: OsLifecycle row {0} has no Label." -f $index) }
+        if ($null -eq (ConvertTo-AdfaConfigDate -Value (Get-AdfaConfigValue -Entry $row -Name 'ExtendedEnd'))) {
+            throw ("DC system config: OsLifecycle row '{0}' has an ExtendedEnd that is missing or not in yyyy-MM-dd form." -f $label)
+        }
+        $esuRaw = Get-AdfaConfigValue -Entry $row -Name 'EsuEnd'
+        if ($null -ne $esuRaw -and ([string]$esuRaw).Trim() -ne '' -and $null -eq (ConvertTo-AdfaConfigDate -Value $esuRaw)) {
+            throw ("DC system config: OsLifecycle row '{0}' has an EsuEnd that is not in yyyy-MM-dd form. Use null where no ESU end date is published." -f $label)
+        }
+        $buildRaw = Get-AdfaConfigValue -Entry $row -Name 'Build'
+        $pattern = [string](Get-AdfaConfigValue -Entry $row -Name 'Pattern')
+        $buildParsed = 0
+        $hasBuild = ($null -ne $buildRaw -and [int]::TryParse([string]$buildRaw, [ref]$buildParsed))
+        if (-not $hasBuild -and [string]::IsNullOrWhiteSpace($pattern)) {
+            throw ("DC system config: OsLifecycle row '{0}' has neither a Build nor a Pattern, so it could never match a domain controller." -f $label)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($pattern)) {
+            try { [void][regex]::new($pattern) }
+            catch { throw ("DC system config: OsLifecycle row '{0}' has a Pattern that is not a valid regular expression: {1}" -f $label, $_.Exception.Message) }
+        }
+    }
+    # Provenance follows the DATES. A file that changes only a port leaves the built-in
+    # Microsoft dates in force, and a finding must go on citing Microsoft for them.
+    if ($replacedTable -and -not [string]::IsNullOrWhiteSpace($OverrideSource)) {
+        $merged['SourceUrl'] = $OverrideSource
+        $merged['ReadDate'] = (Get-Date).ToString('yyyy-MM-dd')
+    }
+    return $merged
+}
+
+function Import-AdfaDcSystemConfig {
+    <#
+    .SYNOPSIS
+        Loads a DC system override from JSON and merges it over the built-in table.
+    .DESCRIPTION
+        A missing, empty or malformed file throws: judging DCs against the built-in dates while
+        the operator believes their own are in force is worse than stopping.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [Parameter(Mandatory)][string]$Path
+    )
+    if (-not (Test-Path -LiteralPath $Path)) { throw ("DC system config not found: {0}" -f $Path) }
+    $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace($raw)) { throw ("DC system config is empty: {0}" -f $Path) }
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw ("DC system config is not valid JSON ({0}): {1}" -f $Path, $_.Exception.Message) }
+    # The JSON literal null parses without error and would merge as "no override". A file that
+    # was named must change something or stop the run.
+    # (PowerShell 7 also arrives here for an empty top-level array, which it unrolls to nothing.)
+    if ($null -eq $obj) { throw ("DC system config holds JSON null or an empty array, not an object: {0}" -f $Path) }
+    try { return (Merge-AdfaDcSystemConfig -BaseConfig $BaseConfig -Override $obj -OverrideSource $Path) }
+    catch { throw ("{0} (file: {1})" -f $_.Exception.Message, $Path) }
 }
 
 function ConvertFrom-AdfaShowreplCsv {
@@ -6058,6 +6903,11 @@ $script:RecommendationMap = @(
        Text  = 'Confirm the network path and DNS name resolution (conditional forwarders / stub zones) to the partner domain in BOTH directions, then reset the trust secure channel: "netdom trust <local> /domain:<partner> /reset". Re-verify with "nltest /sc_verify:<partner>" from the local side and on a partner DC. After a ransomware incident, reset trust passwords as part of credential hygiene.' }
     @{ Section = '(?i)secure channel|machine password'; Match = '.'
        Text  = 'Reset the secure channel against a known-healthy DC. Member/workstation: "Reset-ComputerMachinePassword -Server <healthyDC>" or "nltest /sc_reset:<domain>". For a DC: stop the KDC service, run "netdom resetpwd /server:<healthyDC> /userd:<domain>\<admin> /passwordd:*", restart. Never disjoin/rejoin a domain controller.' }
+    # --- Section-scoped: DC system. Only the lifecycle Fail carries advice; the patch-level
+    #     rows are inventory. The ESU wording is Microsoft's own description of the programme:
+    #     https://learn.microsoft.com/lifecycle/faq/extended-security-updates (read 2026-11-13).
+    @{ Section = '(?i)^dc system'; Match = '(?i)past extended support'
+       Text  = 'Upgrade or replace this domain controller so that it runs a supported Windows Server release. Microsoft describes Extended Security Updates as a last-resort paid option that is a temporary bridge and does not extend the product lifecycle; where one is published for this release, confirm separately whether this DC is enrolled, because this report does not assess that.' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
     # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
@@ -6512,6 +7362,8 @@ function Invoke-Main {
         $PSVersionTable.PSVersion, [Environment]::MachineName, $env:USERDOMAIN, $env:USERNAME)
     Write-Log -Level INFO ("Parameters: AllDomains={0} Sections={1} IncludeDcdiag={2} IncludeRepadmin={3} SkipTrustVerification={4} Server={5}" -f `
         $AllDomains.IsPresent, ($Sections -join ','), $IncludeDcdiag.IsPresent, $IncludeRepadmin.IsPresent, $SkipTrustVerification.IsPresent, $Server)
+    # A fresh run starts with no remembered port probes; within the run each DC is probed once.
+    Clear-AdfaDcPortCache
     Write-Stage ("AD Forest Assessment v{0} starting" -f $script:Config.Version)
     Write-Stage ("Output: {0}" -f $runRoot)
 
@@ -6593,11 +7445,17 @@ function Invoke-Main {
     }
 
     $allDcInventory = @()
+    # Domains whose inventory call threw. Their DCs are in no list, so a section that reports
+    # per DC must be told, or it looks complete while a whole domain is missing from it.
+    $dcInventoryFailures = @()
     if (Test-SectionSelected 'DomainControllers' $Sections) {
         $inv = @()
         foreach ($d in $targetDomains) {
             try { $inv += Get-AdfaDomainControllerInventory -DomainName $d -AdParams $adParams }
-            catch { Write-Warning ("DC inventory failed for {0}: {1}" -f $d, $_.Exception.Message) }
+            catch {
+                Write-Warning ("DC inventory failed for {0}: {1}" -f $d, $_.Exception.Message)
+                $dcInventoryFailures += [pscustomobject]@{ Domain = [string]$d; Error = $_.Exception.Message }
+            }
         }
         $allDcInventory = $inv
         $sectionData['Domain Controllers'] = $inv
@@ -6794,6 +7652,25 @@ function Invoke-Main {
     if (Test-SectionSelected 'DcHardening' $Sections) {
         Write-Stage 'DC hardening (Spooler / SMBv1 / LDAP signing)'
         $sectionData['DC Hardening'] = Get-AdfaDcHardening -DomainControllers $dcNames -Credential $Credential -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+    }
+    if (Test-SectionSelected 'DcSystem' $Sections) {
+        Write-Stage 'DC system (OS lifecycle; build, uptime and last update per DC)'
+        # As with the Exchange SE table, an override that cannot be read is fatal rather than
+        # swallowed.
+        $dcSystemConfig = $script:Config.DcSystem
+        if ($DcSystemConfigPath) {
+            $dcSystemConfig = Import-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Path $DcSystemConfigPath
+            Write-Log -Level INFO ("DC system table overridden from {0}" -f $DcSystemConfigPath)
+        }
+        $dcSystemRows = @()
+        # The lifecycle rows read only the inventory (directory attributes); the patch-level
+        # rows read each DC. They are separate so that a run without rights on the DCs still
+        # gets a lifecycle verdict for every one of them.
+        $dcSystemRows += Get-AdfaDcOsLifecycle -DomainControllers $allDcInventory -Config $dcSystemConfig -Today (Get-Date) `
+            -InventoryFailures $dcInventoryFailures
+        $dcSystemRows += Get-AdfaDcPatchLevel -DomainControllers $dcNames -Config $dcSystemConfig -Credential $Credential `
+            -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec
+        $sectionData['DC System'] = @($dcSystemRows)
     }
     if (Test-SectionSelected 'Backup' $Sections) {
         Write-Stage 'Directory backup status (per DC)'
