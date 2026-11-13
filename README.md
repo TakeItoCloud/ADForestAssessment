@@ -10,8 +10,10 @@ not be tested from the local side is reported `Not Assessed` — never `Verified
 The whole tool is **coverage-aware and fail-closed**: any value that could not be collected
 comes back `Not Assessed`, never a false `Pass` or `0`.
 
-It is strictly read-only. No directory writes; the external verification tools are invoked
-in read-only modes (`/verify`, `/sc_verify`, `/sc_query`, `getmigrationstate`).
+The script writes nothing to the directory itself, and from v1.17.0 its secure channel checks
+are read-only by default. **It is not yet true that a default run changes nothing.** See
+[What a run can change](#what-a-run-can-change) before running it against a forest where that
+matters.
 
 Extracted from
 `infra-scripting-suite/powershell/Assessments/ActiveDirectory/Invoke-ADForestAssessment.ps1`.
@@ -45,7 +47,7 @@ Extracted from
 | **Recovery: GC consistency** | Global Catalog flag in AD vs `_gc._tcp` DNS advertisement, per DNS server |
 | **Recovery: lingering objects** | Opt-in (`-IncludeLingeringObjectScan`) advisory-mode `repadmin /removelingeringobjects` pass per DC against the domain PDC — finds lingering objects before they block replication; changes nothing in the directory |
 | **Recovery: port matrix** | Per-DC reachability on the replication port set (88/135/389/445 critical; 636/3268/9389 optional), separating "unresolvable" from "port closed" |
-| **Recovery: secure channels** | DC machine-account password age from the replicated `pwdLastSet` (collected centrally) and per-DC `nltest /sc_verify` over WinRM where reachable |
+| **Recovery: secure channels** | DC machine-account password age from the replicated `pwdLastSet` (collected centrally) and, per DC over WinRM where reachable, the secure channel's last recorded status from `nltest /sc_query` (read-only; the live `nltest /sc_verify` test only with `-IncludeSecureChannelVerify`) |
 | **Recovery: restore integrity** | `-Sections RestoreIntegrity`: the **`Dsa Not Writable` registry marker** per DC — the forensic evidence of a USN rollback that Microsoft names as the fallback when event 2095 *"may be overwritten before [it is] observed"*, so it is the one restore signal that does not depend on the event log surviving. Plus `invocationId` per DSA: a **shared value across two DCs is a cloned database** (`Fail`), and the per-DC values are emitted as a baseline so diffing `Assessment.json` between runs shows a DC that was restored in between |
 | **Recovery: DS events** | Per-DC Directory Service log scan for lingering objects (1988), tombstone-lifetime exceeded (2042), USN rollback (2095), unsupported restore (2103), source-GUID DNS failures (2087/2088), KCC failures (1311/1865/1925/1084) — **gated on log coverage**: the oldest retained record is compared against the lookback window, and a clean scan over a cleared, wrapped or unreadable log reports `Not Assessed` naming where coverage begins, never `Pass`. A count taken from a partial log is reported as a minimum |
 | **Recovery: dcdiag grid** | 18 parsed tests per DC, including `/test:DNS /DnsAll` (delegations, forwarders, dynamic update, record registration) and `Intersite` with the `/a` it needs to actually test anything as Pass/Fail columns. Every cell that could **not** be assessed carries its cause in the `Failures` column - the exit code, the error, and an excerpt of what dcdiag actually printed - so "Not Assessed" can never again mean "we are not telling you why". Note the verdict match is the literal English `passed test <name>`: on a non-English Windows the cells report `Not Assessed` with that named as the likely reason, rather than guessing |
@@ -69,7 +71,8 @@ mapped, never invented.
   it without reading the note in [PORT-PLAN.md](PORT-PLAN.md).
 - RSAT `ActiveDirectory` module — required
 - `DnsServer`, `GroupPolicy`, DFSR modules — optional; their sections degrade to `Not Assessed`
-- `nltest`, `netdom`, `dcdiag`, `repadmin`, `w32tm` — optional; used read-only where present
+- `nltest`, `netdom`, `dcdiag`, `repadmin`, `w32tm` — optional; used where present. Not all of
+  their uses are read-only: see [What a run can change](#what-a-run-can-change)
 - [Pester](https://pester.dev) 5.0+ and
   [PSScriptAnalyzer](https://github.com/PowerShell/PSScriptAnalyzer) 1.21+ — for the quality gate
 
@@ -89,7 +92,11 @@ domain read only.
 .\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -AllDomains
 
 # Skip trust secure-channel verification
-.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -SkipVerification
+.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -SkipTrustVerification
+
+# Live secure channel test with nltest /sc_verify. NOT read-only: it resets a channel that is
+# not working. See "Secure channel checks" below before using it.
+.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -Sections Trusts,DcSecureChannel -IncludeSecureChannelVerify
 
 # Exchange Server SE compatibility only (forest functional level + DC operating systems)
 .\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -Sections Forest,Domains,DomainControllers,ExchangeSeReadiness
@@ -256,11 +263,69 @@ rows:
   is read only when another record from the same DC proves the day/month order; otherwise the
   row says how many records could not be read, and does not guess.
 
+## What a run can change
+
+Known, with Microsoft's own wording (read on Learn 2026-11-13):
+
+| What | When | What Microsoft documents |
+| --- | --- | --- |
+| `dcdiag /test:DNS /DnsAll`, per DC | Default run (`DcDiagnostics` section) | The dynamic update test performs "registration of a test record (_dcdiag_test_record)... The test record is deleted automatically after the test." |
+| `dcdiag /test:Intersite /a`, per DC | Default run (`DcDiagnostics` section) | Works by "reporting back any replication failures after triggering a replication." |
+| `nltest /sc_verify`; `netdom trust /Verify` as its fallback | Only with `-IncludeSecureChannelVerify` | `/sc_verify`: "If the secure channel does not work, this parameter removes the existing channel, and then builds a new one." |
+| `repadmin /removelingeringobjects ... /advisory_mode` | Only with `-IncludeLingeringObjectScan` | Advisory mode removes nothing; it writes events to the target DCs' Directory Service logs |
+| `dcdiag /c /v` raw capture | Only with `-IncludeDcdiag` | `/c` includes `CutoffServers`, which "triggers replication on the DCs" |
+
+The two `dcdiag` rows in a default run are a known gap, PORT-PLAN H20. Until it is closed, leave
+`DcDiagnostics` out of `-Sections` for a run that must change nothing.
+
+Everything else a default run invokes is used as a query: `nltest /sc_query` and `/dsgetdc`,
+`dfsrmig /getglobalstate`, `repadmin /replsummary`, `/showrepl * /csv` and `/showbackup`,
+`w32tm /query` and `/stripchart`, `nslookup`, the other 16 `dcdiag` tests, and remote reads
+over WinRM, CIM, the remote registry, the DNS Server cmdlets and the event log. No side effect
+of those is documented by Microsoft that this project has found; they have not each been
+audited, and that audit is part of H20.
+
+## Secure channel checks, and the one switch that is not read-only
+
+Three checks look at a Netlogon secure channel: the outbound direction of each trust (on the
+host running the assessment), the inbound direction (on a domain controller of the trust
+partner, over WinRM), and `-Sections DcSecureChannel` (on every DC of the scoped domains, over
+WinRM).
+
+| | Default | With `-IncludeSecureChannelVerify` |
+| --- | --- | --- |
+| Command | `nltest /sc_query` | `nltest /sc_verify` |
+| Changes anything | No | **Yes, when the channel is not working** |
+| What the result is | The status recorded the last time the channel was used | A live test |
+
+Microsoft's [`nltest` reference](https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc731935(v=ws.11))
+(read 2026-11-13) says of `/sc_verify`: "If the secure channel does not work, this parameter
+removes the existing channel, and then builds a new one." Up to v1.16.0 this tool ran
+`/sc_verify` by default while calling itself strictly read-only. From v1.17.0 it does not.
+
+What that means when you read a report:
+
+- **A default result is not a live test.** `Verified` or `Pass` means the last recorded status
+  was `NERR_Success`. A channel that has broken since it was last used can still read that way.
+  Every such row says so and names the switch.
+- **A v1.17.0 default result and a result from an earlier version are not the same claim.** Do
+  not diff the two as if they were.
+- **With the switch, the tool can repair what it reports on.** A channel that was broken before
+  the run may be reported healthy because the run rebuilt it. On a forest you are assessing
+  after an incident, decide deliberately whether you want that.
+- The default result is read from one line of English text
+  (`Trusted DC Connection Status Status = 0 0x0 NERR_Success`). On a host with another display
+  language the row is `Not Assessed` and quotes what was printed.
+- **`netdom` is not run by default.** `netdom trust /Verify` is a live test; it is the fallback
+  for the outbound direction only when the switch is given.
+
 ## Verdict model
 
 `Pass | Warning | Fail | Not Assessed`. Trust directions are reported per direction as
 `Verified | Failed | Not Assessed`. Nothing is inferred: an untested direction is never
-reported as verified, and a section that could not run is never reported as clean.
+reported as verified, and a section that could not run is never reported as clean. By default
+`Verified` for a trust direction is the secure channel's last recorded status, not a live test;
+see the section above.
 
 ## Development
 

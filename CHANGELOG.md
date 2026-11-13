@@ -10,6 +10,97 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-11-13 (the tool was not read-only: it ran nltest /sc_verify by default, tool v1.17.0)
+
+**PORT-PLAN H19. This changes what an existing result means. Read this before comparing a
+v1.17.0 report with an earlier one.**
+
+The README said the tool was "strictly read-only" and the script's help said "The script is
+read-only"; both listed `/sc_verify` among its "read-only modes". Microsoft's `nltest`
+reference says otherwise:
+
+> `/sc_verify` - Checks the status of the secure channel that the NetLogon service established.
+> If the secure channel does not work, this parameter removes the existing channel, and then
+> builds a new one.
+
+([nltest](https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc731935(v=ws.11)),
+read 2026-11-13. This is an archived page; no current `nltest` reference was found on Learn.)
+
+The tool ran that command by default in three places: the outbound direction of every trust,
+on the host running the assessment; the inbound direction, on a domain controller of the trust
+partner over WinRM; and `-Sections DcSecureChannel`, on every DC of the scoped domains. On a
+healthy channel it changed nothing. On a broken one - the case a post-incident assessment is
+run for - it rebuilt the channel, and then reported it healthy.
+
+**The default is now `nltest /sc_query`**, which the same page describes as reporting "on the
+state of the secure channel the last time that you used it". It changes nothing.
+
+**The live test is opt-in.** `-IncludeSecureChannelVerify` runs `/sc_verify` at the same three
+places. The run log carries a warning that the run is not read-only, and each result says that
+a channel broken before the run may have been rebuilt by it.
+
+**What a default result now means.** `Verified` for a trust direction, and `Pass` for a DC's
+secure channel, mean that the *last recorded* status was `NERR_Success`. It is not a live test,
+and a channel that has broken since it was last used can still read that way. Every default
+row says this and names the switch. This is weaker than the old result and is the price of
+being read-only; the operator chose it.
+
+**How the default output is read.** One line, in the form Microsoft's reference shows:
+`Trusted DC Connection Status Status = 0 0x0 NERR_Success`. A zero status passes; any other
+status fails and is quoted. The closing "The command completed successfully" line is ignored on
+purpose: it reports on the command, not on the channel, and the status line is where the
+channel's state is printed. Whether that closing line appears beside a non-zero status was not
+observed - only Microsoft's one published sample, the success case, was available - so the
+parser is written not to depend on it either way. Output without the status line is
+`Not Assessed` with an excerpt, which is also what a host with a non-English display language
+will get.
+
+One place builds the `nltest` argument, `Get-AdfaNltestScArgument`. Tests read the parsed
+script to assert that it is the only place a string that could become an `/sc_verify` argument
+exists, that the two script blocks sent to a DC run exactly the argument they are given, and
+that every call passes `-LiveVerify` the switch's value and never a bare or constant one.
+
+**`netdom trust /Verify` is no longer run by default either.** It is a live test, and what it
+does beyond "verifies the secure channel secrets for a specific trust relationship"
+([netdom trust](https://learn.microsoft.com/windows-server/administration/windows-commands/netdom-trust),
+read 2026-11-13) is not established. It remains the fallback for the outbound direction only
+with `-IncludeSecureChannelVerify`. In that mode it no longer reads "The command failed to
+complete successfully" as success because it contains the word "successfully".
+
+**The live test is stricter too.** With the switch, `/sc_verify` output was accepted as healthy
+if it contained "The command completed successfully" or the word `NERR_Success` anywhere, so an
+error status printed beside either was reported `Verified`. It now needs a zero code on every
+status line.
+
+**Also corrected.** The README's example `-SkipVerification` named a parameter that does not
+exist; it is `-SkipTrustVerification`. The help text listed `/sc_query` and `getmigrationstate`
+as modes the tool used; before this change it invoked neither.
+
+**A default run is still not read-only, and the documentation now says so.** The review of this
+change found that `DcDiagnostics`, part of the default run, executes `dcdiag /test:DNS /DnsAll`
+- whose dynamic update test Microsoft documents as registering and then deleting a test record -
+and `dcdiag /test:Intersite /a`, which Microsoft documents as triggering a replication. Neither
+is changed here; both are PORT-PLAN H20, for the operator to decide per test. The README has a
+new section, "What a run can change", listing every known case with Microsoft's wording, and it
+no longer claims that a default run changes nothing. A first draft of this entry made exactly
+that claim.
+
+**Found by an independent review of the diff before commit, and fixed in it:** the netdom
+fall-through and its lax success rule; the live-mode rule above; a parser pattern that read past
+the end of the status line; two function synopses and two one-line "read-only" statements left
+describing the old behaviour; and three tests that could not fail, which matched text where
+they now read the parsed script.
+
+**This has run only against stubs.** No `nltest` was executed against a real secure channel.
+What `/sc_query` prints on a real domain controller, and on a member server for a trusted
+domain, has not been observed - only Microsoft's published sample. The first real run is
+PORT-PLAN H19-R, owned by the operator.
+
+**Not verified.** What `netdom trust /Verify` does beyond what Learn states, which is why it
+is now opt-in. The layout of `/sc_verify` status lines, for which no sample is published.
+That `/sc_query` is accepted on a host that is not a domain controller; the reference says
+`/sc_verify` is valid only on domain controllers and says nothing either way about `/sc_query`.
+
 ### Added — 2026-11-13 (DC operating system lifecycle, and patch-level inventory, tool v1.16.0)
 
 **PORT-PLAN C1.** New `-Sections DcSystem`, included in the default `All` run. It closes two

@@ -92,12 +92,12 @@ Describe 'Test-AdfaSecureChannel' {
     It 'parses nltest success as Verified' {
         Mock Test-CommandAvailable { $true }
         Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = 'Trust Verification Status = 0x0 NERR_Success' } }
-        (Test-AdfaSecureChannel -SourceDomain a -TargetDomain b).Result | Should -Be 'Verified'
+        (Test-AdfaSecureChannel -SourceDomain a -TargetDomain b -LiveVerify).Result | Should -Be 'Verified'
     }
     It 'parses an nltest error status as Failed' {
         Mock Test-CommandAvailable { $true }
         Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $false; ExitCode = 1; StdOut = 'Trust Verification Status = 0x35 ERROR' } }
-        (Test-AdfaSecureChannel -SourceDomain a -TargetDomain b).Result | Should -Be 'Failed'
+        (Test-AdfaSecureChannel -SourceDomain a -TargetDomain b -LiveVerify).Result | Should -Be 'Failed'
     }
     It 'returns Not Assessed when no tools are present' {
         Mock Test-CommandAvailable { $false }
@@ -209,18 +209,18 @@ Describe 'Recovery & consistency pure logic' {
             Mock Test-TcpPort { $false }
             $r = Test-AdfaRemoteSecureChannel -PartnerDomain 'partner.example' -VerifyDomain 'ours.example' -PartnerDc 'dc1.partner.example'
             $r.Result | Should -Be 'Not Assessed'
-            $r.Detail | Should -Match "nltest /sc_verify:ours\.example"
+            $r.Detail | Should -Match "nltest /sc_query:ours\.example"
             $r.Detail | Should -Match 'partner\.example'
         }
         It 'parses NERR_Success from the partner DC as Verified' {
             Mock Test-TcpPort { $true }
             Mock Invoke-Command { 'Trust Verification Status = 0x0 NERR_Success' }
-            (Test-AdfaRemoteSecureChannel -PartnerDomain 'partner.example' -VerifyDomain 'ours.example' -PartnerDc 'dc1.partner.example').Result | Should -Be 'Verified'
+            (Test-AdfaRemoteSecureChannel -PartnerDomain 'partner.example' -VerifyDomain 'ours.example' -PartnerDc 'dc1.partner.example' -LiveVerify).Result | Should -Be 'Verified'
         }
         It 'parses an error status from the partner DC as Failed, never Verified' {
             Mock Test-TcpPort { $true }
             Mock Invoke-Command { 'Trust Verification Status = 0xc0000022 STATUS_ACCESS_DENIED' }
-            (Test-AdfaRemoteSecureChannel -PartnerDomain 'partner.example' -VerifyDomain 'ours.example' -PartnerDc 'dc1.partner.example').Result | Should -Be 'Failed'
+            (Test-AdfaRemoteSecureChannel -PartnerDomain 'partner.example' -VerifyDomain 'ours.example' -PartnerDc 'dc1.partner.example' -LiveVerify).Result | Should -Be 'Failed'
         }
         It 'reports Not Assessed when the WinRM call itself throws' {
             Mock Test-TcpPort { $true }
@@ -2247,6 +2247,260 @@ Describe 'Cross-domain DC enrichment (live four-domain forest, 2026-09-26)' {
             Get-AdfaEnrichmentFailureAdvice -Causes $null | Should -Be ''
             $dupe = Get-AdfaEnrichmentFailureAdvice -Causes @('A referral was returned from the server', 'A referral was returned from the server')
             [regex]::Matches($dupe, 'A referral was returned from the server').Count | Should -Be 1
+        }
+    }
+}
+
+Describe 'Secure channel checks are read-only by default (H19)' {
+    # Microsoft's nltest reference says of /sc_verify: "If the secure channel does not work, this
+    # parameter removes the existing channel, and then builds a new one." Until H19 the tool ran
+    # it by default, on the host and on every DC, while describing itself as strictly read-only.
+    BeforeAll {
+        # The sample Microsoft publishes for /sc_query, and the same with a non-zero status.
+        $script:ScOk = "Flags: 30 HAS_IP  HAS_TIMESERV`nTrusted DC Name \\dc1.contoso.com`nTrusted DC Connection Status Status = 0 0x0 NERR_Success`nThe command completed successfully"
+        $script:ScBad = "Flags: 0`nTrusted DC Name`nTrusted DC Connection Status Status = 1311 0x51f ERROR_NO_LOGON_SERVERS`nThe command completed successfully"
+    }
+
+    Context 'Get-AdfaNltestScArgument' {
+        It 'asks for /sc_query unless a live verification was explicitly requested' {
+            Get-AdfaNltestScArgument -Domain 'contoso.com' | Should -Be '/sc_query:contoso.com'
+            Get-AdfaNltestScArgument -Domain 'contoso.com' -LiveVerify | Should -Be '/sc_verify:contoso.com'
+        }
+        It 'is the only place in the script that builds an /sc_verify argument' {
+            # Read from the parsed script, not matched as text: every string literal anywhere
+            # in the code that could become an /sc_verify argument - "sc_verify:" followed by
+            # anything but the "<partner>" placeholder of advice text - must sit inside the one
+            # builder. A text count of two spellings missed '/sc_verify:' + $d.
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+            $strings = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
+            $strings.Count | Should -BeGreaterThan 1000   # non-vacuity: the script's strings really were enumerated
+            $hits = @($strings | Where-Object { $_.Extent.Text -match '(?i)sc_verify:(?!<)' })
+            $hits.Count | Should -Be 1
+            $owner = $hits[0].Parent
+            while ($null -ne $owner -and $owner -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $owner = $owner.Parent }
+            $owner.Name | Should -Be 'Get-AdfaNltestScArgument'
+        }
+        It 'runs exactly the argument it was given on the remote side, and nothing composed there' {
+            # The script blocks sent to a DC are the last place an argument could be rewritten.
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+            $blocks = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst] -and $n.Extent.Text -match 'nltest' }, $true))
+            $blocks.Count | Should -Be 2   # declared population: the partner-DC check and the per-DC check
+            foreach ($b in $blocks) { $b.Extent.Text | Should -Be '{ param($a) & nltest.exe $a 2>&1 | Out-String }' }
+        }
+    }
+
+    Context 'Get-AdfaScVerifyOutcome (the opt-in live test)' {
+        It 'needs a zero code on every status line, and is not satisfied by the closing line' {
+            (Get-AdfaScVerifyOutcome -Output 'Trust Verification Status = 0x0 NERR_Success').Outcome | Should -Be 'Ok'
+            (Get-AdfaScVerifyOutcome -Output "Trusted DC Connection Status Status = 0 0x0 NERR_Success`nTrust Verification Status = 0 0x0 NERR_Success`nThe command completed successfully").Outcome | Should -Be 'Ok'
+            $mixed = Get-AdfaScVerifyOutcome -Output "Trusted DC Connection Status Status = 0 0x0 NERR_Success`nTrust Verification Status = 1311 0x51f ERROR_NO_LOGON_SERVERS`nThe command completed successfully"
+            $mixed.Outcome | Should -Be 'Bad'
+            $mixed.Status | Should -Match 'ERROR_NO_LOGON_SERVERS'
+            (Get-AdfaScVerifyOutcome -Output 'Trust Verification Status = 0xc0000022 STATUS_ACCESS_DENIED').Outcome | Should -Be 'Bad'
+            foreach ($o in @('', $null, 'The command completed successfully', 'NERR_Success')) {
+                (Get-AdfaScVerifyOutcome -Output $o).Outcome | Should -Be 'Unparsed'
+            }
+        }
+    }
+
+    Context 'Get-AdfaScQueryOutcome' {
+        It 'reads the connection status line, not the "command completed" line' {
+            (Get-AdfaScQueryOutcome -Output $script:ScOk).Outcome | Should -Be 'Ok'
+            $bad = Get-AdfaScQueryOutcome -Output $script:ScBad
+            $bad.Outcome | Should -Be 'Bad'   # the command "completed successfully" and the channel is still not working
+            $bad.Status | Should -Match 'ERROR_NO_LOGON_SERVERS'
+        }
+        It 'does not read past the end of the status line, and reads a status that has no name' {
+            $noName = Get-AdfaScQueryOutcome -Output "Trusted DC Connection Status Status = 0 0x0`r`nThe command completed successfully"
+            $noName.Outcome | Should -Be 'Ok'
+            $noName.Status | Should -Be '0 0x0'   # not '0 0x0 The'
+            (Get-AdfaScQueryOutcome -Output 'Trusted DC Connection Status Status = 1311 0x51f').Outcome | Should -Be 'Bad'
+            (Get-AdfaScQueryOutcome -Output "  Trusted DC Connection Status Status = 5 0x5 ERROR_ACCESS_DENIED  `r`n").Outcome | Should -Be 'Bad'
+        }
+        It 'does not guess when the status line is absent' {
+            foreach ($o in @('', $null, 'The command completed successfully', 'I_NetLogonControl failed: Status = 5 0x5 ERROR_ACCESS_DENIED', 'Estado da ligacao = 0')) {
+                (Get-AdfaScQueryOutcome -Output $o).Outcome | Should -Be 'Unparsed' -Because "'$o' carries no connection status line"
+            }
+        }
+    }
+
+    Context 'Test-AdfaSecureChannel (local, outbound)' {
+        BeforeEach { $script:H19Args = @() }
+        It 'runs /sc_query by default, never /sc_verify, and says what kind of result that is' {
+            Mock Test-CommandAvailable { $true }
+            Mock Invoke-ExternalCommand { $script:H19Args += ("{0} {1}" -f $FilePath, $Arguments); [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = $script:ScOk } }
+            $r = Test-AdfaSecureChannel -SourceDomain 'contoso.com' -TargetDomain 'fabrikam.com'
+            $r.Result | Should -Be 'Verified'
+            @($script:H19Args | Where-Object { $_ -match 'sc_verify' }).Count | Should -Be 0
+            @($script:H19Args | Where-Object { $_ -match 'nltest\.exe /sc_query:fabrikam\.com' }).Count | Should -Be 1
+            $r.Detail | Should -Match 'last'                          # last recorded state, not a live test
+            $r.Detail | Should -Match 'IncludeSecureChannelVerify'    # how to get the live test
+        }
+        It 'reports Failed for a non-zero status even though the command "completed successfully"' {
+            Mock Test-CommandAvailable { $true }
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = $script:ScBad } }
+            $r = Test-AdfaSecureChannel -SourceDomain 'contoso.com' -TargetDomain 'fabrikam.com'
+            $r.Result | Should -Be 'Failed'
+            $r.Detail | Should -Match 'ERROR_NO_LOGON_SERVERS'
+            $r.Detail | Should -Match 'not a live test'   # a Failed row is a last-recorded state too
+        }
+        It 'never runs netdom by default, even when nltest output cannot be read and netdom would say "verified"' {
+            # netdom trust /Verify is a live test. Before the review of H19 the default path fell
+            # through to it and returned its answer with no caveat.
+            Mock Test-CommandAvailable { $true }
+            Mock Invoke-ExternalCommand {
+                $script:H19Args += ("{0} {1}" -f $FilePath, $Arguments)
+                if ($FilePath -eq 'netdom.exe') { return [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = 'The trust has been verified.' } }
+                [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = 'I_NetLogonControl failed: Status = 1355 0x54b ERROR_NO_SUCH_DOMAIN' }
+            }
+            $r = Test-AdfaSecureChannel -SourceDomain 'contoso.com' -TargetDomain 'fabrikam.com'
+            $r.Result | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'ERROR_NO_SUCH_DOMAIN'   # what nltest printed is quoted, not discarded
+            @($script:H19Args | Where-Object { $_ -match 'netdom' }).Count | Should -Be 0
+            @($script:H19Args).Count | Should -Be 1
+        }
+        It 'does not run netdom in place of a missing nltest by default' {
+            Mock Test-CommandAvailable { $Name -eq 'netdom.exe' }
+            Mock Invoke-ExternalCommand { $script:H19Args += $FilePath; [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = 'The trust has been verified.' } }
+            $r = Test-AdfaSecureChannel -SourceDomain 'contoso.com' -TargetDomain 'fabrikam.com'
+            $r.Result | Should -Be 'Not Assessed'
+            @($script:H19Args).Count | Should -Be 0
+        }
+        It 'with the opt-in, falls back to netdom, and does not read "failed to complete successfully" as success' {
+            Mock Test-CommandAvailable { $true }
+            Mock Invoke-ExternalCommand {
+                if ($FilePath -eq 'netdom.exe') { return [pscustomobject]@{ Success = $false; ExitCode = 1; StdOut = 'The command failed to complete successfully.' } }
+                [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = 'unreadable' }
+            }
+            (Test-AdfaSecureChannel -SourceDomain 'contoso.com' -TargetDomain 'fabrikam.com' -LiveVerify).Result | Should -Be 'Failed'
+            Mock Invoke-ExternalCommand {
+                if ($FilePath -eq 'netdom.exe') { return [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = 'The trust has been verified.' } }
+                [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = 'unreadable' }
+            }
+            (Test-AdfaSecureChannel -SourceDomain 'contoso.com' -TargetDomain 'fabrikam.com' -LiveVerify).Result | Should -Be 'Verified'
+        }
+        It 'with the opt-in, fails a live test that prints an error status beside "completed successfully"' {
+            Mock Test-CommandAvailable { $Name -eq 'nltest.exe' }
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = "Trust Verification Status = 1311 0x51f ERROR_NO_LOGON_SERVERS`nThe command completed successfully" } }
+            (Test-AdfaSecureChannel -SourceDomain 'contoso.com' -TargetDomain 'fabrikam.com' -LiveVerify).Result | Should -Be 'Failed'
+        }
+        It 'runs /sc_verify only when asked, and says in the result that it can reset a channel' {
+            Mock Test-CommandAvailable { $true }
+            Mock Invoke-ExternalCommand { $script:H19Args += ("{0} {1}" -f $FilePath, $Arguments); [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = 'Trust Verification Status = 0x0 NERR_Success' } }
+            $r = Test-AdfaSecureChannel -SourceDomain 'contoso.com' -TargetDomain 'fabrikam.com' -LiveVerify
+            $r.Result | Should -Be 'Verified'
+            @($script:H19Args | Where-Object { $_ -match 'nltest\.exe /sc_verify:fabrikam\.com' }).Count | Should -Be 1
+            $r.Detail | Should -Match 'sc_verify'
+        }
+    }
+
+    Context 'Test-AdfaRemoteSecureChannel (on a partner DC)' {
+        It 'sends /sc_query to the partner DC by default' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { $script:H19Remote = $ArgumentList; $script:ScOk }
+            $r = Test-AdfaRemoteSecureChannel -PartnerDomain 'fabrikam.com' -VerifyDomain 'contoso.com' -PartnerDc 'dc1.fabrikam.com'
+            $r.Result | Should -Be 'Verified'
+            [string]@($script:H19Remote)[0] | Should -Be '/sc_query:contoso.com'
+            $r.Detail | Should -Match 'not a live test'
+            $r.Detail | Should -Match 'IncludeSecureChannelVerify'
+        }
+        It 'reports Failed for a non-zero status and Not Assessed for output it cannot read' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { $script:ScBad }
+            $bad = Test-AdfaRemoteSecureChannel -PartnerDomain 'fabrikam.com' -VerifyDomain 'contoso.com' -PartnerDc 'dc1.fabrikam.com'
+            $bad.Result | Should -Be 'Failed'
+            $bad.Detail | Should -Match 'not a live test'
+            Mock Invoke-Command { 'The command completed successfully' }
+            (Test-AdfaRemoteSecureChannel -PartnerDomain 'fabrikam.com' -VerifyDomain 'contoso.com' -PartnerDc 'dc1.fabrikam.com').Result | Should -Be 'Not Assessed'
+        }
+        It 'sends /sc_verify only when asked' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { $script:H19Remote = $ArgumentList; 'Trust Verification Status = 0x0 NERR_Success' }
+            Test-AdfaRemoteSecureChannel -PartnerDomain 'fabrikam.com' -VerifyDomain 'contoso.com' -PartnerDc 'dc1.fabrikam.com' -LiveVerify | Out-Null
+            [string]@($script:H19Remote)[0] | Should -Be '/sc_verify:contoso.com'
+        }
+    }
+
+    Context 'Get-AdfaDcSecureChannel (on every DC)' {
+        BeforeEach {
+            function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
+                [pscustomobject]@{ HostName = 'dc1.contoso.com'; ComputerObjectDN = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' } }
+            function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ PasswordLastSet = (Get-Date).AddDays(-5) } }
+        }
+        It 'sends /sc_query to each DC by default and passes on a zero status' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { $script:H19Remote = $ArgumentList; $script:ScOk }
+            $rows = @(Get-AdfaDcSecureChannel -DomainName 'contoso.com' -AdParams @{})
+            $row = @($rows | Where-Object { $_.Item -eq 'Secure channel: dc1.contoso.com' })[0]
+            $row.Status | Should -Be 'Pass'
+            [string]@($script:H19Remote)[0] | Should -Be '/sc_query:contoso.com'
+            $row.Detail | Should -Match 'sc_query'
+            $row.Detail | Should -Match 'IncludeSecureChannelVerify'
+        }
+        It 'fails a non-zero status, and is Not Assessed when the output cannot be read' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { $script:ScBad }
+            $failed = @(Get-AdfaDcSecureChannel -DomainName 'contoso.com' -AdParams @{}) | Where-Object { $_.Item -like 'Secure channel:*' }
+            $failed.Status | Should -Be 'Fail'
+            $failed.Detail | Should -Match 'not a live test'
+            Mock Invoke-Command { 'unexpected text' }
+            $na = @(Get-AdfaDcSecureChannel -DomainName 'contoso.com' -AdParams @{}) | Where-Object { $_.Item -like 'Secure channel:*' }
+            $na.Status | Should -Be 'Not Assessed'
+            $na.Detail | Should -Match 'unexpected text'
+        }
+        It 'sends /sc_verify only when asked' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { $script:H19Remote = $ArgumentList; 'Trust Verification Status = 0x0 NERR_Success' }
+            $rows = @(Get-AdfaDcSecureChannel -DomainName 'contoso.com' -AdParams @{} -LiveVerify)
+            [string]@($script:H19Remote)[0] | Should -Be '/sc_verify:contoso.com'
+            (@($rows | Where-Object { $_.Item -like 'Secure channel:*' })[0]).Status | Should -Be 'Pass'
+        }
+    }
+
+    Context 'Wiring' {
+        It 'declares -IncludeSecureChannelVerify as a switch that is off unless given' {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+            $p = @($ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'IncludeSecureChannelVerify' })
+            $p.Count | Should -Be 1
+            $p[0].StaticType.Name | Should -Be 'SwitchParameter'
+            $p[0].DefaultValue | Should -BeNullOrEmpty
+        }
+        It 'gives -LiveVerify only the value of the switch at every call in the script, never a bare or constant one' {
+            # Read from the parsed commands. A text count of "-LiveVerify:$IncludeSecureChannelVerify"
+            # passed with that text in a comment and a bare -LiveVerify on the real call.
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+            $targets = @('Get-AdfaTrustHealth', 'Get-AdfaDcSecureChannel', 'Test-AdfaSecureChannel', 'Test-AdfaRemoteSecureChannel', 'Get-AdfaNltestScArgument')
+            $calls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
+                Where-Object { $targets -contains $_.GetCommandName() })
+            # Declared population: 2 calls from Invoke-Main, 2 from the trust collector, 3 to the argument builder.
+            $calls.Count | Should -Be 7
+            $allowed = @{
+                'Get-AdfaTrustHealth' = '$IncludeSecureChannelVerify'; 'Get-AdfaDcSecureChannel' = '$IncludeSecureChannelVerify'
+                'Test-AdfaSecureChannel' = '$LiveVerify'; 'Test-AdfaRemoteSecureChannel' = '$LiveVerify'; 'Get-AdfaNltestScArgument' = '$LiveVerify'
+            }
+            foreach ($call in $calls) {
+                $name = $call.GetCommandName()
+                $live = @($call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq 'LiveVerify' })
+                $live.Count | Should -Be 1 -Because "$name must be told the mode explicitly (line $($call.Extent.StartLineNumber))"
+                $live[0].Argument | Should -Not -BeNullOrEmpty -Because "a bare -LiveVerify on $name would force the live test (line $($call.Extent.StartLineNumber))"
+                $live[0].Argument.Extent.Text | Should -Be $allowed[$name] -Because "line $($call.Extent.StartLineNumber)"
+            }
+        }
+        It 'passes it from the trust collector to both directions' {
+            $script:H19Live = @()
+            function Get-ADTrust { param([Parameter(ValueFromRemainingArguments)]$a)
+                [pscustomobject]@{ Name = 'fabrikam.com'; Source = 'contoso.com'; Target = 'fabrikam.com'; Direction = 'Bidirectional'; TrustType = 'Forest'
+                    IntraForest = $false; ForestTransitive = $true; SelectiveAuthentication = $false; SIDFilteringForestAware = $false
+                    SIDFilteringQuarantined = $true; TGTDelegation = $false; UsesRC4Encryption = $false; Created = (Get-Date); Modified = (Get-Date) } }
+            Mock Test-CommandAvailable { $false }
+            Mock Test-TcpPort { $true }
+            Mock Test-AdfaSecureChannel { $script:H19Live += ("out:{0}" -f [bool]$LiveVerify); [pscustomobject]@{ Result = 'Verified'; Tool = 't'; Detail = 'd' } }
+            Mock Test-AdfaRemoteSecureChannel { $script:H19Live += ("in:{0}" -f [bool]$LiveVerify); [pscustomobject]@{ Result = 'Verified'; Tool = 't'; Detail = 'd' } }
+            Get-AdfaTrustHealth -DomainName 'contoso.com' -AdParams @{} | Out-Null
+            ($script:H19Live -join ',') | Should -Be 'out:False,in:False'
+            $script:H19Live = @()
+            Get-AdfaTrustHealth -DomainName 'contoso.com' -AdParams @{} -LiveVerify | Out-Null
+            ($script:H19Live -join ',') | Should -Be 'out:True,in:True'
         }
     }
 }

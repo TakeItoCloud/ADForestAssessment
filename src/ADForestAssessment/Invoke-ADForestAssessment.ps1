@@ -73,8 +73,16 @@
     "Not Assessed" (never a false Pass / 0). Trust directions that could not be tested from
     the local side are reported "Not Assessed", never "Verified".
 
-    The script is read-only. External verification tools are invoked in read-only modes
-    (/verify, /sc_verify, /sc_query, getmigrationstate).
+    The script writes nothing to the directory itself, and its secure channel checks are
+    read-only by default (nltest /sc_query). It is NOT yet true that a default run changes
+    nothing: the DcDiagnostics section runs dcdiag /test:DNS /DnsAll, whose dynamic update
+    test Microsoft documents as registering and then deleting a test record, and
+    /test:Intersite, which Microsoft documents as triggering a replication. That is PORT-PLAN
+    H20. Leave DcDiagnostics out of -Sections for a run that must change nothing.
+
+    One switch is not read-only by design and is off unless given: -IncludeSecureChannelVerify
+    runs nltest /sc_verify (and netdom trust /Verify as its fallback), and /sc_verify is
+    documented as removing and rebuilding a secure channel that is not working.
 
 .PARAMETER OutputPath
     Root folder for the assessment bundle. A timestamped sub-folder is always created inside it.
@@ -133,6 +141,15 @@
     Collect trust configuration but do not run the external secure-channel verification
     (nltest / netdom). Trust health is then reported as "Not Assessed".
 
+.PARAMETER IncludeSecureChannelVerify
+    Run the live secure channel test, nltest /sc_verify, in place of the default nltest
+    /sc_query. NOT read-only: Microsoft's nltest reference says that if the secure channel does
+    not work, /sc_verify removes the existing channel and builds a new one. It runs on the host
+    running the assessment (outbound trust direction), on a domain controller of each trust
+    partner (inbound direction), and on every domain controller of the scoped domains
+    (DcSecureChannel section). Without this switch those checks report the state recorded the
+    last time each channel was used, which can miss a channel that has broken since.
+
 .PARAMETER Server
     Optional DC / ADWS endpoint to target for AD cmdlets.
 
@@ -176,7 +193,7 @@
 .NOTES
     Author  : TakeItToCloud (Carlos Annes)
     Requires: RSAT ActiveDirectory module. DnsServer / GroupPolicy / DFSR modules optional.
-    Runtime : Windows PowerShell 5.1 or PowerShell 7+. Read-only.
+    Runtime : Windows PowerShell 5.1 or PowerShell 7+. See .DESCRIPTION for what a run changes.
 #>
 
 [CmdletBinding()]
@@ -206,6 +223,12 @@ param(
     # difference between "Group Policy is converging" and "it silently is not".
     [switch]$IncludeSysvolBacklog,
     [switch]$SkipTrustVerification,
+
+    # Run the LIVE secure channel test, nltest /sc_verify, in place of the read-only
+    # nltest /sc_query. Opt-in because it is not read-only: Microsoft documents that /sc_verify
+    # removes and rebuilds a secure channel that is not working. It runs on the host, on a DC of
+    # each trust partner, and on every DC of the scoped domains.
+    [switch]$IncludeSecureChannelVerify,
 
     [string]$Server,
     [pscredential]$Credential,
@@ -252,7 +275,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.16.0'
+    Version                 = '1.17.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -943,11 +966,125 @@ function Resolve-AdfaTrustHealth {
     return [pscustomobject]@{ Health = 'Healthy'; Reasons = @('All expected directions verified.') }
 }
 
+# What the default (read-only) secure channel result does and does not mean. One sentence, used
+# by all three callers, so the three cannot drift apart in what they claim.
+$script:ScQueryCaveat = 'This is the state recorded the last time the channel was used, read with nltest /sc_query, which changes nothing; it is not a live test. -IncludeSecureChannelVerify runs the live test, nltest /sc_verify, which Microsoft documents as removing and rebuilding a channel that is not working.'
+
+function Get-AdfaNltestScArgument {
+    <#
+    .SYNOPSIS
+        Pure: the nltest secure channel argument for a domain - /sc_query unless a live
+        verification was explicitly requested.
+    .DESCRIPTION
+        The ONLY place an /sc_verify argument is built. Microsoft's nltest reference says of
+        /sc_verify: "If the secure channel does not work, this parameter removes the existing
+        channel, and then builds a new one", and of /sc_query that it "reports on the state of
+        the secure channel the last time that you used it".
+          https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc731935(v=ws.11)
+          Read: 2026-11-13. An archived page; no current nltest reference was found on Learn.
+        A read-only assessment must therefore default to /sc_query. Kept as its own function so
+        a test can assert the argument instead of assuming it.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [switch]$LiveVerify
+    )
+    if ($LiveVerify) { return ("/sc_verify:{0}" -f $Domain) }
+    return ("/sc_query:{0}" -f $Domain)
+}
+
+function Get-AdfaScQueryOutcome {
+    <#
+    .SYNOPSIS
+        Pure: Ok, Bad or Unparsed from the text nltest /sc_query printed.
+    .DESCRIPTION
+        Reads the one line that carries the answer, in the form Microsoft's reference shows:
+            Trusted DC Connection Status Status = 0 0x0 NERR_Success
+        A zero status is Ok; any other status is Bad and is returned as printed. The closing
+        "The command completed successfully" line is deliberately ignored: it says the QUERY
+        ran, and is printed whether or not the channel it reports on is working.
+
+        The match is on English text. On a host with another display language, or for any
+        output without that line, the outcome is Unparsed and the caller reports Not Assessed.
+    .OUTPUTS
+        [pscustomobject] Outcome (Ok | Bad | Unparsed), Status (the status as printed, '' when Unparsed).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][AllowEmptyString()][string]$Output)
+    if ([string]::IsNullOrWhiteSpace($Output)) { return [pscustomobject]@{ Outcome = 'Unparsed'; Status = '' } }
+    # Spaces and tabs only between the parts, never \s: \s also matches a line break, and would
+    # take the first word of the NEXT line as the status name. The name is optional, so a
+    # non-zero status printed without one is still read as a non-zero status.
+    $m = [regex]::Match($Output, '(?im)Trusted DC Connection Status[ \t]+Status[ \t]*=[ \t]*(\d+)[ \t]+(0x[0-9a-f]+)(?:[ \t]+(\S+))?')
+    if (-not $m.Success) { return [pscustomobject]@{ Outcome = 'Unparsed'; Status = '' } }
+    $status = (("{0} {1} {2}" -f $m.Groups[1].Value, $m.Groups[2].Value, $m.Groups[3].Value)).Trim()
+    if ($m.Groups[1].Value -eq '0') { return [pscustomobject]@{ Outcome = 'Ok'; Status = $status } }
+    return [pscustomobject]@{ Outcome = 'Bad'; Status = $status }
+}
+
+function Get-AdfaScVerifyOutcome {
+    <#
+    .SYNOPSIS
+        Pure: Ok, Bad or Unparsed from the text nltest /sc_verify printed (the opt-in live test).
+    .DESCRIPTION
+        Reads every "Trust Verification Status" and "Trusted DC Connection Status" line and looks
+        at the hexadecimal code on each. Ok needs at least one such line and a zero code on all
+        of them; one non-zero code is Bad. Before H19 the callers accepted the closing "The
+        command completed successfully" line, or the word NERR_Success anywhere, as success, so
+        output carrying an error status beside either of those was reported Verified.
+
+        The layout of these lines is not published for /sc_verify; both "= 0x0 NAME" and
+        "= 0 0x0 NAME" are accepted. Anything without a status line is Unparsed.
+    .OUTPUTS
+        [pscustomobject] Outcome (Ok | Bad | Unparsed), Status (the first non-zero status, else the first status).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][AllowEmptyString()][string]$Output)
+    if ([string]::IsNullOrWhiteSpace($Output)) { return [pscustomobject]@{ Outcome = 'Unparsed'; Status = '' } }
+    $found = [regex]::Matches($Output, '(?im)(?:Trust Verification Status|Trusted DC Connection Status)(?:[ \t]+Status)?[ \t]*=[ \t]*(?:\d+[ \t]+)?0x([0-9a-f]+)(?:[ \t]+(\S+))?')
+    if ($found.Count -eq 0) { return [pscustomobject]@{ Outcome = 'Unparsed'; Status = '' } }
+    $first = ''
+    foreach ($m in $found) {
+        $text = (("0x{0} {1}" -f $m.Groups[1].Value, $m.Groups[2].Value)).Trim()
+        if ($first -eq '') { $first = $text }
+        if ($m.Groups[1].Value.TrimStart('0') -ne '') { return [pscustomobject]@{ Outcome = 'Bad'; Status = $text } }
+    }
+    return [pscustomobject]@{ Outcome = 'Ok'; Status = $first }
+}
+
+function Get-AdfaOutputExcerpt {
+    <#
+    .SYNOPSIS
+        Pure: the first few non-blank lines of a tool's output, for quoting in a finding.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$Output, [int]$Lines = 3)
+    if ([string]::IsNullOrWhiteSpace($Output)) { return 'no output' }
+    $excerpt = (($Output -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First $Lines) -join ' | '
+    if ([string]::IsNullOrWhiteSpace($excerpt)) { return 'no output' }
+    return $excerpt.Trim()
+}
+
 function Test-AdfaSecureChannel {
     <#
     .SYNOPSIS
-        Verifies a trust secure channel to a target domain using nltest, with netdom as a
+        Reports on a trust secure channel to a target domain using nltest, with netdom as a
         cross-check. Returns 'Verified','Failed' or 'Not Assessed'.
+    .DESCRIPTION
+        By default this is read-only: nltest /sc_query, whose result is the state recorded the
+        last time the channel was used. 'Verified' in that mode means the recorded state is
+        NERR_Success, and the Detail says so. With -LiveVerify it runs nltest /sc_verify, a live
+        test that also resets a channel that is not working.
+
+        netdom trust /Verify stays as the fallback in both modes: Learn documents it as
+        verifying the secure channel secrets, and resetting them is a separate /reset switch.
     .OUTPUTS
         [pscustomobject] Result, Tool, Detail
     #>
@@ -956,6 +1093,7 @@ function Test-AdfaSecureChannel {
     param(
         [Parameter(Mandatory)][string]$SourceDomain,
         [Parameter(Mandatory)][string]$TargetDomain,
+        [switch]$LiveVerify,
         [int]$TimeoutSeconds = 90,
         [int]$Retries = 2,
         [int]$RetryDelaySeconds = 2
@@ -969,26 +1107,51 @@ function Test-AdfaSecureChannel {
     }
 
     if ($haveNltest) {
-        $r = Invoke-ExternalCommand -FilePath 'nltest.exe' -Arguments ("/sc_verify:{0}" -f $TargetDomain) `
+        $r = Invoke-ExternalCommand -FilePath 'nltest.exe' -Arguments (Get-AdfaNltestScArgument -Domain $TargetDomain -LiveVerify:$LiveVerify) `
             -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
-        $out = $r.StdOut
-        if ($out -match 'Trust Verification Status = 0x0 NERR_Success' -or $out -match 'The command completed successfully') {
-            return [pscustomobject]@{ Result = 'Verified'; Tool = 'nltest'; Detail = 'nltest /sc_verify succeeded.' }
+        $out = [string]$r.StdOut
+        if ($LiveVerify) {
+            $v = Get-AdfaScVerifyOutcome -Output $out
+            if ($v.Outcome -eq 'Ok') {
+                return [pscustomobject]@{ Result = 'Verified'; Tool = 'nltest'; Detail = ("nltest /sc_verify reported status {0}. This is a live test; /sc_verify resets a channel that is not working, so a channel that was broken before this run may have been rebuilt by it." -f $v.Status) }
+            }
+            if ($v.Outcome -eq 'Bad') {
+                return [pscustomobject]@{ Result = 'Failed'; Tool = 'nltest'; Detail = ("nltest /sc_verify reported status {0}: {1}" -f $v.Status, (Get-AdfaOutputExcerpt -Output $out -Lines 4)) }
+            }
+            # Unparsed: nothing is concluded from it. netdom below may still answer.
         }
-        if ($null -ne $out -and $out.Trim().Length -gt 0 -and ($out -match 'Status = 0x' -or $out -match 'ERROR' -or $out -match 'failed')) {
-            return [pscustomobject]@{ Result = 'Failed'; Tool = 'nltest'; Detail = (($out -split "`n" | Select-Object -First 4) -join ' ').Trim() }
+        else {
+            # Read-only mode stops here. It does NOT fall through to netdom: netdom trust
+            # /Verify is a live test whose side effects are not established, and its answer
+            # would not be the "last recorded state" this mode promises to report.
+            $q = Get-AdfaScQueryOutcome -Output $out
+            if ($q.Outcome -eq 'Ok') {
+                return [pscustomobject]@{ Result = 'Verified'; Tool = 'nltest /sc_query'; Detail = ("Secure channel to {0}: last recorded status {1}. {2}" -f $TargetDomain, $q.Status, $script:ScQueryCaveat) }
+            }
+            if ($q.Outcome -eq 'Bad') {
+                return [pscustomobject]@{ Result = 'Failed'; Tool = 'nltest /sc_query'; Detail = ("Secure channel to {0}: last recorded status {1}. {2}" -f $TargetDomain, $q.Status, $script:ScQueryCaveat) }
+            }
+            return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'nltest /sc_query'; Detail = ("nltest /sc_query:{0} printed no connection status line this tool can read (the match is on English text): {1}" -f $TargetDomain, (Get-AdfaOutputExcerpt -Output $out)) }
         }
     }
+    elseif (-not $LiveVerify) {
+        # netdom is present and nltest is not. netdom is a live test, so it is not run here.
+        return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'none'; Detail = 'nltest.exe is not available on this host, so the read-only secure channel query could not be run. netdom trust /Verify is a live test and is run only with -IncludeSecureChannelVerify.' }
+    }
 
+    # Only reachable with -LiveVerify.
     if ($haveNetdom) {
         $r = Invoke-ExternalCommand -FilePath 'netdom.exe' -Arguments ("trust {0} /Domain:{1} /Verify" -f $SourceDomain, $TargetDomain) `
             -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
-        $out = $r.StdOut
-        if ($r.Success -or $out -match 'has been verified' -or $out -match 'successfully') {
-            return [pscustomobject]@{ Result = 'Verified'; Tool = 'netdom'; Detail = 'netdom trust /Verify succeeded.' }
+        $out = [string]$r.StdOut
+        # "The command failed to complete successfully." contains the word "successfully", so
+        # the success wording is honoured only where no failure wording sits beside it.
+        $saysFailed = ($out -match '(?i)\bfail')
+        if (-not $saysFailed -and ($r.Success -or $out -match 'has been verified' -or $out -match 'successfully')) {
+            return [pscustomobject]@{ Result = 'Verified'; Tool = 'netdom'; Detail = 'netdom trust /Verify succeeded. This is a live test, run because -IncludeSecureChannelVerify was given.' }
         }
-        if ($null -ne $out -and $out.Trim().Length -gt 0) {
-            return [pscustomobject]@{ Result = 'Failed'; Tool = 'netdom'; Detail = (($out -split "`n" | Select-Object -First 4) -join ' ').Trim() }
+        if ($out.Trim().Length -gt 0) {
+            return [pscustomobject]@{ Result = 'Failed'; Tool = 'netdom'; Detail = (Get-AdfaOutputExcerpt -Output $out -Lines 4) }
         }
     }
 
@@ -998,8 +1161,9 @@ function Test-AdfaSecureChannel {
 function Test-AdfaRemoteSecureChannel {
     <#
     .SYNOPSIS
-        Verifies a trust direction by executing nltest /sc_verify ON a domain controller
-        of the partner domain, over WinRM. The inbound side of a trust can only be proven
+        Checks a trust direction by executing nltest ON a domain controller of the partner
+        domain, over WinRM: /sc_query by default (read-only, the last recorded state), and
+        /sc_verify only with -LiveVerify. The inbound side of a trust can only be proven
         from the partner's side: running nltest locally against our own domain name
         verifies this machine's own channel and returns NERR_Success on any healthy DC,
         regardless of the trust's real state. Fail-closed: when the partner DC cannot be
@@ -1015,11 +1179,15 @@ function Test-AdfaRemoteSecureChannel {
         [Parameter(Mandatory)][string]$VerifyDomain,
         [string]$PartnerDc,
         [pscredential]$Credential,
+        # Run nltest /sc_verify on the partner DC instead of /sc_query. /sc_verify resets a
+        # channel that is not working, on a DC in ANOTHER domain; off unless asked for.
+        [switch]$LiveVerify,
         [int]$RpcPortTimeoutMs = 1200
     )
     $remoteHost = $PartnerDc
     if ([string]::IsNullOrWhiteSpace($remoteHost)) { $remoteHost = $PartnerDomain }
-    $manual = ("Run 'nltest /sc_verify:{0}' on a DC in {1} to verify this direction." -f $VerifyDomain, $PartnerDomain)
+    $scArgument = Get-AdfaNltestScArgument -Domain $VerifyDomain -LiveVerify:$LiveVerify
+    $manual = ("Run 'nltest {0}' on a DC in {1} to check this direction." -f $scArgument, $PartnerDomain)
 
     if (-not (Test-TcpPort -ComputerName $remoteHost -Port 5985 -TimeoutMs $RpcPortTimeoutMs)) {
         return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'winrm'; Detail = ("WinRM (5985) not reachable on {0}. {1}" -f $remoteHost, $manual) }
@@ -1027,18 +1195,32 @@ function Test-AdfaRemoteSecureChannel {
     try {
         $icm = @{
             ComputerName = $remoteHost
-            ScriptBlock  = { param($d) & nltest.exe "/sc_verify:$d" 2>&1 | Out-String }
-            ArgumentList = $VerifyDomain
+            # The whole argument is built here and passed in, so the remote side runs exactly
+            # what Get-AdfaNltestScArgument decided and nothing is composed on the DC.
+            ScriptBlock  = { param($a) & nltest.exe $a 2>&1 | Out-String }
+            ArgumentList = $scArgument
             ErrorAction  = 'Stop'
         }
         if ($Credential) { $icm.Credential = $Credential }
         $out = [string](Invoke-Command @icm)
-        if ($out -match 'NERR_Success') {
-            return [pscustomobject]@{ Result = 'Verified'; Tool = 'winrm+nltest'; Detail = ("nltest /sc_verify:{0} executed on {1} reported NERR_Success." -f $VerifyDomain, $remoteHost) }
+        if ($LiveVerify) {
+            $v = Get-AdfaScVerifyOutcome -Output $out
+            if ($v.Outcome -eq 'Ok') {
+                return [pscustomobject]@{ Result = 'Verified'; Tool = 'winrm+nltest'; Detail = ("nltest {0} executed on {1} reported status {2}. This is a live test; /sc_verify resets a channel that is not working, so a channel that was broken before this run may have been rebuilt by it." -f $scArgument, $remoteHost, $v.Status) }
+            }
+            if ($v.Outcome -eq 'Bad') {
+                return [pscustomobject]@{ Result = 'Failed'; Tool = 'winrm+nltest'; Detail = ("nltest {0} executed on {1} reported status {2}: {3}" -f $scArgument, $remoteHost, $v.Status, (Get-AdfaOutputExcerpt -Output $out)) }
+            }
+            return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'winrm+nltest'; Detail = ("nltest {0} executed on {1} printed no status line this tool can read (the match is on English text): {2}" -f $scArgument, $remoteHost, (Get-AdfaOutputExcerpt -Output $out)) }
         }
-        $excerpt = (($out -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First 3) -join ' | '
-        if (-not $excerpt) { $excerpt = 'no output' }
-        return [pscustomobject]@{ Result = 'Failed'; Tool = 'winrm+nltest'; Detail = ("nltest /sc_verify:{0} executed on {1} did not report success: {2}" -f $VerifyDomain, $remoteHost, $excerpt) }
+        $q = Get-AdfaScQueryOutcome -Output $out
+        if ($q.Outcome -eq 'Ok') {
+            return [pscustomobject]@{ Result = 'Verified'; Tool = 'winrm+nltest /sc_query'; Detail = ("nltest {0} executed on {1}: last recorded status {2}. {3}" -f $scArgument, $remoteHost, $q.Status, $script:ScQueryCaveat) }
+        }
+        if ($q.Outcome -eq 'Bad') {
+            return [pscustomobject]@{ Result = 'Failed'; Tool = 'winrm+nltest /sc_query'; Detail = ("nltest {0} executed on {1}: last recorded status {2}. {3}" -f $scArgument, $remoteHost, $q.Status, $script:ScQueryCaveat) }
+        }
+        return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'winrm+nltest /sc_query'; Detail = ("nltest {0} executed on {1} printed no connection status line this tool can read (the match is on English text): {2}" -f $scArgument, $remoteHost, (Get-AdfaOutputExcerpt -Output $out)) }
     }
     catch {
         return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'winrm'; Detail = ("WinRM query to {0} failed: {1} {2}" -f $remoteHost, $_.Exception.Message, $manual) }
@@ -1101,6 +1283,8 @@ function Get-AdfaTrustHealth {
         [Parameter(Mandatory)][string]$DomainName,
         [hashtable]$AdParams = @{},
         [switch]$SkipVerification,
+        # Passed to both directions. See Get-AdfaNltestScArgument for what it changes.
+        [switch]$LiveVerify,
         [int]$TimeoutSeconds = 90,
         [int]$Retries = 2,
         [int]$RetryDelaySeconds = 2,
@@ -1145,7 +1329,7 @@ function Get-AdfaTrustHealth {
 
         if (-not $SkipVerification -and $reachable) {
             if ($direction -eq 'Outbound' -or $direction -eq 'Bidirectional') {
-                $o = Test-AdfaSecureChannel -SourceDomain $DomainName -TargetDomain $target `
+                $o = Test-AdfaSecureChannel -SourceDomain $DomainName -TargetDomain $target -LiveVerify:$LiveVerify `
                     -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
                 $outbound = $o.Result; $outboundDetail = $o.Detail
             }
@@ -1157,7 +1341,7 @@ function Get-AdfaTrustHealth {
                 $trustCred = $null
                 if ($AdParams.ContainsKey('Credential')) { $trustCred = $AdParams['Credential'] }
                 $i = Test-AdfaRemoteSecureChannel -PartnerDomain $target -VerifyDomain $DomainName `
-                    -PartnerDc $probeHost -Credential $trustCred -RpcPortTimeoutMs $RpcPortTimeoutMs
+                    -PartnerDc $probeHost -Credential $trustCred -LiveVerify:$LiveVerify -RpcPortTimeoutMs $RpcPortTimeoutMs
                 $inbound = $i.Result; $inboundDetail = $i.Detail
             }
         }
@@ -5846,7 +6030,8 @@ function Get-AdfaDcSecureChannel {
         Two checks per DC. (1) Machine-account password age from the replicated
         pwdLastSet attribute - collected centrally, no remoting needed; a stale value is
         the fingerprint of a DC restored from an old backup. (2) Where WinRM is
-        reachable, secure-channel verification run ON the DC via nltest /sc_verify;
+        reachable, the secure channel's status read ON the DC via nltest /sc_query
+        (read-only, the last recorded state; /sc_verify only with -LiveVerify);
         where it is not, the check reports Not Assessed and says what to run locally.
     .OUTPUTS
         [pscustomobject[]]
@@ -5859,9 +6044,13 @@ function Get-AdfaDcSecureChannel {
         [pscredential]$Credential,
         [int]$WarnDays = 45,
         [int]$FailDays = 90,
+        # Run nltest /sc_verify on each DC instead of /sc_query. /sc_verify resets a channel
+        # that is not working, on every DC it reaches; off unless asked for.
+        [switch]$LiveVerify,
         [int]$RpcPortTimeoutMs = 1200
     )
     $rows = @()
+    $scArgument = Get-AdfaNltestScArgument -Domain $DomainName -LiveVerify:$LiveVerify
     $p = @{} + $AdParams; $p.Server = $DomainName
     $dcs = @()
     try { $dcs = @(Get-ADDomainController -Filter * @p) }
@@ -5890,26 +6079,44 @@ function Get-AdfaDcSecureChannel {
             try {
                 $icm = @{
                     ComputerName = $dc.HostName
-                    ScriptBlock  = { param($d) & nltest.exe "/sc_verify:$d" 2>&1 | Out-String }
-                    ArgumentList = $DomainName
+                    ScriptBlock  = { param($a) & nltest.exe $a 2>&1 | Out-String }
+                    ArgumentList = $scArgument
                     ErrorAction  = 'Stop'
                 }
                 if ($Credential) { $icm.Credential = $Credential }
                 $out = [string](Invoke-Command @icm)
-                if ($out -match 'NERR_Success') {
-                    $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.Pass -Detail 'nltest /sc_verify on the DC reported NERR_Success.'
+                $scItem = ("Secure channel: {0}" -f $dc.HostName)
+                if ($LiveVerify) {
+                    $v = Get-AdfaScVerifyOutcome -Output $out
+                    if ($v.Outcome -eq 'Ok') {
+                        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item $scItem -Status $script:Status.Pass -Detail ("nltest /sc_verify on the DC reported status {0}. This is a live test; /sc_verify resets a channel that is not working, so a channel that was broken before this run may have been rebuilt by it." -f $v.Status)
+                    }
+                    elseif ($v.Outcome -eq 'Bad') {
+                        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item $scItem -Status $script:Status.Fail -Detail ("nltest /sc_verify on the DC reported status {0}: {1}" -f $v.Status, (Get-AdfaOutputExcerpt -Output $out))
+                    }
+                    else {
+                        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item $scItem -Status $script:Status.NotAssessed -Detail ("nltest /sc_verify on the DC printed no status line this tool can read (the match is on English text): {0}" -f (Get-AdfaOutputExcerpt -Output $out))
+                    }
                 }
                 else {
-                    $excerpt = (($out -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First 3) -join ' | '
-                    $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.Fail -Detail ("nltest /sc_verify on the DC did not report success: {0}" -f $excerpt)
+                    $q = Get-AdfaScQueryOutcome -Output $out
+                    if ($q.Outcome -eq 'Ok') {
+                        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item $scItem -Status $script:Status.Pass -Detail ("nltest {0} on the DC: last recorded status {1}. {2}" -f $scArgument, $q.Status, $script:ScQueryCaveat)
+                    }
+                    elseif ($q.Outcome -eq 'Bad') {
+                        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item $scItem -Status $script:Status.Fail -Detail ("nltest {0} on the DC: last recorded status {1}. {2}" -f $scArgument, $q.Status, $script:ScQueryCaveat)
+                    }
+                    else {
+                        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item $scItem -Status $script:Status.NotAssessed -Detail ("nltest {0} on the DC printed no connection status line this tool can read (the match is on English text): {1}" -f $scArgument, (Get-AdfaOutputExcerpt -Output $out))
+                    }
                 }
             }
             catch {
-                $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail ("WinRM query failed: {0}. Run 'nltest /sc_verify:{1}' locally on the DC." -f $_.Exception.Message, $DomainName)
+                $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail ("WinRM query failed: {0}. Run 'nltest {1}' locally on the DC." -f $_.Exception.Message, $scArgument)
             }
         }
         else {
-            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail ("WinRM (5985) not reachable from this host. Run 'nltest /sc_verify:{0}' locally on the DC." -f $DomainName)
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail ("WinRM (5985) not reachable from this host. Run 'nltest {0}' locally on the DC." -f $scArgument)
         }
     }
     return @($rows)
@@ -7360,8 +7567,12 @@ function Invoke-Main {
 
     Write-Log -Level INFO ("Runtime: PowerShell {0} on {1}; user {2}\{3}" -f `
         $PSVersionTable.PSVersion, [Environment]::MachineName, $env:USERDOMAIN, $env:USERNAME)
-    Write-Log -Level INFO ("Parameters: AllDomains={0} Sections={1} IncludeDcdiag={2} IncludeRepadmin={3} SkipTrustVerification={4} Server={5}" -f `
-        $AllDomains.IsPresent, ($Sections -join ','), $IncludeDcdiag.IsPresent, $IncludeRepadmin.IsPresent, $SkipTrustVerification.IsPresent, $Server)
+    Write-Log -Level INFO ("Parameters: AllDomains={0} Sections={1} IncludeDcdiag={2} IncludeRepadmin={3} SkipTrustVerification={4} Server={5} IncludeSecureChannelVerify={6}" -f `
+        $AllDomains.IsPresent, ($Sections -join ','), $IncludeDcdiag.IsPresent, $IncludeRepadmin.IsPresent, $SkipTrustVerification.IsPresent, $Server, $IncludeSecureChannelVerify.IsPresent)
+    # Said in the log as well as in the findings: this run can change a secure channel.
+    if ($IncludeSecureChannelVerify) {
+        Write-Log -Level WARN -Section 'SecureChannel' -Message 'IncludeSecureChannelVerify is set: nltest /sc_verify will run, and it resets any secure channel it finds not working. This run is not read-only.'
+    }
     # A fresh run starts with no remembered port probes; within the run each DC is probed once.
     Clear-AdfaDcPortCache
     Write-Stage ("AD Forest Assessment v{0} starting" -f $script:Config.Version)
@@ -7540,7 +7751,7 @@ function Invoke-Main {
         $trustRows = @()
         foreach ($d in $targetDomains) {
             $tp = @{} + $adParams; $tp.Server = $d
-            $trustRows += Get-AdfaTrustHealth -DomainName $d -AdParams $tp -SkipVerification:$SkipTrustVerification `
+            $trustRows += Get-AdfaTrustHealth -DomainName $d -AdParams $tp -SkipVerification:$SkipTrustVerification -LiveVerify:$IncludeSecureChannelVerify `
                 -TimeoutSeconds $script:Config.ExternalToolTimeoutSec -Retries $script:Config.Retries `
                 -RetryDelaySeconds $script:Config.RetryDelaySeconds -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
         }
@@ -7764,7 +7975,7 @@ function Invoke-Main {
     if (Test-SectionSelected 'DcSecureChannel' $Sections) {
         Write-Stage 'DC machine-account passwords & secure channels'
         $scRows = foreach ($d in $targetDomains) {
-            Get-AdfaDcSecureChannel -DomainName $d -AdParams $adParams -Credential $Credential `
+            Get-AdfaDcSecureChannel -DomainName $d -AdParams $adParams -Credential $Credential -LiveVerify:$IncludeSecureChannelVerify `
                 -WarnDays $script:Config.DcPasswordWarnDays -FailDays $script:Config.DcPasswordFailDays `
                 -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
         }
