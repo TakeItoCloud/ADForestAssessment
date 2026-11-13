@@ -43,6 +43,7 @@ function New-StubSid {
 }
 function Get-ADForest { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ Name='contoso.com'; RootDomain='contoso.com'; ForestMode='Windows2016Forest'
+        PartitionsContainer='CN=Partitions,CN=Configuration,DC=contoso,DC=com'
         Domains=@('contoso.com'); Sites=@('Default-First-Site-Name'); GlobalCatalogs=@('dc1.contoso.com')
         SchemaMaster='dc1.contoso.com'; DomainNamingMaster='dc1.contoso.com'; UPNSuffixes=@() } }
 function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a)
@@ -92,7 +93,8 @@ function Get-ADOptionalFeature { param([Parameter(ValueFromRemainingArguments)]$
 function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ configurationNamingContext='CN=Configuration,DC=contoso,DC=com'; schemaNamingContext='CN=Schema,CN=Configuration,DC=contoso,DC=com' } }
 function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
-    [pscustomobject]@{ tombstoneLifetime=180; 'ms-DS-MachineAccountQuota'=0; rangeUpper=15334; whenChanged=$now } }
+    [pscustomobject]@{ tombstoneLifetime=180; 'ms-DS-MachineAccountQuota'=0; rangeUpper=15334; whenChanged=$now
+        'msDS-Behavior-Version'=7 } }
 # No verification tools on this host -> trust health should degrade to Not Assessed honestly.
 function Test-CommandAvailable { param([string]$Name) return $false }
 function Test-ModuleAvailable { param([string]$Name) return $false }
@@ -193,6 +195,12 @@ $smokeFindings = @(Import-Csv $result.FindingsFile)
 $seRows = @($smokeFindings | Where-Object { $_.Section -eq 'Exchange SE Compatibility' })
 Check (@($seRows).Count -gt 0) ("Exchange SE section produced findings ({0})" -f @($seRows).Count)
 Check (@($seRows | Where-Object { $_.Item -match 'not readable' }).Count -eq 0) 'Exchange SE: no DC is reported as having an unreadable OS'
+# H17: the forest functional level verdict is read from msDS-Behavior-Version on the Partitions
+# container. If the collector is not wired, or the stub forest loses PartitionsContainer, this
+# row degrades to Not Assessed instead of Pass.
+$fflSmoke = @($seRows | Where-Object { $_.Item -eq 'Forest functional level' })
+Check (@($fflSmoke).Count -eq 1) ("Exchange SE: exactly one forest functional level row ({0})" -f @($fflSmoke).Count)
+Check (@($fflSmoke | Where-Object { $_.Status -eq 'Pass' -and $_.Detail -match 'msDS-Behavior-Version 7' }).Count -eq 1) 'Exchange SE: forest functional level passes on the numeric level read from the Partitions container'
 foreach ($sec in @('_msdcs Zone Delegation', 'Time Hierarchy', 'Site Global Catalog Coverage')) {
     $n = @($smokeFindings | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Section '{0}' is wired into Invoke-Main and reached the findings ({1} rows)" -f $sec, $n)
@@ -227,6 +235,7 @@ Write-Host "== Running Invoke-Main against a THREE-DOMAIN stubbed forest ==" -Fo
 $multiDomains = @('contoso.com', 'north.contoso.com', 'south.contoso.com')
 function Get-ADForest { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ Name='contoso.com'; RootDomain='contoso.com'; ForestMode='Windows2016Forest'
+        PartitionsContainer='CN=Partitions,CN=Configuration,DC=contoso,DC=com'
         Domains=@('contoso.com','north.contoso.com','south.contoso.com')
         Sites=@('Default-First-Site-Name'); GlobalCatalogs=@('dc1.contoso.com')
         SchemaMaster='dc1.contoso.com'; DomainNamingMaster='dc1.contoso.com'; UPNSuffixes=@() } }

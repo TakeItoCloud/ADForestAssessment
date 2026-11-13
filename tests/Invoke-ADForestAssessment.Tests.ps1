@@ -758,12 +758,12 @@ Describe 'Exchange Server SE compatibility' {
 
     Context 'Forest functional level verdict' {
         It 'passes the two supported levels and fails a lower one' {
-            foreach ($m in @('Windows2016Forest', 'Windows2012R2Forest')) {
-                $r = Get-AdfaExchangeSeCompatibility -ForestMode $m -DomainSummaries @() `
+            foreach ($m in @(@{ Mode = 'Windows2016Forest'; Level = '7' }, @{ Mode = 'Windows2012R2Forest'; Level = '6' })) {
+                $r = Get-AdfaExchangeSeCompatibility -ForestMode $m.Mode -ForestLevel $m.Level -DomainSummaries @() `
                     -DomainControllers $script:DcOk -SeConfig $script:SeCfg
-                [string](Get-SeTestRow $r 'Forest functional level').Status | Should -Be 'Pass' -Because "$m is supported"
+                [string](Get-SeTestRow $r 'Forest functional level').Status | Should -Be 'Pass' -Because "$($m.Mode) is supported"
             }
-            $bad = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2008R2Forest' -DomainSummaries @() `
+            $bad = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2008R2Forest' -ForestLevel '4' -DomainSummaries @() `
                 -DomainControllers $script:DcOk -SeConfig $script:SeCfg
             $row = Get-SeTestRow $bad 'Forest functional level'
             [string]$row.Status | Should -Be 'Fail'
@@ -776,6 +776,179 @@ Describe 'Exchange Server SE compatibility' {
         }
     }
 
+    Context 'Forest functional level is decided from the numeric level, not the mode name (H17)' {
+        # Before H17 the verdict was `$supportedModes -contains $ForestMode`: anything outside
+        # the list was "raise the forest functional level". A Windows Server 2025 level forest
+        # is ABOVE the supported levels, so that advice pointed the wrong way.
+        BeforeAll {
+            function Get-FflRow {
+                param([string]$Level, [string]$Mode = '', [string]$LevelError = '')
+                $r = Get-AdfaExchangeSeCompatibility -ForestMode $Mode -ForestLevel $Level -ForestLevelError $LevelError `
+                    -DomainSummaries @() -DomainControllers $script:DcOk -SeConfig $script:SeCfg
+                return (Get-SeTestRow $r 'Forest functional level')
+            }
+        }
+        It 'passes a Windows Server 2012 R2 level forest (msDS-Behavior-Version 6)' {
+            $row = Get-FflRow -Level '6' -Mode 'Windows2012R2Forest'
+            [string]$row.Status | Should -Be 'Pass'
+            $row.Detail | Should -Match 'Windows Server 2012 R2'
+        }
+        It 'passes a Windows Server 2016 level forest (msDS-Behavior-Version 7)' {
+            $row = Get-FflRow -Level '7' -Mode 'Windows2016Forest'
+            [string]$row.Status | Should -Be 'Pass'
+            $row.Detail | Should -Match 'Windows Server 2016'
+        }
+        It 'fails a Windows Server 2025 level forest as NOT LISTED, and does not tell anyone to raise it' {
+            $row = Get-FflRow -Level '10' -Mode 'Windows2025Forest'
+            [string]$row.Status | Should -Be 'Fail'
+            $row.Detail | Should -Match 'Windows Server 2025'
+            $row.Detail | Should -Match 'not listed in the supportability matrix'
+            $row.Detail | Should -Match 'learn\.microsoft\.com/exchange/plan-and-deploy/supportability-matrix'
+            $row.Detail | Should -Not -Match '(?i)is raised|Set-ADForestMode'
+            # No remediation command for a level above the matrix: the map must return nothing.
+            Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item ([string]$row.Item) -Detail ([string]$row.Detail) |
+                Should -BeNullOrEmpty
+        }
+        It 'gives an above-the-list forest no advice even when the override path contains a word other advice matches' {
+            # Under an override the finding cites the FILE PATH. 'Backup' in that path would
+            # otherwise match the unscoped backup entry and attach unrelated advice.
+            $narrow = Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg `
+                -Override @{ SupportedForestModes = @('Windows2012R2Forest') } -OverrideSource 'C:\Scripts\Backup\se.json'
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
+                -DomainControllers $script:DcOk -SeConfig $narrow
+            $row = Get-SeTestRow $r 'Forest functional level'
+            [string]$row.Status | Should -Be 'Fail'
+            # Non-vacuity: without the scoped empty entry this exact text DOES attract advice.
+            Get-AdfaRecommendation -Section 'Some Other Section' -Item 'x' -Detail ([string]$row.Detail) | Should -Not -BeNullOrEmpty
+            Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item ([string]$row.Item) -Detail ([string]$row.Detail) |
+                Should -BeNullOrEmpty
+            # The real matrix lists Windows Server 2016, so the override's verdict must not be
+            # attributed to Microsoft.
+            $row.Detail | Should -Not -Match 'supportability matrix'
+            $row.Detail | Should -Match 'the supplied config table'
+        }
+        It 'does not name a target mode in the raise advice, because the supported set can be overridden' {
+            $only2025 = Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Override @{ SupportedForestModes = @('Windows2025Forest') }
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
+                -DomainControllers $script:DcOk -SeConfig $only2025
+            $row = Get-SeTestRow $r 'Forest functional level'
+            [string]$row.Status | Should -Be 'Fail'
+            $row.Detail | Should -Match 'Supported: Windows2025Forest'
+            $rec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item ([string]$row.Item) -Detail ([string]$row.Detail)
+            $rec | Should -Match 'Set-ADForestMode'
+            $rec | Should -Not -Match 'Windows2016Forest'   # would be "raise to where you already are"
+        }
+        It 'reports Not Assessed, not Fail, when no supported mode resolves to a level' {
+            # Not reachable through Merge-AdfaExchangeSeConfig, which refuses such a config. The
+            # verdict function is pure and takes any table, so it must not turn a broken table
+            # into "every forest fails".
+            $broken = @{} + $script:SeCfg
+            $broken['SupportedForestModes'] = @('Windows2099Forest')
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
+                -DomainControllers $script:DcOk -SeConfig $broken
+            $row = Get-SeTestRow $r 'Forest functional level'
+            [string]$row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match 'Windows2099Forest'
+        }
+        It 'takes the direction from the number even when the mode name disagrees or is unknown' {
+            # An older ActiveDirectory module may not know the newest level's name. What it
+            # prints for such a forest is not published, so the name must not decide anything.
+            foreach ($name in @('UnknownForest', 'Windows2016Forest', '')) {
+                [string](Get-FflRow -Level '10' -Mode $name).Detail | Should -Match 'not listed in the supportability matrix' -Because "name '$name' must not override level 10"
+            }
+            $low = Get-FflRow -Level '4' -Mode 'Windows2016Forest'
+            [string]$low.Status | Should -Be 'Fail'
+            $low.Detail | Should -Match 'until the forest functional level is raised'
+        }
+        It 'keeps the raise wording and the raise advice for a level below the supported ones' {
+            $row = Get-FflRow -Level '4' -Mode 'Windows2008R2Forest'
+            [string]$row.Status | Should -Be 'Fail'
+            $row.Detail | Should -Match 'Windows Server 2008 R2'
+            $row.Detail | Should -Match 'Windows2016Forest'   # names what IS supported
+            $row.Detail | Should -Match 'until the forest functional level is raised'
+            Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item ([string]$row.Item) -Detail ([string]$row.Detail) |
+                Should -Match 'Set-ADForestMode'
+        }
+        It 'reports Not Assessed with the cause when the level could not be read' {
+            $row = Get-FflRow -Level '' -Mode 'Windows2016Forest' -LevelError 'Access is denied'
+            [string]$row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match 'Access is denied'
+            # The mode name alone must never produce a verdict.
+            [string](Get-FflRow -Level '' -Mode 'Windows2016Forest').Status | Should -Be 'Not Assessed'
+        }
+        It 'reports Not Assessed showing the raw value when the level is not recognised' {
+            foreach ($raw in @('9', '11', '-1', 'abc', '7.5')) {
+                $row = Get-FflRow -Level $raw -Mode 'Windows2016Forest'
+                [string]$row.Status | Should -Be 'Not Assessed' -Because "'$raw' is not a known functional level"
+                $row.Detail | Should -Match ([regex]::Escape("'$raw'"))
+            }
+        }
+    }
+
+    Context 'Get-AdfaForestLevelClass' {
+        BeforeAll {
+            $script:Known = @(0, 1, 2, 3, 4, 5, 6, 7, 10)
+            $script:Supp = @(6, 7)
+        }
+        It 'classifies each level against the supported set' {
+            Get-AdfaForestLevelClass -RawLevel '6' -KnownLevels $script:Known -SupportedLevels $script:Supp | Should -Be 'Supported'
+            Get-AdfaForestLevelClass -RawLevel '7' -KnownLevels $script:Known -SupportedLevels $script:Supp | Should -Be 'Supported'
+            Get-AdfaForestLevelClass -RawLevel '4' -KnownLevels $script:Known -SupportedLevels $script:Supp | Should -Be 'Below'
+            Get-AdfaForestLevelClass -RawLevel '0' -KnownLevels $script:Known -SupportedLevels $script:Supp | Should -Be 'Below'
+            Get-AdfaForestLevelClass -RawLevel '10' -KnownLevels $script:Known -SupportedLevels $script:Supp | Should -Be 'Above'
+        }
+        It 'treats a known level in a gap between supported levels as Below, never Above' {
+            # Reachable only with an override (say 2016 + 2012, levels 7 and 5). Level 6 can be
+            # raised to a supported level, so the raise advice is true; Above would be false.
+            Get-AdfaForestLevelClass -RawLevel '6' -KnownLevels $script:Known -SupportedLevels @(5, 7) | Should -Be 'Below'
+        }
+        It 'never returns Supported or Above against an empty supported set' {
+            Get-AdfaForestLevelClass -RawLevel '7' -KnownLevels $script:Known -SupportedLevels @() | Should -Be 'Below'
+        }
+        It 'fails closed on an absent or unrecognised value' {
+            foreach ($raw in @($null, '', '   ')) {
+                Get-AdfaForestLevelClass -RawLevel $raw -KnownLevels $script:Known -SupportedLevels $script:Supp | Should -Be 'Unreadable'
+            }
+            foreach ($raw in @('9', '11', '-1', 'abc', '7.5')) {
+                Get-AdfaForestLevelClass -RawLevel $raw -KnownLevels $script:Known -SupportedLevels $script:Supp |
+                    Should -Be 'Unrecognised' -Because "'$raw' is not a known functional level"
+            }
+        }
+    }
+
+    Context 'Get-AdfaForestBehaviorVersion (collector)' {
+        BeforeAll {
+            $script:FakeForest = [pscustomobject]@{ Name = 'contoso.com'; PartitionsContainer = 'CN=Partitions,CN=Configuration,DC=contoso,DC=com' }
+        }
+        It 'returns the raw attribute value from the Partitions container' {
+            function Get-ADObject {
+                param([string]$Identity, [string[]]$Properties, [Parameter(ValueFromRemainingArguments)]$a)
+                if ($Identity -ne 'CN=Partitions,CN=Configuration,DC=contoso,DC=com') { throw "unexpected identity $Identity" }
+                [pscustomobject]@{ DistinguishedName = $Identity; 'msDS-Behavior-Version' = 10 }
+            }
+            $r = Get-AdfaForestBehaviorVersion -Forest $script:FakeForest -AdParams @{}
+            [string]$r.Level | Should -Be '10'
+            [string]$r.Error | Should -BeNullOrEmpty
+        }
+        It 'carries the directory error verbatim when the read is refused' {
+            function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a) throw 'Access is denied' }
+            $r = Get-AdfaForestBehaviorVersion -Forest $script:FakeForest -AdParams @{}
+            [string]$r.Level | Should -BeNullOrEmpty
+            [string]$r.Error | Should -Match 'Access is denied'
+        }
+        It 'does not read an attribute that was not returned as level 0' {
+            function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ DistinguishedName = 'x' } }
+            $r = Get-AdfaForestBehaviorVersion -Forest $script:FakeForest -AdParams @{}
+            [string]$r.Level | Should -BeNullOrEmpty
+            [string]$r.Error | Should -Match 'msDS-Behavior-Version'
+        }
+        It 'names the missing PartitionsContainer instead of guessing a DN' {
+            $r = Get-AdfaForestBehaviorVersion -Forest ([pscustomobject]@{ Name = 'contoso.com' }) -AdParams @{}
+            [string]$r.Level | Should -BeNullOrEmpty
+            [string]$r.Error | Should -Match 'PartitionsContainer'
+        }
+    }
+
     Context 'Domain controller OS verdict' {
         It 'fails the forest when any single DC runs an unsupported OS' {
             # "All domain controllers in the forest must be running one of the supported
@@ -784,7 +957,7 @@ Describe 'Exchange Server SE compatibility' {
                 [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false },
                 [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Windows Server 2012 Standard'; IsReadOnly = $false }
             )
-            $row = Get-SeTestRow (Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' `
+            $row = Get-SeTestRow (Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' `
                     -DomainSummaries @() -DomainControllers $dcs -SeConfig $script:SeCfg) 'Domain controller operating systems'
             [string]$row.Status | Should -Be 'Fail'
             $row.Detail | Should -Match 'dc2\.contoso\.com'
@@ -796,7 +969,7 @@ Describe 'Exchange Server SE compatibility' {
                 [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $false },
                 [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Not Assessed'; IsReadOnly = $false }
             )
-            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
                 -DomainControllers $dcs -SeConfig $script:SeCfg
             [string](Get-SeTestRow $r 'Domain controller operating systems').Status | Should -Be 'Pass'
             $unk = Get-SeTestRow $r 'Domain controller OS - not readable'
@@ -805,11 +978,11 @@ Describe 'Exchange Server SE compatibility' {
             $unk.Detail | Should -Match 'unverified, not compatible'
         }
         It 'reports Not Assessed when nothing is readable and when no DCs were enumerated' {
-            $allUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+            $allUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
                 -DomainControllers @([pscustomobject]@{ HostName = 'dc1'; OperatingSystem = 'Not Assessed'; IsReadOnly = $false }) `
                 -SeConfig $script:SeCfg
             [string](Get-SeTestRow $allUnk 'Domain controller operating systems').Status | Should -Be 'Not Assessed'
-            $none = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+            $none = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
                 -DomainControllers @() -SeConfig $script:SeCfg
             [string](Get-SeTestRow $none 'Domain controller operating systems').Status | Should -Be 'Not Assessed'
         }
@@ -821,7 +994,7 @@ Describe 'Exchange Server SE compatibility' {
                 [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $false },
                 [pscustomobject]@{ HostName = 'rodc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $true }
             )
-            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
                 -DomainControllers $dcs -SeConfig $script:SeCfg
             $row = Get-SeTestRow $r 'Read-only domain controllers'
             $row | Should -Not -BeNullOrEmpty
@@ -830,12 +1003,12 @@ Describe 'Exchange Server SE compatibility' {
 
             # Non-vacuity for the negative case: the lookup really does return null when absent.
             Get-SeTestRow $r 'No Such Item Exists' | Should -BeNullOrEmpty
-            $clean = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+            $clean = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
                 -DomainControllers $script:DcOk -SeConfig $script:SeCfg
             Get-SeTestRow $clean 'Read-only domain controllers' | Should -BeNullOrEmpty
         }
         It 'states its own limits so it is not mistaken for full SE readiness' {
-            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
                 -DomainControllers $script:DcOk -SeConfig $script:SeCfg
             (Get-SeTestRow $r 'Scope of this check').Detail | Should -Match 'does NOT cover'
         }
@@ -868,9 +1041,55 @@ Describe 'Exchange Server SE compatibility' {
         It 'actually changes the verdict, rather than being decoration' {
             $strict = Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg `
                 -Override @{ SupportedForestModes = @('Windows2016Forest') }
-            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -DomainSummaries @() `
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -ForestLevel '6' -DomainSummaries @() `
                 -DomainControllers $script:DcOk -SeConfig $strict
             [string](Get-SeTestRow $r 'Forest functional level').Status | Should -Be 'Fail'
+        }
+        It 'refuses a supported mode name that has no level in the table' {
+            # The verdict reads the number, so a name with no number would silently drop out
+            # of the supported set and fail a supported forest.
+            { Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Override @{ SupportedForestModes = @('Windows2099Forest') } } |
+                Should -Throw -ExpectedMessage '*Windows2099Forest*'
+        }
+        It 'reads a level table that came from JSON, where entries are objects and not hashtables' {
+            # 2099 / level 99 is deliberately not a real functional level: this proves a level
+            # Microsoft has not shipped yet can be added by config alone.
+            $json = '{ "SupportedForestModes": [ "Windows2099Forest", "Windows2016Forest" ],
+                       "ForestFunctionalLevels": [
+                         { "Level": 99, "Mode": "Windows2099Forest", "Label": "Fictional Server 2099" },
+                         { "Level": "7", "Mode": "Windows2016Forest", "Label": "Windows Server 2016" },
+                         { "Level": 6,  "Mode": "Windows2012R2Forest", "Label": "Windows Server 2012 R2" } ] }'
+            $m = Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Override ($json | ConvertFrom-Json)
+            $t = @(Get-AdfaForestLevelTable -SeConfig $m)
+            $t.Count | Should -Be 3
+            ($t | Where-Object { $_.Level -eq 99 }).Mode | Should -Be 'Windows2099Forest'
+            ($t | Where-Object { $_.Level -eq 99 }).Label | Should -Be 'Fictional Server 2099'
+            ($t | Where-Object { $_.Mode -eq 'Windows2016Forest' }).Level | Should -Be 7   # "7" as a string still orders as a number
+            $new = Get-SeTestRow (Get-AdfaExchangeSeCompatibility -ForestMode '' -ForestLevel '99' -DomainSummaries @() `
+                    -DomainControllers $script:DcOk -SeConfig $m) 'Forest functional level'
+            [string]$new.Status | Should -Be 'Pass'
+            $new.Detail | Should -Match 'Fictional Server 2099'
+            $old = Get-SeTestRow (Get-AdfaExchangeSeCompatibility -ForestMode '' -ForestLevel '6' -DomainSummaries @() `
+                    -DomainControllers $script:DcOk -SeConfig $m) 'Forest functional level'
+            [string]$old.Status | Should -Be 'Fail'
+            $old.Detail | Should -Match 'until the forest functional level is raised'
+        }
+        It 'says a level table override replaces the whole table when that is what broke it' {
+            # An operator adding one new level, expecting a row-by-row merge, drops the built-in
+            # rows. The error must not blame a name the override never mentioned.
+            $partial = '{ "ForestFunctionalLevels": [ { "Level": 99, "Mode": "Windows2099Forest", "Label": "n" } ] }' | ConvertFrom-Json
+            { Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Override $partial } |
+                Should -Throw -ExpectedMessage '*replaces the whole built-in table*'
+            { Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg -Override @{ ForestFunctionalLevels = @() } } |
+                Should -Throw -ExpectedMessage '*empty list*'
+        }
+        It 'judges a 2025 level forest as supported once an override lists it' {
+            # A new supported level must be a config edit, never a code edit.
+            $wide = Merge-AdfaExchangeSeConfig -BaseConfig $script:SeCfg `
+                -Override @{ SupportedForestModes = @('Windows2025Forest', 'Windows2016Forest') }
+            $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2025Forest' -ForestLevel '10' -DomainSummaries @() `
+                -DomainControllers $script:DcOk -SeConfig $wide
+            [string](Get-SeTestRow $r 'Forest functional level').Status | Should -Be 'Pass'
         }
     }
 

@@ -448,22 +448,41 @@ function Get-SeRow {
     return $m[0]
 }
 
-$rFfl = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+$rFfl = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
 Assert-Equal 'Pass' ([string](Get-SeRow $rFfl 'Forest functional level').Status) 'SE FFL: Windows2016Forest => Pass'
-$rFfl2 = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+$rFfl2 = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -ForestLevel '6' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
 Assert-Equal 'Pass' ([string](Get-SeRow $rFfl2 'Forest functional level').Status) 'SE FFL: Windows2012R2Forest => Pass'
-$rFflBad = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2008R2Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+$rFflBad = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2008R2Forest' -ForestLevel '4' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
 Assert-Equal 'Fail' ([string](Get-SeRow $rFflBad 'Forest functional level').Status) 'SE FFL: Windows2008R2Forest => Fail'
 Assert-True ((Get-SeRow $rFflBad 'Forest functional level').Detail -match 'Windows2016Forest') 'SE FFL: the failure names what IS supported'
 $rFflNone = Get-AdfaExchangeSeCompatibility -ForestMode '' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
 Assert-Equal 'Not Assessed' ([string](Get-SeRow $rFflNone 'Forest functional level').Status) 'SE FFL: unreadable => Not Assessed, never Pass'
+
+# H17: the direction comes from msDS-Behavior-Version, not the mode name. A Windows Server 2025
+# level forest (10) is ABOVE the supported levels and must not be told to raise anything.
+$rFfl2025 = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2025Forest' -ForestLevel '10' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+$row2025 = Get-SeRow $rFfl2025 'Forest functional level'
+Assert-Equal 'Fail' ([string]$row2025.Status) 'SE FFL: level 10 (Windows Server 2025) => Fail'
+Assert-True ($row2025.Detail -match 'not listed in the supportability matrix') 'SE FFL: level 10 is reported as not listed, with the matrix cited'
+Assert-True ($row2025.Detail -notmatch '(?i)is raised|Set-ADForestMode') 'SE FFL: level 10 is never told to raise the level'
+Assert-Equal '' ([string](Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Forest functional level' -Detail ([string]$row2025.Detail))) 'SE FFL: level 10 carries no remediation command'
+$rFflNameLies = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '4' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+Assert-Equal 'Fail' ([string](Get-SeRow $rFflNameLies 'Forest functional level').Status) 'SE FFL: the number decides even when the mode name says supported'
+$rFflNameOnly = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '' -ForestLevelError 'Access is denied' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+$rowNameOnly = Get-SeRow $rFflNameOnly 'Forest functional level'
+Assert-Equal 'Not Assessed' ([string]$rowNameOnly.Status) 'SE FFL: a mode name with no readable level => Not Assessed, never Pass'
+Assert-True ($rowNameOnly.Detail -match 'Access is denied') 'SE FFL: the unreadable row carries its cause'
+$rFflOdd = Get-AdfaExchangeSeCompatibility -ForestMode '' -ForestLevel '9' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+$rowOdd = Get-SeRow $rFflOdd 'Forest functional level'
+Assert-Equal 'Not Assessed' ([string]$rowOdd.Status) 'SE FFL: an unrecognised level => Not Assessed'
+Assert-True ($rowOdd.Detail -match "'9'") 'SE FFL: the unrecognised raw value is shown'
 
 # --- Verdict: DC operating systems. One bad DC anywhere in the forest is a blocker.
 $dcMixed = @(
     [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false },
     [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Windows Server 2012 Standard';   IsReadOnly = $false }
 )
-$rOs = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcMixed -SeConfig $seCfg
+$rOs = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $dcMixed -SeConfig $seCfg
 $osRow = Get-SeRow $rOs 'Domain controller operating systems'
 Assert-Equal 'Fail' ([string]$osRow.Status) 'SE DC OS: one unsupported DC => Fail for the forest'
 Assert-True ($osRow.Detail -match 'dc2\.contoso\.com') 'SE DC OS: the failure names the offending DC'
@@ -474,7 +493,7 @@ $dcUnknown = @(
     [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $false },
     [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Not Assessed';        IsReadOnly = $false }
 )
-$rUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcUnknown -SeConfig $seCfg
+$rUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $dcUnknown -SeConfig $seCfg
 Assert-Equal 'Pass' ([string](Get-SeRow $rUnk 'Domain controller operating systems').Status) 'SE DC OS: a readable DC still passes on its own merits'
 $unkRow = Get-SeRow $rUnk 'Domain controller OS - not readable'
 Assert-True ($null -ne $unkRow) 'SE DC OS: an unreadable OS gets its own row, so a partial pass cannot hide it'
@@ -485,11 +504,11 @@ if ($null -ne $unkRow) {
     Assert-True ($unkRow.Detail -match 'unverified, not compatible') 'SE DC OS: unreadable row refuses to imply compatibility'
 }
 
-$rAllUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() `
+$rAllUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
     -DomainControllers @([pscustomobject]@{ HostName = 'dc1'; OperatingSystem = 'Not Assessed'; IsReadOnly = $false }) -SeConfig $seCfg
 Assert-Equal 'Not Assessed' ([string](Get-SeRow $rAllUnk 'Domain controller operating systems').Status) 'SE DC OS: nothing readable => Not Assessed, never Pass'
 
-$rNoDc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers @() -SeConfig $seCfg
+$rNoDc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers @() -SeConfig $seCfg
 Assert-Equal 'Not Assessed' ([string](Get-SeRow $rNoDc 'Domain controller operating systems').Status) 'SE DC OS: no DCs enumerated => Not Assessed'
 
 # --- RODC caveat
@@ -497,7 +516,7 @@ $dcRodc = @(
     [pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $false },
     [pscustomobject]@{ HostName = 'rodc1.contoso.com'; OperatingSystem = 'Windows Server 2019'; IsReadOnly = $true }
 )
-$rRodc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcRodc -SeConfig $seCfg
+$rRodc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $dcRodc -SeConfig $seCfg
 $rodcRow = Get-SeRow $rRodc 'Read-only domain controllers'
 Assert-True ($null -ne $rodcRow) 'SE RODC: a read-only DC is reported'
 if ($null -ne $rodcRow) {
@@ -507,7 +526,7 @@ if ($null -ne $rodcRow) {
 # Non-vacuity for the "no row" assertions below: prove the lookup can actually return nothing,
 # so an absent row is evidence rather than an artefact of how it is queried.
 Assert-True ($null -eq (Get-SeRow $rRodc 'No Such Item Exists')) 'SE RODC: non-vacuity - the row lookup returns null for an absent item'
-$rNoRodc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
+$rNoRodc = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $seCfg
 Assert-True ($null -eq (Get-SeRow $rNoRodc 'Read-only domain controllers')) 'SE RODC: no row when there are no read-only DCs'
 
 # --- Scope statement: the section must not be mistaken for full SE readiness.
@@ -537,12 +556,12 @@ Assert-True $emptiedOs 'SE config: an empty OS list is rejected, not honoured'
 
 # The override must actually change the verdict, or it is decoration.
 $strict = Merge-AdfaExchangeSeConfig -BaseConfig $seCfg -Override @{ SupportedForestModes = @('Windows2016Forest') }
-$rStrict = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $strict
+$rStrict = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2012R2Forest' -ForestLevel '6' -DomainSummaries @() -DomainControllers $dcOk -SeConfig $strict
 Assert-Equal 'Fail' ([string](Get-SeRow $rStrict 'Forest functional level').Status) 'SE config: a narrowed override really does change the verdict'
 
 # Remediation must reach the SE findings and must be SE-specific, not generic replication advice.
 $fflRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Forest functional level' `
-    -Detail 'Windows2008R2Forest is NOT supported for Exchange Server SE.'
+    -Detail ([string](Get-SeRow $rFflBad 'Forest functional level').Detail)
 Assert-True ($fflRec -match 'Set-ADForestMode') 'SE remediation: forest level fix names the cmdlet'
 Assert-True ($fflRec -match 'one-way|cannot be reverted') 'SE remediation: warns the change is irreversible'
 $osRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Domain controller operating systems' `

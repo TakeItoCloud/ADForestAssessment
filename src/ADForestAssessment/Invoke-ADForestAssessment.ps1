@@ -226,7 +226,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.15.0'
+    Version                 = '1.15.1'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -339,15 +339,49 @@ $script:Config = @{
     # supported OS or functional level must be a config edit, never a code edit.
     #
     # Source: https://learn.microsoft.com/exchange/plan-and-deploy/supportability-matrix#supported-active-directory-environments
-    # Read:   2026-09-21
+    # Read:   2026-11-12 (first read 2026-09-21; the Exchange Server SE row was unchanged)
     ExchangeSe              = @{
         Release                     = 'Exchange Server SE'
         SourceUrl                   = 'https://learn.microsoft.com/exchange/plan-and-deploy/supportability-matrix#supported-active-directory-environments'
-        ReadDate                    = '2026-09-21'
-        # Get-ADForest().ForestMode enum names. Windows Server 2016 is the highest forest
-        # functional level Microsoft has ever shipped - there is no 2019/2022/2025 value to
-        # list, which is why this table stops there rather than being out of date.
+        ReadDate                    = '2026-11-12'
+        # ADForestMode names, as the supportability matrix lists them for this release:
+        # "Windows Server 2016, Windows Server 2012 R2" (matrix re-read 2026-11-12).
+        #
+        # Windows Server 2016 is NOT the highest forest functional level. A Windows Server 2025
+        # forest and domain functional level exists, and Windows Server 2019 and 2022 "use
+        # Windows Server 2016 as the most recent functional level":
+        #   https://learn.microsoft.com/windows-server/identity/ad-ds/active-directory-functional-levels
+        #   Read: 2026-11-12
+        # The matrix does not list the 2025 level for this release, so it is absent here because
+        # the vendor does not list it - not because it does not exist. A forest at that level is
+        # ABOVE the supported levels, which is a different finding from one below them.
         SupportedForestModes        = @('Windows2016Forest', 'Windows2012R2Forest')
+        # msDS-Behavior-Version on CN=Partitions,CN=Configuration -> the functional level it
+        # denotes. The verdict is taken from this NUMBER, never from the mode name: the number
+        # is ordered, so "below" and "above" the supported levels can be told apart, and it does
+        # not depend on which ActiveDirectory module version printed the name.
+        #   Attribute and its location, values 0-4:
+        #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/raise-active-directory-domain-forest-functional-levels
+        #   5 = 2012, 6 = 2012 R2, 7 = 2016 (the -ForestMode integers):
+        #     https://learn.microsoft.com/powershell/module/addsdeployment/install-addsforest
+        #   10 = 2025 ("maps to the value of DomainLevel 10 and ForestLevel 10"):
+        #     https://learn.microsoft.com/windows-server/get-started/whats-new-windows-server-2025
+        #   Mode names (the -ForestMode accepted values, incl. Windows2025Forest):
+        #     https://learn.microsoft.com/powershell/module/activedirectory/set-adforestmode
+        #   Read: 2026-11-12 (all four)
+        # 8 and 9 are not published as functional levels and are deliberately absent. A value
+        # not in this table is reported Not Assessed with the raw value, never interpreted.
+        ForestFunctionalLevels      = @(
+            @{ Level = 10; Mode = 'Windows2025Forest';        Label = 'Windows Server 2025' }
+            @{ Level = 7;  Mode = 'Windows2016Forest';        Label = 'Windows Server 2016' }
+            @{ Level = 6;  Mode = 'Windows2012R2Forest';      Label = 'Windows Server 2012 R2' }
+            @{ Level = 5;  Mode = 'Windows2012Forest';        Label = 'Windows Server 2012' }
+            @{ Level = 4;  Mode = 'Windows2008R2Forest';      Label = 'Windows Server 2008 R2' }
+            @{ Level = 3;  Mode = 'Windows2008Forest';        Label = 'Windows Server 2008' }
+            @{ Level = 2;  Mode = 'Windows2003Forest';        Label = 'Windows Server 2003' }
+            @{ Level = 1;  Mode = 'Windows2003InterimForest'; Label = 'Windows Server 2003 interim' }
+            @{ Level = 0;  Mode = 'Windows2000Forest';        Label = 'Windows 2000' }
+        )
         # Matched against Get-ADComputer's OperatingSystem string. Note 2012 R2 is supported
         # and plain 2012 is NOT, so the R2 pattern must not be loosened to bare '2012'.
         SupportedDomainControllerOs = @(
@@ -3092,10 +3126,22 @@ function Merge-AdfaExchangeSeConfig {
         if ($Override -is [hashtable]) { $value = $Override[$k] }
         else { $value = $Override.PSObject.Properties[$k].Value }
         if ($null -eq $value) { continue }
-        if (($k -eq 'SupportedForestModes' -or $k -eq 'SupportedDomainControllerOs') -and @($value).Count -eq 0) {
+        if (($k -eq 'SupportedForestModes' -or $k -eq 'SupportedDomainControllerOs' -or $k -eq 'ForestFunctionalLevels') -and @($value).Count -eq 0) {
             throw ("Exchange SE config override sets '{0}' to an empty list. An empty gate cannot be honoured - remove the key to keep the built-in value." -f $k)
         }
         $merged[$k] = $value
+    }
+    # The verdict is taken from the numeric level, so every supported mode NAME must resolve to
+    # a level in the table. A name that does not would silently drop out of the supported set
+    # and turn a supported forest into a Fail, so it is refused here instead.
+    $knownModes = @(Get-AdfaForestLevelTable -SeConfig $merged | ForEach-Object { $_.Mode })
+    foreach ($mode in @($merged['SupportedForestModes'])) {
+        if ($knownModes -notcontains [string]$mode) {
+            # Says where each half came from. The name may be the BUILT-IN one and the table the
+            # overridden one: an override ForestFunctionalLevels replaces the whole table, it is
+            # not merged row by row, so an override listing only a new level drops the rest.
+            throw ("Exchange SE config: SupportedForestModes contains '{0}', which has no entry in the ForestFunctionalLevels table in force ({1}). An override that supplies ForestFunctionalLevels replaces the whole built-in table, so it must list every level the supported modes need. Add '{0}' there with its msDS-Behavior-Version value, or correct the name." -f [string]$mode, ($knownModes -join ', '))
+        }
     }
     if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) {
         $merged['SourceUrl'] = $OverrideSource
@@ -3168,6 +3214,120 @@ function Get-AdfaEnrichmentFailureAdvice {
     return (' ' + ($parts -join ' '))
 }
 
+function Get-AdfaForestLevelTable {
+    <#
+    .SYNOPSIS
+        Pure: the ForestFunctionalLevels config table as uniform objects.
+    .DESCRIPTION
+        The built-in table holds hashtables; one loaded from a JSON override holds
+        PSCustomObjects. Normalised once here so no caller has to handle both. An entry whose
+        Level is not a whole number is dropped rather than coerced - a level this tool cannot
+        read as a number is not a level it can order.
+    .OUTPUTS
+        [pscustomobject[]] Level (int), Mode, Label.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)][hashtable]$SeConfig)
+    $out = @()
+    foreach ($entry in @($SeConfig['ForestFunctionalLevels'])) {
+        if ($null -eq $entry) { continue }
+        $level = $null; $mode = ''; $label = ''
+        if ($entry -is [hashtable]) { $level = $entry['Level']; $mode = [string]$entry['Mode']; $label = [string]$entry['Label'] }
+        else {
+            foreach ($n in @('Level', 'Mode', 'Label')) {
+                $p = $entry.PSObject.Properties[$n]
+                if ($null -eq $p) { continue }
+                if ($n -eq 'Level') { $level = $p.Value } elseif ($n -eq 'Mode') { $mode = [string]$p.Value } else { $label = [string]$p.Value }
+            }
+        }
+        $parsed = 0
+        if (-not [int]::TryParse([string]$level, [ref]$parsed)) { continue }
+        $out += [pscustomobject]@{ Level = $parsed; Mode = $mode; Label = $label }
+    }
+    return @($out)
+}
+
+function Get-AdfaForestLevelClass {
+    <#
+    .SYNOPSIS
+        Pure: where a raw msDS-Behavior-Version value sits relative to the supported levels.
+    .DESCRIPTION
+        The one decision H17 turns on. Takes the value exactly as the directory returned it
+        (a string, possibly empty), the levels this build knows, and the levels the release
+        supports. Nothing is queried.
+    .OUTPUTS
+        [string] One of: Unreadable | Unrecognised | Supported | Below | Above
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$RawLevel,
+        [AllowEmptyCollection()][int[]]$KnownLevels = @(),
+        [AllowEmptyCollection()][int[]]$SupportedLevels = @()
+    )
+    if ([string]::IsNullOrWhiteSpace($RawLevel)) { return 'Unreadable' }
+    $level = 0
+    # TryParse rejects 'abc' and '7.5'. It accepts '-1' and '9', which are numbers but not
+    # levels - the known-level check is what turns those away.
+    if (-not [int]::TryParse($RawLevel.Trim(), [ref]$level)) { return 'Unrecognised' }
+    if (@($KnownLevels) -notcontains $level) { return 'Unrecognised' }
+    if (@($SupportedLevels) -contains $level) { return 'Supported' }
+    $max = (@($SupportedLevels) | Measure-Object -Maximum).Maximum
+    # Above only when it exceeds EVERY supported level. A known level sitting in a gap between
+    # two supported ones (possible only with an override) is Below: raising it reaches a
+    # supported level, so the raise advice is true for it.
+    if ($null -ne $max -and $level -gt [int]$max) { return 'Above' }
+    return 'Below'
+}
+
+function Get-AdfaForestBehaviorVersion {
+    <#
+    .SYNOPSIS
+        Reads the forest functional level as the number the directory stores.
+    .DESCRIPTION
+        One read-only LDAP read of msDS-Behavior-Version on the Partitions container, whose DN
+        comes from Get-ADForest's own PartitionsContainer property rather than being composed.
+
+        Fail-closed. Learn states that "0 or not set" means the Windows 2000 level, but an
+        attribute that was not RETURNED cannot be told apart from one that is not SET by this
+        read, so an absent value is reported as not read with that reason - never as level 0.
+        A refused or failed read carries the directory's own error text, uninterpreted.
+    .OUTPUTS
+        [pscustomobject] Level (raw string, '' when not read), Error ('' when read).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$Forest,
+        [hashtable]$AdParams = @{}
+    )
+    $container = ''
+    if ($null -ne $Forest) {
+        $pcProp = $Forest.PSObject.Properties['PartitionsContainer']
+        if ($null -ne $pcProp -and $null -ne $pcProp.Value) { $container = [string]$pcProp.Value }
+    }
+    if ([string]::IsNullOrWhiteSpace($container)) {
+        return [pscustomobject]@{ Level = ''; Error = 'Get-ADForest returned no PartitionsContainer, so the object holding msDS-Behavior-Version could not be located.' }
+    }
+    try {
+        $p = @{} + $AdParams
+        $p.Identity = $container
+        $p.Properties = @('msDS-Behavior-Version')
+        $p.ErrorAction = 'Stop'
+        $obj = Get-ADObject @p
+        $bvProp = $null
+        if ($null -ne $obj) { $bvProp = $obj.PSObject.Properties['msDS-Behavior-Version'] }
+        if ($null -eq $bvProp -or $null -eq $bvProp.Value -or [string]::IsNullOrWhiteSpace([string]$bvProp.Value)) {
+            return [pscustomobject]@{ Level = ''; Error = ("msDS-Behavior-Version was not returned for {0}. An unset attribute and one that could not be read look the same from here, so no level is assumed." -f $container) }
+        }
+        return [pscustomobject]@{ Level = ([string]$bvProp.Value).Trim(); Error = '' }
+    }
+    catch {
+        return [pscustomobject]@{ Level = ''; Error = ("Reading msDS-Behavior-Version from {0} failed: {1}" -f $container, $_.Exception.Message) }
+    }
+}
+
 function Get-AdfaExchangeSeCompatibility {
     <#
     .SYNOPSIS
@@ -3192,7 +3352,12 @@ function Get-AdfaExchangeSeCompatibility {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
+        # Shown for information only. The verdict never reads it - see -ForestLevel.
         [AllowNull()][AllowEmptyString()][string]$ForestMode,
+        # msDS-Behavior-Version exactly as read from the Partitions container; '' when not read.
+        [AllowNull()][AllowEmptyString()][string]$ForestLevel,
+        # Why -ForestLevel is empty, in the directory's own words where it gave any.
+        [AllowNull()][AllowEmptyString()][string]$ForestLevelError,
         [AllowNull()][AllowEmptyCollection()]$DomainSummaries = @(),
         [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
         [Parameter(Mandatory)][hashtable]$SeConfig
@@ -3207,18 +3372,72 @@ function Get-AdfaExchangeSeCompatibility {
         })
 
     # ---- Forest functional level ----
-    if ([string]::IsNullOrWhiteSpace($ForestMode)) {
-        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Forest functional level' -Status $script:Status.NotAssessed `
-            -Detail ("Forest functional level could not be read, so {0} compatibility cannot be judged. {1}" -f $release, $provenance)
+    # Decided from the NUMBER (msDS-Behavior-Version), not the mode name. Membership of a name
+    # list can only say "listed" or "not listed"; before H17 every unlisted name was told to
+    # raise the level, which is the wrong direction for a forest already above the matrix.
+    $levelTable = @(Get-AdfaForestLevelTable -SeConfig $SeConfig)
+    $knownLevels = @($levelTable | ForEach-Object { [int]$_.Level })
+    $supportedLevels = @($levelTable | Where-Object { $supportedModes -contains $_.Mode } | ForEach-Object { [int]$_.Level })
+    $rawLevel = ''
+    if ($null -ne $ForestLevel) { $rawLevel = ([string]$ForestLevel).Trim() }
+    $modeNote = ''
+    if (-not [string]::IsNullOrWhiteSpace($ForestMode)) {
+        $modeNote = (" Get-ADForest reported ForestMode '{0}', shown for information only - the verdict is taken from the numeric level." -f $ForestMode)
     }
-    elseif ($supportedModes -contains $ForestMode) {
-        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Forest functional level' -Status $script:Status.Pass `
-            -Detail ("{0} - supported for {1}. {2}" -f $ForestMode, $release, $provenance)
+    $fflItem = 'Forest functional level'
+
+    if ($supportedLevels.Count -eq 0) {
+        # Reachable only through a config whose supported names resolve to no level. Judging
+        # against an empty set would fail every forest, so say what is wrong instead.
+        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item $fflItem -Status $script:Status.NotAssessed `
+            -Detail ("None of the supported forest modes ({0}) resolves to a level in the ForestFunctionalLevels table, so there is nothing to judge the forest against. Correct the config. {1}" -f ($supportedModes -join ', '), $provenance)
     }
     else {
-        $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Forest functional level' -Status $script:Status.Fail `
-            -Detail ("{0} is NOT supported for {1}. Supported: {2}. Setup will not proceed until the forest functional level is raised. {3}" -f `
-                $ForestMode, $release, ($supportedModes -join ', '), $provenance)
+        $levelClass = Get-AdfaForestLevelClass -RawLevel $rawLevel -KnownLevels $knownLevels -SupportedLevels $supportedLevels
+        $label = ''
+        $parsedLevel = 0
+        if ([int]::TryParse($rawLevel, [ref]$parsedLevel)) {
+            $hit = @($levelTable | Where-Object { [int]$_.Level -eq $parsedLevel })
+            if ($hit.Count -gt 0) { $label = [string]$hit[0].Label }
+        }
+        $what = ("{0} forest functional level (msDS-Behavior-Version {1})" -f $label, $rawLevel)
+
+        if ($levelClass -eq 'Supported') {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item $fflItem -Status $script:Status.Pass `
+                -Detail ("{0} - supported for {1}. {2}{3}" -f $what, $release, $provenance, $modeNote)
+        }
+        elseif ($levelClass -eq 'Below') {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item $fflItem -Status $script:Status.Fail `
+                -Detail ("{0} is NOT supported for {1}: it is below the supported levels. Supported: {2}. Setup will not proceed until the forest functional level is raised. {3}{4}" -f `
+                    $what, $release, ($supportedModes -join ', '), $provenance, $modeNote)
+        }
+        elseif ($levelClass -eq 'Above') {
+            # No remediation command is offered, by the operator's decision for H17: "raise it"
+            # is the opposite of what this finding means. Learn does publish a procedure for
+            # LOWERING a functional level; whether to point at it is PORT-PLAN H18, because that
+            # page was not read in full when this was written.
+            #
+            # The list is called "the supportability matrix" only when the values really are
+            # Microsoft's. Under an override the same sentence would put words in the vendor's
+            # mouth - the real matrix may well list the level an override leaves out.
+            $listName = 'the supplied config table'
+            if ([string]$SeConfig['SourceUrl'] -match '(?i)^https://learn\.microsoft\.com/') { $listName = 'the supportability matrix' }
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item $fflItem -Status $script:Status.Fail `
+                -Detail ("{0} is not listed in {1} for {2}: it is above the levels listed there ({3}). This is not a level to raise. {4}{5}" -f `
+                    $what, $listName, $release, ($supportedModes -join ', '), $provenance, $modeNote)
+        }
+        elseif ($levelClass -eq 'Unrecognised') {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item $fflItem -Status $script:Status.NotAssessed `
+                -Detail ("msDS-Behavior-Version on the Partitions container is '{0}', which is not a forest functional level this build recognises (known: {1}). The raw value is shown and no verdict is given for {2}.{3}" -f `
+                    $rawLevel, (($knownLevels | Sort-Object) -join ', '), $release, $modeNote)
+        }
+        else {
+            $cause = 'No cause was recorded.'
+            if (-not [string]::IsNullOrWhiteSpace($ForestLevelError)) { $cause = ("Cause: {0}" -f ([string]$ForestLevelError).Trim()) }
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item $fflItem -Status $script:Status.NotAssessed `
+                -Detail ("The forest functional level (msDS-Behavior-Version on the Partitions container) could not be read, so {0} compatibility cannot be judged. {1}{2}" -f `
+                    $release, $cause, $modeNote)
+        }
     }
 
     # ---- Domain functional levels: informational ----
@@ -5841,8 +6060,18 @@ $script:RecommendationMap = @(
        Text  = 'Reset the secure channel against a known-healthy DC. Member/workstation: "Reset-ComputerMachinePassword -Server <healthyDC>" or "nltest /sc_reset:<domain>". For a DC: stop the KDC service, run "netdom resetpwd /server:<healthyDC> /userd:<domain>\<admin> /passwordd:*", restart. Never disjoin/rejoin a domain controller.' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
+    # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
+    # First match wins, so it stops the raise entry below - which before H17 told a Windows
+    # Server 2025 level forest to raise its level to Windows Server 2016 - and it stops every
+    # later unscoped entry too. That second part is not theoretical: under a config override the
+    # finding cites the override FILE PATH, and a path containing a word such as "Backup" would
+    # otherwise attract the backup advice. Tests pin both.
+    @{ Section = '(?i)exchange se'; Match = '(?i)this is not a level to raise'
+       Text  = '' }
+    # The target mode is not named: the supported set can be overridden, so the finding's own
+    # "Supported:" list is the only place that knows which level to raise to.
     @{ Section = '(?i)exchange se'; Match = '(?i)forest functional level'
-       Text  = 'Raise the forest functional level before Setup: confirm every DC is on a supported OS first, then "Set-ADForestMode -Identity <forest> -ForestMode Windows2016Forest" (raise each domain with Set-ADDomainMode first where needed). This is a one-way change and cannot be reverted without a forest recovery, so take a verified system-state backup of two DCs per domain and confirm replication is healthy beforehand.' }
+       Text  = 'Raise the forest functional level before Setup: confirm every DC is on a supported OS first, then "Set-ADForestMode -Identity <forest> -ForestMode <mode>", using one of the supported modes this finding lists (raise each domain with Set-ADDomainMode first where needed). This is a one-way change and cannot be reverted without a forest recovery, so take a verified system-state backup of two DCs per domain and confirm replication is healthy beforehand.' }
     @{ Section = '(?i)exchange se'; Match = '(?i)not supported for|not readable|unverified, not compatible'
        Text  = 'Every domain controller in the forest must run a supported Windows Server version, not only the ones in the Exchange site. Upgrade or decommission the named DCs before Setup, transferring any FSMO roles they hold first. Where the OS could not be read, re-run with credentials able to read the DC computer objects - an unreadable value is not a pass.' }
     @{ Section = '(?i)exchange se'; Match = '(?i)read-only domain controller'
@@ -6714,7 +6943,19 @@ function Invoke-Main {
             $fmProp = $forest.PSObject.Properties['ForestMode']   # $null when absent - StrictMode-safe
             if ($null -ne $fmProp -and $null -ne $fmProp.Value) { $forestMode = [string]$fmProp.Value }
         }
+        # The numeric level is what the verdict reads. When the forest itself was unreadable
+        # there is no Partitions container to ask, and the cause is the forest error.
+        $forestLevel = ''
+        $forestLevelError = ''
+        if ($forestError) { $forestLevelError = ("The forest could not be read: {0}" -f $forestError) }
+        else {
+            $bv = Get-AdfaForestBehaviorVersion -Forest $forest -AdParams $adParams
+            $forestLevel = [string]$bv.Level
+            $forestLevelError = [string]$bv.Error
+            if ($forestLevelError) { Write-Log -Level WARN -Section 'ExchangeSeReadiness' -Message $forestLevelError }
+        }
         $sectionData['Exchange SE Compatibility'] = Get-AdfaExchangeSeCompatibility -ForestMode $forestMode `
+            -ForestLevel $forestLevel -ForestLevelError $forestLevelError `
             -DomainSummaries $sectionData['Domain Summary'] -DomainControllers $allDcInventory -SeConfig $seConfig
     }
 

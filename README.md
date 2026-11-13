@@ -53,7 +53,7 @@ Extracted from
 | **Recovery: per-site GC coverage** | `-Sections SiteGc`: joins `Site`, `IsGlobalCatalog` and `IsReadOnly` — which the DC inventory already collects and nothing correlated. A site holding DCs but none that is **both writeable and a GC** is a `Warning` naming what is actually there, because Microsoft requires the AD site hosting an Exchange server to contain at least one writeable domain controller that is also a global catalog server, and an Exchange server cannot be deployed in a site containing only read-only directory servers |
 | Identity export | Full user and computer export with every populated attribute (CSV; HTML shows a summary) |
 | Exchange | Schema markers |
-| **Exchange SE compatibility** | Forest functional level and **every DC's operating system** against the Exchange Server SE supported matrix, plus the read-only-DC caveat — from a versioned config table with a `-ExchangeSeConfigPath` override. Deliberately narrow: it does *not* cover schema/organisation object versions, Exchange server inventory or coexistence builds. The per-site writeable-GC requirement is covered separately, as an AD health check, by `-Sections SiteGc` |
+| **Exchange SE compatibility** | Forest functional level (read as the numeric `msDS-Behavior-Version`, so a level above the matrix is not mistaken for one below it) and **every DC's operating system** against the Exchange Server SE supported matrix, plus the read-only-DC caveat — from a versioned config table with a `-ExchangeSeConfigPath` override. Deliberately narrow: it does *not* cover schema/organisation object versions, Exchange server inventory or coexistence builds. The per-site writeable-GC requirement is covered separately, as an AD health check, by `-Sections SiteGc` |
 
 Every Fail / Warning / Broken / Degraded finding in the consolidated output carries a
 **best-practice remediation recommendation** (a `Recommendation` column in
@@ -149,13 +149,26 @@ Off Windows it falls back to `$HOME/Documents`.
 
 | Gate | Supported for Exchange Server SE |
 | --- | --- |
-| Forest functional level | `Windows2016Forest`, `Windows2012R2Forest` — a lower level is a `Fail` |
+| Forest functional level | Windows Server 2016 (`msDS-Behavior-Version` 7) and Windows Server 2012 R2 (6). A lower level is a `Fail` that says to raise it. A **higher** level — Windows Server 2025 is 10 — is a `Fail` that says the level is not listed in the matrix, with no remediation command. An unreadable level is `Not Assessed` with its cause; a value that is not a known level is `Not Assessed` with the raw value shown |
 | DC operating system, **every DC in the forest** | Windows Server 2025 / 2022 / 2019 / 2016 / 2012 R2 — one unsupported DC anywhere is a `Fail` |
 | Read-only DCs | Not supported; reported as a `Warning`, since an RODC in a site no Exchange server enters does not stop Setup |
 
 Values come from
 [the supportability matrix](https://learn.microsoft.com/exchange/plan-and-deploy/supportability-matrix#supported-active-directory-environments)
-(read 2026-09-21) and live in a versioned table in the script, not scattered through the code.
+(read 2026-11-12) and live in a versioned table in the script, not scattered through the code.
+
+The forest level verdict is taken from the **number** the directory stores
+(`msDS-Behavior-Version` on the Partitions container), not from the `ForestMode` name, because
+only a number can tell "below the supported levels" from "above them". The name
+`Get-ADForest` reports is shown for information. Each name in `SupportedForestModes` must exist
+in the script's `ForestFunctionalLevels` table, which maps names to numbers; a supported mode
+the table does not know is a terminating error. That table can be overridden too, to add a level
+Microsoft ships later, but an override **replaces the whole table** rather than merging row by
+row, so it must list every level the supported modes need.
+
+When an override is in force, a level above the listed ones is reported as not listed in "the
+supplied config table", not "the supportability matrix": the tool does not attribute your
+table's verdict to Microsoft.
 When Microsoft revises the matrix, override it rather than editing code:
 
 ```json
