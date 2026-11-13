@@ -75,6 +75,38 @@ verdict only.
 | R5 | Runtime verification of the H-track checks against a live forest. **First run done 2026-09-22** against a single-domain four-DC forest: it found H10 and H11, and confirmed the `_msdcs`, time-hierarchy and site-GC collectors execute. A **multi-domain** live run followed on 2026-09-26 against a four-domain forest and immediately found H16, a cross-domain referral that broke the Exchange SE verdict in three of four domains - the single highest-value finding of the whole track, and unreachable from any single-domain run or fixture. Still outstanding, the lingering-object scan (opt-in, not exercised), and a non-English Windows (every console-text parser matches English verdict strings). **Operator-owned** — the build environment is Linux with no directory and no Windows PowerShell 5.1, so every AD call, `Get-WinEvent -ComputerName`, `dfsrmig`, `repadmin`, `w32tm /query /computer:` and per-server `Resolve-DnsName` path is exercised against stubs only. Two H8 paths need naming specifically: (a) `w32tm /query /configuration` — the KEY names are published but the **line format is not**, so `ConvertFrom-AdfaW32tmConfiguration` is tolerant by design and reports `Not Assessed` on a non-match; the first live run must confirm the parse actually matches, or the root PDC client-type row will read `Not Assessed` everywhere. (b) `Resolve-DnsName -Type SOA` against a delegated child zone — the apex-comparison logic is tested against fixtures, but that the real cmdlet surfaces the **parent** apex for a non-delegated subdomain is asserted from vendor documentation, not measured | Planned | |
 | R6 | HTML badges and the log's `Summary:` line under-count: the four counters do not match `Info`, so 17 of 123 findings on the three-domain fixture are counted nowhere. The JSON summary reconciles (v1.7.0); correcting the HTML and the log changes output already shown to people, so it is the operator's call | Planned | |
 
+## Coverage track (gaps against the AdAssessment26 finding catalogue)
+
+**Proposed 2026-11-13, awaiting operator approval of scope and order.** Source:
+[docs/GAP-ANALYSIS.md](docs/GAP-ANALYSIS.md), which maps all 89 catalogue rows to this tool
+(15 Covered, 44 Partly, 30 Missing) with evidence per row. One row per group of checks; one
+branch and one pull request per row. C1 to C8 are in the operator's stated priority order; C9 to
+C15 are the remainder in a proposed order.
+
+Every check built under this track runs against stubs only until C17, and each changelog entry
+must say so. Vendor facts are re-read on Microsoft Learn in the session that builds the check;
+the reference repository's recorded facts are a starting point, not a source.
+
+| Phase | Scope | Status | Date |
+| --- | --- | --- | --- |
+| C1 | DC operating system past end of support, and patch level (build, last update date, uptime). Catalogue: OSL-001, INV-003. Sections: `DomainControllers`, new `DcSystem` | Planned | |
+| C2 | Free disk space on the NTDS database, NTDS log and SYSVOL volumes. Catalogue: DISK-001. New section `DcDisk` | Planned | |
+| C3 | LDAP channel binding, LDAP signing enforcement, SMB server and client signing, LmCompatibilityLevel. Catalogue: LDAP-001..003, SMB-001..002, NTLM-001, INV-019. Section: `DcHardening` | Planned | |
+| C4 | Windows LAPS: DSRM password management, and enabled non-DC computers without LAPS. Catalogue: LAPS-001..002. New section `Laps` | Planned | |
+| C5 | Domain controller certificate inventory and expiry. Catalogue: CERT-001, INV-020. New section `DcCertificates` | Planned | |
+| C6 | RID pool: allocation enabled, global RID space consumed, per-DC pool. Catalogue: RID-001..002, INV-004. New section `RidPool` | Planned | |
+| C7 | SIDHistory populated. Catalogue: OBJ-009. Section: `SecurityPosture` | Planned | |
+| C8 | GPO version in AD versus GPT.INI in SYSVOL. Catalogue: GPO-001. Section: `Gpo` | Planned | |
+| C9 | Dangerous rights: the domain root rule and a SID allowlist in place of name matching, AdminSDHolder, GPOs. Catalogue: ACL-001..003. Section: `Acl` | Planned | |
+| C10 | Privileged groups and delegation: Schema and Enterprise Admins rule, adminCount orphans, constrained delegation, protocol transition, RBCD, SPN on privileged accounts. Catalogue: PRIV-001..002, OBJ-001..004, OBJ-006, INV-005, INV-017. Sections: `PrivilegedAccounts`, `PrivilegedHygiene`, `Kerberos` | Planned | |
+| C11 | dcdiag tests not in the grid, and the per-partition and per-scope verdict rule. Catalogue: DCDIAG-001, 008, 009; REPL-001, 004, 006..010; SYSVOL-002..003. Section: `DcDiagnostics` | Planned | |
+| C12 | dcdiag DNS per-category results. Catalogue: DNSDIAG-001..007. **Overlaps H15** - merge the two rows rather than run both | Planned | |
+| C13 | DNS: dynamic update, scavenging, locator SRV, DC A records, records naming absent DCs; zone configuration, record export, DC DNS client servers. Catalogue: DNS-001..005, INV-013, 014, 016. Sections: `Dns`, `DnsAdConsistency`, `DomainControllers`, new `DnsRecordExport` | Planned | |
+| C14 | Reachability classes, subnets without a site, clock offset reference, stale enabled objects, SYSVOL replication engine. Catalogue: REACH-001..002, SITE-001, TIME-001, STALE-001..002, SYSVOL-004 | Planned | |
+| C15 | Inventory depth: topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration. Catalogue: INV-001, 006..012, 015 | Planned | |
+| C16 | Triage of the 30 promises the README and help text make that the code does not keep (table in docs/GAP-ANALYSIS.md): for each, fix the code, fix the wording, or accept. Several read as defects in shipped checks, among them `Get-AdfaDfsrSubscription` reading a property no inventory row carries, and the README's `-SkipVerification` example naming a parameter that does not exist. One claim, that `nltest /sc_verify` is not read-only, rests on a vendor fact that could not be verified when the analysis was written and must be read on Microsoft Learn first. **Owner: operator** | Planned | |
+| C17 | First run against a real forest of every check added under C1 to C15. **Owner: operator** | Planned | |
+
 **R4 is the gate for trusting the recovery sections in production**: every R0-R2 check is
 covered by pure-logic tests with stubs and CI runs on ubuntu — nothing has yet exercised
 `Get-WinEvent -ComputerName`, `Invoke-Command`, `dcdiag /s:` or per-server `Resolve-DnsName`

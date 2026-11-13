@@ -10,6 +10,18 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Docs — 2026-11-13 (gap analysis against the AdAssessment26 finding catalogue; no code change)
+
+[docs/GAP-ANALYSIS.md](docs/GAP-ANALYSIS.md) maps all 89 rows of the AdAssessment26 finding
+catalogue to this tool at v1.15.0: 15 Covered, 44 Partly, 30 Missing, each with its evidence,
+what is needed, the data source and transport, the rights needed and a proposed `-Sections`
+name. It also lists 30 things the README or help text promise that the code does not do, or
+does only in part. PORT-PLAN gains a Coverage track, C1 to C17, proposed and awaiting approval.
+
+Limits, stated in the document itself: the rows were produced by reading code and were not
+individually re-verified; nothing was run against a directory; and the vendor facts quoted come
+from the reference repository's records and were not re-read on Microsoft Learn.
+
 ### Fixed — 2026-11-12 (a forest above the supported functional levels was told to raise its level, tool v1.15.1)
 
 **PORT-PLAN H17.** The Exchange SE section judged the forest functional level by asking whether
