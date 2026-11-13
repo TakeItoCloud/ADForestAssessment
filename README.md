@@ -10,10 +10,11 @@ not be tested from the local side is reported `Not Assessed` — never `Verified
 The whole tool is **coverage-aware and fail-closed**: any value that could not be collected
 comes back `Not Assessed`, never a false `Pass` or `0`.
 
-The script writes nothing to the directory itself, and from v1.17.0 its secure channel checks
-are read-only by default. **It is not yet true that a default run changes nothing.** See
-[What a run can change](#what-a-run-can-change) before running it against a forest where that
-matters.
+The script writes nothing to the directory itself. From v1.18.0, every command it can run
+that Microsoft documents as changing something, and that this project knows of, is off unless
+you give its switch. That is a statement about what is known, not a guarantee: the other
+commands a default run invokes have not each been audited. See
+[What a run can change](#what-a-run-can-change).
 
 Extracted from
 `infra-scripting-suite/powershell/Assessments/ActiveDirectory/Invoke-ADForestAssessment.ps1`.
@@ -27,7 +28,7 @@ Extracted from
 | Replication | Partner metadata, failures, queue; sites, subnets, site links, connection objects; `repadmin /showrepl * /csv` cross-check (catches links the AD cmdlets miss when a partner is unreachable) |
 | **Replication convergence** | `repadmin /replsummary` **parsed into findings** — the largest delta and fails/total per DSA, in both directions — plus **per-link convergence lag**: a link with **zero failures** whose last success is old is reported, because that is the silent stall where nothing errors since nothing is being attempted. An unreadable delta or last-success time is `Not Assessed`, never treated as recent |
 | **Trusts** | Forest and domain trusts with per-direction secure-channel verification — outbound from the local side, **inbound executed on a partner-domain DC over WinRM** (a direction that cannot be tested from the correct side is `Not Assessed`, never `Verified`) — plus SID filtering, selective authentication, TGT delegation, encryption posture |
-| Diagnostics | `dcdiag` parsed to PASS/FAIL across 17 tests (Netlogons, Services, Replications, FsmoCheck, Advertising, SysVolCheck, MachineAccount, ObjectsReplicated, RidManager, KccEvent, VerifyReferences, CrossRefValidation, KnowsOfRoleHolders, Intersite, DFSREvent, **CheckSecurityError**, **VerifyEnterpriseReferences** — the last two specifically post-restore) |
+| Diagnostics | `dcdiag` parsed to PASS/FAIL per DC, an 18-test grid. **16 run by default**: Netlogons, Services, Replications, FsmoCheck, Advertising, SysVolCheck, MachineAccount, ObjectsReplicated, RidManager, KccEvent, VerifyReferences, CrossRefValidation, KnowsOfRoleHolders, DFSREvent, **CheckSecurityError** and **VerifyEnterpriseReferences** (the last two specifically post-restore). **2 run only with `-IncludeDcdiagActiveTests`**, because they change state: Intersite and DNS (see [What a run can change](#what-a-run-can-change)) |
 | DNS | Zones, scavenging, forwarders, zone transfer, critical SRV records, secure dynamic updates |
 | **SYSVOL / DFSR** | DFSR migration state; **SYSVOL and NETLOGON share presence per DC** (SMB-unreachable is reported as unknown, never as a missing share); and the two attributes a D2/D4-equivalent rebuild edits by hand — `msDFSR-Enabled=FALSE` (replication switched off) and `msDFSR-options=1` (authoritative member), with **more than one authoritative member reported as a conflict**, which no single DC can reveal |
 | **SYSVOL backlog** | Opt-in (`-IncludeSysvolBacklog`): pending SYSVOL files **in both directions** between every DC and its domain's PDC emulator. `Get-DfsrBacklog` shows at most 100 records with the true total only in its verbose stream, so where that cannot be read the figure is reported as **"at least N"**, never as a total |
@@ -50,7 +51,7 @@ Extracted from
 | **Recovery: secure channels** | DC machine-account password age from the replicated `pwdLastSet` (collected centrally) and, per DC over WinRM where reachable, the secure channel's last recorded status from `nltest /sc_query` (read-only; the live `nltest /sc_verify` test only with `-IncludeSecureChannelVerify`) |
 | **Recovery: restore integrity** | `-Sections RestoreIntegrity`: the **`Dsa Not Writable` registry marker** per DC — the forensic evidence of a USN rollback that Microsoft names as the fallback when event 2095 *"may be overwritten before [it is] observed"*, so it is the one restore signal that does not depend on the event log surviving. Plus `invocationId` per DSA: a **shared value across two DCs is a cloned database** (`Fail`), and the per-DC values are emitted as a baseline so diffing `Assessment.json` between runs shows a DC that was restored in between |
 | **Recovery: DS events** | Per-DC Directory Service log scan for lingering objects (1988), tombstone-lifetime exceeded (2042), USN rollback (2095), unsupported restore (2103), source-GUID DNS failures (2087/2088), KCC failures (1311/1865/1925/1084) — **gated on log coverage**: the oldest retained record is compared against the lookback window, and a clean scan over a cleared, wrapped or unreadable log reports `Not Assessed` naming where coverage begins, never `Pass`. A count taken from a partial log is reported as a minimum |
-| **Recovery: dcdiag grid** | 18 parsed tests per DC, including `/test:DNS /DnsAll` (delegations, forwarders, dynamic update, record registration) and `Intersite` with the `/a` it needs to actually test anything as Pass/Fail columns. Every cell that could **not** be assessed carries its cause in the `Failures` column - the exit code, the error, and an excerpt of what dcdiag actually printed - so "Not Assessed" can never again mean "we are not telling you why". Note the verdict match is the literal English `passed test <name>`: on a non-English Windows the cells report `Not Assessed` with that named as the likely reason, rather than guessing |
+| **Recovery: dcdiag grid** | 18 columns per DC, 16 of them tested in a default run. `/test:DNS /DnsAll` (delegations, forwarders, dynamic update, record registration) and `Intersite` with the `/a` it needs to actually test anything are run only with `-IncludeDcdiagActiveTests`; without it those two cells read `Not Assessed` and the row's `NotRun` column says why. Every cell of a test that was attempted and could **not** be assessed carries its cause in the `Failures` column - the exit code, the error, and an excerpt of what dcdiag actually printed - so "Not Assessed" can never again mean "we are not telling you why". Note the verdict match is the literal English `passed test <name>`: on a non-English Windows the cells report `Not Assessed` with that named as the likely reason, rather than guessing |
 | **Recovery: `_msdcs` delegation** | `-Sections MsdcsDelegation`: whether `_msdcs.<forest>` is a **zone of its own** (an SOA query answered by the *parent* zone means it is only a subdomain, which will not serve the forest-wide locator records), whether the parent holds delegation **NS** records, whether each NS target has a resolvable **glue (A)** record, and whether each NS host is a DC this run inventoried — stale NS records are what a metadata cleanup leaves behind. All four measured **per DNS server**, because the zone is AD-integrated and with replication broken the answer differs between servers |
 | **Recovery: time hierarchy** | `-Sections TimeHierarchy`: every DC's **measured clock offset** via `w32tm /stripchart /rdtsc` (the one external-tool output Microsoft publishes a schema for) against the 300s Kerberos maximum, judged on the worst sample and stating that it measures divergence from the host running the assessment rather than absolute correctness; plus every DC's time source via `w32tm /query /computer:<dc> /source`. A DC sourcing time from its **virtualisation host** is a `Warning` — per KB 976924 two time sources can make a DC's clock jump, which *"can cause lingering objects to be left in caches, and may cause replication to stop"*. The **forest root PDC emulator** must not take time from the domain hierarchy it is the top of (W32Time logs event ID 12 for that), so its source and its configured client `Type` each get a row. Where Microsoft's own guidance on host time sync diverges for the PDC, the finding names **both** positions instead of picking one |
 | **Recovery: per-site GC coverage** | `-Sections SiteGc`: joins `Site`, `IsGlobalCatalog` and `IsReadOnly` — which the DC inventory already collects and nothing correlated. A site holding DCs but none that is **both writeable and a GC** is a `Warning` naming what is actually there, because Microsoft requires the AD site hosting an Exchange server to contain at least one writeable domain controller that is also a global catalog server, and an Exchange server cannot be deployed in a site containing only read-only directory servers |
@@ -269,23 +270,33 @@ Known, with Microsoft's own wording (read on Learn 2026-11-13):
 
 | What | When | What Microsoft documents |
 | --- | --- | --- |
-| `dcdiag /test:DNS /DnsAll`, per DC | Default run (`DcDiagnostics` section) | The dynamic update test performs "registration of a test record (_dcdiag_test_record)... The test record is deleted automatically after the test." |
-| `dcdiag /test:Intersite /a`, per DC | Default run (`DcDiagnostics` section) | Works by "reporting back any replication failures after triggering a replication." |
+| `dcdiag /test:DNS /DnsAll`, per DC | Only with `-IncludeDcdiagActiveTests` | The dynamic update test performs "registration of a test record (_dcdiag_test_record)... The test record is deleted automatically after the test." |
+| `dcdiag /test:Intersite /a`, per DC | Only with `-IncludeDcdiagActiveTests` | Works by "reporting back any replication failures after triggering a replication." |
 | `nltest /sc_verify`; `netdom trust /Verify` as its fallback | Only with `-IncludeSecureChannelVerify` | `/sc_verify`: "If the secure channel does not work, this parameter removes the existing channel, and then builds a new one." |
 | `repadmin /removelingeringobjects ... /advisory_mode` | Only with `-IncludeLingeringObjectScan` | Advisory mode removes nothing; it writes events to the target DCs' Directory Service logs |
-| `dcdiag /c /v` raw capture | Only with `-IncludeDcdiag` | `/c` includes `CutoffServers`, which "triggers replication on the DCs" |
+| `dcdiag /c /v` raw capture | Only with `-IncludeDcdiag` | `/c`: "Comprehensive. Runs all tests except DCPromo and RegisterInDNS, including non-default tests." By that description it includes `CutoffServers`, which "triggers replication on the DCs", **and the DNS test in the first row** |
 
-The two `dcdiag` rows in a default run are a known gap, PORT-PLAN H20. Until it is closed, leave
-`DcDiagnostics` out of `-Sections` for a run that must change nothing.
+The two `dcdiag` switches are independent. `-IncludeDcdiagActiveTests` controls the parsed
+grid; `-IncludeDcdiag` controls the raw capture, and by Microsoft's description of `/c` the raw
+capture runs the DNS test whether or not the other switch is given. A run with `-IncludeDcdiag`
+alone therefore shows DNS as "not run" in the grid while the capture ran it.
 
-Everything else a default run invokes is used as a query: `nltest /sc_query` and `/dsgetdc`,
+Up to v1.17.0 the two `dcdiag` tests in the first two rows ran in every default run. From
+v1.18.0 they do not: without the switch, the **DNS** and **Intersite** cells of the DC
+Diagnostics grid read `Not Assessed`, each DC's row says why in its `NotRun` column and names
+the switch, and the row's own status is taken from the other 16 tests. A default run therefore no longer tests DNS
+dynamic update, DNS delegation and record registration through `dcdiag`, or intersite
+replication. The `Dns`, `DnsDepth`, `DnsAdConsistency` and `MsdcsDelegation` sections still
+read DNS without `dcdiag`.
+
+Everything a default run does invoke is used as a query: `nltest /sc_query` and `/dsgetdc`,
 `dfsrmig /getglobalstate`, `repadmin /replsummary`, `/showrepl * /csv` and `/showbackup`,
 `w32tm /query` and `/stripchart`, `nslookup`, the other 16 `dcdiag` tests, and remote reads
 over WinRM, CIM, the remote registry, the DNS Server cmdlets and the event log. No side effect
-of those is documented by Microsoft that this project has found; they have not each been
-audited, and that audit is part of H20.
+of those is documented by Microsoft that this project has found. They have not each been
+audited; that audit is PORT-PLAN H20a.
 
-## Secure channel checks, and the one switch that is not read-only
+## Secure channel checks
 
 Three checks look at a Netlogon secure channel: the outbound direction of each trust (on the
 host running the assessment), the inbound direction (on a domain controller of the trust

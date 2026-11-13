@@ -1410,6 +1410,42 @@ function Invoke-ExternalCommand {
 }
 $gridRows = @(Get-AdfaDcDiagnostic -DomainControllers @('dc1.contoso.com') -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)
 Assert-Equal 1 (@($gridRows).Count) 'dcdiag grid: one row per DC'
+
+# H20: the DNS and Intersite tests change state (a DNS test record is registered and deleted; a
+# replication is triggered), so a default run must not invoke dcdiag for them at all.
+$script:h20Args = @()
+function Invoke-ExternalCommand {
+    param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
+    $script:h20Args += $Arguments
+    $name = ([regex]::Match($Arguments, '/test:(\S+)')).Groups[1].Value
+    [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile; StdOut = ("......................... DC1 passed test {0}" -f $name) }
+}
+$h20Default = @(Get-AdfaDcDiagnostic -DomainControllers @('dc1.contoso.com') -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)[0]
+Assert-Equal 16 (@($script:h20Args).Count) 'H20: a default run invokes dcdiag for 16 tests, not 18'
+Assert-Equal 0 (@($script:h20Args | Where-Object { $_ -match '/test:(DNS|Intersite)\b' }).Count) 'H20: a default run never invokes the DNS or Intersite test'
+Assert-Equal 'Not Assessed' ([string]$h20Default.DCDIAG_DNS) 'H20: the DNS cell is Not Assessed by default'
+Assert-Equal 'Not Assessed' ([string]$h20Default.DCDIAG_Intersite) 'H20: the Intersite cell is Not Assessed by default'
+Assert-True ([string]$h20Default.NotRun -match 'IncludeDcdiagActiveTests') 'H20: the row names the switch that runs them, in its NotRun column'
+Assert-Equal '' ([string]$h20Default.Failures) 'H20: nothing failed, so the Failures column - which the advice is chosen from - is empty'
+$h20Finding = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row ([pscustomobject]@{ DomainController = 'dc1.contoso.com'; Status = 'Fail'; Failures = 'SysVolCheck: no diagnostic lines captured'; NotRun = [string]$h20Default.NotRun }) -StatusColumn 'Status'
+$h20Clean = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail 'SysVolCheck: no diagnostic lines captured'
+Assert-Equal $h20Clean ([string]$h20Finding.Recommendation) 'H20: the not-run note does not choose the advice for a failing row'
+Assert-True ([string]$h20Finding.Detail -match 'IncludeDcdiagActiveTests') 'H20: the note still reaches the consolidated finding detail'
+Assert-Equal 'Pass' ([string]$h20Default.Status) 'H20: a DC whose 16 attempted tests passed is Pass, not Warning'
+$script:h20Args = @()
+$h20Active = @(Get-AdfaDcDiagnostic -DomainControllers @('dc1.contoso.com') -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 -IncludeActiveTests)[0]
+Assert-Equal 18 (@($script:h20Args).Count) 'H20: with the opt-in all 18 tests are invoked'
+Assert-Equal 'Pass' ([string]$h20Active.DCDIAG_DNS) 'H20: with the opt-in the DNS cell is read'
+# Restore the stub the assertions below were written against.
+function Invoke-ExternalCommand {
+    param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
+    if ($Arguments -match '/test:Advertising\b') {
+        return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile
+            StdOut = "Directory Server Diagnosis`n......................... DC1 passed test Advertising" }
+    }
+    return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile
+        StdOut = "Directory Server Diagnosis`nPerforming initial setup:`nLdap search capability attribute search failed on server DC1, return value = 81" }
+}
 $gridRow = @($gridRows)[0]
 Assert-Equal 'Pass' ([string]$gridRow.DCDIAG_Advertising) 'dcdiag grid: a parseable verdict is still read correctly'
 Assert-Equal 'Not Assessed' ([string]$gridRow.DCDIAG_VerifyEnterpriseReferences) 'dcdiag grid: an unreadable verdict is Not Assessed, never Pass'

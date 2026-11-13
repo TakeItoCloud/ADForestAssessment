@@ -2251,6 +2251,225 @@ Describe 'Cross-domain DC enrichment (live four-domain forest, 2026-09-26)' {
     }
 }
 
+Describe 'dcdiag tests that change state are not run by default (H20)' {
+    # Microsoft documents that the dcdiag DNS dynamic update test performs "registration of a
+    # test record (_dcdiag_test_record)" which "is deleted automatically after the test", and
+    # that Intersite works by "reporting back any replication failures after triggering a
+    # replication". Until H20 both ran on every DC in every default run.
+    BeforeAll {
+        $script:H20Dc = 'dc1.contoso.com'
+        function Invoke-H20Grid {
+            param([switch]$Active)
+            $script:H20Args = @()
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { $true }
+            Mock Invoke-ExternalCommand {
+                $script:H20Args += [string]$Arguments
+                $name = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = ("......................... DC1 passed test {0}" -f $name) }
+            }
+            return @(Get-AdfaDcDiagnostic -DomainControllers @($script:H20Dc) -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 -IncludeActiveTests:$Active)
+        }
+    }
+
+    Context 'Config' {
+        It 'names the two tests, each with the vendor statement that puts it there' {
+            $active = @($script:Config.DcdiagActiveTests)
+            # Declared population: the two tests Microsoft documents as changing state.
+            $active.Count | Should -Be 2
+            @($active | ForEach-Object { [string]$_.Test }) | Should -Contain 'DNS'
+            @($active | ForEach-Object { [string]$_.Test }) | Should -Contain 'Intersite'
+            foreach ($a in $active) {
+                [string]$a.Effect | Should -Not -BeNullOrEmpty
+                [string]$a.Source | Should -Match '^https://learn\.microsoft\.com/'
+                [string]$a.ReadDate | Should -Match '^\d{4}-\d{2}-\d{2}$'
+            }
+        }
+    }
+
+    Context 'Default run' {
+        It 'never invokes dcdiag for DNS or Intersite, and still invokes it for the other 16 tests' {
+            $rows = @(Invoke-H20Grid)
+            @($script:H20Args | Where-Object { $_ -match '/test:(DNS|Intersite)\b' }).Count | Should -Be 0
+            @($script:H20Args | Where-Object { $_ -match '/DnsAll|\s/a(\s|$)' }).Count | Should -Be 0
+            @($script:H20Args).Count | Should -Be 16
+            @($rows).Count | Should -Be 1
+        }
+        It 'holds the tests back when the switch is simply not given, not only when it is given as false' {
+            # Every other call in this Describe binds the switch explicitly. A function that
+            # defaulted to running the tests would pass all of them.
+            $script:H20Args = @()
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { $true }
+            Mock Invoke-ExternalCommand {
+                $script:H20Args += [string]$Arguments
+                $name = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = ("DC1 passed test {0}" -f $name) }
+            }
+            Get-AdfaDcDiagnostic -DomainControllers @($script:H20Dc) -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 | Out-Null
+            @($script:H20Args).Count | Should -Be 16
+            @($script:H20Args | Where-Object { $_ -match '/test:(DNS|Intersite)\b' }).Count | Should -Be 0
+        }
+        It 'holds them back on EVERY DC, and gives every DC its own note' {
+            # Declared population: 3 DCs, 16 tests each. A defect that held the tests back only
+            # for the first DC passed every single-DC test.
+            $script:H20Args = @()
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { $true }
+            Mock Invoke-ExternalCommand {
+                $script:H20Args += [string]$Arguments
+                $name = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = ("passed test {0}" -f $name) }
+            }
+            $names = @('dc1.contoso.com', 'dc2.contoso.com', 'dc3.contoso.com')
+            $rows = @(Get-AdfaDcDiagnostic -DomainControllers $names -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)
+            @($rows).Count | Should -Be 3
+            @($script:H20Args).Count | Should -Be 48
+            @($script:H20Args | Where-Object { $_ -match '/test:(DNS|Intersite)\b' }).Count | Should -Be 0
+            foreach ($row in $rows) {
+                [string]$row.DCDIAG_DNS | Should -Be 'Not Assessed'
+                [string]$row.DCDIAG_Intersite | Should -Be 'Not Assessed'
+                [string]$row.NotRun | Should -Match 'IncludeDcdiagActiveTests' -Because "$($row.DomainController) must carry its own reason"
+                [string]$row.Status | Should -Be 'Pass'
+            }
+        }
+        It 'reports the two cells Not Assessed, with the reason and the switch in the row' {
+            $row = @(Invoke-H20Grid)[0]
+            [string]$row.DCDIAG_DNS | Should -Be 'Not Assessed'
+            [string]$row.DCDIAG_Intersite | Should -Be 'Not Assessed'
+            [string]$row.NotRun | Should -Match 'DNS'
+            [string]$row.NotRun | Should -Match 'Intersite'
+            [string]$row.NotRun | Should -Match 'IncludeDcdiagActiveTests'
+            [string]$row.NotRun | Should -Match '(?i)not run'
+            # Nothing failed, so the column the advice is chosen from stays empty.
+            [string]$row.Failures | Should -BeNullOrEmpty
+        }
+        It 'does not turn a DC whose 16 attempted tests all passed into a Warning' {
+            # The two cells are a decision, not a failed measurement. A Warning on every DC in
+            # every default run would bury the DCs that have a real unassessed test.
+            $row = @(Invoke-H20Grid)[0]
+            [string]$row.Status | Should -Be 'Pass'
+            [string]$row.DCDIAG_Advertising | Should -Be 'Pass'
+        }
+        It 'still reports a Warning when a test that WAS attempted could not be read, and keeps the note' {
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { $true }
+            Mock Invoke-ExternalCommand {
+                if ([string]$Arguments -match '/test:Advertising\b') { return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = 'unexpected text' } }
+                $name = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = ("DC1 passed test {0}" -f $name) }
+            }
+            $row = @(Get-AdfaDcDiagnostic -DomainControllers @($script:H20Dc) -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)[0]
+            [string]$row.Status | Should -Be 'Warning'
+            [string]$row.DCDIAG_Advertising | Should -Be 'Not Assessed'
+            [string]$row.Failures | Should -Match 'Advertising'
+            [string]$row.Failures | Should -Not -Match 'IncludeDcdiagActiveTests'   # the note is not a failure
+            [string]$row.NotRun | Should -Match 'IncludeDcdiagActiveTests'          # and is still in the row
+        }
+        It 'still reports Fail when a test that WAS attempted failed' {
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { $true }
+            Mock Invoke-ExternalCommand {
+                if ([string]$Arguments -match '/test:Replications\b') { return [pscustomobject]@{ Success = $false; ExitCode = 1; Attempt = 1; Error = $null; StdOut = "[Replications Check,DC1] A recent replication attempt failed`n......................... DC1 failed test Replications" } }
+                $name = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = ("DC1 passed test {0}" -f $name) }
+            }
+            $row = @(Get-AdfaDcDiagnostic -DomainControllers @($script:H20Dc) -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)[0]
+            [string]$row.Status | Should -Be 'Fail'
+            [string]$row.DCDIAG_Replications | Should -Be 'Fail'
+            [string]$row.NotRun | Should -Match 'IncludeDcdiagActiveTests'
+        }
+        It 'gives an unreachable DC its own cause and no "not run by default" note' {
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { $false }
+            $row = @(Get-AdfaDcDiagnostic -DomainControllers @($script:H20Dc) -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)[0]
+            [string]$row.Failures | Should -Match 'not reachable'
+            [string]$row.NotRun | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'The note must not choose the advice' {
+        # The recommendation map matches on the whole finding text, first match wins. The note
+        # says the Intersite test "triggers a replication", and an unscoped entry matches the
+        # word "replication": with the note in the Failures column, every failing dcdiag row in
+        # a default run was given replication advice, whatever had actually failed.
+        BeforeAll {
+            $script:H20Note = 'Not run by default, so not assessed: DNS (its dynamic update test registers a test record in the DNS zone and then deletes it); Intersite (it triggers a replication). Microsoft documents these dcdiag tests as changing state. -IncludeDcdiagActiveTests runs them.'
+            function New-H20Row { param([string]$Status, [string]$Failures, [string]$NotRun)
+                [pscustomobject]@{ DomainController = 'dc1.contoso.com'; Status = $Status; Failures = $Failures; NotRun = $NotRun } }
+        }
+        It 'gives a failing row the same advice with the note as without it' {
+            foreach ($failure in @('SysVolCheck: no diagnostic lines captured', 'Advertising: no diagnostic lines captured', 'RidManager: NOT ASSESSED - dcdiag printed no verdict for this test')) {
+                $with = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row (New-H20Row 'Fail' $failure $script:H20Note) -StatusColumn 'Status'
+                $without = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row (New-H20Row 'Fail' $failure '') -StatusColumn 'Status'
+                $with.Recommendation | Should -Be $without.Recommendation -Because "the advice for '$failure' must come from the failure"
+                $with.Recommendation | Should -Not -BeNullOrEmpty
+            }
+        }
+        It 'proves the note WOULD change the advice if it were part of the failure text' {
+            # Non-vacuity: without this, the test above could pass because the note is harmless.
+            $failure = 'SysVolCheck: no diagnostic lines captured'
+            $clean = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $failure
+            $polluted = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail ("{0} | {1}" -f $failure, $script:H20Note)
+            $polluted | Should -Not -Be $clean
+        }
+        It 'still puts the note in the finding detail, after the failure' {
+            $f = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row (New-H20Row 'Fail' 'SysVolCheck: x' $script:H20Note) -StatusColumn 'Status'
+            $f.Detail | Should -Match '^SysVolCheck: x \| Not run by default'
+            $pass = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row (New-H20Row 'Pass' '' $script:H20Note) -StatusColumn 'Status'
+            $pass.Detail | Should -Match '^Not run by default'
+            $pass.Recommendation | Should -BeNullOrEmpty
+            $pass.Item | Should -Be 'dc1.contoso.com'
+        }
+        It 'leaves a row with no NotRun column exactly as it was' {
+            $row = [pscustomobject]@{ Scope = 'contoso.com'; Item = 'Some check'; Status = 'Warning'; Detail = 'something about replication' }
+            $f = ConvertTo-AdfaConsolidatedFinding -Section 'Replication Health' -Row $row -StatusColumn 'Status'
+            $f.Detail | Should -Be 'something about replication'
+            $f.Scope | Should -Be 'contoso.com'
+            $f.Item | Should -Be 'Some check'
+            $f.Recommendation | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    Context 'With the opt-in' {
+        It 'runs all 18 tests, with /DnsAll and /a' {
+            $row = @(Invoke-H20Grid -Active)[0]
+            @($script:H20Args).Count | Should -Be 18
+            @($script:H20Args | Where-Object { $_ -match '/test:DNS /DnsAll' }).Count | Should -Be 1
+            @($script:H20Args | Where-Object { $_ -match '/test:Intersite .* /a$' }).Count | Should -Be 1
+            [string]$row.DCDIAG_DNS | Should -Be 'Pass'
+            [string]$row.DCDIAG_Intersite | Should -Be 'Pass'
+            [string]$row.NotRun | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'Wiring' {
+        It 'declares -IncludeDcdiagActiveTests as a switch, and passes its value and nothing else to the collector' {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+            $p = @($ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'IncludeDcdiagActiveTests' })
+            $p.Count | Should -Be 1
+            $p[0].StaticType.Name | Should -Be 'SwitchParameter'
+            $calls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | Where-Object { $_.GetCommandName() -eq 'Get-AdfaDcDiagnostic' })
+            $calls.Count | Should -Be 1   # declared population: the one call in Invoke-Main
+            $arg = @($calls[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq 'IncludeActiveTests' })
+            $arg.Count | Should -Be 1
+            $arg[0].Argument | Should -Not -BeNullOrEmpty
+            $arg[0].Argument.Extent.Text | Should -Be '$IncludeDcdiagActiveTests'
+        }
+        It 'builds dcdiag arguments in one place, so no other code can run a state-changing test' {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+            $strings = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
+            $hits = @($strings | Where-Object { $_.Extent.Text -match '(?i)/test:(DNS|Intersite)\b' })
+            $hits.Count | Should -Be 2   # declared population: one string per test, both in the builder
+            foreach ($h in $hits) {
+                $owner = $h.Parent
+                while ($null -ne $owner -and $owner -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $owner = $owner.Parent }
+                $owner.Name | Should -Be 'Get-AdfaDcdiagArgument'
+            }
+        }
+    }
+}
+
 Describe 'Secure channel checks are read-only by default (H19)' {
     # Microsoft's nltest reference says of /sc_verify: "If the secure channel does not work, this
     # parameter removes the existing channel, and then builds a new one." Until H19 the tool ran

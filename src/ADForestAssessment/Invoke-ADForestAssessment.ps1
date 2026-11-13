@@ -73,16 +73,26 @@
     "Not Assessed" (never a false Pass / 0). Trust directions that could not be tested from
     the local side are reported "Not Assessed", never "Verified".
 
-    The script writes nothing to the directory itself, and its secure channel checks are
-    read-only by default (nltest /sc_query). It is NOT yet true that a default run changes
-    nothing: the DcDiagnostics section runs dcdiag /test:DNS /DnsAll, whose dynamic update
-    test Microsoft documents as registering and then deleting a test record, and
-    /test:Intersite, which Microsoft documents as triggering a replication. That is PORT-PLAN
-    H20. Leave DcDiagnostics out of -Sections for a run that must change nothing.
+    The script writes nothing to the directory itself. Every command that Microsoft documents
+    as changing something, and that this project knows of, is off unless its switch is given:
 
-    One switch is not read-only by design and is off unless given: -IncludeSecureChannelVerify
-    runs nltest /sc_verify (and netdom trust /Verify as its fallback), and /sc_verify is
-    documented as removing and rebuilding a secure channel that is not working.
+      -IncludeSecureChannelVerify  nltest /sc_verify (netdom trust /Verify as fallback);
+                                   /sc_verify removes and rebuilds a secure channel that is
+                                   not working.
+      -IncludeDcdiagActiveTests    dcdiag /test:DNS /DnsAll, whose dynamic update test
+                                   registers and then deletes a DNS test record; and
+                                   /test:Intersite /a, which triggers a replication.
+      -IncludeDcdiag               raw 'dcdiag /c /v'; /c runs all tests except DCPromo and
+                                   RegisterInDNS, so it includes CutoffServers (triggers
+                                   replication) and the DNS test above, independently of
+                                   -IncludeDcdiagActiveTests.
+      -IncludeLingeringObjectScan  repadmin /removelingeringobjects in advisory mode, which
+                                   removes nothing but writes events on the target DCs.
+
+    That is a list of what is KNOWN. The other commands a default run invokes (the remaining
+    dcdiag tests, repadmin, w32tm, nltest /sc_query and /dsgetdc, dfsrmig, nslookup, and remote
+    reads over WinRM, CIM, the remote registry, the DNS cmdlets and the event log) are used as
+    queries, but have not each been audited for a documented side effect. PORT-PLAN H20a.
 
 .PARAMETER OutputPath
     Root folder for the assessment bundle. A timestamped sub-folder is always created inside it.
@@ -117,7 +127,21 @@
     stops the run.
 
 .PARAMETER IncludeDcdiag
-    Also capture raw 'dcdiag /c /v' output per DC under raw\.
+    Also capture raw 'dcdiag /c /v' output per DC under raw\. NOT read-only. Microsoft
+    documents /c as "Comprehensive. Runs all tests except DCPromo and RegisterInDNS, including
+    non-default tests". By that description it includes CutoffServers, which "triggers
+    replication on the DCs", and the DNS test, whose dynamic update test registers and deletes
+    a test record - whether or not -IncludeDcdiagActiveTests is given. The two switches are
+    independent: this one controls the raw capture, that one the parsed grid.
+
+.PARAMETER IncludeDcdiagActiveTests
+    Also run the two dcdiag grid tests that Microsoft documents as changing state:
+    /test:DNS /DnsAll, whose dynamic update test performs "registration of a test record
+    (_dcdiag_test_record)" that "is deleted automatically after the test"; and
+    /test:Intersite /a, which works by "reporting back any replication failures after
+    triggering a replication". NOT read-only. Without this switch the DNS and Intersite cells
+    of the DC Diagnostics grid read Not Assessed, each DC's row says why, and the row's status
+    is taken from the other 16 tests.
 
 .PARAMETER IncludeRepadmin
     Also capture raw 'repadmin /replsummary' and per-DC '/showrepl /errorsonly' under raw\.
@@ -230,6 +254,12 @@ param(
     # each trust partner, and on every DC of the scoped domains.
     [switch]$IncludeSecureChannelVerify,
 
+    # Also run the dcdiag tests that Microsoft documents as changing state: /test:DNS /DnsAll,
+    # whose dynamic update test registers and then deletes a DNS test record, and
+    # /test:Intersite /a, which triggers a replication. Opt-in because they are not read-only.
+    # Without it those two grid cells read Not Assessed and the row says why.
+    [switch]$IncludeDcdiagActiveTests,
+
     [string]$Server,
     [pscredential]$Credential,
 
@@ -275,7 +305,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.17.0'
+    Version                 = '1.18.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -443,6 +473,23 @@ $script:Config = @{
         # "Read-only GCs and read-only DCs aren't supported" - same source.
         ReadOnlySupported           = $false
     }
+    # --- dcdiag tests that change state (PORT-PLAN H20) ---------------------------------------
+    # Tests in the dcdiag grid that Microsoft documents as doing something beyond reading. They
+    # are NOT run unless -IncludeDcdiagActiveTests is given; by default their cells read
+    # Not Assessed and the row says why. Kept as data, with the vendor's own words and where
+    # they were read, so adding a test to this list is a config edit with its evidence beside it.
+    DcdiagActiveTests       = @(
+        @{ Test     = 'DNS'
+           Effect   = 'its dynamic update test registers a test record in the DNS zone and then deletes it'
+           Quote    = 'perform registration of a test record (_dcdiag_test_record) ... The test record is deleted automatically after the test.'
+           Source   = 'https://learn.microsoft.com/windows-server/identity/ad-ds/manage/troubleshoot/verify-dns-functionality-to-support-directory-replication'
+           ReadDate = '2026-11-13' }
+        @{ Test     = 'Intersite'
+           Effect   = 'it triggers a replication'
+           Quote    = 'Reporting back any replication failures after triggering a replication.'
+           Source   = 'https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag'
+           ReadDate = '2026-11-13' }
+    )
     # --- DC system: OS lifecycle, and patch-level inventory (PORT-PLAN C1) ------------------
     # Volatile vendor facts, replaceable from a file via -DcSystemConfigPath.
     #
@@ -1796,6 +1843,9 @@ function Get-AdfaDcDiagnostic {
         # binding error instead of reporting the section as unassessed. The recovery sections
         # added in v1.4.0 already allowed an empty list; these older ones did not.
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers,
+        # Also run the tests listed in $script:Config.DcdiagActiveTests, which Microsoft
+        # documents as changing state on the DC or in DNS. Off unless asked for.
+        [switch]$IncludeActiveTests,
         [int]$TimeoutSeconds = 90,
         [int]$Retries = 2,
         [int]$RetryDelaySeconds = 2,
@@ -1817,11 +1867,30 @@ function Get-AdfaDcDiagnostic {
         'MachineAccount', 'ObjectsReplicated', 'RidManager', 'KccEvent', 'VerifyReferences',
         'CrossRefValidation', 'KnowsOfRoleHolders', 'Intersite', 'DFSREvent',
         'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS'
+    # Tests held back unless asked for, and the sentence that explains each held-back cell.
+    $heldBack = @()
+    $heldBackWhy = @()
+    if (-not $IncludeActiveTests) {
+        foreach ($entry in @($script:Config.DcdiagActiveTests)) {
+            if ($tests -contains [string]$entry.Test) {
+                $heldBack += [string]$entry.Test
+                $heldBackWhy += ("{0} ({1})" -f [string]$entry.Test, [string]$entry.Effect)
+            }
+        }
+    }
+    $heldBackNote = ''
+    if ($heldBack.Count -gt 0) {
+        $heldBackNote = ("Not run by default, so not assessed: {0}. Microsoft documents these dcdiag tests as changing state. -IncludeDcdiagActiveTests runs them." -f ($heldBackWhy -join '; '))
+    }
     $haveDcdiag = Test-CommandAvailable -Name 'dcdiag.exe'
     $rows = foreach ($dc in $DomainControllers) {
         $row = [ordered]@{ DomainController = $dc; Status = $null; Ping = $null }
         foreach ($t in $tests) { $row["DCDIAG_$t"] = $null }
         $row.Failures = ''
+        # Why the held-back cells of THIS row read Not Assessed. Its own column, not Failures:
+        # nothing failed, and Failures is the text the recommendation is chosen from. Filled in
+        # only for a DC that dcdiag was actually run against; an unreachable DC has its own cause.
+        $row.NotRun = ''
 
         $reachable = Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
         $row.Ping = $(if ($reachable) { $script:Status.Pass } else { $script:Status.Fail })
@@ -1841,6 +1910,11 @@ function Get-AdfaDcDiagnostic {
 
         $failDetails = New-Object System.Collections.Generic.List[string]
         foreach ($t in $tests) {
+            if ($heldBack -contains $t) {
+                # Decided, not attempted: dcdiag is not invoked for this test at all.
+                $row["DCDIAG_$t"] = $script:Status.NotAssessed
+                continue
+            }
             $r = Invoke-ExternalCommand -FilePath 'dcdiag.exe' -Arguments (Get-AdfaDcdiagArgument -TestName $t -DomainController $dc) `
                 -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
             # StrictMode-safe reads: Invoke-ExternalCommand's contract is fixed, but a stub or a
@@ -1885,10 +1959,15 @@ function Get-AdfaDcDiagnostic {
             }
         }
 
-        $cells = foreach ($t in $tests) { $row["DCDIAG_$t"] }
+        # The row's status is taken from the tests that were ATTEMPTED. A held-back test is a
+        # decision, not a failed measurement: counting it would make every DC a Warning in every
+        # default run and bury the DCs with a test that really could not be read. Its cell still
+        # reads Not Assessed, and the row's NotRun column carries the reason.
+        $cells = @(foreach ($t in $tests) { if ($heldBack -notcontains $t) { $row["DCDIAG_$t"] } })
         if ($cells -contains $script:Status.Fail) { $row.Status = $script:Status.Fail }
         elseif ($cells -contains $script:Status.NotAssessed) { $row.Status = $script:Status.Warning }
         else { $row.Status = $script:Status.Pass }
+        $row.NotRun = $heldBackNote
         $row.Failures = $failDetails -join ' | '
         [pscustomobject]$row
     }
@@ -7266,6 +7345,57 @@ $script:RecommendationMap = @(
        Text  = 'Correlate with the Replication and DNS sections of this report; the event detail names the object or partner involved. Fix the cause there, then confirm the event stops recurring.' }
 )
 
+function ConvertTo-AdfaConsolidatedFinding {
+    <#
+    .SYNOPSIS
+        Pure: one section row as a consolidated finding - item, status, detail, recommendation.
+    .DESCRIPTION
+        Taken out of Invoke-Main so the order of two steps can be tested. The recommendation is
+        chosen from the text that describes what was FOUND (Detail, Reasons, FailureDetail,
+        Failures, VerifyDetail). A row may also carry a NotRun note, saying what was
+        deliberately not run and why; that note is added to the finding's detail AFTER the
+        recommendation has been chosen. The recommendation map matches on the whole text,
+        first match wins, so a note that mentions replication or DNS would otherwise pick the
+        advice for a failure that has nothing to do with either.
+    .OUTPUTS
+        [pscustomobject] Section, Scope, Item, Status, Detail, Recommendation.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Section,
+        [Parameter(Mandatory)]$Row,
+        [Parameter(Mandatory)][string]$StatusColumn
+    )
+    $names = @($Row.PSObject.Properties | ForEach-Object { $_.Name })
+    $status = [string]$Row.$StatusColumn
+    $item = $Section
+    foreach ($n in @('Item', 'TrustName', 'DomainController', 'Group', 'PolicyName')) {
+        if ($names -contains $n) { $item = $Row.$n; break }
+    }
+    $detailParts = @()
+    foreach ($n in @('Detail', 'Reasons', 'FailureDetail', 'Failures', 'VerifyDetail')) {
+        if (($names -contains $n) -and $Row.$n) { $detailParts += [string]$Row.$n }
+    }
+    $scopeVal = ''
+    if ($names -contains 'Scope') { $scopeVal = [string]$Row.Scope }
+    $detailText = $detailParts -join ' | '
+    # Attach a best-practice fix to every actionable (non-Pass) finding.
+    $recommendation = ''
+    if ($status -match '^(Fail|Broken|Failed|Warning|Degraded)$') {
+        $recommendation = Get-AdfaRecommendation -Section $Section -Item ([string]$item) -Detail $detailText
+    }
+    if (($names -contains 'NotRun') -and $Row.NotRun) {
+        if ($detailText -ne '') { $detailText = ("{0} | {1}" -f $detailText, [string]$Row.NotRun) }
+        else { $detailText = [string]$Row.NotRun }
+    }
+    return [pscustomobject]@{
+        Section = $Section; Scope = $scopeVal; Item = [string]$item
+        Status  = $status; Detail = $detailText
+        Recommendation = $recommendation
+    }
+}
+
 function Get-AdfaRecommendation {
     <#
     .SYNOPSIS
@@ -7573,6 +7703,12 @@ function Invoke-Main {
     if ($IncludeSecureChannelVerify) {
         Write-Log -Level WARN -Section 'SecureChannel' -Message 'IncludeSecureChannelVerify is set: nltest /sc_verify will run, and it resets any secure channel it finds not working. This run is not read-only.'
     }
+    if ($IncludeDcdiag) {
+        Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiag is set: the raw capture runs dcdiag /c on each DC. Microsoft documents /c as running all tests except DCPromo and RegisterInDNS; by that description it includes CutoffServers, which triggers replication, and the DNS test, whose dynamic update test registers and deletes a test record. This run is not read-only.'
+    }
+    if ($IncludeDcdiagActiveTests) {
+        Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiagActiveTests is set: the dcdiag DNS test will register and delete a DNS test record on each DC, and the dcdiag Intersite test will trigger a replication. This run is not read-only.'
+    }
     # A fresh run starts with no remembered port probes; within the run each DC is probed once.
     Clear-AdfaDcPortCache
     Write-Stage ("AD Forest Assessment v{0} starting" -f $script:Config.Version)
@@ -7760,7 +7896,7 @@ function Invoke-Main {
 
     if (Test-SectionSelected 'DcDiagnostics' $Sections) {
         Write-Stage 'DC diagnostics (parsed)'
-        $sectionData['DC Diagnostics'] = Get-AdfaDcDiagnostic -DomainControllers $dcNames @ext -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        $sectionData['DC Diagnostics'] = Get-AdfaDcDiagnostic -DomainControllers $dcNames -IncludeActiveTests:$IncludeDcdiagActiveTests @ext -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
     }
     if (Test-SectionSelected 'Dns' $Sections) {
         Write-Stage 'DNS health'
@@ -8113,29 +8249,7 @@ function Invoke-Main {
                 }
                 continue
             }
-            $status = [string]$row.$statusCol
-            $item = if ($names -contains 'Item') { $row.Item }
-                    elseif ($names -contains 'TrustName') { $row.TrustName }
-                    elseif ($names -contains 'DomainController') { $row.DomainController }
-                    elseif ($names -contains 'Group') { $row.Group }
-                    elseif ($names -contains 'PolicyName') { $row.PolicyName }
-                    else { $key }
-            $detailParts = @()
-            foreach ($dc in @('Detail', 'Reasons', 'FailureDetail', 'Failures', 'VerifyDetail')) {
-                if (($names -contains $dc) -and $row.$dc) { $detailParts += [string]$row.$dc }
-            }
-            $scopeVal = if ($names -contains 'Scope') { [string]$row.Scope } else { '' }
-            $detailText = $detailParts -join ' | '
-            # Attach a best-practice fix to every actionable (non-Pass) finding.
-            $recommendation = ''
-            if ($status -match '^(Fail|Broken|Failed|Warning|Degraded)$') {
-                $recommendation = Get-AdfaRecommendation -Section $key -Item ([string]$item) -Detail $detailText
-            }
-            $consolidated += [pscustomobject]@{
-                Section = $key; Scope = $scopeVal; Item = [string]$item
-                Status  = $status; Detail = $detailText
-                Recommendation = $recommendation
-            }
+            $consolidated += ConvertTo-AdfaConsolidatedFinding -Section $key -Row $row -StatusColumn $statusCol
         }
     }
     # Severity order for the consolidated file and the log.
