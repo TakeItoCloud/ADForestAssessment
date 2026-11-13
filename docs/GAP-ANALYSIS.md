@@ -77,6 +77,11 @@ statement. The claim is reproduced below as the audit made it. It matters, becau
 runs `nltest /sc_verify` on domain controllers and describes itself as strictly read-only; it
 needs a direct read of the vendor page before anything is concluded.
 
+**Update, 2026-11-13.** The vendor page was read later the same day at its archived address
+and confirms the claim. It was fixed as PORT-PLAN H19 (v1.17.0): the default is now
+`nltest /sc_query`, and `/sc_verify` is opt-in. The paragraph above and row P2 below are left
+as written, because they record what was known when this analysis was made.
+
 ## Proposed plan rows
 
 One row per group of checks, in the priority order given for this work. Rows C1 to C8 are the

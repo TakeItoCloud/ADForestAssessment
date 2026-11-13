@@ -92,16 +92,42 @@ function Invoke-ExternalCommand {
     [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile
         StdOut = "Flags: 0`nTrusted DC Name \\dc1`nTrust Verification Status = 0x0 NERR_Success`nThe command completed successfully" }
 }
-$sc = Test-AdfaSecureChannel -SourceDomain 'a.local' -TargetDomain 'b.local'
-Assert-Equal 'Verified' $sc.Result 'nltest success output => Verified'
+$sc = Test-AdfaSecureChannel -SourceDomain 'a.local' -TargetDomain 'b.local' -LiveVerify
+Assert-Equal 'Verified' $sc.Result 'nltest /sc_verify success output => Verified (opt-in live test)'
 
 function Invoke-ExternalCommand {
     param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
     [pscustomobject]@{ Success = $false; ExitCode = 1; Attempt = 1; Error = $null; OutFile = $OutFile
         StdOut = "Trust Verification Status = 0x35 ERROR_NO_LOGON_SERVERS`nThe command failed" }
 }
+$sc = Test-AdfaSecureChannel -SourceDomain 'a.local' -TargetDomain 'b.local' -LiveVerify
+Assert-Equal 'Failed' $sc.Result 'nltest /sc_verify error status => Failed (opt-in live test)'
+
+# H19: the DEFAULT must be read-only. nltest /sc_verify resets a channel that is not working,
+# so without the opt-in the tool runs /sc_query and reads the connection status line - not the
+# "command completed successfully" line, which is printed for a broken channel too.
+Assert-Equal '/sc_query:b.local' (Get-AdfaNltestScArgument -Domain 'b.local') 'H19: the default nltest argument is /sc_query'
+Assert-Equal '/sc_verify:b.local' (Get-AdfaNltestScArgument -Domain 'b.local' -LiveVerify) 'H19: /sc_verify only with the opt-in'
+$script:h19Args = @()
+function Invoke-ExternalCommand {
+    param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
+    $script:h19Args += ("{0} {1}" -f $FilePath, $Arguments)
+    [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile
+        StdOut = "Flags: 30 HAS_IP  HAS_TIMESERV`nTrusted DC Name \\dc1.b.local`nTrusted DC Connection Status Status = 0 0x0 NERR_Success`nThe command completed successfully" }
+}
 $sc = Test-AdfaSecureChannel -SourceDomain 'a.local' -TargetDomain 'b.local'
-Assert-Equal 'Failed' $sc.Result 'nltest error status => Failed'
+Assert-Equal 'Verified' $sc.Result 'H19: /sc_query with status 0 => Verified'
+Assert-Equal 0 (@($script:h19Args | Where-Object { $_ -match 'sc_verify' }).Count) 'H19: a default run never invokes /sc_verify'
+Assert-True (@($script:h19Args | Where-Object { $_ -match 'nltest\.exe /sc_query:b\.local' }).Count -eq 1) 'H19: a default run invokes /sc_query once'
+Assert-True ($sc.Detail -match 'not a live test') 'H19: the default result says it is not a live test'
+function Invoke-ExternalCommand {
+    param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
+    [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile
+        StdOut = "Trusted DC Connection Status Status = 1311 0x51f ERROR_NO_LOGON_SERVERS`nThe command completed successfully" }
+}
+$sc = Test-AdfaSecureChannel -SourceDomain 'a.local' -TargetDomain 'b.local'
+Assert-Equal 'Failed' $sc.Result 'H19: a non-zero status is Failed even though the command "completed successfully"'
+Assert-Equal 'Unparsed' ([string](Get-AdfaScQueryOutcome -Output 'The command completed successfully').Outcome) 'H19: output with no status line is Unparsed, never Ok'
 
 function Test-CommandAvailable { param([string]$Name) return $false }  # no tools
 $sc = Test-AdfaSecureChannel -SourceDomain 'a.local' -TargetDomain 'b.local'
