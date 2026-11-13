@@ -10,6 +10,86 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed — 2026-11-13 (two dcdiag tests in every default run changed state, tool v1.18.0)
+
+**PORT-PLAN H20. This changes what a default run tests. Read this before comparing a v1.18.0
+report with an earlier one.**
+
+The review of H19 found that a default run was still not read-only. `DcDiagnostics`, part of
+the default `All`, ran two `dcdiag` tests on every DC that Microsoft documents as doing more
+than reading (both read on Learn 2026-11-13):
+
+- `dcdiag /test:DNS /DnsAll`. Its dynamic update test is described as: "perform registration of
+  a test record (_dcdiag_test_record)... The test record is deleted automatically after the
+  test."
+  ([Verify DNS functionality](https://learn.microsoft.com/windows-server/identity/ad-ds/manage/troubleshoot/verify-dns-functionality-to-support-directory-replication))
+- `dcdiag /test:Intersite /a`. Listed as working by "Reporting back any replication failures
+  after triggering a replication."
+  ([dcdiag](https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag))
+
+H12 (v1.13.0) added the DNS test, choosing `/DnsAll` specifically to cover dynamic update; the
+only way `dcdiag` can test dynamic update is to perform one. Intersite was already in the grid,
+but before H12 it ran without `/a` or `/e`, which Microsoft says "skips actual testing"; H12
+gave it `/a`, and with that it began doing the testing that triggers a replication.
+
+**Both now run only with `-IncludeDcdiagActiveTests`**, by operator decision. With the switch
+the run log warns that the run is not read-only.
+
+**What a default run reports instead.** The **DNS** and **Intersite** cells of the DC
+Diagnostics grid read `Not Assessed`. Each DC's row says they were not run, why, and which
+switch runs them, in a new `NotRun` column. `dcdiag` is not invoked for those two tests at all.
+
+**The note has its own column, and does not choose the advice.** A first draft put the note in
+the `Failures` column. The recommendation map matches on a finding's whole text, first match
+wins; the note says the Intersite test "triggers a replication", and an unscoped entry matches
+the word "replication". Every failing `dcdiag` row in a default run would have been given
+replication advice, whatever had failed. The review caught it. The note is now in `NotRun`, and
+the step that turns a row into a finding - extracted from `Invoke-Main` as
+`ConvertTo-AdfaConsolidatedFinding` so it can be tested - chooses the recommendation first and
+appends the note to the detail afterwards.
+
+**The row's status ignores the two held-back cells.** A DC whose 16 attempted tests all passed
+is `Pass`, not `Warning`. A held-back test is a decision, not a failed measurement, and a
+`Warning` on every DC in every default run would bury the DCs with a test that really could not
+be read. A test that was attempted and could not be read still makes the row `Warning`, and a
+test asserts that.
+
+**What a default run no longer covers.** Through `dcdiag`: DNS dynamic update, DNS delegation,
+forwarders and record registration, and intersite replication. The `Dns`, `DnsDepth`,
+`DnsAdConsistency` and `MsdcsDelegation` sections still read DNS without `dcdiag`.
+
+**Config.** The two tests are listed in `$script:Config.DcdiagActiveTests`, each with the
+vendor's sentence, its URL and the date read, so adding a test to the list carries its evidence
+with it.
+
+**The claim the documentation now makes** is that every state-changing command *this project
+knows of* is opt-in. It does not say a default run changes nothing: the other commands a
+default run invokes are used as queries but have not each been audited. That audit is
+PORT-PLAN H20a. The README's "What a run can change" table and the script's help list all four
+opt-in switches.
+
+**`-IncludeDcdiag` is now described as not read-only, and it logs a warning.** It captures raw
+`dcdiag /c /v`. Microsoft documents `/c` as "Comprehensive. Runs all tests except DCPromo and
+RegisterInDNS, including non-default tests". By that description the capture includes
+`CutoffServers`, which "triggers replication on the DCs", and the DNS test - independently of
+`-IncludeDcdiagActiveTests`. So a run with `-IncludeDcdiag` alone shows DNS as not run in the
+grid while the raw capture ran it; the README says so. No `dcdiag` was executed to confirm what
+`/c` runs on a given build; this rests on Microsoft's sentence.
+
+**Found by an independent review of the diff before commit, and fixed in it:** the note
+choosing the advice; the raw capture's DNS test; three stale README statements (a coverage row
+still describing 18 tests in a default run, a test list of 17 that omitted DNS, and a heading
+naming "the one switch" where there are four); a test that failed under Windows PowerShell 5.1
+and passed only under PowerShell 7; and five tests that could not fail, each shown with a
+mutation that survived - holding the tests back for the first DC only, dropping the note from
+later rows or from rows with a real finding, never reporting `Fail` in a default run, and
+making the function default to running the tests.
+
+**This has run only against stubs.** No `dcdiag` was executed. That a default run leaves no
+test record behind on a real DNS server is asserted from the fact that `dcdiag` is not invoked
+for the DNS test, not from observation. The first real run is PORT-PLAN H20-R, owned by the
+operator.
+
 ### Fixed — 2026-11-13 (the tool was not read-only: it ran nltest /sc_verify by default, tool v1.17.0)
 
 **PORT-PLAN H19. This changes what an existing result means. Read this before comparing a
