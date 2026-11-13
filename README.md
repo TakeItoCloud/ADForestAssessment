@@ -42,6 +42,7 @@ Extracted from
 | Kerberos exposure | Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation |
 | DC hardening | Print Spooler, SMBv1, LDAP signing requirement (remote CIM / registry) |
 | **DC system** | `-Sections DcSystem`. **OS lifecycle**: each DC's operating system against Microsoft's extended support end date, from a versioned table. Past the date is a `Fail` whose text says whether an Extended Security Updates (ESU) programme is still running, has also ended, or was never published — and always that **ESU enrolment is not assessed**. An OS the table does not list, or one that could not be read, is `Not Assessed` with the raw values, never `Pass`. Reads only the directory, so it needs no rights on any DC. **Patch level**: per DC, OS build, uptime and the latest update install date over remote CIM. This half is **inventory** (`Info` or `Not Assessed`, never `Pass`): Microsoft publishes no maximum uptime or update age for a DC, so none is applied. Unreachable, access denied and other read failures are three different results |
+| **DC disk space** | `-Sections DcDisk`. Free space on the volumes that hold the **NTDS database**, the **NTDS logs** and **SYSVOL**, per DC. The three paths are read from each DC's own registry and matched to a volume by the longest mount path, so a database under a mounted folder is judged on the right volume. One row per distinct volume, listing the roles it holds. `Fail` below 10 % free or below 2 GB free, `Warning` below 20 % or below 5 GB — **tool defaults, not Microsoft values**, labelled as such in every finding and overridable with `-ConfigOverridePath`. A path or a volume that could not be read is `Not Assessed` with its cause; unreachable, access denied, a registry value that is not set and any other read failure are different results. Covers the DCs of every scoped domain, with or without `DomainControllers` selected; a domain whose DCs could not be enumerated gets its own `Not Assessed` row. Needs local Administrators rights on each DC |
 | Resilience | Directory backup status (`repadmin /showbackup`), time sync (`w32tm`), DC count, duplicate SPNs |
 | **Recovery: DNS vs AD** | DC locator SRV records compared against the DCs the directory actually contains — **on every DC's DNS server separately**, with a divergence summary ("3 of 7 answering servers advertise a DC that no longer exists"); plus the PDC locator record per server |
 | **Recovery: DSA CNAMEs** | Per-DC `<DSA-GUID>._msdcs` alias verification (missing / wrong target, per DNS server) — the usual cause of RPC 1722 after metadata cleanup or restore — and orphaned NTDS Settings objects |
@@ -80,8 +81,8 @@ mapped, never invented.
 ## Permissions
 
 Domain read access is enough for most sections. Trust verification, remote DC hardening
-checks (CIM / registry), the patch-level half of `DcSystem` (CIM) and `dcdiag` need
-administrative rights on the domain controllers. The OS lifecycle half of `DcSystem` needs
+checks (CIM / registry), the patch-level half of `DcSystem` (CIM), `DcDisk` (CIM) and `dcdiag`
+need administrative rights on the domain controllers. The OS lifecycle half of `DcSystem` needs
 domain read only.
 
 ## Usage
@@ -105,6 +106,10 @@ domain read only.
 # ...judged against your own prerequisite table instead of the built-in one
 .\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -Sections ExchangeSeReadiness `
     -ExchangeSeConfigPath C:\Scripts\exchange-se-prereqs.json
+
+# Free space on each DC's NTDS database, NTDS log and SYSVOL volumes, against your own thresholds
+.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -Sections DomainControllers,DcDisk `
+    -ConfigOverridePath C:\Scripts\adfa-overrides.json
 
 # Post-incident triage: the recovery sections plus the health checks they depend on,
 # including the advisory-mode lingering-object scan (writes events on target DCs, changes nothing)
@@ -264,6 +269,176 @@ rows:
   is read only when another record from the same DC proves the day/month order; otherwise the
   row says how many records could not be read, and does not guess.
 
+## DC disk space
+
+`-Sections DcDisk` (or the default `All`). The section covers the domain controllers of
+**every scoped domain**, and each row carries its domain. With `DomainControllers` also
+selected it takes them from the DC inventory; without it, it enumerates each scoped domain
+itself. A scoped domain whose DCs could not be enumerated, or that returned none, gets a
+`Not Assessed` row of its own (`Disk space - <domain>`) with the cause; it is never left out.
+If no scoped domain gave a single DC, the section falls back to the DCs the default server
+returns. Those carry no domain, and each domain's row then says that it is not known whether
+they include its DCs, instead of claiming that nothing was read.
+
+**This has run only against stubs.** It has not been executed against a real domain
+controller. The first real run is PORT-PLAN C17.
+
+**What is read, per DC.** Three registry values, which exist only in the registry of the DC
+itself:
+
+| Role | Registry value under `HKLM\SYSTEM\CurrentControlSet\Services` |
+| --- | --- |
+| NTDS database | `NTDS\Parameters`, `DSA Database File` (the path of the database file) |
+| NTDS logs | `NTDS\Parameters`, `Database Log Files Path` |
+| SYSVOL | `Netlogon\Parameters`, `SysVol` |
+
+([Defender exclusions on Windows Server](https://learn.microsoft.com/defender-endpoint/microsoft-defender-antivirus-exclusions-windows-server)
+and [Backing up and restoring an FRS-replicated SYSVOL folder](https://learn.microsoft.com/windows/win32/vss/backing-up-and-restoring-an-frs-replicated-sysvol-folder),
+read 2026-11-13.) Then `Win32_Volume` for each volume's name, type, capacity and free bytes
+([Win32_Volume](https://learn.microsoft.com/previous-versions/windows/desktop/legacy/aa394515(v=vs.85)),
+read 2026-11-13). Each path is matched to the volume whose mount path is its longest prefix,
+which is the Win32 rule for a path under a mounted folder.
+
+**Thresholds. These are tool defaults, not Microsoft values.**
+
+| Result | Free space, as a share of the volume | Or free space, absolute |
+| --- | --- | --- |
+| `Fail` | below 10 % | below 2 GB |
+| `Warning` | below 20 % | below 5 GB |
+| `Pass` | 20 % or more | and 5 GB or more |
+
+Either test is enough, and the finding says which one fired. "Below" is strict: exactly 10 %
+is a `Warning`, exactly 20 % is a `Pass`. Microsoft publishes no free-space threshold for these
+volumes. The three figures it does publish are all relative to the size of the database, not
+to the volume: free space of 110 % of the `ntds.dit` size to allow offline defragmentation,
+300 % of it as "a safe way to accommodate growth and defragging" where the storage allows, and
+a fixed VHD of at least 210 % of it
+([capacity planning](https://learn.microsoft.com/windows-server/administration/performance-tuning/role/active-directory-server/capacity-planning-for-active-directory-domain-services),
+read 2026-11-13). This section does not read the size of the database file, so it evaluates
+none of them, and the row for the database volume says so (PORT-PLAN C2a). 20 % and
+10 % are the pair the AdAssessment26 catalogue lists for this check as operator-set; the
+absolute floor is this tool's addition, because 25 % of an 8 GB volume is 2 GB. A dedicated
+volume smaller than a floor can never pass it: lower the floors, or set both to 0. The figures
+in a finding are cut off after two decimals, never rounded, so a volume one byte under 10 %
+reads "9.99 % free", not "10.00 % free ... below 10 %".
+
+Change them with `-ConfigOverridePath` (next section):
+
+```json
+{ "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15, "WarnBelowFreeGB": 10, "FailBelowFreeGB": 5 } }
+```
+
+**Rows.** One row per distinct volume per DC, naming the roles it holds: a DC with everything
+on `C:` gives one row, `Disk space: <dc> C:\ (NTDS database, NTDS logs, SYSVOL)`. Every role is
+accounted for by exactly one row. Where a role could not be judged it gets its own
+`Not Assessed` row, and the cause is one of these, kept apart:
+
+| Cause | What the row says |
+| --- | --- |
+| No port answered | `Unreachable`: neither WinRM (5985) nor RPC (135); no read attempted |
+| The DC refused the session or the read, or the provider returned 5 or `0x80041003` | `Access denied`: local Administrators rights on the DC are needed |
+| The registry value is not set (the provider returned 1) | `Not found`, read as the value not being set. **No default path is assumed in its place** |
+| The registry key does not exist (the provider returned 2) | `Not found`, read as the key not existing |
+| The value exists and is not a string (the provider returned `0x80041005`) | Says so |
+| Any other failure | `Read failed`, with the DC's own text or the return code, quoted and not interpreted |
+| The value is empty, or holds an unexpanded `%VARIABLE%` | Says so, with the value |
+| The path is on no volume the DC returned | Names the path and the volumes |
+| The volume returned no capacity (offline, unformatted) | `Not Assessed` for that volume, with the values returned |
+
+No row is `Info`, and none is `Pass` unless both the capacity and the free space were read.
+
+**What the return codes rest on.** Microsoft documents the return value of the two methods as
+0 for success and otherwise an error code from WinError.h or, for script callers, from
+WbemErrorEnum
+([GetStringValue](https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getstringvalue-method-in-class-stdregprov),
+[WbemErrorEnum](https://learn.microsoft.com/windows/win32/api/wbemdisp/ne-wbemdisp-wbemerrorenum),
+read 2026-11-13). It does not publish which code the provider returns for which condition.
+`5`, `0x80041003` and `0x80041005` are read by the names those two lists give them
+(`ERROR_ACCESS_DENIED`, `wbemErrAccessDenied`, `wbemErrTypeMismatch`). **1 and 2 are read on a
+measurement, not on a Microsoft statement**: on the one host where it was measured - a
+Windows 11 workstation, not a domain controller, with the same two methods - the provider
+returned 1 for a value that does not exist under a key that does, and 2 for a key that does
+not exist. WinError.h's own name for 1, `ERROR_INVALID_FUNCTION`, does not describe that. Each
+`Not found` row says the reading is measured and not published. Whether a domain controller
+answers the same way is for the first real run to confirm (PORT-PLAN C17). Whatever the code,
+the role is `Not Assessed`.
+
+**Reading the registry is a CIM method call, the only one this tool makes.** The values are
+read through the WMI registry provider, `StdRegProv`, over the same CIM session as the volume
+query, so WinRM and the DCOM fallback both carry them and the Remote Registry service is not
+needed. `StdRegProv` exposes no instances: a value can be read through it only by calling a
+method. Two are called, `GetStringValue` and — where that returns nothing usable —
+`GetExpandedStringValue`, which Microsoft documents as getting the string value and the
+expanded string value of a named value
+([StdRegProv](https://learn.microsoft.com/previous-versions/windows/desktop/regprov/stdregprov),
+read 2026-11-13). Microsoft lists the class's 20 methods in one table and does not sort them
+into reading and writing methods; that sorting is this tool's, made from each method's own
+description. The methods described as creating, deleting or setting (`CreateKey`, `DeleteKey`,
+`DeleteValue`, the `Set*` methods) are never called; a test reads every method call from the
+parsed script and fails on any other name. Microsoft does not state in so many words that the
+`Get*` methods have no side effect: this rests on their documented purpose and signature.
+`-WhatIf` and `-Confirm` are forced off on the two reads and on closing the CIM session, so a
+preference in your session can neither skip a read nor leave a session open.
+
+Limits to keep in mind:
+
+- That `Win32_Volume.Name` holds the mount path is observed behaviour, not something
+  Microsoft documents. If a real DC returns something else, the affected roles report
+  `Not Assessed` naming the volumes returned; they are never matched to a nearby volume.
+- SYSVOL is judged on the volume of the path the `SysVol` value names. Whether DFSR staging or
+  a junction target sits on another volume is not examined.
+- Which return code the provider gives for a value that is not set, as against a key that
+  does not exist, is not published. 1 and 2 are read as measured on one workstation (above),
+  and each row says so.
+- The timeout note under the patch-level rows above applies here too: up to seven CIM
+  operations per transport for one DC.
+
+## One override file for section config: `-ConfigOverridePath`
+
+A JSON file whose top-level keys are section names. Each value is checked by that section's own
+rules. `DcDisk` is the only section so far; later checks add their own key.
+
+```json
+{
+  "DcDisk": {
+    "WarnBelowPercent": 25,
+    "FailBelowPercent": 15,
+    "WarnBelowFreeGB": 10,
+    "FailBelowFreeGB": 5,
+    "WsmanPort": 5985,
+    "RpcPort": 135
+  }
+}
+```
+
+```powershell
+.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -ConfigOverridePath C:\Scripts\adfa-overrides.json
+```
+
+- Keys you omit keep their built-in value, and a finding cites your file only for the values
+  the file supplied. With the file above reduced to `WarnBelowPercent`, a finding reads
+  "...adfa-overrides.json (loaded 2026-11-13) for WarnBelowPercent; tool default, not a
+  Microsoft value, for FailBelowPercent, WarnBelowFreeGB, FailBelowFreeGB".
+- The file is read once, before the directory is contacted. **Anything wrong with it stops the
+  run before anything is collected**: a missing or empty file, text that is not JSON, JSON that
+  is not one object (`null`, an array, a string), an unknown section, a section set to `null`,
+  an unknown key, or a value its section cannot use.
+- The file must begin with `{`. An array is refused even when it holds exactly one valid
+  object: PowerShell 7 would unwrap it and Windows PowerShell 5.1 would not, and the same file
+  must get the same answer on both.
+- A key or a section written twice is refused, naming it (`'DcDisk.WarnBelowPercent' more than
+  once`). A JSON parser keeps only the last of them without an error, so a file that
+  contradicts itself would otherwise be applied and cited as the source.
+- For `DcDisk` a value must be a JSON number, without quotes. Percentages are 0 to 100, floors
+  are 0 or more, `Fail` may not be above `Warning` once your values are merged with the
+  built-in ones, at least one threshold must remain above 0, and a port is a whole number from
+  1 to 65535. `Paths`, `SourceUrl` and `ReadDate` cannot be set from the file.
+- The file is validated in full even when `-Sections` leaves out the section it names; the
+  log then says the section was validated and not used.
+- `-ExchangeSeConfigPath` and `-DcSystemConfigPath` are unchanged and separate. Their tables
+  cannot be set from this file: `"DcSystem"` or `"ExchangeSe"` as a top-level key is refused as
+  an unknown section.
+
 ## What a run can change
 
 Known, with Microsoft's own wording (read on Learn 2026-11-13):
@@ -295,6 +470,11 @@ Everything a default run does invoke is used as a query: `nltest /sc_query` and 
 over WinRM, CIM, the remote registry, the DNS Server cmdlets and the event log. No side effect
 of those is documented by Microsoft that this project has found. They have not each been
 audited; that audit is PORT-PLAN H20a.
+
+One of those remote reads is a CIM method call rather than an instance query: `DcDisk` reads
+three registry values per DC with `StdRegProv` `GetStringValue` and `GetExpandedStringValue`.
+Why that is treated as a read, and what Microsoft does and does not say about it, is under
+[DC disk space](#dc-disk-space).
 
 ## Secure channel checks
 

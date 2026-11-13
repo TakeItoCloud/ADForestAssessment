@@ -82,7 +82,51 @@ function Get-CimInstance {
             [pscustomobject]@{ HotFixID = 'KB0000002'; InstalledOn = '11/10/2026' }
         )
     }
+    # C2 (DcDisk): Win32_Volume in the shape the class returns - Name is the mount path, DeviceID
+    # the volume GUID path, DriveType a uint32, Capacity and FreeSpace uint64 bytes. Four
+    # volumes, so the path-to-volume mapping has something to get wrong: the system volume, a
+    # second local volume for the logs, a recovery partition that has no mount path, and an
+    # empty optical drive, which returns no capacity at all.
+    if ($ClassName -eq 'Win32_Volume') {
+        return @(
+            [pscustomobject]@{ Name = 'C:\'; DeviceID = '\\?\Volume{00000000-0000-0000-0000-00000000000c}\'; DriveType = [uint32]3; Capacity = [uint64]128849018880; FreeSpace = [uint64]64424509440 }
+            [pscustomobject]@{ Name = 'E:\'; DeviceID = '\\?\Volume{00000000-0000-0000-0000-00000000000e}\'; DriveType = [uint32]3; Capacity = [uint64]21474836480; FreeSpace = [uint64]12884901888 }
+            [pscustomobject]@{ Name = '\\?\Volume{00000000-0000-0000-0000-00000000000f}\'; DeviceID = '\\?\Volume{00000000-0000-0000-0000-00000000000f}\'; DriveType = [uint32]3; Capacity = [uint64]554696704; FreeSpace = [uint64]83886080 }
+            [pscustomobject]@{ Name = 'D:\'; DeviceID = '\\?\Volume{00000000-0000-0000-0000-00000000000d}\'; DriveType = [uint32]5; Capacity = $null; FreeSpace = $null }
+        )
+    }
     throw ("STUB: CIM class '{0}' is not stubbed" -f $ClassName)
+}
+# C2 (DcDisk): the registry is read through StdRegProv, which has no instances - a value comes
+# back from a METHOD call, as an object carrying ReturnValue (uint32, 0 for success) and the
+# method's [out] parameter sValue. The stub answers GetStringValue for the three values the
+# section reads. For anything else it answers what the REAL provider was measured to answer on
+# 2026-11-13 (one Windows 11 workstation, not a DC): 1 for a value that does not exist under a
+# key that does, 2 for a key that does not exist. An earlier version answered 2 for an absent
+# value, a shape the provider does not produce. $script:SmokeAbsentValues names values to
+# treat as not set, so a scenario can take one away. Any other class or
+# method throws: nothing in this tool may call a method that is not a registry read, and a
+# call that tried would fail here rather than appear to succeed. The database and SYSVOL are
+# on C:, the logs on E:, so one DC yields two volume rows. -WhatIf and -Confirm are not declared:
+# in a simple function the values the caller passes for them fall into $args and are ignored.
+$script:SmokeAbsentValues = @()
+function Invoke-CimMethod {
+    param($CimSession, [string]$Namespace, [string]$ClassName, [string]$MethodName, $Arguments, [uint32]$OperationTimeoutSec, $ErrorAction)
+    if ($ClassName -ne 'StdRegProv' -or @('GetStringValue', 'GetExpandedStringValue') -notcontains $MethodName) {
+        throw ("STUB: CIM method '{0}.{1}' is not stubbed" -f $ClassName, $MethodName)
+    }
+    $stubRegistry = @{
+        'SYSTEM\CurrentControlSet\Services\NTDS\Parameters|DSA Database File'       = 'C:\Windows\NTDS\ntds.dit'
+        'SYSTEM\CurrentControlSet\Services\NTDS\Parameters|Database Log Files Path' = 'E:\NTDS-Logs'
+        'SYSTEM\CurrentControlSet\Services\Netlogon\Parameters|SysVol'              = 'C:\Windows\SYSVOL\sysvol'
+    }
+    $stubKey = ('{0}|{1}' -f [string]$Arguments['sSubKeyName'], [string]$Arguments['sValueName'])
+    $stubAbsent = (@($script:SmokeAbsentValues) -contains [string]$Arguments['sValueName'])
+    if ($stubRegistry.ContainsKey($stubKey) -and -not $stubAbsent) { return [pscustomobject]@{ ReturnValue = [uint32]0; sValue = $stubRegistry[$stubKey]; PSComputerName = 'stub' } }
+    $stubKeyPrefix = ([string]$Arguments['sSubKeyName'] + '|')
+    $stubKeyExists = (@($stubRegistry.Keys | Where-Object { $_.StartsWith($stubKeyPrefix, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0)
+    if ($stubKeyExists) { return [pscustomobject]@{ ReturnValue = [uint32]1; sValue = $null; PSComputerName = 'stub' } }
+    return [pscustomobject]@{ ReturnValue = [uint32]2; sValue = $null; PSComputerName = 'stub' }
 }
 function Get-ADReplicationPartnerMetadata { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ Partner='dc2.contoso.com'; ConsecutiveReplicationFailures=0; LastReplicationSuccess=$now } }
@@ -245,6 +289,24 @@ Check (@($osRow).Count -eq 1 -and $osRow[0].Status -eq 'Info' -and $osRow[0].Det
 $hfRow = @($dcsRows | Where-Object { $_.Item -like 'Last update installed:*' })
 Check (@($hfRow).Count -eq 1 -and $hfRow[0].Status -eq 'Info' -and $hfRow[0].Detail -match '2026-11-10') 'DC System: the latest update date is the later of the two stub records, with the day/month order proven by the set'
 Check (@($dcsRows | Where-Object { $_.Status -eq 'Pass' -and $_.Item -notlike 'OS lifecycle:*' }).Count -eq 0) 'DC System: no patch-level row is ever a Pass - it is inventory'
+# C2: the DcDisk section must be wired, must read the three paths through the StdRegProv stub
+# and the volumes through the Win32_Volume stub, and must judge each distinct volume once.
+$diskRows = @($smokeFindings | Where-Object { $_.Section -eq 'DC Disk Space' })
+Check (@($diskRows).Count -eq 2) ("Section 'DC Disk Space' is wired into Invoke-Main and gives one row per distinct volume of the stub DC ({0} rows, expected 2)" -f @($diskRows).Count)
+$diskC = @($diskRows | Where-Object { $_.Item -eq 'Disk space: dc1.contoso.com C:\ (NTDS database, SYSVOL)' })
+Check (@($diskC).Count -eq 1 -and $diskC[0].Status -eq 'Pass' -and $diskC[0].Detail -match '50\.00 % free: 60\.00 GB free of 120\.00 GB') 'DC Disk Space: the system volume holds the database and SYSVOL, and passes on the figures the stub returned'
+$diskE = @($diskRows | Where-Object { $_.Item -eq 'Disk space: dc1.contoso.com E:\ (NTDS logs)' })
+Check (@($diskE).Count -eq 1 -and $diskE[0].Status -eq 'Pass' -and $diskE[0].Detail -match 'E:\\NTDS-Logs') 'DC Disk Space: the logs are judged on their own volume, found from the path the registry stub returned'
+# Declared population: the three roles. Each is accounted for by exactly one row.
+foreach ($role in @('NTDS database', 'NTDS logs', 'SYSVOL')) {
+    Check (@($diskRows | Where-Object { $_.Item -match [regex]::Escape($role) }).Count -eq 1) ("DC Disk Space: role '{0}' is accounted for by exactly one row" -f $role)
+}
+Check (@($diskRows | Where-Object { $_.Scope -eq 'contoso.com' }).Count -eq 2) 'DC Disk Space: every row carries its domain as Scope'
+Check (@($diskRows | Where-Object { $_.Detail -match 'tool default, not a Microsoft value' }).Count -eq 2) 'DC Disk Space: every verdict labels its thresholds as tool defaults, not Microsoft values'
+Check (@($diskRows | Where-Object { $_.Detail -match 'Read over Wsman' }).Count -eq 2) 'DC Disk Space: the transport that answered is stated'
+Check ($diskC[0].Detail -match '110 %' -and $diskE[0].Detail -notmatch '110 %') 'DC Disk Space: the database volume, and only it, says the 110 % of ntds.dit figure was not measured'
+Check (@($diskRows | Where-Object { @('Pass', 'Warning', 'Fail', 'Not Assessed') -notcontains $_.Status }).Count -eq 0) 'DC Disk Space: no row is Info - a row is a verdict or it is Not Assessed'
+Check (@($diskRows | Where-Object { $_.Recommendation }).Count -eq 0) 'DC Disk Space: a passing row carries no advice'
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
@@ -286,7 +348,7 @@ Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scop
 $findings2 = @(Import-Csv (Join-Path $result2.CsvPath 'Findings-Consolidated.csv'))
 Check ($findings2.Count -gt 0) ("Multi-domain: consolidated findings are not empty ({0} rows)" -f $findings2.Count)
 
-foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System')) {
+foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space')) {
     $n = @($findings2 | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Multi-domain: section '{0}' reached the consolidated findings ({1} rows)" -f $sec, $n)
 }
@@ -297,6 +359,38 @@ Check (@($life2).Count -eq 3) ("Multi-domain: DC System has one OS lifecycle row
 foreach ($d in $multiDomains) {
     Check (@($life2 | Where-Object { $_.Scope -eq $d }).Count -eq 1) ("Multi-domain: DC System lifecycle row carries scope '{0}'" -f $d)
 }
+# C2: two volume rows per domain's DC, each set carrying its own domain - not six rows for the
+# first domain, and not two for the forest.
+$disk2 = @($findings2 | Where-Object { $_.Section -eq 'DC Disk Space' })
+Check (@($disk2).Count -eq 6) ("Multi-domain: DC Disk Space has two volume rows for each of the three domains' DC ({0}, expected 6)" -f @($disk2).Count)
+foreach ($d in $multiDomains) {
+    $forDomain = @($disk2 | Where-Object { $_.Scope -eq $d })
+    Check (@($forDomain).Count -eq 2) ("Multi-domain: DC Disk Space has two rows scoped '{0}' ({1})" -f $d, @($forDomain).Count)
+    Check (@($forDomain | Where-Object { $_.Status -eq 'Pass' }).Count -eq 2) ("Multi-domain: both DC Disk Space volumes of '{0}' are judged, not skipped" -f $d)
+}
+
+# C2: the same three domains with DcDisk selected WITHOUT DomainControllers. There is then no DC
+# inventory, and the section used to fall back to one unscoped Get-ADDomainController call,
+# which on a real forest returns the current domain's DCs only: two domains were missing from
+# the section with no row to say so. The section now enumerates each scoped domain itself, so
+# every domain is present and every row carries its domain.
+$outD = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_diskonly_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outD
+$script:Sections = @('DcDisk')
+$resultD = Invoke-Main
+$findingsD = @(Import-Csv $resultD.FindingsFile)
+$diskD = @($findingsD | Where-Object { $_.Section -eq 'DC Disk Space' })
+Check (@($resultD.DomainsScoped).Count -eq 3) ("Multi-domain, DcDisk alone: three domains scoped ({0})" -f @($resultD.DomainsScoped).Count)
+Check (@($diskD).Count -eq 6) ("Multi-domain, DcDisk alone: two volume rows for each of the three domains' DC, with no DC inventory ({0}, expected 6)" -f @($diskD).Count)
+foreach ($d in $multiDomains) {
+    $forDomainD = @($diskD | Where-Object { $_.Scope -eq $d })
+    Check (@($forDomainD).Count -eq 2 -and @($forDomainD | Where-Object { $_.Status -eq 'Pass' }).Count -eq 2) ("Multi-domain, DcDisk alone: domain '{0}' is in the section and judged ({1} rows)" -f $d, @($forDomainD).Count)
+}
+Check (@($diskD | Where-Object { -not $_.Scope }).Count -eq 0) 'Multi-domain, DcDisk alone: no row is without a domain'
+Check (-not (Test-Path (Join-Path $resultD.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, DcDisk alone: non-vacuity - the DomainControllers section itself was not run'
+Remove-Item -Recurse -Force $outD -ErrorAction SilentlyContinue
+$script:OutputPath = $out2
+$script:Sections = @('All')
 
 # Every scoped domain must actually appear - not just the first one.
 $scopes = @($findings2 | Select-Object -ExpandProperty Scope -Unique | Where-Object { $_ })
@@ -377,6 +471,103 @@ if (Test-Path $result2.JsonPath) {
 Write-Host ""
 Write-Host ("Multi-domain bundle: {0}" -f $result2.OutputRoot)
 
+# ---- Scenario 2b: -ConfigOverridePath through the whole run (C2) ------------
+# The Pester suite proves the loader and the validator. This proves the wiring: that the file
+# named on the command line reaches the section that uses it, that a finding then cites the
+# file, and that a file that cannot be used stops the run before anything is collected.
+Write-Host ""
+Write-Host "== Running Invoke-Main with -ConfigOverridePath ==" -ForegroundColor Cyan
+
+$overrideFile = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_" + [guid]::NewGuid().ToString('N') + ".json")
+# The stub volumes are 50 % (C:) and 60 % (E:) free. These thresholds turn the first into a Fail
+# and the second into a Warning; the built-in ones pass both.
+'{ "DcDisk": { "WarnBelowPercent": 70, "FailBelowPercent": 55 } }' | Out-File -LiteralPath $overrideFile -Encoding UTF8
+$outO = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outO
+$script:AllDomains = $false
+$script:Sections = @('DomainControllers', 'DcDisk')
+$script:ConfigOverridePath = $overrideFile
+$resultO = Invoke-Main
+$findingsO = @(Import-Csv $resultO.FindingsFile)
+$diskO = @($findingsO | Where-Object { $_.Section -eq 'DC Disk Space' })
+Check (@($diskO).Count -eq 2) ("Override: DC Disk Space still gives one row per volume ({0}, expected 2)" -f @($diskO).Count)
+$diskOC = @($diskO | Where-Object { $_.Item -like '*C:\ (NTDS database, SYSVOL)' })
+$diskOE = @($diskO | Where-Object { $_.Item -like '*E:\ (NTDS logs)' })
+Check (@($diskOC).Count -eq 1 -and $diskOC[0].Status -eq 'Fail') 'Override: the file''s thresholds reached the section - 50 % free is now a Fail (below 55 %)'
+Check (@($diskOE).Count -eq 1 -and $diskOE[0].Status -eq 'Warning') 'Override: 60 % free is now a Warning (below 70 %)'
+Check (@($diskO | Where-Object { $_.Detail -match [regex]::Escape($overrideFile) }).Count -eq 2) 'Override: each finding cites the file for the thresholds it supplied'
+Check (@($diskO | Where-Object { $_.Detail -match 'for WarnBelowPercent, FailBelowPercent; tool default, not a Microsoft value, for WarnBelowFreeGB, FailBelowFreeGB' }).Count -eq 2) 'Override: the thresholds the file did not supply are still labelled tool defaults'
+Check (@($diskO | Where-Object { $_.Recommendation -match 'Move unrelated files' }).Count -eq 2) 'Override: a Fail and a Warning row each carry the disk space advice'
+Check (@($diskO | Where-Object { $_.Recommendation -match 'D4|dfsrmig|repadmin|wbadmin' }).Count -eq 0) 'Override: a row naming SYSVOL is not given the DFSR restore advice'
+$logO = Get-Content $resultO.LogFile -Raw
+Check ($logO -match 'Config override: section DcDisk taken from') 'Override: the log records which section was taken from the file'
+Remove-Item -Recurse -Force $outO -ErrorAction SilentlyContinue
+
+# The same file with a section this run does not select: validated, logged as unused, no effect.
+$outU = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outU
+$script:Sections = @('DomainControllers', 'DcSystem')
+$resultU = Invoke-Main
+$logU = Get-Content $resultU.LogFile -Raw
+Check ($logU -match 'section DcDisk was validated but is not used by this run') 'Override: a section the run does not select is validated and logged as unused'
+$findingsU = @(Import-Csv $resultU.FindingsFile)
+Check (@($findingsU | Where-Object { $_.Section -eq 'DC System' }).Count -gt 0) 'Override: non-vacuity - the run that did not select DcDisk did produce findings'
+Check (@($findingsU | Where-Object { $_.Section -eq 'DC Disk Space' }).Count -eq 0) 'Override: an unselected section is still not run'
+Remove-Item -Recurse -Force $outU -ErrorAction SilentlyContinue
+
+# A registry value that is not set on the DC. The stub answers as the provider was measured to:
+# 1 for a value that does not exist under a key that does. The role must come back Not Assessed
+# and named Not found - not as an uninterpreted read failure - and the other two roles must
+# still be judged. (The override file is still in force here; its thresholds fail and warn the
+# two volumes, which does not matter to this check.)
+$outA = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_absent_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outA
+$script:Sections = @('DomainControllers', 'DcDisk')
+$script:SmokeAbsentValues = @('SysVol')
+$resultA = Invoke-Main
+$script:SmokeAbsentValues = @()
+$diskA = @(@(Import-Csv $resultA.FindingsFile) | Where-Object { $_.Section -eq 'DC Disk Space' })
+Check (@($diskA).Count -eq 3) ("Absent value: one row for each volume and one for the role that could not be placed ({0}, expected 3)" -f @($diskA).Count)
+$absentRow = @($diskA | Where-Object { $_.Item -eq 'Disk space: dc1.contoso.com - SYSVOL path' })
+Check (@($absentRow).Count -eq 1 -and $absentRow[0].Status -eq 'Not Assessed') 'Absent value: the SYSVOL role is Not Assessed, never Pass'
+Check (@($absentRow).Count -eq 1 -and $absentRow[0].Detail -match '^Not found: StdRegProv returned 1,' -and $absentRow[0].Detail -match 'measured, not published by Microsoft') 'Absent value: the cause is named Not found, with the return code, and the reading is labelled measured, not published'
+Check (@($absentRow).Count -eq 1 -and $absentRow[0].Detail -match 'No default location is assumed') 'Absent value: no default path is put in its place'
+Check (@($diskA | Where-Object { $_.Item -like '*C:\ (NTDS database)' -or $_.Item -like '*E:\ (NTDS logs)' }).Count -eq 2) 'Absent value: the database and log volumes are still judged, each on its own row'
+Check (@($diskA | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0) 'Absent value: nothing passes on the strength of the value that was not read'
+Remove-Item -Recurse -Force $outA -ErrorAction SilentlyContinue
+
+# A file that cannot be used: the run must stop, name the file, and collect nothing.
+$badFiles = @(
+    @{ Name = 'an unknown section'; Text = '{ "DcDisks": { "WarnBelowPercent": 70 } }'; Expect = "unknown section 'DcDisks'" }
+    @{ Name = 'a malformed value'; Text = '{ "DcDisk": { "WarnBelowPercent": "high" } }'; Expect = 'WarnBelowPercent' }
+    @{ Name = 'JSON null'; Text = 'null'; Expect = 'JSON null' }
+    @{ Name = 'a file that is not JSON'; Text = 'not json {'; Expect = 'not valid JSON' }
+    # PowerShell 7 unwraps a one-element array; the run must stop on it on both editions.
+    @{ Name = 'an array holding one valid object'; Text = '[ { "DcDisk": { "WarnBelowPercent": 70 } } ]'; Expect = 'not a JSON array' }
+    # Both editions keep the last of two equal keys without an error; the run must stop instead.
+    @{ Name = 'a key written twice'; Text = '{ "DcDisk": { "WarnBelowPercent": 70, "WarnBelowPercent": 30 } }'; Expect = "'DcDisk.WarnBelowPercent' more than once" }
+)
+$script:Sections = @('All')
+foreach ($bad in $badFiles) {
+    $bad.Text | Out-File -LiteralPath $overrideFile -Encoding UTF8
+    $outB = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_" + [guid]::NewGuid().ToString('N'))
+    $script:OutputPath = $outB
+    $thrown = ''
+    try { Invoke-Main | Out-Null } catch { $thrown = [string]$_.Exception.Message }
+    Check ($thrown -match [regex]::Escape($bad.Expect)) ("Override: {0} stops the run ({1})" -f $bad.Name, $bad.Expect)
+    Check ($thrown -match [regex]::Escape([IO.Path]::GetFileName($overrideFile))) ("Override: the refusal of {0} names the file" -f $bad.Name)
+    $written = @(Get-ChildItem -Path $outB -Recurse -Filter *.csv -ErrorAction SilentlyContinue)
+    Check ($written.Count -eq 0) ("Override: with {0}, nothing was collected before the run stopped ({1} CSV files)" -f $bad.Name, $written.Count)
+    Remove-Item -Recurse -Force $outB -ErrorAction SilentlyContinue
+}
+Check (@($badFiles).Count -eq 6) 'Override: non-vacuity - six declared unusable files were tried'
+Remove-Item -LiteralPath $overrideFile -Force -ErrorAction SilentlyContinue
+# The parameter carries [ValidateNotNullOrEmpty()], and the attribute stays on the variable, so
+# it cannot simply be set back to empty: the variable is removed and re-created without it.
+Remove-Variable -Name ConfigOverridePath -Scope Script
+$script:ConfigOverridePath = ''
+$script:Sections = @('All')
+
 # ---- Scenario 3: collection failures must be reported, never swallowed -------
 # Regression guard for the empty-catch fixes. The failure mode being pinned is the one this
 # repo already shipped once (v1.6.0): a collector throws, its rows quietly do not appear, and
@@ -434,6 +625,28 @@ $dcs3 = @($findings3 | Where-Object { $_.Section -eq 'DC System' })
 Check (@($dcs3 | Where-Object { $_.Item -eq 'OS lifecycle' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode: DC System reports the OS lifecycle check as Not Assessed when there is no DC inventory'
 Check (@($dcs3 | Where-Object { $_.Item -eq 'Patch level' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode: DC System reports patch level as Not Assessed when no DC was enumerated'
 Check (@($dcs3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC System reports nothing but Not Assessed ({0} rows)" -f @($dcs3).Count)
+
+# C2: the same for DcDisk. With no DC there is nothing to read; the section must say so, name
+# the enumeration failure, give the domain whose inventory failed its own row, and pass nothing.
+$disk3 = @($findings3 | Where-Object { $_.Section -eq 'DC Disk Space' })
+Check (@($disk3 | Where-Object { $_.Item -eq 'Disk space' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode: DC Disk Space reports Not Assessed when no DC was enumerated'
+Check (@($disk3 | Where-Object { $_.Item -eq 'Disk space' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode: DC Disk Space carries the enumeration failure into its row'
+Check (@($disk3 | Where-Object { $_.Item -eq 'Disk space - contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'Failure mode: DC Disk Space gives the domain whose inventory failed its own Not Assessed row'
+Check (@($disk3).Count -eq 2 -and @($disk3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC Disk Space reports nothing but Not Assessed, and never Pass ({0} rows, expected 2)" -f @($disk3).Count)
+
+Check (@($disk3 | Where-Object { $_.Item -eq 'Disk space - contoso.com' -and $_.Detail -match 'could not be enumerated\. Cause: STUB: ADWS unreachable' -and $_.Detail -match 'None of its volumes was read' }).Count -eq 1) 'Failure mode: the domain row names the cause and, with no DC read at all, says none of its volumes was read'
+# The same failure with DcDisk selected alone: the section's own per-domain enumeration throws,
+# and it must give the scoped domain its Not Assessed row rather than an empty section.
+$out3d = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_diskonly_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $out3d
+$script:Sections = @('DcDisk')
+$result3d = Invoke-Main
+$disk3d = @(@(Import-Csv $result3d.FindingsFile) | Where-Object { $_.Section -eq 'DC Disk Space' })
+Check (@($disk3d).Count -eq 2 -and @($disk3d | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode, DcDisk alone: nothing but Not Assessed, and never Pass ({0} rows, expected 2)" -f @($disk3d).Count)
+Check (@($disk3d | Where-Object { $_.Item -eq 'Disk space - contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode, DcDisk alone: the scoped domain has its own row, with the cause'
+Remove-Item -Recurse -Force $out3d -ErrorAction SilentlyContinue
+$script:OutputPath = $out3
+$script:Sections = @('All')
 
 # Non-vacuity: the run must not have passed simply because nothing was assessed at all.
 $notAssessed3 = @($findings3 | Where-Object { $_.Status -eq 'Not Assessed' }).Count
