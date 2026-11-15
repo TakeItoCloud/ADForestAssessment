@@ -40,7 +40,7 @@ Extracted from
 | AD CS / PKI | Enrolment CAs, ESC1-susceptible certificate templates |
 | Dangerous ACLs | Non-default principals holding DCSync rights on the domain head |
 | Kerberos exposure | Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation |
-| DC hardening | Print Spooler, SMBv1, LDAP signing requirement (remote CIM / registry) |
+| **DC hardening** | `-Sections DcHardening`. Per DC, six registry values and three CIM classes read in one session: **LDAP server signing** (`LDAPServerIntegrity`) and its Windows Server 2025 **enforcement** (`LDAPServerEnforceIntegrity`), **LDAP channel binding** (`LdapEnforceChannelBinding`), **SMB server and client signing** (`RequireSecuritySignature`), the **LAN Manager authentication level** (`LmCompatibilityLevel`), the **Print Spooler** service and the **SMBv1** server. Each value is graded against what Microsoft's security baselines expect on a domain controller. A value that is **not set** is graded on the default Microsoft documents for the DC's OS build where it documents one, named as a default; where it documents none it is `Not Assessed`, never a pass and never a failure. Unreachable, access denied, not set, key absent and wrong type are separate results. These rows show the **configured policy, not what a client and the DC negotiate on the wire**. The **SMBv1** row is `Not Assessed` on any DC whose SMB configuration class returns no instance to a query, which is what the one host measured does (PORT-PLAN C3f). Details under [DC hardening](#dc-hardening) |
 | **DC system** | `-Sections DcSystem`. **OS lifecycle**: each DC's operating system against Microsoft's extended support end date, from a versioned table. Past the date is a `Fail` whose text says whether an Extended Security Updates (ESU) programme is still running, has also ended, or was never published — and always that **ESU enrolment is not assessed**. An OS the table does not list, or one that could not be read, is `Not Assessed` with the raw values, never `Pass`. Reads only the directory, so it needs no rights on any DC. **Patch level**: per DC, OS build, uptime and the latest update install date over remote CIM. This half is **inventory** (`Info` or `Not Assessed`, never `Pass`): Microsoft publishes no maximum uptime or update age for a DC, so none is applied. Unreachable, access denied and other read failures are three different results |
 | **DC disk space** | `-Sections DcDisk`. Free space on the volumes that hold the **NTDS database**, the **NTDS logs** and **SYSVOL**, per DC. The three paths are read from each DC's own registry and matched to a volume by the longest mount path, so a database under a mounted folder is judged on the right volume. One row per distinct volume, listing the roles it holds. `Fail` below 10 % free or below 2 GB free, `Warning` below 20 % or below 5 GB — **tool defaults, not Microsoft values**, labelled as such in every finding and overridable with `-ConfigOverridePath`. A path or a volume that could not be read is `Not Assessed` with its cause; unreachable, access denied, a registry value that is not set and any other read failure are different results. Covers the DCs of every scoped domain, with or without `DomainControllers` selected; a domain whose DCs could not be enumerated gets its own `Not Assessed` row. Needs local Administrators rights on each DC |
 | Resilience | Directory backup status (`repadmin /showbackup`), time sync (`w32tm`), DC count, duplicate SPNs |
@@ -80,9 +80,9 @@ mapped, never invented.
 
 ## Permissions
 
-Domain read access is enough for most sections. Trust verification, remote DC hardening
-checks (CIM / registry), the patch-level half of `DcSystem` (CIM), `DcDisk` (CIM) and `dcdiag`
-need administrative rights on the domain controllers. The OS lifecycle half of `DcSystem` needs
+Domain read access is enough for most sections. Trust verification, `DcHardening` (CIM), the
+patch-level half of `DcSystem` (CIM), `DcDisk` (CIM) and `dcdiag` need administrative rights on
+the domain controllers. The OS lifecycle half of `DcSystem` needs
 domain read only.
 
 ## Usage
@@ -254,7 +254,8 @@ judged. The file must be one JSON object, and its only keys are `OsLifecycle`, `
 `RpcPort`. Anything else stops the run: a missing or malformed file, a top-level array, an
 empty object, a misspelt key, a `null` value, a row with a bad date or nothing to match on, or
 a port that is not a port. A finding cites your file for its dates only when the file supplied
-them.
+them. The two port keys change the port that is probed before a read, not the port the CIM
+session connects to, which is always the default one (PORT-PLAN C3g).
 
 The patch-level rows need local Administrators rights on each DC. They try WinRM (5985) first
 and DCOM (RPC 135) second, and each DC is probed once per port. Each CIM operation is given
@@ -363,7 +364,7 @@ not exist. WinError.h's own name for 1, `ERROR_INVALID_FUNCTION`, does not descr
 answers the same way is for the first real run to confirm (PORT-PLAN C17). Whatever the code,
 the role is `Not Assessed`.
 
-**Reading the registry is a CIM method call, the only one this tool makes.** The values are
+**Reading the registry is a CIM method call. Only this section and `DcHardening` make any.** The values are
 read through the WMI registry provider, `StdRegProv`, over the same CIM session as the volume
 query, so WinRM and the DCOM fallback both carry them and the Remote Registry service is not
 needed. `StdRegProv` exposes no instances: a value can be read through it only by calling a
@@ -393,10 +394,181 @@ Limits to keep in mind:
 - The timeout note under the patch-level rows above applies here too: up to seven CIM
   operations per transport for one DC.
 
+## DC hardening
+
+`-Sections DcHardening` (or the default `All`). Like `DcDisk`, the section covers the domain
+controllers of **every scoped domain**, each row carrying its domain: from the DC inventory
+when `DomainControllers` is also selected, otherwise from its own enumeration of each scoped
+domain. A scoped domain with no DC row gets a `Not Assessed` row of its own,
+`DC hardening - <domain>`.
+
+**This shows configured policy, not what a client and a DC negotiate on the wire.** Every value
+below is read from the registry of the DC. No LDAP bind and no SMB session is attempted, and
+each row says so. LDAP signing applies only to SASL binds that are not over TLS, and channel
+binding only to TLS with SASL; SMB signing is used when either side requires it, so one side's
+value does not settle what a given connection does. Microsoft's own live check of LDAP signing
+is a simple bind on port 389 that "sends simple-bind credentials without TLS. Run it only in an
+isolated lab", which is why this tool does not make one.
+
+**What is read, per DC**, in one CIM session (WinRM first, DCOM second, no retry after a
+refusal), needing local Administrators rights on the DC:
+
+| Row | Registry value under `HKLM\SYSTEM\CurrentControlSet` | Passes at | Not set means |
+| --- | --- | --- | --- |
+| `LDAP server signing: <dc>` | `Services\NTDS\Parameters`, `LDAPServerIntegrity` | 2 (Require signing) | Windows Server 2022 and earlier: the documented default, None, a `Warning`. Windows Server 2025: see below |
+| `LDAP server signing enforcement: <dc>` | `Services\NTDS\Parameters`, `LDAPServerEnforceIntegrity` | 1 | Windows Server 2025 only; `Info`, not applicable, on earlier builds. See below |
+| `LDAP channel binding: <dc>` | `Services\NTDS\Parameters`, `LdapEnforceChannelBinding` | 2 (Always) | 2022 and earlier: documented default Never, a `Warning`. 2025: `Not Assessed` - the default "When supported" is published for new deployments only |
+| `SMB server signing: <dc>` | `Services\LanManServer\Parameters`, `RequireSecuritySignature` | 1 | Not published for a DC on any build: graded on the SMB server's own configuration where the DC returned it (see "second instrument" below - on the one host measured it is not returned), otherwise `Not Assessed` |
+| `SMB client signing: <dc>` | `Services\LanManWorkstation\Parameters`, `RequireSecuritySignature` | 1 | 2022 and earlier: documented default Disabled, a `Warning`. 2025: documented default required, a `Pass` named as a default |
+| `LAN Manager authentication level: <dc>` | `Control\Lsa`, `LmCompatibilityLevel` | 5 | 2008 R2 to 2022: documented default 3, a `Warning`. 2025: `Not Assessed` - NTLMv1 is removed there and the default is not restated |
+| `Print Spooler: <dc>` | `Win32_Service`, not the registry | Stopped | - |
+| `SMBv1: <dc>` | `MSFT_SmbServerConfiguration.EnableSMB1Protocol`, by instance query | False | - |
+
+**The SMBv1 row may be `Not Assessed` on every DC.** It asks for the instance of
+`MSFT_SmbServerConfiguration`. Measured on 2026-11-15 on one host - a Windows 11 (build 26100)
+workstation, not a domain controller, not elevated, under PowerShell 7 and Windows PowerShell
+5.1 - that query returns **no instance and no error**, while `Get-SmbServerConfiguration` on the
+same host returns the configuration: the cmdlet calls the class's static method
+`GetConfiguration`. This tool does not invoke that method. It is not one of the three `Get*`
+registry methods the script is held to, Microsoft Learn documents the cmdlet and not the class
+or its methods, and adding it is the operator's decision (PORT-PLAN C3f). So where a DC answers
+as that host did, the row reads `Not read: MSFT_SmbServerConfiguration returned no instance`,
+`Not Assessed`, never `Pass` - and it is kept apart from access denied and from a query that
+failed. What a real DC returns has not been measured (PORT-PLAN C17). Until one of those two rows
+is done, check SMBv1 with Microsoft's own command on the DC:
+`Get-SmbServerConfiguration | Select EnableSMB1Protocol`.
+
+The OS build that decides the default is the one the DC itself reports
+(`Win32_OperatingSystem.BuildNumber`), read in the same session. The only boundary Microsoft
+publishes for these defaults is "Windows Server 2022 or earlier" against "Windows Server 2025
+or later", so the table is keyed on build 20348 and below, and 26100 and above. A build
+between the two, or a build that could not be read, has no documented default: a value that is
+not set is then `Not Assessed`. The LAN Manager level has a lower bound as well: its documented
+default is for Windows Server 2008 R2 and later, build 7101 and above.
+
+A value that **is** set is graded whatever the build for four of the six settings: channel
+binding, SMB server signing, SMB client signing and the LAN Manager level. The two LDAP signing
+rows are the exception, because on Windows Server 2025 they are decided together:
+
+- `LDAPServerIntegrity` at 2 passes on every build. Below 2 it is a `Warning` up to Windows
+  Server 2022, `Not Assessed` when the build was not read, and on Windows Server 2025 it follows
+  the table below.
+- `LDAPServerEnforceIntegrity`, set or not, is `Info` (not applicable) below Windows Server
+  2025 and `Not Assessed` when the build was not read. In both cases the row still says what
+  the read of the value gave - the number, "not set", or the refusal.
+
+A value below the expectation is a `Warning`, the rule the AdAssessment26 catalogue gives for
+these rows. The expected value is Microsoft's, cited in the row; the status a DC gets for
+missing it is **a tool default, not a Microsoft value**, each such row says so, and it can be
+set to `Fail` per setting (below). A number Microsoft publishes no meaning for is
+`Not Assessed`. `EnableSecuritySignature` is not read: Microsoft documents it as ignored for
+SMB2 and later.
+
+**LDAP signing on Windows Server 2025.** The enforcement value decides together with the older
+one, and the two rows say how:
+
+| `LDAPServerEnforceIntegrity` | `LDAPServerIntegrity` | Signing row | Enforcement row |
+| --- | --- | --- | --- |
+| 1 | any value, or not set | `Pass` - the enforcement policy takes precedence | `Pass` |
+| 0 | 2 | `Pass` | `Warning` |
+| 0 | below 2 | `Warning` | `Warning` |
+| 0 | not set | `Not Assessed` | `Warning` |
+| not set | not set | `Pass`, the documented 2025 default | `Pass`, the documented default |
+| not set | 2 | `Pass` | `Pass` |
+| not set | 0 or 1 | `Not Assessed` | `Not Assessed` |
+| not set | a number with no published meaning (3 ...) | `Not Assessed` | `Not Assessed` |
+| a number that is neither 0 nor 1 | 2 | `Pass` | `Not Assessed` |
+| a number that is neither 0 nor 1 | below 2, or not set | `Not Assessed` | `Not Assessed` |
+| not read (refused, key absent, wrong type) | 2 | `Pass` | `Not Assessed` |
+| not read (refused, key absent, wrong type) | below 2, or not set | `Not Assessed` | `Not Assessed` |
+
+"Not set, 0 or 1" is `Not Assessed` because Microsoft documents both that an upgrade to Windows
+Server 2025 "maintains your current settings" and that an enforcement policy left Not
+Configured "has the same effect as Enabled", and the registry does not show which applies. A
+number Microsoft publishes no meaning for decides nothing in either row: the enforcement row
+does not take a signing value of 3 for "at least 2, so signing is required", and the signing
+row says of an enforcement value of 2 that it was read and what it holds, not that it was not
+read.
+
+**SMB server signing has a second instrument, where the DC returns one.** The section asks
+for the instance of `MSFT_SmbServerConfiguration` for SMBv1, and that instance also carries
+`RequireSecuritySignature`. Microsoft's own verification is the **cmdlet**
+(`Get-SmbServerConfiguration | FL RequireSecuritySignature`: "If the returned information is
+True, then SMB signing is enabled"), which returns an object of that class; this tool does not
+run the cmdlet, it queries the class, and on the one host measured that query returns no
+instance (see the SMBv1 note above). So:
+
+- Where the instance was returned and the registry value is set, the row is graded on the
+  registry and says whether the second instrument agrees; if the two **disagree** the row is
+  `Not Assessed`.
+- Where the instance was returned and the registry value is not set, the row is graded on the
+  second instrument, which is a measurement.
+- Where no instance was returned - the measured case - a registry value that is set is graded
+  on the registry alone and the row says the second instrument was not read and why; a registry
+  value that is not set is `Not Assessed`.
+
+The SMB client has no second instrument here.
+
+**What is not published on Microsoft Learn**, and is labelled so in the config table and, where
+a finding relies on it, in the finding:
+
+- The registry path of `LDAPServerIntegrity` for AD DS. Learn gives the path for AD LDS only;
+  `NTDS\Parameters` is where it publishes the two sibling values. Every `LDAP server signing`
+  row says the path is inferred, whatever its verdict.
+- What `LDAPServerIntegrity` = 1 means. Learn publishes 0 (for AD LDS) and 2. A value of 1 is
+  reported as "not 2", a `Warning`, with that said.
+- A value table for `LDAPServerEnforceIntegrity`. The Windows Server 2025 baseline expects 1;
+  0 = Disabled is inferred from that, and the row says "inferred".
+- The return codes of `GetDWORDValue`. 1 is read as the value not being set and 2 as its key
+  not existing, **measured on one Windows 11 workstation**, not a domain controller; each such
+  row says so. Whether a DC answers the same way is for the first real run (PORT-PLAN C17).
+
+**Changing the expectation.** With `-ConfigOverridePath`, under `DcHardening`, per setting id:
+`ExpectedMinimum` (only to a value the tool can grade against - `LmCompatibilityLevel` 3, 4 or
+5; `LdapEnforceChannelBinding` 1 or 2; the other four have one possible value) and
+`OtherStatus` (`Warning` or `Fail`). A finding then cites the file. For the two settings whose
+expectation can be moved, the recommendation does not name a value of its own: it says to raise
+the setting to at least the expected minimum the finding names, and gives Microsoft's baseline
+value (channel binding Always, `LmCompatibilityLevel` 5) as Microsoft's.
+
+The two ports cannot be changed for this section. `WsmanPort` and `RpcPort` under `DcHardening`
+are refused: the CIM session is always opened on the default WinRM port, or through the RPC
+endpoint mapper for DCOM, so a port set in the file would change what is probed and not what is
+connected to. `DcDisk` still accepts the two keys and has that same gap (PORT-PLAN C3g).
+
+```json
+{ "DcHardening": { "Settings": { "LmCompatibilityLevel": { "ExpectedMinimum": 3, "OtherStatus": "Fail" } } } }
+```
+
+Limits to keep in mind:
+
+- None of this has met a real domain controller. The reads have run against stubs only; the
+  first run against a real forest is PORT-PLAN C17.
+- The timeout note under the patch-level rows above applies here too: up to nine CIM
+  operations per transport for one DC (six registry reads and three queries).
+- The SMBv1 row, and the second instrument of SMB server signing, depend on a query that
+  returned nothing on the one host it was measured on; both may be `Not Assessed` on every DC
+  until PORT-PLAN C3f is decided.
+- A value delivered by Group Policy and a value set by hand look the same in the registry, and
+  the section does not say which it is (PORT-PLAN C3d).
+- `Print Spooler` is graded on whether the service is running. Its start mode is stated in the
+  row and not graded, so a spooler that is stopped but not disabled passes (PORT-PLAN C3b).
+- One status covers every value below an expectation: `LmCompatibilityLevel` 0 and 4 are both
+  a `Warning` unless a config file says otherwise (PORT-PLAN C3c).
+
+**Changed in v1.20.0.** The rows are named family first (`Print Spooler: <dc>`, where it was
+`<dc>: Print Spooler`), the old `<dc>: LDAP signing required` row is now
+`LDAP server signing: <dc>`, and a DC that could not be read is `DC hardening: <dc>`. Print
+Spooler and SMBv1 are read through the same CIM session as everything else, so they honour
+`-Credential` and work under PowerShell 7; a missing `EnableSMB1Protocol` property, which used
+to pass, is now `Not Assessed`, and so is a class that returns no instance at all. The registry values are read with `StdRegProv` `GetDWORDValue`,
+a third `Get*` method beside the two `DcDisk` uses, on the same reasoning.
+
 ## One override file for section config: `-ConfigOverridePath`
 
 A JSON file whose top-level keys are section names. Each value is checked by that section's own
-rules. `DcDisk` is the only section so far; later checks add their own key.
+rules. Two sections can be named so far, `DcDisk` and `DcHardening`; later checks add their own
+key.
 
 ```json
 {
@@ -407,6 +579,12 @@ rules. `DcDisk` is the only section so far; later checks add their own key.
     "FailBelowFreeGB": 5,
     "WsmanPort": 5985,
     "RpcPort": 135
+  },
+  "DcHardening": {
+    "Settings": {
+      "LmCompatibilityLevel": { "ExpectedMinimum": 3 },
+      "SmbServerSigning": { "OtherStatus": "Fail" }
+    }
   }
 }
 ```
@@ -433,6 +611,19 @@ rules. `DcDisk` is the only section so far; later checks add their own key.
   are 0 or more, `Fail` may not be above `Warning` once your values are merged with the
   built-in ones, at least one threshold must remain above 0, and a port is a whole number from
   1 to 65535. `Paths`, `SourceUrl` and `ReadDate` cannot be set from the file.
+- For `DcHardening` the one key is `Settings`; `WsmanPort` and `RpcPort` are refused there (see
+  [DC hardening](#dc-hardening)). `Settings` is an object
+  keyed by setting id - a list is refused - and under an id only `ExpectedMinimum` and
+  `OtherStatus` can be set. `ExpectedMinimum` must be a JSON number and one of the values the
+  setting can be graded against - none of which is a value that means off or never - and
+  `OtherStatus` must be `Warning` or `Fail`, so a value below the
+  expectation can never be configured to read as a pass. The registry key and value a setting
+  reads, the meanings of its numbers, its documented defaults and its sources cannot be set
+  from the file.
+- For `DcDisk`, `WsmanPort` and `RpcPort` change the port that is **probed** before a read. The
+  CIM session itself is opened without a port, so it still goes to the default one: setting
+  either key to anything but the default can make a reachable DC read as unreachable, and does
+  not make a DC on another port readable (PORT-PLAN C3g).
 - The file is validated in full even when `-Sections` leaves out the section it names; the
   log then says the section was validated and not used.
 - `-ExchangeSeConfigPath` and `-DcSystemConfigPath` are unchanged and separate. Their tables
@@ -471,10 +662,10 @@ over WinRM, CIM, the remote registry, the DNS Server cmdlets and the event log. 
 of those is documented by Microsoft that this project has found. They have not each been
 audited; that audit is PORT-PLAN H20a.
 
-One of those remote reads is a CIM method call rather than an instance query: `DcDisk` reads
-three registry values per DC with `StdRegProv` `GetStringValue` and `GetExpandedStringValue`.
-Why that is treated as a read, and what Microsoft does and does not say about it, is under
-[DC disk space](#dc-disk-space).
+Two of those remote reads are CIM method calls rather than instance queries: `DcDisk` reads
+three registry values per DC with `StdRegProv` `GetStringValue` and `GetExpandedStringValue`,
+and `DcHardening` reads six with `GetDWORDValue`. Why they are treated as reads, and what
+Microsoft does and does not say about it, is under [DC disk space](#dc-disk-space).
 
 ## Secure channel checks
 

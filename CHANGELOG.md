@@ -10,6 +10,338 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-11-13 (DC hardening: LDAP signing and channel binding, SMB signing, LAN Manager level, tool v1.20.0)
+
+**PORT-PLAN C3.** `-Sections DcHardening`, already part of the default `All` run, now reads six
+registry values per domain controller and grades each one. It closes or narrows seven rows of
+the gap analysis (ADA-LDAP-001, -002, -003, ADA-SMB-001, -002, ADA-NTLM-001, ADA-INV-019). Before
+this change the section read one of the six, `LDAPServerIntegrity`, and called anything other
+than 2 a `Warning`, an absent value included, with no reason.
+
+**This has run only against stubs.** No part of it has been executed against a real directory
+or a real domain controller. No `Invoke-CimMethod`, `Get-CimInstance` or registry read in it has
+met a real DC. The first run against a real forest is PORT-PLAN C17, owned by the operator.
+
+**These rows show configured policy, not what is negotiated on the wire.** Every value is read
+from the registry of the DC. No LDAP bind and no SMB session is attempted, and each of the six
+setting rows says so in its `NotRun` column. Microsoft's own live check of LDAP signing is a
+simple bind on port 389 that "sends simple-bind credentials without TLS. Run it only in an
+isolated lab"; this tool does not make one (PORT-PLAN C3e).
+
+**What it reads, per DC**, in one CIM session (WinRM first, DCOM second, no retry after a
+refusal):
+
+| Row | Value | Passes at |
+| --- | --- | --- |
+| `LDAP server signing: <dc>` | `NTDS\Parameters`, `LDAPServerIntegrity` | 2 |
+| `LDAP server signing enforcement: <dc>` | `NTDS\Parameters`, `LDAPServerEnforceIntegrity` | 1, from Windows Server 2025; `Info`, not applicable, below it |
+| `LDAP channel binding: <dc>` | `NTDS\Parameters`, `LdapEnforceChannelBinding` | 2 |
+| `SMB server signing: <dc>` | `LanManServer\Parameters`, `RequireSecuritySignature` | 1 |
+| `SMB client signing: <dc>` | `LanManWorkstation\Parameters`, `RequireSecuritySignature` | 1 |
+| `LAN Manager authentication level: <dc>` | `Control\Lsa`, `LmCompatibilityLevel` | 5 |
+| `Print Spooler: <dc>` | `Win32_Service` (State, StartMode) | Stopped |
+| `SMBv1: <dc>` | `MSFT_SmbServerConfiguration.EnableSMB1Protocol`, by instance query - which returned no instance on the one host measured; see "Found by an independent review" below | False |
+
+Plus `Win32_OperatingSystem.BuildNumber`, the DC's own statement of its build. A value below the
+expectation is a `Warning`, the rule the AdAssessment26 catalogue gives for these rows; a number
+Microsoft publishes no meaning for is `Not Assessed`. `EnableSecuritySignature` is not read:
+Microsoft documents it as ignored for SMB2 and later.
+
+**The expected value is Microsoft's; the status is not.** Each expectation is the value a
+Microsoft page gives for a domain controller, cited in the row. What a DC is called for missing
+it - `Warning`, or `Fail` where a config file says so - is **a tool default, not a Microsoft
+value**, and every row graded that way says so.
+
+**A value that is not set.** It is not a failure by itself and not a pass by itself. Where
+Microsoft documents the default for the DC's OS build, the row is graded on that default and
+says so ("graded on that documented default, not on a configured value", with the source).
+Where it does not, the row is `Not Assessed` with the reason. The only boundary Microsoft
+publishes for these defaults is "Windows Server 2022 or earlier" against "Windows Server 2025 or
+later", so the table is keyed on build 20348 and below, and 26100 and above; a build between
+the two, or one that was not read, has no documented default.
+
+| Setting, not set | Build 20348 and below | Build 26100 and above |
+| --- | --- | --- |
+| LDAP server signing | default None: `Warning` | decided with the enforcement value, below |
+| LDAP channel binding | default Never: `Warning` | `Not Assessed` - "When supported" is published for new deployments only |
+| SMB server signing | `Not Assessed` unless the second instrument was read | the same |
+| SMB client signing | default Disabled: `Warning` | default required: `Pass`, named as a default |
+| LAN Manager level | default 3, from Windows Server 2008 R2 (every build above 7100): `Warning` | `Not Assessed` - NTLMv1 is removed and the default is not restated |
+
+**LDAP signing on Windows Server 2025.** With `LDAPServerEnforceIntegrity` = 1 the signing row
+passes whatever `LDAPServerIntegrity` holds, because Microsoft documents that the enforcement
+policy takes precedence. With it = 0 the older value decides. With neither set, both rows pass
+on the documented default. With the enforcement value not set and a signing value below 2
+present, both rows are `Not Assessed`: Microsoft documents both that an upgrade "maintains your
+current settings" and that Not Configured "has the same effect as Enabled", and the registry
+does not show which applies. `LDAPServerIntegrity` = 2 passes on every build. A number
+Microsoft publishes no meaning for decides nothing in either row: a signing value of 3 is not
+"at least 2", and an enforcement value of 2 is neither Enabled nor Disabled.
+
+**SMB server signing has a second instrument, where the DC returns one.**
+`MSFT_SmbServerConfiguration.RequireSecuritySignature` is asked for in the same session, by
+instance query. Microsoft's own verification is the cmdlet `Get-SmbServerConfiguration`, which
+returns an object of that class; this tool does not run the cmdlet. Where the instance was
+returned and the registry value is set, the row is graded on the registry and says whether the
+second instrument agrees; where the two disagree the row is `Not Assessed`. Where the registry
+value is not set, the row is graded on the second instrument, which is a measurement and not a
+default. **On the one host measured the query returns no instance**, and then there is no
+second instrument: a registry value that is set is graded alone, with that said, and one that
+is not set is `Not Assessed`.
+
+**Results that are kept apart.** Unreachable (no port answered, no read attempted); access
+denied for the DC, or for one value (return 5, 0x80041003, or a thrown refusal); not set
+(return 1); key absent (return 2); present with another type (0x80041005); any other failure,
+with the code quoted and not interpreted. The reading of 1 and 2 is **measured on one Windows 11
+workstation, not published by Microsoft**, and each row that relies on it says so. A value that
+was not read is never turned into a number: for four of the six settings 0 means "disabled".
+
+**Not published on Microsoft Learn**, and labelled so in the config table and in the findings
+that rely on it: the registry path of `LDAPServerIntegrity` for AD DS (Learn gives it for AD LDS
+only; PORT-PLAN C3a), so every `LDAP server signing` row, passing or not, says the path is
+inferred; what its value 1 means, so 1 is reported as "not 2"; a value table for
+`LDAPServerEnforceIntegrity`, so 0 is reported as "Disabled, inferred"; what an absent
+`RequireSecuritySignature` means on a domain controller; the default `LmCompatibilityLevel` on
+Windows Server 2025; the default channel binding on an upgraded 2025 DC; and which return code
+`GetDWORDValue` gives for which condition.
+
+**Every scoped domain is in the section.** DcHardening now takes its DCs as DcDisk does - from
+the DC inventory, or from its own enumeration of each scoped domain when `DomainControllers` was
+not selected - and gives a scoped domain with no DC row a `Not Assessed` row of its own. This is
+PORT-PLAN C2e, done for this section only. It probes through the shared port cache, which is
+C1b, done for this section only.
+
+**The expectation can be changed from a file.** `-ConfigOverridePath` accepts a second section,
+`DcHardening`: under `Settings`, per setting id, `ExpectedMinimum` (only to a value the tool can
+grade against) and `OtherStatus` (`Warning` or `Fail`). The registry value a setting reads, the
+meanings of its numbers, its defaults and its sources cannot be set from a file, and neither can
+a status of `Pass` or `Info` for a weak value. Nor can the two ports: `WsmanPort` and `RpcPort`
+are refused for this section, because its CIM session does not use them (PORT-PLAN C3g). A
+finding cites the file for exactly what the file supplied.
+
+**Read-only.** `GetDWORDValue` is the script's third CIM method, beside the two C2 added.
+Microsoft documents it as returning "the data value for a named value whose data type is
+REG_DWORD" and lists the `Set*` methods separately as the ones that create or change. As for
+the other two, no page says in so many words that it has no side effect; the decision rests on
+its documented purpose and signature. The test that reads every `Invoke-CimMethod` from the
+parsed script now allows exactly three literal names and still fails on any other.
+
+### Changed — 2026-11-13 (DC hardening rows and transports, tool v1.20.0)
+
+- **Row names.** Rows are named family first: `Print Spooler: <dc>` (was `<dc>: Print Spooler`),
+  `SMBv1: <dc>` (was `<dc>: SMBv1`), `LDAP server signing: <dc>` (was `<dc>: LDAP signing
+  required`), and `DC hardening: <dc>` for a DC that could not be read (was the bare `<dc>`).
+  Anything that matched the old `Item` strings in the CSV or JSON needs updating. Every row of
+  the section now has a `NotRun` column.
+- **One transport.** Print Spooler was read with `Get-Service -ComputerName`, which PowerShell 7
+  does not have, so under PowerShell 7 the row was always `Not Assessed`; SMBv1 opened its own
+  CIM connection; `LDAPServerIntegrity` used the .NET remote registry and ignored `-Credential`,
+  as did the Spooler read. All three now go through the section's one CIM session.
+- **Two false passes closed.** A missing `EnableSMB1Protocol` property read as "not enabled" and
+  passed; it is now `Not Assessed`. A Spooler service in a state that is empty or `Unknown`, or
+  not returned at all, is `Not Assessed` where it used to pass. `Stopped` is still a `Pass`
+  and `Running` still a `Warning`; the start mode is now stated, not graded (PORT-PLAN C3b).
+- **An absent `LDAPServerIntegrity`** was a `Warning` reading "LDAPServerIntegrity =  (2 =
+  required)". It is now graded as described above.
+- **Advice.** The section's `Warning` and `Fail` rows took their advice from three unscoped
+  entries matched anywhere in the text, so a host name or an error containing "backup" or
+  "replication" could pick another fault's advice. Each row family now has its own
+  section-scoped entry, anchored on the family name the tool writes, and no other text of a
+  DC Hardening row can reach an unscoped entry.
+- **Shared helpers.** `Get-AdfaStdRegReturnClass`, `Get-AdfaDcPopulationGap`,
+  `Get-AdfaDcPopulationGapText`, `ConvertTo-AdfaDcTarget` and `Invoke-AdfaDcRemoteRead` were
+  taken out of the DcDisk code and are used by both sections. DcDisk's output is unchanged.
+
+**Tests.** 89 new Pester tests in a new `Describe` (78 before the review below, 11 added by
+it), and assertions in both harnesses. Four
+existing C2 tests were changed, because they are declared-population counts over the whole
+script and this change adds to those populations: the `Invoke-CimMethod` count and allow-list
+(2 calls and two names, now 3 and three, twice), the `New-CimSession` / `Remove-CimSession`
+count (2, now 3), and the `Get-CimInstance` count (4, now 6). The smoke harness's count of
+unusable override files went from six to eight with the two cases this change adds. No other
+existing test was changed.
+
+**The guards were shown able to fail.** The tests of this row were written with the code, so
+they could not all be shown red first. Instead 143 single mutations were applied one at a time
+across every new function, the config table, the recommendation map and the wiring - a verdict
+turned round, a `Not Assessed` turned into `Pass`, an unreachable DC read as reachable, access
+denied reported as a read failure, a validation removed, a boundary moved by one, a loop cut to
+its first item. Each was applied to an isolated copy of the tree, run against the C2 and C3
+`Describe`s, and the copy restored and verified by SHA-256; the working tree was never the
+thing mutated. Eleven survived at first, which is eleven tests that were missing. Each now has
+a test that fails on it: one DC without a domain in a population row; a second instrument
+marked as not read; a build reported as 0; a `uValue` handed back beside a nonzero return code;
+a result with no return code; a config that differs from the built-in table reaching the seam,
+and reaching the rows; ports 0 and 65536; the last build before Windows Server 2025; and DCOM
+tried although the RPC port did not answer. On the final pass all 143 are caught. That pass,
+the gate under Windows PowerShell 5.1 and the changes they led to were made on 2026-11-15.
+The last of the eleven has a twin in code this change did not write: the same line in the
+`DcDisk` collector is held by no C2 test either. That is PORT-PLAN C2g, not fixed here.
+
+**Found by an independent review of the diff before commit, and fixed in it.** The review
+confirmed fifteen findings against the uncommitted change. All fifteen are fixed here, on
+2026-11-15; none was judged wrong. Each behaviour finding has a test that fails without the fix.
+
+1. *A false Pass.* With `LDAPServerEnforceIntegrity` not set on a Windows Server 2025 DC, the
+   enforcement row passed beside any `LDAPServerIntegrity` number of 2 or more - 3 and
+   4294967295 included - and said that number "requires signing", while the signing row of the
+   same DC said Microsoft publishes no meaning for it. The test was "at least 2", not "a
+   documented value". The enforcement row is now `Not Assessed` beside a number with no
+   published meaning, and with the signing setting's meanings not supplied it takes no number
+   as documented.
+2. *A cause that was lost.* When the OS build was not read, the enforcement row said only that
+   the build was unread: access denied, an absent key, a wrong type and a failed read all
+   disappeared from it, while the DC's other five rows said "Access denied". The cause of the
+   read now comes first in that row, and the `Info` row below Windows Server 2025 states it too.
+3. *A false cause.* The signing row said the enforcement value "was not read" when it had been
+   read and held a number that is neither 0 nor 1. It now says the value was read, what it
+   holds, and that the number settles nothing.
+4. *A sentence that contradicted itself.* A LAN Manager level not set on build 7100 or below was
+   told that Microsoft documents no default for its build, because the pages cover "build 20348
+   and below". The reason is now built from the ranges of that setting's own rows.
+5. and 8. *An instrument that returns nothing* (reported twice, by two reviewers). The `SMBv1`
+   row and the second instrument of SMB server signing read `MSFT_SmbServerConfiguration` by
+   instance query. Measured during the review and again for the fix - one Windows 11 build 26100
+   workstation, not a domain controller, not elevated, PowerShell 7 and Windows PowerShell 5.1 -
+   that query returns **no instance and no error**, plain, with `-Property` and as WQL, while
+   `Get-SmbServerConfiguration` in the same process returns `EnableSMB1Protocol` False and
+   `RequireSecuritySignature` True. The cmdlet calls the class's static method
+   `GetConfiguration`. The Pester stub and the smoke stub handed back an instance, so the green
+   tests proved the stubs; and the README, this entry and a config comment said the property
+   read "is what Microsoft's own verification reads", which is true of the cmdlet and not of
+   the query. The code did fail closed - `Not Assessed`, never a false pass - but as a read
+   failure, with nothing to say it was the normal answer. **What changed:** `GetConfiguration`
+   is *not* invoked - it is not one of the three registry `Get*` methods the script is held to,
+   Microsoft Learn documents the cmdlet and not the class or its methods, and widening the
+   allow-list is the operator's decision (PORT-PLAN C3f). A class that returns no instance is
+   now its own result, "Not read", `Not Assessed`, saying what was measured, naming the method
+   that is not invoked and giving Microsoft's cmdlet as the check to run on the DC; it is told
+   apart from access denied and from a query that failed. Both stubs now return the measured
+   shape by default, and the tests that hand back an instance say that shape is unmeasured. The
+   three texts say only what the page says. **What this means for a run:** wherever a DC answers
+   as the workstation did, SMBv1 is not graded and SMB server signing has no second instrument.
+   The same instance query was in the section before this change, so SMBv1 may never have been
+   graded by this tool; that has not been measured on a DC.
+6. *An override that did not do what its name says.* `WsmanPort` and `RpcPort` under
+   `DcHardening` changed the port probed and the port named in the `Unreachable` row, but the
+   CIM session is opened without a port: with 5986 in the file, a DC listening on 5985 was
+   reported unreachable without a read being attempted. Both keys are now refused for this
+   section, with the reason, and a test reads the parsed seam to show the session is given no
+   port. `DcDisk` and `DcSystem` accept the same two keys and have the same gap; they are
+   unchanged, the README now says so for both, and it is PORT-PLAN C3g.
+7. *Two targets in one row.* With `ExpectedMinimum` lowered from a file, the finding said "below
+   the expected minimum of 3" and its recommendation said to set level 5. The advice for the
+   two settings whose expectation can be moved - channel binding and the LAN Manager level -
+   now says to raise the setting to at least the minimum the finding names, and gives
+   Microsoft's baseline value as Microsoft's.
+9. to 13. *Five tests that could not fail*, each shown by a mutation that survived all 188 C2
+   and C3 tests: an empty SMB result fabricated into SMBv1 False and signing True; any
+   enforcement number other than 0 making the signing row pass; 0 (Never) added to the
+   channel-binding `ExpectedChoices`, which would have let a file make every channel-binding
+   value pass; the collector probing with a fixed 1200 ms instead of `-PortTimeoutMs`; and the
+   source of an unknown default dropped from the rows that are `Not Assessed` for it. Each now
+   has a test, and so does the one the reviewer called near-equivalent (the build query's error
+   kept as the first error when nothing answered).
+14. *A README sentence the code did not keep.* "A value that is set is graded whatever the
+    build" is true of four settings, not of the two LDAP signing rows. The README now says which.
+15. *A quotation the page does not carry.* "NTLMv1 is removed starting in Windows 11, version
+    24H2 and Windows Server 2025." was in quotation marks beside the Windows Server page, which
+    says "NTLMv1 is removed. LANMAN and NTLMv2 are no longer under active feature development
+    and are deprecated." The fact was right; the config comment now quotes the page it cites.
+
+Tests changed because behaviour changed, all of them tests this same change had added: the
+validator test that merged `WsmanPort` and the six "port that is not a port" cases now assert
+the refusal; the collector test that set the two ports through the validator sets them on a
+copy of the table; the seam's default stub and its expectations follow the measured SMB shape;
+and one seam test now names its four `Not Assessed` rows where it counted three; the port
+assertions and the stubs in the two harnesses were changed the same way, and the smoke harness
+now counts four passing rows per DC where it counted five, SMBv1 no longer being one of them.
+No test from before this change was touched, and the 110 C2 tests are unchanged and green.
+
+**The review's guards were shown able to fail.** 23 single mutations, one or more per finding
+and the reviewers' own five among them, were applied one at a time to a copy of the tree under
+Windows PowerShell 5.1 with Pester 5.9.1: a green baseline on the copy first (199 run, 0
+failed - the 110 C2 tests and the 89 C3 tests), each mutation run against the C2 and C3
+`Describe`s, the copy restored after each, a green baseline on the restored copy at the end, and
+the working tree's script verified unchanged by SHA-256. The working tree was never the thing
+mutated. All 23 are caught; before the fixes the reviewers' five survived all 188 tests then
+present. The first attempt at this pass copied only the script and the test file, so two tests
+that read `README.md` failed on the copy before any mutation was applied; it was stopped and
+discarded for that reason, and the pass was repeated on a copy of the whole tree.
+
+**Found by reading the rows that pass, not by a test.** A default that fell short read "it
+below the expected minimum"; it now reads "it is below". The row for the Windows Server 2025
+enforcement policy, where it is `Info` and not applicable, carried the sentence about return
+code 1 although it rests on no reading of one; it no longer does. Both are pinned by tests.
+
+**Not verified.** Everything a real DC would answer: the return codes of `GetDWORDValue` on a
+domain controller, over WinRM, over DCOM and under Windows PowerShell 5.1 (measured only on a
+Windows 11 workstation, local session, PowerShell 7); that `Win32_Service` returns the
+properties read, in the types assumed; **whether `MSFT_SmbServerConfiguration` returns any
+instance to an instance query on a domain controller, remotely, or elevated** - on the one
+workstation measured, locally and not elevated, it returns none, so the `SMBv1` row and the SMB
+signing second instrument may be `Not Assessed` on every DC (PORT-PLAN C3f); whether the
+unadapted CIM store differs from the adapted members for these classes; the rights the
+registry reads need beyond local Administrators; and which of the six values a real DC has set
+or absent. The `MSFT_SmbServerConfiguration` class schema is not published on Learn, only the
+cmdlet pages; its three methods were read from the class on the workstation.
+The Azure baseline pages are machine-configuration renderings of the baselines, not the
+Security Compliance Toolkit download.
+
+**Vendor sources**, read 2026-11-13 except where a line gives another date:
+
+- LDAP signing defaults, Windows Server 2025 behaviour, events 2887 and 2889:
+  <https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-signing>
+- `LDAPServerIntegrity` values (AD LDS), the enforcement policy and its precedence, the lab-only
+  warning: <https://learn.microsoft.com/windows-server/identity/manage-ldap-signing-group-policy>
+- `LDAPServerIntegrity` path for AD LDS:
+  <https://learn.microsoft.com/troubleshoot/windows-server/active-directory/enable-ldap-signing-in-windows-server>
+- `LDAPServerIntegrity`=2 on domain controllers:
+  <https://learn.microsoft.com/troubleshoot/windows-server/active-directory/ldap-session-security-settings-requirements-adv190023>
+- LDAP signing policy defaults and recommendation:
+  <https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-controller-ldap-server-signing-requirements>
+- Channel binding values, defaults and events:
+  <https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-channel-binding>
+- Baseline rows (`LDAPServerEnforceIntegrity`, `LdapEnforceChannelBinding`, both
+  `RequireSecuritySignature`, `LmCompatibilityLevel`):
+  <https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows-server-2025>
+- SMB signing registry values, `EnableSecuritySignature` ignored, DC default:
+  <https://learn.microsoft.com/windows-server/storage/file-server/smb-signing-overview>
+- SMB signing on Windows Server 2025, verification (by the cmdlet `Get-SmbServerConfiguration
+  | FL RequireSecuritySignature`; re-read 2026-11-15) and remediation:
+  <https://learn.microsoft.com/windows-server/storage/file-server/smb-signing> and
+  <https://learn.microsoft.com/windows-server/storage/file-server/smb-security-hardening>
+- SMB signing policy defaults:
+  <https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/microsoft-network-server-digitally-sign-communications-always>
+  and
+  <https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/microsoft-network-client-digitally-sign-communications-always>
+- `LmCompatibilityLevel` location, levels and default:
+  <https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level>
+- `LmCompatibilityLevel` 5 on a DC, NTLMv1 audit:
+  <https://learn.microsoft.com/troubleshoot/windows-server/windows-security/audit-domain-controller-ntlmv1>
+- NTLMv1 removed in Windows Server 2025 (re-read 2026-11-15; the page's words are "NTLMv1 is
+  removed. LANMAN and NTLMv2 are no longer under active feature development and are
+  deprecated", and it lists NTLMv1 under "Features removed"):
+  <https://learn.microsoft.com/windows-server/get-started/removed-deprecated-features-windows-server>
+- `Get-SmbServerConfiguration`, "Retrieves the SMB server configuration", output "The
+  MSFT_SmbServerConfiguration object" (read 2026-11-15):
+  <https://learn.microsoft.com/powershell/module/smbshare/get-smbserverconfiguration>
+- `GetDWORDValue`:
+  <https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getdwordvalue-method-in-class-stdregprov>
+  and <https://learn.microsoft.com/windows/win32/wmisdk/obtaining-registry-data>
+- `Win32_Service` State and StartMode:
+  <https://learn.microsoft.com/windows/win32/cimwin32prov/win32-service>
+- Print Spooler on domain controllers:
+  <https://learn.microsoft.com/defender-for-identity/security-posture-assessments/identity-infrastructure>
+- SMBv1 detection (by the cmdlet `Get-SmbServerConfiguration | Select EnableSMB1Protocol`, and
+  the `SMB1` registry value with its "no registry named value is created" default; re-read
+  2026-11-15), removal and audit:
+  <https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3>
+- Remote WMI rights:
+  <https://learn.microsoft.com/troubleshoot/windows-server/system-management-components/scenario-guide-troubleshoot-wmi-connectivity-access-issues>
+- Windows Server 2008 R2 as every build above 7100, the lower bound of the LAN Manager default
+  (read 2026-11-15): <https://learn.microsoft.com/windows/win32/msi/operating-system-property-values>
+
 ### Added — 2026-11-13 (DC disk space, and one override file for section config, tool v1.19.0)
 
 **PORT-PLAN C2.** New `-Sections DcDisk`, included in the default `All` run, and a new

@@ -37,7 +37,18 @@
         - Dangerous ACLs: non-default principals holding DCSync rights on the domain head
         - Kerberos exposure: Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation
         - Privileged hygiene: adminCount orphans, SPNs on privileged accounts, Protected Users
-        - DC hardening: Print Spooler, SMBv1, LDAP signing requirement (remote CIM/registry)
+        - DC hardening, per DC: LDAP server signing and its Windows Server 2025 enforcement,
+          LDAP channel binding, SMB server and client signing, the LAN Manager authentication
+          level (LmCompatibilityLevel), the Print Spooler service and the SMBv1 server. Six
+          registry values and three CIM classes in one session per DC (remote CIM, needs local
+          admin on the DC). Each value is graded against the value Microsoft's security
+          baselines expect on a domain controller; a value that is not set is graded on the
+          default Microsoft documents for the DC's OS build where it documents one, and is
+          Not Assessed where it does not. These are registry reads: they show the policy
+          configured on each DC, not what a client and the DC negotiate on the wire, and no
+          LDAP bind or SMB session is attempted. The SMBv1 row is Not Assessed on any DC
+          whose SMB configuration class returns no instance to a query, which is what the
+          one host measured does; the cmdlet that would read it is not run (PORT-PLAN C3f)
         - DC system: operating system past end of extended support, judged per DC from the
           directory against a table of Microsoft lifecycle dates; and per-DC inventory of OS
           build, uptime and latest update install date (remote CIM, needs local admin on the
@@ -99,14 +110,16 @@
     reads over WinRM, CIM, the remote registry, the DNS cmdlets and the event log) are used as
     queries, but have not each been audited for a documented side effect. PORT-PLAN H20a.
 
-    One of those reads is a CIM METHOD call, and it is the only one in the script. The DcDisk
-    section reads three registry values on each DC through the WMI registry provider,
-    StdRegProv, which exposes no instances and can be read only by calling a method. It calls
+    Two sections make CIM METHOD calls, and they are the only ones in the script. Both read
+    the registry of each DC through the WMI registry provider, StdRegProv, which exposes no
+    instances and can be read only by calling a method. DcDisk reads three values with
     GetStringValue and, where that gives nothing usable, GetExpandedStringValue - the two
-    methods Microsoft documents as getting a string value - each named literally in the source,
-    and no other. StdRegProv's writing methods (Create*, Delete*, Set*) are never called.
-    Microsoft does not state in so many words that the Get* methods have no side effect; the
-    decision rests on their documented purpose and signature.
+    methods Microsoft documents as getting a string value. DcHardening reads six values with
+    GetDWORDValue, which Microsoft documents as returning the data of a REG_DWORD value. Each
+    of the three is named literally in the source, and no other method is called. StdRegProv's
+    writing methods (Create*, Delete*, Set*) are never called. Microsoft does not state in so
+    many words that the Get* methods have no side effect; the decision rests on their
+    documented purpose and signature.
 
 .PARAMETER OutputPath
     Root folder for the assessment bundle. A timestamped sub-folder is always created inside it.
@@ -138,12 +151,29 @@
     domain. A scoped domain whose DCs could not be enumerated gets a Not Assessed row of its
     own; it is never left out.
 
+    DcHardening reads six registry values and three CIM classes on each DC, over remote CIM,
+    and needs local Administrators rights there. Like DcDisk it covers the DCs of every scoped
+    domain, from the DC inventory or from its own enumeration, and gives a scoped domain with
+    no DC row a Not Assessed row of its own. Its rows show configured policy, not what is
+    negotiated on the wire.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    The only section so far is DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Two sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
+
+    And DcHardening, whose one key is Settings. Settings is keyed by
+    setting id (LdapServerIntegrity, LdapServerEnforceIntegrity, LdapEnforceChannelBinding,
+    SmbServerSigning, SmbClientSigning, LmCompatibilityLevel), and under each id a file can
+    set ExpectedMinimum, to one of the values the tool can grade against, and OtherStatus,
+    to Warning or Fail:
+
+        { "DcHardening": { "Settings": { "LmCompatibilityLevel": { "ExpectedMinimum": 3 } } } }
+
+    DcHardening refuses WsmanPort and RpcPort: its CIM session always uses the default ports,
+    so a port set in the file would change the probe and not the connection.
 
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
@@ -317,7 +347,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk" so far - and each value is checked by that section's
+    # are section config names - "DcDisk" and "DcHardening" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -351,7 +381,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.19.0'
+    Version                 = '1.20.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -641,6 +671,286 @@ $script:Config = @{
             @{ Role = 'NTDS database'; Kind = 'Database'; Key = 'SYSTEM\CurrentControlSet\Services\NTDS\Parameters';     ValueName = 'DSA Database File' }
             @{ Role = 'NTDS logs';     Kind = 'Logs';     Key = 'SYSTEM\CurrentControlSet\Services\NTDS\Parameters';     ValueName = 'Database Log Files Path' }
             @{ Role = 'SYSVOL';        Kind = 'Sysvol';   Key = 'SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'; ValueName = 'SysVol' }
+        )
+    }
+    # --- DC hardening: LDAP signing and channel binding, SMB signing, LAN Manager level (PORT-PLAN C3) ---
+    # Six registry values per DC, read with StdRegProv GetDWORDValue, each graded against the
+    # value Microsoft's security baselines expect on a domain controller. A row shows the policy
+    # CONFIGURED in the registry of the DC, not what a client and the DC agree on the wire.
+    #
+    # Every URL below was read on 2026-11-13, except where its own line gives another date. What
+    # each row holds:
+    #   Key, ValueName   where the value is. Not replaceable from a file.
+    #   KeyNote          said in every row of the setting, where the registry path itself is not
+    #                    a published fact (LDAPServerIntegrity, below). Not replaceable.
+    #   Meanings         the numbers Microsoft publishes a meaning for. A number that is not
+    #                    listed is reported Not Assessed, never graded.
+    #   ExpectedMinimum  the lowest number that passes. In all six settings a higher documented
+    #                    number is stricter, so it passes too. Replaceable from a file, but only
+    #                    with one of ExpectedChoices.
+    #   OtherStatus      what a value below the expectation is reported as: Warning (the rule the
+    #                    AdAssessment26 catalogue gives for these rows) or Fail. Replaceable.
+    #                    A TOOL DEFAULT, NOT A MICROSOFT VALUE: Microsoft publishes the value it
+    #                    expects, and this tool chooses what to call a DC that misses it. Every
+    #                    row graded with it says so.
+    #   Defaults         what Microsoft documents for a value that is NOT SET, by OS build. The
+    #                    only boundary it publishes is "Windows Server 2022 or earlier" against
+    #                    "Windows Server 2025 or later", so the rows are keyed on build 20348 and
+    #                    below, and 26100 and above; a build between the two, or one that was not
+    #                    read, has no documented default and is reported Not Assessed. Known =
+    #                    $false is a row that says why no default is known for those builds.
+    #                    Value is the number of the default where Microsoft publishes it; where
+    #                    it names the default only as a policy choice, Value is $null and Meets
+    #                    says whether that choice meets the expectation.
+    #
+    # NOT PUBLISHED ON MICROSOFT LEARN, and labelled so wherever a finding relies on it:
+    #   - The registry path of LDAPServerIntegrity for AD DS. Learn gives the path only for
+    #     AD LDS (Services\<InstanceName>\Parameters); NTDS\Parameters is where it publishes the
+    #     two sibling values (LdapEnforceChannelBinding, LDAPServerEnforceIntegrity), and it
+    #     names LDAPServerIntegrity=2 as the domain controller setting in the ADV190023 article.
+    #   - What LDAPServerIntegrity = 1 means, and which number the policy choice "None" stores.
+    #     Learn publishes 0 ("Disables signing (default)", for AD LDS) and 2 ("Requires signing").
+    #   - A value table for LDAPServerEnforceIntegrity. The Windows Server 2025 baseline expects
+    #     1 and the policy has the choices Enabled / Disabled / Not Configured; 1 = Enabled and
+    #     0 = Disabled is inferred from that.
+    #   - What an absent RequireSecuritySignature means on a domain controller, on any build.
+    #   - The default LmCompatibilityLevel, and the meaning of its levels, on Windows Server 2025.
+    #   - The default LdapEnforceChannelBinding on a Windows Server 2025 DC that was upgraded.
+    # EnableSecuritySignature is deliberately not read: "The EnableSecuritySignature registry
+    # setting for SMB2 and later clients and servers is ignored" (smb-signing-overview).
+    #
+    # Replaceable from a file via -ConfigOverridePath, under the key "DcHardening": per setting
+    # id, ExpectedMinimum and OtherStatus. Nothing else. WsmanPort and RpcPort are NOT replaceable
+    # for this section: the session Get-AdfaDcHardeningRaw opens always goes to the default WinRM
+    # port, or to the RPC endpoint mapper for DCOM, so a file that changed the port would change
+    # what is probed and not what is connected to. A file that names either is refused.
+    DcHardening             = @{
+        SourceUrl = 'https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows-server-2025'
+        ReadDate  = '2026-11-13'
+        # Ports probed before a remote read: WinRM over HTTP, then the RPC endpoint mapper for
+        # the DCOM fallback. The same two values the DcSystem and DcDisk sections use. They are
+        # the ports the CIM session itself uses by default, and they cannot be set from a file.
+        WsmanPort = 5985
+        RpcPort   = 135
+        Settings  = @(
+            @{
+                Id = 'LdapServerIntegrity'; Catalogue = 'ADA-LDAP-001'; Item = 'LDAP server signing'
+                Policy = 'Domain controller: LDAP server signing requirements'
+                # Path inferred for AD DS, see above. KeyNote puts that in every row of the setting.
+                Key = 'SYSTEM\CurrentControlSet\Services\NTDS\Parameters'; ValueName = 'LDAPServerIntegrity'
+                KeyNote = 'The registry path of this value is inferred, not published by Microsoft for AD DS: Microsoft Learn gives the path of LDAPServerIntegrity for AD LDS only, and NTDS\Parameters, read here, is where it publishes the two related values LdapEnforceChannelBinding and LDAPServerEnforceIntegrity.'
+                #   "The LDAPServerIntegrity value accepts the following values: 0: Disables
+                #    signing (default). 2: Requires signing." (for AD LDS)
+                #     https://learn.microsoft.com/windows-server/identity/manage-ldap-signing-group-policy
+                #   "The LDAPServerIntegrity=2 setting ... enforces the use of signing by the client."
+                #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/ldap-session-security-settings-requirements-adv190023
+                Meanings = @{
+                    '0' = 'signing disabled - published for AD LDS only'
+                    '1' = 'meaning not published on Microsoft Learn; it is not 2, the value that requires signing'
+                    '2' = 'Require signing'
+                }
+                ExpectedMinimum = 2; ExpectedChoices = @(2); OtherStatus = 'Warning'
+                #   "We recommend that you set Domain controller: LDAP server signing requirements
+                #    to Require signature."
+                ExpectedSource = 'Microsoft recommends Require signing: https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-controller-ldap-server-signing-requirements (read 2026-11-13)'
+                AppliesFromBuild = $null
+                # On Windows Server 2025 and later the enforcement value decides with this one:
+                #   "The Domain controller: LDAP server signing requirements enforcement policy
+                #    takes precedence over the Domain controller: LDAP server signing
+                #    requirements policy."
+                OverriddenBy = 'LdapServerEnforceIntegrity'; OverriddenByValueName = 'LDAPServerEnforceIntegrity'; OverriddenFromBuild = 26100
+                OverrideOnValue = 1; OverrideOffValue = 0
+                Defaults = @(
+                    #   "LDAP server signing: optional by default; domain controllers accept both
+                    #    signed and unsigned LDAP binds." and policy page "DC Effective Default
+                    #    Settings | None". The number that "None" stores is not published.
+                    @{ MinBuild = $null; MaxBuild = 20348; Known = $true; Value = $null; Meets = $false
+                       Label = 'None: the domain controller accepts both signed and unsigned LDAP binds'
+                       Source = 'https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-signing (read 2026-11-13)' }
+                    #   "No server policy set: if no LDAP server signing policy exists, Windows
+                    #    Server 2025 requires LDAP signing by default." Used only where the
+                    #    enforcement value is not set either; the verdict function decides.
+                    @{ MinBuild = 26100; MaxBuild = $null; Known = $true; Value = $null; Meets = $true
+                       Label = 'LDAP signing required, where no LDAP server signing policy exists'
+                       Source = 'https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-signing (read 2026-11-13)' }
+                )
+                SourceUrl = 'https://learn.microsoft.com/windows-server/identity/manage-ldap-signing-group-policy'; ReadDate = '2026-11-13'
+            }
+            @{
+                Id = 'LdapServerEnforceIntegrity'; Catalogue = 'ADA-LDAP-003'; Item = 'LDAP server signing enforcement'
+                Policy = 'Domain controller: LDAP server signing requirements enforcement'
+                #   "Registry Key: HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters
+                #    Registry Value: LDAPServerEnforceIntegrity Registry Value Type: REG_DWORD ...
+                #    Domain Controller = Equals(1)"
+                Key = 'SYSTEM\CurrentControlSet\Services\NTDS\Parameters'; ValueName = 'LDAPServerEnforceIntegrity'
+                Meanings = @{
+                    '0' = 'Disabled - inferred from the baseline row, which expects 1; Microsoft publishes no value table'
+                    '1' = 'Enabled'
+                }
+                ExpectedMinimum = 1; ExpectedChoices = @(1); OtherStatus = 'Warning'
+                ExpectedSource = 'Windows Server 2025 security baseline, Domain Controller = Equals(1): https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows-server-2025 (read 2026-11-13)'
+                # The policy is documented for Windows Server 2025 only; whether an earlier
+                # release honours the value is not published.
+                AppliesFromBuild = 26100; AppliesFromLabel = 'Windows Server 2025'
+                Governs = 'LdapServerIntegrity'; GovernsValueName = 'LDAPServerIntegrity'; GovernedMinimum = 2
+                Defaults = @(
+                    #   "Default: Not Configured, which has the same effect as Enabled (default
+                    #    for new deployments)." Against it: "Existing policies preserved: if you
+                    #    have LDAP server-side or client-side signing policies in place, the
+                    #    upgrade maintains your current settings" - so the verdict function does
+                    #    not apply this default where a legacy signing value below 2 is present.
+                    @{ MinBuild = 26100; MaxBuild = $null; Known = $true; Value = $null; Meets = $true
+                       Label = 'Not Configured, which has the same effect as Enabled'
+                       Source = 'https://learn.microsoft.com/windows-server/identity/manage-ldap-signing-group-policy (read 2026-11-13)' }
+                )
+                SourceUrl = 'https://learn.microsoft.com/windows-server/identity/manage-ldap-signing-group-policy'; ReadDate = '2026-11-13'
+            }
+            @{
+                Id = 'LdapEnforceChannelBinding'; Catalogue = 'ADA-LDAP-002'; Item = 'LDAP channel binding'
+                Policy = 'Domain controller: LDAP server channel binding token requirements'
+                #   "Registry Key: HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters
+                #    Registry Value: LdapEnforceChannelBinding Registry Value Type: REG_DWORD ...
+                #    Domain Controller = Equals(2)" (Windows Server 2025 baseline)
+                Key = 'SYSTEM\CurrentControlSet\Services\NTDS\Parameters'; ValueName = 'LdapEnforceChannelBinding'
+                #   "0 | Never | The server doesn't perform channel binding validation."
+                #   "1 | When supported | Clients that support CBT must provide it. Clients that
+                #    don't support CBT are still allowed. The server logs auditing events."
+                #   "2 | Always | All applicable TLS and SASL clients must provide CBT."
+                Meanings = @{
+                    '0' = 'Never: the server performs no channel binding validation'
+                    '1' = 'When supported: clients that support channel binding must provide it, others are still allowed'
+                    '2' = 'Always: clients that provide no valid channel binding token are rejected'
+                }
+                # 1 is offered as a choice for the audit phase Microsoft describes before Always.
+                ExpectedMinimum = 2; ExpectedChoices = @(1, 2); OtherStatus = 'Warning'
+                # No baseline row for this value was found for Windows Server 2022 and earlier;
+                # on those releases the expectation rests on the second page ("For the strongest
+                # security posture, use SASL authentication with Kerberos over TLS and enforce
+                # channel binding").
+                ExpectedSource = 'Windows Server 2025 security baseline, Domain Controller = Equals(2): https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows-server-2025 ; and https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-channel-binding (read 2026-11-13)'
+                AppliesFromBuild = $null
+                Defaults = @(
+                    #   "Windows Server 2022 or earlier: Channel binding policy: Set to Never."
+                    @{ MinBuild = $null; MaxBuild = 20348; Known = $true; Value = 0; Meets = $null
+                       Label = 'Never'
+                       Source = 'https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-channel-binding (read 2026-11-13)' }
+                    #   "For new Active Directory deployments on Windows Server 2025 or later:
+                    #    Channel binding policy: Defaults to When supported." Nothing is said for
+                    #    a DC that was upgraded, and the registry does not show which a DC is.
+                    @{ MinBuild = 26100; MaxBuild = $null; Known = $false; Value = $null; Meets = $null
+                       Reason = 'Microsoft states the default "When supported" only for new Active Directory deployments on Windows Server 2025 or later, and the registry does not show whether this DC was a new deployment or an upgrade'
+                       Source = 'https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-channel-binding (read 2026-11-13)' }
+                )
+                SourceUrl = 'https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-channel-binding'; ReadDate = '2026-11-13'
+            }
+            @{
+                Id = 'SmbServerSigning'; Catalogue = 'ADA-SMB-001'; Item = 'SMB server signing'
+                Policy = 'Microsoft network server: Digitally sign communications (always)'
+                #   "Registry key: HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\LanManServer\
+                #    Parameters Registry value: RequireSecuritySignature Data Type: REG_DWORD
+                #    Data: 0 (disable), 1 (enable)"
+                Key = 'SYSTEM\CurrentControlSet\Services\LanManServer\Parameters'; ValueName = 'RequireSecuritySignature'
+                Meanings = @{
+                    '0' = 'SMB signing not required of clients'
+                    '1' = 'SMB signing required of clients'
+                }
+                ExpectedMinimum = 1; ExpectedChoices = @(1); OtherStatus = 'Warning'
+                ExpectedSource = 'Windows Server 2025 security baseline, Domain Controller = Equals(1): https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows-server-2025 ; and "By default, domain controllers require SMB signing of anyone connecting to them": https://learn.microsoft.com/windows-server/storage/file-server/smb-signing-overview (read 2026-11-13)'
+                AppliesFromBuild = $null
+                # The SMB server's own configuration object, asked for in the same session by an
+                # instance query. What Microsoft documents is the CMDLET, not this query:
+                #   "Get-SmbServerConfiguration | FL RequireSecuritySignature ... If the returned
+                #    information is True, then SMB signing is enabled"
+                #     https://learn.microsoft.com/windows-server/storage/file-server/smb-signing
+                #   and the cmdlet's output is "The MSFT_SmbServerConfiguration object".
+                #     https://learn.microsoft.com/powershell/module/smbshare/get-smbserverconfiguration
+                #     Read: 2026-11-15 (both).
+                # The class schema is not published on Microsoft Learn. MEASURED on 2026-11-15 on
+                # ONE host (a Windows 11 build 26100 workstation, not a domain controller, not
+                # elevated, local session): an instance query of the class returns NO instance and
+                # no error, while the cmdlet returns the configuration - the cmdlet calls the
+                # class's static method GetConfiguration, whose only parameter is [out] Output.
+                # This tool does not invoke that method (PORT-PLAN C3f), so wherever a DC answers
+                # as that host did, this second instrument does not exist and the row says so.
+                # Whether a domain controller returns an instance has not been measured.
+                SecondInstrument = 'MSFT_SmbServerConfiguration.RequireSecuritySignature'
+                Defaults = @(
+                    @{ MinBuild = $null; MaxBuild = $null; Known = $false; Value = $null; Meets = $null
+                       Reason = 'Microsoft does not publish what an absent value means on a domain controller. Its policy page lists "Default Domain Controller Policy: Enabled" and "DC Effective Default Settings: Enabled" beside "Stand-Alone Server Default Settings: Disabled", so on a DC the requirement normally arrives through Group Policy, which sets the value; and its two pages on Windows Server 2025 disagree on whether inbound signing is required by default'
+                       Source = 'https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/microsoft-network-server-digitally-sign-communications-always ; https://learn.microsoft.com/windows-server/storage/file-server/smb-signing ; https://learn.microsoft.com/windows-server/storage/file-server/smb-security-hardening (read 2026-11-13)' }
+                )
+                SourceUrl = 'https://learn.microsoft.com/windows-server/storage/file-server/smb-signing-overview'; ReadDate = '2026-11-13'
+            }
+            @{
+                Id = 'SmbClientSigning'; Catalogue = 'ADA-SMB-002'; Item = 'SMB client signing'
+                Policy = 'Microsoft network client: Digitally sign communications (always)'
+                #   "Registry key: HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\
+                #    LanManWorkstation\Parameters Registry value: RequireSecuritySignature
+                #    Data Type: REG_DWORD Data: 0 (disable), 1 (enable)"
+                Key = 'SYSTEM\CurrentControlSet\Services\LanManWorkstation\Parameters'; ValueName = 'RequireSecuritySignature'
+                Meanings = @{
+                    '0' = 'SMB signing not required on outbound connections'
+                    '1' = 'SMB signing required on outbound connections'
+                }
+                ExpectedMinimum = 1; ExpectedChoices = @(1); OtherStatus = 'Warning'
+                ExpectedSource = 'Windows Server 2025 security baseline, Domain Controller = Equals(1): https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows-server-2025 (read 2026-11-13)'
+                AppliesFromBuild = $null
+                Defaults = @(
+                    #   Policy page: "DC Effective Default Settings | Disabled".
+                    @{ MinBuild = $null; MaxBuild = 20348; Known = $true; Value = 0; Meets = $null
+                       Label = 'Disabled (DC Effective Default Settings: Disabled)'
+                       Source = 'https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/microsoft-network-client-digitally-sign-communications-always (read 2026-11-13)' }
+                    #   "Windows Server 2025 requires outbound SMB signing only." (smb-signing) and
+                    #   "all outbound and inbound SMB connections are now required to be signed by
+                    #    default" (smb-security-hardening): the two pages agree on outbound.
+                    @{ MinBuild = 26100; MaxBuild = $null; Known = $true; Value = 1; Meets = $null
+                       Label = 'required: Windows Server 2025 requires SMB signing on outbound connections by default'
+                       Source = 'https://learn.microsoft.com/windows-server/storage/file-server/smb-signing ; https://learn.microsoft.com/windows-server/storage/file-server/smb-security-hardening (read 2026-11-13)' }
+                )
+                SourceUrl = 'https://learn.microsoft.com/windows-server/storage/file-server/smb-signing-overview'; ReadDate = '2026-11-13'
+            }
+            @{
+                Id = 'LmCompatibilityLevel'; Catalogue = 'ADA-NTLM-001'; Item = 'LAN Manager authentication level'
+                Policy = 'Network security: LAN Manager authentication level'
+                #   "HKLM\System\CurrentControlSet\Control\Lsa\LmCompatibilityLevel"
+                Key = 'SYSTEM\CurrentControlSet\Control\Lsa'; ValueName = 'LmCompatibilityLevel'
+                # The meanings are the security policy page's. The Policy CSP page words levels
+                # 2 to 5 differently and contradicts itself, so it is not used.
+                Meanings = @{
+                    '0' = 'Send LM & NTLM responses; domain controllers accept LM, NTLM and NTLMv2'
+                    '1' = 'Send LM & NTLM, NTLMv2 session security where the server supports it; domain controllers accept LM, NTLM and NTLMv2'
+                    '2' = 'Send NTLM response only; domain controllers accept LM, NTLM and NTLMv2'
+                    '3' = 'Send NTLMv2 response only; domain controllers accept LM, NTLM and NTLMv2'
+                    '4' = 'Send NTLMv2 response only; domain controllers refuse LM and accept NTLM and NTLMv2'
+                    '5' = 'Send NTLMv2 response only; domain controllers refuse LM and NTLM and accept only NTLMv2'
+                }
+                # 3 is the countermeasure the security policy page names ("Send NTLMv2 responses
+                # only"); 5 is what both security baselines and the NTLMv1 audit article give for
+                # a domain controller. 5 is the default here; 3 and 4 are offered as choices.
+                ExpectedMinimum = 5; ExpectedChoices = @(3, 4, 5); OtherStatus = 'Warning'
+                ExpectedSource = 'Windows Server 2025 security baseline, Domain Controller = Equals(5): https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows-server-2025 ; and "To configure a DC to use only NTLMv2 ... Value: 5": https://learn.microsoft.com/troubleshoot/windows-server/windows-security/audit-domain-controller-ntlmv1 (read 2026-11-13)'
+                AppliesFromBuild = $null
+                Defaults = @(
+                    #   "In Windows Server 2008 R2 and later, this setting is configured to Send
+                    #    NTLMv2 responses only." and "DC Effective Default Settings | Send NTLMv2
+                    #    response only". Windows Server 2008 R2 is every build above 7100, and
+                    #    the release before it, Windows Server 2008 with SP2, is build 6002:
+                    #    "Windows Server 2008 R2 | 601 | greater than 7100" (VersionNT, WindowsBuild)
+                    #      https://learn.microsoft.com/windows/win32/msi/operating-system-property-values
+                    #      Read: 2026-11-15.
+                    @{ MinBuild = 7101; MaxBuild = 20348; Known = $true; Value = 3; Meets = $null
+                       Label = 'Send NTLMv2 response only (level 3)'
+                       Source = 'https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level (read 2026-11-13)' }
+                    #   Windows Server 2025, features no longer in development, row "NTLM": "NTLMv1 is
+                    #    removed. LANMAN and NTLMv2 are no longer under active feature development
+                    #    and are deprecated." The same page lists NTLMv1 under "Features removed"
+                    #    for Windows Server 2025. Read: 2026-11-15.
+                    @{ MinBuild = 26100; MaxBuild = $null; Known = $false; Value = $null; Meets = $null
+                       Reason = 'NTLMv1 is removed in Windows Server 2025, and no Microsoft page read restates the default, or the meaning of the levels, for that release'
+                       Source = 'https://learn.microsoft.com/windows-server/get-started/removed-deprecated-features-windows-server (read 2026-11-15)' }
+                )
+                SourceUrl = 'https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level'; ReadDate = '2026-11-13'
+            }
         )
     }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
@@ -2797,55 +3107,6 @@ function Get-AdfaPrivilegedHygiene {
     return @($rows)
 }
 
-function Get-AdfaDcHardening {
-    <#
-    .SYNOPSIS
-        Per-DC hardening: Print Spooler running, SMBv1 enabled, LDAP signing requirement.
-        Uses remote CIM/registry; degrades to Not Assessed where unreachable.
-    .OUTPUTS
-        [pscustomobject[]]
-    #>
-    [CmdletBinding()]
-    [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
-    if (@($DomainControllers).Count -eq 0) {
-        return @(New-Finding -Area 'DCHardening' -Item 'DC hardening' -Status $script:Status.NotAssessed `
-                -Detail 'No domain controllers were enumerated, so no hardening setting could be read. This is not a clean result.')
-    }
-    $rows = @()
-    foreach ($dc in $DomainControllers) {
-        if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
-            $rows += New-Finding -Area 'DCHardening' -Item ("{0}" -f $dc) -Status $script:Status.NotAssessed -Detail 'DC not reachable (RPC/135).'
-            continue
-        }
-        # Print Spooler (PrinterBug / PetitPotam relay surface)
-        try {
-            $sp = Get-Service -ComputerName $dc -Name Spooler -ErrorAction Stop
-            $rows += New-Finding -Area 'DCHardening' -Item ("{0}: Print Spooler" -f $dc) -Status $(if ($sp.Status -eq 'Running') { $script:Status.Warning } else { $script:Status.Pass }) -Detail ("Spooler is {0} (should be Stopped/Disabled on DCs)." -f $sp.Status)
-        }
-        catch { $rows += New-Finding -Area 'DCHardening' -Item ("{0}: Print Spooler" -f $dc) -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-
-        # SMBv1
-        try {
-            $cimArgs = @{ ComputerName = $dc; ErrorAction = 'Stop' }
-            if ($Credential) { $cimArgs.Credential = $Credential }
-            $smb = Get-CimInstance @cimArgs -Namespace 'root/Microsoft/Windows/SMB' -ClassName 'MSFT_SmbServerConfiguration'
-            $rows += New-Finding -Area 'DCHardening' -Item ("{0}: SMBv1" -f $dc) -Status $(if ($smb.EnableSMB1Protocol) { $script:Status.Fail } else { $script:Status.Pass }) -Detail ("EnableSMB1Protocol = {0}" -f $smb.EnableSMB1Protocol)
-        }
-        catch { $rows += New-Finding -Area 'DCHardening' -Item ("{0}: SMBv1" -f $dc) -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-
-        # LDAP server signing requirement (registry LDAPServerIntegrity: 2 = required)
-        try {
-            $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $dc)
-            $key = $reg.OpenSubKey('SYSTEM\CurrentControlSet\Services\NTDS\Parameters')
-            $val = if ($key) { $key.GetValue('LDAPServerIntegrity') } else { $null }
-            $rows += New-Finding -Area 'DCHardening' -Item ("{0}: LDAP signing required" -f $dc) -Status $(if ("$val" -eq '2') { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("LDAPServerIntegrity = {0} (2 = required)" -f $val)
-        }
-        catch { $rows += New-Finding -Area 'DCHardening' -Item ("{0}: LDAP signing required" -f $dc) -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-    }
-    return @($rows)
-}
-
 # ---------------------------------------------------------------------------
 # DC system: OS lifecycle verdict and patch-level inventory (PORT-PLAN C1)
 # ---------------------------------------------------------------------------
@@ -3884,6 +4145,58 @@ function Get-AdfaDcDiskThresholdText {
     return ("Thresholds: {0}. Threshold source: {1}." -f ($parts -join '; '), [string]$Config['ThresholdSource'])
 }
 
+function Get-AdfaStdRegReturnClass {
+    <#
+    .SYNOPSIS
+        Pure: what one StdRegProv Get* call's outcome means, as a class. Shared by every section
+        that reads the registry through the provider (DcDisk, DcHardening).
+    .DESCRIPTION
+        One place decides what a return code is read as, so two sections cannot read the same
+        code two ways. The wording a row gives the operator stays with the section.
+
+          Success       the provider returned 0.
+          ValueNotSet   it returned 1. MEASURED, NOT PUBLISHED: see Resolve-AdfaDcDiskPathRead for
+                        what Microsoft publishes and what was measured for the two string
+                        methods, and Get-AdfaStdRegDwordValue for GetDWORDValue.
+          KeyAbsent     it returned 2. Measured, as above.
+          AccessDenied  it returned 5 (WinError.h ERROR_ACCESS_DENIED) or 2147749891 (0x80041003,
+                        WbemErrorEnum wbemErrAccessDenied), or the call threw a refusal.
+          TypeMismatch  it returned 2147749893 (0x80041005, wbemErrTypeMismatch): the value
+                        exists and is not of the type the method reads.
+          ReadFailed    any other nonzero code, or the call threw anything else. Quoted by the
+                        caller, never interpreted - and never read as "not set".
+          NoReturnCode  nothing usable came back as a return code.
+
+        Threw tells a call that raised from one that returned; Code is the number, or $null.
+    .OUTPUTS
+        [pscustomobject] Class, Code ([int64] or $null), Threw.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$ReturnValue,
+        [AllowNull()][AllowEmptyString()][string]$ErrorText = '',
+        [AllowNull()][AllowEmptyString()][string]$ErrorCode = ''
+    )
+    $out = [pscustomobject]@{ Class = 'NoReturnCode'; Code = $null; Threw = $false }
+    if (-not [string]::IsNullOrEmpty($ErrorText)) {
+        $out.Threw = $true
+        $out.Class = 'ReadFailed'
+        if ((Get-AdfaRemoteReadErrorClass -Message $ErrorText -ErrorCode $ErrorCode) -eq 'AccessDenied') { $out.Class = 'AccessDenied' }
+        return $out
+    }
+    $number = [int64]0
+    if ($null -eq $ReturnValue -or -not [int64]::TryParse([string]$ReturnValue, [ref]$number)) { return $out }
+    $out.Code = $number
+    if ($number -eq 0) { $out.Class = 'Success' }
+    elseif ($number -eq 5 -or $number -eq 2147749891) { $out.Class = 'AccessDenied' }
+    elseif ($number -eq 1) { $out.Class = 'ValueNotSet' }
+    elseif ($number -eq 2) { $out.Class = 'KeyAbsent' }
+    elseif ($number -eq 2147749893) { $out.Class = 'TypeMismatch' }
+    else { $out.Class = 'ReadFailed' }
+    return $out
+}
+
 function Resolve-AdfaDcDiskPathRead {
     <#
     .SYNOPSIS
@@ -3948,8 +4261,12 @@ function Resolve-AdfaDcDiskPathRead {
     $rights = 'Local Administrators rights on the DC are needed for this read.'
     $errorText = [string](Get-AdfaConfigValue -Entry $Entry -Name 'Error')
     $errorCode = [string](Get-AdfaConfigValue -Entry $Entry -Name 'ErrorCode')
-    if ($errorText -ne '') {
-        if ((Get-AdfaRemoteReadErrorClass -Message $errorText -ErrorCode $errorCode) -eq 'AccessDenied') {
+    # What the outcome IS comes from the classifier every registry-reading section shares; what
+    # the row SAYS about it is this section's own wording, below.
+    $class = Get-AdfaStdRegReturnClass -ReturnValue (Get-AdfaConfigValue -Entry $Entry -Name 'ReturnValue') -ErrorText $errorText -ErrorCode $errorCode
+    $kind = [string]$class.Class
+    if ($class.Threw) {
+        if ($kind -eq 'AccessDenied') {
             $out.Cause = ("Access denied: the registry read was refused. {0} Reported by the DC - {1}" -f $rights, $errorText)
         }
         else {
@@ -3957,38 +4274,37 @@ function Resolve-AdfaDcDiskPathRead {
         }
         return $out
     }
-    $code = Get-AdfaConfigValue -Entry $Entry -Name 'ReturnValue'
-    $number = [int64]0
-    if ($null -eq $code -or -not [int64]::TryParse([string]$code, [ref]$number)) {
+    if ($kind -eq 'NoReturnCode') {
         $out.Cause = 'Read failed: the registry provider returned no return code, so whether the value was read is not known.'
         return $out
     }
+    $number = [int64]$class.Code
     $also = ''
     $expanded = Get-AdfaConfigValue -Entry $Entry -Name 'ExpandedReturnValue'
     if ($null -ne $expanded -and [string]$expanded -ne '') { $also = (" GetExpandedStringValue was also tried and returned {0}." -f [string]$expanded) }
     # Where the 1 / 2 reading comes from, said in the row because it is not a vendor statement.
     $measured = 'This reading is measured, not published by Microsoft: on the one host where it was measured (a Windows 11 workstation, not a domain controller) the provider returns 1 for a value that is not set under a key that exists, and 2 for a key that does not exist.'
-    if ($number -eq 5) {
+    if ($kind -eq 'AccessDenied' -and $number -eq 5) {
         $out.Cause = ("Access denied: StdRegProv returned 5, which WinError.h defines as ERROR_ACCESS_DENIED. {0}" -f $rights)
         return $out
     }
-    if ($number -eq 2147749891) {
+    if ($kind -eq 'AccessDenied') {
         $out.Cause = ("Access denied: StdRegProv returned 2147749891 (0x80041003), which WbemErrorEnum defines as wbemErrAccessDenied. {0}" -f $rights)
         return $out
     }
-    if ($number -eq 1) {
+    if ($kind -eq 'ValueNotSet') {
         $out.Cause = ("Not found: StdRegProv returned 1, read here as the value not being set on this DC. {0} WinError.h defines 1 as ERROR_INVALID_FUNCTION, which does not describe it. No default location is assumed in its place.{1}" -f $measured, $also)
         return $out
     }
-    if ($number -eq 2) {
+    if ($kind -eq 'KeyAbsent') {
         $out.Cause = ("Not found: StdRegProv returned 2, which WinError.h defines as ERROR_FILE_NOT_FOUND, read here as the registry key not existing on this DC. {0} No default location is assumed in its place.{1}" -f $measured, $also)
         return $out
     }
-    if ($number -eq 2147749893) {
+    if ($kind -eq 'TypeMismatch') {
         $out.Cause = ("The value is present but is not a string: StdRegProv returned 2147749893 (0x80041005), which WbemErrorEnum defines as wbemErrTypeMismatch, so it names no path.{0}" -f $also)
         return $out
     }
-    if ($number -ne 0) {
+    if ($kind -ne 'Success') {
         $hex = ''
         if ($number -gt 0 -and $number -le 4294967295) { $hex = (" (0x{0})" -f $number.ToString('X8', [System.Globalization.CultureInfo]::InvariantCulture)) }
         $out.Cause = ("Read failed: StdRegProv returned {0}{1}. Microsoft documents a nonzero return as an error code from WinError.h or WbemErrorEnum and does not publish which code this provider returns for which condition, so the code is quoted and not interpreted.{2}" -f $number, $hex, $also)
@@ -4185,7 +4501,8 @@ function Get-AdfaStdRegStringValue {
     <#
     .SYNOPSIS
         Reads ONE string value from HKEY_LOCAL_MACHINE on a DC through the WMI registry
-        provider. The only place this script invokes a CIM method.
+        provider. With Get-AdfaStdRegDwordValue, the only places this script invokes a CIM
+        method.
     .DESCRIPTION
         READ-ONLY DECISION (PORT-PLAN C2). The house rule is "no CIM method invocation". This
         function is the one deliberate exception, and it is bounded:
@@ -4205,10 +4522,11 @@ function Get-AdfaStdRegStringValue {
               https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getstringvalue-method-in-class-stdregprov
               https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getexpandedstringvalue-method-in-class-stdregprov
               Read: 2026-11-13 (all three).
-          - Only those two Get* methods are called, each with a LITERAL -MethodName on a literal
-            -ClassName. A test reads every Invoke-CimMethod in this script from the parsed
-            source and fails on any other method name, a computed name, or another class.
-            EnumValues is not used: it is not a Get* method.
+          - Only those two Get* methods are called here, each with a LITERAL -MethodName on a
+            literal -ClassName; Get-AdfaStdRegDwordValue calls a third, GetDWORDValue, the same
+            way (PORT-PLAN C3). A test reads every Invoke-CimMethod in this script from the
+            parsed source and fails on any other method name, a computed name, or another
+            class. EnumValues is not used: it is not a Get* method.
 
         What Microsoft does NOT say: no page read states that these methods have no side
         effect. The decision rests on their documented purpose and signature, and on the
@@ -4478,6 +4796,164 @@ function Get-AdfaDcTargetsByDomain {
     return [pscustomobject]@{ Targets = $targets.ToArray(); Failures = $failures.ToArray() }
 }
 
+function Get-AdfaDcPopulationGap {
+    <#
+    .SYNOPSIS
+        Pure: the scoped domains a per-DC section must give a row of their own, because its DC
+        rows do not account for them. Shared by DcDisk and DcHardening.
+    .DESCRIPTION
+        DECLARED POPULATION: the domains named in -ScopedDomains, plus any named only in
+        -InventoryFailures. A domain is returned when its enumeration threw, or when no target
+        carries it as Scope; a domain covered by at least one target and not failed is not.
+        Names are compared without regard to case. The caller words the row.
+    .OUTPUTS
+        [pscustomobject[]] Domain, Failed, Error ('' unless Failed), Seen (targets carry this
+        domain although its enumeration failed), WithoutDomain (how many targets carry no
+        domain at all - they came from the unscoped fallback enumeration).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$Targets = @(),
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+    )
+    # Which domains the targets account for, and how many targets carry no domain at all.
+    $domainsSeen = @{}
+    $withoutDomain = 0
+    foreach ($target in @($Targets | Where-Object { $null -ne $_ })) {
+        $targetScope = ''
+        if ($target -isnot [string]) {
+            $targetScopeProp = $target.PSObject.Properties['Scope']
+            if ($null -ne $targetScopeProp -and $null -ne $targetScopeProp.Value) { $targetScope = ([string]$targetScopeProp.Value).Trim() }
+        }
+        if ($targetScope -eq '') { $withoutDomain++ } else { $domainsSeen[$targetScope.ToLowerInvariant()] = $true }
+    }
+    $failureCause = [ordered]@{}
+    foreach ($failure in @($InventoryFailures | Where-Object { $null -ne $_ })) {
+        $failedDomain = ([string]$failure.Domain).Trim()
+        if (-not $failureCause.Contains($failedDomain.ToLowerInvariant())) { $failureCause[$failedDomain.ToLowerInvariant()] = @{ Domain = $failedDomain; Error = [string]$failure.Error } }
+    }
+    $population = New-Object System.Collections.ArrayList
+    foreach ($name in @($ScopedDomains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if (@($population | Where-Object { $_ -eq $name.Trim() }).Count -eq 0) { [void]$population.Add($name.Trim()) }
+    }
+    foreach ($k in @($failureCause.Keys)) {
+        $failedName = [string]$failureCause[$k]['Domain']
+        if (@($population | Where-Object { $_ -eq $failedName }).Count -eq 0) { [void]$population.Add($failedName) }
+    }
+    $gaps = New-Object System.Collections.ArrayList
+    foreach ($domain in $population) {
+        $key = $domain.ToLowerInvariant()
+        $failed = $failureCause.Contains($key)
+        $seen = $domainsSeen.ContainsKey($key)
+        if ($seen -and -not $failed) { continue }
+        $cause = ''
+        if ($failed) { $cause = ([string]$failureCause[$key]['Error']).Trim() }
+        [void]$gaps.Add([pscustomobject]@{ Domain = [string]$domain; Failed = [bool]$failed; Error = $cause; Seen = [bool]$seen; WithoutDomain = [int]$withoutDomain })
+    }
+    return @($gaps.ToArray())
+}
+
+function Get-AdfaDcPopulationGapText {
+    <#
+    .SYNOPSIS
+        Pure: the Detail of a per-domain population row - why the domain has no DC row, and
+        what that does and does not say about what was read.
+    .DESCRIPTION
+        The row does not claim "nothing was read" when DCs without a domain follow it: those
+        came from a fallback enumeration that does not say which domain each belongs to, and the
+        row says that instead. -NothingRead is the section's own sentence for the plain case.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]$Gap,
+        [Parameter(Mandatory)][string]$NothingRead
+    )
+    $cause = 'The enumeration returned no domain controller for this domain.'
+    if ($Gap.Failed) { $cause = ("The domain controllers of this domain could not be enumerated. Cause: {0}" -f [string]$Gap.Error) }
+    $coverage = $NothingRead
+    if ($Gap.Seen) {
+        $coverage = 'The domain controllers listed under this domain came from another enumeration; whether they are all of them is not known.'
+    }
+    elseif ([int]$Gap.WithoutDomain -gt 0) {
+        $coverage = ("The {0} domain controller(s) listed in this section without a domain came from the fallback enumeration against the default server, which does not say which domain each belongs to. Whether they include this domain's is not known, so this domain is not shown as read." -f [int]$Gap.WithoutDomain)
+    }
+    return ("{0} {1}" -f $cause, $coverage)
+}
+
+function ConvertTo-AdfaDcTarget {
+    <#
+    .SYNOPSIS
+        Pure: one per-DC target as a host name and a domain. A target is an inventory row
+        (HostName, Scope) or a plain host name, which carries no domain.
+    .OUTPUTS
+        [pscustomobject] HostName ('' when the target has none), Scope ('' when it has none).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Target)
+    $out = [pscustomobject]@{ HostName = ''; Scope = '' }
+    if ($null -eq $Target) { return $out }
+    if ($Target -is [string]) { $out.HostName = $Target; return $out }
+    $hostProp = $Target.PSObject.Properties['HostName']
+    if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $out.HostName = [string]$hostProp.Value }
+    $scopeProp = $Target.PSObject.Properties['Scope']
+    if ($null -ne $scopeProp -and $null -ne $scopeProp.Value) { $out.Scope = [string]$scopeProp.Value }
+    return $out
+}
+
+function Invoke-AdfaDcRemoteRead {
+    <#
+    .SYNOPSIS
+        The transport loop every CIM-reading per-DC section shares: one read per DC over the
+        first transport that answers. Shared by DcDisk and DcHardening.
+    .DESCRIPTION
+        -Protocols lists, in order, the transports whose port answered the caller's probe
+        (Test-AdfaDcPort, so a DC is probed once per port in the whole run). WinRM is tried
+        first and DCOM second. A refusal is NOT retried over the other transport: the same
+        account would be refused again. The read itself is the section's own seam, named by
+        -ReadCommand from a fixed list and called with -ComputerName, -Protocol and the
+        caller's -ReadArguments; it opens one session, reads, and closes it.
+
+        Never decides what a failure means beyond refusal or not: the caller words the row.
+    .OUTPUTS
+        [pscustomobject] Raw (the seam's last result, $null when it returned none), Denied,
+        Attempts ("<protocol>: <error>" for each attempt that did not succeed).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Protocols,
+        [Parameter(Mandatory)][ValidateSet('Get-AdfaDcDiskRaw', 'Get-AdfaDcHardeningRaw')][string]$ReadCommand,
+        [hashtable]$ReadArguments = @{}
+    )
+    $raw = $null
+    $attempts = @()
+    $denied = $false
+    foreach ($protocol in $Protocols) {
+        $readArgs = @{} + $ReadArguments
+        $readArgs['ComputerName'] = $ComputerName
+        $readArgs['Protocol'] = $protocol
+        $raw = & $ReadCommand @readArgs
+        if ($null -ne $raw -and $raw.Ok) { break }
+        $message = ''
+        $code = ''
+        if ($null -ne $raw) {
+            $message = [string]$raw.Error
+            $codeProp = $raw.PSObject.Properties['ErrorCode']
+            if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $code = [string]$codeProp.Value }
+        }
+        $attempts += ("{0}: {1}" -f $protocol, $message)
+        if ((Get-AdfaRemoteReadErrorClass -Message $message -ErrorCode $code) -eq 'AccessDenied') { $denied = $true; break }
+    }
+    return [pscustomobject]@{ Raw = $raw; Denied = $denied; Attempts = @($attempts) }
+}
+
 function Get-AdfaDcDiskSpace {
     <#
     .SYNOPSIS
@@ -4527,45 +5003,11 @@ function Get-AdfaDcDiskSpace {
     $rows = @()
     $targets = @($DomainControllers | Where-Object { $null -ne $_ })
 
-    # Which domains the targets account for, and how many targets carry no domain at all.
-    $domainsSeen = @{}
-    $withoutDomain = 0
-    foreach ($target in $targets) {
-        $targetScope = ''
-        if ($target -isnot [string]) {
-            $targetScopeProp = $target.PSObject.Properties['Scope']
-            if ($null -ne $targetScopeProp -and $null -ne $targetScopeProp.Value) { $targetScope = ([string]$targetScopeProp.Value).Trim() }
-        }
-        if ($targetScope -eq '') { $withoutDomain++ } else { $domainsSeen[$targetScope.ToLowerInvariant()] = $true }
-    }
-    $failureCause = [ordered]@{}
-    foreach ($failure in @($InventoryFailures | Where-Object { $null -ne $_ })) {
-        $failedDomain = ([string]$failure.Domain).Trim()
-        if (-not $failureCause.Contains($failedDomain.ToLowerInvariant())) { $failureCause[$failedDomain.ToLowerInvariant()] = @{ Domain = $failedDomain; Error = [string]$failure.Error } }
-    }
-    $population = New-Object System.Collections.ArrayList
-    foreach ($name in @($ScopedDomains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
-        if (@($population | Where-Object { $_ -eq $name.Trim() }).Count -eq 0) { [void]$population.Add($name.Trim()) }
-    }
-    foreach ($k in @($failureCause.Keys)) {
-        $failedName = [string]$failureCause[$k]['Domain']
-        if (@($population | Where-Object { $_ -eq $failedName }).Count -eq 0) { [void]$population.Add($failedName) }
-    }
-    foreach ($domain in $population) {
-        $key = $domain.ToLowerInvariant()
-        $failed = $failureCause.Contains($key)
-        if ($domainsSeen.ContainsKey($key) -and -not $failed) { continue }
-        $cause = 'The enumeration returned no domain controller for this domain.'
-        if ($failed) { $cause = ("The domain controllers of this domain could not be enumerated. Cause: {0}" -f ([string]$failureCause[$key]['Error']).Trim()) }
-        $coverage = 'None of its volumes was read.'
-        if ($domainsSeen.ContainsKey($key)) {
-            $coverage = 'The domain controllers listed under this domain came from another enumeration; whether they are all of them is not known.'
-        }
-        elseif ($withoutDomain -gt 0) {
-            $coverage = ("The {0} domain controller(s) listed in this section without a domain came from the fallback enumeration against the default server, which does not say which domain each belongs to. Whether they include this domain's is not known, so this domain is not shown as read." -f $withoutDomain)
-        }
-        $rows += New-AdfaDcDiskRow -Scope $domain -Item ("Disk space - {0}" -f $domain) -Status $script:Status.NotAssessed `
-            -Detail ("{0} {1}" -f $cause, $coverage)
+    # One row for each scoped domain the DC rows do not account for. Which domains those are,
+    # and the wording that is the same in every per-DC section, are shared (Get-AdfaDcPopulationGap).
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaDcDiskRow -Scope ([string]$gap.Domain) -Item ("Disk space - {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'None of its volumes was read.')
     }
     if ($targets.Count -eq 0) {
         $why = ''
@@ -4577,15 +5019,9 @@ function Get-AdfaDcDiskSpace {
     $wsmanPort = [int]$Config['WsmanPort']
     $rpcPort = [int]$Config['RpcPort']
     foreach ($target in $targets) {
-        $dc = ''
-        $scope = ''
-        if ($target -is [string]) { $dc = $target }
-        else {
-            $hostProp = $target.PSObject.Properties['HostName']
-            if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $dc = [string]$hostProp.Value }
-            $scopeProp = $target.PSObject.Properties['Scope']
-            if ($null -ne $scopeProp -and $null -ne $scopeProp.Value) { $scope = [string]$scopeProp.Value }
-        }
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
         if ([string]::IsNullOrWhiteSpace($dc)) {
             $rows += New-AdfaDcDiskRow -Scope $scope -Item 'Disk space: (unnamed)' -Status $script:Status.NotAssessed `
                 -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no volume was read.'
@@ -4602,24 +5038,12 @@ function Get-AdfaDcDiskSpace {
         $protocols = @()
         if ($wsman) { $protocols += 'Wsman' }
         if ($rpc) { $protocols += 'Dcom' }
-        $raw = $null
-        $attempts = @()
-        $denied = $false
-        foreach ($protocol in $protocols) {
-            $readArgs = @{ ComputerName = $dc; Protocol = $protocol; OperationTimeoutSec = $OperationTimeoutSec; Paths = $Config['Paths'] }
-            if ($Credential) { $readArgs.Credential = $Credential }
-            $raw = Get-AdfaDcDiskRaw @readArgs
-            if ($null -ne $raw -and $raw.Ok) { break }
-            $message = ''
-            $code = ''
-            if ($null -ne $raw) {
-                $message = [string]$raw.Error
-                $codeProp = $raw.PSObject.Properties['ErrorCode']
-                if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $code = [string]$codeProp.Value }
-            }
-            $attempts += ("{0}: {1}" -f $protocol, $message)
-            if ((Get-AdfaRemoteReadErrorClass -Message $message -ErrorCode $code) -eq 'AccessDenied') { $denied = $true; break }
-        }
+        $readArguments = @{ OperationTimeoutSec = $OperationTimeoutSec; Paths = $Config['Paths'] }
+        if ($Credential) { $readArguments.Credential = $Credential }
+        $read = Invoke-AdfaDcRemoteRead -ComputerName $dc -Protocols $protocols -ReadCommand 'Get-AdfaDcDiskRaw' -ReadArguments $readArguments
+        $raw = $read.Raw
+        $attempts = @($read.Attempts)
+        $denied = [bool]$read.Denied
         if ($null -eq $raw -or -not $raw.Ok) {
             $lead = 'Read failed: a port answered, but neither the registry values nor the volume list could be read. If the text below is a refusal in another language, local Administrators rights on the DC are what is missing.'
             if ($denied) { $lead = 'Access denied: the account running the assessment could not read the registry or the volume list of this DC. Local Administrators rights on the DC are needed for this read.' }
@@ -4764,6 +5188,1271 @@ function Merge-AdfaDcDiskConfig {
 }
 
 # ---------------------------------------------------------------------------
+# DC hardening: LDAP signing and channel binding, SMB signing, LAN Manager level (PORT-PLAN C3)
+# ---------------------------------------------------------------------------
+
+function New-AdfaDcHardeningRow {
+    <#
+    .SYNOPSIS
+        Pure: one DcHardening finding row. Every row of the section has the same columns, NotRun
+        included, so a consumer never has to test whether the column exists.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$NotRun = ''
+    )
+    $row = New-Finding -Scope $Scope -Area 'DCHardening' -Item $Item -Status $Status -Detail $Detail
+    $row | Add-Member -NotePropertyName 'NotRun' -NotePropertyValue $NotRun
+    return $row
+}
+
+function ConvertTo-AdfaNullableBoolean {
+    <#
+    .SYNOPSIS
+        Pure: a CIM boolean as $true or $false, or $null when it is neither. A property that was
+        not returned is not False.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [bool]) { return [bool]$Value }
+    $text = ([string]$Value).Trim()
+    if ($text -ieq 'true') { return $true }
+    if ($text -ieq 'false') { return $false }
+    return $null
+}
+
+function Resolve-AdfaHardeningRead {
+    <#
+    .SYNOPSIS
+        Pure: one GetDWORDValue result as a state - a number, "not set", or the named reason
+        there is no number.
+    .DESCRIPTION
+        Kind is one of:
+          Value         the provider returned 0 and a number.
+          NotSet        it returned 1, read as the value not being set under a key that exists.
+          KeyAbsent     it returned 2, read as the key not existing.
+          AccessDenied  it returned 5 or 0x80041003, or the call threw a refusal.
+          TypeMismatch  it returned 0x80041005: the value exists and is not a REG_DWORD.
+          ReadFailed    anything else, including a return of 0 that carried no number.
+        The classes come from Get-AdfaStdRegReturnClass, which DcDisk uses too.
+
+        Number is $null for every Kind but Value. It is never 0 by default: for four of the six
+        settings 0 means "disabled", so a missing number read as 0 would turn "not measured"
+        into a finding.
+
+        The reading of 1 and 2 is MEASURED, NOT PUBLISHED, and every row that relies on it says
+        so. See Get-AdfaStdRegDwordValue for what Microsoft publishes and what was measured.
+    .OUTPUTS
+        [pscustomobject] Kind, Number ([int64] or $null), Cause ('' for Value and NotSet).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Entry)
+    $out = [pscustomobject]@{ Kind = 'ReadFailed'; Number = $null; Cause = '' }
+    if ($null -eq $Entry) {
+        $out.Cause = 'Read failed: no result was returned for this registry value.'
+        return $out
+    }
+    $rights = 'Local Administrators rights on the DC are needed for this read.'
+    $measured = 'This reading is measured, not published by Microsoft: on the one host where it was measured (a Windows 11 workstation, not a domain controller) GetDWORDValue returns 1 for a value that is not set under a key that exists, and 2 for a key that does not exist.'
+    $errorText = [string](Get-AdfaConfigValue -Entry $Entry -Name 'Error')
+    $errorCode = [string](Get-AdfaConfigValue -Entry $Entry -Name 'ErrorCode')
+    $class = Get-AdfaStdRegReturnClass -ReturnValue (Get-AdfaConfigValue -Entry $Entry -Name 'ReturnValue') -ErrorText $errorText -ErrorCode $errorCode
+    $kind = [string]$class.Class
+    if ($class.Threw) {
+        if ($kind -eq 'AccessDenied') {
+            $out.Kind = 'AccessDenied'
+            $out.Cause = ("Access denied: the registry read was refused. {0} Reported by the DC - {1}" -f $rights, $errorText)
+        }
+        else { $out.Cause = ("Read failed: the registry read did not complete. Reported by the DC - {0}" -f $errorText) }
+        return $out
+    }
+    if ($kind -eq 'NoReturnCode') {
+        $out.Cause = 'Read failed: the registry provider returned no return code, so whether the value was read is not known.'
+        return $out
+    }
+    $code = [int64]$class.Code
+    if ($kind -eq 'AccessDenied') {
+        $out.Kind = 'AccessDenied'
+        if ($code -eq 5) { $out.Cause = ("Access denied: StdRegProv returned 5, which WinError.h defines as ERROR_ACCESS_DENIED. {0}" -f $rights) }
+        else { $out.Cause = ("Access denied: StdRegProv returned 2147749891 (0x80041003), which WbemErrorEnum defines as wbemErrAccessDenied. {0}" -f $rights) }
+        return $out
+    }
+    if ($kind -eq 'ValueNotSet') {
+        $out.Kind = 'NotSet'
+        return $out
+    }
+    if ($kind -eq 'KeyAbsent') {
+        $out.Kind = 'KeyAbsent'
+        $out.Cause = ("Not found: StdRegProv returned 2, which WinError.h defines as ERROR_FILE_NOT_FOUND, read here as the registry key not existing on this DC. {0}" -f $measured)
+        return $out
+    }
+    if ($kind -eq 'TypeMismatch') {
+        $out.Kind = 'TypeMismatch'
+        $out.Cause = 'The value is present but is not a REG_DWORD: StdRegProv returned 2147749893 (0x80041005), which WbemErrorEnum defines as wbemErrTypeMismatch, so no number was read.'
+        return $out
+    }
+    if ($kind -ne 'Success') {
+        $hex = ''
+        if ($code -gt 0 -and $code -le 4294967295) { $hex = (" (0x{0})" -f $code.ToString('X8', [System.Globalization.CultureInfo]::InvariantCulture)) }
+        $out.Cause = ("Read failed: StdRegProv returned {0}{1}. Microsoft documents a nonzero return as an error code from WinError.h or WbemErrorEnum and does not publish which code this provider returns for which condition, so the code is quoted and not interpreted." -f $code, $hex)
+        return $out
+    }
+    $value = Get-AdfaConfigValue -Entry $Entry -Name 'Value'
+    if ($null -eq $value -or ([string]$value).Trim() -eq '') {
+        $out.Cause = 'Read failed: StdRegProv returned 0 but no value, so no number was read.'
+        return $out
+    }
+    $number = [int64]0
+    if (-not [int64]::TryParse(([string]$value).Trim(), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$number)) {
+        $out.Cause = ("Read failed: StdRegProv returned 0 with a value that is not a number ('{0}')." -f [string]$value)
+        return $out
+    }
+    $out.Kind = 'Value'
+    $out.Number = $number
+    return $out
+}
+
+function Resolve-AdfaHardeningDefault {
+    <#
+    .SYNOPSIS
+        Pure: what Microsoft documents for a hardening value that is NOT SET, on a DC of a
+        given OS build - or that it documents nothing usable, and why.
+    .DESCRIPTION
+        The setting's Defaults rows are keyed on a build range. The row whose range holds the
+        build decides: a Known row gives the default (Value where Microsoft publishes the
+        number, otherwise Meets), a row that is not Known gives the reason no default is known.
+        A build that was not read, or one no row covers, has no documented default: an absent
+        value is then neither a pass nor a failure, it is not known.
+    .OUTPUTS
+        [pscustomobject] Known, Value ([int64] or $null), Meets ($true, $false or $null),
+        Label, Source, Reason ('' when Known).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Setting,
+        [AllowNull()]$Build
+    )
+    $out = [pscustomobject]@{ Known = $false; Value = $null; Meets = $null; Label = ''; Source = ''; Reason = '' }
+    if ($null -eq $Build) {
+        $out.Reason = 'the default depends on the OS build, which was not read from this DC'
+        return $out
+    }
+    $number = [int64]$Build
+    foreach ($row in @(Get-AdfaConfigValue -Entry $Setting -Name 'Defaults')) {
+        if ($null -eq $row) { continue }
+        $min = Get-AdfaConfigValue -Entry $row -Name 'MinBuild'
+        $max = Get-AdfaConfigValue -Entry $row -Name 'MaxBuild'
+        if ($null -ne $min -and $number -lt [int64]$min) { continue }
+        if ($null -ne $max -and $number -gt [int64]$max) { continue }
+        $out.Source = [string](Get-AdfaConfigValue -Entry $row -Name 'Source')
+        if (-not [bool](Get-AdfaConfigValue -Entry $row -Name 'Known')) {
+            $out.Reason = [string](Get-AdfaConfigValue -Entry $row -Name 'Reason')
+            return $out
+        }
+        $out.Known = $true
+        $out.Label = [string](Get-AdfaConfigValue -Entry $row -Name 'Label')
+        $value = Get-AdfaConfigValue -Entry $row -Name 'Value'
+        if ($null -ne $value) { $out.Value = [int64]$value }
+        $meets = Get-AdfaConfigValue -Entry $row -Name 'Meets'
+        if ($null -ne $meets) { $out.Meets = [bool]$meets }
+        return $out
+    }
+    # No row covers the build. The ranges are read from the setting's own rows, not written
+    # here: they differ per setting (the LAN Manager level has a lower bound the others lack),
+    # and a fixed sentence would contradict itself for a build below that bound.
+    $ranges = @()
+    foreach ($row in @(Get-AdfaConfigValue -Entry $Setting -Name 'Defaults')) {
+        if ($null -eq $row) { continue }
+        $min = Get-AdfaConfigValue -Entry $row -Name 'MinBuild'
+        $max = Get-AdfaConfigValue -Entry $row -Name 'MaxBuild'
+        if ($null -ne $min -and $null -ne $max) { $ranges += ("builds {0} to {1}" -f [int64]$min, [int64]$max) }
+        elseif ($null -ne $max) { $ranges += ("build {0} and below" -f [int64]$max) }
+        elseif ($null -ne $min) { $ranges += ("build {0} and later" -f [int64]$min) }
+    }
+    $covered = 'they say nothing for any build'
+    if ($ranges.Count -gt 0) { $covered = ("what they say about this value when it is not set is for {0} only" -f ($ranges -join ', and for ')) }
+    $out.Reason = ("Microsoft documents no default for OS build {0} in the pages read: {1}" -f $number, $covered)
+    return $out
+}
+
+function Get-AdfaHardeningVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the verdict for one hardening setting on one DC. Inputs in, Status and Detail out.
+    .DESCRIPTION
+        The rule, in order:
+          1. A setting documented only from a given OS build (the Windows Server 2025 LDAP
+             signing enforcement policy) is Info, "Not applicable", below that build - and
+             Not Assessed when the build was not read, because whether it applies is then
+             exactly what is not known. Either way the row still says what the read of the
+             value itself gave: a refusal, an absent key or a wrong type is not lost behind
+             the statement about the build.
+          2. A read that gave no number, other than "not set", is Not Assessed with its cause:
+             key absent, access denied, wrong type, any other failure. Never Pass.
+          3. A number Microsoft publishes no meaning for is Not Assessed.
+          4. A number at or above ExpectedMinimum is Pass; below it, the setting's OtherStatus.
+          5. A value that is NOT SET is graded on the default Microsoft documents for the DC's
+             OS build, and the text says it is a default and not a configured value. Where no
+             default is documented - the build was not read, no row covers it, or Microsoft
+             leaves it open - it is Not Assessed with that reason.
+
+        Three settings need more than their own value:
+
+          LDAP server signing (LDAPServerIntegrity). From Windows Server 2025 the enforcement
+          value decides with it: enforcement on means signing is required whatever this value
+          holds; enforcement off means this value decides; neither set means the documented
+          2025 default, signing required. A value below 2 with the enforcement value not set
+          is Not Assessed: Microsoft documents both that an upgrade preserves the old policy
+          and that an unconfigured enforcement policy behaves as Enabled, and the registry does
+          not show which applies. 2 passes on every build, because every branch requires it.
+
+          An enforcement value that was read but holds a number that is neither of those two
+          settles nothing, and the signing row says that it was read and what it holds; it does
+          not call it unread.
+
+          LDAP server signing enforcement (LDAPServerEnforceIntegrity). Not set is the
+          documented default, same effect as Enabled - except beside a signing value below 2,
+          for the reason above, and except beside a signing value Microsoft publishes no
+          meaning for (-RelatedSettings carries the signing setting's Meanings): a number
+          nobody documents is not taken to require signing because it is larger than 2.
+
+          SMB server signing. The SMB server's own configuration object is asked for in the
+          same session and is a second instrument, where the DC returns one. Where the registry
+          value is set, the row is graded on it and the second instrument can only veto: if the
+          two disagree the row is Not Assessed. Where it is not set, Microsoft publishes no
+          default for a domain controller, so the row is graded on the second instrument, which
+          is a measurement; with neither, Not Assessed.
+
+        Nothing here is a statement about the wire. The caller says so in NotRun.
+    .OUTPUTS
+        [pscustomobject] Status, Detail.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Setting,
+        [Parameter(Mandatory)]$State,
+        [AllowNull()]$Build,
+        # The states of the other settings of the same DC, by setting id.
+        [hashtable]$Related = @{},
+        # Read ([bool]), Value ($true / $false) and Error, or $null where there is none.
+        [AllowNull()]$SecondInstrument = $null,
+        # The config rows of the other settings, by setting id: where a verdict rests on
+        # another setting's number, that number's published meanings come from here. A
+        # setting that is not supplied has no published meaning as far as this function knows.
+        [hashtable]$RelatedSettings = @{}
+    )
+    $name = [string](Get-AdfaConfigValue -Entry $Setting -Name 'ValueName')
+    $minimum = [int64](Get-AdfaConfigValue -Entry $Setting -Name 'ExpectedMinimum')
+    $otherStatus = [string](Get-AdfaConfigValue -Entry $Setting -Name 'OtherStatus')
+    $meanings = Get-AdfaConfigValue -Entry $Setting -Name 'Meanings'
+    $kind = [string]$State.Kind
+    $pass = $script:Status.Pass
+    $notAssessed = $script:Status.NotAssessed
+
+    # ---- 1. Does the policy exist on this build at all?
+    $appliesFrom = Get-AdfaConfigValue -Entry $Setting -Name 'AppliesFromBuild'
+    if ($null -ne $appliesFrom) {
+        $release = [string](Get-AdfaConfigValue -Entry $Setting -Name 'AppliesFromLabel')
+        # What the read of the value itself gave. It is said in both rows below, so that a
+        # refusal, an absent key or a wrong type stays a distinct result of this row.
+        $readGave = ''
+        if ($kind -ne 'Value' -and $kind -ne 'NotSet') {
+            $readGave = ([string]$State.Cause).Trim()
+            if ($readGave -eq '') { $readGave = ("Read failed: no number was read for {0}." -f $name) }
+        }
+        if ($null -eq $Build) {
+            $applies = ("depends on the OS build, which was not read from this DC: Microsoft documents it only for {0} (build {1}) and later." -f $release, [int64]$appliesFrom)
+            if ($readGave -ne '') {
+                return [pscustomobject]@{ Status = $notAssessed; Detail = ("{0} Whether this policy applies at all also {1}" -f $readGave, $applies) }
+            }
+            $found = ("{0} is not set in the registry of this DC." -f $name)
+            if ($kind -eq 'Value') { $found = ("{0} = {1} on this DC." -f $name, [int64]$State.Number) }
+            return [pscustomobject]@{ Status = $notAssessed; Detail = ("{0} Whether this policy applies {1}" -f $found, $applies) }
+        }
+        if ([int64]$Build -lt [int64]$appliesFrom) {
+            $present = ''
+            if ($kind -eq 'Value') { $present = (" The value is present on this DC ({0} = {1}); whether an earlier release honours it is not published." -f $name, [int64]$State.Number) }
+            elseif ($readGave -ne '') { $present = (" The value itself was not read on this DC - {0}" -f $readGave) }
+            return [pscustomobject]@{ Status = $script:Status.Info
+                Detail = ("Not applicable: this DC runs OS build {0}, and Microsoft documents this policy only for {1} (build {2}) and later.{3}" -f [int64]$Build, $release, [int64]$appliesFrom, $present) }
+        }
+    }
+
+    # ---- 2. A read that gave no number and is not "not set".
+    if ($kind -ne 'Value' -and $kind -ne 'NotSet') {
+        return [pscustomobject]@{ Status = $notAssessed; Detail = [string]$State.Cause }
+    }
+
+    # ---- 3. A number with no published meaning.
+    $number = $null
+    $own = ("{0} is not set in the registry of this DC" -f $name)
+    if ($kind -eq 'Value') {
+        $number = [int64]$State.Number
+        if ($null -eq $meanings -or -not $meanings.ContainsKey([string]$number)) {
+            $documented = @()
+            if ($null -ne $meanings) { $documented = @($meanings.Keys | ForEach-Object { [int64]$_ } | Sort-Object) }
+            return [pscustomobject]@{ Status = $notAssessed
+                Detail = ("{0} = {1}. Microsoft publishes no meaning for this number (documented values: {2}), so it is not graded." -f $name, $number, ($documented -join ', ')) }
+        }
+        $own = ("{0} = {1} ({2})" -f $name, $number, [string]$meanings[[string]$number])
+    }
+    $expected = ("{0}" -f $minimum)
+    if ($null -ne $meanings -and $meanings.ContainsKey([string]$minimum)) { $expected = ("{0} ({1})" -f $minimum, [string]$meanings[[string]$minimum]) }
+    $meets = ($kind -eq 'Value' -and $number -ge $minimum)
+
+    # The plain grade of a value that is set.
+    $valueStatus = $otherStatus
+    $valueDetail = ("{0}. Below the expected minimum of {1}." -f $own, $expected)
+    if ($meets) {
+        $valueStatus = $pass
+        $valueDetail = ("{0}. Meets the expected minimum of {1}." -f $own, $expected)
+    }
+    # The plain grade of a value that is not set: the documented default, or not known.
+    $default = Resolve-AdfaHardeningDefault -Setting $Setting -Build $Build
+    $defaultStatus = $notAssessed
+    $defaultDetail = ("{0}, and the default in force is not known: {1}." -f $own, [string]$default.Reason)
+    if ([string]$default.Source -ne '') { $defaultDetail = ("{0} Source: {1}." -f $defaultDetail, [string]$default.Source) }
+    if ($default.Known) {
+        $defaultMeets = $false
+        if ($null -ne $default.Value) { $defaultMeets = ([int64]$default.Value -ge $minimum) }
+        elseif ($null -ne $default.Meets) { $defaultMeets = [bool]$default.Meets }
+        $defaultStatus = $otherStatus
+        $compare = 'is below'
+        if ($defaultMeets) { $defaultStatus = $pass; $compare = 'meets' }
+        $defaultDetail = ("{0}. Microsoft documents the default for this OS build as '{1}'; the row is graded on that documented default, not on a configured value: it {2} the expected minimum of {3}. Default source: {4}." -f $own, [string]$default.Label, $compare, $expected, [string]$default.Source)
+    }
+
+    # ---- LDAP server signing: the Windows Server 2025 enforcement value decides with it.
+    $overriddenBy = [string](Get-AdfaConfigValue -Entry $Setting -Name 'OverriddenBy')
+    if ($overriddenBy -ne '' -and -not $meets) {
+        $otherName = [string](Get-AdfaConfigValue -Entry $Setting -Name 'OverriddenByValueName')
+        $fromBuild = [int64](Get-AdfaConfigValue -Entry $Setting -Name 'OverriddenFromBuild')
+        if ($null -eq $Build -and $kind -eq 'Value') {
+            return [pscustomobject]@{ Status = $notAssessed
+                Detail = ("{0}. Below the expected minimum of {1}, but from Windows Server 2025 (build {2}) the enforcement policy ({3}) can override this value, and the OS build was not read from this DC, so whether signing is required is not known." -f $own, $expected, $fromBuild, $otherName) }
+        }
+        if ($null -ne $Build -and [int64]$Build -ge $fromBuild) {
+            $otherKind = 'Unread'
+            $otherNumber = $null
+            if ($Related.ContainsKey($overriddenBy) -and $null -ne $Related[$overriddenBy]) {
+                $otherKind = [string]$Related[$overriddenBy].Kind
+                if ($otherKind -eq 'Value') { $otherNumber = [int64]$Related[$overriddenBy].Number }
+            }
+            $on = [int64](Get-AdfaConfigValue -Entry $Setting -Name 'OverrideOnValue')
+            $off = [int64](Get-AdfaConfigValue -Entry $Setting -Name 'OverrideOffValue')
+            if ($otherKind -eq 'Value' -and $otherNumber -eq $on) {
+                return [pscustomobject]@{ Status = $pass
+                    Detail = ("LDAP signing is required whatever this value holds: {0} = {1} on this DC, and Microsoft documents that the enforcement policy takes precedence over the signing requirements policy and requires LDAP signing regardless of it. {2}." -f $otherName, $on, $own) }
+            }
+            if ($otherKind -eq 'Value' -and $otherNumber -eq $off) {
+                if ($kind -eq 'Value') {
+                    return [pscustomobject]@{ Status = $otherStatus
+                        Detail = ("{0} {1} = {2} on this DC, read as the enforcement policy being Disabled (inferred: Microsoft publishes no value table for it), in which case Microsoft documents that this value determines the requirement." -f $valueDetail, $otherName, $off) }
+                }
+                return [pscustomobject]@{ Status = $notAssessed
+                    Detail = ("{0}, and {1} = {2}, read as the enforcement policy being Disabled (inferred). Microsoft documents that the signing requirements policy then determines the requirement, and separately that Windows Server 2025 requires signing where no server signing policy exists; it does not say which holds when the enforcement policy is Disabled and no signing value is present." -f $own, $otherName, $off) }
+            }
+            if ($otherKind -eq 'NotSet') {
+                if ($kind -eq 'NotSet') {
+                    # Both absent: the documented default of the release. Fall through to it,
+                    # naming the second value so the reader sees what the default rests on.
+                    if ($default.Known) { $defaultDetail = ("{0} {1} is not set either." -f $defaultDetail, $otherName) }
+                    return [pscustomobject]@{ Status = $defaultStatus; Detail = $defaultDetail }
+                }
+                return [pscustomobject]@{ Status = $notAssessed
+                    Detail = ("{0}, and {1} is not set. Microsoft documents both that an upgrade to Windows Server 2025 preserves an existing LDAP signing policy and that an enforcement policy left Not Configured has the same effect as Enabled. The registry does not show which applies, so whether signing is required is not known." -f $own, $otherName) }
+            }
+            if ($otherKind -eq 'Value') {
+                # Read, and neither of the two numbers that settle the matter. It was read:
+                # the row must not call it unread.
+                return [pscustomobject]@{ Status = $notAssessed
+                    Detail = ("{0}. On this OS build whether signing is required also depends on {1}, which holds {2} on this DC: neither {3}, read as the enforcement policy being Enabled, nor {4}, read as Disabled (see that row). That number settles nothing, so whether signing is required is not known." -f $own, $otherName, $otherNumber, $on, $off) }
+            }
+            return [pscustomobject]@{ Status = $notAssessed
+                Detail = ("{0}. On this OS build whether signing is required also depends on {1}, which was not read on this DC (see that row)." -f $own, $otherName) }
+        }
+    }
+
+    # ---- LDAP server signing enforcement, not set: the default, unless a legacy value is beside it.
+    $governs = [string](Get-AdfaConfigValue -Entry $Setting -Name 'Governs')
+    if ($governs -ne '' -and $kind -eq 'NotSet' -and $default.Known) {
+        $otherName = [string](Get-AdfaConfigValue -Entry $Setting -Name 'GovernsValueName')
+        $governedMinimum = [int64](Get-AdfaConfigValue -Entry $Setting -Name 'GovernedMinimum')
+        $otherKind = 'Unread'
+        $otherNumber = $null
+        if ($Related.ContainsKey($governs) -and $null -ne $Related[$governs]) {
+            $otherKind = [string]$Related[$governs].Kind
+            if ($otherKind -eq 'Value') { $otherNumber = [int64]$Related[$governs].Number }
+        }
+        if ($otherKind -eq 'NotSet') {
+            return [pscustomobject]@{ Status = $defaultStatus
+                Detail = ("{0} {1} is not set either, and Microsoft documents that Windows Server 2025 requires LDAP signing where no server signing policy exists." -f $defaultDetail, $otherName) }
+        }
+        # The governed value counts only as a number Microsoft publishes a meaning for. A
+        # number it does not document (3, 4294967295 ...) is not "at least 2, so signing is
+        # required": the signing row reports that number as Not Assessed, and this row must
+        # not assert as fact what that one says is unknown. With the governed setting's
+        # meanings not supplied, no number is taken as documented.
+        $otherDocumented = $false
+        $otherDocumentedList = ''
+        if ($otherKind -eq 'Value' -and $RelatedSettings.ContainsKey($governs) -and $null -ne $RelatedSettings[$governs]) {
+            $otherMeanings = Get-AdfaConfigValue -Entry $RelatedSettings[$governs] -Name 'Meanings'
+            if ($null -ne $otherMeanings) {
+                $otherDocumented = [bool]$otherMeanings.ContainsKey([string]$otherNumber)
+                $otherDocumentedList = (@($otherMeanings.Keys | ForEach-Object { [int64]$_ } | Sort-Object) -join ', ')
+            }
+        }
+        if ($otherKind -eq 'Value' -and -not $otherDocumented) {
+            $why = ("the published meanings of {0} were not available to this verdict" -f $otherName)
+            if ($otherDocumentedList -ne '') { $why = ("a number Microsoft publishes no meaning for (documented values: {0}; see that row)" -f $otherDocumentedList) }
+            return [pscustomobject]@{ Status = $notAssessed
+                Detail = ("{0}, and {1} = {2}: {3}. What that value requires is not known, so the documented default of this policy ('{4}') is not applied beside it." -f $own, $otherName, $otherNumber, $why, [string]$default.Label) }
+        }
+        if ($otherKind -eq 'Value' -and $otherNumber -ge $governedMinimum) {
+            return [pscustomobject]@{ Status = $defaultStatus
+                Detail = ("{0} {1} = {2} on this DC requires signing whichever of the two policies decides." -f $defaultDetail, $otherName, $otherNumber) }
+        }
+        if ($otherKind -eq 'Value') {
+            return [pscustomobject]@{ Status = $notAssessed
+                Detail = ("{0}, and {1} = {2}. Microsoft documents both that an upgrade to Windows Server 2025 preserves an existing LDAP signing policy and that an enforcement policy left Not Configured has the same effect as Enabled. The registry does not show which applies, so whether the enforcement is in force is not known." -f $own, $otherName, $otherNumber) }
+        }
+        return [pscustomobject]@{ Status = $notAssessed
+            Detail = ("{0}. Whether the documented default ('{1}') is what is in force depends on {2}, which was not read on this DC (see that row)." -f $own, [string]$default.Label, $otherName) }
+    }
+
+    # ---- SMB server signing: the SMB server's own configuration is a second instrument.
+    $second = [string](Get-AdfaConfigValue -Entry $Setting -Name 'SecondInstrument')
+    if ($second -ne '') {
+        $secondValue = $null
+        $secondError = ''
+        if ($null -ne $SecondInstrument) {
+            if ([bool](Get-AdfaConfigValue -Entry $SecondInstrument -Name 'Read')) { $secondValue = ConvertTo-AdfaNullableBoolean -Value (Get-AdfaConfigValue -Entry $SecondInstrument -Name 'Value') }
+            $secondError = [string](Get-AdfaConfigValue -Entry $SecondInstrument -Name 'Error')
+        }
+        $notRead = ("The second instrument, {0}, was not read" -f $second)
+        if ($secondError -ne '') { $notRead = ("{0} ({1})" -f $notRead, $secondError.Trim().TrimEnd('.')) }
+        if ($kind -eq 'Value') {
+            if ($null -eq $secondValue) { return [pscustomobject]@{ Status = $valueStatus; Detail = ("{0} {1}." -f $valueDetail, $notRead) } }
+            if ([bool]$secondValue -ne [bool]$meets) {
+                return [pscustomobject]@{ Status = $notAssessed
+                    Detail = ("The two instruments disagree: {0}, but the SMB server's own configuration reports {1} = {2}. Which of them describes this DC is not known, so the row is not graded." -f $own, $second, [bool]$secondValue) }
+            }
+            return [pscustomobject]@{ Status = $valueStatus; Detail = ("{0} The second instrument agrees: {1} = {2}." -f $valueDetail, $second, [bool]$secondValue) }
+        }
+        if ($null -ne $secondValue) {
+            $measuredStatus = $otherStatus
+            $measuredWord = 'not required'
+            if ([bool]$secondValue) { $measuredStatus = $pass; $measuredWord = 'required' }
+            return [pscustomobject]@{ Status = $measuredStatus
+                Detail = ("{0}, and Microsoft does not publish what that means on a domain controller. The row is graded on the SMB server's own configuration instead, which is a measurement and not a default: {1} = {2}, read here as signing being {3}. Microsoft's documented check of this property is the cmdlet Get-SmbServerConfiguration, which returns an object of this class; here the class was read by an instance query, and the cmdlet was not run." -f $own, $second, [bool]$secondValue, $measuredWord) }
+        }
+        return [pscustomobject]@{ Status = $defaultStatus; Detail = ("{0} {1}." -f $defaultDetail, $notRead) }
+    }
+
+    # ---- The plain rule.
+    if ($kind -eq 'Value') { return [pscustomobject]@{ Status = $valueStatus; Detail = $valueDetail } }
+    return [pscustomobject]@{ Status = $defaultStatus; Detail = $defaultDetail }
+}
+
+function Get-AdfaSpoolerVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the Print Spooler row from one DC's raw read. Status and Detail.
+    .DESCRIPTION
+        The rule the section has always had - Running is a Warning, Stopped is a Pass - now
+        read from Win32_Service in the section's one CIM session, where it was Get-Service
+        -ComputerName, a parameter PowerShell 7 does not have. State is one of the strings the
+        class documents ("Stopped", "Start Pending", "Stop Pending", "Running", "Continue
+        Pending", "Pause Pending", "Paused", "Unknown") and StartMode one of "Boot", "System",
+        "Auto", "Manual", "Disabled":
+          https://learn.microsoft.com/windows/win32/cimwin32prov/win32-service
+          Read: 2026-11-13.
+        Fail closed where the old code was not: no service returned, or a state that is empty
+        or "Unknown", is Not Assessed, never a Pass. Any other state that is not Stopped is a
+        Warning. A service that is Stopped but not Disabled is still a Pass, as before, and the
+        row says its start mode: grading the start mode is PORT-PLAN C3b.
+
+        "Domain controllers and Active Directory admin systems need to have the Print spooler
+        service disabled":
+          https://learn.microsoft.com/defender-for-identity/security-posture-assessments/identity-infrastructure
+          Read: 2026-11-13.
+    .OUTPUTS
+        [pscustomobject] Status, Detail.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)]$Raw)
+    $notAssessed = $script:Status.NotAssessed
+    if (-not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'SpoolerOk')) {
+        $errorText = [string](Get-AdfaConfigValue -Entry $Raw -Name 'SpoolerError')
+        $lead = 'Read failed: the service list (Win32_Service) could not be read.'
+        if ((Get-AdfaRemoteReadErrorClass -Message $errorText -ErrorCode ([string](Get-AdfaConfigValue -Entry $Raw -Name 'SpoolerErrorCode'))) -eq 'AccessDenied') {
+            $lead = 'Access denied: the service list (Win32_Service) could not be read. Local Administrators rights on the DC are needed for this read.'
+        }
+        return [pscustomobject]@{ Status = $notAssessed; Detail = ("{0} Reported by the DC - {1}" -f $lead, $errorText) }
+    }
+    if (-not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'SpoolerFound')) {
+        return [pscustomobject]@{ Status = $notAssessed
+            Detail = 'Win32_Service returned no service named Spooler on this DC. Whether the Print Spooler is absent or the query returned nothing for another reason is not known, so this is not reported as a pass.' }
+    }
+    $state = ([string](Get-AdfaConfigValue -Entry $Raw -Name 'SpoolerState')).Trim()
+    $mode = ([string](Get-AdfaConfigValue -Entry $Raw -Name 'SpoolerStartMode')).Trim()
+    $modeText = 'start mode not returned'
+    if ($mode -ne '') { $modeText = ("start mode {0}" -f $mode) }
+    if ($state -eq '' -or $state -ieq 'Unknown') {
+        return [pscustomobject]@{ Status = $notAssessed
+            Detail = ("The Print Spooler service was returned without a usable state ('{0}', {1}), so whether it is running is not known." -f $state, $modeText) }
+    }
+    $guidance = 'Microsoft''s guidance is that domain controllers need to have the Print Spooler service disabled.'
+    if ($state -ieq 'Stopped') {
+        $note = ''
+        if ($mode -ne '' -and $mode -ine 'Disabled') { $note = (" It is stopped now, but its start mode is {0}, not Disabled, so it can be started again; that is stated here and not graded." -f $mode) }
+        return [pscustomobject]@{ Status = $script:Status.Pass; Detail = ("Print Spooler is Stopped ({0}).{1}" -f $modeText, $note) }
+    }
+    if ($state -ieq 'Running') {
+        return [pscustomobject]@{ Status = $script:Status.Warning; Detail = ("Print Spooler is Running ({0}). {1}" -f $modeText, $guidance) }
+    }
+    return [pscustomobject]@{ Status = $script:Status.Warning; Detail = ("Print Spooler is {0} ({1}), which is not Stopped. {2}" -f $state, $modeText, $guidance) }
+}
+
+function Get-AdfaDcHardeningFinding {
+    <#
+    .SYNOPSIS
+        Pure: one DC's raw read (Get-AdfaDcHardeningRaw) as finding rows.
+    .DESCRIPTION
+        DECLARED POPULATION: one row for every setting in the config table, then Print Spooler,
+        then SMBv1. A setting the read returned nothing for gets its own Not Assessed row, so
+        a setting is never silently absent.
+
+        Item is "<family>: <dc>", family first, so the recommendation map can anchor on the
+        family and nothing after the colon - a host name, an error text, an override file path
+        - can choose the advice.
+
+        Every row carries the raw read (value name, number, key, OS build, transport), which is
+        the inventory the AdAssessment26 catalogue lists as ADA-INV-019.
+
+        Two things that are not Microsoft's are said in the row that relies on them. A setting
+        whose registry path is not a published fact (KeyNote in the table: LDAPServerIntegrity
+        under NTDS\Parameters) says so in every one of its rows, whatever the verdict. And a row
+        graded below the expectation says that its status is a tool default or the operator's
+        override, not a Microsoft value.
+
+        The six setting rows say in NotRun, not in Detail, that nothing was tested on the wire:
+        a registry value is the configured policy. For LDAP, signing applies to non-TLS SASL
+        binds only and channel binding to TLS with SASL only; for SMB, "Signing doesn't occur
+        only when both the server and client have signing set to 0", so one side's value does
+        not settle what a connection does. Microsoft's own live check of LDAP signing, a simple
+        bind on port 389, "sends simple-bind credentials without TLS. Run it only in an
+        isolated lab" - which is why no bind is attempted here:
+          https://learn.microsoft.com/windows-server/identity/manage-ldap-signing-group-policy
+          https://learn.microsoft.com/windows-server/storage/file-server/smb-signing-overview
+          Read: 2026-11-13 (both).
+
+        The SMBv1 row keeps its rule (enabled is a Fail) and fails closed where the old code
+        did not: a property that was not returned is Not Assessed, where it used to pass.
+        Microsoft's own detection is a cmdlet, "Get-SmbServerConfiguration | Select
+        EnableSMB1Protocol":
+          https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+          Read: 2026-11-15.
+        This tool does not run that cmdlet. It asks for the instance of the class the cmdlet
+        returns, and on the one host measured that query returns no instance (see
+        Get-AdfaDcHardeningRaw). A read that returned no instance is its own result here -
+        "Not read", Not Assessed, naming what was measured and PORT-PLAN C3f - kept apart from
+        access denied and from a query that failed. The same holds for the SMB server signing
+        row's second instrument, which comes from the same instance.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows (Scope, Area, Item, Status, Detail, NotRun).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainController,
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)]$Raw,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rows = @()
+    $protocol = [string](Get-AdfaConfigValue -Entry $Raw -Name 'Protocol')
+    $settings = @(@($Config['Settings']) | Where-Object { $null -ne $_ })
+    $values = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Values') | Where-Object { $null -ne $_ })
+
+    # The OS build, as the DC itself reported it. Not a number, or not returned: not known.
+    $build = $null
+    $buildText = ([string](Get-AdfaConfigValue -Entry $Raw -Name 'BuildNumber')).Trim()
+    $buildNote = ''
+    $parsed = 0
+    if ($buildText -ne '' -and [int]::TryParse($buildText, [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed) -and $parsed -gt 0) {
+        $build = $parsed
+        $buildNote = ("OS build {0}." -f $build)
+    }
+    else {
+        $why = ([string](Get-AdfaConfigValue -Entry $Raw -Name 'BuildError')).Trim()
+        if ($why -eq '' -and $buildText -ne '') { $why = ("the DC returned '{0}', which is not a build number" -f $buildText) }
+        if ($why -eq '') { $why = 'Win32_OperatingSystem returned no build number' }
+        $buildNote = ("OS build not read ({0})" -f $why)
+        if (-not $buildNote.EndsWith('.)')) { $buildNote = $buildNote + '.' }
+    }
+
+    # Every setting's state first: two of the verdicts need another setting's state - and, for
+    # the number it holds, that setting's published meanings.
+    $states = @{}
+    $settingsById = @{}
+    foreach ($setting in $settings) {
+        $id = [string](Get-AdfaConfigValue -Entry $setting -Name 'Id')
+        $settingsById[$id] = $setting
+        $entry = $null
+        foreach ($v in $values) {
+            if ([string](Get-AdfaConfigValue -Entry $v -Name 'Id') -eq $id) { $entry = $v; break }
+        }
+        $states[$id] = Resolve-AdfaHardeningRead -Entry $entry
+    }
+
+    $smbOk = [bool](Get-AdfaConfigValue -Entry $Raw -Name 'SmbOk')
+    $smbError = [string](Get-AdfaConfigValue -Entry $Raw -Name 'SmbError')
+    # The instance query completed and returned no instance: not an error, and not a read.
+    $smbNoInstance = ((-not $smbOk) -and [bool](Get-AdfaConfigValue -Entry $Raw -Name 'SmbNoInstance'))
+    if ($smbNoInstance) { $smbError = 'MSFT_SmbServerConfiguration returned no instance to an instance query, and this tool does not invoke the method the class is otherwise read through' }
+    $smbSigning = $null
+    if ($smbOk) { $smbSigning = ConvertTo-AdfaNullableBoolean -Value (Get-AdfaConfigValue -Entry $Raw -Name 'SmbRequireSigning') }
+    $secondInstrument = [pscustomobject]@{ Read = ($null -ne $smbSigning); Value = $smbSigning; Error = $smbError }
+
+    $measured = 'The reading of return code 1 as "not set" is measured, not published by Microsoft: on the one host where it was measured (a Windows 11 workstation, not a domain controller) GetDWORDValue returns 1 for a value that is not set under a key that exists.'
+    # Said in every row graded below the expectation: the expected VALUE is Microsoft's, the
+    # STATUS a DC gets for missing it is not.
+    $statusNote = 'The status given to a value below the expectation ({0}) is a tool default or your own override, not a Microsoft value.'
+    $wire = 'No LDAP bind, SMB session or NTLM authentication was attempted: this row shows the policy configured in the registry of the DC, which is not necessarily what a client and this DC negotiate on the wire.'
+    foreach ($setting in $settings) {
+        $id = [string](Get-AdfaConfigValue -Entry $setting -Name 'Id')
+        $family = [string](Get-AdfaConfigValue -Entry $setting -Name 'Item')
+        $state = $states[$id]
+        $verdict = Get-AdfaHardeningVerdict -Setting $setting -State $state -Build $build -Related $states -SecondInstrument $secondInstrument -RelatedSettings $settingsById
+        $registry = ("HKLM\{0}\{1}" -f [string](Get-AdfaConfigValue -Entry $setting -Name 'Key'), [string](Get-AdfaConfigValue -Entry $setting -Name 'ValueName'))
+        $tail = ("Expectation source: {0}. Registry value: {1}. {2} Read over {3}." -f [string](Get-AdfaConfigValue -Entry $setting -Name 'ExpectedSource'), $registry, $buildNote, $protocol)
+        # Said where the verdict rests on the reading of return code 1. A row that is not
+        # applicable on this build rests on no reading at all.
+        if ([string]$state.Kind -eq 'NotSet' -and [string]$verdict.Status -ne $script:Status.Info) { $tail = ("{0} {1}" -f $tail, $measured) }
+        # Where the registry path itself is not a published fact, every row of the setting says so.
+        $keyNote = ([string](Get-AdfaConfigValue -Entry $setting -Name 'KeyNote')).Trim()
+        if ($keyNote -ne '') { $tail = ("{0} {1}" -f $tail, $keyNote) }
+        $belowStatus = [string](Get-AdfaConfigValue -Entry $setting -Name 'OtherStatus')
+        if ($belowStatus -ne '' -and [string]$verdict.Status -eq $belowStatus) { $tail = ("{0} {1}" -f $tail, ($statusNote -f $belowStatus)) }
+        $rows += New-AdfaDcHardeningRow -Scope $Scope -Item ("{0}: {1}" -f $family, $DomainController) -Status ([string]$verdict.Status) `
+            -Detail ("{0} {1}" -f [string]$verdict.Detail, $tail) -NotRun $wire
+    }
+
+    # ---- Print Spooler ----
+    $spooler = Get-AdfaSpoolerVerdict -Raw $Raw
+    $rows += New-AdfaDcHardeningRow -Scope $Scope -Item ("Print Spooler: {0}" -f $DomainController) -Status ([string]$spooler.Status) `
+        -Detail ("{0} Read over {1}." -f [string]$spooler.Detail, $protocol)
+
+    # ---- SMBv1 ----
+    $smbItem = ("SMBv1: {0}" -f $DomainController)
+    if ($smbNoInstance) {
+        # Not a refusal and not a failed query: the class answered, with nothing. Said as what
+        # it is, with what is known about why, so the row is not read as a fault on the DC.
+        $rows += New-AdfaDcHardeningRow -Scope $Scope -Item $smbItem -Status $script:Status.NotAssessed `
+            -Detail ("Not read: MSFT_SmbServerConfiguration returned no instance to an instance query on this DC, and no error, so whether the SMBv1 server is enabled is not known. This is not a pass. The one host this was measured on (a Windows 11 workstation, not a domain controller, not elevated) answers the same way: there the configuration is returned only by the class's static method GetConfiguration, which is what Microsoft's cmdlet Get-SmbServerConfiguration calls and which this tool does not invoke (PORT-PLAN C3f). Microsoft's own detection is that cmdlet, run on the DC: Get-SmbServerConfiguration | Select EnableSMB1Protocol. Read over {0}." -f $protocol)
+    }
+    elseif (-not $smbOk) {
+        $lead = 'Read failed: the SMB server configuration (MSFT_SmbServerConfiguration) could not be read.'
+        if ((Get-AdfaRemoteReadErrorClass -Message $smbError -ErrorCode ([string](Get-AdfaConfigValue -Entry $Raw -Name 'SmbErrorCode'))) -eq 'AccessDenied') {
+            $lead = 'Access denied: the SMB server configuration (MSFT_SmbServerConfiguration) could not be read. Local Administrators rights on the DC are needed for this read.'
+        }
+        $rows += New-AdfaDcHardeningRow -Scope $Scope -Item $smbItem -Status $script:Status.NotAssessed `
+            -Detail ("{0} Reported by the DC - {1} Read over {2}." -f $lead, $smbError, $protocol)
+    }
+    else {
+        $smb1Raw = Get-AdfaConfigValue -Entry $Raw -Name 'SmbEnableSmb1'
+        $smb1 = ConvertTo-AdfaNullableBoolean -Value $smb1Raw
+        if ($null -eq $smb1) {
+            $rows += New-AdfaDcHardeningRow -Scope $Scope -Item $smbItem -Status $script:Status.NotAssessed `
+                -Detail ("EnableSMB1Protocol was not returned as true or false by MSFT_SmbServerConfiguration on this DC (returned: '{0}'), so whether the SMBv1 server is enabled is not known. Read over {1}." -f [string]$smb1Raw, $protocol)
+        }
+        elseif ($smb1) {
+            $rows += New-AdfaDcHardeningRow -Scope $Scope -Item $smbItem -Status $script:Status.Fail `
+                -Detail ("EnableSMB1Protocol = True: the SMBv1 server is enabled on this DC. Read over {0}." -f $protocol)
+        }
+        else {
+            $rows += New-AdfaDcHardeningRow -Scope $Scope -Item $smbItem -Status $script:Status.Pass `
+                -Detail ("EnableSMB1Protocol = False. Read over {0}." -f $protocol)
+        }
+    }
+    return @($rows)
+}
+
+function Get-AdfaStdRegDwordValue {
+    <#
+    .SYNOPSIS
+        Reads ONE REG_DWORD value from HKEY_LOCAL_MACHINE on a DC through the WMI registry
+        provider. The third and last CIM method this script invokes.
+    .DESCRIPTION
+        READ-ONLY DECISION (PORT-PLAN C3), on the same footing as Get-AdfaStdRegStringValue,
+        which records the decision in full. GetDWORDValue "returns the data value for a named
+        value whose data type is REG_DWORD"; its signature is
+          uint32 GetDWORDValue([in] uint32 hDefKey = HKEY_LOCAL_MACHINE, [in] string sSubKeyName,
+                               [in] string sValueName, [out] uint32 uValue)
+        and its only [out] parameter is the value:
+          https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getdwordvalue-method-in-class-stdregprov
+        Microsoft lists it with the methods for reading registry data and names the Set*
+        methods separately, as the ones "for creating new keys or values, or changing existing
+        ones":
+          https://learn.microsoft.com/windows/win32/wmisdk/obtaining-registry-data
+          Read: 2026-11-13 (both).
+        As for the string methods, no page read says in so many words that the method has no
+        side effect; the decision rests on its documented purpose and signature. It is called
+        with a LITERAL -MethodName on a literal -ClassName, and a test reads every
+        Invoke-CimMethod in this script from the parsed source and fails on any name outside
+        the three Get* names. -WhatIf and -Confirm are forced off, which is safe only because
+        this is a read: under a WhatIf preference "The cmdlet is not run", and there would be
+        nothing to judge.
+
+        The method page lists the namespace as Root\default; the class "is preinstalled in the
+        WMI namespaces root\default and root\cimv2", and root/cimv2 is used here because it is
+        the namespace the C2 reads were measured in.
+
+        WHAT MICROSOFT PUBLISHES about the return value: 0 for success, otherwise "a nonzero
+        error code that is defined in WinError.h". Not which code means what, and not what the
+        method returns for a value that exists with another type.
+
+        WHAT WAS MEASURED for this method. On 2026-11-13, on ONE host - a Windows 11 (build
+        26100) workstation, not a domain controller, over a local CIM session under PowerShell
+        7 - GetDWORDValue returned:
+          0            a REG_DWORD value that exists, with uValue as a UInt32
+          1            a value that does not exist, under a key that does; uValue null
+          2            a key that does not exist
+          5            a key the account may not read
+          2147749893   (0x80041005) a value that exists and is a string
+        The same pattern C2 measured for the two string methods. Whether a domain controller, a
+        server release, a DCOM or WSMan session to another host, or Windows PowerShell 5.1
+        answers the same way has not been measured (PORT-PLAN C17).
+
+        uValue is absent on every nonzero return. It is therefore never converted to a number
+        here unless the return was 0 and a value came back: an absent value must not become 0,
+        which for most of these settings means "disabled".
+
+        Never throws. A call that raised comes back with Answered = $false and the error text
+        and CIM error code.
+    .OUTPUTS
+        [pscustomobject] Answered, ReturnValue ($null when not answered), Value ($null unless
+        the return was 0 and a value came back), Method, Error, ErrorCode.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$CimSession,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$ValueName,
+        [int]$OperationTimeoutSec = 90
+    )
+    $out = [pscustomobject]@{ Answered = $false; ReturnValue = $null; Value = $null; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' }
+    # 2147483650 is HKEY_LOCAL_MACHINE, as the method page lists it (defined in WinReg.h).
+    $arguments = @{ hDefKey = [uint32]2147483650; sSubKeyName = $Key; sValueName = $ValueName }
+    try {
+        $result = Invoke-CimMethod -CimSession $CimSession -Namespace 'root/cimv2' -ClassName 'StdRegProv' -MethodName 'GetDWORDValue' `
+            -Arguments $arguments -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -WhatIf:$false -Confirm:$false -ErrorAction Stop
+        if ($null -eq $result) { throw 'The registry provider returned no result.' }
+        $codeProp = $result.PSObject.Properties['ReturnValue']
+        if ($null -eq $codeProp -or $null -eq $codeProp.Value) { throw 'The registry provider returned no ReturnValue.' }
+        $out.ReturnValue = [int64]$codeProp.Value
+        if ($out.ReturnValue -eq 0) {
+            $valueProp = $result.PSObject.Properties['uValue']
+            if ($null -ne $valueProp -and $null -ne $valueProp.Value) { $out.Value = [int64]$valueProp.Value }
+        }
+        $out.Answered = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        if ($out.Error -eq '') { $out.Error = 'The registry read failed without an error message.' }
+        $nativeCode = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $nativeCode -and $null -ne $nativeCode.Value) { $out.ErrorCode = [string]$nativeCode.Value }
+    }
+    return $out
+}
+
+function Get-AdfaDcHardeningRaw {
+    <#
+    .SYNOPSIS
+        The one place C3 touches a DC: the registry values the config names and three instance
+        queries, in one bounded CIM session.
+    .DESCRIPTION
+        One GetDWORDValue call per setting - no second method and no retry: a value that is not
+        set, a refusal and a wrong type are all answers, and each is kept as the provider gave
+        it. Then three classes, read as instances with the properties named:
+          Win32_OperatingSystem         BuildNumber, the DC's own statement of its build, which
+                                        decides which documented default applies.
+          MSFT_SmbServerConfiguration   (root/Microsoft/Windows/SMB) EnableSMB1Protocol and
+                                        RequireSecuritySignature.
+          Win32_Service                 the Spooler service: Name, State, StartMode.
+        Nothing is written and no other method is invoked. The classes have methods that change
+        things (Win32_Service: StartService, StopService, ChangeStartMode ...); none is used.
+
+        MSFT_SmbServerConfiguration MAY RETURN NOTHING, and on the one host measured it does.
+        Measured on 2026-11-15 on a Windows 11 (build 26100) workstation - not a domain
+        controller, not elevated, a local session, under PowerShell 7 and Windows PowerShell
+        5.1: Get-CimInstance on the class returns no instance and no error, with -Property,
+        without it and as a WQL query, while Get-SmbServerConfiguration in the same process
+        returns the configuration. The class's methods, read from the class itself, are three
+        static ones: GetConfiguration (one parameter, [out] Output), SetConfiguration and
+        ResetConfiguration; the cmdlet calls the first. Microsoft Learn publishes the cmdlet
+        ("Retrieves the SMB server configuration", output "The MSFT_SmbServerConfiguration
+        object") and not the class or its methods:
+          https://learn.microsoft.com/powershell/module/smbshare/get-smbserverconfiguration
+          Read: 2026-11-15.
+        GetConfiguration is NOT invoked here. It is not on the allow-list of CIM methods this
+        script may call, it is not a method Microsoft documents, and adding it is the
+        operator's decision (PORT-PLAN C3f). So a query that returns no instance is reported
+        as exactly that - SmbNoInstance = $true, SmbOk = $false, both values $null - and the
+        SMBv1 row and the SMB signing second instrument are then Not Assessed. What a domain
+        controller, an elevated session or a remote session returns to the instance query has
+        not been measured (PORT-PLAN C17).
+
+        Values are read from the unadapted CIM store where there is one (Get-AdfaCimRawValue).
+
+        Never throws. One operation that fails does not discard the others: each registry value
+        and each class carries its own error. Ok is $false only when the session could not be
+        opened, or when not one operation got an answer from the DC - which is what lets the
+        caller try the other transport.
+
+        The session is always closed, with -WhatIf and -Confirm forced off for the reason given
+        in Get-AdfaDcDiskRaw: a preference in the caller's session must not leave it open.
+    .OUTPUTS
+        [pscustomobject] Ok, Protocol, Error, ErrorCode, BuildNumber, BuildError, BuildErrorCode,
+        Values (one per setting: Id, Key, ValueName, Answered, ReturnValue, Value, Method, Error,
+        ErrorCode), SmbOk, SmbNoInstance, SmbEnableSmb1, SmbRequireSigning, SmbError, SmbErrorCode, SpoolerOk,
+        SpoolerFound, SpoolerState, SpoolerStartMode, SpoolerError, SpoolerErrorCode.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [ValidateSet('Wsman', 'Dcom')][string]$Protocol = 'Wsman',
+        [pscredential]$Credential,
+        [int]$OperationTimeoutSec = 90,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Settings
+    )
+    $out = [pscustomobject]@{
+        Ok = $false; Protocol = $Protocol; Error = ''; ErrorCode = ''
+        BuildNumber = ''; BuildError = ''; BuildErrorCode = ''; Values = @()
+        SmbOk = $false; SmbNoInstance = $false; SmbEnableSmb1 = $null; SmbRequireSigning = $null; SmbError = ''; SmbErrorCode = ''
+        SpoolerOk = $false; SpoolerFound = $false; SpoolerState = ''; SpoolerStartMode = ''; SpoolerError = ''; SpoolerErrorCode = ''
+    }
+    $session = $null
+    try {
+        $sessionArgs = @{ ComputerName = $ComputerName; OperationTimeoutSec = [uint32]$OperationTimeoutSec; ErrorAction = 'Stop' }
+        if ($Protocol -eq 'Dcom') { $sessionArgs.SessionOption = New-CimSessionOption -Protocol Dcom }
+        if ($Credential) { $sessionArgs.Credential = $Credential }
+        $session = New-CimSession @sessionArgs
+
+        $answered = $false
+        $firstError = ''
+        $firstCode = ''
+
+        # ---- The registry values ----
+        $entries = New-Object System.Collections.ArrayList
+        foreach ($definition in @($Settings)) {
+            if ($null -eq $definition) { continue }
+            $key = [string](Get-AdfaConfigValue -Entry $definition -Name 'Key')
+            $valueName = [string](Get-AdfaConfigValue -Entry $definition -Name 'ValueName')
+            $read = Get-AdfaStdRegDwordValue -CimSession $session -Key $key -ValueName $valueName -OperationTimeoutSec $OperationTimeoutSec
+            if ($read.Answered) { $answered = $true }
+            elseif ($firstError -eq '') { $firstError = [string]$read.Error; $firstCode = [string]$read.ErrorCode }
+            [void]$entries.Add([pscustomobject]@{
+                    Id = [string](Get-AdfaConfigValue -Entry $definition -Name 'Id'); Key = $key; ValueName = $valueName
+                    Answered = [bool]$read.Answered; ReturnValue = $read.ReturnValue; Value = $read.Value
+                    Method = [string]$read.Method; Error = [string]$read.Error; ErrorCode = [string]$read.ErrorCode
+                })
+        }
+        $out.Values = $entries.ToArray()
+
+        # ---- The OS build ----
+        try {
+            $os = @(Get-CimInstance -CimSession $session -Namespace 'root/cimv2' -ClassName 'Win32_OperatingSystem' `
+                    -Property 'BuildNumber' -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -ErrorAction Stop)
+            if ($os.Count -eq 0 -or $null -eq $os[0]) { throw 'Win32_OperatingSystem returned no instance.' }
+            $answered = $true
+            $buildValue = Get-AdfaCimRawValue -Instance $os[0] -Name 'BuildNumber'
+            if ($null -ne $buildValue) { $out.BuildNumber = ([string]$buildValue).Trim() }
+        }
+        catch {
+            $out.BuildError = [string]$_.Exception.Message
+            if ($out.BuildError -eq '') { $out.BuildError = 'The operating system query failed without an error message.' }
+            $buildCode = $_.Exception.PSObject.Properties['NativeErrorCode']
+            if ($null -ne $buildCode -and $null -ne $buildCode.Value) { $out.BuildErrorCode = [string]$buildCode.Value }
+            if ($firstError -eq '') { $firstError = $out.BuildError; $firstCode = $out.BuildErrorCode }
+        }
+
+        # ---- The SMB server configuration ----
+        try {
+            $smb = @(Get-CimInstance -CimSession $session -Namespace 'root/Microsoft/Windows/SMB' -ClassName 'MSFT_SmbServerConfiguration' `
+                    -Property 'EnableSMB1Protocol', 'RequireSecuritySignature' -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -ErrorAction Stop)
+            # The query completed: the DC answered, whatever it returned.
+            $answered = $true
+            $smb = @($smb | Where-Object { $null -ne $_ })
+            if ($smb.Count -eq 0) {
+                # No instance and no error. NOT a read, and never filled in with a default: an
+                # invented False here would be an SMBv1 Pass nobody measured. SmbOk stays
+                # $false and the two values stay $null.
+                $out.SmbNoInstance = $true
+            }
+            else {
+                $out.SmbEnableSmb1 = Get-AdfaCimRawValue -Instance $smb[0] -Name 'EnableSMB1Protocol'
+                $out.SmbRequireSigning = Get-AdfaCimRawValue -Instance $smb[0] -Name 'RequireSecuritySignature'
+                $out.SmbOk = $true
+            }
+        }
+        catch {
+            $out.SmbError = [string]$_.Exception.Message
+            if ($out.SmbError -eq '') { $out.SmbError = 'The SMB server configuration query failed without an error message.' }
+            $smbCode = $_.Exception.PSObject.Properties['NativeErrorCode']
+            if ($null -ne $smbCode -and $null -ne $smbCode.Value) { $out.SmbErrorCode = [string]$smbCode.Value }
+            if ($firstError -eq '') { $firstError = $out.SmbError; $firstCode = $out.SmbErrorCode }
+        }
+
+        # ---- The Print Spooler service ----
+        try {
+            $services = @(Get-CimInstance -CimSession $session -Namespace 'root/cimv2' -ClassName 'Win32_Service' -Filter "Name='Spooler'" `
+                    -Property 'Name', 'State', 'StartMode' -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -ErrorAction Stop)
+            $answered = $true
+            $out.SpoolerOk = $true
+            $service = @($services | Where-Object { $null -ne $_ })
+            if ($service.Count -gt 0) {
+                $out.SpoolerFound = $true
+                $out.SpoolerState = [string](Get-AdfaCimRawValue -Instance $service[0] -Name 'State')
+                $out.SpoolerStartMode = [string](Get-AdfaCimRawValue -Instance $service[0] -Name 'StartMode')
+            }
+        }
+        catch {
+            $out.SpoolerError = [string]$_.Exception.Message
+            if ($out.SpoolerError -eq '') { $out.SpoolerError = 'The service query failed without an error message.' }
+            $serviceCode = $_.Exception.PSObject.Properties['NativeErrorCode']
+            if ($null -ne $serviceCode -and $null -ne $serviceCode.Value) { $out.SpoolerErrorCode = [string]$serviceCode.Value }
+            if ($firstError -eq '') { $firstError = $out.SpoolerError; $firstCode = $out.SpoolerErrorCode }
+        }
+
+        $out.Ok = $answered
+        if (-not $answered) {
+            $out.Error = $firstError
+            $out.ErrorCode = $firstCode
+        }
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $codeProp = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $out.ErrorCode = [string]$codeProp.Value }
+    }
+    finally {
+        if ($null -ne $session) {
+            try { Remove-CimSession -CimSession $session -WhatIf:$false -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+    return $out
+}
+
+function Get-AdfaDcHardening {
+    <#
+    .SYNOPSIS
+        Per-DC hardening: LDAP server signing and its Windows Server 2025 enforcement, LDAP
+        channel binding, SMB server and client signing, the LAN Manager authentication level,
+        the Print Spooler service and the SMBv1 server.
+    .DESCRIPTION
+        One CIM session per DC, over the transport loop DcDisk uses (Invoke-AdfaDcRemoteRead):
+        the DC is probed once per port through the shared cache (Test-AdfaDcPort), WinRM is
+        tried first and DCOM second where the RPC endpoint mapper answers, and a refusal is not
+        retried over the other transport. Three outcomes are kept apart for a DC that gave
+        nothing: unreachable (no port answered, no read attempted), access denied, and any
+        other read failure, quoted as the DC reported it.
+
+        Before v1.20.0 this section probed port 135 itself, read the Spooler with Get-Service
+        -ComputerName, SMBv1 with its own CIM connection and LDAPServerIntegrity over the .NET
+        remote registry, ignored -Credential for two of the three, and graded an absent
+        LDAPServerIntegrity as a Warning with no reason.
+
+        Needs local Administrators rights on each DC: "By default, only members of the
+        Administrators group can access the WMI namespace remotely."
+          https://learn.microsoft.com/troubleshoot/windows-server/system-management-components/scenario-guide-troubleshoot-wmi-connectivity-access-issues
+          Read: 2026-11-13.
+        The registry permission StdRegProv needs on the four keys is not published.
+
+        Accepts DC rows (HostName, Scope) so each finding carries its domain, or plain host
+        names where the caller has only those.
+
+        DECLARED POPULATION: the domains named in -ScopedDomains. Each of them ends up in the
+        section one of two ways - as the Scope of at least one DC row, or as its own
+        "DC hardening - <domain>" Not Assessed row saying why none of its DCs is shown as read.
+        A domain is never simply missing (PORT-PLAN C2e, done for this section).
+
+        These are registry reads: they show the policy configured on each DC, not what a client
+        and the DC negotiate on the wire. No LDAP bind and no SMB session is attempted.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90,
+        # Domains whose DC enumeration threw: objects with Domain and Error.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        # Why no DC could be enumerated at all, where the caller knows.
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        # The domains this run was scoped to: the declared population of the section.
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+    )
+    $rows = @()
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaDcHardeningRow -Scope ([string]$gap.Domain) -Item ("DC hardening - {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'None of its hardening settings was read.')
+    }
+    if ($targets.Count -eq 0) {
+        $why = ''
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = (" Domain controller enumeration failed: {0}." -f $EnumerationError.Trim().TrimEnd('.')) }
+        $rows += New-AdfaDcHardeningRow -Item 'DC hardening' -Status $script:Status.NotAssessed `
+            -Detail ("No domain controllers were enumerated, so no hardening setting could be read.{0} This is not a clean result." -f $why)
+        return @($rows)
+    }
+    $wsmanPort = [int]$Config['WsmanPort']
+    $rpcPort = [int]$Config['RpcPort']
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-AdfaDcHardeningRow -Scope $scope -Item 'DC hardening: (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no hardening setting was read.'
+            continue
+        }
+        $item = ("DC hardening: {0}" -f $dc)
+        $wsman = Test-AdfaDcPort -ComputerName $dc -Port $wsmanPort -TimeoutMs $PortTimeoutMs
+        $rpc = Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs
+        if (-not $wsman -and -not $rpc) {
+            $rows += New-AdfaDcHardeningRow -Scope $scope -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so no read was attempted." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
+            continue
+        }
+        $protocols = @()
+        if ($wsman) { $protocols += 'Wsman' }
+        if ($rpc) { $protocols += 'Dcom' }
+        $readArguments = @{ OperationTimeoutSec = $OperationTimeoutSec; Settings = $Config['Settings'] }
+        if ($Credential) { $readArguments.Credential = $Credential }
+        $read = Invoke-AdfaDcRemoteRead -ComputerName $dc -Protocols $protocols -ReadCommand 'Get-AdfaDcHardeningRaw' -ReadArguments $readArguments
+        $raw = $read.Raw
+        if ($null -eq $raw -or -not $raw.Ok) {
+            $lead = 'Read failed: a port answered, but neither the registry values nor the system, SMB and service information could be read. If the text below is a refusal in another language, local Administrators rights on the DC are what is missing.'
+            if ($read.Denied) { $lead = 'Access denied: the account running the assessment could not read the registry or the system information of this DC. Local Administrators rights on the DC are needed for this read.' }
+            $rows += New-AdfaDcHardeningRow -Scope $scope -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("{0} Reported by the DC - {1}" -f $lead, (@($read.Attempts) -join ' | '))
+            continue
+        }
+        $rows += @(Get-AdfaDcHardeningFinding -DomainController $dc -Scope $scope -Raw $raw -Config $Config)
+    }
+    return @($rows)
+}
+
+function ConvertTo-AdfaOverrideTable {
+    <#
+    .SYNOPSIS
+        Pure: an override object - a hashtable built in memory, or an object parsed from JSON -
+        as an ordered name-to-value table. $null when it is neither, so the caller can refuse
+        an array, a string or a number, whose own properties must not be read as keys.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+    if ($null -eq $Value) { return $null }
+    $table = [ordered]@{}
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($k in @($Value.Keys)) { $table[[string]$k] = $Value[$k] }
+        return $table
+    }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($p in @($Value.PSObject.Properties)) { $table[[string]$p.Name] = $p.Value }
+        return $table
+    }
+    return $null
+}
+
+function Merge-AdfaDcHardeningConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in DC hardening table, with validation. The
+        DcHardening validator for -ConfigOverridePath.
+    .DESCRIPTION
+        What a file can change: under Settings, per setting id, ExpectedMinimum and
+        OtherStatus:
+
+            { "DcHardening": { "Settings": { "LmCompatibilityLevel": { "ExpectedMinimum": 3, "OtherStatus": "Fail" } } } }
+
+        What it cannot: the registry key and value a setting reads, the meanings of its numbers,
+        its documented defaults and its sources. Those are what the tool reads and what the
+        vendor documents, and a file that redirected them would make every finding describe
+        something else.
+
+        Nor WsmanPort and RpcPort. Until the review of this row they were accepted, and they
+        changed only the port that is PROBED: the CIM session is opened with no -Port and no
+        TLS option, so it always goes to the default WinRM port, or to the RPC endpoint mapper
+        for DCOM. A file naming 5986 would have had a DC that listens on 5985 reported as
+        unreachable without a read being attempted. Both keys are refused, with that reason.
+        DcDisk still accepts them and has the same gap (PORT-PLAN C3g).
+
+        Anything this tool could not use is refused with the reason: an override that is not
+        one object, an empty object, an unknown key, a null, a port key,
+        Settings that is not an object keyed by setting id (an array is refused), an unknown
+        setting id, a setting that is null, not an object or empty, an unknown key under a
+        setting, an ExpectedMinimum that is not a JSON number or is not one of the setting's
+        ExpectedChoices, and an OtherStatus that is not Warning or Fail - a value below the
+        expectation can never be configured to read as a pass or as information.
+
+        Provenance follows the values. ExpectedSource is rewritten for exactly the settings and
+        keys the override supplied, and the built-in source stays named beside it.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    # The settings are copied row by row, so a merge never modifies the built-in table.
+    $settings = New-Object System.Collections.ArrayList
+    foreach ($row in @($BaseConfig['Settings'])) {
+        $copy = @{}
+        foreach ($k in @($row.Keys)) { $copy[$k] = $row[$k] }
+        [void]$settings.Add($copy)
+    }
+    $merged['Settings'] = $settings.ToArray()
+    if ($null -eq $Override) { return $merged }
+
+    $top = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $top) {
+        throw ("DC hardening config override must be a single object with named keys (for example {{ ""Settings"": {{ ""LmCompatibilityLevel"": {{ ""ExpectedMinimum"": 3 }} }} }}), not a {0}." -f $Override.GetType().Name)
+    }
+    if ($top.Count -eq 0) {
+        throw 'DC hardening config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    $portKeys = @('WsmanPort', 'RpcPort')
+    $known = @('Settings')
+    $settingKeys = @('ExpectedMinimum', 'OtherStatus')
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $from = 'an override whose source was not recorded'
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+    $suppliedTop = @()
+    foreach ($given in @($top.Keys)) {
+        # The two port keys are refused whatever they hold, and with their own reason: a port
+        # set here would be probed, and the CIM session would still go to the default one.
+        $portMatch = @($portKeys | Where-Object { $_ -eq $given })
+        if ($portMatch.Count -gt 0) {
+            throw ("DC hardening config override names '{0}'. The ports of this section cannot be set from a file: its CIM session is always opened on the default WinRM port ({1}), or through the RPC endpoint mapper ({2}) for DCOM, so a different port here would change what is probed and not what is connected to. Remove the key." -f [string]$portMatch[0], [int]$BaseConfig['WsmanPort'], [int]$BaseConfig['RpcPort'])
+        }
+        # A misspelt key would otherwise be accepted, ignored, and leave the operator believing
+        # their value was applied.
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("DC hardening config override names an unknown key '{0}'. Known keys: {1}." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        if ($suppliedTop -contains $name) { throw ("DC hardening config override names '{0}' more than once." -f $name) }
+        $suppliedTop += $name
+        $value = $top[$given]
+        if ($null -eq $value) {
+            throw ("DC hardening config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name)
+        }
+
+        # ---- Settings: an object keyed by setting id.
+        $bySetting = ConvertTo-AdfaOverrideTable -Value $value
+        if ($null -eq $bySetting) {
+            throw ("DC hardening config override: 'Settings' must be an object keyed by setting id (for example {{ ""LmCompatibilityLevel"": {{ ""ExpectedMinimum"": 3 }} }}), not a {0}. A list is refused: a setting is named by its key." -f $value.GetType().Name)
+        }
+        if ($bySetting.Count -eq 0) {
+            throw "DC hardening config override: 'Settings' is an empty object. It names no setting, so it would change nothing while appearing to be in force."
+        }
+        $ids = @($merged['Settings'] | ForEach-Object { [string]$_['Id'] })
+        $suppliedIds = @()
+        foreach ($givenId in @($bySetting.Keys)) {
+            $idMatch = @($ids | Where-Object { $_ -eq $givenId })
+            if ($idMatch.Count -eq 0) {
+                throw ("DC hardening config override names an unknown setting '{0}'. Known settings: {1}." -f $givenId, ($ids -join ', '))
+            }
+            $id = [string]$idMatch[0]
+            if ($suppliedIds -contains $id) { throw ("DC hardening config override names setting '{0}' more than once." -f $id) }
+            $suppliedIds += $id
+            $settingValue = $bySetting[$givenId]
+            if ($null -eq $settingValue) {
+                throw ("DC hardening config override sets setting '{0}' to null. Remove the key to keep the built-in row." -f $id)
+            }
+            $changes = ConvertTo-AdfaOverrideTable -Value $settingValue
+            if ($null -eq $changes) {
+                throw ("DC hardening config override: setting '{0}' must be an object naming {1}, not a {2}." -f $id, ($settingKeys -join ' and/or '), $settingValue.GetType().Name)
+            }
+            if ($changes.Count -eq 0) {
+                throw ("DC hardening config override: setting '{0}' is an empty object. It names no key, so it would change nothing while appearing to be in force." -f $id)
+            }
+            $target = @($merged['Settings'] | Where-Object { [string]$_['Id'] -eq $id })[0]
+            $suppliedKeys = @()
+            foreach ($givenKey in @($changes.Keys)) {
+                $keyMatch = @($settingKeys | Where-Object { $_ -eq $givenKey })
+                if ($keyMatch.Count -eq 0) {
+                    throw ("DC hardening config override, setting '{0}', names an unknown key '{1}'. Known keys: {2}. The registry value a setting reads, the meanings of its numbers, its defaults and its sources cannot be changed from a file." -f $id, $givenKey, ($settingKeys -join ', '))
+                }
+                $key = [string]$keyMatch[0]
+                if ($suppliedKeys -contains $key) { throw ("DC hardening config override, setting '{0}', names '{1}' more than once." -f $id, $key) }
+                $suppliedKeys += $key
+                $change = $changes[$givenKey]
+                if ($null -eq $change) {
+                    throw ("DC hardening config override, setting '{0}', sets '{1}' to null. Remove the key to keep the built-in value." -f $id, $key)
+                }
+                if ($key -eq 'ExpectedMinimum') {
+                    # A JSON number only: how a string becomes a number depends on the culture
+                    # of the host, and an expectation must not.
+                    if ($numericTypes -notcontains $change.GetType()) {
+                        throw ("DC hardening config override, setting '{0}', sets 'ExpectedMinimum' to a {1} ('{2}'). It must be a JSON number, written without quotes." -f $id, $change.GetType().Name, [string]$change)
+                    }
+                    $wanted = [double]$change
+                    $choices = @($target['ExpectedChoices'] | ForEach-Object { [int64]$_ })
+                    $isChoice = (-not [double]::IsNaN($wanted) -and -not [double]::IsInfinity($wanted) -and $wanted -eq [math]::Floor($wanted) -and $choices -contains [int64]$wanted)
+                    if (-not $isChoice) {
+                        throw ("DC hardening config override, setting '{0}', sets 'ExpectedMinimum' to {1}. It must be one of {2}: the values this setting can be graded against, each with a meaning Microsoft publishes." -f $id, $wanted.ToString('0.####', $inv), ($choices -join ', '))
+                    }
+                    $target['ExpectedMinimum'] = [int]$wanted
+                }
+                else {
+                    $allowed = @('Warning', 'Fail')
+                    $statusMatch = @()
+                    if ($change -is [string]) { $statusMatch = @($allowed | Where-Object { $_ -eq $change.Trim() }) }
+                    if ($statusMatch.Count -eq 0) {
+                        throw ("DC hardening config override, setting '{0}', sets 'OtherStatus' to '{1}'. It must be Warning or Fail: a value below the expectation is never reported as a pass, as information or as not assessed." -f $id, [string]$change)
+                    }
+                    $target['OtherStatus'] = [string]$statusMatch[0]
+                }
+            }
+            # Provenance, for exactly what the override supplied for this setting.
+            $text = ("{0} for {1}" -f $from, ($suppliedKeys -join ', '))
+            $builtIn = @($settingKeys | Where-Object { $suppliedKeys -notcontains $_ })
+            if ($builtIn.Count -gt 0) { $text = ("{0}; the built-in {1} is unchanged" -f $text, ($builtIn -join ', ')) }
+            $target['ExpectedSource'] = ("{0}. Built-in source: {1}" -f $text, [string]$target['ExpectedSource'])
+        }
+    }
+    return $merged
+}
+
+# ---------------------------------------------------------------------------
 # -ConfigOverridePath: one JSON file, one top-level key per section (PORT-PLAN C2)
 # ---------------------------------------------------------------------------
 # The sections whose built-in table that file can replace. A top-level key of the file is one of
@@ -4781,7 +6470,8 @@ function Merge-AdfaDcDiskConfig {
 # -DcSystemConfigPath, unchanged. A row that adds either must first decide what happens when
 # both sources name the same section.
 $script:ConfigOverrideSections = [ordered]@{
-    DcDisk = @{ ConfigKey = 'DcDisk'; Section = 'DcDisk'; Merge = 'Merge-AdfaDcDiskConfig' }
+    DcDisk      = @{ ConfigKey = 'DcDisk'; Section = 'DcDisk'; Merge = 'Merge-AdfaDcDiskConfig' }
+    DcHardening = @{ ConfigKey = 'DcHardening'; Section = 'DcHardening'; Merge = 'Merge-AdfaDcHardeningConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -8723,6 +10413,46 @@ $script:RecommendationMap = @(
     #     extending it, because nothing more specific was found published.
     @{ Section = '(?i)^dc disk space'; Match = '.'
        Text  = 'Free space on the named volume, or extend it. For a volume that holds the directory database or its log files, Microsoft''s steps are, in this order: 1. Move unrelated files to another volume. 2. Perform a system state backup, which reduces the size of the transaction log files. 3. Perform an offline defragmentation of the database; Microsoft''s sizing guidance asks for free space of 110 % of the ntds.dit size to allow it, which this report does not measure. Also confirm that NTFS compression is not turned on for the drives that hold ntds.dit and the log files. The thresholds this finding was judged against are this tool''s defaults or your own override, not Microsoft values.' }
+    # --- Section-scoped: DC hardening (PORT-PLAN C3). One entry per row family, each anchored on
+    #     the family name the tool itself writes at the start of the Item ("<family>: <dc>"), so
+    #     nothing after the colon - a host name, an error text, an override file path cited as
+    #     the expectation source - takes part in choosing the advice. The last entry answers
+    #     every other row of the section with no advice at all, so none of that free text can
+    #     reach an unscoped entry further down ('ldap signing', 'smbv1', 'spooler', 'backup',
+    #     'replication', 'sysvol' ...). Tests pin each family to its entry.
+    #     The two settings whose expectation a file can move - channel binding (1 or 2) and the
+    #     LAN Manager level (3, 4 or 5) - do not tell the reader to set one fixed value: the
+    #     text is chosen by family and never sees the merged expectation, so it points at the
+    #     expected minimum the finding itself names and gives Microsoft's baseline value as
+    #     that. A fixed "set it to 5" beside "below the expected minimum of 3" would be two
+    #     targets in one row. The other four have one possible expectation each.
+    #     Every remediation is Microsoft's own, with the compatibility warning its page gives:
+    #       LDAP signing, enforcement - https://learn.microsoft.com/windows-server/identity/manage-ldap-signing-group-policy
+    #                                   https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-signing
+    #       Channel binding           - https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-channel-binding
+    #       SMB signing               - https://learn.microsoft.com/windows-server/storage/file-server/smb-signing
+    #       LAN Manager level         - https://learn.microsoft.com/troubleshoot/windows-server/windows-security/audit-domain-controller-ntlmv1
+    #       Print Spooler             - https://learn.microsoft.com/defender-for-identity/security-posture-assessments/identity-infrastructure
+    #       SMBv1                     - https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+    #     Read: 2026-11-13 (all).
+    @{ Section = '(?i)^dc hardening'; Match = '(?i)^DC Hardening :: LDAP server signing enforcement: '
+       Text  = 'On Windows Server 2025, leave the Group Policy setting "Domain controller: LDAP server signing requirements enforcement" Enabled or Not Configured: Microsoft documents both as requiring LDAP signing whatever the older signing requirements policy says. Where it was set to Disabled to keep unsigned clients working, find those clients with Directory Service events 2887 and 2889, move them to signed binds, then enable it again. Clients that do not support LDAP signing can no longer query the DC once it is required.' }
+    @{ Section = '(?i)^dc hardening'; Match = '(?i)^DC Hardening :: LDAP server signing: '
+       Text  = 'Require LDAP signing with the Group Policy setting "Domain controller: LDAP server signing requirements" = Require signing. Microsoft''s migration path is to do it in this order: monitor Directory Service events 2887 and 2889 to identify clients that still bind unsigned, configure those clients to request signing, then require it - clients that do not support LDAP signing can no longer run LDAP queries against the DC afterwards. LDAP signing applies to SASL binds that are not over TLS; it does not protect simple binds.' }
+    @{ Section = '(?i)^dc hardening'; Match = '(?i)^DC Hardening :: LDAP channel binding: '
+       Text  = 'Raise the Group Policy setting "Domain controller: LDAP server channel binding token requirements" to at least the expected minimum this finding names. The value Microsoft''s Windows Server 2025 security baseline gives for a domain controller is Always, and Microsoft''s path to it is to audit first: with the setting at When supported, use Directory Service events 3039, 3074 and 3075 to identify the clients that fail or omit channel binding; fix or update those, then move to Always, which rejects every client that does not send a valid token. Channel binding applies to LDAP over TLS with SASL authentication only.' }
+    @{ Section = '(?i)^dc hardening'; Match = '(?i)^DC Hardening :: SMB server signing: '
+       Text  = 'Require SMB signing on the DC''s SMB server: enable the Group Policy setting "Microsoft network server: Digitally sign communications (always)", or run Set-SmbServerConfiguration -RequireSecuritySignature $true on the DC. Domain controllers require it by default through the Default Domain Controllers Policy, so check why that policy is not delivering the value here. A device that does not support SMB signing can no longer connect to the DC, SYSVOL and NETLOGON included.' }
+    @{ Section = '(?i)^dc hardening'; Match = '(?i)^DC Hardening :: SMB client signing: '
+       Text  = 'Require SMB signing on the DC''s outbound SMB connections: enable the Group Policy setting "Microsoft network client: Digitally sign communications (always)", or run Set-SmbClientConfiguration -RequireSecuritySignature $true on the DC. The DC can then no longer connect to an SMB server that does not support signing; Microsoft''s guidance is to enable signing on that server or replace the device, not to turn the requirement off.' }
+    @{ Section = '(?i)^dc hardening'; Match = '(?i)^DC Hardening :: LAN Manager authentication level: '
+       Text  = 'Raise the Group Policy setting "Network security: LAN Manager authentication level" on domain controllers to at least the expected minimum this finding names. The value Microsoft''s security baselines give for a DC is "Send NTLMv2 response only. Refuse LM & NTLM" (LmCompatibilityLevel 5). Audit first: a DC at level 5 refuses LM and NTLMv1, so find the clients that still use NTLMv1 with Microsoft''s procedure for auditing NTLMv1 on domain controllers (Security event 4624 on the DCs, filtered on the NTLM V1 package) and move them to NTLMv2 or Kerberos before changing the level.' }
+    @{ Section = '(?i)^dc hardening'; Match = '(?i)^DC Hardening :: Print Spooler: '
+       Text  = 'Disable the Print Spooler service on domain controllers; Microsoft recommends doing it with a Group Policy Object. Microsoft''s reason: any authenticated user can connect to a DC''s spooler and have the DC send a notification to a system with unconstrained delegation, which exposes the DC computer account credential. Check dependencies first: the domain controller role uses the spooler for print pruning - removing stale print queue objects from the directory - so with the service disabled, prune those objects another way.' }
+    @{ Section = '(?i)^dc hardening'; Match = '(?i)^DC Hardening :: SMBv1: '
+       Text  = 'Turn off the SMBv1 server on this DC: Set-SmbServerConfiguration -EnableSMB1Protocol $false, and remove the feature (Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol, which restarts the computer, or Server Manager > Remove Roles and Features > "SMB 1.0/CIFS File Sharing Support"). Find the clients that still use it first: Set-SmbServerConfiguration -AuditSmb1Access $true, then event 3000 in the Microsoft-Windows-SMBServer\Audit log names each one. Microsoft warns to be careful when disabling SMBv1 on domain controllers, because legacy systems that need SYSVOL may not support SMBv2 or SMBv3.' }
+    @{ Section = '(?i)^dc hardening'; Match = '.'
+       Text  = '' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
     # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
@@ -9348,7 +11078,7 @@ function Invoke-Main {
     # per DC must be told, or it looks complete while a whole domain is missing from it.
     $dcInventoryFailures = @()
     # Whether the inventory was asked for at all. A per-DC section that needs every scoped
-    # domain's DCs (DcDisk) enumerates them itself when it was not.
+    # domain's DCs (DcDisk, DcHardening) enumerates them itself when it was not.
     $dcInventoryCollected = $false
     if (Test-SectionSelected 'DomainControllers' $Sections) {
         $dcInventoryCollected = $true
@@ -9553,8 +11283,28 @@ function Invoke-Main {
         $sectionData['Privileged Hygiene'] = @($phRows)
     }
     if (Test-SectionSelected 'DcHardening' $Sections) {
-        Write-Stage 'DC hardening (Spooler / SMBv1 / LDAP signing)'
-        $sectionData['DC Hardening'] = Get-AdfaDcHardening -DomainControllers $dcNames -Credential $Credential -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        Write-Stage 'DC hardening (LDAP signing and channel binding, SMB signing, LAN Manager level, Print Spooler, SMBv1; per DC)'
+        # The table the file supplied where it supplied one, otherwise the built-in table. The
+        # file was validated before any section ran.
+        $dcHardeningConfig = $script:Config.DcHardening
+        if ($configOverrides.ContainsKey('DcHardening')) { $dcHardeningConfig = $configOverrides['DcHardening'] }
+        # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk takes them
+        # (PORT-PLAN C2e): the DC inventory where the DomainControllers section ran; otherwise
+        # the section's own enumeration of each scoped domain, because $dcNames then holds only
+        # what one unscoped call against the default server returned - the current domain's DCs.
+        $dcHardeningTargets = @($allDcInventory)
+        $dcHardeningFailures = @($dcInventoryFailures)
+        if (-not $dcInventoryCollected) {
+            $dcHardeningEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+            $dcHardeningTargets = @($dcHardeningEnumeration.Targets)
+            $dcHardeningFailures = @($dcHardeningEnumeration.Failures)
+        }
+        # Last resort, when no scoped domain gave a single DC: the host names the fallback
+        # enumeration found. They carry no domain, and the section says so for each domain.
+        if ($dcHardeningTargets.Count -eq 0) { $dcHardeningTargets = @($dcNames) }
+        $sectionData['DC Hardening'] = @(Get-AdfaDcHardening -DomainControllers $dcHardeningTargets -Config $dcHardeningConfig -Credential $Credential `
+                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
+                -InventoryFailures $dcHardeningFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
     }
     if (Test-SectionSelected 'DcSystem' $Sections) {
         Write-Stage 'DC system (OS lifecycle; build, uptime and last update per DC)'

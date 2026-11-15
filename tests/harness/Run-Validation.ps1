@@ -1879,6 +1879,229 @@ try {
 }
 finally { Remove-Item -LiteralPath $overrideProbe -Force -ErrorAction SilentlyContinue }
 
+# =============================================================================
+# PORT-PLAN C3. DC hardening: pure logic only - nothing here opens a session. The collector and
+# the CIM seam are covered by the Pester suite and by Run-SmokeTest.
+# =============================================================================
+Write-Host ""
+Write-Host "== DC hardening (C3): pure logic ==" -ForegroundColor Cyan
+$hardCfg = $script:Config.DcHardening
+$hardIds = @('LdapServerIntegrity', 'LdapServerEnforceIntegrity', 'LdapEnforceChannelBinding', 'SmbServerSigning', 'SmbClientSigning', 'LmCompatibilityLevel')
+function Get-HardSetting { param([string]$Id, $Config = $hardCfg) @($Config['Settings'] | Where-Object { [string]$_['Id'] -eq $Id })[0] }
+# One registry read in the seam's shape. No -Number means the value is not set: return code 1, no number.
+function New-HardValue {
+    param([string]$Id, $Number = $null, $ReturnValue = 0, [string]$Err = '', [string]$Code = '')
+    $setting = Get-HardSetting -Id $Id
+    if ($Err -ne '') { $ReturnValue = $null; $Number = $null }
+    elseif ($null -eq $Number -and [int64]$ReturnValue -eq 0) { $ReturnValue = 1 }
+    [pscustomobject]@{ Id = $Id; Key = [string]$setting['Key']; ValueName = [string]$setting['ValueName']; Answered = ($Err -eq '')
+        ReturnValue = $ReturnValue; Value = $Number; Method = 'GetDWORDValue'; Error = $Err; ErrorCode = $Code }
+}
+function Get-HardState { param([string]$Id, $Number = $null, $ReturnValue = 0, [string]$Err = '') Resolve-AdfaHardeningRead -Entry (New-HardValue -Id $Id -Number $Number -ReturnValue $ReturnValue -Err $Err) }
+function Get-HardVerdict {
+    param([string]$Id, $Number = $null, $Build = 17763, [hashtable]$Related = @{}, $Second = $null, $Config = $hardCfg, $ReturnValue = 0, [switch]$NoRelatedSettings)
+    # The config rows by setting id, as the row builder hands them to the verdict.
+    $byId = @{}
+    if (-not $NoRelatedSettings) { foreach ($s in @($Config['Settings'])) { $byId[[string]$s['Id']] = $s } }
+    Get-AdfaHardeningVerdict -Setting (Get-HardSetting -Id $Id -Config $Config) -State (Get-HardState -Id $Id -Number $Number -ReturnValue $ReturnValue) -Build $Build -Related $Related -SecondInstrument $Second -RelatedSettings $byId
+}
+# The SMB part has two shapes. The default (an instance, with both properties) has NOT been
+# measured on any host. -SmbNoInstance is what one Windows 11 workstation was measured to return
+# to the instance query on 2026-11-15: no instance and no error.
+function New-HardRaw {
+    param([hashtable]$Numbers = @{}, [string]$Build = '17763', $Smb1 = $false, $SmbSigning = $true, [string]$SpoolerState = 'Stopped', [string]$SpoolerStartMode = 'Disabled', [switch]$SmbNoInstance)
+    $values = @()
+    foreach ($id in $hardIds) { $n = $null; if ($Numbers.ContainsKey($id)) { $n = $Numbers[$id] }; $values += New-HardValue -Id $id -Number $n }
+    $smbOk = $true
+    if ($SmbNoInstance) { $smbOk = $false; $Smb1 = $null; $SmbSigning = $null }
+    [pscustomobject]@{ Ok = $true; Protocol = 'Wsman'; Error = ''; ErrorCode = ''; BuildNumber = $Build; BuildError = ''; BuildErrorCode = ''; Values = @($values)
+        SmbOk = $smbOk; SmbNoInstance = [bool]$SmbNoInstance; SmbEnableSmb1 = $Smb1; SmbRequireSigning = $SmbSigning; SmbError = ''; SmbErrorCode = ''
+        SpoolerOk = $true; SpoolerFound = $true; SpoolerState = $SpoolerState; SpoolerStartMode = $SpoolerStartMode; SpoolerError = ''; SpoolerErrorCode = '' }
+}
+
+# --- Config table.
+Assert-Equal 6 (@($hardCfg['Settings']).Count) 'Hardening config: declared population - six registry settings'
+Assert-Equal ($hardIds -join ',') (@($hardCfg['Settings'] | ForEach-Object { [string]$_['Id'] }) -join ',') 'Hardening config: the six settings, in table order'
+Assert-Equal 'LDAPServerIntegrity|LDAPServerEnforceIntegrity|LdapEnforceChannelBinding|RequireSecuritySignature|RequireSecuritySignature|LmCompatibilityLevel' (@($hardCfg['Settings'] | ForEach-Object { [string]$_['ValueName'] }) -join '|') 'Hardening config: the six value names'
+Assert-Equal '2,1,2,1,1,5' (@($hardCfg['Settings'] | ForEach-Object { [string]$_['ExpectedMinimum'] }) -join ',') 'Hardening config: each setting expects the value the Microsoft baseline gives for a domain controller'
+Assert-Equal 6 (@($hardCfg['Settings'] | Where-Object { [string]$_['SourceUrl'] -match '^https://learn\.microsoft\.com/' -and [string]$_['ReadDate'] -eq '2026-11-13' }).Count) 'Hardening config: every setting records where it was read on Microsoft Learn, and when'
+
+# --- The shared return-code reading.
+Assert-Equal 'Success,ValueNotSet,KeyAbsent,AccessDenied,AccessDenied,TypeMismatch,ReadFailed' (@(@(0, 1, 2, 5, [uint32]2147749891, [uint32]2147749893, 87) | ForEach-Object { [string](Get-AdfaStdRegReturnClass -ReturnValue $_).Class }) -join ',') 'Registry return codes: 0, 1, 2, 5, 0x80041003, 0x80041005 and any other code are seven declared answers, read one way for every section'
+Assert-Equal 'NoReturnCode' ([string](Get-AdfaStdRegReturnClass -ReturnValue $null).Class) 'Registry return codes: no return code is not a read'
+Assert-Equal 'AccessDenied' ([string](Get-AdfaStdRegReturnClass -ReturnValue $null -ErrorText 'Acesso negado.' -ErrorCode 'AccessDenied').Class) 'Registry return codes: a refusal that threw is access denied by its CIM error code, whatever the language of the text'
+
+# --- A value that was not read is never a number.
+$hardNotSet = Get-HardState -Id 'SmbServerSigning'
+Assert-True ([string]$hardNotSet.Kind -eq 'NotSet' -and $null -eq $hardNotSet.Number) 'Hardening read: a value that is not set (return 1) has no number - it is not 0, which would read as disabled'
+Assert-True ([string](Get-HardState -Id 'SmbServerSigning' -Number 0).Kind -eq 'Value' -and (Get-HardState -Id 'SmbServerSigning' -Number 0).Number -eq 0) 'Hardening read: a value that IS 0 is kept as 0'
+Assert-Equal 'KeyAbsent,AccessDenied,TypeMismatch,ReadFailed,AccessDenied' ((@(
+        (Get-HardState -Id 'LmCompatibilityLevel' -ReturnValue 2), (Get-HardState -Id 'LmCompatibilityLevel' -ReturnValue 5),
+        (Get-HardState -Id 'LmCompatibilityLevel' -ReturnValue ([uint32]2147749893)), (Get-HardState -Id 'LmCompatibilityLevel' -ReturnValue 87),
+        (Get-HardState -Id 'LmCompatibilityLevel' -Err 'Access is denied.')) | ForEach-Object { [string]$_.Kind }) -join ',') 'Hardening read: key absent, refused, wrong type, any other code and a thrown refusal are five different results'
+
+# --- Defaults by OS build, with the boundaries.
+$hardCb = Get-HardSetting -Id 'LdapEnforceChannelBinding'
+Assert-True ((Resolve-AdfaHardeningDefault -Setting $hardCb -Build 20348).Known -and (Resolve-AdfaHardeningDefault -Setting $hardCb -Build 20348).Value -eq 0) 'Hardening default: channel binding on build 20348 is the documented Never (0)'
+Assert-True (-not (Resolve-AdfaHardeningDefault -Setting $hardCb -Build 20349).Known) 'Hardening default: one build above Windows Server 2022 there is no documented default'
+Assert-True (-not (Resolve-AdfaHardeningDefault -Setting $hardCb -Build 26100).Known) 'Hardening default: channel binding on Windows Server 2025 is not known - published for new deployments only'
+Assert-True (-not (Resolve-AdfaHardeningDefault -Setting $hardCb -Build $null).Known) 'Hardening default: with the build not read, no default is known'
+$hardClient = Get-HardSetting -Id 'SmbClientSigning'
+Assert-Equal '0,1' ((@(20348, 26100) | ForEach-Object { [string](Resolve-AdfaHardeningDefault -Setting $hardClient -Build $_).Value }) -join ',') 'Hardening default: SMB client signing is disabled by default up to 2022 and required from 2025'
+Assert-True (-not (Resolve-AdfaHardeningDefault -Setting $hardClient -Build 26099).Known) 'Hardening default: one build below Windows Server 2025 there is no documented default'
+
+# --- Verdict direction and boundaries.
+Assert-Equal 'Warning,Warning,Pass' ((@(0, 1, 2) | ForEach-Object { [string](Get-HardVerdict -Id 'LdapEnforceChannelBinding' -Number $_).Status }) -join ',') 'Hardening verdict: channel binding 0 and 1 warn, 2 passes'
+Assert-Equal 'Warning,Warning,Warning,Warning,Warning,Pass' ((@(0, 1, 2, 3, 4, 5) | ForEach-Object { [string](Get-HardVerdict -Id 'LmCompatibilityLevel' -Number $_).Status }) -join ',') 'Hardening verdict: LmCompatibilityLevel passes at 5 only (declared population: the six levels)'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'LmCompatibilityLevel' -Number 6).Status) 'Hardening verdict: a number Microsoft publishes no meaning for is Not Assessed, not graded'
+Assert-Equal 'Warning' ([string](Get-HardVerdict -Id 'LdapEnforceChannelBinding' -Build 17763).Status) 'Hardening verdict: channel binding not set on a 2019 DC is graded as the documented default, Never'
+Assert-True ([string](Get-HardVerdict -Id 'LdapEnforceChannelBinding' -Build 17763).Detail -match 'documented default' -and [string](Get-HardVerdict -Id 'LdapEnforceChannelBinding' -Build 17763).Detail -match 'not on a configured value') 'Hardening verdict: a row graded on a default says so'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'LdapEnforceChannelBinding' -Build 26100).Status) 'Hardening verdict: channel binding not set on a 2025 DC is Not Assessed, not a guess'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'LdapEnforceChannelBinding' -Build $null).Status) 'Hardening verdict: a value that is not set, on a DC whose build was not read, is Not Assessed'
+Assert-Equal 'Pass' ([string](Get-HardVerdict -Id 'SmbClientSigning' -Build 26100).Status) 'Hardening verdict: SMB client signing not set on a 2025 DC passes on the documented default'
+Assert-Equal 'Info,Info,Pass' ((@(17763, 26099, 26100) | ForEach-Object { [string](Get-HardVerdict -Id 'LdapServerEnforceIntegrity' -Number 1 -Build $_).Status }) -join ',') 'Hardening verdict: the enforcement policy is not applicable below build 26100 and graded from it'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'LdapServerEnforceIntegrity' -Number 1 -Build $null).Status) 'Hardening verdict: with the build not read, the enforcement row is Not Assessed, not Info'
+$hardDenied = @($hardIds | ForEach-Object { Get-HardVerdict -Id $_ -ReturnValue 5 -Build 26100 })
+Assert-Equal 6 (@($hardDenied | Where-Object { [string]$_.Status -eq 'Not Assessed' -and [string]$_.Detail -match '^Access denied' }).Count) 'Hardening verdict: a refused read is Not Assessed as access denied on every one of the six settings'
+$hardAbsentKey = @($hardIds | ForEach-Object { Get-HardVerdict -Id $_ -ReturnValue 2 -Build 26100 })
+Assert-Equal 6 (@($hardAbsentKey | Where-Object { [string]$_.Status -eq 'Not Assessed' -and [string]$_.Detail -match '^Not found' }).Count) 'Hardening verdict: an absent key is Not Assessed as not found, and is not confused with a refusal'
+
+# --- LDAP signing on Windows Server 2025: the enforcement value decides with it.
+$enfOn = @{ LdapServerEnforceIntegrity = (Get-HardState -Id 'LdapServerEnforceIntegrity' -Number 1) }
+$enfOff = @{ LdapServerEnforceIntegrity = (Get-HardState -Id 'LdapServerEnforceIntegrity' -Number 0) }
+$enfUnset = @{ LdapServerEnforceIntegrity = (Get-HardState -Id 'LdapServerEnforceIntegrity') }
+Assert-Equal 'Warning' ([string](Get-HardVerdict -Id 'LdapServerIntegrity' -Number 1 -Build 17763 -Related $enfOn).Status) 'LDAP signing: on a 2019 DC a value of 1 is a Warning whatever the enforcement value holds'
+Assert-Equal 'Pass' ([string](Get-HardVerdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related $enfOn).Status) 'LDAP signing: on a 2025 DC enforcement = 1 requires signing whatever this value holds'
+Assert-Equal 'Warning' ([string](Get-HardVerdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related $enfOff).Status) 'LDAP signing: on a 2025 DC with enforcement = 0 this value decides'
+Assert-Equal 'Pass' ([string](Get-HardVerdict -Id 'LdapServerIntegrity' -Build 26100 -Related $enfUnset).Status) 'LDAP signing: neither value set on a 2025 DC is the documented default, signing required'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related $enfUnset).Status) 'LDAP signing: a legacy value with no enforcement value on a 2025 DC is Not Assessed - Microsoft documents both outcomes'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100).Status) 'LDAP signing: with the enforcement value unread on a 2025 DC, a value below 2 is Not Assessed'
+Assert-Equal 'Pass' ([string](Get-HardVerdict -Id 'LdapServerIntegrity' -Number 2 -Build $null).Status) 'LDAP signing: 2 requires signing on every build, so it passes even with the build unread'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'LdapServerIntegrity' -Number 1 -Build $null).Status) 'LDAP signing: below 2 with the build unread is Not Assessed'
+
+# --- SMB server signing: the second instrument can veto, and stands in when the value is not set.
+function New-HardSecond { param($Value, [bool]$Read = $true) [pscustomobject]@{ Read = $Read; Value = $Value; Error = '' } }
+Assert-Equal 'Pass' ([string](Get-HardVerdict -Id 'SmbServerSigning' -Number 1 -Second (New-HardSecond $true)).Status) 'SMB server signing: registry 1 and the SMB server configuration True agree - Pass'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'SmbServerSigning' -Number 1 -Second (New-HardSecond $false)).Status) 'SMB server signing: registry 1 against the SMB server configuration False is Not Assessed, never Pass'
+Assert-Equal 'Pass,Warning' ((@($true, $false) | ForEach-Object { [string](Get-HardVerdict -Id 'SmbServerSigning' -Second (New-HardSecond $_)).Status }) -join ',') 'SMB server signing: not set in the registry, the row is graded on the measured SMB server configuration'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'SmbServerSigning' -Second (New-HardSecond $null $false)).Status) 'SMB server signing: not set and nothing else read is Not Assessed on any build'
+
+# --- One DC to rows.
+$hardRows = @(Get-AdfaDcHardeningFinding -DomainController 'dc1.contoso.com' -Scope 'contoso.com' -Config $hardCfg -Raw (New-HardRaw -Numbers @{ LdapServerIntegrity = 2; SmbServerSigning = 1; LmCompatibilityLevel = 3 } -Smb1 $true -SpoolerState 'Running' -SpoolerStartMode 'Auto'))
+Assert-Equal 8 (@($hardRows).Count) 'Hardening rows: one row per setting, then Print Spooler and SMBv1 (declared population: eight)'
+Assert-Equal 'Pass,Info,Warning,Pass,Warning,Warning,Warning,Fail' (@($hardRows | ForEach-Object { [string]$_.Status }) -join ',') 'Hardening rows: a mixed result is reported as mixed, in table order'
+Assert-Equal 8 (@($hardRows | Where-Object { [string]$_.Item -match ': dc1\.contoso\.com$' -and [string]$_.Scope -eq 'contoso.com' }).Count) 'Hardening rows: every row is named family first and carries its domain'
+Assert-Equal 6 (@($hardRows | Where-Object { [string]$_.NotRun -match 'not necessarily what a client and this DC negotiate on the wire' -and [string]$_.Detail -notmatch 'negotiate' }).Count) 'Hardening rows: the not-on-the-wire note is in NotRun on the six setting rows, never in the text the advice is chosen from'
+$hardEmpty = @(Get-AdfaDcHardeningFinding -DomainController 'dc1.contoso.com' -Scope '' -Config $hardCfg -Raw (New-HardRaw -Build '' -SmbSigning $null))
+Assert-Equal 0 (@($hardEmpty | Where-Object { [string]$_.Status -eq 'Pass' -and [string]$_.Item -notmatch '^(Print Spooler|SMBv1)' }).Count) 'Hardening rows: with no value set and the build unread, no setting passes'
+Assert-Equal 6 (@($hardEmpty | Where-Object { [string]$_.Status -eq 'Not Assessed' }).Count) 'Hardening rows: with no value set and the build unread, all six settings are Not Assessed'
+# What is not Microsoft's is said in the row that relies on it: the inferred registry path of
+# LDAPServerIntegrity, and the status a value below the expectation is given.
+Assert-Equal 1 (@($hardRows | Where-Object { [string]$_.Detail -match 'registry path of this value is inferred, not published by Microsoft for AD DS' }).Count) 'Hardening rows: one row says its registry path is inferred'
+Assert-True ([string]$hardRows[0].Item -eq 'LDAP server signing: dc1.contoso.com' -and [string]$hardRows[0].Status -eq 'Pass' -and [string]$hardRows[0].Detail -match 'path of this value is inferred') 'Hardening rows: it is the LDAP server signing row, and it says so even when it passes'
+Assert-Equal 'LDAP channel binding|SMB client signing|LAN Manager authentication level' ((@($hardRows | Where-Object { [string]$_.Detail -match 'below the expectation \(Warning\) is a tool default or your own override, not a Microsoft value' } | ForEach-Object { [string]$_.Item -replace ': .*$', '' }) -join '|')) 'Hardening rows: each setting graded below its expectation says the status is a tool default, not a Microsoft value (declared population: three)'
+Assert-Equal 0 (@($hardEmpty | Where-Object { [string]$_.Detail -match 'tool default' }).Count) 'Hardening rows: a row that is not graded below the expectation does not carry that sentence'
+$hardLm = Get-HardSetting -Id 'LmCompatibilityLevel'
+Assert-Equal '3,3' ((@(7600, 7601) | ForEach-Object { [string](Resolve-AdfaHardeningDefault -Setting $hardLm -Build $_).Value }) -join ',') 'Hardening default: the LAN Manager default of 3 applies to both Windows Server 2008 R2 builds'
+Assert-Equal 'True,False,False' ((@(7101, 7100, 6002) | ForEach-Object { [string](Resolve-AdfaHardeningDefault -Setting $hardLm -Build $_).Known }) -join ',') 'Hardening default: it applies from every build above 7100, as Microsoft publishes Windows Server 2008 R2, and not below (off by one)'
+
+# --- Population: every scoped domain is accounted for.
+$hardPop = @(Get-AdfaDcHardening -DomainControllers @() -Config $hardCfg -ScopedDomains $scopedDomains `
+        -InventoryFailures @([pscustomobject]@{ Domain = 'north.contoso.com'; Error = 'The server is not operational' }))
+Assert-Equal 4 (@($hardPop).Count) 'Hardening population: with no DC, each of the three scoped domains has a row, plus the section row'
+Assert-Equal 0 (@($hardPop | Where-Object { [string]$_.Status -ne 'Not Assessed' }).Count) 'Hardening population: with no DC read, nothing is anything but Not Assessed'
+foreach ($d in $scopedDomains) {
+    Assert-Equal 1 (@($hardPop | Where-Object { [string]$_.Item -eq ("DC hardening - {0}" -f $d) -and [string]$_.Scope -eq $d }).Count) ("Hardening population: scoped domain '{0}' has its own row" -f $d)
+}
+
+# --- Advice: each family's own entry answers, whatever words the row or a file path contains.
+$hardAdvice = [ordered]@{
+    'LDAP server signing'              = '2887 and 2889'
+    'LDAP server signing enforcement'  = 'LDAP server signing requirements enforcement'
+    'LDAP channel binding'             = 'channel binding token requirements'
+    'SMB server signing'               = 'Set-SmbServerConfiguration -RequireSecuritySignature'
+    'SMB client signing'               = 'Set-SmbClientConfiguration -RequireSecuritySignature'
+    'LAN Manager authentication level' = 'Refuse LM & NTLM'
+    'Print Spooler'                    = 'print pruning'
+    'SMBv1'                            = 'EnableSMB1Protocol \$false'
+}
+foreach ($family in @($hardAdvice.Keys)) {
+    $rec = Get-AdfaRecommendation -Section 'DC Hardening' -Item ("{0}: dc1-backup.contoso.com" -f $family) -Detail 'Expectation source: C:\Backup\replication\sysvol-dfsr.json ldap signing smbv1 spooler'
+    Assert-True ($rec -match $hardAdvice[$family] -and $rec -notmatch 'repadmin|wbadmin|dfsrmig') ("Hardening advice: '{0}' gets its own Microsoft-supported advice, not an unrelated one" -f $family)
+}
+Assert-Equal '' (Get-AdfaRecommendation -Section 'DC Hardening' -Item 'DC hardening: dc1.contoso.com' -Detail 'replication backup sysvol ldap signing') 'Hardening advice: a row of the section with no advice of its own gets none'
+
+# --- The DcHardening validator.
+$hardMerged = Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -OverrideSource 'C:\cfg\hard.json' -Override @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 3; OtherStatus = 'Fail' } } }
+Assert-Equal 'Fail,Pass,Pass' ((@(2, 3, 5) | ForEach-Object { [string](Get-HardVerdict -Id 'LmCompatibilityLevel' -Number $_ -Config $hardMerged).Status }) -join ',') 'Hardening override: the expectation and the status below it come from the file (off by one below the minimum fails)'
+Assert-True ([string](Get-HardSetting -Id 'LmCompatibilityLevel' -Config $hardMerged)['ExpectedSource'] -match 'C:\\cfg\\hard\.json') 'Hardening override: the file is cited for the setting it changed'
+Assert-Equal 5 ([int](Get-HardSetting -Id 'LmCompatibilityLevel')['ExpectedMinimum']) 'Hardening override: the built-in table is not modified by a merge'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override 'abc' } 'single object' 'Hardening override: a string is refused'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override ('{}' | ConvertFrom-Json) } 'empty object' 'Hardening override: an empty object is refused'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ Typo = 1 } } "unknown key 'Typo'" 'Hardening override: an unknown key is refused'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override ('{ "Settings": null }' | ConvertFrom-Json) } 'null' 'Hardening override: a null is refused'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override ('{ "Settings": [] }' | ConvertFrom-Json) } 'object keyed by setting id' 'Hardening override: an empty list of settings is refused'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ Settings = @{ Nope = @{ OtherStatus = 'Fail' } } } } "unknown setting 'Nope'" 'Hardening override: an unknown setting is refused'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ Settings = @{ LmCompatibilityLevel = @{ Key = 'x' } } } } "unknown key 'Key'" 'Hardening override: the registry value a setting reads cannot be redirected from a file'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 2 } } } } 'one of 3, 4, 5' 'Hardening override: an expectation Microsoft documents no support for is refused'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = '3' } } } } 'JSON number' 'Hardening override: a number written as a string is refused'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ Settings = @{ SmbServerSigning = @{ OtherStatus = 'Pass' } } } } 'Warning or Fail' 'Hardening override: a weak value can never be configured to read as a pass'
+# The two ports cannot be set from a file: the section's CIM session does not use them, so a port
+# set there would change the probe and not the connection. Refused whatever the value.
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ WsmanPort = 5986 } } "names 'WsmanPort'. The ports of this section cannot be set from a file" 'Hardening override: WsmanPort is refused - the CIM session always uses the default WinRM port'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ RpcPort = 1135 } } "names 'RpcPort'. The ports of this section cannot be set from a file" 'Hardening override: RpcPort is refused - DCOM always goes through the RPC endpoint mapper'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ WsmanPort = 5985 } } 'cannot be set from a file' 'Hardening override: the port key is refused even with the built-in value'
+Assert-Equal '5985,135' ((@('WsmanPort', 'RpcPort') | ForEach-Object { [string](Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ Settings = @{ SmbServerSigning = @{ OtherStatus = 'Fail' } } })[$_] }) -join ',') 'Hardening override: a merge leaves the two built-in ports as they are'
+# Found by the review of the diff: the choices a file may set an expectation to, exactly.
+Assert-Equal '2|1|1,2|1|1|3,4,5' ((@($hardCfg['Settings'] | ForEach-Object { (@($_['ExpectedChoices']) -join ',') }) -join '|')) 'Hardening config: the expectations a file may choose, per setting (declared population: six) - none of them a value that means off or never'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ Settings = @{ LdapEnforceChannelBinding = @{ ExpectedMinimum = 0 } } } } 'It must be one of 1, 2' 'Hardening override: channel binding Never (0) can never be made the expectation'
+# Found by mutation: the last build before Windows Server 2025, a second instrument that is
+# marked as not read, and a build that is not a build.
+Assert-Equal 'Warning,Pass' ((@(26099, 26100) | ForEach-Object { [string](Get-HardVerdict -Id 'LdapServerIntegrity' -Number 1 -Build $_ -Related $enfOn).Status }) -join ',') 'LDAP signing: the enforcement value decides from build 26100, not one build earlier (off by one)'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'SmbServerSigning' -Second (New-HardSecond $true $false)).Status) 'SMB server signing: a second instrument marked as not read is not used, whatever value it carries'
+Assert-Equal 'Warning' ([string](Get-HardVerdict -Id 'SmbServerSigning' -Number 0 -Second (New-HardSecond $true $false)).Status) 'SMB server signing: with the second instrument not read, a value that is set is graded on the registry alone'
+$hardZero = @(Get-AdfaDcHardeningFinding -DomainController 'dc1.contoso.com' -Scope '' -Config $hardCfg -Raw (New-HardRaw -Build '0' -SmbSigning $null))
+Assert-Equal 6 (@($hardZero | Where-Object { [string]$_.Status -eq 'Not Assessed' }).Count) 'Hardening rows: a build of 0 is not a build - no default is applied and all six settings are Not Assessed'
+# --- Found by the independent review of the diff before commit.
+# 1. A signing value with no published meaning beside an unset enforcement value: the enforcement
+#    row does not take "3 is at least 2" for "signing is required".
+$sigOdd = @(3, [int64]4294967295) | ForEach-Object { Get-HardVerdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -Related @{ LdapServerIntegrity = (Get-HardState -Id 'LdapServerIntegrity' -Number $_) } }
+Assert-Equal 2 (@($sigOdd | Where-Object { [string]$_.Status -eq 'Not Assessed' -and [string]$_.Detail -match 'a number Microsoft publishes no meaning for \(documented values: 0, 1, 2; see that row\)' -and [string]$_.Detail -notmatch 'requires signing whichever' }).Count) 'LDAP enforcement: beside a signing value with no published meaning (3, 4294967295) the default is not applied and the row is Not Assessed, never Pass'
+Assert-Equal 'Pass' ([string](Get-HardVerdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -Related @{ LdapServerIntegrity = (Get-HardState -Id 'LdapServerIntegrity' -Number 2) }).Status) 'LDAP enforcement: non-vacuity - beside the documented value 2 the default still applies and passes'
+Assert-Equal 'Not Assessed' ([string](Get-HardVerdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -NoRelatedSettings -Related @{ LdapServerIntegrity = (Get-HardState -Id 'LdapServerIntegrity' -Number 2) }).Status) 'LDAP enforcement: with the signing setting''s published meanings not supplied, no number is taken as documented (fail closed)'
+# 2. Build not read: the cause of the failed read stays in the enforcement row.
+$enfNoBuild = Get-HardVerdict -Id 'LdapServerEnforceIntegrity' -ReturnValue 5 -Build $null
+Assert-True ([string]$enfNoBuild.Status -eq 'Not Assessed' -and [string]$enfNoBuild.Detail -match '^Access denied: StdRegProv returned 5' -and [string]$enfNoBuild.Detail -match 'also depends on the OS build, which was not read') 'LDAP enforcement: with the build unread, a refused read is still reported as access denied, and the build as a second cause'
+Assert-True ([string](Get-HardVerdict -Id 'LdapServerEnforceIntegrity' -ReturnValue 2 -Build $null).Detail -match '^Not found: StdRegProv returned 2') 'LDAP enforcement: with the build unread, an absent key is still reported as not found'
+Assert-True ([string](Get-HardVerdict -Id 'LdapServerEnforceIntegrity' -ReturnValue 5 -Build 17763).Status -eq 'Info' -and [string](Get-HardVerdict -Id 'LdapServerEnforceIntegrity' -ReturnValue 5 -Build 17763).Detail -match 'The value itself was not read on this DC - Access denied') 'LDAP enforcement: below Windows Server 2025 the row is still Info, and still says the read was refused'
+# 3. An enforcement value that was read and is neither 0 nor 1: the signing row says it was read.
+$enfTwo = @{ LdapServerEnforceIntegrity = (Get-HardState -Id 'LdapServerEnforceIntegrity' -Number 2) }
+$sigBesideTwo = @(@($null, 0, 1) | ForEach-Object { Get-HardVerdict -Id 'LdapServerIntegrity' -Number $_ -Build 26100 -Related $enfTwo })
+Assert-Equal 3 (@($sigBesideTwo | Where-Object { [string]$_.Status -eq 'Not Assessed' -and [string]$_.Detail -match 'LDAPServerEnforceIntegrity, which holds 2 on this DC' -and [string]$_.Detail -notmatch 'was not read' }).Count) 'LDAP signing: beside an enforcement value that was read as 2, the row is Not Assessed and says the value was read (declared population: signing not set, 0 and 1)'
+# 4. A build below the LAN Manager default's lower bound is not told it is "20348 and below".
+$lmLow = [string](Resolve-AdfaHardeningDefault -Setting (Get-HardSetting -Id 'LmCompatibilityLevel') -Build 6003).Reason
+Assert-True ($lmLow -match 'no default for OS build 6003' -and $lmLow -match 'builds 7101 to 20348, and for build 26100 and later only' -and $lmLow -notmatch '20348 and below') 'Hardening default: a build below the LAN Manager lower bound is given that setting''s own ranges, not a sentence that contradicts itself'
+# 5. The SMB class returned no instance - the shape measured on a real host.
+$hardNoInst = @(Get-AdfaDcHardeningFinding -DomainController 'dc1.contoso.com' -Scope 'contoso.com' -Config $hardCfg -Raw (New-HardRaw -Numbers @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 2; SmbServerSigning = 1; SmbClientSigning = 1; LmCompatibilityLevel = 5 } -SmbNoInstance))
+$hardNoInstSmb1 = @($hardNoInst | Where-Object { [string]$_.Item -eq 'SMBv1: dc1.contoso.com' })[0]
+Assert-True ([string]$hardNoInstSmb1.Status -eq 'Not Assessed' -and [string]$hardNoInstSmb1.Detail -match '^Not read: MSFT_SmbServerConfiguration returned no instance to an instance query' -and [string]$hardNoInstSmb1.Detail -match 'this tool does not invoke') 'Hardening rows: an SMB class that returned no instance leaves SMBv1 Not Assessed, never Pass, and the row says why'
+$hardNoInstSrv = @($hardNoInst | Where-Object { [string]$_.Item -eq 'SMB server signing: dc1.contoso.com' })[0]
+Assert-True ([string]$hardNoInstSrv.Status -eq 'Pass' -and [string]$hardNoInstSrv.Detail -match 'was not read \(MSFT_SmbServerConfiguration returned no instance' -and [string]$hardNoInstSrv.Detail -notmatch 'agrees') 'Hardening rows: SMB server signing is then graded on the registry alone and claims no second instrument'
+$hardNoInstUnset = @(Get-AdfaDcHardeningFinding -DomainController 'dc1.contoso.com' -Scope '' -Config $hardCfg -Raw (New-HardRaw -SmbNoInstance))
+Assert-Equal 'Not Assessed,Not Assessed' ((@('SMB server signing', 'SMBv1') | ForEach-Object { $f = $_; [string]@($hardNoInstUnset | Where-Object { [string]$_.Item -eq ("{0}: dc1.contoso.com" -f $f) })[0].Status }) -join ',') 'Hardening rows: with the registry value not set and no instance, SMB server signing and SMBv1 are both Not Assessed'
+# 7. Advice and finding name one target when a file moved the expectation.
+$hardMoved = Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -OverrideSource 'C:\cfg\hard.json' -Override @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 3 }; LdapEnforceChannelBinding = @{ ExpectedMinimum = 1 } } }
+$hardMovedRows = @(Get-AdfaDcHardeningFinding -DomainController 'dc1.contoso.com' -Scope '' -Config $hardMoved -Raw (New-HardRaw -Build '20348' -Numbers @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 0; SmbServerSigning = 1; SmbClientSigning = 1; LmCompatibilityLevel = 0 }) |
+        ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'DC Hardening' -Row $_ -StatusColumn 'Status' })
+$hardMovedTwo = @($hardMovedRows | Where-Object { [string]$_.Item -match '^(LDAP channel binding|LAN Manager authentication level): ' })
+Assert-Equal 2 (@($hardMovedTwo | Where-Object { [string]$_.Status -eq 'Warning' -and [string]$_.Recommendation -match 'to at least the expected minimum this finding names' -and [string]$_.Recommendation -notmatch '^Set the Group Policy setting' }).Count) 'Hardening advice: for the two settings a file can move, the advice points at the minimum the finding names and sets no fixed value of its own'
+Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^LAN Manager' })[0].Detail -match 'Below the expected minimum of 3 ' -and [string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^LDAP channel' })[0].Detail -match 'Below the expected minimum of 1 ') 'Hardening advice: non-vacuity - both findings do name the moved expectation'
+# 13. A default that is not known cites its page in the row.
+Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
+$hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
+Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
+Assert-Equal 'DcDisk,DcHardening' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the two sections the file can carry'
+
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
