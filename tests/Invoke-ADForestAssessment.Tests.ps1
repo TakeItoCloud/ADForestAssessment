@@ -3533,9 +3533,10 @@ Describe 'DC disk space, and the generic config override (C2)' {
     Context 'Read-only guard' {
         It 'invokes no CIM method except a literal StdRegProv Get* read' {
             $calls = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Invoke-CimMethod' })
-            # Declared population: one GetStringValue call and one GetExpandedStringValue call.
-            $calls.Count | Should -Be 2
-            $allowed = @('GetStringValue', 'GetExpandedStringValue')
+            # Declared population: one GetStringValue call and one GetExpandedStringValue call
+            # (DcDisk, C2), and one GetDWORDValue call (DcHardening, C3).
+            $calls.Count | Should -Be 3
+            $allowed = @('GetStringValue', 'GetExpandedStringValue', 'GetDWORDValue')
             $seen = @()
             foreach ($call in $calls) {
                 $line = $call.Extent.StartLineNumber
@@ -3550,11 +3551,12 @@ Describe 'DC disk space, and the generic config override (C2)' {
                 $ns | Should -BeOfType ([System.Management.Automation.Language.StringConstantExpressionAst])
                 $ns.Value | Should -Be 'root/cimv2'
             }
-            (@($seen | Sort-Object) -join ',') | Should -Be 'GetExpandedStringValue,GetStringValue'
+            (@($seen | Sort-Object) -join ',') | Should -Be 'GetDWORDValue,GetExpandedStringValue,GetStringValue'
         }
         It 'forces -WhatIf and -Confirm off on those reads, so neither preference can silently skip one or stop to ask' {
             $calls = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Invoke-CimMethod' })
-            $calls.Count | Should -Be 2
+            # Declared population: the two string reads (C2) and the DWORD read (C3).
+            $calls.Count | Should -Be 3
             foreach ($call in $calls) {
                 foreach ($switch in @('WhatIf', 'Confirm')) {
                     $w = @($call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $switch })
@@ -3566,9 +3568,10 @@ Describe 'DC disk space, and the generic config override (C2)' {
         }
         It 'forces -WhatIf and -Confirm off where a CIM session is closed, so a preference cannot leave sessions open' {
             $closes = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Remove-CimSession' })
-            # Declared population: the DcSystem seam and the DcDisk seam, the two places a CIM session is opened.
-            $closes.Count | Should -Be 2
-            @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'New-CimSession' }).Count | Should -Be 2
+            # Declared population: the DcSystem seam, the DcDisk seam and the DcHardening seam (C3),
+            # the three places a CIM session is opened.
+            $closes.Count | Should -Be 3
+            @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'New-CimSession' }).Count | Should -Be 3
             foreach ($call in $closes) {
                 foreach ($switch in @('WhatIf', 'Confirm')) {
                     $w = @($call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $switch })
@@ -3598,9 +3601,10 @@ Describe 'DC disk space, and the generic config override (C2)' {
             foreach ($banned in @('Set-CimInstance', 'New-CimInstance', 'Remove-CimInstance', 'Invoke-WmiMethod', 'Set-WmiInstance', 'Remove-WmiObject')) {
                 $names | Should -Not -Contain $banned
             }
-            # Non-vacuity, declared population: the four instance reads this script makes -
-            # MSFT_SmbServerConfiguration, Win32_OperatingSystem, Win32_QuickFixEngineering, Win32_Volume.
-            @($names | Where-Object { $_ -eq 'Get-CimInstance' }).Count | Should -Be 4
+            # Non-vacuity, declared population: the six instance reads this script makes -
+            # Win32_OperatingSystem and Win32_QuickFixEngineering (DcSystem), Win32_Volume (DcDisk),
+            # and Win32_OperatingSystem, MSFT_SmbServerConfiguration and Win32_Service (DcHardening, C3).
+            @($names | Where-Object { $_ -eq 'Get-CimInstance' }).Count | Should -Be 6
         }
         It 'reads Win32_Volume as instances only, naming the properties it wants' {
             $vol = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Get-CimInstance' -and $_.Extent.Text -match 'Win32_Volume' })
@@ -5067,6 +5071,2182 @@ Describe 'DC disk space, and the generic config override (C2)' {
             Get-AdfaJsonTopLevelKind -Text '   ' | Should -Be 'Empty'
             Get-AdfaJsonTopLevelKind -Text '' | Should -Be 'Empty'
             Get-AdfaJsonTopLevelKind -Text ([string][char]0xFEFF) | Should -Be 'Empty'
+        }
+    }
+}
+
+Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manager level (C3)' {
+    BeforeAll {
+        $script:Hc = $script:Config.DcHardening
+        # Held in variables: PSAvoidUsingComputerNameHardcoded flags a literal -ComputerName.
+        $script:C3Dc1 = 'dc1.contoso.com'
+        $script:C3Dc2 = 'dc2.contoso.com'
+        $script:C3Dc3 = 'dc3.fabrikam.com'
+        $script:C3NtdsKey = 'SYSTEM\CurrentControlSet\Services\NTDS\Parameters'
+        $script:C3ServerKey = 'SYSTEM\CurrentControlSet\Services\LanManServer\Parameters'
+        $script:C3ClientKey = 'SYSTEM\CurrentControlSet\Services\LanManWorkstation\Parameters'
+        $script:C3LsaKey = 'SYSTEM\CurrentControlSet\Control\Lsa'
+        # Declared population of the section: the six registry settings, in table order, and the
+        # two rows the section already had.
+        $script:C3Ids = @('LdapServerIntegrity', 'LdapServerEnforceIntegrity', 'LdapEnforceChannelBinding', 'SmbServerSigning', 'SmbClientSigning', 'LmCompatibilityLevel')
+        $script:C3Items = @('LDAP server signing', 'LDAP server signing enforcement', 'LDAP channel binding', 'SMB server signing', 'SMB client signing', 'LAN Manager authentication level')
+        $script:C3Families = @($script:C3Items + @('Print Spooler', 'SMBv1'))
+        $script:C3WireNote = 'not necessarily what a client and this DC negotiate'
+
+        function Get-C3Row {
+            param($Rows, [string]$Item)
+            $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
+        function Get-C3Setting {
+            param([string]$Id, $Config = $script:Hc)
+            return @($Config['Settings'] | Where-Object { [string]$_['Id'] -eq $Id })[0]
+        }
+        # One registry read result, in the shape Get-AdfaDcHardeningRaw returns it. A value that
+        # is not set is what the provider was measured to answer: ReturnValue 1 and NO number.
+        function New-C3Value {
+            param([string]$Id, $Number = $null, $ReturnValue = 0, [string]$Err = '', [string]$Code = '')
+            $s = Get-C3Setting -Id $Id
+            $answered = ($Err -eq '')
+            if ($answered -and $null -eq $Number -and $null -ne $ReturnValue -and [int64]$ReturnValue -eq 0) { $ReturnValue = 1 }
+            if (-not $answered) { $ReturnValue = $null; $Number = $null }
+            [pscustomobject]@{ Id = $Id; Key = [string]$s['Key']; ValueName = [string]$s['ValueName']; Answered = $answered
+                ReturnValue = $ReturnValue; Value = $Number; Method = 'GetDWORDValue'; Error = $Err; ErrorCode = $Code }
+        }
+        # A whole per-DC read, in the seam's shape. -Numbers maps a setting id to its number; an
+        # id that is not named is a value that is not set. -Entries replaces single entries.
+        # THE SMB PART HAS TWO SHAPES. The default here (SmbOk, with both properties) is an
+        # instance returned to the instance query: a shape NOT MEASURED on any host, kept because
+        # the code must grade it correctly if a DC does return one. -SmbNoInstance is the shape
+        # that WAS measured (2026-11-15, one Windows 11 workstation, not a DC, not elevated): the
+        # query returns no instance and no error, so nothing was read.
+        function New-C3Raw {
+            param([hashtable]$Numbers = @{}, [hashtable]$Entries = @{}, [string]$Build = '17763', [string]$BuildError = '', [string]$Protocol = 'Wsman',
+                $Smb1 = $false, $SmbSigning = $true, [bool]$SmbOk = $true, [string]$SmbError = '', [string]$SmbErrorCode = '', [switch]$SmbNoInstance,
+                [bool]$SpoolerOk = $true, [bool]$SpoolerFound = $true, [string]$SpoolerState = 'Stopped', [string]$SpoolerStartMode = 'Disabled',
+                [string]$SpoolerError = '', [string]$SpoolerErrorCode = '')
+            $values = @()
+            foreach ($id in $script:C3Ids) {
+                if ($Entries.ContainsKey($id)) { $values += $Entries[$id]; continue }
+                $n = $null
+                if ($Numbers.ContainsKey($id)) { $n = $Numbers[$id] }
+                $values += New-C3Value -Id $id -Number $n
+            }
+            if ($SmbNoInstance) { $SmbOk = $false; $Smb1 = $null; $SmbSigning = $null; $SmbError = ''; $SmbErrorCode = '' }
+            [pscustomobject]@{ Ok = $true; Protocol = $Protocol; Error = ''; ErrorCode = ''
+                BuildNumber = $Build; BuildError = $BuildError; BuildErrorCode = ''; Values = @($values)
+                SmbOk = $SmbOk; SmbNoInstance = [bool]$SmbNoInstance; SmbEnableSmb1 = $Smb1; SmbRequireSigning = $SmbSigning; SmbError = $SmbError; SmbErrorCode = $SmbErrorCode
+                SpoolerOk = $SpoolerOk; SpoolerFound = $SpoolerFound; SpoolerState = $SpoolerState; SpoolerStartMode = $SpoolerStartMode
+                SpoolerError = $SpoolerError; SpoolerErrorCode = $SpoolerErrorCode }
+        }
+        function Get-C3FailedRaw {
+            param([string]$Protocol, [string]$Message, [string]$Code = '')
+            $r = New-C3Raw -Protocol $Protocol
+            $r.Ok = $false; $r.Error = $Message; $r.ErrorCode = $Code; $r.Values = @(); $r.BuildNumber = ''
+            $r.SmbOk = $false; $r.SpoolerOk = $false
+            return $r
+        }
+        # A hardened Windows Server 2019 DC: every value present and at its expected value.
+        function New-C3GoodNumbers { @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 2; SmbServerSigning = 1; SmbClientSigning = 1; LmCompatibilityLevel = 5 } }
+        # The state of one read, as the pure layer sees it.
+        function Get-C3State {
+            param([string]$Id, $Number = $null, $ReturnValue = 0, [string]$Err = '', [string]$Code = '')
+            Resolve-AdfaHardeningRead -Entry (New-C3Value -Id $Id -Number $Number -ReturnValue $ReturnValue -Err $Err -Code $Code)
+        }
+        # The config rows by setting id, as Get-AdfaDcHardeningFinding hands them to the verdict.
+        function Get-C3SettingsById {
+            param($Config = $script:Hc)
+            $byId = @{}
+            foreach ($s in @($Config['Settings'])) { $byId[[string]$s['Id']] = $s }
+            return $byId
+        }
+        function Get-C3Verdict {
+            param([string]$Id, $Number = $null, $Build = 17763, [hashtable]$Related = @{}, $Second = $null, $Config = $script:Hc, $ReturnValue = 0, [string]$Err = '', [string]$Code = '',
+                [switch]$NoRelatedSettings)
+            $state = Get-C3State -Id $Id -Number $Number -ReturnValue $ReturnValue -Err $Err -Code $Code
+            $byId = @{}
+            if (-not $NoRelatedSettings) { $byId = Get-C3SettingsById -Config $Config }
+            Get-AdfaHardeningVerdict -Setting (Get-C3Setting -Id $Id -Config $Config) -State $state -Build $Build -Related $Related -SecondInstrument $Second -RelatedSettings $byId
+        }
+        function New-C3Second {
+            param($Value, [bool]$Read = $true, [string]$Err = '')
+            [pscustomobject]@{ Read = $Read; Value = $Value; Error = $Err }
+        }
+        $script:C3Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C3Main = @($script:C3Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        $script:C3Commands = @($script:C3Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+        function Get-C3Function {
+            param([string]$Name)
+            return @($script:C3Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true))
+        }
+        function Get-C3Parameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C3Guard {
+            param($Node)
+            $g = $Node.Parent
+            while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+            return $g.Clauses[0].Item1.Extent.Text
+        }
+        function Get-C3Branch {
+            $branches = @($script:C3Main[0].FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $n.Clauses[0].Item1.Extent.Text -match "^Test-SectionSelected 'DcHardening' \`$Sections$" }, $true))
+            return $branches
+        }
+    }
+
+    Context 'Section wiring' {
+        It 'is still a value of the -Sections ValidateSet and part of the default All run' {
+            $param = @($script:C3Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $param.Count | Should -Be 1
+            $set = @($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+            $values = @($set[0].PositionalArguments | ForEach-Object { $_.Value })
+            $values | Should -Contain 'DcHardening'
+            $values | Should -Contain 'DcDisk'   # non-vacuity: the list really was read
+            # One section for the subject, not two.
+            @($values | Where-Object { $_ -match '(?i)harden|ldap|smb|ntlm' }).Count | Should -Be 1
+            Test-SectionSelected 'DcHardening' @('All') | Should -BeTrue
+            Test-SectionSelected 'DcHardening' @('DcDisk') | Should -BeFalse
+        }
+        It 'has one branch in Invoke-Main that calls the collector with the config, the failures, the enumeration error and the scoped domains' {
+            $script:C3Main.Count | Should -Be 1
+            $branches = @(Get-C3Branch)
+            # Declared population: the one branch for this section.
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $calls = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcHardening' }, $true))
+            $calls.Count | Should -Be 1
+            $expected = [ordered]@{
+                DomainControllers   = '$dcHardeningTargets'
+                Config              = '$dcHardeningConfig'
+                Credential          = '$Credential'
+                PortTimeoutMs       = '$script:Config.RpcPortTimeoutMs'
+                OperationTimeoutSec = '$script:Config.ExternalToolTimeoutSec'
+                InventoryFailures   = '$dcHardeningFailures'
+                EnumerationError    = '$script:DcEnumerationError'
+                ScopedDomains       = '$targetDomains'
+            }
+            # Declared population: the eight parameters the collector is called with.
+            @($expected.Keys).Count | Should -Be 8
+            foreach ($p in @($expected.Keys)) {
+                $given = Get-C3Parameter -Call $calls[0] -Name $p
+                $given | Should -Not -BeNullOrEmpty -Because "the collector must be given -$p"
+                $given.Extent.Text | Should -Be $expected[$p] -Because "-$p must carry that value"
+            }
+            $assign = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['DC Hardening']" }, $true))
+            $assign.Count | Should -Be 1
+            # The override reaches the collector: the built-in table, then the file's.
+            $configAssigns = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcHardeningConfig' }, $true))
+            $configAssigns.Count | Should -Be 2
+            $configAssigns[0].Right.Extent.Text | Should -Be '$script:Config.DcHardening'
+            $configAssigns[1].Right.Extent.Text | Should -Be "`$configOverrides['DcHardening']"
+            Get-C3Guard $configAssigns[1] | Should -Be "`$configOverrides.ContainsKey('DcHardening')"
+        }
+        It 'takes its targets per scoped domain: the DC inventory, then its own enumeration, and the unscoped fallback only last (PORT-PLAN C2e)' {
+            $branches = @(Get-C3Branch)
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $targets = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcHardeningTargets' }, $true))
+            # Declared population: the inventory, the section's own enumeration, the fallback - in that order.
+            $targets.Count | Should -Be 3
+            $targets[0].Right.Extent.Text | Should -Be '@($allDcInventory)'
+            $targets[1].Right.Extent.Text | Should -Be '@($dcHardeningEnumeration.Targets)'
+            Get-C3Guard $targets[1] | Should -Be '-not $dcInventoryCollected'
+            $targets[2].Right.Extent.Text | Should -Be '@($dcNames)'
+            Get-C3Guard $targets[2] | Should -Be '$dcHardeningTargets.Count -eq 0'
+            $failures = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcHardeningFailures' }, $true))
+            $failures.Count | Should -Be 2
+            $failures[0].Right.Extent.Text | Should -Be '@($dcInventoryFailures)'
+            $failures[1].Right.Extent.Text | Should -Be '@($dcHardeningEnumeration.Failures)'
+            Get-C3Guard $failures[1] | Should -Be '-not $dcInventoryCollected'
+            $own = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcTargetsByDomain' }, $true))
+            $own.Count | Should -Be 1
+            (Get-C3Parameter -Call $own[0] -Name 'Domains').Extent.Text | Should -Be '$targetDomains'
+            (Get-C3Parameter -Call $own[0] -Name 'AdParams').Extent.Text | Should -Be '$adParams'
+            Get-C3Guard $own[0] | Should -Be '-not $dcInventoryCollected'
+            # The old call shape, which handed the section the unscoped host names, is gone.
+            @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcHardening' -and $n.Extent.Text -match '-DomainControllers \$dcNames' }, $true)).Count | Should -Be 0
+        }
+        It 'is registered for -ConfigOverridePath with its own validator' {
+            # Declared population: the two sections the file can carry.
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening'
+            $entry = $script:ConfigOverrideSections['DcHardening']
+            [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
+            [string]$entry['Section'] | Should -Be 'DcHardening'
+            [string]$entry['Merge'] | Should -Be 'Merge-AdfaDcHardeningConfig'
+            Get-Command -Name 'Merge-AdfaDcHardeningConfig' -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+            $script:Config.ContainsKey('DcHardening') | Should -BeTrue
+        }
+        It 'reads each DC through the shared transport loop and the shared probe cache, and by no other route' {
+            $collector = @(Get-C3Function -Name 'Get-AdfaDcHardening')
+            $collector.Count | Should -Be 1
+            $inside = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            @($inside | Where-Object { $_ -eq 'Invoke-AdfaDcRemoteRead' }).Count | Should -Be 1
+            # Declared population: the WinRM port and the RPC port, each probed through the cache.
+            @($inside | Where-Object { $_ -eq 'Test-AdfaDcPort' }).Count | Should -Be 2
+            foreach ($banned in @('Test-TcpPort', 'Get-Service', 'Get-CimInstance', 'Invoke-CimMethod', 'New-CimSession')) {
+                $inside | Should -Not -Contain $banned -Because "the collector must not call $banned itself"
+            }
+            # No .NET remote registry in any function of the section.
+            $section = @($script:C3Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -match '^(Get|Resolve|New|Merge)-Adfa(Dc)?Hardening|^Get-AdfaStdRegDwordValue$|^Get-AdfaSpoolerVerdict$' }, $true))
+            # Non-vacuity: the functions really were found.
+            $section.Count | Should -BeGreaterThan 7
+            foreach ($f in $section) {
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member.Extent.Text -match 'OpenRemoteBaseKey|OpenSubKey' }, $true)).Count | Should -Be 0 -Because "$($f.Name) must not use the .NET remote registry"
+            }
+            # The shared loop opens no session and probes nothing itself: it calls the seam it is given,
+            # and only one of the two seams it knows.
+            $loop = @(Get-C3Function -Name 'Invoke-AdfaDcRemoteRead')
+            $loop.Count | Should -Be 1
+            $inLoop = @($loop[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            foreach ($banned in @('Test-TcpPort', 'New-CimSession', 'Invoke-CimMethod', 'Get-CimInstance')) { $inLoop | Should -Not -Contain $banned }
+            $readParam = @($loop[0].Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'ReadCommand' })
+            $readParam.Count | Should -Be 1
+            $allowed = @($readParam[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+            $allowed.Count | Should -Be 1
+            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw'
+            { Invoke-AdfaDcRemoteRead -ComputerName $script:C3Dc1 -Protocols @('Wsman') -ReadCommand 'Remove-Item' } | Should -Throw
+            # And DcDisk goes through the same loop: the helper was generalised, not copied.
+            $disk = @(Get-C3Function -Name 'Get-AdfaDcDiskSpace')
+            @($disk[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-AdfaDcRemoteRead' }, $true)).Count | Should -Be 1
+        }
+        It 'documents the section, the override key and the third registry method in the help' {
+            $help = $script:C3Ast.GetHelpContent()
+            $help | Should -Not -BeNullOrEmpty
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'DcHardening'
+            [string]$help.Parameters['SECTIONS'] | Should -Match 'DcHardening'
+            [string]$help.Description | Should -Match 'GetDWORDValue'
+            [string]$help.Description | Should -Match 'LmCompatibilityLevel|LAN Manager'
+            [string]$help.Description | Should -Match 'channel binding'
+            [string]$help.Description | Should -Match 'not what .* negotiate'
+        }
+        It 'has one row in the README Coverage table, and the README says the rows are configured policy' {
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($readme | Where-Object { $_ -match '^\| \*\*DC hardening\*\* \|' })
+            $row.Count | Should -Be 1
+            $row[0] | Should -Match 'channel binding'
+            $row[0] | Should -Match 'LmCompatibilityLevel'
+            @($readme | Where-Object { $_ -match '^\| \*\*DC disk space\*\* \|' }).Count | Should -Be 1   # non-vacuity
+            (($readme -join ' ') -replace '\s+', ' ') | Should -Match 'not what a client and (the|a) DC negotiate'
+        }
+        It 'carries the same version in the script and the manifest: 1.20.0' {
+            [string]$script:Config.Version | Should -Be '1.20.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.20.0'
+        }
+    }
+
+    Context 'Read-only guard' {
+        It 'reads a DWORD with one literal StdRegProv GetDWORDValue call, with -WhatIf and -Confirm forced off' {
+            $fn = @(Get-C3Function -Name 'Get-AdfaStdRegDwordValue')
+            $fn.Count | Should -Be 1
+            $calls = @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-CimMethod' }, $true))
+            # Declared population: the one GetDWORDValue call.
+            $calls.Count | Should -Be 1
+            $method = Get-C3Parameter -Call $calls[0] -Name 'MethodName'
+            $method | Should -BeOfType ([System.Management.Automation.Language.StringConstantExpressionAst])
+            $method.Value | Should -Be 'GetDWORDValue'
+            (Get-C3Parameter -Call $calls[0] -Name 'ClassName').Value | Should -Be 'StdRegProv'
+            (Get-C3Parameter -Call $calls[0] -Name 'Namespace').Value | Should -Be 'root/cimv2'
+            foreach ($switch in @('WhatIf', 'Confirm')) {
+                $w = @($calls[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $switch })
+                $w.Count | Should -Be 1
+                $w[0].Argument.Extent.Text | Should -Be '$false'
+            }
+        }
+        It 'invokes no CIM method anywhere else in the section' {
+            foreach ($name in @('Get-AdfaDcHardeningRaw', 'Get-AdfaDcHardening', 'Get-AdfaDcHardeningFinding')) {
+                $fn = @(Get-C3Function -Name $name)
+                $fn.Count | Should -Be 1 -Because "$name must exist"
+                @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-CimMethod' }, $true)).Count | Should -Be 0
+            }
+        }
+        It 'bounds every operation of the seam with the caller''s timeout, and reads three named classes as instances only' {
+            $fns = @(@(Get-C3Function -Name 'Get-AdfaDcHardeningRaw') + @(Get-C3Function -Name 'Get-AdfaStdRegDwordValue'))
+            $fns.Count | Should -Be 2
+            $bounded = @()
+            foreach ($f in $fns) {
+                $bounded += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and @('Invoke-CimMethod', 'Get-CimInstance') -contains $n.GetCommandName() }, $true))
+            }
+            # Declared population: GetDWORDValue, and the Win32_OperatingSystem, MSFT_SmbServerConfiguration and Win32_Service queries.
+            $bounded.Count | Should -Be 4
+            foreach ($call in $bounded) {
+                $t = Get-C3Parameter -Call $call -Name 'OperationTimeoutSec'
+                $t | Should -Not -BeNullOrEmpty -Because "$($call.GetCommandName()) on line $($call.Extent.StartLineNumber) must be bounded"
+                $t.Extent.Text | Should -Match '\$OperationTimeoutSec'
+            }
+            $classes = @($bounded | Where-Object { $_.GetCommandName() -eq 'Get-CimInstance' } | ForEach-Object {
+                    $c = Get-C3Parameter -Call $_ -Name 'ClassName'
+                    $c | Should -BeOfType ([System.Management.Automation.Language.StringConstantExpressionAst])
+                    [string]$c.Value
+                })
+            (@($classes | Sort-Object) -join ',') | Should -Be 'MSFT_SmbServerConfiguration,Win32_OperatingSystem,Win32_Service'
+            foreach ($call in @($bounded | Where-Object { $_.GetCommandName() -eq 'Get-CimInstance' })) {
+                (Get-C3Parameter -Call $call -Name 'Property') | Should -Not -BeNullOrEmpty -Because 'each query names the properties it wants'
+            }
+        }
+        It 'closes the session it opened with -WhatIf and -Confirm forced off' {
+            $fn = @(Get-C3Function -Name 'Get-AdfaDcHardeningRaw')
+            $closes = @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Remove-CimSession' }, $true))
+            $closes.Count | Should -Be 1
+            @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'New-CimSession' }, $true)).Count | Should -Be 1
+            foreach ($switch in @('WhatIf', 'Confirm')) {
+                $w = @($closes[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $switch })
+                $w.Count | Should -Be 1
+                $w[0].Argument.Extent.Text | Should -Be '$false'
+            }
+        }
+    }
+
+    Context 'Config table' {
+        It 'holds the six settings, each with its key, value name, expected value, source and read date' {
+            $settings = @($script:Hc['Settings'])
+            # Declared population: the six registry settings of plan row C3.
+            $settings.Count | Should -Be 6
+            (@($settings | ForEach-Object { [string]$_['Id'] }) -join ',') | Should -Be ($script:C3Ids -join ',')
+            (@($settings | ForEach-Object { [string]$_['Item'] }) -join '|') | Should -Be ($script:C3Items -join '|')
+            (@($settings | ForEach-Object { [string]$_['Catalogue'] }) -join ',') | Should -Be 'ADA-LDAP-001,ADA-LDAP-003,ADA-LDAP-002,ADA-SMB-001,ADA-SMB-002,ADA-NTLM-001'
+            $expect = @{
+                LdapServerIntegrity        = @($script:C3NtdsKey, 'LDAPServerIntegrity', 2)
+                LdapServerEnforceIntegrity = @($script:C3NtdsKey, 'LDAPServerEnforceIntegrity', 1)
+                LdapEnforceChannelBinding  = @($script:C3NtdsKey, 'LdapEnforceChannelBinding', 2)
+                SmbServerSigning           = @($script:C3ServerKey, 'RequireSecuritySignature', 1)
+                SmbClientSigning           = @($script:C3ClientKey, 'RequireSecuritySignature', 1)
+                LmCompatibilityLevel       = @($script:C3LsaKey, 'LmCompatibilityLevel', 5)
+            }
+            # Declared population: the six settings, each with every expectation a file may choose.
+            $choices = @{
+                LdapServerIntegrity        = '2'
+                LdapServerEnforceIntegrity = '1'
+                LdapEnforceChannelBinding  = '1,2'
+                SmbServerSigning           = '1'
+                SmbClientSigning           = '1'
+                LmCompatibilityLevel       = '3,4,5'
+            }
+            $choices.Count | Should -Be 6
+            foreach ($s in $settings) {
+                $id = [string]$s['Id']
+                [string]$s['Key'] | Should -Be $expect[$id][0] -Because $id
+                [string]$s['ValueName'] | Should -Be $expect[$id][1] -Because $id
+                $s['ExpectedMinimum'] | Should -Be $expect[$id][2] -Because $id
+                [string]$s['OtherStatus'] | Should -Be 'Warning' -Because $id
+                [string]$s['SourceUrl'] | Should -Match '^https://learn\.microsoft\.com/' -Because $id
+                [string]$s['ReadDate'] | Should -Be '2026-11-13' -Because $id
+                [string]$s['ExpectedSource'] | Should -Match 'learn\.microsoft\.com' -Because $id
+                @($s['ExpectedChoices']) | Should -Contain $s['ExpectedMinimum'] -Because $id
+                # The exact list, per setting: it is the whole of what a file may set the
+                # expectation to. A value that means "off" or "never" in it (0 for channel
+                # binding, 0 for SMB signing, 2 for the LAN Manager level) would let a file make
+                # every DC pass, and the "has a meaning" check below would not notice: 0 has one.
+                (@($s['ExpectedChoices']) -join ',') | Should -Be $choices[$id] -Because "$id ExpectedChoices"
+                # Every number that can be expected has a published meaning.
+                foreach ($c in @($s['ExpectedChoices'])) { $s['Meanings'].ContainsKey([string]$c) | Should -BeTrue -Because "$id choice $c" }
+                @($s['Defaults']).Count | Should -BeGreaterThan 0 -Because "$id must say what an absent value means, or that it is not known"
+                foreach ($d in @($s['Defaults'])) {
+                    [string]$d['Source'] | Should -Match 'learn\.microsoft\.com' -Because "$id default"
+                    if ($d['Known']) { [string]$d['Label'] | Should -Not -BeNullOrEmpty -Because "$id default" }
+                    else { [string]$d['Reason'] | Should -Not -BeNullOrEmpty -Because "$id default" }
+                }
+            }
+            # EnableSecuritySignature is ignored for SMB2 and later, so it is not read.
+            @($settings | Where-Object { [string]$_['ValueName'] -eq 'EnableSecuritySignature' }).Count | Should -Be 0
+            $script:Hc['WsmanPort'] | Should -Be 5985
+            $script:Hc['RpcPort'] | Should -Be 135
+        }
+        It 'keys the documented defaults on the OS build: Windows Server 2022 and earlier, and 2025 and later' {
+            # Channel binding: Never up to build 20348; from 26100 the default is published for new deployments only.
+            $cb = Get-C3Setting -Id 'LdapEnforceChannelBinding'
+            $old = Resolve-AdfaHardeningDefault -Setting $cb -Build 17763
+            $old.Known | Should -BeTrue
+            $old.Value | Should -Be 0
+            [string]$old.Label | Should -Match 'Never'
+            (Resolve-AdfaHardeningDefault -Setting $cb -Build 20348).Known | Should -BeTrue
+            # Off by one on either side of the two boundaries.
+            (Resolve-AdfaHardeningDefault -Setting $cb -Build 20349).Known | Should -BeFalse
+            (Resolve-AdfaHardeningDefault -Setting $cb -Build 26099).Known | Should -BeFalse
+            $new = Resolve-AdfaHardeningDefault -Setting $cb -Build 26100
+            $new.Known | Should -BeFalse
+            [string]$new.Reason | Should -Match 'new Active Directory deployments'
+            $none = Resolve-AdfaHardeningDefault -Setting $cb -Build $null
+            $none.Known | Should -BeFalse
+            [string]$none.Reason | Should -Match 'OS build, which was not read'
+            # SMB client: disabled before 2025, required from 2025.
+            $cl = Get-C3Setting -Id 'SmbClientSigning'
+            (Resolve-AdfaHardeningDefault -Setting $cl -Build 20348).Value | Should -Be 0
+            (Resolve-AdfaHardeningDefault -Setting $cl -Build 26100).Value | Should -Be 1
+            (Resolve-AdfaHardeningDefault -Setting $cl -Build 26100).Known | Should -BeTrue
+            (Resolve-AdfaHardeningDefault -Setting $cl -Build 25398).Known | Should -BeFalse
+            [string](Resolve-AdfaHardeningDefault -Setting $cl -Build 25398).Reason | Should -Match 'build 25398'
+            # LAN Manager level: 3 from Windows Server 2008 R2 to 2022; not restated for 2025. Microsoft
+            # publishes Windows Server 2008 R2 as every build above 7100, so both of its builds
+            # (7600, and 7601 with SP1) take the default, and Windows Server 2008 SP2 (6002) does not.
+            $lm = Get-C3Setting -Id 'LmCompatibilityLevel'
+            (Resolve-AdfaHardeningDefault -Setting $lm -Build 7601).Value | Should -Be 3
+            (Resolve-AdfaHardeningDefault -Setting $lm -Build 7600).Value | Should -Be 3
+            # Off by one on either side of the boundary.
+            (Resolve-AdfaHardeningDefault -Setting $lm -Build 7101).Known | Should -BeTrue
+            (Resolve-AdfaHardeningDefault -Setting $lm -Build 7100).Known | Should -BeFalse
+            (Resolve-AdfaHardeningDefault -Setting $lm -Build 6002).Known | Should -BeFalse
+            # A build no row covers is told which builds the rows do cover, read from the rows
+            # of THAT setting. The LAN Manager level has a lower bound: a build below it must not
+            # be told that the pages cover "build 20348 and below", which it is.
+            foreach ($low in @(6002, 6003, 7100)) {
+                $reason = [string](Resolve-AdfaHardeningDefault -Setting $lm -Build $low).Reason
+                $reason | Should -Match ("no default for OS build {0}" -f $low)
+                $reason | Should -Match 'builds 7101 to 20348, and for build 26100 and later only'
+                $reason | Should -Not -Match '20348 and below' -Because "build $low is itself below 20348"
+            }
+            # The settings with no lower bound keep the two-range wording.
+            [string](Resolve-AdfaHardeningDefault -Setting $cb -Build 25398).Reason | Should -Match 'build 20348 and below, and for build 26100 and later only'
+            (Resolve-AdfaHardeningDefault -Setting $lm -Build 20348).Value | Should -Be 3
+            (Resolve-AdfaHardeningDefault -Setting $lm -Build 26100).Known | Should -BeFalse
+            # SMB server: what an absent value means on a DC is not published for any build.
+            $sv = Get-C3Setting -Id 'SmbServerSigning'
+            (Resolve-AdfaHardeningDefault -Setting $sv -Build 17763).Known | Should -BeFalse
+            (Resolve-AdfaHardeningDefault -Setting $sv -Build 26100).Known | Should -BeFalse
+        }
+    }
+
+    Context 'Get-AdfaStdRegReturnClass (pure, shared with DcDisk)' {
+        It 'tells apart a read, a value that is not set, an absent key, a refusal, a type mismatch and anything else' {
+            $cases = @(
+                @{ R = 0; E = ''; C = ''; Want = 'Success' }
+                @{ R = 1; E = ''; C = ''; Want = 'ValueNotSet' }
+                @{ R = 2; E = ''; C = ''; Want = 'KeyAbsent' }
+                @{ R = 5; E = ''; C = ''; Want = 'AccessDenied' }
+                @{ R = [uint32]2147749891; E = ''; C = ''; Want = 'AccessDenied' }
+                @{ R = [uint32]2147749893; E = ''; C = ''; Want = 'TypeMismatch' }
+                @{ R = 87; E = ''; C = ''; Want = 'ReadFailed' }
+                @{ R = 6; E = ''; C = ''; Want = 'ReadFailed' }
+                @{ R = $null; E = ''; C = ''; Want = 'NoReturnCode' }
+                @{ R = 'abc'; E = ''; C = ''; Want = 'NoReturnCode' }
+                @{ R = $null; E = 'Acesso negado.'; C = 'AccessDenied'; Want = 'AccessDenied' }
+                @{ R = $null; E = 'Access is denied.'; C = ''; Want = 'AccessDenied' }
+                @{ R = $null; E = 'The operation has timed out.'; C = 'Failed'; Want = 'ReadFailed' }
+            )
+            # Declared population: the thirteen answers above.
+            $cases.Count | Should -Be 13
+            foreach ($c in $cases) {
+                $got = Get-AdfaStdRegReturnClass -ReturnValue $c.R -ErrorText $c.E -ErrorCode $c.C
+                [string]$got.Class | Should -Be $c.Want -Because ("return '{0}', error '{1}'" -f $c.R, $c.E)
+                $got.Threw | Should -Be ($c.E -ne '')
+            }
+            (Get-AdfaStdRegReturnClass -ReturnValue 5).Code | Should -Be 5
+            (Get-AdfaStdRegReturnClass -ReturnValue ([uint32]2147749891)).Code | Should -Be 2147749891
+        }
+    }
+
+    Context 'Resolve-AdfaHardeningRead (pure: one registry read to a state)' {
+        It 'never turns a value that was not read into a number' {
+            $set = Get-C3State -Id 'SmbServerSigning' -Number 0
+            [string]$set.Kind | Should -Be 'Value'
+            $set.Number | Should -Be 0
+            $notSet = Get-C3State -Id 'SmbServerSigning'
+            [string]$notSet.Kind | Should -Be 'NotSet'
+            $notSet.Number | Should -BeNullOrEmpty
+            ($null -eq $notSet.Number) | Should -BeTrue -Because 'a value that is not set is not 0, which would read as signing disabled'
+            # Every other outcome: no number either.
+            $others = @(
+                (Get-C3State -Id 'SmbServerSigning' -ReturnValue 2),
+                (Get-C3State -Id 'SmbServerSigning' -ReturnValue 5),
+                (Get-C3State -Id 'SmbServerSigning' -ReturnValue ([uint32]2147749891)),
+                (Get-C3State -Id 'SmbServerSigning' -ReturnValue ([uint32]2147749893)),
+                (Get-C3State -Id 'SmbServerSigning' -ReturnValue 87),
+                (Get-C3State -Id 'SmbServerSigning' -Err 'Access is denied.'),
+                (Get-C3State -Id 'SmbServerSigning' -Err 'The operation has timed out.' -Code 'Failed'),
+                (Resolve-AdfaHardeningRead -Entry $null)
+            )
+            # Declared population: the eight unusable reads above.
+            $others.Count | Should -Be 8
+            (@($others | ForEach-Object { [string]$_.Kind }) -join ',') | Should -Be 'KeyAbsent,AccessDenied,AccessDenied,TypeMismatch,ReadFailed,AccessDenied,ReadFailed,ReadFailed'
+            foreach ($o in $others) {
+                ($null -eq $o.Number) | Should -BeTrue
+                [string]$o.Cause | Should -Not -BeNullOrEmpty
+            }
+            [string]$others[0].Cause | Should -Match '^Not found: StdRegProv returned 2,'
+            [string]$others[0].Cause | Should -Match 'measured, not published by Microsoft'
+            [string]$others[1].Cause | Should -Match '^Access denied: StdRegProv returned 5,'
+            [string]$others[1].Cause | Should -Match 'Administrators'
+            [string]$others[2].Cause | Should -Match '^Access denied: StdRegProv returned 2147749891 \(0x80041003\)'
+            [string]$others[3].Cause | Should -Match 'is not a REG_DWORD'
+            [string]$others[3].Cause | Should -Match 'wbemErrTypeMismatch'
+            [string]$others[4].Cause | Should -Match '^Read failed: StdRegProv returned 87 \(0x00000057\)\.'
+            [string]$others[4].Cause | Should -Match 'not interpreted'
+            [string]$others[5].Cause | Should -Match '^Access denied: the registry read was refused'
+            [string]$others[6].Cause | Should -Match '^Read failed: the registry read did not complete'
+            [string]$others[6].Cause | Should -Match 'timed out'
+        }
+        It 'treats a success that carries no number as a failed read, not as 0' {
+            $entry = New-C3Value -Id 'LmCompatibilityLevel' -Number 5
+            $entry.Value = $null
+            $state = Resolve-AdfaHardeningRead -Entry $entry
+            [string]$state.Kind | Should -Be 'ReadFailed'
+            ($null -eq $state.Number) | Should -BeTrue
+            [string]$state.Cause | Should -Match 'returned 0 but no value'
+        }
+        It 'reads a number that arrives as a string or as a uint32' {
+            (Get-C3State -Id 'LmCompatibilityLevel' -Number ([uint32]5)).Number | Should -Be 5
+            (Get-C3State -Id 'LmCompatibilityLevel' -Number '3').Number | Should -Be 3
+            [string](Get-C3State -Id 'LmCompatibilityLevel' -Number 'five').Kind | Should -Be 'ReadFailed'
+        }
+    }
+
+    Context 'Get-AdfaHardeningVerdict (pure)' {
+        It 'grades LDAP channel binding: Always passes, anything weaker warns, an unknown number is not graded' {
+            (Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Number 2).Status | Should -Be 'Pass'
+            $when = Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Number 1
+            $when.Status | Should -Be 'Warning'
+            $when.Detail | Should -Match 'LdapEnforceChannelBinding = 1 \(When supported'
+            $when.Detail | Should -Match 'Below the expected minimum of 2 \(Always'
+            (Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Number 0).Status | Should -Be 'Warning'
+            $odd = Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Number 3
+            $odd.Status | Should -Be 'Not Assessed'
+            $odd.Detail | Should -Match 'publishes no meaning for this number'
+            $odd.Detail | Should -Match '0, 1, 2'
+        }
+        It 'grades an absent channel binding value as the documented default where one is published, and Not Assessed where none is' {
+            $old = Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Build 17763
+            $old.Status | Should -Be 'Warning'
+            $old.Detail | Should -Match 'is not set in the registry of this DC'
+            $old.Detail | Should -Match 'documented default'
+            $old.Detail | Should -Match 'Never'
+            $old.Detail | Should -Match 'not on a configured value'
+            $old.Detail | Should -Match 'learn\.microsoft\.com/windows-server/identity/ad-ds/ldap-channel-binding'
+            $new = Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Build 26100
+            $new.Status | Should -Be 'Not Assessed'
+            $new.Detail | Should -Match 'default in force is not known'
+            $new.Detail | Should -Match 'new Active Directory deployments'
+            $unknown = Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Build $null
+            $unknown.Status | Should -Be 'Not Assessed'
+            $unknown.Detail | Should -Match 'OS build, which was not read'
+            # A value that IS set is graded whatever the build, known or not.
+            (Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Number 2 -Build $null).Status | Should -Be 'Pass'
+            (Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Number 1 -Build 26100).Status | Should -Be 'Warning'
+        }
+        It 'grades the LAN Manager level against 5, and an absent value as the documented level 3' {
+            (Get-C3Verdict -Id 'LmCompatibilityLevel' -Number 5).Status | Should -Be 'Pass'
+            foreach ($n in @(0, 1, 2, 3, 4)) { (Get-C3Verdict -Id 'LmCompatibilityLevel' -Number $n).Status | Should -Be 'Warning' -Because "level $n" }
+            (Get-C3Verdict -Id 'LmCompatibilityLevel' -Number 4).Detail | Should -Match 'refuse LM'
+            (Get-C3Verdict -Id 'LmCompatibilityLevel' -Number 6).Status | Should -Be 'Not Assessed'
+            $absent = Get-C3Verdict -Id 'LmCompatibilityLevel' -Build 20348
+            $absent.Status | Should -Be 'Warning'
+            $absent.Detail | Should -Match 'documented default'
+            $absent.Detail | Should -Match 'Send NTLMv2 response only'
+            $on2025 = Get-C3Verdict -Id 'LmCompatibilityLevel' -Build 26100
+            $on2025.Status | Should -Be 'Not Assessed'
+            $on2025.Detail | Should -Match 'NTLMv1 is removed'
+            # A present value is still graded on 2025: the 2025 baseline expects 5 there too.
+            (Get-C3Verdict -Id 'LmCompatibilityLevel' -Number 5 -Build 26100).Status | Should -Be 'Pass'
+            (Get-C3Verdict -Id 'LmCompatibilityLevel' -Number 3 -Build 26100).Status | Should -Be 'Warning'
+        }
+        It 'grades SMB client signing, with the default that changed in Windows Server 2025' {
+            (Get-C3Verdict -Id 'SmbClientSigning' -Number 1).Status | Should -Be 'Pass'
+            (Get-C3Verdict -Id 'SmbClientSigning' -Number 0).Status | Should -Be 'Warning'
+            (Get-C3Verdict -Id 'SmbClientSigning' -Number 2).Status | Should -Be 'Not Assessed'
+            $old = Get-C3Verdict -Id 'SmbClientSigning' -Build 17763
+            $old.Status | Should -Be 'Warning'
+            $old.Detail | Should -Match 'documented default'
+            $new = Get-C3Verdict -Id 'SmbClientSigning' -Build 26100
+            $new.Status | Should -Be 'Pass'
+            # A Pass that rests on a default says so; it never reads as a configured value.
+            $new.Detail | Should -Match 'documented default'
+            $new.Detail | Should -Match 'not on a configured value'
+            (Get-C3Verdict -Id 'SmbClientSigning' -Build 25398).Status | Should -Be 'Not Assessed'
+        }
+        It 'grades SMB server signing on the registry, lets the second instrument veto it, and uses it when the value is not set' {
+            $agree = Get-C3Verdict -Id 'SmbServerSigning' -Number 1 -Second (New-C3Second -Value $true)
+            $agree.Status | Should -Be 'Pass'
+            $agree.Detail | Should -Match 'MSFT_SmbServerConfiguration\.RequireSecuritySignature = True'
+            $agree.Detail | Should -Match 'agrees'
+            $veto = Get-C3Verdict -Id 'SmbServerSigning' -Number 1 -Second (New-C3Second -Value $false)
+            $veto.Status | Should -Be 'Not Assessed'
+            $veto.Detail | Should -Match 'two instruments disagree'
+            $vetoOff = Get-C3Verdict -Id 'SmbServerSigning' -Number 0 -Second (New-C3Second -Value $true)
+            $vetoOff.Status | Should -Be 'Not Assessed'
+            (Get-C3Verdict -Id 'SmbServerSigning' -Number 0 -Second (New-C3Second -Value $false)).Status | Should -Be 'Warning'
+            $alone = Get-C3Verdict -Id 'SmbServerSigning' -Number 1 -Second (New-C3Second -Value $null -Read $false -Err 'Access is denied.')
+            $alone.Status | Should -Be 'Pass'
+            $alone.Detail | Should -Match 'second instrument.*was not read'
+            (Get-C3Verdict -Id 'SmbServerSigning' -Number 1).Status | Should -Be 'Pass'
+            # Not set: the SMB server's own answer is a measurement, so it is graded.
+            $measured = Get-C3Verdict -Id 'SmbServerSigning' -Second (New-C3Second -Value $true)
+            $measured.Status | Should -Be 'Pass'
+            $measured.Detail | Should -Match 'is not set in the registry of this DC'
+            $measured.Detail | Should -Match 'graded on the SMB server''s own configuration'
+            # What Microsoft documents is the cmdlet. The row does not claim the instance query is it.
+            $measured.Detail | Should -Match 'documented check of this property is the cmdlet Get-SmbServerConfiguration'
+            $measured.Detail | Should -Match 'the cmdlet was not run'
+            $measured.Detail | Should -Not -Match 'Microsoft documents reading that property'
+            (Get-C3Verdict -Id 'SmbServerSigning' -Second (New-C3Second -Value $false)).Status | Should -Be 'Warning'
+            # Not set and nothing else to go on: on no build is that a Pass or a Warning.
+            foreach ($b in @(17763, 26100, $null)) {
+                $blind = Get-C3Verdict -Id 'SmbServerSigning' -Build $b
+                $blind.Status | Should -Be 'Not Assessed' -Because "build '$b'"
+                $blind.Detail | Should -Match 'default in force is not known'
+            }
+            (Get-C3Verdict -Id 'SmbServerSigning' -Second (New-C3Second -Value $null -Read $false -Err 'x')).Status | Should -Be 'Not Assessed'
+        }
+        It 'grades LDAP server signing alone on Windows Server 2022 and earlier' {
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 2 -Build 17763).Status | Should -Be 'Pass'
+            $one = Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 17763
+            $one.Status | Should -Be 'Warning'
+            # 1 is what is found on most DCs, and Microsoft Learn does not say what it means.
+            $one.Detail | Should -Match 'LDAPServerIntegrity = 1 \(.*not published'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 0 -Build 20348).Status | Should -Be 'Warning'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 3 -Build 17763).Status | Should -Be 'Not Assessed'
+            $absent = Get-C3Verdict -Id 'LdapServerIntegrity' -Build 17763
+            $absent.Status | Should -Be 'Warning'
+            $absent.Detail | Should -Match 'documented default'
+            $absent.Detail | Should -Match 'None'
+            # The enforcement value is not consulted below Windows Server 2025, whatever it holds.
+            $ignored = Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 17763 -Related @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity' -Number 1) }
+            $ignored.Status | Should -Be 'Warning'
+        }
+        It 'lets the Windows Server 2025 enforcement value decide the LDAP signing row, and says Not Assessed where Microsoft leaves it open' {
+            $on = @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity' -Number 1) }
+            $off = @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity' -Number 0) }
+            $unset = @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity') }
+            $denied = @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity' -ReturnValue 5) }
+            # Enforcement = 1: signing is required regardless of this value.
+            $over = Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related $on
+            $over.Status | Should -Be 'Pass'
+            $over.Detail | Should -Match 'takes precedence'
+            $over.Detail | Should -Match 'LDAPServerEnforceIntegrity = 1'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Build 26100 -Related $on).Status | Should -Be 'Pass'
+            # Enforcement = 0: this value decides.
+            $alone = Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related $off
+            $alone.Status | Should -Be 'Warning'
+            $alone.Detail | Should -Match 'inferred'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 2 -Build 26100 -Related $off).Status | Should -Be 'Pass'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Build 26100 -Related $off).Status | Should -Be 'Not Assessed'
+            # Neither set: the documented 2025 default is that signing is required.
+            $default = Get-C3Verdict -Id 'LdapServerIntegrity' -Build 26100 -Related $unset
+            $default.Status | Should -Be 'Pass'
+            $default.Detail | Should -Match 'documented default'
+            $default.Detail | Should -Match 'not on a configured value'
+            # A legacy value below 2 with no enforcement value: upgrade-preserved, or enforced? Not known.
+            $open = Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related $unset
+            $open.Status | Should -Be 'Not Assessed'
+            $open.Detail | Should -Match 'does not show which applies'
+            # 2 requires signing whichever policy decides, even with the enforcement value unread.
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 2 -Build 26100 -Related $denied).Status | Should -Be 'Pass'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 2 -Build 26100).Status | Should -Be 'Pass'
+            # Below 2 with the enforcement value unread, or absent from the read altogether.
+            $blind = Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related $denied
+            $blind.Status | Should -Be 'Not Assessed'
+            $blind.Detail | Should -Match 'LDAPServerEnforceIntegrity, which was not read'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100).Status | Should -Be 'Not Assessed'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Build 26100 -Related $denied).Status | Should -Be 'Not Assessed'
+            # Build not read: 2 still passes, anything else cannot be graded.
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 2 -Build $null).Status | Should -Be 'Pass'
+            $noBuild = Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build $null
+            $noBuild.Status | Should -Be 'Not Assessed'
+            $noBuild.Detail | Should -Match 'OS build was not read'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Build $null).Status | Should -Be 'Not Assessed'
+        }
+        It 'does not let an enforcement value with no published meaning decide the signing row, and says that it was read' {
+            # Declared population: the three states of the signing value that are not 2 - not set,
+            # 0 and 1 - each beside an enforcement value that was READ and is neither 0 nor 1.
+            $two = @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity' -Number 2) }
+            $cases = @($null, 0, 1)
+            $cases.Count | Should -Be 3
+            foreach ($n in $cases) {
+                $v = Get-C3Verdict -Id 'LdapServerIntegrity' -Number $n -Build 26100 -Related $two
+                $v.Status | Should -Be 'Not Assessed' -Because "signing value '$n' beside LDAPServerEnforceIntegrity = 2"
+                $v.Detail | Should -Match 'LDAPServerEnforceIntegrity, which holds 2 on this DC' -Because "signing value '$n'"
+                $v.Detail | Should -Match 'neither 1, read as the enforcement policy being Enabled, nor 0, read as Disabled'
+                # The value WAS read. The row must not give "not read" as the cause.
+                $v.Detail | Should -Not -Match 'was not read' -Because "signing value '$n'"
+                $v.Detail | Should -Not -Match 'whatever this value holds'
+            }
+            # Any other undocumented number, the largest a DWORD holds included.
+            $max = @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity' -Number ([int64]4294967295)) }
+            $big = Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related $max
+            $big.Status | Should -Be 'Not Assessed'
+            $big.Detail | Should -Match 'which holds 4294967295 on this DC'
+            # Non-vacuity: the two documented numbers do decide, and an unread value still reads "not read".
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity' -Number 1) }).Status | Should -Be 'Pass'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity' -Number 0) }).Status | Should -Be 'Warning'
+            (Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity' -ReturnValue 5) }).Detail | Should -Match 'which was not read on this DC'
+            # The sibling row, on the same DC, says the same thing about the number.
+            $sibling = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Number 2 -Build 26100 -Related @{ LdapServerIntegrity = (Get-C3State -Id 'LdapServerIntegrity' -Number 1) }
+            $sibling.Status | Should -Be 'Not Assessed'
+            $sibling.Detail | Should -Match 'LDAPServerEnforceIntegrity = 2\. Microsoft publishes no meaning for this number'
+        }
+        It 'does not apply the enforcement default beside a signing value Microsoft publishes no meaning for' {
+            # Declared population: two numbers above 2 with no published meaning. Neither is
+            # "at least 2, therefore signing is required".
+            $odd = @(3, [int64]4294967295)
+            $odd.Count | Should -Be 2
+            foreach ($n in $odd) {
+                $related = @{ LdapServerIntegrity = (Get-C3State -Id 'LdapServerIntegrity' -Number $n) }
+                $enforcement = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -Related $related
+                $enforcement.Status | Should -Be 'Not Assessed' -Because "LDAPServerIntegrity = $n has no published meaning"
+                $enforcement.Detail | Should -Match ("LDAPServerIntegrity = {0}: a number Microsoft publishes no meaning for \(documented values: 0, 1, 2; see that row\)" -f $n)
+                $enforcement.Detail | Should -Match 'is not applied beside it'
+                $enforcement.Detail | Should -Not -Match 'requires signing whichever'
+                # The two rows of the one DC agree: the signing row does not grade that number either.
+                $signing = Get-C3Verdict -Id 'LdapServerIntegrity' -Number $n -Build 26100 -Related @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity') }
+                $signing.Status | Should -Be 'Not Assessed'
+                $signing.Detail | Should -Match 'publishes no meaning for this number'
+            }
+            # Non-vacuity: 2, which is documented, still takes the default and passes.
+            $twoRelated = @{ LdapServerIntegrity = (Get-C3State -Id 'LdapServerIntegrity' -Number 2) }
+            $ok = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -Related $twoRelated
+            $ok.Status | Should -Be 'Pass'
+            $ok.Detail | Should -Match 'LDAPServerIntegrity = 2 on this DC requires signing whichever'
+            # Fail closed: with the signing setting's meanings not handed over, not even 2 is taken as documented.
+            $blind = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -Related $twoRelated -NoRelatedSettings
+            $blind.Status | Should -Be 'Not Assessed'
+            $blind.Detail | Should -Match 'published meanings of LDAPServerIntegrity were not available'
+            # Through the row builder, which is what hands the verdict those meanings: a 2025 DC
+            # with the enforcement value not set, beside a signing value of 2 and beside one of 3.
+            $rowsTwo = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -Build '26100' -Numbers @{ LdapServerIntegrity = 2 }) -Config $script:Hc)
+            $enfTwo = Get-C3Row $rowsTwo 'LDAP server signing enforcement: dc1.contoso.com'
+            $enfTwo.Status | Should -Be 'Pass'
+            [string]$enfTwo.Detail | Should -Match 'LDAPServerIntegrity = 2 on this DC requires signing whichever'
+            $rowsThree = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -Build '26100' -Numbers @{ LdapServerIntegrity = 3 }) -Config $script:Hc)
+            (Get-C3Row $rowsThree 'LDAP server signing enforcement: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C3Row $rowsThree 'LDAP server signing: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            # Declared population: the two LDAP signing rows of that DC. Neither is a Pass.
+            @($rowsThree | Where-Object { [string]$_.Item -match '^LDAP server signing' -and $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'keeps the cause of a failed read in the enforcement row when the OS build was not read either' {
+            # Declared population: the four reads that give no number and are not "not set".
+            $kinds = @(
+                @{ R = 5; E = ''; C = ''; Lead = '^Access denied: StdRegProv returned 5' }
+                @{ R = 2; E = ''; C = ''; Lead = '^Not found: StdRegProv returned 2' }
+                @{ R = [uint32]2147749893; E = ''; C = ''; Lead = '^The value is present but is not a REG_DWORD' }
+                @{ R = $null; E = 'The RPC server is unavailable.'; C = 'Failed'; Lead = '^Read failed: the registry read did not complete' }
+            )
+            $kinds.Count | Should -Be 4
+            foreach ($k in $kinds) {
+                $v = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -ReturnValue $k.R -Err $k.E -Code $k.C -Build $null
+                $v.Status | Should -Be 'Not Assessed'
+                $v.Detail | Should -Match $k.Lead -Because 'the cause of the read comes first and is not replaced by the statement about the build'
+                $v.Detail | Should -Match 'Whether this policy applies at all also depends on the OS build, which was not read'
+            }
+            # A value that was read, or is not set, is named too - the row says what the read gave.
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Number 1 -Build $null).Detail | Should -Match '^LDAPServerEnforceIntegrity = 1 on this DC\. Whether this policy applies depends on the OS build'
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Build $null).Detail | Should -Match '^LDAPServerEnforceIntegrity is not set in the registry of this DC\. Whether this policy applies depends on the OS build'
+            # Below the build the policy is documented from, the row stays Info - and still says the read was refused.
+            $old = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -ReturnValue 5 -Build 17763
+            $old.Status | Should -Be 'Info'
+            $old.Detail | Should -Match '^Not applicable'
+            $old.Detail | Should -Match 'The value itself was not read on this DC - Access denied: StdRegProv returned 5'
+            # Through the row builder: the refusal is visible in the row of a DC whose build was not read.
+            $raw = New-C3Raw -Build '' -BuildError 'The operation has timed out.' -Entries @{ LdapServerEnforceIntegrity = (New-C3Value -Id 'LdapServerEnforceIntegrity' -ReturnValue 5) }
+            $row = Get-C3Row @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $raw -Config $script:Hc) 'LDAP server signing enforcement: dc1.contoso.com'
+            $row.Status | Should -Be 'Not Assessed'
+            [string]$row.Detail | Should -Match '^Access denied: StdRegProv returned 5'
+        }
+        It 'prints the source of a default that is not known, in the row that is Not Assessed for it' {
+            # Declared population: the three settings whose value, when not set, has a Defaults row
+            # that says no default is known - each with the page that row cites.
+            $cases = @(
+                @{ Id = 'LdapEnforceChannelBinding'; Build = 26100; Source = 'Source: https://learn\.microsoft\.com/windows-server/identity/ad-ds/ldap-channel-binding \(read 2026-11-13\)\.' }
+                @{ Id = 'LmCompatibilityLevel'; Build = 26100; Source = 'Source: https://learn\.microsoft\.com/windows-server/get-started/removed-deprecated-features-windows-server \(read 2026-11-15\)\.' }
+                @{ Id = 'SmbServerSigning'; Build = 17763; Source = 'Source: https://learn\.microsoft\.com/previous-versions/.*/microsoft-network-server-digitally-sign-communications-always ; https://learn\.microsoft\.com/windows-server/storage/file-server/smb-signing ;' }
+            )
+            $cases.Count | Should -Be 3
+            foreach ($c in $cases) {
+                $v = Get-C3Verdict -Id $c.Id -Build $c.Build
+                $v.Status | Should -Be 'Not Assessed' -Because $c.Id
+                $v.Detail | Should -Match 'default in force is not known' -Because $c.Id
+                $v.Detail | Should -Match $c.Source -Because "$($c.Id): a vendor fact is cited beside the claim"
+                # The source printed is the one the config row holds, not a second copy of it.
+                $rowSource = [string](Resolve-AdfaHardeningDefault -Setting (Get-C3Setting -Id $c.Id) -Build $c.Build).Source
+                $rowSource | Should -Not -BeNullOrEmpty
+                $v.Detail | Should -Match ([regex]::Escape(("Source: {0}." -f $rowSource)))
+            }
+            # A build no row covers has no page to cite, and cites none.
+            (Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Build 25398).Detail | Should -Not -Match 'Source: '
+        }
+        It 'reports the enforcement row as not applicable below Windows Server 2025, and grades it from 2025' {
+            foreach ($n in @($null, 0, 1)) {
+                $na = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Number $n -Build 20348
+                $na.Status | Should -Be 'Info' -Because "value '$n' on build 20348"
+                $na.Detail | Should -Match '^Not applicable'
+                $na.Detail | Should -Match '26100'
+            }
+            # Off by one: 26099 is still not applicable, 26100 is graded.
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Number 1 -Build 26099).Status | Should -Be 'Info'
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Number 1 -Build 26100).Status | Should -Be 'Pass'
+            # An unreadable value on an older DC is still not applicable, not a failed measurement.
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -ReturnValue 5 -Build 17763).Status | Should -Be 'Info'
+            # Build unknown: not Info - whether it applies is exactly what is not known.
+            $noBuild = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Number 1 -Build $null
+            $noBuild.Status | Should -Be 'Not Assessed'
+            $noBuild.Detail | Should -Match 'depends on the OS build'
+            $zero = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Number 0 -Build 26100
+            $zero.Status | Should -Be 'Warning'
+            $zero.Detail | Should -Match 'inferred'
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Number 2 -Build 26100).Status | Should -Be 'Not Assessed'
+            # Not set: the default is "same effect as Enabled", unless a legacy signing value below 2 is present.
+            $sUnset = @{ LdapServerIntegrity = (Get-C3State -Id 'LdapServerIntegrity') }
+            $sTwo = @{ LdapServerIntegrity = (Get-C3State -Id 'LdapServerIntegrity' -Number 2) }
+            $sOne = @{ LdapServerIntegrity = (Get-C3State -Id 'LdapServerIntegrity' -Number 1) }
+            $sDenied = @{ LdapServerIntegrity = (Get-C3State -Id 'LdapServerIntegrity' -ReturnValue 5) }
+            $d = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -Related $sUnset
+            $d.Status | Should -Be 'Pass'
+            $d.Detail | Should -Match 'documented default'
+            $d.Detail | Should -Match 'same effect as Enabled'
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -Related $sTwo).Status | Should -Be 'Pass'
+            $amb = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -Related $sOne
+            $amb.Status | Should -Be 'Not Assessed'
+            $amb.Detail | Should -Match 'does not show which applies'
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -Related $sDenied).Status | Should -Be 'Not Assessed'
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Build 26100).Status | Should -Be 'Not Assessed'
+        }
+        It 'words a documented default as a sentence - it is below, or it meets, the expected minimum - and names the second value that is not set either' {
+            $low = Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Build 17763
+            $low.Status | Should -Be 'Warning'
+            $low.Detail | Should -Match 'not on a configured value: it is below the expected minimum of 2 \(Always'
+            $ok = Get-C3Verdict -Id 'SmbClientSigning' -Build 26100
+            $ok.Status | Should -Be 'Pass'
+            $ok.Detail | Should -Match 'not on a configured value: it meets the expected minimum of 1 \('
+            $unset = @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity'); LdapServerIntegrity = (Get-C3State -Id 'LdapServerIntegrity') }
+            $signing = Get-C3Verdict -Id 'LdapServerIntegrity' -Build 26100 -Related $unset
+            $signing.Status | Should -Be 'Pass'
+            $signing.Detail | Should -Match 'LDAPServerEnforceIntegrity is not set either\.'
+            $enforcement = Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Build 26100 -Related $unset
+            $enforcement.Status | Should -Be 'Pass'
+            $enforcement.Detail | Should -Match 'LDAPServerIntegrity is not set either, and Microsoft documents that Windows Server 2025 requires LDAP signing'
+        }
+        It 'does not use a second instrument that is marked as not read, whatever value it carries' {
+            $stale = New-C3Second -Value $true -Read $false -Err 'The SMB query timed out.'
+            $unset = Get-C3Verdict -Id 'SmbServerSigning' -Second $stale
+            $unset.Status | Should -Be 'Not Assessed'
+            $unset.Detail | Should -Match 'was not read \(The SMB query timed out\)'
+            # A value that is set is then graded on the registry alone: no agreement and no veto is claimed.
+            $set = Get-C3Verdict -Id 'SmbServerSigning' -Number 0 -Second $stale
+            $set.Status | Should -Be 'Warning'
+            $set.Detail | Should -Not -Match 'disagree'
+            $set.Detail | Should -Match 'was not read'
+            $pass = Get-C3Verdict -Id 'SmbServerSigning' -Number 1 -Second (New-C3Second -Value $false -Read $false)
+            $pass.Status | Should -Be 'Pass'
+            $pass.Detail | Should -Not -Match 'agrees|disagree'
+        }
+        It 'grades LDAP server signing alone below Windows Server 2025, the last build before it included' {
+            $enfOn = @{ LdapServerEnforceIntegrity = (Get-C3State -Id 'LdapServerEnforceIntegrity' -Number 1) }
+            # Declared population: the last build before the boundary, and the boundary itself.
+            $below = Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26099 -Related $enfOn
+            $below.Status | Should -Be 'Warning' -Because 'the enforcement policy is documented from build 26100 only'
+            $below.Detail | Should -Not -Match 'whatever this value holds'
+            $at = Get-C3Verdict -Id 'LdapServerIntegrity' -Number 1 -Build 26100 -Related $enfOn
+            $at.Status | Should -Be 'Pass'
+            $at.Detail | Should -Match 'whatever this value holds'
+            # The enforcement row itself, on the same two builds.
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Number 1 -Build 26099).Status | Should -Be 'Info'
+            (Get-C3Verdict -Id 'LdapServerEnforceIntegrity' -Number 1 -Build 26100).Status | Should -Be 'Pass'
+        }
+        It 'is Not Assessed, with the cause, for every read that gave no number - on every setting that is graded' {
+            $kinds = @(
+                @{ R = 2; E = ''; C = ''; Lead = '^Not found' }
+                @{ R = 5; E = ''; C = ''; Lead = '^Access denied' }
+                @{ R = [uint32]2147749891; E = ''; C = ''; Lead = '^Access denied' }
+                @{ R = [uint32]2147749893; E = ''; C = ''; Lead = '^The value is present but is not a REG_DWORD' }
+                @{ R = 87; E = ''; C = ''; Lead = '^Read failed' }
+                @{ R = $null; E = 'Acesso negado.'; C = 'AccessDenied'; Lead = '^Access denied' }
+                @{ R = $null; E = 'The RPC server is unavailable.'; C = 'Failed'; Lead = '^Read failed' }
+            )
+            $kinds.Count | Should -Be 7
+            $seen = 0
+            foreach ($id in $script:C3Ids) {
+                foreach ($k in $kinds) {
+                    $v = Get-C3Verdict -Id $id -ReturnValue $k.R -Err $k.E -Code $k.C -Build 26100 -Second (New-C3Second -Value $true)
+                    $v.Status | Should -Be 'Not Assessed' -Because "$id with return '$($k.R)' / error '$($k.E)'"
+                    $v.Detail | Should -Match $k.Lead -Because $id
+                    $seen++
+                }
+            }
+            # Declared population: six settings by seven unusable reads.
+            $seen | Should -Be 42
+        }
+        It 'takes the status of a value below the expectation, and the expectation itself, from the config' {
+            $cfg = Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -OverrideSource 'C:\cfg\hardening.json' -Override @{
+                Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 3; OtherStatus = 'Fail' } } }
+            (Get-C3Verdict -Id 'LmCompatibilityLevel' -Number 3 -Config $cfg).Status | Should -Be 'Pass'
+            (Get-C3Verdict -Id 'LmCompatibilityLevel' -Number 4 -Config $cfg).Status | Should -Be 'Pass'
+            (Get-C3Verdict -Id 'LmCompatibilityLevel' -Number 5 -Config $cfg).Status | Should -Be 'Pass'
+            # Off by one below the overridden minimum.
+            $two = Get-C3Verdict -Id 'LmCompatibilityLevel' -Number 2 -Config $cfg
+            $two.Status | Should -Be 'Fail'
+            $two.Detail | Should -Match 'Below the expected minimum of 3'
+            # The documented default (3) now meets the expectation, and is still named a default.
+            $absent = Get-C3Verdict -Id 'LmCompatibilityLevel' -Build 17763 -Config $cfg
+            $absent.Status | Should -Be 'Pass'
+            $absent.Detail | Should -Match 'documented default'
+            # The built-in table is untouched.
+            (Get-C3Verdict -Id 'LmCompatibilityLevel' -Number 3).Status | Should -Be 'Warning'
+            # Channel binding: an operator in the audit phase may accept "When supported".
+            $cfg2 = Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override @{ Settings = @{ LdapEnforceChannelBinding = @{ ExpectedMinimum = 1 } } }
+            (Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Number 1 -Config $cfg2).Status | Should -Be 'Pass'
+            (Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Number 0 -Config $cfg2).Status | Should -Be 'Warning'
+        }
+    }
+
+    Context 'Get-AdfaDcHardeningFinding (pure: one DC''s raw read to rows)' {
+        It 'gives a hardened Windows Server 2019 DC one row per setting, family first, each carrying its domain and the not-on-the-wire note' {
+            $raw = New-C3Raw -Numbers (New-C3GoodNumbers)
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope 'contoso.com' -Raw $raw -Config $script:Hc)
+            # Declared population: the six registry settings, Print Spooler and SMBv1.
+            $rows.Count | Should -Be 8
+            (@($rows | ForEach-Object { [string]$_.Item }) -join '|') | Should -Be (@($script:C3Families | ForEach-Object { "{0}: dc1.contoso.com" -f $_ }) -join '|')
+            foreach ($r in $rows) {
+                $r.Scope | Should -Be 'contoso.com'
+                $r.Area | Should -Be 'DCHardening'
+                $r.PSObject.Properties['NotRun'] | Should -Not -BeNullOrEmpty -Because 'every row of the section has the NotRun column'
+            }
+            foreach ($family in $script:C3Items) {
+                $row = Get-C3Row $rows ("{0}: dc1.contoso.com" -f $family)
+                [string]$row.NotRun | Should -Match $script:C3WireNote -Because $family
+                [string]$row.NotRun | Should -Match 'No LDAP bind'
+                # The note is in NotRun only: the recommendation is chosen from the Detail.
+                [string]$row.Detail | Should -Not -Match 'negotiate' -Because $family
+                [string]$row.Detail | Should -Match 'Read over Wsman' -Because $family
+                [string]$row.Detail | Should -Match 'OS build 17763' -Because $family
+                [string]$row.Detail | Should -Match 'Registry value: HKLM\\' -Because $family
+            }
+            [string](Get-C3Row $rows 'Print Spooler: dc1.contoso.com').NotRun | Should -Be ''
+            [string](Get-C3Row $rows 'SMBv1: dc1.contoso.com').NotRun | Should -Be ''
+            (Get-C3Row $rows 'LDAP server signing: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'LDAP server signing enforcement: dc1.contoso.com').Status | Should -Be 'Info'
+            (Get-C3Row $rows 'LDAP channel binding: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'SMB client signing: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'Print Spooler: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'SMBv1: dc1.contoso.com').Status | Should -Be 'Pass'
+            # Each graded row names where its expectation came from.
+            (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Detail | Should -Match 'Expectation source: .*learn\.microsoft\.com'
+            (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Detail | Should -Match 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa\\LmCompatibilityLevel'
+        }
+        It 'reports a DC with none of the six values set as defaults or Not Assessed - never as a configured Pass' {
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope 'contoso.com' -Raw (New-C3Raw -SmbOk $false -SmbError 'Access is denied.') -Config $script:Hc)
+            $rows.Count | Should -Be 8
+            (Get-C3Row $rows 'LDAP server signing: dc1.contoso.com').Status | Should -Be 'Warning'
+            (Get-C3Row $rows 'LDAP server signing enforcement: dc1.contoso.com').Status | Should -Be 'Info'
+            (Get-C3Row $rows 'LDAP channel binding: dc1.contoso.com').Status | Should -Be 'Warning'
+            (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C3Row $rows 'SMB client signing: dc1.contoso.com').Status | Should -Be 'Warning'
+            (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Status | Should -Be 'Warning'
+            # Declared population: the six setting rows. None is a Pass, and each says the value is not set.
+            $settingRows = @($rows | Where-Object { $script:C3Items -contains ([string]$_.Item -replace ': dc1\.contoso\.com$', '') })
+            $settingRows.Count | Should -Be 6
+            @($settingRows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+            foreach ($r in @($settingRows | Where-Object { $_.Status -ne 'Info' })) {
+                [string]$r.Detail | Should -Match 'is not set in the registry of this DC' -Because $r.Item
+                [string]$r.Detail | Should -Match 'measured, not published by Microsoft' -Because $r.Item
+            }
+            # The row that is not applicable on this build rests on no reading of a return code,
+            # and does not carry that label.
+            [string](Get-C3Row $rows 'LDAP server signing enforcement: dc1.contoso.com').Detail | Should -Match '^Not applicable'
+            [string](Get-C3Row $rows 'LDAP server signing enforcement: dc1.contoso.com').Detail | Should -Not -Match 'measured, not published'
+            # The same DC on Windows Server 2025: three defaults pass, each named as a default.
+            $rows25 = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope 'contoso.com' -Raw (New-C3Raw -Build '26100' -SmbOk $false -SmbError 'x') -Config $script:Hc)
+            $passes = @($rows25 | Where-Object { $_.Status -eq 'Pass' -and [string]$_.Item -notmatch '^(Print Spooler|SMBv1)' })
+            (@($passes | ForEach-Object { [string]$_.Item -replace ': .*$', '' }) -join '|') | Should -Be 'LDAP server signing|LDAP server signing enforcement|SMB client signing'
+            foreach ($p in $passes) { [string]$p.Detail | Should -Match 'documented default' -Because $p.Item }
+            (Get-C3Row $rows25 'LDAP channel binding: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C3Row $rows25 'SMB server signing: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C3Row $rows25 'LAN Manager authentication level: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+        }
+        It 'keeps a mixed result mixed: one key refused, one value weak, the rest read' {
+            $entries = @{ SmbServerSigning = (New-C3Value -Id 'SmbServerSigning' -ReturnValue 5) }
+            $raw = New-C3Raw -Numbers @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 1; SmbClientSigning = 1; LmCompatibilityLevel = 3 } -Entries $entries -Smb1 $true -SpoolerState 'Running' -SpoolerStartMode 'Auto'
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc2 -Scope 'contoso.com' -Raw $raw -Config $script:Hc)
+            $rows.Count | Should -Be 8
+            (Get-C3Row $rows 'LDAP server signing: dc2.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'LDAP channel binding: dc2.contoso.com').Status | Should -Be 'Warning'
+            $refused = Get-C3Row $rows 'SMB server signing: dc2.contoso.com'
+            $refused.Status | Should -Be 'Not Assessed'
+            $refused.Detail | Should -Match '^Access denied'
+            (Get-C3Row $rows 'SMB client signing: dc2.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'LAN Manager authentication level: dc2.contoso.com').Status | Should -Be 'Warning'
+            (Get-C3Row $rows 'Print Spooler: dc2.contoso.com').Status | Should -Be 'Warning'
+            (Get-C3Row $rows 'SMBv1: dc2.contoso.com').Status | Should -Be 'Fail'
+        }
+        It 'grades nothing that needs the OS build when the build was not read, and still grades what does not' {
+            $raw = New-C3Raw -Numbers @{ LmCompatibilityLevel = 5; LdapServerIntegrity = 1 } -Build '' -BuildError 'The operation has timed out.'
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $raw -Config $script:Hc)
+            (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Detail | Should -Match 'OS build not read \(The operation has timed out\.\)'
+            (Get-C3Row $rows 'LDAP server signing: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C3Row $rows 'LDAP server signing enforcement: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C3Row $rows 'LDAP channel binding: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C3Row $rows 'SMB client signing: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            # A build that is not a number is not a build.
+            $odd = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -Build 'abc') -Config $script:Hc)
+            (Get-C3Row $odd 'SMB client signing: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            # Nor is 0, or a negative number: neither is a build, and 0 would otherwise fall in the
+            # "Windows Server 2022 or earlier" range and be graded on that default.
+            foreach ($notABuild in @('0', '-5')) {
+                $rowsZ = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -Build $notABuild) -Config $script:Hc)
+                $z = Get-C3Row $rowsZ 'SMB client signing: dc1.contoso.com'
+                $z.Status | Should -Be 'Not Assessed' -Because "build '$notABuild'"
+                [string]$z.Detail | Should -Match ("OS build not read \(the DC returned '{0}', which is not a build number\)" -f [regex]::Escape($notABuild))
+            }
+        }
+        It 'gives a setting the seam returned nothing for its own Not Assessed row, so no setting is silently absent' {
+            $raw = New-C3Raw -Numbers (New-C3GoodNumbers)
+            $raw.Values = @($raw.Values | Where-Object { $_.Id -ne 'LmCompatibilityLevel' })
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $raw -Config $script:Hc)
+            $rows.Count | Should -Be 8
+            $gap = Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com'
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Detail | Should -Match '^Read failed: no result was returned'
+        }
+        It 'grades the Print Spooler row on the service state, and never passes a state it did not read' {
+            function Get-C3Spooler { param($Raw) Get-C3Row @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $Raw -Config $script:Hc) 'Print Spooler: dc1.contoso.com' }
+            $run = Get-C3Spooler (New-C3Raw -SpoolerState 'Running' -SpoolerStartMode 'Auto')
+            $run.Status | Should -Be 'Warning'
+            $run.Detail | Should -Match 'Running'
+            $stopped = Get-C3Spooler (New-C3Raw -SpoolerState 'Stopped' -SpoolerStartMode 'Disabled')
+            $stopped.Status | Should -Be 'Pass'
+            $stopped.Detail | Should -Not -Match 'not Disabled'
+            $manual = Get-C3Spooler (New-C3Raw -SpoolerState 'Stopped' -SpoolerStartMode 'Manual')
+            $manual.Status | Should -Be 'Pass'
+            $manual.Detail | Should -Match 'start mode is Manual, not Disabled'
+            (Get-C3Spooler (New-C3Raw -SpoolerState 'Paused' -SpoolerStartMode 'Auto')).Status | Should -Be 'Warning'
+            (Get-C3Spooler (New-C3Raw -SpoolerState '' -SpoolerStartMode '')).Status | Should -Be 'Not Assessed'
+            (Get-C3Spooler (New-C3Raw -SpoolerState 'Unknown' -SpoolerStartMode 'Auto')).Status | Should -Be 'Not Assessed'
+            $none = Get-C3Spooler (New-C3Raw -SpoolerFound $false -SpoolerState '' -SpoolerStartMode '')
+            $none.Status | Should -Be 'Not Assessed'
+            $none.Detail | Should -Match 'returned no service named Spooler'
+            $denied = Get-C3Spooler (New-C3Raw -SpoolerOk $false -SpoolerError 'Acesso negado.' -SpoolerErrorCode 'AccessDenied')
+            $denied.Status | Should -Be 'Not Assessed'
+            $denied.Detail | Should -Match '^Access denied'
+            $failed = Get-C3Spooler (New-C3Raw -SpoolerOk $false -SpoolerError 'Invalid class' -SpoolerErrorCode 'Failed')
+            $failed.Status | Should -Be 'Not Assessed'
+            $failed.Detail | Should -Match '^Read failed'
+            $failed.Detail | Should -Match 'Invalid class'
+        }
+        It 'grades the SMBv1 row on EnableSMB1Protocol, and never passes a property that was not returned' {
+            function Get-C3Smb1 { param($Raw) Get-C3Row @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $Raw -Config $script:Hc) 'SMBv1: dc1.contoso.com' }
+            (Get-C3Smb1 (New-C3Raw -Smb1 $true)).Status | Should -Be 'Fail'
+            (Get-C3Smb1 (New-C3Raw -Smb1 $false)).Status | Should -Be 'Pass'
+            (Get-C3Smb1 (New-C3Raw -Smb1 'True')).Status | Should -Be 'Fail'
+            (Get-C3Smb1 (New-C3Raw -Smb1 'False')).Status | Should -Be 'Pass'
+            # The old code read a missing property as "not enabled" and passed it.
+            $missing = Get-C3Smb1 (New-C3Raw -Smb1 $null)
+            $missing.Status | Should -Be 'Not Assessed'
+            $missing.Detail | Should -Match 'EnableSMB1Protocol was not returned'
+            (Get-C3Smb1 (New-C3Raw -Smb1 'maybe')).Status | Should -Be 'Not Assessed'
+            $denied = Get-C3Smb1 (New-C3Raw -SmbOk $false -SmbError 'Access is denied.')
+            $denied.Status | Should -Be 'Not Assessed'
+            $denied.Detail | Should -Match '^Access denied'
+            $failed = Get-C3Smb1 (New-C3Raw -SmbOk $false -SmbError 'Invalid namespace' -SmbErrorCode 'Failed')
+            $failed.Detail | Should -Match '^Read failed'
+        }
+        It 'reports an SMB configuration class that returned no instance as not read - the shape measured on a real host - and passes nothing on it' {
+            # Measured 2026-11-15 on one Windows 11 workstation (not a DC, not elevated): the
+            # instance query returns no instance and no error. A hardened DC answering that way:
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope 'contoso.com' -Raw (New-C3Raw -Numbers (New-C3GoodNumbers) -SmbNoInstance) -Config $script:Hc)
+            # Declared population: the six registry settings, Print Spooler and SMBv1.
+            $rows.Count | Should -Be 8
+            $smb1 = Get-C3Row $rows 'SMBv1: dc1.contoso.com'
+            $smb1.Status | Should -Be 'Not Assessed' -Because 'nothing was read, so nothing may pass'
+            [string]$smb1.Detail | Should -Match '^Not read: MSFT_SmbServerConfiguration returned no instance to an instance query'
+            [string]$smb1.Detail | Should -Match 'This is not a pass'
+            [string]$smb1.Detail | Should -Match 'GetConfiguration'
+            [string]$smb1.Detail | Should -Match 'this tool does not invoke'
+            [string]$smb1.Detail | Should -Match 'PORT-PLAN C3f'
+            # It is its own result: not a refusal, and not a failed query.
+            [string]$smb1.Detail | Should -Not -Match '^(Access denied|Read failed)'
+            # SMB server signing is then graded on the registry alone, and says the second instrument is missing and why.
+            $server = Get-C3Row $rows 'SMB server signing: dc1.contoso.com'
+            $server.Status | Should -Be 'Pass'
+            [string]$server.Detail | Should -Match 'second instrument, MSFT_SmbServerConfiguration\.RequireSecuritySignature, was not read \(MSFT_SmbServerConfiguration returned no instance to an instance query'
+            [string]$server.Detail | Should -Not -Match 'agrees|disagree'
+            # With the registry value not set there is nothing to grade the row on: Not Assessed, on every build.
+            foreach ($b in @('17763', '26100', '')) {
+                $unset = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -Build $b -SmbNoInstance) -Config $script:Hc)
+                (Get-C3Row $unset 'SMB server signing: dc1.contoso.com').Status | Should -Be 'Not Assessed' -Because "build '$b'"
+                (Get-C3Row $unset 'SMBv1: dc1.contoso.com').Status | Should -Be 'Not Assessed' -Because "build '$b'"
+            }
+            # A raw read that carries values beside SmbNoInstance is still not read: the flag wins over stray data.
+            $stray = New-C3Raw -Numbers (New-C3GoodNumbers) -SmbNoInstance
+            $stray.SmbEnableSmb1 = $false
+            $stray.SmbRequireSigning = $true
+            $strayRows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $stray -Config $script:Hc)
+            (Get-C3Row $strayRows 'SMBv1: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            [string](Get-C3Row $strayRows 'SMB server signing: dc1.contoso.com').Detail | Should -Not -Match 'agrees'
+            # Non-vacuity: an instance, where one is returned, is graded.
+            $with = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -Numbers (New-C3GoodNumbers)) -Config $script:Hc)
+            (Get-C3Row $with 'SMBv1: dc1.contoso.com').Status | Should -Be 'Pass'
+        }
+        It 'feeds the SMB server signing row its second instrument from the same read' {
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -Numbers @{ SmbServerSigning = 1 } -SmbSigning $false) -Config $script:Hc)
+            $veto = Get-C3Row $rows 'SMB server signing: dc1.contoso.com'
+            $veto.Status | Should -Be 'Not Assessed'
+            $veto.Detail | Should -Match 'two instruments disagree'
+            $unset = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -SmbSigning $true) -Config $script:Hc)
+            (Get-C3Row $unset 'SMB server signing: dc1.contoso.com').Status | Should -Be 'Pass'
+            # A property that was not returned is "not read", not False.
+            $nullProp = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -Numbers @{ SmbServerSigning = 1 } -SmbSigning $null) -Config $script:Hc)
+            $np = Get-C3Row $nullProp 'SMB server signing: dc1.contoso.com'
+            $np.Status | Should -Be 'Pass'
+            $np.Detail | Should -Match 'was not read'
+        }
+        It 'says in every LDAP server signing row that its registry path is inferred, not published - and in no other row' {
+            # Declared population: the three kinds of verdict the row can carry - a pass, the
+            # status below the expectation, and Not Assessed.
+            $cases = @(
+                @{ Raw = (New-C3Raw -Numbers (New-C3GoodNumbers)); Want = 'Pass' }
+                @{ Raw = (New-C3Raw -Numbers @{ LdapServerIntegrity = 1 }); Want = 'Warning' }
+                @{ Raw = (New-C3Raw -Entries @{ LdapServerIntegrity = (New-C3Value -Id 'LdapServerIntegrity' -ReturnValue 5) }); Want = 'Not Assessed' }
+            )
+            $cases.Count | Should -Be 3
+            foreach ($c in $cases) {
+                $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $c.Raw -Config $script:Hc)
+                $rows.Count | Should -Be 8
+                $ldap = Get-C3Row $rows 'LDAP server signing: dc1.contoso.com'
+                $ldap.Status | Should -Be $c.Want
+                [string]$ldap.Detail | Should -Match 'registry path of this value is inferred, not published by Microsoft for AD DS' -Because $c.Want
+                [string]$ldap.Detail | Should -Match 'for AD LDS only' -Because $c.Want
+                # The other seven rows read a path Microsoft does publish, and do not say it.
+                @($rows | Where-Object { [string]$_.Detail -match 'path of this value is inferred' }).Count | Should -Be 1 -Because $c.Want
+            }
+            # The note is held by exactly one setting of the table, and a file cannot replace it.
+            @($script:Hc['Settings'] | Where-Object { $_.ContainsKey('KeyNote') }).Count | Should -Be 1
+            [string](Get-C3Setting -Id 'LdapServerIntegrity')['KeyNote'] | Should -Match 'inferred'
+            { Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override @{ Settings = @{ LdapServerIntegrity = @{ KeyNote = 'x' } } } } | Should -Throw "*unknown key 'KeyNote'*"
+        }
+        It 'says that the status of a value below the expectation is a tool default or an override, not a Microsoft value - on those rows only' {
+            $raw = New-C3Raw -Numbers @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 1; SmbServerSigning = 1; SmbClientSigning = 0; LmCompatibilityLevel = 3 }
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $raw -Config $script:Hc)
+            $rows.Count | Should -Be 8
+            $labelled = @($rows | Where-Object { [string]$_.Detail -match 'is a tool default or your own override, not a Microsoft value' })
+            # Declared population: the three settings this DC holds below their expectation.
+            (@($labelled | ForEach-Object { [string]$_.Item -replace ': .*$', '' }) -join '|') | Should -Be 'LDAP channel binding|SMB client signing|LAN Manager authentication level'
+            foreach ($r in $labelled) {
+                $r.Status | Should -Be 'Warning'
+                [string]$r.Detail | Should -Match 'below the expectation \(Warning\) is a tool default' -Because $r.Item
+            }
+            # A documented default that falls short is graded with the same status, and says so too;
+            # a row that is Pass, Info or Not Assessed never carries the sentence.
+            $unset = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -SmbOk $false -SmbError 'x') -Config $script:Hc)
+            $unsetLabelled = @($unset | Where-Object { [string]$_.Detail -match 'is a tool default or your own override' })
+            (@($unsetLabelled | ForEach-Object { [string]$_.Item -replace ': .*$', '' }) -join '|') | Should -Be 'LDAP server signing|LDAP channel binding|SMB client signing|LAN Manager authentication level'
+            @($unsetLabelled | Where-Object { $_.Status -ne 'Warning' }).Count | Should -Be 0
+            @($unset | Where-Object { @('Pass', 'Info', 'Not Assessed') -contains [string]$_.Status -and [string]$_.Detail -match 'tool default' }).Count | Should -Be 0
+            # Non-vacuity: the unlabelled statuses really are there.
+            (Get-C3Row $unset 'SMB server signing: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C3Row $unset 'LDAP server signing enforcement: dc1.contoso.com').Status | Should -Be 'Info'
+            # With the status set from a file, the sentence names that status.
+            $merged = Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override @{ Settings = @{ SmbClientSigning = @{ OtherStatus = 'Fail' } } } -OverrideSource 'C:\cfg\hardening.json'
+            $client = Get-C3Row @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $raw -Config $merged) 'SMB client signing: dc1.contoso.com'
+            $client.Status | Should -Be 'Fail'
+            [string]$client.Detail | Should -Match 'below the expectation \(Fail\) is a tool default or your own override, not a Microsoft value'
+        }
+    }
+
+    Context 'Get-AdfaDcHardening (collector)' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            $script:C3Reads = @()
+        }
+        It 'reads every DC, not only the first, and gives each its own rows and domain' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                $script:C3Reads += $ComputerName
+                $numbers = New-C3GoodNumbers
+                if ($ComputerName -eq $script:C3Dc2) { $numbers['LmCompatibilityLevel'] = 3 }
+                if ($ComputerName -eq $script:C3Dc3) { $numbers['SmbClientSigning'] = 0 }
+                New-C3Raw -Numbers $numbers -Protocol $Protocol
+            }
+            $dcs = @(
+                [pscustomobject]@{ Scope = 'contoso.com'; HostName = $script:C3Dc1 },
+                [pscustomobject]@{ Scope = 'contoso.com'; HostName = $script:C3Dc2 },
+                [pscustomobject]@{ Scope = 'fabrikam.com'; HostName = $script:C3Dc3 }
+            )
+            $rows = @(Get-AdfaDcHardening -DomainControllers $dcs -Config $script:Hc)
+            # Declared population: three DCs, eight rows each.
+            $rows.Count | Should -Be 24
+            ($script:C3Reads -join ',') | Should -Be 'dc1.contoso.com,dc2.contoso.com,dc3.fabrikam.com'
+            foreach ($dc in @($script:C3Dc1, $script:C3Dc2, $script:C3Dc3)) {
+                foreach ($family in $script:C3Families) {
+                    @($rows | Where-Object { [string]$_.Item -eq ("{0}: {1}" -f $family, $dc) }).Count | Should -Be 1 -Because "$family on $dc"
+                }
+            }
+            (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'LAN Manager authentication level: dc2.contoso.com').Status | Should -Be 'Warning'
+            $third = Get-C3Row $rows 'SMB client signing: dc3.fabrikam.com'
+            $third.Status | Should -Be 'Warning'
+            $third.Scope | Should -Be 'fabrikam.com'
+            @($rows | Where-Object { $_.Scope -eq 'contoso.com' }).Count | Should -Be 16
+            @($rows | Where-Object { $_.Scope -eq 'fabrikam.com' }).Count | Should -Be 8
+        }
+        It 'accepts plain host names as well as inventory rows' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                New-C3Raw -Numbers (New-C3GoodNumbers) -Protocol $Protocol
+            }
+            $rows = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1, $script:C3Dc2) -Config $script:Hc)
+            $rows.Count | Should -Be 16
+            (Get-C3Row $rows 'SMBv1: dc2.contoso.com').Status | Should -Be 'Pass'
+            [string]$rows[0].Scope | Should -Be ''
+        }
+        It 'reports Not Assessed, never a clean result, when there are no DCs, and carries the enumeration error' {
+            $rows = @(Get-AdfaDcHardening -DomainControllers @() -Config $script:Hc)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'DC hardening'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match 'not a clean result'
+            $why = @(Get-AdfaDcHardening -DomainControllers $null -Config $script:Hc -EnumerationError 'The server is not operational')
+            $why.Count | Should -Be 1
+            $why[0].Status | Should -Be 'Not Assessed'
+            $why[0].Detail | Should -Match 'not operational'
+        }
+        It 'accounts for every scoped domain: a domain with no DC row gets a Not Assessed row of its own, never a gap' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                New-C3Raw -Numbers (New-C3GoodNumbers) -Protocol $Protocol
+            }
+            $scoped = @('contoso.com', 'north.contoso.com', 'south.contoso.com', 'fabrikam.com')
+            $dcs = @(
+                [pscustomobject]@{ Scope = 'contoso.com'; HostName = $script:C3Dc1 },
+                [pscustomobject]@{ Scope = 'CONTOSO.com'; HostName = $script:C3Dc2 },
+                [pscustomobject]@{ Scope = 'fabrikam.com'; HostName = $script:C3Dc3 }
+            )
+            $failed = @([pscustomobject]@{ Domain = 'south.contoso.com'; Error = 'The server is not operational' })
+            $rows = @(Get-AdfaDcHardening -DomainControllers $dcs -Config $script:Hc -InventoryFailures $failed -ScopedDomains $scoped)
+            # Declared population: the four scoped domains. Two are covered by DC rows (three DCs,
+            # eight rows each), one failed, one returned no DC.
+            $rows.Count | Should -Be 26
+            foreach ($d in $scoped) {
+                @($rows | Where-Object { [string]$_.Scope -eq $d }).Count | Should -BeGreaterThan 0 -Because "scoped domain $d must appear in the section"
+            }
+            (Get-C3Row $rows 'DC hardening - contoso.com') | Should -BeNullOrEmpty
+            (Get-C3Row $rows 'DC hardening - fabrikam.com') | Should -BeNullOrEmpty
+            $south = Get-C3Row $rows 'DC hardening - south.contoso.com'
+            $south.Status | Should -Be 'Not Assessed'
+            $south.Scope | Should -Be 'south.contoso.com'
+            $south.Detail | Should -Match 'could not be enumerated\. Cause: The server is not operational'
+            $south.Detail | Should -Match 'None of its hardening settings was read\.$'
+            $north = Get-C3Row $rows 'DC hardening - north.contoso.com'
+            $north.Status | Should -Be 'Not Assessed'
+            $north.Detail | Should -Match 'returned no domain controller for this domain'
+            # With no DC at all, every scoped domain still has its row, and nothing passes.
+            $none = @(Get-AdfaDcHardening -DomainControllers @() -Config $script:Hc -ScopedDomains $scoped)
+            $none.Count | Should -Be 5   # four domain rows and the section's own "no DC enumerated" row
+            @($none | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            foreach ($d in $scoped) { (Get-C3Row $none ("DC hardening - {0}" -f $d)).Status | Should -Be 'Not Assessed' }
+        }
+        It 'does not say "nothing was read" for a failed domain when DCs without a domain follow it' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                New-C3Raw -Numbers (New-C3GoodNumbers) -Protocol $Protocol
+            }
+            $failed = @([pscustomobject]@{ Domain = 'contoso.com'; Error = 'ADWS down' })
+            $rows = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1, $script:C3Dc2) -Config $script:Hc -InventoryFailures $failed -ScopedDomains @('contoso.com'))
+            $rows.Count | Should -Be 17
+            $gap = Get-C3Row $rows 'DC hardening - contoso.com'
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Detail | Should -Match 'ADWS down'
+            $gap.Detail | Should -Not -Match '(?i)none of its hardening settings was read'
+            $gap.Detail | Should -Match 'The 2 domain controller\(s\) listed in this section without a domain came from the fallback enumeration'
+        }
+        It 'passes the run''s credential to the seam for every DC and transport, and none when there is none' {
+            $script:C3Creds = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                $user = '(none)'
+                if ($PSBoundParameters.ContainsKey('Credential') -and $null -ne $Credential) { $user = [string]$Credential.UserName }
+                $script:C3Creds += ("{0}/{1}/{2}/{3}" -f $ComputerName, $Protocol, $user, $OperationTimeoutSec)
+                if ($Protocol -eq 'Wsman') { return (Get-C3FailedRaw -Protocol $Protocol -Message 'The WinRM client cannot process the request.' -Code 'Failed') }
+                New-C3Raw -Numbers (New-C3GoodNumbers) -Protocol $Protocol
+            }
+            $secret = New-Object System.Security.SecureString
+            foreach ($ch in 'stub'.ToCharArray()) { $secret.AppendChar($ch) }
+            $cred = New-Object System.Management.Automation.PSCredential -ArgumentList 'CONTOSO\reader', $secret
+            Get-AdfaDcHardening -DomainControllers @($script:C3Dc1, $script:C3Dc2) -Config $script:Hc -Credential $cred -OperationTimeoutSec 45 | Out-Null
+            # Declared population: two DCs, two transports each.
+            ($script:C3Creds -join ',') | Should -Be 'dc1.contoso.com/Wsman/CONTOSO\reader/45,dc1.contoso.com/Dcom/CONTOSO\reader/45,dc2.contoso.com/Wsman/CONTOSO\reader/45,dc2.contoso.com/Dcom/CONTOSO\reader/45'
+            Clear-AdfaDcPortCache
+            $script:C3Creds = @()
+            Get-AdfaDcHardening -DomainControllers @($script:C3Dc1) -Config $script:Hc | Out-Null
+            ($script:C3Creds -join ',') | Should -Be 'dc1.contoso.com/Wsman/(none)/90,dc1.contoso.com/Dcom/(none)/90'
+        }
+        It 'reports an unreachable DC as unreachable, without attempting a read' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $false }
+            function Get-AdfaDcHardeningRaw { param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings) $script:C3Reads += $ComputerName }
+            $rows = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1) -Config $script:Hc)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'DC hardening: dc1.contoso.com'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '^Unreachable'
+            $rows[0].Detail | Should -Match '5985'
+            $rows[0].Detail | Should -Match '135'
+            @($script:C3Reads).Count | Should -Be 0
+        }
+        It 'reports access denied as access denied, not as unreachable, and does not retry it over DCOM' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                $script:C3Reads += $Protocol
+                Get-C3FailedRaw -Protocol $Protocol -Message 'Acesso negado.' -Code 'AccessDenied'
+            }
+            $rows = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1) -Config $script:Hc)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'DC hardening: dc1.contoso.com'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '^Access denied'
+            $rows[0].Detail | Should -Match 'Administrators'
+            $rows[0].Detail | Should -Match 'Acesso negado'
+            $rows[0].Detail | Should -Not -Match '(?i)unreachable'
+            ($script:C3Reads -join ',') | Should -Be 'Wsman'
+        }
+        It 'reports any other failure as a read failure, with both attempts quoted, and not as a refusal' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                Get-C3FailedRaw -Protocol $Protocol -Message "The RPC server is unavailable ($Protocol)." -Code 'Failed'
+            }
+            $rows = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1) -Config $script:Hc)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '^Read failed'
+            $rows[0].Detail | Should -Not -Match '^Access denied'
+            $rows[0].Detail | Should -Match 'unavailable \(Wsman\)'
+            $rows[0].Detail | Should -Match 'unavailable \(Dcom\)'
+        }
+        It 'tries WinRM first and DCOM second, and reports which one answered' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                $script:C3Reads += $Protocol
+                if ($Protocol -eq 'Wsman') { return (Get-C3FailedRaw -Protocol $Protocol -Message 'The WinRM client cannot process the request.' -Code 'Failed') }
+                New-C3Raw -Numbers (New-C3GoodNumbers) -Protocol $Protocol
+            }
+            $rows = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1) -Config $script:Hc)
+            ($script:C3Reads -join ',') | Should -Be 'Wsman,Dcom'
+            (Get-C3Row $rows 'LDAP channel binding: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'LDAP channel binding: dc1.contoso.com').Detail | Should -Match 'Read over Dcom'
+        }
+        It 'uses only the transport whose port answered, the ports the config names, and hands the seam the config''s settings' {
+            $script:C3Probed = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C3Probed += $Port; return ($Port -eq 1135) }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                $script:C3Reads += ("{0}:{1}" -f $Protocol, (@($Settings | ForEach-Object { [string]$_['ValueName'] }) -join '|'))
+                New-C3Raw -Numbers (New-C3GoodNumbers) -Protocol $Protocol
+            }
+            # The two ports are held by the table and cannot be set from a file (see the validator's
+            # tests); a copy of the table is changed here only to show the collector reads them from it.
+            $cfg = Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override $null
+            $cfg['WsmanPort'] = 5986
+            $cfg['RpcPort'] = 1135
+            Get-AdfaDcHardening -DomainControllers @($script:C3Dc1) -Config $cfg | Out-Null
+            ($script:C3Reads -join ',') | Should -Be 'Dcom:LDAPServerIntegrity|LDAPServerEnforceIntegrity|LdapEnforceChannelBinding|RequireSecuritySignature|RequireSecuritySignature|LmCompatibilityLevel'
+            (@($script:C3Probed | Sort-Object) -join ',') | Should -Be '1135,5986'
+            $script:Hc['WsmanPort'] | Should -Be 5985 -Because 'the built-in table is not modified'
+        }
+        It 'probes with the caller''s port timeout, and reports that same timeout for a DC that did not answer' {
+            $script:C3Probed = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C3Probed += ("{0}:{1}:{2}" -f $ComputerName, $Port, $TimeoutMs); return $false }
+            function Get-AdfaDcHardeningRaw { param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings) $script:C3Reads += $ComputerName }
+            $rows = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1, $script:C3Dc2) -Config $script:Hc -PortTimeoutMs 4321)
+            # Declared population: two DCs by two ports, every probe with the timeout the caller gave.
+            (@($script:C3Probed | Sort-Object) -join ',') | Should -Be 'dc1.contoso.com:135:4321,dc1.contoso.com:5985:4321,dc2.contoso.com:135:4321,dc2.contoso.com:5985:4321'
+            $rows.Count | Should -Be 2
+            foreach ($r in $rows) { [string]$r.Detail | Should -Match 'answered within 4321 ms' -Because $r.Item }
+            @($script:C3Reads).Count | Should -Be 0
+            # And the default, when the caller gives none.
+            Clear-AdfaDcPortCache
+            $script:C3Probed = @()
+            Get-AdfaDcHardening -DomainControllers @($script:C3Dc1) -Config $script:Hc | Out-Null
+            (@($script:C3Probed | Sort-Object) -join ',') | Should -Be 'dc1.contoso.com:135:1200,dc1.contoso.com:5985:1200'
+        }
+        It 'reads and grades with the config it was given, not the built-in table: a file''s expectation reaches the seam and the rows' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                $script:C3Reads += (@($Settings | ForEach-Object { "{0}={1}/{2}" -f [string]$_['Id'], [string]$_['ExpectedMinimum'], [string]$_['OtherStatus'] }) -join '|')
+                New-C3Raw -Numbers @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 2; SmbServerSigning = 1; SmbClientSigning = 0; LmCompatibilityLevel = 3 } -Protocol $Protocol
+            }
+            $cfg = Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -OverrideSource 'C:\cfg\hardening.json' -Override @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 3 }; SmbClientSigning = @{ OtherStatus = 'Fail' } } }
+            $rows = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1, $script:C3Dc2) -Config $cfg)
+            $rows.Count | Should -Be 16
+            # Declared population: two DCs, and for each of them the seam was handed the merged table.
+            @($script:C3Reads).Count | Should -Be 2
+            foreach ($seen in $script:C3Reads) {
+                $seen | Should -Match 'LmCompatibilityLevel=3/Warning'
+                $seen | Should -Match 'SmbClientSigning=1/Fail'
+            }
+            foreach ($dc in @($script:C3Dc1, $script:C3Dc2)) {
+                $lm = Get-C3Row $rows ("LAN Manager authentication level: {0}" -f $dc)
+                $lm.Status | Should -Be 'Pass' -Because 'the file lowered the expectation to 3'
+                [string]$lm.Detail | Should -Match 'C:\\cfg\\hardening\.json'
+                (Get-C3Row $rows ("SMB client signing: {0}" -f $dc)).Status | Should -Be 'Fail' -Because 'the file set the status below the expectation to Fail'
+            }
+            # Non-vacuity: the same read against the built-in table grades both rows differently.
+            $builtIn = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1) -Config $script:Hc)
+            (Get-C3Row $builtIn 'LAN Manager authentication level: dc1.contoso.com').Status | Should -Be 'Warning'
+            (Get-C3Row $builtIn 'SMB client signing: dc1.contoso.com').Status | Should -Be 'Warning'
+        }
+        It 'does not try DCOM when the RPC port did not answer, even after the WinRM read failed' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($Port -eq 5985) }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                $script:C3Reads += $Protocol
+                Get-C3FailedRaw -Protocol $Protocol -Message 'The operation has timed out.' -Code 'Failed'
+            }
+            $rows = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1) -Config $script:Hc)
+            # Declared population: the one transport whose port answered.
+            ($script:C3Reads -join ',') | Should -Be 'Wsman'
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            [string]$rows[0].Detail | Should -Match '^Read failed'
+            [string]$rows[0].Detail | Should -Match 'Wsman: The operation has timed out\.'
+            [string]$rows[0].Detail | Should -Not -Match 'Dcom'
+        }
+        It 'shares the probe cache with the other per-DC sections: a DC already probed is not probed again' {
+            $script:C3Probed = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C3Probed += ("{0}:{1}" -f $ComputerName, $Port); return $true }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                New-C3Raw -Numbers (New-C3GoodNumbers) -Protocol $Protocol
+            }
+            Test-AdfaDcPort -ComputerName $script:C3Dc1 -Port 5985 | Out-Null
+            Test-AdfaDcPort -ComputerName $script:C3Dc1 -Port 135 | Out-Null
+            Get-AdfaDcHardening -DomainControllers @($script:C3Dc1, $script:C3Dc2) -Config $script:Hc | Out-Null
+            # Declared population: two DCs by two ports, each probed once in the whole run.
+            (@($script:C3Probed | Sort-Object) -join ',') | Should -Be 'dc1.contoso.com:135,dc1.contoso.com:5985,dc2.contoso.com:135,dc2.contoso.com:5985'
+        }
+        It 'handles a mixed set: one DC read, one unreachable, one refused - and passes nothing it did not read' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($ComputerName -ne $script:C3Dc2) }
+            function Get-AdfaDcHardeningRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Settings)
+                if ($ComputerName -eq $script:C3Dc3) { return (Get-C3FailedRaw -Protocol $Protocol -Message 'Access is denied.' -Code 'AccessDenied') }
+                New-C3Raw -Numbers (New-C3GoodNumbers) -Protocol $Protocol
+            }
+            $dcs = @(
+                [pscustomobject]@{ Scope = 'contoso.com'; HostName = $script:C3Dc1 },
+                [pscustomobject]@{ Scope = 'contoso.com'; HostName = $script:C3Dc2 },
+                [pscustomobject]@{ Scope = 'fabrikam.com'; HostName = $script:C3Dc3 }
+            )
+            $rows = @(Get-AdfaDcHardening -DomainControllers $dcs -Config $script:Hc)
+            # Declared population: eight rows for the DC that was read, one each for the other two.
+            $rows.Count | Should -Be 10
+            (Get-C3Row $rows 'DC hardening: dc2.contoso.com').Detail | Should -Match '^Unreachable'
+            (Get-C3Row $rows 'DC hardening: dc3.fabrikam.com').Detail | Should -Match '^Access denied'
+            (Get-C3Row $rows 'DC hardening: dc3.fabrikam.com').Scope | Should -Be 'fabrikam.com'
+            @($rows | Where-Object { $_.Status -eq 'Pass' -and [string]$_.Item -notmatch 'dc1\.contoso\.com$' }).Count | Should -Be 0
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 7
+        }
+        It 'gives a DC with no host name a Not Assessed row instead of dropping it' {
+            $rows = @(Get-AdfaDcHardening -DomainControllers @([pscustomobject]@{ Scope = 'contoso.com'; HostName = '' }) -Config $script:Hc)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'DC hardening: (unnamed)'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Scope | Should -Be 'contoso.com'
+        }
+    }
+
+    Context 'Shared helpers generalised from DcDisk' {
+        It 'names the scoped domains that need a row of their own (Get-AdfaDcPopulationGap)' {
+            $targets = @(
+                [pscustomobject]@{ Scope = 'contoso.com'; HostName = $script:C3Dc1 },
+                'dc9.contoso.com'
+            )
+            $gaps = @(Get-AdfaDcPopulationGap -Targets $targets -ScopedDomains @('contoso.com', 'north.contoso.com', 'south.contoso.com') `
+                    -InventoryFailures @([pscustomobject]@{ Domain = 'south.contoso.com'; Error = 'boom' }, [pscustomobject]@{ Domain = 'east.contoso.com'; Error = 'bang' }))
+            # Declared population: three scoped domains and one named only by a failure; contoso.com is covered.
+            (@($gaps | ForEach-Object { [string]$_.Domain }) -join ',') | Should -Be 'north.contoso.com,south.contoso.com,east.contoso.com'
+            $gaps[0].Failed | Should -BeFalse
+            $gaps[1].Failed | Should -BeTrue
+            [string]$gaps[1].Error | Should -Be 'boom'
+            $gaps[0].WithoutDomain | Should -Be 1
+            $gaps[0].Seen | Should -BeFalse
+            # A domain that both failed and has DC rows still gets a row.
+            $both = @(Get-AdfaDcPopulationGap -Targets $targets -ScopedDomains @('contoso.com') -InventoryFailures @([pscustomobject]@{ Domain = 'CONTOSO.com'; Error = 'x' }))
+            $both.Count | Should -Be 1
+            $both[0].Seen | Should -BeTrue
+            @(Get-AdfaDcPopulationGap -Targets $targets -ScopedDomains @('contoso.com')).Count | Should -Be 0
+        }
+        It 'counts a single DC without a domain: the population row then does not claim that nothing was read (Get-AdfaDcPopulationGapText)' {
+            $nothing = 'None of its hardening settings was read.'
+            # Declared population: no DC without a domain, exactly one, and two.
+            $none = @(Get-AdfaDcPopulationGap -Targets @() -ScopedDomains @('contoso.com'))
+            $none.Count | Should -Be 1
+            $none[0].WithoutDomain | Should -Be 0
+            (Get-AdfaDcPopulationGapText -Gap $none[0] -NothingRead $nothing) | Should -Be ("The enumeration returned no domain controller for this domain. {0}" -f $nothing)
+            $one = @(Get-AdfaDcPopulationGap -Targets @($script:C3Dc1) -ScopedDomains @('contoso.com'))
+            $one.Count | Should -Be 1
+            $one[0].WithoutDomain | Should -Be 1
+            $oneText = Get-AdfaDcPopulationGapText -Gap $one[0] -NothingRead $nothing
+            $oneText | Should -Match 'The 1 domain controller\(s\) listed in this section without a domain'
+            $oneText | Should -Not -Match ([regex]::Escape($nothing))
+            $two = @(Get-AdfaDcPopulationGap -Targets @($script:C3Dc1, $script:C3Dc2) -ScopedDomains @('contoso.com'))
+            (Get-AdfaDcPopulationGapText -Gap $two[0] -NothingRead $nothing) | Should -Match 'The 2 domain controller\(s\) listed'
+        }
+        It 'reads a target as a host name and a domain, whatever shape it arrives in (ConvertTo-AdfaDcTarget)' {
+            $a = ConvertTo-AdfaDcTarget -Target $script:C3Dc1
+            $a.HostName | Should -Be 'dc1.contoso.com'
+            $a.Scope | Should -Be ''
+            $b = ConvertTo-AdfaDcTarget -Target ([pscustomobject]@{ Scope = 'fabrikam.com'; HostName = $script:C3Dc3 })
+            $b.HostName | Should -Be 'dc3.fabrikam.com'
+            $b.Scope | Should -Be 'fabrikam.com'
+            (ConvertTo-AdfaDcTarget -Target ([pscustomobject]@{ Name = 'x' })).HostName | Should -Be ''
+        }
+    }
+
+    Context 'Get-AdfaDcHardeningRaw (the CIM seam)' {
+        BeforeAll {
+            function New-CimSessionOption { param([string]$Protocol) [pscustomobject]@{ Protocol = $Protocol } }
+            # Simple functions on purpose, with -WhatIf and -Confirm NOT declared: the values the
+            # caller passes for them then arrive in $args as '-WhatIf:' followed by the value.
+            function Get-C3Switch {
+                param($Arguments, [string]$Name)
+                for ($i = 0; $i -lt @($Arguments).Count; $i++) {
+                    if ([string]$Arguments[$i] -eq ("-{0}:" -f $Name) -and ($i + 1) -lt @($Arguments).Count) { return $Arguments[$i + 1] }
+                }
+                return $null
+            }
+            function Remove-CimSession {
+                param($CimSession)
+                $script:C3Closed++
+                $script:C3CloseCalls += [pscustomobject]@{ WhatIf = (Get-C3Switch -Arguments $args -Name 'WhatIf'); Confirm = (Get-C3Switch -Arguments $args -Name 'Confirm') }
+            }
+            function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
+                if ($null -ne $script:C3SessionError) { throw $script:C3SessionError }
+                $p = 'none'; if ($null -ne $SessionOption) { $p = [string]$SessionOption.Protocol }; $script:C3Opts += $p
+                $user = '(none)'
+                if ($PSBoundParameters.ContainsKey('Credential') -and $null -ne $Credential) { $user = [string]$Credential.UserName }
+                $script:C3Sessions += [pscustomobject]@{ ComputerName = $ComputerName; User = $user; OperationTimeoutSec = $OperationTimeoutSec }
+                [pscustomobject]@{ ComputerName = $ComputerName } }
+            # StdRegProv.GetDWORDValue through Invoke-CimMethod returns ReturnValue (uint32) and the
+            # method's [out] parameter uValue (uint32), which is absent on every nonzero return.
+            # The codes are the ones MEASURED from the real provider on 2026-11-13 (one Windows 11
+            # workstation, not a DC): 1 for a value that does not exist under a key that does, 2
+            # for a key that does not exist. The stub's registry is keyed "key|value"; a key in
+            # $script:C3AbsentKeys answers 2, a value it does not hold answers 1.
+            function Invoke-CimMethod {
+                param($CimSession, [string]$Namespace, [string]$ClassName, [string]$MethodName, $Arguments, [uint32]$OperationTimeoutSec, $ErrorAction)
+                $script:C3Calls += [pscustomobject]@{ Namespace = $Namespace; ClassName = $ClassName; MethodName = $MethodName
+                    Hive = $Arguments['hDefKey']; Key = [string]$Arguments['sSubKeyName']; ValueName = [string]$Arguments['sValueName']
+                    WhatIf = (Get-C3Switch -Arguments $args -Name 'WhatIf'); Confirm = (Get-C3Switch -Arguments $args -Name 'Confirm')
+                    Bounded = $PSBoundParameters.ContainsKey('OperationTimeoutSec'); OperationTimeoutSec = $OperationTimeoutSec }
+                if (@($script:C3AbsentKeys) -contains [string]$Arguments['sSubKeyName']) { return [pscustomobject]@{ ReturnValue = [uint32]2; uValue = $null; PSComputerName = 'x' } }
+                $answer = $script:C3Registry[("{0}|{1}" -f [string]$Arguments['sSubKeyName'], [string]$Arguments['sValueName'])]
+                if ($null -eq $answer) { return [pscustomobject]@{ ReturnValue = [uint32]1; uValue = $null; PSComputerName = 'x' } }
+                if ($answer -is [System.Exception]) { throw $answer }
+                # Two answers no provider should give, and the seam must not take for a read: nothing
+                # at all, and an object with a value but no return code.
+                if ($answer -is [string] -and $answer -eq 'NoResult') { return $null }
+                if ($answer -is [string] -and $answer -eq 'NoReturnValue') { return [pscustomobject]@{ uValue = [uint32]1; PSComputerName = 'x' } }
+                # A hashtable is a nonzero return. UValue, where given, is what a transport that fills
+                # in the [out] parameter anyway would hand back beside the code.
+                if ($answer -is [hashtable]) { return [pscustomobject]@{ ReturnValue = [uint32]$answer.Code; uValue = $answer['UValue']; PSComputerName = 'x' } }
+                return [pscustomobject]@{ ReturnValue = [uint32]0; uValue = [uint32]$answer; PSComputerName = 'x' }
+            }
+            # The three classes. Win32_OperatingSystem.BuildNumber is a string; Win32_Service.State
+            # and StartMode are strings. MSFT_SmbServerConfiguration is stubbed, by default, as what
+            # the real class was MEASURED to return to an instance query on 2026-11-15 (one Windows
+            # 11 build 26100 workstation, not a DC, not elevated, PowerShell 7 and 5.1): NO instance
+            # and no error. The cmdlet reads the class through its static method GetConfiguration,
+            # which this script does not invoke. A test that hands back an instance says so: that
+            # shape has not been measured on any host, and its two properties are booleans.
+            function Get-CimInstance {
+                param($CimSession, [string]$Namespace, [string]$ClassName, [string[]]$Property, [string]$Filter, [uint32]$OperationTimeoutSec, $ErrorAction)
+                $script:C3QueryCalls += [pscustomobject]@{ ClassName = $ClassName; Namespace = $Namespace; Property = (@($Property) -join ','); Filter = $Filter
+                    Bounded = $PSBoundParameters.ContainsKey('OperationTimeoutSec'); OperationTimeoutSec = $OperationTimeoutSec }
+                $answer = $script:C3Classes[$ClassName]
+                if ($answer -is [System.Exception]) { throw $answer }
+                return $answer
+            }
+            $script:C3Settings = $script:Config.DcHardening['Settings']
+        }
+        BeforeEach {
+            $script:C3Closed = 0
+            $script:C3CloseCalls = @()
+            $script:C3Sessions = @()
+            $script:C3SessionError = $null
+            $script:C3AbsentKeys = @()
+            $script:C3QueryCalls = @()
+            $script:C3Opts = @()
+            $script:C3Calls = @()
+            $script:C3Registry = @{
+                ("{0}|LDAPServerIntegrity" -f $script:C3NtdsKey)        = 2
+                ("{0}|LdapEnforceChannelBinding" -f $script:C3NtdsKey)  = 2
+                ("{0}|RequireSecuritySignature" -f $script:C3ServerKey) = 1
+                ("{0}|RequireSecuritySignature" -f $script:C3ClientKey) = 0
+                ("{0}|LmCompatibilityLevel" -f $script:C3LsaKey)        = 5
+            }
+            $script:C3Classes = @{
+                Win32_OperatingSystem       = [pscustomobject]@{ BuildNumber = '17763' }
+                MSFT_SmbServerConfiguration = @()
+                Win32_Service               = [pscustomobject]@{ Name = 'Spooler'; State = 'Running'; StartMode = 'Auto' }
+            }
+            # The unmeasured shape, for the tests that name it.
+            $script:C3SmbInstance = [pscustomobject]@{ EnableSMB1Protocol = $false; RequireSecuritySignature = $true }
+        }
+        It 'reads the six values from HKLM with GetDWORDValue, then the three classes, and closes the session' {
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $r.Ok | Should -BeTrue
+            $r.Protocol | Should -Be 'Wsman'
+            # Declared population: one read per setting, one call each - no retry, no second method.
+            @($r.Values).Count | Should -Be 6
+            @($script:C3Calls).Count | Should -Be 6
+            foreach ($c in $script:C3Calls) {
+                $c.ClassName | Should -Be 'StdRegProv'
+                $c.MethodName | Should -Be 'GetDWORDValue'
+                $c.Namespace | Should -Be 'root/cimv2'
+                [uint32]$c.Hive | Should -Be ([uint32]2147483650)   # HKEY_LOCAL_MACHINE
+                ($null -ne $c.WhatIf) | Should -BeTrue -Because '-WhatIf must be passed'
+                $c.WhatIf | Should -Be $false
+                ($null -ne $c.Confirm) | Should -BeTrue -Because '-Confirm must be passed'
+                $c.Confirm | Should -Be $false
+                $c.Bounded | Should -BeTrue
+                $c.OperationTimeoutSec | Should -Be 30
+            }
+            (@($script:C3Calls | ForEach-Object { "{0}\{1}" -f $_.Key, $_.ValueName }) -join '|') | Should -Be (@(
+                    "$($script:C3NtdsKey)\LDAPServerIntegrity", "$($script:C3NtdsKey)\LDAPServerEnforceIntegrity", "$($script:C3NtdsKey)\LdapEnforceChannelBinding",
+                    "$($script:C3ServerKey)\RequireSecuritySignature", "$($script:C3ClientKey)\RequireSecuritySignature", "$($script:C3LsaKey)\LmCompatibilityLevel") -join '|')
+            (@($r.Values | ForEach-Object { [string]$_.Id }) -join ',') | Should -Be ($script:C3Ids -join ',')
+            # Declared population: the three instance queries, each bounded and naming its properties.
+            @($script:C3QueryCalls).Count | Should -Be 3
+            (@($script:C3QueryCalls | ForEach-Object { [string]$_.ClassName }) -join ',') | Should -Be 'Win32_OperatingSystem,MSFT_SmbServerConfiguration,Win32_Service'
+            foreach ($q in $script:C3QueryCalls) {
+                $q.Bounded | Should -BeTrue
+                $q.OperationTimeoutSec | Should -Be 30
+                [string]$q.Property | Should -Not -BeNullOrEmpty
+            }
+            $script:C3QueryCalls[0].Property | Should -Be 'BuildNumber'
+            $script:C3QueryCalls[1].Namespace | Should -Be 'root/Microsoft/Windows/SMB'
+            $script:C3QueryCalls[1].Property | Should -Be 'EnableSMB1Protocol,RequireSecuritySignature'
+            $script:C3QueryCalls[2].Filter | Should -Be "Name='Spooler'"
+            $script:C3QueryCalls[2].Property | Should -Be 'Name,State,StartMode'
+            @($script:C3Sessions).Count | Should -Be 1
+            $script:C3Sessions[0].OperationTimeoutSec | Should -Be 30
+            $script:C3Sessions[0].User | Should -Be '(none)'
+            @($script:C3CloseCalls).Count | Should -Be 1
+            ($null -ne $script:C3CloseCalls[0].WhatIf) | Should -BeTrue
+            $script:C3CloseCalls[0].WhatIf | Should -Be $false
+            $script:C3CloseCalls[0].Confirm | Should -Be $false
+            $r.BuildNumber | Should -Be '17763'
+            # The SMB class answered with no instance: asked, and not read.
+            $r.SmbOk | Should -BeFalse
+            $r.SmbNoInstance | Should -BeTrue
+            ($null -eq $r.SmbEnableSmb1) | Should -BeTrue
+            ($null -eq $r.SmbRequireSigning) | Should -BeTrue
+            $r.SpoolerOk | Should -BeTrue
+            $r.SpoolerFound | Should -BeTrue
+            $r.SpoolerState | Should -Be 'Running'
+            $r.SpoolerStartMode | Should -Be 'Auto'
+        }
+        It 'returns a value that is set as its number, and one that is not set as return code 1 with NO number' {
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $lm = @($r.Values | Where-Object { $_.Id -eq 'LmCompatibilityLevel' })[0]
+            $lm.Answered | Should -BeTrue
+            $lm.ReturnValue | Should -Be 0
+            $lm.Value | Should -Be 5
+            # 0 is a real value and must survive as 0, not be lost as "nothing".
+            $client = @($r.Values | Where-Object { $_.Id -eq 'SmbClientSigning' })[0]
+            $client.ReturnValue | Should -Be 0
+            ($null -ne $client.Value) | Should -BeTrue
+            $client.Value | Should -Be 0
+            $enf = @($r.Values | Where-Object { $_.Id -eq 'LdapServerEnforceIntegrity' })[0]
+            $enf.Answered | Should -BeTrue
+            $enf.ReturnValue | Should -Be 1
+            ($null -eq $enf.Value) | Should -BeTrue -Because 'an absent value must not become 0'
+            # Seam to rows: the pure layer judges what the seam returned.
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope 'contoso.com' -Raw $r -Config $script:Hc)
+            $rows.Count | Should -Be 8
+            (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'SMB client signing: dc1.contoso.com').Status | Should -Be 'Warning'
+            (Get-C3Row $rows 'SMB client signing: dc1.contoso.com').Detail | Should -Match 'RequireSecuritySignature = 0'
+            (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Detail | Should -Match 'second instrument.*was not read \(MSFT_SmbServerConfiguration returned no instance'
+            (Get-C3Row $rows 'LDAP server signing enforcement: dc1.contoso.com').Status | Should -Be 'Info'
+            (Get-C3Row $rows 'Print Spooler: dc1.contoso.com').Status | Should -Be 'Warning'
+            # The class returned no instance, as measured: the SMBv1 row has nothing to pass on.
+            (Get-C3Row $rows 'SMBv1: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+        }
+        It 'does not turn an SMB configuration class that returned no instance into a read: no SMBv1 False, no signing True' {
+            # Declared population: the three ways a query can come back holding nothing - an empty
+            # result, a single $null, and an array holding only $null.
+            $empties = @{ 'empty result' = @(); 'a single null' = $null; 'an array of null' = @($null) }
+            $empties.Count | Should -Be 3
+            foreach ($name in @($empties.Keys)) {
+                $script:C3Classes['MSFT_SmbServerConfiguration'] = $empties[$name]
+                $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+                $r.Ok | Should -BeTrue -Because $name
+                $r.SmbOk | Should -BeFalse -Because "$name is not a read"
+                $r.SmbNoInstance | Should -BeTrue -Because $name
+                ($null -eq $r.SmbEnableSmb1) | Should -BeTrue -Because "$name must not become EnableSMB1Protocol = False"
+                ($null -eq $r.SmbRequireSigning) | Should -BeTrue -Because "$name must not become RequireSecuritySignature = True"
+                [string]$r.SmbError | Should -Be '' -Because 'the query did not fail'
+                $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $r -Config $script:Hc)
+                $smb1 = Get-C3Row $rows 'SMBv1: dc1.contoso.com'
+                $smb1.Status | Should -Be 'Not Assessed' -Because $name
+                [string]$smb1.Detail | Should -Match '^Not read: MSFT_SmbServerConfiguration returned no instance'
+            }
+            # The answer of the class is an answer: with nothing else answering, the DC still answered.
+            $boom = New-Object System.Exception 'The RPC server is unavailable.'
+            foreach ($k in @($script:C3Registry.Keys)) { $script:C3Registry[$k] = $boom }
+            $script:C3Registry[("{0}|LDAPServerEnforceIntegrity" -f $script:C3NtdsKey)] = $boom
+            $script:C3Classes['Win32_OperatingSystem'] = $boom
+            $script:C3Classes['Win32_Service'] = $boom
+            $script:C3Classes['MSFT_SmbServerConfiguration'] = @()
+            $only = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $only.Ok | Should -BeTrue
+            $only.SmbOk | Should -BeFalse
+            # Non-vacuity: an instance is read as one.
+            $script:C3Classes['MSFT_SmbServerConfiguration'] = $script:C3SmbInstance
+            $with = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $with.SmbOk | Should -BeTrue
+            $with.SmbNoInstance | Should -BeFalse
+        }
+        It 'reads both properties from an instance where the class returns one (a shape not measured on any host)' {
+            $script:C3Classes['MSFT_SmbServerConfiguration'] = $script:C3SmbInstance
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $r.SmbOk | Should -BeTrue
+            $r.SmbNoInstance | Should -BeFalse
+            $r.SmbEnableSmb1 | Should -Be $false
+            $r.SmbRequireSigning | Should -Be $true
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope 'contoso.com' -Raw $r -Config $script:Hc)
+            (Get-C3Row $rows 'SMBv1: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Detail | Should -Match 'second instrument agrees'
+        }
+        It 'keeps the first error when nothing at all answered, the build query''s included when no registry value was asked for' {
+            $os = New-Object System.Exception 'The operation has timed out.'
+            $os | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'Timeout'
+            $later = New-Object System.Exception 'A later error.'
+            $script:C3Classes['Win32_OperatingSystem'] = $os
+            $script:C3Classes['MSFT_SmbServerConfiguration'] = $later
+            $script:C3Classes['Win32_Service'] = $later
+            # No setting: the build query is the first operation, so its error is the one kept.
+            $none = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings @()
+            $none.Ok | Should -BeFalse
+            @($none.Values).Count | Should -Be 0
+            $none.Error | Should -Be 'The operation has timed out.'
+            $none.ErrorCode | Should -Be 'Timeout'
+            $script:C3Closed | Should -Be 1
+        }
+        It 'keeps the return code of a key that does not exist (2), of a refusal (5) and of a value of another type, and still reads the rest' {
+            $script:C3AbsentKeys = @($script:C3ClientKey)
+            $script:C3Registry[("{0}|RequireSecuritySignature" -f $script:C3ServerKey)] = @{ Code = 5 }
+            $script:C3Registry[("{0}|LmCompatibilityLevel" -f $script:C3LsaKey)] = @{ Code = [uint32]2147749893 }
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $r.Ok | Should -BeTrue
+            @($r.Values | Where-Object { $_.Id -eq 'SmbClientSigning' })[0].ReturnValue | Should -Be 2
+            @($r.Values | Where-Object { $_.Id -eq 'SmbServerSigning' })[0].ReturnValue | Should -Be 5
+            @($r.Values | Where-Object { $_.Id -eq 'LmCompatibilityLevel' })[0].ReturnValue | Should -Be 2147749893
+            foreach ($id in @('SmbClientSigning', 'SmbServerSigning', 'LmCompatibilityLevel')) {
+                ($null -eq @($r.Values | Where-Object { $_.Id -eq $id })[0].Value) | Should -BeTrue -Because $id
+            }
+            @($r.Values | Where-Object { $_.Id -eq 'LdapServerIntegrity' })[0].Value | Should -Be 2
+            # A refusal is not retried: still one call per value.
+            @($script:C3Calls).Count | Should -Be 6
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope 'contoso.com' -Raw $r -Config $script:Hc)
+            (Get-C3Row $rows 'SMB client signing: dc1.contoso.com').Detail | Should -Match '^Not found: StdRegProv returned 2,'
+            (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Detail | Should -Match '^Access denied: StdRegProv returned 5,'
+            (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Detail | Should -Match 'is not a REG_DWORD'
+            # Declared population: the three settings whose read gave no number, and SMBv1, whose
+            # class returned no instance.
+            (@($rows | Where-Object { $_.Status -eq 'Not Assessed' } | ForEach-Object { [string]$_.Item -replace ': .*$', '' }) -join '|') | Should -Be 'SMB server signing|SMB client signing|LAN Manager authentication level|SMBv1'
+            (Get-C3Row $rows 'LDAP server signing: dc1.contoso.com').Status | Should -Be 'Pass'
+        }
+        It 'keeps the error and CIM error code of a read that threw, and still reads the others' {
+            $denied = New-Object System.Exception 'Acesso negado.'
+            $denied | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+            $script:C3Registry[("{0}|LdapEnforceChannelBinding" -f $script:C3NtdsKey)] = $denied
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $r.Ok | Should -BeTrue
+            $cb = @($r.Values | Where-Object { $_.Id -eq 'LdapEnforceChannelBinding' })[0]
+            $cb.Answered | Should -BeFalse
+            $cb.Error | Should -Be 'Acesso negado.'
+            $cb.ErrorCode | Should -Be 'AccessDenied'
+            ($null -eq $cb.Value) | Should -BeTrue
+            @($r.Values | Where-Object { $_.Answered }).Count | Should -Be 5
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $r -Config $script:Hc)
+            (Get-C3Row $rows 'LDAP channel binding: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C3Row $rows 'LDAP channel binding: dc1.contoso.com').Detail | Should -Match '^Access denied: the registry read was refused'
+        }
+        It 'never takes a number from a call that did not return 0, even when the out parameter comes back filled in' {
+            # Measured locally, uValue is absent on a nonzero return. A transport that handed back
+            # the default of a uint32 instead would turn "not set" into 0, which reads as "disabled".
+            $script:C3Registry[("{0}|RequireSecuritySignature" -f $script:C3ServerKey)] = @{ Code = 1; UValue = [uint32]0 }
+            $script:C3Registry[("{0}|LmCompatibilityLevel" -f $script:C3LsaKey)] = @{ Code = 5; UValue = [uint32]5 }
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $server = @($r.Values | Where-Object { $_.Id -eq 'SmbServerSigning' })[0]
+            $server.Answered | Should -BeTrue
+            $server.ReturnValue | Should -Be 1
+            ($null -eq $server.Value) | Should -BeTrue -Because 'a return of 1 carries no value, whatever uValue holds'
+            $lm = @($r.Values | Where-Object { $_.Id -eq 'LmCompatibilityLevel' })[0]
+            $lm.ReturnValue | Should -Be 5
+            ($null -eq $lm.Value) | Should -BeTrue -Because 'a refusal carries no value, whatever uValue holds'
+            # Non-vacuity: a value that was read is still returned.
+            (@($r.Values | Where-Object { $_.Id -eq 'LdapServerIntegrity' })[0]).Value | Should -Be 2
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $r -Config $script:Hc)
+            (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Detail | Should -Match 'is not set in the registry of this DC'
+        }
+        It 'does not count a call that returned nothing, or no return code, as an answer' {
+            $script:C3Registry[("{0}|LDAPServerIntegrity" -f $script:C3NtdsKey)] = 'NoReturnValue'
+            $script:C3Registry[("{0}|LdapEnforceChannelBinding" -f $script:C3NtdsKey)] = 'NoResult'
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $ldap = @($r.Values | Where-Object { $_.Id -eq 'LdapServerIntegrity' })[0]
+            $ldap.Answered | Should -BeFalse
+            $ldap.Error | Should -Be 'The registry provider returned no ReturnValue.'
+            ($null -eq $ldap.ReturnValue) | Should -BeTrue
+            ($null -eq $ldap.Value) | Should -BeTrue -Because 'a uValue with no return code beside it is not a read'
+            $cb = @($r.Values | Where-Object { $_.Id -eq 'LdapEnforceChannelBinding' })[0]
+            $cb.Answered | Should -BeFalse
+            $cb.Error | Should -Be 'The registry provider returned no result.'
+            # Declared population: six reads, of which these two gave no answer.
+            @($r.Values).Count | Should -Be 6
+            @($r.Values | Where-Object { $_.Answered }).Count | Should -Be 4
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $r -Config $script:Hc)
+            $row = Get-C3Row $rows 'LDAP server signing: dc1.contoso.com'
+            $row.Status | Should -Be 'Not Assessed'
+            [string]$row.Detail | Should -Match '^Read failed: the registry read did not complete\. Reported by the DC - The registry provider returned no ReturnValue\.'
+        }
+        It 'keeps each class failure to itself: a failed OS, SMB or service query does not discard the rest' {
+            $script:C3Classes['Win32_OperatingSystem'] = New-Object System.Exception 'The operation has timed out.'
+            $smbDenied = New-Object System.Exception 'Acesso negado.'
+            $smbDenied | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+            $script:C3Classes['MSFT_SmbServerConfiguration'] = $smbDenied
+            $script:C3Classes['Win32_Service'] = @()
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $r.Ok | Should -BeTrue
+            $r.BuildNumber | Should -Be ''
+            $r.BuildError | Should -Match 'timed out'
+            $r.SmbOk | Should -BeFalse
+            $r.SmbError | Should -Be 'Acesso negado.'
+            $r.SmbErrorCode | Should -Be 'AccessDenied'
+            $r.SpoolerOk | Should -BeTrue
+            $r.SpoolerFound | Should -BeFalse
+            @($r.Values | Where-Object { $_.Answered }).Count | Should -Be 6
+            $script:C3Closed | Should -Be 1
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $r -Config $script:Hc)
+            (Get-C3Row $rows 'SMBv1: dc1.contoso.com').Detail | Should -Match '^Access denied'
+            (Get-C3Row $rows 'Print Spooler: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            # LDAP signing = 2 passes without the build; the absent enforcement value cannot be placed.
+            (Get-C3Row $rows 'LDAP server signing: dc1.contoso.com').Status | Should -Be 'Pass'
+            (Get-C3Row $rows 'LDAP server signing enforcement: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+        }
+        It 'reads the unadapted CIM value where the instance carries one' {
+            $store = @{
+                EnableSMB1Protocol       = [pscustomobject]@{ Value = $true }
+                RequireSecuritySignature = [pscustomobject]@{ Value = $false }
+            }
+            $script:C3Classes['MSFT_SmbServerConfiguration'] = [pscustomobject]@{ EnableSMB1Protocol = $false; RequireSecuritySignature = $true; CimInstanceProperties = $store }
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $r.SmbEnableSmb1 | Should -Be $true
+            $r.SmbRequireSigning | Should -Be $false
+        }
+        It 'opens a DCOM session when asked, passes the credential, and closes the session even when everything failed' {
+            $secret = New-Object System.Security.SecureString
+            foreach ($ch in 'stub'.ToCharArray()) { $secret.AppendChar($ch) }
+            $cred = New-Object System.Management.Automation.PSCredential -ArgumentList 'CONTOSO\reader', $secret
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc2 -Protocol 'Dcom' -Credential $cred -OperationTimeoutSec 20 -Settings $script:C3Settings
+            $r.Ok | Should -BeTrue
+            $r.Protocol | Should -Be 'Dcom'
+            ($script:C3Opts -join ',') | Should -Be 'Dcom'
+            $script:C3Sessions[0].User | Should -Be 'CONTOSO\reader'
+            $script:C3Sessions[0].ComputerName | Should -Be 'dc2.contoso.com'
+            # Nothing answers: Ok is false, the first error is kept, and the session is still closed.
+            $boom = New-Object System.Exception 'Access is denied.'
+            $boom | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+            foreach ($k in @($script:C3Registry.Keys)) { $script:C3Registry[$k] = $boom }
+            foreach ($k in @('LDAPServerEnforceIntegrity')) { $script:C3Registry[("{0}|{1}" -f $script:C3NtdsKey, $k)] = $boom }
+            foreach ($k in @($script:C3Classes.Keys)) { $script:C3Classes[$k] = $boom }
+            $script:C3Closed = 0
+            $none = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $none.Ok | Should -BeFalse
+            $none.Error | Should -Be 'Access is denied.'
+            $none.ErrorCode | Should -Be 'AccessDenied'
+            $script:C3Closed | Should -Be 1
+        }
+        It 'reports a session that could not be opened, with its error code, and closes nothing' {
+            $refused = New-Object System.Exception 'Acesso negado.'
+            $refused | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+            $script:C3SessionError = $refused
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Be 'Acesso negado.'
+            $r.ErrorCode | Should -Be 'AccessDenied'
+            @($script:C3Calls).Count | Should -Be 0
+            $script:C3Closed | Should -Be 0
+        }
+        It 'runs through the collector: seam, transport loop and rows together, for two DCs' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            Clear-AdfaDcPortCache
+            $rows = @(Get-AdfaDcHardening -DomainControllers @($script:C3Dc1, $script:C3Dc2) -Config $script:Hc)
+            $rows.Count | Should -Be 16
+            # Declared population: two DCs by six registry reads.
+            @($script:C3Calls).Count | Should -Be 12
+            $script:C3Closed | Should -Be 2
+            (Get-C3Row $rows 'LDAP channel binding: dc2.contoso.com').Status | Should -Be 'Pass'
+        }
+    }
+
+    Context 'Merge-AdfaDcHardeningConfig (the DcHardening validator)' {
+        It 'replaces only what the override names, cites the override for it, and leaves the built-in table alone' {
+            $m = Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -OverrideSource 'C:\cfg\hardening.json' -Override @{
+                Settings  = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 3 }; SmbServerSigning = @{ OtherStatus = 'Fail' } } }
+            $m['WsmanPort'] | Should -Be 5985
+            $m['RpcPort'] | Should -Be 135
+            $lm = Get-C3Setting -Id 'LmCompatibilityLevel' -Config $m
+            $lm['ExpectedMinimum'] | Should -Be 3
+            [string]$lm['OtherStatus'] | Should -Be 'Warning'
+            [string]$lm['ExpectedSource'] | Should -Match 'C:\\cfg\\hardening\.json'
+            [string]$lm['ExpectedSource'] | Should -Match 'ExpectedMinimum'
+            $sv = Get-C3Setting -Id 'SmbServerSigning' -Config $m
+            [string]$sv['OtherStatus'] | Should -Be 'Fail'
+            $sv['ExpectedMinimum'] | Should -Be 1
+            [string]$sv['ExpectedSource'] | Should -Match 'OtherStatus'
+            # A setting the override does not name keeps its row and its provenance.
+            [string](Get-C3Setting -Id 'LdapEnforceChannelBinding' -Config $m)['ExpectedSource'] | Should -Be ([string](Get-C3Setting -Id 'LdapEnforceChannelBinding')['ExpectedSource'])
+            # What the tool reads is not changed by a merge, and the built-in table is not modified.
+            [string]$lm['Key'] | Should -Be $script:C3LsaKey
+            @($m['Settings']).Count | Should -Be 6
+            (Get-C3Setting -Id 'LmCompatibilityLevel')['ExpectedMinimum'] | Should -Be 5
+            [string](Get-C3Setting -Id 'SmbServerSigning')['OtherStatus'] | Should -Be 'Warning'
+            [string](Get-C3Setting -Id 'LmCompatibilityLevel')['ExpectedSource'] | Should -Not -Match 'hardening\.json'
+            # The override reaches the finding text.
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw (New-C3Raw -Numbers @{ LmCompatibilityLevel = 3 }) -Config $m)
+            $row = Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com'
+            $row.Status | Should -Be 'Pass'
+            $row.Detail | Should -Match 'Expectation source: .*C:\\cfg\\hardening\.json'
+            # No override: the same table back, as a copy.
+            $same = Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override $null
+            $same['WsmanPort'] | Should -Be 5985
+            @($same['Settings']).Count | Should -Be 6
+            # A JSON document goes through the same way as a hashtable.
+            $j = Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override ('{ "Settings": { "LdapEnforceChannelBinding": { "ExpectedMinimum": 1, "OtherStatus": "Fail" } } }' | ConvertFrom-Json)
+            (Get-C3Setting -Id 'LdapEnforceChannelBinding' -Config $j)['ExpectedMinimum'] | Should -Be 1
+            [string](Get-C3Setting -Id 'LdapEnforceChannelBinding' -Config $j)['OtherStatus'] | Should -Be 'Fail'
+        }
+        It 'refuses every override it could not use, naming the fault' {
+            $bad = @(
+                @{ O = 'abc'; Want = 'single object' }
+                @{ O = @(1, 2); Want = 'single object' }
+                @{ O = ('{}' | ConvertFrom-Json); Want = 'empty object' }
+                @{ O = @{ Typo = 1 }; Want = "unknown key 'Typo'" }
+                @{ O = ('{ "WsmanPort": null }' | ConvertFrom-Json); Want = "names 'WsmanPort'\. The ports of this section cannot be set from a file" }
+                @{ O = @{ WsmanPort = 5986 }; Want = "names 'WsmanPort'\. The ports of this section cannot be set from a file" }
+                @{ O = @{ WsmanPort = 5985 }; Want = "names 'WsmanPort'\. The ports of this section cannot be set from a file" }
+                @{ O = @{ RpcPort = 135 }; Want = "names 'RpcPort'\. The ports of this section cannot be set from a file" }
+                @{ O = @{ RpcPort = 1135; Settings = @{ SmbServerSigning = @{ OtherStatus = 'Fail' } } }; Want = "names 'RpcPort'\. The ports of this section cannot be set from a file" }
+                @{ O = ('{ "Settings": { "LmCompatibilityLevel": { "ExpectedMinimum": 4 } }, "WsmanPort": 5986 }' | ConvertFrom-Json); Want = "names 'WsmanPort'\. The ports of this section cannot be set from a file" }
+                @{ O = ('{ "Settings": null }' | ConvertFrom-Json); Want = "'Settings' to null" }
+                @{ O = ('{ "Settings": [] }' | ConvertFrom-Json); Want = 'Settings.*object keyed by setting id' }
+                @{ O = ('{ "Settings": [ { "Id": "LmCompatibilityLevel", "ExpectedMinimum": 3 } ] }' | ConvertFrom-Json); Want = 'Settings.*object keyed by setting id' }
+                @{ O = ('{ "Settings": {} }' | ConvertFrom-Json); Want = 'Settings.*empty' }
+                @{ O = @{ Settings = 'all' }; Want = 'Settings.*object keyed by setting id' }
+                @{ O = @{ Settings = @{ LmCompat = @{ ExpectedMinimum = 3 } } }; Want = "unknown setting 'LmCompat'" }
+                @{ O = ('{ "Settings": { "LmCompatibilityLevel": null } }' | ConvertFrom-Json); Want = "'LmCompatibilityLevel' to null" }
+                @{ O = @{ Settings = @{ LmCompatibilityLevel = 3 } }; Want = 'LmCompatibilityLevel.*must be an object' }
+                @{ O = ('{ "Settings": { "LmCompatibilityLevel": {} } }' | ConvertFrom-Json); Want = 'LmCompatibilityLevel.*empty' }
+                @{ O = @{ Settings = @{ LmCompatibilityLevel = @{ Key = 'SOFTWARE\x' } } }; Want = "unknown key 'Key'" }
+                @{ O = @{ Settings = @{ LmCompatibilityLevel = @{ ValueName = 'x' } } }; Want = "unknown key 'ValueName'" }
+                @{ O = @{ Settings = @{ LmCompatibilityLevel = @{ Defaults = @() } } }; Want = "unknown key 'Defaults'" }
+                @{ O = ('{ "Settings": { "LmCompatibilityLevel": { "ExpectedMinimum": null } } }' | ConvertFrom-Json); Want = "'ExpectedMinimum' to null" }
+                @{ O = @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = '3' } } }; Want = 'JSON number' }
+                @{ O = @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 3.5 } } }; Want = 'ExpectedMinimum.*one of 3, 4, 5' }
+                @{ O = @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 2 } } }; Want = 'ExpectedMinimum.*one of 3, 4, 5' }
+                @{ O = @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 6 } } }; Want = 'ExpectedMinimum.*one of 3, 4, 5' }
+                @{ O = @{ Settings = @{ LdapServerIntegrity = @{ ExpectedMinimum = 1 } } }; Want = 'ExpectedMinimum.*one of 2' }
+                @{ O = @{ Settings = @{ SmbServerSigning = @{ ExpectedMinimum = 0 } } }; Want = 'ExpectedMinimum.*one of 1:' }
+                @{ O = @{ Settings = @{ SmbClientSigning = @{ ExpectedMinimum = 0 } } }; Want = 'ExpectedMinimum.*one of 1:' }
+                @{ O = @{ Settings = @{ LdapServerEnforceIntegrity = @{ ExpectedMinimum = 0 } } }; Want = 'ExpectedMinimum.*one of 1:' }
+                @{ O = @{ Settings = @{ LdapEnforceChannelBinding = @{ ExpectedMinimum = 0 } } }; Want = "'ExpectedMinimum' to 0\. It must be one of 1, 2:" }
+                @{ O = @{ Settings = @{ LdapEnforceChannelBinding = @{ ExpectedMinimum = 3 } } }; Want = "'ExpectedMinimum' to 3\. It must be one of 1, 2:" }
+                @{ O = @{ Settings = @{ SmbServerSigning = @{ OtherStatus = 'Pass' } } }; Want = 'OtherStatus.*Warning or Fail' }
+                @{ O = @{ Settings = @{ SmbServerSigning = @{ OtherStatus = 'Info' } } }; Want = 'OtherStatus.*Warning or Fail' }
+                @{ O = @{ Settings = @{ SmbServerSigning = @{ OtherStatus = 'Not Assessed' } } }; Want = 'OtherStatus.*Warning or Fail' }
+                @{ O = @{ Settings = @{ SmbServerSigning = @{ OtherStatus = 1 } } }; Want = 'OtherStatus.*Warning or Fail' }
+                @{ O = ('{ "Settings": { "SmbServerSigning": { "OtherStatus": null } } }' | ConvertFrom-Json); Want = "'OtherStatus' to null" }
+            )
+            # Declared population: the thirty-eight unusable overrides above.
+            $bad.Count | Should -Be 38
+            foreach ($b in $bad) {
+                $thrown = $null
+                try { Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override $b.O | Out-Null } catch { $thrown = [string]$_.Exception.Message }
+                $thrown | Should -Not -BeNullOrEmpty -Because ("an override wanting '{0}' must be refused" -f $b.Want)
+                $thrown | Should -Match $b.Want
+                $thrown | Should -Match '^DC hardening config'
+            }
+            # Non-vacuity: the validator does accept a good one.
+            { Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override @{ Settings = @{ SmbServerSigning = @{ OtherStatus = 'Fail' } } } } | Should -Not -Throw
+            { Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 4 } } } } | Should -Not -Throw
+            # Channel binding can be lowered to 1 (When supported), and to nothing below it: "Never" can never be made to pass.
+            $audit = Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override @{ Settings = @{ LdapEnforceChannelBinding = @{ ExpectedMinimum = 1 } } }
+            (Get-C3Verdict -Id 'LdapEnforceChannelBinding' -Number 0 -Config $audit).Status | Should -Be 'Warning'
+        }
+        It 'refuses the two port keys, because the CIM session does not use them - and the seam really opens its session without a port' {
+            # The reason the keys are refused, pinned on the code: New-CimSession is called by
+            # splatting one hashtable, and nothing in the seam puts a Port (or a TLS option) in it.
+            $fn = @(Get-C3Function -Name 'Get-AdfaDcHardeningRaw')
+            $fn.Count | Should -Be 1
+            $opens = @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'New-CimSession' }, $true))
+            $opens.Count | Should -Be 1
+            @($opens[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] }).Count | Should -Be 0 -Because 'the session is opened by splatting alone'
+            $splat = @($opens[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.VariableExpressionAst] -and $_.Splatted })
+            $splat.Count | Should -Be 1
+            $splatName = [string]$splat[0].VariablePath.UserPath
+            # Every key the function ever gives that hashtable: in its literal, and by member assignment.
+            $keys = @()
+            foreach ($a in @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true))) {
+                if ($a.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and [string]$a.Left.VariablePath.UserPath -eq $splatName) {
+                    foreach ($h in @($a.Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $false))) {
+                        $keys += @($h.KeyValuePairs | ForEach-Object { [string]$_.Item1.Extent.Text })
+                    }
+                }
+                if ($a.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $a.Left.Expression -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                    [string]$a.Left.Expression.VariablePath.UserPath -eq $splatName) { $keys += [string]$a.Left.Member.Extent.Text }
+            }
+            # Declared population: the five things the session is opened with.
+            (@($keys | Sort-Object) -join ',') | Should -Be 'ComputerName,Credential,ErrorAction,OperationTimeoutSec,SessionOption'
+            # So a file may not name either port, whatever value it gives - the built-in one included.
+            foreach ($key in @('WsmanPort', 'RpcPort')) {
+                foreach ($value in @(5985, 5986, 135, 1)) {
+                    $thrown = $null
+                    try { Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -Override @{ $key = $value } | Out-Null } catch { $thrown = [string]$_.Exception.Message }
+                    $thrown | Should -Match ("^DC hardening config override names '{0}'\. The ports of this section cannot be set from a file" -f $key) -Because "$key = $value"
+                    $thrown | Should -Match 'default WinRM port \(5985\)'
+                    $thrown | Should -Match 'RPC endpoint mapper \(135\)'
+                }
+            }
+            # Through the one override file, too.
+            { Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "WsmanPort": 5986 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
+                Should -Throw -ExpectedMessage "*section 'DcHardening'*names 'WsmanPort'*cannot be set from a file*"
+            # DcDisk is unchanged by this: it still accepts the key (PORT-PLAN C3g).
+            (Merge-AdfaDcDiskConfig -BaseConfig $script:Config.DcDisk -Override @{ WsmanPort = 5986 })['WsmanPort'] | Should -Be 5986
+        }
+        It 'is reached through the one override file, beside DcDisk, and a bad section stops the load naming the section and the file' {
+            $ovr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "LmCompatibilityLevel": { "ExpectedMinimum": 4 } } }, "DcDisk": { "FailBelowPercent": 5 } }' | ConvertFrom-Json) `
+                -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
+            (@($ovr.Keys | Sort-Object) -join ',') | Should -Be 'DcDisk,DcHardening'
+            (Get-C3Setting -Id 'LmCompatibilityLevel' -Config $ovr['DcHardening'])['ExpectedMinimum'] | Should -Be 4
+            { Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "LmCompatibilityLevel": { "ExpectedMinimum": 1 } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
+                Should -Throw -ExpectedMessage "*section 'DcHardening'*ExpectedMinimum*"
+            $f = Join-Path ([IO.Path]::GetTempPath()) ("adfa_c3_{0}.json" -f [guid]::NewGuid().ToString('N'))
+            try {
+                '{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | Out-File -LiteralPath $f -Encoding UTF8
+                $loaded = Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections
+                [string](Get-C3Setting -Id 'SmbClientSigning' -Config $loaded['DcHardening'])['OtherStatus'] | Should -Be 'Fail'
+                [string](Get-C3Setting -Id 'SmbClientSigning' -Config $loaded['DcHardening'])['ExpectedSource'] | Should -Match ([regex]::Escape($f))
+                '{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Pass" } } } }' | Out-File -LiteralPath $f -Encoding UTF8
+                $thrown = $null
+                try { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections | Out-Null } catch { $thrown = [string]$_.Exception.Message }
+                $thrown | Should -Match "section 'DcHardening'"
+                $thrown | Should -Match 'OtherStatus'
+                $thrown | Should -Match ([regex]::Escape([IO.Path]::GetFileName($f)))
+                # A key written twice inside a setting is found in the text, with its path.
+                '{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail", "OtherStatus": "Warning" } } } }' | Out-File -LiteralPath $f -Encoding UTF8
+                { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
+                    Should -Throw -ExpectedMessage "*'DcHardening.Settings.SmbClientSigning.OtherStatus' more than once*"
+            }
+            finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'Recommendations' {
+        BeforeAll {
+            # What each family's advice must say, taken from the Microsoft page that supports it.
+            $script:C3Advice = [ordered]@{
+                'LDAP server signing'              = 'LDAP server signing requirements.*2887 and 2889'
+                'LDAP server signing enforcement'  = 'LDAP server signing requirements enforcement'
+                'LDAP channel binding'             = 'LDAP server channel binding token requirements.*3039'
+                'SMB server signing'               = 'Microsoft network server: Digitally sign communications \(always\)'
+                'SMB client signing'               = 'Microsoft network client: Digitally sign communications \(always\)'
+                'LAN Manager authentication level' = 'LAN Manager authentication level.*Refuse LM & NTLM'
+                'Print Spooler'                    = 'Print Spooler.*print pruning'
+                'SMBv1'                            = 'EnableSMB1Protocol \$false'
+            }
+        }
+        It 'gives each family its own advice, whatever the host name, the detail or an override file path contains' {
+            # Declared population: the eight row families of the section.
+            @($script:C3Advice.Keys).Count | Should -Be 8
+            (@($script:C3Advice.Keys) -join '|') | Should -Be ($script:C3Families -join '|')
+            $hostile = 'Expectation source: C:\Backup\replication\sysvol-dfsr\stale-delegation.json. time sync w32tm password policy lockout global catalog secure dynamic port 389 not reachable event 2042 on ldap signing smbv1 spooler'
+            $seen = @()
+            foreach ($family in @($script:C3Advice.Keys)) {
+                $rec = Get-AdfaRecommendation -Section 'DC Hardening' -Item ("{0}: dc1-backup.replication.contoso.com" -f $family) -Detail $hostile
+                $rec | Should -Match $script:C3Advice[$family] -Because $family
+                $rec | Should -Not -Match 'repadmin|wbadmin|dfsrmig|w32tm /config|krbtgt' -Because $family
+                $seen += $rec
+            }
+            # Eight families, eight different texts: no family borrowed another's.
+            @($seen | Select-Object -Unique).Count | Should -Be 8
+        }
+        It 'does not name a fixed target for a setting whose expectation a file can move: the advice points at the minimum the finding names' {
+            # Declared population: the settings a file can give more than one expectation.
+            $movable = @($script:Hc['Settings'] | Where-Object { @($_['ExpectedChoices']).Count -gt 1 } | ForEach-Object { [string]$_['Id'] })
+            ($movable -join ',') | Should -Be 'LdapEnforceChannelBinding,LmCompatibilityLevel'
+            $cfg = Merge-AdfaDcHardeningConfig -BaseConfig $script:Hc -OverrideSource 'C:\cfg\hardening.json' -Override @{
+                Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 3 }; LdapEnforceChannelBinding = @{ ExpectedMinimum = 1 } } }
+            $raw = New-C3Raw -Build '20348' -Numbers @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 0; SmbServerSigning = 1; SmbClientSigning = 1; LmCompatibilityLevel = 0 }
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope 'contoso.com' -Raw $raw -Config $cfg)
+            $findings = @($rows | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'DC Hardening' -Row $_ -StatusColumn 'Status' })
+            $want = @{
+                'LAN Manager authentication level' = @{ Detail = 'Below the expected minimum of 3 '; Baseline = 'The value Microsoft''s security baselines give for a DC is "Send NTLMv2 response only\. Refuse LM & NTLM" \(LmCompatibilityLevel 5\)' }
+                'LDAP channel binding'             = @{ Detail = 'Below the expected minimum of 1 '; Baseline = 'The value Microsoft''s Windows Server 2025 security baseline gives for a domain controller is Always' }
+            }
+            $want.Count | Should -Be 2
+            foreach ($family in @($want.Keys)) {
+                $f = @($findings | Where-Object { $_.Item -eq ("{0}: dc1.contoso.com" -f $family) })
+                $f.Count | Should -Be 1 -Because $family
+                $f[0].Status | Should -Be 'Warning' -Because $family
+                [string]$f[0].Detail | Should -Match $want[$family].Detail -Because $family
+                # The advice defers to the finding for the target, and gives Microsoft's value as Microsoft's.
+                [string]$f[0].Recommendation | Should -Match '^Raise the Group Policy setting ".*" .*to at least the expected minimum this finding names\.' -Because $family
+                [string]$f[0].Recommendation | Should -Match $want[$family].Baseline -Because $family
+                # It does not instruct a value of its own: that would be a second target in the same row.
+                [string]$f[0].Recommendation | Should -Not -Match '^Set the Group Policy setting' -Because $family
+                [string]$f[0].Recommendation | Should -Not -Match 'requirements" to Always once' -Because $family
+                [string]$f[0].Recommendation | Should -Not -Match 'authentication level" to "Send NTLMv2' -Because $family
+            }
+        }
+        It 'does not let the signing entry answer the enforcement row, or the server entry the client row' {
+            (Get-AdfaRecommendation -Section 'DC Hardening' -Item 'LDAP server signing enforcement: dc1.contoso.com' -Detail 'x') |
+                Should -Not -Be (Get-AdfaRecommendation -Section 'DC Hardening' -Item 'LDAP server signing: dc1.contoso.com' -Detail 'x')
+            (Get-AdfaRecommendation -Section 'DC Hardening' -Item 'SMB client signing: dc1.contoso.com' -Detail 'x') | Should -Match 'Set-SmbClientConfiguration'
+            (Get-AdfaRecommendation -Section 'DC Hardening' -Item 'SMB server signing: dc1.contoso.com' -Detail 'x') | Should -Match 'Set-SmbServerConfiguration'
+        }
+        It 'gives a row of the section that has no advice of its own none at all, rather than an unrelated one' {
+            foreach ($item in @('DC hardening: dc1.contoso.com', 'DC hardening - contoso.com', 'DC hardening', 'Something new: dc1.contoso.com')) {
+                Get-AdfaRecommendation -Section 'DC Hardening' -Item $item -Detail 'replication backup sysvol ldap signing smbv1 spooler time sync' | Should -Be '' -Because $item
+            }
+            # Non-vacuity: the same text outside the section does attract advice.
+            Get-AdfaRecommendation -Section 'Somewhere Else' -Item 'x' -Detail 'replication backup sysvol' | Should -Not -Be ''
+        }
+        It 'attaches advice to Warning and Fail rows only, and adds the not-on-the-wire note after the advice was chosen' {
+            $raw = New-C3Raw -Numbers @{ LdapServerIntegrity = 1; LdapEnforceChannelBinding = 2; SmbServerSigning = 1; SmbClientSigning = 1; LmCompatibilityLevel = 5 } -Entries @{
+                SmbClientSigning = (New-C3Value -Id 'SmbClientSigning' -ReturnValue 5) } -Smb1 $true
+            $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope 'contoso.com' -Raw $raw -Config $script:Hc)
+            $findings = @($rows | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'DC Hardening' -Row $_ -StatusColumn 'Status' })
+            $findings.Count | Should -Be 8
+            $weak = @($findings | Where-Object { $_.Item -eq 'LDAP server signing: dc1.contoso.com' })[0]
+            $weak.Status | Should -Be 'Warning'
+            $weak.Recommendation | Should -Match '2887 and 2889'
+            $weak.Detail | Should -Match $script:C3WireNote
+            @($findings | Where-Object { $_.Item -eq 'SMBv1: dc1.contoso.com' })[0].Recommendation | Should -Match 'EnableSMB1Protocol'
+            # Not Assessed, Info and Pass rows carry none.
+            foreach ($f in @($findings | Where-Object { @('Pass', 'Info', 'Not Assessed') -contains $_.Status })) { $f.Recommendation | Should -Be '' -Because $f.Item }
+            @($findings | Where-Object { $_.Status -eq 'Not Assessed' }).Count | Should -Be 1
+            @($findings | Where-Object { $_.Recommendation -ne '' }).Count | Should -Be 2
         }
     }
 }

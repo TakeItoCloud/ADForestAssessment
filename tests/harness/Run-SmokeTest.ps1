@@ -62,19 +62,41 @@ function Get-ADComputer {
     param([string]$Identity, [string]$Server, [string[]]$Properties, [Parameter(ValueFromRemainingArguments)]$a)
     if ([string]::IsNullOrWhiteSpace($Server)) { throw 'A referral was returned from the server' }
     [pscustomobject]@{ OperatingSystem='Windows Server 2019'; OperatingSystemVersion='10.0 (17763)'; Enabled=$true; whenCreated=$now } }
-# C1 (DcSystem): the CIM cmdlets, stubbed in the shape the real ones return for the two classes
-# the section reads. Any other class throws, so the DcHardening SMB read keeps degrading to
-# Not Assessed exactly as it did before these stubs existed, instead of quietly "succeeding"
-# against an object that has none of its properties. InstalledOn is given as the string Learn
-# documents, in a form whose day/month order the set itself proves (23 > 12).
+# C1 (DcSystem): the CIM cmdlets, stubbed in the shape the real ones return for the classes the
+# sections read. Any other class throws, so a section that asked for a class nobody stubbed
+# degrades to Not Assessed instead of quietly "succeeding" against an object that has none of
+# its properties. InstalledOn is given as the string Learn documents, in a form whose day/month
+# order the set itself proves (23 > 12).
 function New-CimSessionOption { param([string]$Protocol) [pscustomobject]@{ Protocol = $Protocol } }
 function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
     [pscustomobject]@{ ComputerName = $ComputerName; Protocol = 'WSMAN' } }
 function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) }
 function Get-CimInstance {
-    param($CimSession, [string]$ComputerName, [string]$ClassName, [string]$Namespace, [string[]]$Property, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
+    param($CimSession, [string]$ComputerName, [string]$ClassName, [string]$Namespace, [string[]]$Property, [string]$Filter, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
     if ($ClassName -eq 'Win32_OperatingSystem') {
         return [pscustomobject]@{ LastBootUpTime = $now.AddDays(-9); BuildNumber = '17763'; Version = '10.0.17763' }
+    }
+    # C3 (DcHardening): the SMB server configuration, and the Print Spooler service as
+    # Win32_Service returns it - State and StartMode are strings. The service query is answered
+    # only for the filter the section sends, so a section that asked for every service would get
+    # nothing rather than a Spooler it did not ask for.
+    #
+    # MSFT_SmbServerConfiguration answers, BY DEFAULT, what the real class was MEASURED to answer
+    # to an instance query on 2026-11-15 (one Windows 11 build 26100 workstation, not a DC, not
+    # elevated, PowerShell 7 and Windows PowerShell 5.1): no instance and no error. The real
+    # configuration comes from the class's static method GetConfiguration, which the tool does
+    # not invoke and which the Invoke-CimMethod stub below refuses. An earlier version of this
+    # stub handed back an instance, a shape nobody had measured, and so proved only itself.
+    # $script:SmokeSmbInstance = $true selects that unmeasured shape for the one pass that
+    # checks the code path a DC would take if it did return an instance; the two properties are
+    # booleans there.
+    if ($ClassName -eq 'MSFT_SmbServerConfiguration' -and $Namespace -eq 'root/Microsoft/Windows/SMB') {
+        if ($script:SmokeSmbInstance) { return [pscustomobject]@{ EnableSMB1Protocol = $false; RequireSecuritySignature = $true } }
+        return @()
+    }
+    if ($ClassName -eq 'Win32_Service') {
+        if ($Filter -ne "Name='Spooler'") { return @() }
+        return [pscustomobject]@{ Name = 'Spooler'; State = 'Stopped'; StartMode = 'Disabled' }
     }
     if ($ClassName -eq 'Win32_QuickFixEngineering') {
         return @(
@@ -109,10 +131,19 @@ function Get-CimInstance {
 # call that tried would fail here rather than appear to succeed. The database and SYSVOL are
 # on C:, the logs on E:, so one DC yields two volume rows. -WhatIf and -Confirm are not declared:
 # in a simple function the values the caller passes for them fall into $args and are ignored.
+#
+# C3 (DcHardening): GetDWORDValue, whose [out] parameter is uValue (uint32) and is absent on every
+# nonzero return. The stub DC is a Windows Server 2019 DC (build 17763) on which three of the six
+# values are set - LDAPServerIntegrity 2, the SMB server's RequireSecuritySignature 1 and
+# LmCompatibilityLevel 5 - and three are not: LdapEnforceChannelBinding, LDAPServerEnforceIntegrity
+# and the SMB client's RequireSecuritySignature, whose key exists. That is the shape a real DC
+# has: a value Group Policy never set is simply not there. A value of the wrong type answers
+# 2147749893 (0x80041005) to either kind of method, as measured.
 $script:SmokeAbsentValues = @()
+$script:SmokeSmbInstance = $false
 function Invoke-CimMethod {
     param($CimSession, [string]$Namespace, [string]$ClassName, [string]$MethodName, $Arguments, [uint32]$OperationTimeoutSec, $ErrorAction)
-    if ($ClassName -ne 'StdRegProv' -or @('GetStringValue', 'GetExpandedStringValue') -notcontains $MethodName) {
+    if ($ClassName -ne 'StdRegProv' -or @('GetStringValue', 'GetExpandedStringValue', 'GetDWORDValue') -notcontains $MethodName) {
         throw ("STUB: CIM method '{0}.{1}' is not stubbed" -f $ClassName, $MethodName)
     }
     $stubRegistry = @{
@@ -120,11 +151,32 @@ function Invoke-CimMethod {
         'SYSTEM\CurrentControlSet\Services\NTDS\Parameters|Database Log Files Path' = 'E:\NTDS-Logs'
         'SYSTEM\CurrentControlSet\Services\Netlogon\Parameters|SysVol'              = 'C:\Windows\SYSVOL\sysvol'
     }
+    $stubDwords = @{
+        'SYSTEM\CurrentControlSet\Services\NTDS\Parameters|LDAPServerIntegrity'              = [uint32]2
+        'SYSTEM\CurrentControlSet\Services\LanManServer\Parameters|RequireSecuritySignature' = [uint32]1
+        'SYSTEM\CurrentControlSet\Control\Lsa|LmCompatibilityLevel'                         = [uint32]5
+    }
+    # Keys that exist although the stub holds no value under them.
+    $stubEmptyKeys = @('SYSTEM\CurrentControlSet\Services\LanManWorkstation\Parameters')
     $stubKey = ('{0}|{1}' -f [string]$Arguments['sSubKeyName'], [string]$Arguments['sValueName'])
     $stubAbsent = (@($script:SmokeAbsentValues) -contains [string]$Arguments['sValueName'])
-    if ($stubRegistry.ContainsKey($stubKey) -and -not $stubAbsent) { return [pscustomobject]@{ ReturnValue = [uint32]0; sValue = $stubRegistry[$stubKey]; PSComputerName = 'stub' } }
+    $stubIsString = ($stubRegistry.ContainsKey($stubKey) -and -not $stubAbsent)
+    $stubIsDword = ($stubDwords.ContainsKey($stubKey) -and -not $stubAbsent)
+    if ($MethodName -eq 'GetDWORDValue') {
+        if ($stubIsDword) { return [pscustomobject]@{ ReturnValue = [uint32]0; uValue = $stubDwords[$stubKey]; PSComputerName = 'stub' } }
+        if ($stubIsString) { return [pscustomobject]@{ ReturnValue = [uint32]2147749893; uValue = $null; PSComputerName = 'stub' } }
+    }
+    else {
+        if ($stubIsString) { return [pscustomobject]@{ ReturnValue = [uint32]0; sValue = $stubRegistry[$stubKey]; PSComputerName = 'stub' } }
+        if ($stubIsDword) { return [pscustomobject]@{ ReturnValue = [uint32]2147749893; sValue = $null; PSComputerName = 'stub' } }
+    }
     $stubKeyPrefix = ([string]$Arguments['sSubKeyName'] + '|')
-    $stubKeyExists = (@($stubRegistry.Keys | Where-Object { $_.StartsWith($stubKeyPrefix, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0)
+    $stubKeyExists = (@(@($stubRegistry.Keys) + @($stubDwords.Keys) | Where-Object { $_.StartsWith($stubKeyPrefix, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0)
+    if (-not $stubKeyExists) { $stubKeyExists = (@($stubEmptyKeys | Where-Object { $_ -eq [string]$Arguments['sSubKeyName'] }).Count -gt 0) }
+    if ($MethodName -eq 'GetDWORDValue') {
+        if ($stubKeyExists) { return [pscustomobject]@{ ReturnValue = [uint32]1; uValue = $null; PSComputerName = 'stub' } }
+        return [pscustomobject]@{ ReturnValue = [uint32]2; uValue = $null; PSComputerName = 'stub' }
+    }
     if ($stubKeyExists) { return [pscustomobject]@{ ReturnValue = [uint32]1; sValue = $null; PSComputerName = 'stub' } }
     return [pscustomobject]@{ ReturnValue = [uint32]2; sValue = $null; PSComputerName = 'stub' }
 }
@@ -307,6 +359,40 @@ Check (@($diskRows | Where-Object { $_.Detail -match 'Read over Wsman' }).Count 
 Check ($diskC[0].Detail -match '110 %' -and $diskE[0].Detail -notmatch '110 %') 'DC Disk Space: the database volume, and only it, says the 110 % of ntds.dit figure was not measured'
 Check (@($diskRows | Where-Object { @('Pass', 'Warning', 'Fail', 'Not Assessed') -notcontains $_.Status }).Count -eq 0) 'DC Disk Space: no row is Info - a row is a verdict or it is Not Assessed'
 Check (@($diskRows | Where-Object { $_.Recommendation }).Count -eq 0) 'DC Disk Space: a passing row carries no advice'
+# C3: the DcHardening section must be wired, must read the six values through the GetDWORDValue
+# stub and the three classes through the Get-CimInstance stub in ONE session per DC, and must
+# report every setting exactly once, family first.
+$hardFamilies = @('LDAP server signing', 'LDAP server signing enforcement', 'LDAP channel binding', 'SMB server signing', 'SMB client signing', 'LAN Manager authentication level', 'Print Spooler', 'SMBv1')
+$hardRows = @($smokeFindings | Where-Object { $_.Section -eq 'DC Hardening' })
+Check (@($hardRows).Count -eq 8) ("Section 'DC Hardening' is wired into Invoke-Main and gives one row per setting of the stub DC ({0} rows, expected 8)" -f @($hardRows).Count)
+# Declared population: the six registry settings, Print Spooler and SMBv1.
+foreach ($family in $hardFamilies) {
+    Check (@($hardRows | Where-Object { $_.Item -eq ("{0}: dc1.contoso.com" -f $family) }).Count -eq 1) ("DC Hardening: '{0}' is accounted for by exactly one row" -f $family)
+}
+function Get-HardRow { param($Rows, [string]$Family) @($Rows | Where-Object { $_.Item -eq ("{0}: dc1.contoso.com" -f $Family) })[0] }
+Check ((Get-HardRow $hardRows 'LDAP server signing').Status -eq 'Pass' -and (Get-HardRow $hardRows 'LDAP server signing').Detail -match 'LDAPServerIntegrity = 2') 'DC Hardening: LDAP server signing passes on the value the registry stub returned'
+Check ((Get-HardRow $hardRows 'LDAP server signing enforcement').Status -eq 'Info' -and (Get-HardRow $hardRows 'LDAP server signing enforcement').Detail -match '^Not applicable') 'DC Hardening: the Windows Server 2025 enforcement policy is not applicable on the stub DC (build 17763), as Info'
+$hardCb = Get-HardRow $hardRows 'LDAP channel binding'
+Check ($hardCb.Status -eq 'Warning' -and $hardCb.Detail -match 'is not set in the registry of this DC' -and $hardCb.Detail -match "documented default" -and $hardCb.Detail -match "'Never'") 'DC Hardening: channel binding is not set, and is graded on the documented default for the build, named as a default'
+Check ($hardCb.Detail -match 'measured, not published by Microsoft') 'DC Hardening: the reading of return code 1 as "not set" is labelled as measured'
+Check ((Get-HardRow $hardRows 'SMB server signing').Status -eq 'Pass' -and (Get-HardRow $hardRows 'SMB server signing').Detail -match 'RequireSecuritySignature = 1') 'DC Hardening: SMB server signing passes on the registry value'
+Check ((Get-HardRow $hardRows 'SMB server signing').Detail -match 'second instrument, MSFT_SmbServerConfiguration\.RequireSecuritySignature, was not read \(MSFT_SmbServerConfiguration returned no instance' -and (Get-HardRow $hardRows 'SMB server signing').Detail -notmatch 'agrees') 'DC Hardening: the SMB class returned no instance, as measured, so the row says its second instrument was not read and claims no agreement'
+$hardClient = Get-HardRow $hardRows 'SMB client signing'
+Check ($hardClient.Status -eq 'Warning' -and $hardClient.Detail -match 'documented default' -and $hardClient.Detail -match 'Disabled') 'DC Hardening: SMB client signing is not set, and the documented pre-2025 default (Disabled) is a Warning'
+Check ((Get-HardRow $hardRows 'LAN Manager authentication level').Status -eq 'Pass' -and (Get-HardRow $hardRows 'LAN Manager authentication level').Detail -match 'LmCompatibilityLevel = 5') 'DC Hardening: the LAN Manager level passes at 5'
+Check ((Get-HardRow $hardRows 'Print Spooler').Status -eq 'Pass' -and (Get-HardRow $hardRows 'Print Spooler').Detail -match 'Stopped') 'DC Hardening: Print Spooler is read from Win32_Service and passes when Stopped'
+Check ((Get-HardRow $hardRows 'SMBv1').Status -eq 'Not Assessed' -and (Get-HardRow $hardRows 'SMBv1').Detail -match '^Not read: MSFT_SmbServerConfiguration returned no instance to an instance query') 'DC Hardening: SMBv1 is Not Assessed, never Pass, when the SMB class returns no instance - the shape measured on a real host'
+Check ((Get-HardRow $hardRows 'SMBv1').Detail -match 'GetConfiguration' -and (Get-HardRow $hardRows 'SMBv1').Detail -match 'PORT-PLAN C3f' -and -not (Get-HardRow $hardRows 'SMBv1').Recommendation) 'DC Hardening: the SMBv1 row names the method it does not invoke and the plan row, and carries no advice'
+Check (@($hardRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 4) ("DC Hardening: four rows pass on the stub DC - LDAP signing, SMB server signing, LAN Manager level, Print Spooler ({0})" -f @($hardRows | Where-Object { $_.Status -eq 'Pass' }).Count)
+Check (@($hardRows | Where-Object { $_.Scope -eq 'contoso.com' }).Count -eq 8) 'DC Hardening: every row carries its domain as Scope'
+Check (@($hardRows | Where-Object { $_.Detail -match 'Read over Wsman' }).Count -eq 8) 'DC Hardening: the transport that answered is stated on every row'
+Check (@($hardRows | Where-Object { $_.Detail -match 'OS build 17763' }).Count -eq 6) 'DC Hardening: each of the six setting rows states the OS build the default was chosen for'
+Check (@($hardRows | Where-Object { $_.Detail -match 'not necessarily what a client and this DC negotiate on the wire' }).Count -eq 6) 'DC Hardening: each of the six setting rows says it is configured policy, not what is on the wire'
+Check (@($hardRows | Where-Object { $_.Detail -match 'registry path of this value is inferred, not published by Microsoft for AD DS' }).Count -eq 1 -and (Get-HardRow $hardRows 'LDAP server signing').Detail -match 'path of this value is inferred') 'DC Hardening: the LDAP server signing row, and no other, says its registry path is inferred and not published'
+Check (@($hardRows | Where-Object { $_.Status -eq 'Warning' }).Count -eq 2 -and @($hardRows | Where-Object { $_.Status -eq 'Warning' -and $_.Detail -match 'below the expectation \(Warning\) is a tool default or your own override, not a Microsoft value' }).Count -eq 2 -and @($hardRows | Where-Object { $_.Status -ne 'Warning' -and $_.Detail -match 'tool default' }).Count -eq 0) 'DC Hardening: each Warning row, and no other, says its status is a tool default and not a Microsoft value'
+Check (@($hardRows | Where-Object { $_.Status -eq 'Pass' -and $_.Recommendation }).Count -eq 0 -and @($hardRows | Where-Object { $_.Status -eq 'Info' -and $_.Recommendation }).Count -eq 0) 'DC Hardening: a Pass or Info row carries no advice'
+Check ($hardCb.Recommendation -match 'LDAP server channel binding token requirements' -and $hardClient.Recommendation -match 'Microsoft network client: Digitally sign communications') 'DC Hardening: each Warning row carries the advice of its own family'
+Check (@($hardRows | Where-Object { $_.Item -like '*: Print Spooler' -or $_.Item -like '*: SMBv1' -or $_.Item -like '*: LDAP signing required' }).Count -eq 0) 'DC Hardening: the pre-1.20.0 row names are gone, so nothing is reported twice'
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
@@ -348,7 +434,7 @@ Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scop
 $findings2 = @(Import-Csv (Join-Path $result2.CsvPath 'Findings-Consolidated.csv'))
 Check ($findings2.Count -gt 0) ("Multi-domain: consolidated findings are not empty ({0} rows)" -f $findings2.Count)
 
-foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space')) {
+foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space', 'DC Hardening')) {
     $n = @($findings2 | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Multi-domain: section '{0}' reached the consolidated findings ({1} rows)" -f $sec, $n)
 }
@@ -367,6 +453,16 @@ foreach ($d in $multiDomains) {
     $forDomain = @($disk2 | Where-Object { $_.Scope -eq $d })
     Check (@($forDomain).Count -eq 2) ("Multi-domain: DC Disk Space has two rows scoped '{0}' ({1})" -f $d, @($forDomain).Count)
     Check (@($forDomain | Where-Object { $_.Status -eq 'Pass' }).Count -eq 2) ("Multi-domain: both DC Disk Space volumes of '{0}' are judged, not skipped" -f $d)
+}
+# C3: eight rows per domain's DC, each set carrying its own domain - not twenty-four rows for
+# the first domain, and not eight for the forest.
+$hard2 = @($findings2 | Where-Object { $_.Section -eq 'DC Hardening' })
+Check (@($hard2).Count -eq 24) ("Multi-domain: DC Hardening has eight rows for each of the three domains' DC ({0}, expected 24)" -f @($hard2).Count)
+foreach ($d in $multiDomains) {
+    $forDomainH = @($hard2 | Where-Object { $_.Scope -eq $d })
+    Check (@($forDomainH).Count -eq 8) ("Multi-domain: DC Hardening has eight rows scoped '{0}' ({1})" -f $d, @($forDomainH).Count)
+    Check (@($forDomainH | Where-Object { $_.Status -eq 'Pass' }).Count -eq 4) ("Multi-domain: the DC Hardening settings of '{0}' are judged, not skipped" -f $d)
+    Check (@($forDomainH | Where-Object { $_.Item -like 'SMBv1: *' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) ("Multi-domain: the SMBv1 row of '{0}' is Not Assessed, never Pass, on a class that returned no instance" -f $d)
 }
 
 # C2: the same three domains with DcDisk selected WITHOUT DomainControllers. There is then no DC
@@ -389,6 +485,23 @@ foreach ($d in $multiDomains) {
 Check (@($diskD | Where-Object { -not $_.Scope }).Count -eq 0) 'Multi-domain, DcDisk alone: no row is without a domain'
 Check (-not (Test-Path (Join-Path $resultD.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, DcDisk alone: non-vacuity - the DomainControllers section itself was not run'
 Remove-Item -Recurse -Force $outD -ErrorAction SilentlyContinue
+
+# C3 / C2e: the same for DcHardening. Before v1.20.0 it took the unscoped host names, so on a
+# real forest a run without DomainControllers covered the current domain only.
+$outH = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_hardonly_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outH
+$script:Sections = @('DcHardening')
+$resultH = Invoke-Main
+$hardH = @(@(Import-Csv $resultH.FindingsFile) | Where-Object { $_.Section -eq 'DC Hardening' })
+Check (@($resultH.DomainsScoped).Count -eq 3) ("Multi-domain, DcHardening alone: three domains scoped ({0})" -f @($resultH.DomainsScoped).Count)
+Check (@($hardH).Count -eq 24) ("Multi-domain, DcHardening alone: eight rows for each of the three domains' DC, with no DC inventory ({0}, expected 24)" -f @($hardH).Count)
+foreach ($d in $multiDomains) {
+    $forDomainHH = @($hardH | Where-Object { $_.Scope -eq $d })
+    Check (@($forDomainHH).Count -eq 8 -and @($forDomainHH | Where-Object { $_.Status -eq 'Pass' }).Count -eq 4) ("Multi-domain, DcHardening alone: domain '{0}' is in the section and judged ({1} rows)" -f $d, @($forDomainHH).Count)
+}
+Check (@($hardH | Where-Object { -not $_.Scope }).Count -eq 0) 'Multi-domain, DcHardening alone: no row is without a domain'
+Check (-not (Test-Path (Join-Path $resultH.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, DcHardening alone: non-vacuity - the DomainControllers section itself was not run'
+Remove-Item -Recurse -Force $outH -ErrorAction SilentlyContinue
 $script:OutputPath = $out2
 $script:Sections = @('All')
 
@@ -503,6 +616,40 @@ $logO = Get-Content $resultO.LogFile -Raw
 Check ($logO -match 'Config override: section DcDisk taken from') 'Override: the log records which section was taken from the file'
 Remove-Item -Recurse -Force $outO -ErrorAction SilentlyContinue
 
+# C3: the same for the DcHardening key of the file. The stub DC's SMB client signing value is not
+# set, which is a Warning by the documented pre-2025 default; the file turns a value below the
+# expectation into a Fail for that setting only, and the finding cites the file.
+'{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | Out-File -LiteralPath $overrideFile -Encoding UTF8
+$outOH = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outOH
+$script:Sections = @('DomainControllers', 'DcHardening')
+$resultOH = Invoke-Main
+$hardO = @(@(Import-Csv $resultOH.FindingsFile) | Where-Object { $_.Section -eq 'DC Hardening' })
+Check (@($hardO).Count -eq 8) ("Override: DC Hardening still gives one row per setting ({0}, expected 8)" -f @($hardO).Count)
+$hardOClient = @($hardO | Where-Object { $_.Item -eq 'SMB client signing: dc1.contoso.com' })
+Check (@($hardOClient).Count -eq 1 -and $hardOClient[0].Status -eq 'Fail') 'Override: the file reached the section - SMB client signing below the expectation is now a Fail'
+Check (@($hardOClient).Count -eq 1 -and $hardOClient[0].Detail -match [regex]::Escape($overrideFile) -and $hardOClient[0].Detail -match 'for OtherStatus') 'Override: the finding cites the file for the value it supplied'
+Check (@($hardOClient).Count -eq 1 -and $hardOClient[0].Recommendation -match 'Microsoft network client: Digitally sign communications') 'Override: a row that cites a file path still carries the advice of its own family'
+Check (@($hardO | Where-Object { $_.Item -eq 'LDAP channel binding: dc1.contoso.com' -and $_.Status -eq 'Warning' -and $_.Detail -notmatch [regex]::Escape($overrideFile) }).Count -eq 1) 'Override: a setting the file does not name keeps its built-in status and source'
+Check ((Get-Content $resultOH.LogFile -Raw) -match 'Config override: section DcHardening taken from') 'Override: the log records that the DcHardening section was taken from the file'
+Remove-Item -Recurse -Force $outOH -ErrorAction SilentlyContinue
+
+# C3: the other shape of the SMB class - an instance returned to the query. NOT MEASURED on any
+# host; run once so the code a DC would take if it did return one is exercised end to end. (The
+# override file above is still in force; it touches SMB client signing only.)
+$script:SmokeSmbInstance = $true
+$outSI = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_smbinstance_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outSI
+$script:Sections = @('DomainControllers', 'DcHardening')
+$resultSI = Invoke-Main
+$hardSI = @(@(Import-Csv $resultSI.FindingsFile) | Where-Object { $_.Section -eq 'DC Hardening' })
+Check (@($hardSI).Count -eq 8) ("SMB instance returned (unmeasured shape): DC Hardening gives one row per setting ({0}, expected 8)" -f @($hardSI).Count)
+Check (@($hardSI | Where-Object { $_.Item -eq 'SMBv1: dc1.contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match 'EnableSMB1Protocol = False' }).Count -eq 1) 'SMB instance returned (unmeasured shape): SMBv1 is graded on EnableSMB1Protocol'
+Check (@($hardSI | Where-Object { $_.Item -eq 'SMB server signing: dc1.contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match 'second instrument agrees' }).Count -eq 1) 'SMB instance returned (unmeasured shape): the second instrument agrees with the registry value'
+$script:SmokeSmbInstance = $false
+Remove-Item -Recurse -Force $outSI -ErrorAction SilentlyContinue
+'{ "DcDisk": { "WarnBelowPercent": 70, "FailBelowPercent": 55 } }' | Out-File -LiteralPath $overrideFile -Encoding UTF8
+
 # The same file with a section this run does not select: validated, logged as unused, no effect.
 $outU = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $outU
@@ -546,6 +693,10 @@ $badFiles = @(
     @{ Name = 'an array holding one valid object'; Text = '[ { "DcDisk": { "WarnBelowPercent": 70 } } ]'; Expect = 'not a JSON array' }
     # Both editions keep the last of two equal keys without an error; the run must stop instead.
     @{ Name = 'a key written twice'; Text = '{ "DcDisk": { "WarnBelowPercent": 70, "WarnBelowPercent": 30 } }'; Expect = "'DcDisk.WarnBelowPercent' more than once" }
+    # C3: a hardening expectation that would let a weak value read as a pass.
+    @{ Name = 'a DcHardening status that is not Warning or Fail'; Text = '{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Pass" } } } }'; Expect = 'It must be Warning or Fail' }
+    # C3: a port for DcHardening. The section's CIM session does not use it, so it is refused.
+    @{ Name = 'a DcHardening port'; Text = '{ "DcHardening": { "WsmanPort": 5986 } }'; Expect = 'The ports of this section cannot be set from a file' }
 )
 $script:Sections = @('All')
 foreach ($bad in $badFiles) {
@@ -560,7 +711,7 @@ foreach ($bad in $badFiles) {
     Check ($written.Count -eq 0) ("Override: with {0}, nothing was collected before the run stopped ({1} CSV files)" -f $bad.Name, $written.Count)
     Remove-Item -Recurse -Force $outB -ErrorAction SilentlyContinue
 }
-Check (@($badFiles).Count -eq 6) 'Override: non-vacuity - six declared unusable files were tried'
+Check (@($badFiles).Count -eq 8) 'Override: non-vacuity - eight declared unusable files were tried'
 Remove-Item -LiteralPath $overrideFile -Force -ErrorAction SilentlyContinue
 # The parameter carries [ValidateNotNullOrEmpty()], and the attribute stays on the variable, so
 # it cannot simply be set back to empty: the variable is removed and re-created without it.
@@ -635,6 +786,25 @@ Check (@($disk3 | Where-Object { $_.Item -eq 'Disk space - contoso.com' -and $_.
 Check (@($disk3).Count -eq 2 -and @($disk3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC Disk Space reports nothing but Not Assessed, and never Pass ({0} rows, expected 2)" -f @($disk3).Count)
 
 Check (@($disk3 | Where-Object { $_.Item -eq 'Disk space - contoso.com' -and $_.Detail -match 'could not be enumerated\. Cause: STUB: ADWS unreachable' -and $_.Detail -match 'None of its volumes was read' }).Count -eq 1) 'Failure mode: the domain row names the cause and, with no DC read at all, says none of its volumes was read'
+# C3: the same for DcHardening. With no DC there is no setting to read; the section must say so,
+# name the enumeration failure, give the domain whose inventory failed its own row, and pass
+# nothing.
+$hard3 = @($findings3 | Where-Object { $_.Section -eq 'DC Hardening' })
+Check (@($hard3 | Where-Object { $_.Item -eq 'DC hardening' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode: DC Hardening reports Not Assessed when no DC was enumerated, and carries the enumeration failure'
+Check (@($hard3 | Where-Object { $_.Item -eq 'DC hardening - contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'could not be enumerated\. Cause: STUB: ADWS unreachable' -and $_.Detail -match 'None of its hardening settings was read' }).Count -eq 1) 'Failure mode: DC Hardening gives the domain whose inventory failed its own Not Assessed row, with the cause'
+Check (@($hard3).Count -eq 2 -and @($hard3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC Hardening reports nothing but Not Assessed, and never Pass ({0} rows, expected 2)" -f @($hard3).Count)
+Check (@($hard3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a DC Hardening row that measured nothing carries no advice'
+$out3h = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_hardonly_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $out3h
+$script:Sections = @('DcHardening')
+$result3h = Invoke-Main
+$hard3h = @(@(Import-Csv $result3h.FindingsFile) | Where-Object { $_.Section -eq 'DC Hardening' })
+Check (@($hard3h).Count -eq 2 -and @($hard3h | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode, DcHardening alone: nothing but Not Assessed, and never Pass ({0} rows, expected 2)" -f @($hard3h).Count)
+Check (@($hard3h | Where-Object { $_.Item -eq 'DC hardening - contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode, DcHardening alone: the scoped domain has its own row, with the cause'
+Remove-Item -Recurse -Force $out3h -ErrorAction SilentlyContinue
+$script:OutputPath = $out3
+$script:Sections = @('All')
+
 # The same failure with DcDisk selected alone: the section's own per-domain enumeration throws,
 # and it must give the scoped domain its Not Assessed row rather than an empty section.
 $out3d = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_diskonly_" + [guid]::NewGuid().ToString('N'))
