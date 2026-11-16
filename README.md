@@ -36,7 +36,7 @@ Extracted from
 | Group Policy | Linked / unlinked GPOs, WMI filters, central store |
 | Policy | Default and fine-grained password and lockout policy |
 | Privilege | DA/EA/SA/Administrators membership, adminCount orphans, SPNs on privileged accounts, Protected Users |
-| Security posture | krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota, AdminSDHolder, stale / never-expiring / RC4-DES accounts |
+| Security posture | krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota, AdminSDHolder, stale / never-expiring / RC4-DES accounts; and **SID history** per scoped domain (directory reads only, `sIDHistory` never written): the principals that carry it (`Warning` when any - a tool default, `Info` by override; `Pass` worded "none visible to this account" when the read succeeded and returned none), a historic SID of the principal's own domain (`Fail`), a privileged well-known RID or SID (`Fail`, named), and the source domains (`Info`: this forest, a trust partner, or "unresolved"). Details under [SID history](#sid-history) |
 | AD CS / PKI | Enrolment CAs, ESC1-susceptible certificate templates |
 | Dangerous ACLs | Non-default principals holding DCSync rights on the domain head |
 | Kerberos exposure | Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation |
@@ -820,11 +820,52 @@ because Microsoft does not say whether it requests a pool (the DC Diagnostics se
 Nothing is written: no attribute is set, and neither `msDS-RIDPoolAllocationEnabled` nor
 `SidCompatibilityVersion` is ever touched.
 
+## SID history
+
+`-Sections SecurityPosture` (part of `All`) gives every scoped domain four SID history rows beside
+the section's older rows. **Run against stubs only** so far; the first run against a real forest is
+PORT-PLAN C17, and C7a lists what that run must confirm.
+
+| Row | Read from | Results |
+| --- | --- | --- |
+| `SID history: <domain>` | `Get-ADObject -LDAPFilter '(sIDHistory=*)' -Server <domain>`, asking for `sIDHistory`, `objectSid`, `objectClass`, `sAMAccountName`, `distinguishedName` and `userAccountControl` only | `Warning` when any principal carries SID history (a **tool default**, the catalogue rule ADA-OBJ-009; `Info` by override); `Pass` when the read succeeded and returned none, worded "none visible to this account"; counts by class and enabled state, and the names up to a cap in their own column |
+| `SID history same-domain: <domain>` | the same answer and the domain's own SID (`Get-ADDomain`) | `Fail` when a historic SID belongs to the principal's own domain; `Pass` when none does, or when no principal was returned; `Not Assessed` when the domain's SID was not read, or a value could not be parsed or a returned principal had no `sIDHistory` value read, and none failed |
+| `SID history privileged: <domain>` | the same answer | `Fail` when a historic SID is a privileged RID (500, 502, 512, 516, 517, 518, 519, 520, 526, 527, on an account-domain SID) or SID (S-1-5-32-544, -548, -549, -550, -551, S-1-5-9), naming each by name and count in Detail ("Domain Admins (RID 512)", "Administrators (well-known SID)") and the SIDs in `HistoricSids`; `Pass`; `Not Assessed` as above |
+| `SID history sources: <domain>` | the same answer, the trusted domain objects under `CN=System` (`securityIdentifier`), and the SID of every forest domain | `Info`: each source domain part with its count, labelled as a domain of this forest, a trust partner, builtin or well-known, not an account-domain SID, or "unresolved"; `Not Assessed` when principals were returned and no value was read on any of them |
+| `SID history (no domain scoped)`, `SID history` | | `Not Assessed`: no domain scoped, or the forest unreadable |
+
+**An empty answer is not proof.** By the schema's default security descriptors Authenticated
+Users can read `sIDHistory` on users, groups and computers, but Microsoft documents that a search
+returns no object or property the caller has no access to. The `Pass` therefore says "none visible
+to this account". An unreachable domain, a refused read and a timed-out read are each their own
+`Not Assessed` result, and all four rows of that domain carry the cause.
+
+**Where Microsoft is silent, the tool says so.** Microsoft publishes no grade for SID history that
+is present; it names eliminating SID history as one way to reduce token size, and Defender for
+Identity reports "unsecure" SID history for removal. The `Warning` is this tool's default. The
+same-domain `Fail` rests on Microsoft's DsAddSidHistory constraint (source and destination in
+different forests, so that duplicate SIDs are not created in one forest) and on a move keeping the
+SID of the domain the object left: that such a value indicates tampering is this tool's inference.
+The privileged list is this tool's, read from Microsoft's well-known SID tables; Microsoft gives
+only the Enterprise Admins example.
+
+**SID parsing** reads bytes, text and SecurityIdentifier objects. Bytes are checked against the
+SID layout first (revision 1, at most 15 sub-authorities, exact length), read by arithmetic that
+keeps a RID of 4294967295 on Windows PowerShell 5.1 and PowerShell 7, and cross-checked with .NET
+`SecurityIdentifier` where the platform has it: a value the platform refuses, or reads differently,
+is not read. A malformed value is reported as not parsed, never as a crash and never as clean.
+
+**Not read, not done**: whether a trust filters SID history (SID filtering, quarantine) is in the
+Trusts section; the trusted domain objects of other forest domains; the security event log
+("Add Sid History" events). Nothing is written: no `Set-ADUser -Remove`, no `netdom`, no
+`SetSidFilteringStatus`. Names and SIDs are in their own columns (`Principals`, `HistoricSids`,
+`SourceDomains`, `DomainSid`), never in the text a recommendation is chosen from.
+
 ## One override file for section config: `-ConfigOverridePath`
 
 A JSON file whose top-level keys are section names. Each value is checked by that section's own
-rules. Five sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates` and
-`RidPool`;
+rules. Six sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates`,
+`RidPool` and `SidHistory` (used by `SecurityPosture`);
 later checks add their own key.
 
 ```json
@@ -858,6 +899,10 @@ later checks add their own key.
   "RidPool": {
     "WarnAtPercentUsed": 10,
     "FailAtPercentUsed": 90
+  },
+  "SidHistory": {
+    "PresentStatus": "Warning",
+    "NameListCap": 25
   }
 }
 ```
@@ -910,6 +955,11 @@ later checks add their own key.
   `FailAtPercentUsed` must be above `WarnAtPercentUsed` once merged. The known sizes of the
   global RID space, the location of `CN=RID Manager$` and every attribute name are refused, so a
   file cannot make the tool read another attribute or grade against a size it did not read.
+- For `SidHistory` the two keys above are the only ones: `PresentStatus` is the text `Warning` or
+  `Info` (SID history that is present is never a pass, and same-domain and privileged values
+  stay a `Fail`), and `NameListCap` a whole JSON number from 0 to 1000. The privileged RIDs and
+  SIDs, the filters and the property lists are refused, so a file cannot make the tool ask for
+  every attribute or stop a privileged SID from failing.
 - For `DcDisk`, `WsmanPort` and `RpcPort` change the port that is **probed** before a read. The
   CIM session itself is opened without a port, so it still goes to the default one: setting
   either key to anything but the default can make a reachable DC read as unreachable, and does

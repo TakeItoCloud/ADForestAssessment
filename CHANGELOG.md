@@ -10,6 +10,186 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-11-16 (SID history: principals with sIDHistory, same-domain and privileged historic SIDs, their source domains, tool v1.24.0)
+
+**PORT-PLAN C7.** Four new rows per scoped domain in the existing `SecurityPosture` section
+(report section `Security Posture`), so no new `-Sections` value: the section already runs per
+domain, and its older rows (krbtgt password age, AD Recycle Bin, tombstone lifetime, machine
+account quota, DES/reversible-encryption accounts) are unchanged. It addresses ADA-OBJ-009
+(SIDHistory populated), for which the tool had nothing; the reference rule is "Warning when count >
+0", and the same-domain, privileged and source-domain rows are this tool's additions.
+
+**This has run only against stubs.** No `Get-ADDomain` or `Get-ADObject` call in it has met a
+real domain controller. The first run against a real forest is PORT-PLAN C17, owned by the
+operator, and PORT-PLAN C7a lists what that run must confirm for this row - among them what the
+ActiveDirectory module actually returns for `sIDHistory` (bytes, `SecurityIdentifier` objects or a
+collection of either: Learn does not say, so all three are read), and the exception types behind
+the `Unreachable:` / `Access denied:` / `Timed out:` wording.
+
+**What it reads, and nothing else.** Directory reads only, with domain read access:
+
+- **Per scoped domain** (`Get-AdfaSidHistoryRaw`): `Get-ADDomain -Identity <domain>` for the
+  domain's DN and SID; `Get-ADObject -LDAPFilter '(sIDHistory=*)' -Server <domain>` asking for
+  `sIDHistory`, `objectSid`, `objectClass`, `sAMAccountName`, `distinguishedName` and
+  `userAccountControl` only, paged by the module; and `Get-ADObject -LDAPFilter
+  '(objectClass=trustedDomain)' -SearchBase CN=System,<domain DN>` asking for `securityIdentifier`,
+  `trustPartner` and `flatName`. A property list holding a wildcard or a blank is refused before
+  any call. The three reads are independent: a domain SID or a trust read that fails leaves the
+  principals.
+- **Once per run** (`Get-AdfaSidHistoryForestMap`): `Get-ADDomain` for the SID of every domain of
+  the forest, to name the domain a historic SID came from.
+
+Nothing is written. `sIDHistory` is never removed or changed: Microsoft's own remediation
+(`Set-ADUser -Remove @{SIDHistory=...}`) is quoted in the advice and never run, and `netdom` and
+`Forest.SetSidFilteringStatus` are not used. A test reads the parsed script and fails on any
+state-changing cmdlet, any write parameter (`-Remove`, `-Replace`, `-Add`, `-Clear`), any ADSI
+write, any external tool, and on any directory call in the row other than the four declared.
+
+**What it reports.**
+
+| Row | Results |
+| --- | --- |
+| `SID history: <domain>` | `Warning` when any principal carries SID history (a **tool default**, the catalogue rule; `Info` by override), with counts by class (user, computer - managed service accounts included, group, other) and enabled state (from `userAccountControl`, never for a group), and the names up to `NameListCap` (25, a tool default) with the number not listed; `Pass` when the query succeeded and returned none, worded "None visible: ... visible to this account" |
+| `SID history same-domain: <domain>` | `Fail` when a historic SID's domain part equals the domain's own SID; `Pass`, also when no principal was returned; `Not Assessed` when the domain SID was not read, or when a value could not be parsed or a returned principal had no `sIDHistory` value read and none failed (a Fail found stands) |
+| `SID history privileged: <domain>` | `Fail` when a historic SID is a privileged RID (500, 502, 512, 516, 517, 518, 519, 520, 526, 527 - on an account-domain SID `S-1-5-21-x-y-z-RID` only) or SID (`S-1-5-32-544`, `-548`, `-549`, `-550`, `-551`, `S-1-5-9`), naming each by name and count in Detail ("Domain Admins (RID 512) x1", "Administrators (well-known SID) x1") and the SIDs in `HistoricSids`; `Pass`; `Not Assessed` as above |
+| `SID history sources: <domain>` | `Info`: each distinct domain part with its count, labelled as a domain of this forest, a trust partner of this domain, builtin or well-known, not an account-domain SID, or "unresolved" - never "foreign" or "deleted" - and saying when the forest's SIDs or the trusts were read only in part, or a principal had no value read; `Not Assessed` when principals were returned and no value was read on any of them |
+| `SID history (no domain scoped)`, `SID history` | `Not Assessed`: no domain scoped; the forest unreadable |
+
+A principal query that failed makes all four rows of that domain `Not Assessed` with the cause,
+worded by class from the exception type first: `Unreachable:`, `Access denied:`, `Timed out:` or
+`Read failed:`. A count that was not measured is empty, never 0. Account names, historic SIDs, the
+domain SID and the source domains are in their own columns (`Principals`, `HistoricSids`,
+`DomainSid`, `SourceDomains`), never in `Detail`, which the recommendation is chosen from.
+
+**Grades where Microsoft is silent.** Microsoft publishes no grade for SID history that is
+present; Defender for Identity publishes no severity for "Unsecure SID History attributes". The
+`Warning` is the operator-approved catalogue rule, labelled in the row and the config as a tool
+default and overridable to `Info`, never to `Pass`. The same-domain `Fail` is an **inference**,
+said in the row: Microsoft documents that DsAddSidHistory requires the source and destination in
+different forests "so that duplicate SIDs ... are not created in the same forest", and a move
+between domains keeps the SID of the domain left; no Learn page calls a same-domain value an abuse
+indicator. The privileged list is this tool's, from Microsoft's well-known SID tables; Microsoft
+gives only the Enterprise Admins example. Learn writes Key Admins as `S-1-5-root domain-526` and
+Enterprise Key Admins as `S-1-5-domain-527`, the reverse of their names; matching on the RID
+alone, the check is not affected (said in the config comment).
+
+**SID parsing, 5.1-safe.** `ConvertFrom-AdfaSidValue` reads bytes, text and objects carrying the
+text in `Value`, as `SecurityIdentifier` does. Bytes are checked against the SID layout first
+(revision 1, at most 15 sub-authorities, exactly 8 + 4 x count bytes - so trailing bytes, which
+.NET would ignore, are refused on every platform alike), the 6-byte authority read big-endian and
+each sub-authority as an unsigned 32-bit little-endian number by `[uint64]` arithmetic, never
+`[int]`. Where the platform has `SecurityIdentifier(byte[], 0)` it reads the same bytes; a value it
+refuses is not read, and a value it reads differently from the fallback is not read either, so the
+two parsers are cross-checked on every Windows run (measured: Windows PowerShell 5.1.26100 and
+PowerShell 7.6.9 both read `S-1-5-21-1-2-3-4294967295` and a 48-bit authority as the fallback does,
+and both throw an `ArgumentException` for a short value or revision 2). No real value reaches the
+refusal or the disagreement branch - the layout check refuses first, and the two parsers agree on
+every value that passes it - so those two branches are tested through a test-only `-PlatformReader`
+seam that no caller in the script uses: a reading that differs, an `ArgumentException` (also
+wrapped in a `MethodInvocationException`, as a .NET constructor throws it) and a
+`PlatformNotSupportedException` (the fallback's reading stands). Tested on `S-1-5-21-...`
+with a RID of 4294967295, every sub-authority at 4294967295, `S-1-5-32-544`, `S-1-5-9`, a 48-bit
+authority and 15 sub-authorities, and on eleven malformed values (empty, 3 bytes, revision 2, 16
+sub-authorities, one byte short, trailing bytes, non-SID text, a RID above UInt32, a text-form
+authority above 2^48 - 1, a number, null): each is "not parsed" with a reason, never an exception. A single byte array is one value and is
+never unrolled into its bytes (a test found a test helper doing exactly that).
+
+**Config.** A new versioned table `SidHistory`, overridable under a new `SidHistory` key of
+`-ConfigOverridePath` (`PresentStatus` Warning or Info, `NameListCap` a whole number from 0 to
+1000). The privileged RIDs and SIDs, the filters, the property lists and the class buckets are
+refused, so a file cannot make the tool ask for every attribute or stop a privileged SID from
+failing. A finding cites the file for exactly the keys it supplied.
+
+**Advice.** Section-scoped recommendation entries for the three graded families, anchored on the
+Item prefix the tool writes (`SID history: `, `SID history same-domain: `, `SID history
+privileged: `), plus a `SID history` prefix catch-all with no advice - and no section-wide
+catch-all, because the older Security Posture rows rely on the unscoped `krbtgt`, `recycle bin` and
+`machine account quota` entries. All four sit ahead of the unscoped entries, so a group name in a
+Detail ("KRBTGT", "Backup Operators") cannot reach the `krbtgt` or `backup` advice.
+
+**Changed tests, because behaviour legitimately changed.** The pinned list of
+`-ConfigOverridePath` sections gains `SidHistory` (Pester, four places, and Run-Validation); the
+three version pins move to 1.24.0; the RidPool help test now expects "Six sections can be named";
+the count of splatted `Properties` assignments in the script, which the Laps section pins so that
+no new property list goes unreviewed, goes from 12 to 14 (the two lists of
+`Get-AdfaSidHistoryRaw`). The smoke harness's `Get-ADDomain` stub now gives each domain its own
+SID (keyed by `-Identity`; a call naming no domain gets contoso.com's, as before).
+
+**Found by an independent review of the diff before commit, and fixed in it.**
+
+- **Principals returned with no `sIDHistory` value made the same-domain and privileged rows
+  `Pass`.** An object returned for `(sIDHistory=*)` whose value was missing, `$null` or an empty
+  collection became a record with no history; the count row said `Warning`, and the same-domain and
+  privileged rows passed with "None visible", because they tested only the number of values. Those
+  rows now pass only when no principal was returned. Principals returned with no value read on any
+  of them make the same-domain, privileged and sources rows `Not Assessed`. When some values were
+  read, the principals with none are counted in the rows (`Not Assessed` unless a Fail is found,
+  which stands), and the count row says how many came back with no value. On a live domain controller
+  this is unlikely, because the same access governs the filter and the value, but the guard was
+  missing in the code. It was reproduced with a stub.
+- **A `|` in a distinguished name corrupted the `Principals` and `HistoricSids` columns** of the
+  same-domain and privileged rows (`CN=x|y,...` with sAMAccountName `alice` read as
+  `y,...|alice`). The name was recovered by splitting the grouping key at the first `|`, and RFC 4514
+  needs no escaping for `|` in a DN. The name is now kept on its own, and the grouping key starts
+  with the DN's length, so two principals cannot share one key.
+- **The privileged row put fixed SIDs in Detail** ("Administrators (S-1-5-32-544)"), while the help,
+  README, PORT-PLAN and this entry say SIDs never go there. Detail now reads "Administrators
+  (well-known SID)" or "Domain Admins (RID 512)", and the SIDs are only in `HistoricSids`. The
+  Pester guard that checked only `S-1-5-21-` now refuses any `S-1-` in the Detail of every row.
+- **Guards no test could fail**, each now killed by a test:
+  - The platform/fallback cross-check and the platform-refusal branch of `ConvertFrom-AdfaSidValue`
+    could not be reached, because no real value gets through the layout check to either. They are
+    now tested through the `-PlatformReader` seam described above.
+  - The "builtin or well-known" label for `S-1-5-9` (one sub-authority), and "not an account-domain
+    SID" for `S-1-16-12288` and a service SID.
+  - `NameListCap` on the same-domain and privileged rows, where only the count row was tested.
+  - The most specific `objectClass` taken from the whole chain (`top,person,organizationalPerson,user`)
+    as an array and as a list.
+  - No enabled state for a group or another class that returns `userAccountControl`.
+  - A text-form authority above 2^48 - 1 refused (`S-1-281474976710656-5`), and one at the limit read.
+
+  Existing tests strengthened by the review:
+  - The Pester malformed-values test, from ten values to eleven.
+  - Run-Validation's malformed values, from eight to nine.
+  - Run-Validation's verdict table, from seven reads to eight (adding "no value read").
+  - The Detail guard of the "present" test, from `S-1-5-21-` to `S-1-`.
+
+  No test was deleted or weakened.
+
+**Not verified.** Everything listed in PORT-PLAN C7a; whether a trust filters SID history is left to
+the Trusts section (cross-referenced in the rows' NotRun note); the trusted domain objects of other
+forest domains, and the Security-log "Add Sid History" events, are not read (PORT-PLAN C7c).
+Decisions for the operator to confirm are in PORT-PLAN C7b.
+
+**Vendor sources, all read on Microsoft Learn on 2026-11-16:**
+
+- sIDHistory attribute (syntax, multi-valued, GC, search flags, Security-Principal) -
+  https://learn.microsoft.com/windows/win32/adschema/a-sidhistory
+- String(Sid) syntax (octet string, System.Byte[]) - https://learn.microsoft.com/windows/win32/adschema/s-string-sid
+- user and group classes (Security-Principal auxiliary class; default security descriptors) -
+  https://learn.microsoft.com/windows/win32/adschema/c-user and https://learn.microsoft.com/windows/win32/adschema/c-group
+- General-Information property set (SID-History, Object-Sid) - https://learn.microsoft.com/windows/win32/adschema/r-general-information
+- trustedDomain class and securityIdentifier - https://learn.microsoft.com/windows/win32/adschema/c-trusteddomain and
+  https://learn.microsoft.com/windows/win32/adschema/a-securityidentifier
+- objectSid - https://learn.microsoft.com/windows/win32/adschema/a-objectsid
+- Access control and read operations - https://learn.microsoft.com/windows/win32/ad/access-control-and-read-operations
+- Security identifiers (SIDHistory multi-valued and in the token; domain identifier and RID;
+  well-known SID table) - https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-identifiers
+- Well-known SIDs (aliases 0x220.., Key Admins 0x20E, Enterprise Key Admins 0x20F) -
+  https://learn.microsoft.com/windows/win32/secauthz/well-known-sids
+- SID structure (MS-DTYP 2.4.2.2) - https://learn.microsoft.com/openspecs/windows_protocols/ms-dtyp/f992ad60-0fe4-4b87-9fed-beb478836861
+- SecurityIdentifier(Byte[], Int32) - https://learn.microsoft.com/dotnet/api/system.security.principal.securityidentifier.-ctor
+- Defender for Identity, Unsecure SID History attributes (no severity published) -
+  https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts
+- Defender for Identity alert "Suspected SID-History injection" (external ID 1106) -
+  https://learn.microsoft.com/defender-for-identity/alerts-mdi-classic
+- Using DsAddSidHistory - https://learn.microsoft.com/windows/win32/ad/using-dsaddsidhistory
+- Planning for compromise ("eliminating SID history") -
+  https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/planning-for-compromise
+- netdom trust /quarantine - https://learn.microsoft.com/windows-server/administration/windows-commands/netdom-trust
+- Get-ADObject (paging defaults) - https://learn.microsoft.com/powershell/module/activedirectory/get-adobject
+- userAccountControl ACCOUNTDISABLE - https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties
+
 ### Added — 2026-11-16 (RID pool: allocation enabled, global RID space issued, each DC's RID pool, tool v1.23.0)
 
 **PORT-PLAN C6.** New `-Sections RidPool` (report section `RID Pool`), included in the default
