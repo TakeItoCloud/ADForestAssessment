@@ -98,9 +98,39 @@ function New-StubLapsComputer {
     elseif ($null -ne $ExpiryDays -and ($Asked -contains 'msLAPS-PasswordExpirationTime')) { $o | Add-Member -NotePropertyName 'msLAPS-PasswordExpirationTime' -NotePropertyValue ([int64]$now.AddDays($ExpiryDays).ToFileTimeUtc()) }
     return $o
 }
+# C5 (DcCertificates): two certificates made in memory with an ephemeral ECDSA key - nothing is
+# written to any certificate store or key container - one valid for 200 more days and one that
+# expired 10 days ago, relative to the time of this run. The directory stub publishes both on the
+# DC's computer object; the TLS seam stub presents the valid one.
+function New-StubCertificate {
+    param([string]$Subject, [double]$FromDays, [double]$ToDays)
+    $key = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve+NamedCurves]::nistP256)
+    $request = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest -ArgumentList $Subject, $key, ([System.Security.Cryptography.HashAlgorithmName]::SHA256)
+    $oids = New-Object System.Security.Cryptography.OidCollection
+    [void]$oids.Add((New-Object System.Security.Cryptography.Oid -ArgumentList '1.3.6.1.5.5.7.3.1'))
+    $request.CertificateExtensions.Add((New-Object System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension -ArgumentList $oids, $false))
+    $cert = $request.CreateSelfSigned((New-Object System.DateTimeOffset -ArgumentList $now.AddDays($FromDays)), (New-Object System.DateTimeOffset -ArgumentList $now.AddDays($ToDays)))
+    $key.Dispose()
+    return $cert
+}
+$script:SmokeCertValid = New-StubCertificate -Subject 'CN=dc1.contoso.com' -FromDays -165 -ToDays 200
+$script:SmokeCertExpired = New-StubCertificate -Subject 'CN=dc1.contoso.com' -FromDays -375 -ToDays -10
+# $script:SmokeCertDirFail makes the userCertificate read throw, as a refused directory read would.
+$script:SmokeCertDirFail = $false
 function Get-ADComputer {
     param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$LDAPFilter, [Parameter(ValueFromRemainingArguments)]$a)
     if ([string]::IsNullOrWhiteSpace($Server)) { throw 'A referral was returned from the server' }
+    # C5: the DC's computer object found by its DNS host name, asked for userCertificate only. The
+    # attribute comes back as the module returns a multi-valued attribute - a collection whose
+    # elements are the DER bytes of one certificate each.
+    if ($LDAPFilter -match '^\(&\(objectClass=computer\)\(dNSHostName=([^()*\\]+)\)\)$') {
+        if ($script:SmokeCertDirFail) { throw 'STUB: certificate read refused' }
+        if ((@($Properties) -join ',') -ne 'userCertificate') { throw ("STUB: the certificate read asked for '{0}', not userCertificate alone" -f (@($Properties) -join ',')) }
+        $certHost = $Matches[1]
+        $certObject = [pscustomobject]@{ DistinguishedName = ("CN=DC1,OU=Domain Controllers,DC={0}" -f (($Server -split '\.') -join ',DC=')); DNSHostName = $certHost; Name = 'DC1'; ObjectClass = 'computer'; Enabled = $true }
+        $certObject | Add-Member -NotePropertyName 'userCertificate' -NotePropertyValue @($script:SmokeCertValid.RawData, $script:SmokeCertExpired.RawData)
+        return $certObject
+    }
     if (-not [string]::IsNullOrWhiteSpace($LDAPFilter)) {
         if ($script:SmokeLapsFail -or $script:SmokeLapsComputerFail) { throw 'STUB: computer query refused' }
         foreach ($p in @($Properties)) {
@@ -293,6 +323,23 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
 function Test-CommandAvailable { param([string]$Name) return $false }
 function Test-ModuleAvailable { param([string]$Name) return $false }
 function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+# C5: the TLS handshake seam. Test-TcpPort above says every port answers, so without this stub a
+# run with -IncludeLdapsHandshake would make a real DNS lookup and a real TCP connection to
+# dc1.contoso.com:636. It answers in the shape the real seam returns: the valid certificate, as
+# presented, with the chain status a host that does not trust the stub's self-signed certificate
+# would report. Every call is recorded.
+$script:SmokeTlsCalls = @()
+# The bounds each call was given, "<connect ms>/<handshake ms>".
+$script:SmokeTlsBounds = @()
+function Get-AdfaDcTlsCertificateRaw {
+    param([string]$ComputerName, [int]$Port, [int]$ConnectTimeoutMs, [int]$HandshakeTimeoutMs)
+    $script:SmokeTlsCalls += ("{0}:{1}" -f $ComputerName, $Port)
+    $script:SmokeTlsBounds += ("{0}/{1}" -f $ConnectTimeoutMs, $HandshakeTimeoutMs)
+    [pscustomobject]@{ Ok = $true; Class = 'Presented'; Error = ''; ErrorType = ''; SocketError = ''
+        Certificate = (ConvertTo-AdfaCertificateRecord -Certificate $script:SmokeCertValid)
+        SslPolicyErrors = 'RemoteCertificateChainErrors'; ChainStatus = @('UntrustedRoot: stub chain')
+        CallbackRan = $true; DeadlineExpired = $false; ElapsedMs = 5 }
+}
 
 $out = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out
@@ -301,6 +348,7 @@ $script:AllDomains = $false
 $script:IncludeDcdiag = $false
 $script:IncludeRepadmin = $false
 $script:SkipTrustVerification = $false
+$script:IncludeLdapsHandshake = $false
 $script:Server = $null
 $script:Credential = $null
 
@@ -496,6 +544,28 @@ $allComputersCsv = @(Get-ChildItem -Path $result.CsvPath -Filter 'AllComputers_*
 $allComputersColumns = @((Import-Csv $allComputersCsv[0].FullName | Select-Object -First 1).PSObject.Properties.Name)
 Check (@($script:SmokeLapsSecretNames | Where-Object { $allComputersColumns -contains $_ }).Count -eq 0) 'Hard rule: the computer export has no column for any of the seven secret LAPS attributes'
 Check ($allComputersColumns -contains 'msLAPS-PasswordExpirationTime' -and $allComputersColumns -contains 'OperatingSystem') 'Hard rule: non-vacuity - the export did receive the all-attributes object, and kept the non-secret expiry time'
+# C5: the DcCertificates section must be wired, must read the directory through the AD stub,
+# and in a default run must NOT make the handshake. Declared population: one DC, so one LDAPS
+# row (Not Assessed, not run) and one row per published certificate (two).
+$certRows = @($smokeFindings | Where-Object { $_.Section -eq 'DC Certificates' })
+Check (@($certRows).Count -eq 3) ("Section 'DC Certificates' is wired into Invoke-Main and gives one LDAPS row and one row per published certificate for the stub DC ({0} rows, expected 3)" -f @($certRows).Count)
+Check (@($script:SmokeTlsCalls).Count -eq 0) ("DC Certificates: a default run makes no handshake ({0} calls)" -f @($script:SmokeTlsCalls).Count)
+$certLdaps = @($certRows | Where-Object { $_.Item -eq 'LDAPS certificate: dc1.contoso.com' })
+Check (@($certLdaps).Count -eq 1 -and $certLdaps[0].Status -eq 'Not Assessed' -and $certLdaps[0].Detail -match '^Not run: ' -and $certLdaps[0].Detail -match '-IncludeLdapsHandshake') 'DC Certificates: without the switch the LDAPS row is Not Assessed and names the switch, never Pass'
+$certValid = @($certRows | Where-Object { $_.Item -eq ("Directory certificate: dc1.contoso.com [{0}]" -f $script:SmokeCertValid.Thumbprint.ToUpperInvariant()) })
+$certExpired = @($certRows | Where-Object { $_.Item -eq ("Directory certificate: dc1.contoso.com [{0}]" -f $script:SmokeCertExpired.Thumbprint.ToUpperInvariant()) })
+Check (@($certValid).Count -eq 1 -and $certValid[0].Status -eq 'Pass' -and $certValid[0].Detail -match 'Directory evidence') 'DC Certificates: the published valid certificate passes, labelled directory evidence'
+Check (@($certExpired).Count -eq 1 -and $certExpired[0].Status -eq 'Fail' -and $certExpired[0].Detail -match '^Published in the directory: expired on') 'DC Certificates: the published expired certificate is a Fail'
+Check (@($certExpired).Count -eq 1 -and $certExpired[0].Recommendation -match 'userCertificate' -and $certExpired[0].Recommendation -notmatch 'ENROLLEE_SUPPLIES_SUBJECT|wbadmin|repadmin') 'DC Certificates: the Fail carries the directory certificate advice, not the template or backup advice'
+Check (@($certRows | Where-Object { $_.Scope -eq 'contoso.com' }).Count -eq 3) 'DC Certificates: every row carries its domain as Scope'
+Check (@($certRows | Where-Object { $_.Status -ne 'Fail' -and $_.Recommendation }).Count -eq 0) 'DC Certificates: a row that is not a Fail or a Warning carries no advice'
+$certCsv = Join-Path $result.CsvPath 'DC Certificates.csv'
+if (Test-Path $certCsv) {
+    $certColumns = @((Import-Csv $certCsv | Select-Object -First 1).PSObject.Properties.Name)
+    Check (@('Evidence', 'Thumbprint', 'NotAfterUtc', 'DaysLeft', 'CertSubject', 'CertIssuer', 'Ekus', 'SslPolicyErrors', 'ChainStatus', 'NotRun' | Where-Object { $certColumns -notcontains $_ }).Count -eq 0) 'DC Certificates: the section CSV carries the evidence columns'
+    Check (@(Import-Csv $certCsv | Where-Object { $_.Ekus -match 'Server Authentication \(1\.3\.6\.1\.5\.5\.7\.3\.1\)' }).Count -eq 2) 'DC Certificates: the EKUs of both published certificates are named in their column'
+}
+else { Check $false 'DC Certificates CSV exists' }
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
@@ -537,7 +607,7 @@ Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scop
 $findings2 = @(Import-Csv (Join-Path $result2.CsvPath 'Findings-Consolidated.csv'))
 Check ($findings2.Count -gt 0) ("Multi-domain: consolidated findings are not empty ({0} rows)" -f $findings2.Count)
 
-foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space', 'DC Hardening', 'Windows LAPS')) {
+foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space', 'DC Hardening', 'Windows LAPS', 'DC Certificates')) {
     $n = @($findings2 | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Multi-domain: section '{0}' reached the consolidated findings ({1} rows)" -f $sec, $n)
 }
@@ -579,6 +649,15 @@ foreach ($d in $multiDomains) {
     Check (@($forDomainL).Count -eq 2) ("Multi-domain: Windows LAPS has two rows scoped '{0}' ({1})" -f $d, @($forDomainL).Count)
     Check (@($forDomainL | Where-Object { $_.Item -eq ("LAPS coverage: {0}" -f $d) -and $_.Status -eq 'Warning' -and $_.Detail -match ("visible: ws2\.{0}\." -f [regex]::Escape($d)) }).Count -eq 1) ("Multi-domain: the coverage row of '{0}' is graded on that domain's own computers" -f $d)
     Check (@($forDomainL | Where-Object { $_.Item -eq ("DSRM password backup: dc1.{0}" -f $d) -and $_.Status -eq 'Pass' }).Count -eq 1) ("Multi-domain: the DC of '{0}' has its own DSRM row" -f $d)
+}
+
+# C5: three rows per domain's DC, each set carrying its own domain and read from that domain.
+$cert2 = @($findings2 | Where-Object { $_.Section -eq 'DC Certificates' })
+Check (@($cert2).Count -eq 9) ("Multi-domain: DC Certificates has three rows for each of the three domains' DC ({0}, expected 9)" -f @($cert2).Count)
+foreach ($d in $multiDomains) {
+    $forDomainC = @($cert2 | Where-Object { $_.Scope -eq $d })
+    Check (@($forDomainC).Count -eq 3) ("Multi-domain: DC Certificates has three rows scoped '{0}' ({1})" -f $d, @($forDomainC).Count)
+    Check (@($forDomainC | Where-Object { $_.Item -like 'Directory certificate: *' -and $_.Detail -match ("Read from {0}\." -f [regex]::Escape($d)) }).Count -eq 2) ("Multi-domain: the directory rows of '{0}' were read from that domain" -f $d)
 }
 
 # C2: the same three domains with DcDisk selected WITHOUT DomainControllers. There is then no DC
@@ -630,6 +709,33 @@ foreach ($d in $multiDomains) {
 }
 Check (-not (Test-Path (Join-Path $resultL.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, Laps alone: non-vacuity - the DomainControllers section itself was not run'
 Remove-Item -Recurse -Force $outL -ErrorAction SilentlyContinue
+# C5: DcCertificates alone, WITH the handshake. No DC inventory, so the section enumerates each
+# scoped domain itself; each DC is handshaken once, through the stub seam, and its LDAPS row is
+# graded on the certificate presented.
+$outC = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_certonly_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outC
+$script:Sections = @('DcCertificates')
+$script:IncludeLdapsHandshake = $true
+$script:SmokeTlsCalls = @()
+$script:SmokeTlsBounds = @()
+$resultC = Invoke-Main
+$script:IncludeLdapsHandshake = $false
+$certC = @(@(Import-Csv $resultC.FindingsFile) | Where-Object { $_.Section -eq 'DC Certificates' })
+Check (@($certC).Count -eq 9) ("Multi-domain, DcCertificates alone with the handshake: three rows for each domain's DC, with no DC inventory ({0}, expected 9)" -f @($certC).Count)
+Check (@($script:SmokeTlsCalls).Count -eq 3 -and @($script:SmokeTlsCalls | Where-Object { $_ -ne 'dc1.contoso.com:636' }).Count -eq 0) ("Multi-domain, DcCertificates alone: one handshake per DC, to port 636 ({0})" -f ($script:SmokeTlsCalls -join ', '))
+# Found by the independent review: the handshake's connection was bounded by the shared probe's
+# 1200 ms, at which Windows reported a refusal as a time-out. It now takes ConnectTimeoutMs from
+# the section's config, and the whole handshake HandshakeTimeoutMs.
+Check (@($script:SmokeTlsBounds).Count -eq 3 -and @($script:SmokeTlsBounds | Where-Object { $_ -ne '5000/5000' }).Count -eq 0) ("Multi-domain, DcCertificates alone: each handshake is bounded by the section config (connect 5000 ms, handshake 5000 ms), not by the 1200 ms port probe ({0})" -f ($script:SmokeTlsBounds -join ', '))
+foreach ($d in $multiDomains) {
+    $forDomainCC = @($certC | Where-Object { $_.Scope -eq $d })
+    Check (@($forDomainCC | Where-Object { $_.Item -eq 'LDAPS certificate: dc1.contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match '^Presented on LDAPS port 636: ' }).Count -eq 1) ("Multi-domain, DcCertificates alone: the DC of '{0}' has its LDAPS row graded on the presented certificate" -f $d)
+    Check (@($forDomainCC | Where-Object { $_.Status -eq 'Pass' -and $_.Detail -match 'It is the certificate this DC presented on LDAPS in this run' }).Count -eq 1) ("Multi-domain, DcCertificates alone: the published copy of the presented certificate of '{0}' says so" -f $d)
+}
+Check (@($certC | Where-Object { $_.Item -like 'LDAPS certificate: *' -and $_.Detail -match 'UntrustedRoot' }).Count -eq 0) 'Multi-domain, DcCertificates alone: the platform''s chain status is not in the finding text'
+Check ((Get-Content $resultC.LogFile -Raw) -match 'IncludeLdapsHandshake is set') 'Multi-domain, DcCertificates alone: the log says the handshake switch was given'
+Check (-not (Test-Path (Join-Path $resultC.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, DcCertificates alone: non-vacuity - the DomainControllers section itself was not run'
+Remove-Item -Recurse -Force $outC -ErrorAction SilentlyContinue
 # C4, found by the independent review: a DC whose expiry time is the last date .NET holds (the
 # FILETIME of [datetime]::MaxValue, which an administrator gets by setting "never") threw out of
 # the section and ended the run with no report. The run must finish, and every DC row must be graded.
@@ -778,6 +884,21 @@ Check (@($lapsOCov).Count -eq 1 -and $lapsOCov[0].Recommendation -match 'Set-Lap
 Check ((Get-Content $resultOL.LogFile -Raw) -match 'Config override: section Laps taken from') 'Override: the log records that the Laps section was taken from the file'
 Remove-Item -Recurse -Force $outOL -ErrorAction SilentlyContinue
 
+# C5: the same for the DcCertificates key. The published valid certificate has 200 days left: a
+# Pass by the built-in 30-day window, a Warning once the file widens it to 365 days.
+'{ "DcCertificates": { "WarnWithinDays": 365 } }' | Out-File -LiteralPath $overrideFile -Encoding UTF8
+$outOC = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outOC
+$script:Sections = @('DomainControllers', 'DcCertificates')
+$resultOC = Invoke-Main
+$certO = @(@(Import-Csv $resultOC.FindingsFile) | Where-Object { $_.Section -eq 'DC Certificates' })
+$certOValid = @($certO | Where-Object { $_.Item -eq ("Directory certificate: dc1.contoso.com [{0}]" -f $script:SmokeCertValid.Thumbprint.ToUpperInvariant()) })
+Check (@($certOValid).Count -eq 1 -and $certOValid[0].Status -eq 'Warning' -and $certOValid[0].Detail -match 'within the Warning window of 365 day') 'Override: the file reached the DcCertificates section - 200 days left is now a Warning (window 365 days)'
+Check (@($certOValid).Count -eq 1 -and $certOValid[0].Detail -match [regex]::Escape($overrideFile) -and $certOValid[0].Detail -match 'for WarnWithinDays; tool default, not a Microsoft value, for FailWithinDays') 'Override: the finding cites the file for the window it supplied, and still calls the other a tool default'
+Check (@($certOValid).Count -eq 1 -and $certOValid[0].Recommendation -match 'userCertificate' -and $certOValid[0].Recommendation -notmatch 'wbadmin|repadmin|dfsrmig|ENROLLEE_SUPPLIES_SUBJECT') 'Override: a row that cites a file path still carries the advice of its own family'
+Check ((Get-Content $resultOC.LogFile -Raw) -match 'Config override: section DcCertificates taken from') 'Override: the log records that the DcCertificates section was taken from the file'
+Remove-Item -Recurse -Force $outOC -ErrorAction SilentlyContinue
+
 # C3: the same for the DcHardening key of the file. The stub DC's SMB client signing value is not
 # set, which is a Warning by the documented pre-2025 default; the file turns a value below the
 # expectation into a Fail for that setting only, and the finding cites the file.
@@ -845,6 +966,23 @@ Check (@($diskA | Where-Object { $_.Item -like '*C:\ (NTDS database)' -or $_.Ite
 Check (@($diskA | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0) 'Absent value: nothing passes on the strength of the value that was not read'
 Remove-Item -Recurse -Force $outA -ErrorAction SilentlyContinue
 
+# C5: the userCertificate read refused, with the handshake on. The LDAPS row is still graded on
+# the presented certificate; the directory row is Not Assessed with the cause, never Info and
+# never "no certificate".
+$outCF = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_certfail_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outCF
+$script:Sections = @('DomainControllers', 'DcCertificates')
+$script:IncludeLdapsHandshake = $true
+$script:SmokeCertDirFail = $true
+$resultCF = Invoke-Main
+$script:SmokeCertDirFail = $false
+$script:IncludeLdapsHandshake = $false
+$certF = @(@(Import-Csv $resultCF.FindingsFile) | Where-Object { $_.Section -eq 'DC Certificates' })
+Check (@($certF).Count -eq 2) ("Certificate read refused: one LDAPS row and one directory row ({0}, expected 2)" -f @($certF).Count)
+Check (@($certF | Where-Object { $_.Item -eq 'Directory certificates: dc1.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Read failed: ' -and $_.Detail -match 'STUB: certificate read refused' }).Count -eq 1) 'Certificate read refused: the directory row is Not Assessed with the cause, never Info'
+Check (@($certF | Where-Object { $_.Item -eq 'LDAPS certificate: dc1.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Certificate read refused: non-vacuity - the presented certificate is still graded'
+Remove-Item -Recurse -Force $outCF -ErrorAction SilentlyContinue
+
 # A file that cannot be used: the run must stop, name the file, and collect nothing.
 $badFiles = @(
     @{ Name = 'an unknown section'; Text = '{ "DcDisks": { "WarnBelowPercent": 70 } }'; Expect = "unknown section 'DcDisks'" }
@@ -863,6 +1001,10 @@ $badFiles = @(
     @{ Name = 'a Laps attribute list'; Text = '{ "Laps": { "ComputerProperties": [ "ms-Mcs-AdmPwd" ] } }'; Expect = "unknown key 'ComputerProperties'" }
     # C4: a Warning threshold that nothing could exceed, which would switch the check off.
     @{ Name = 'a Laps Warning threshold of 100'; Text = '{ "Laps": { "WarnAbovePercent": 100 } }'; Expect = 'no domain would ever be reported' }
+    # C5: a file that tries to move the handshake to another port.
+    @{ Name = 'a DcCertificates port'; Text = '{ "DcCertificates": { "LdapsPort": 3269 } }'; Expect = "unknown key 'LdapsPort'" }
+    # C5: a Fail window wider than the Warning window.
+    @{ Name = 'a DcCertificates Fail window above the Warning window'; Text = '{ "DcCertificates": { "FailWithinDays": 60 } }'; Expect = 'is above WarnWithinDays' }
 )
 $script:Sections = @('All')
 foreach ($bad in $badFiles) {
@@ -877,7 +1019,7 @@ foreach ($bad in $badFiles) {
     Check ($written.Count -eq 0) ("Override: with {0}, nothing was collected before the run stopped ({1} CSV files)" -f $bad.Name, $written.Count)
     Remove-Item -Recurse -Force $outB -ErrorAction SilentlyContinue
 }
-Check (@($badFiles).Count -eq 10) 'Override: non-vacuity - ten declared unusable files were tried'
+Check (@($badFiles).Count -eq 12) 'Override: non-vacuity - twelve declared unusable files were tried'
 Remove-Item -LiteralPath $overrideFile -Force -ErrorAction SilentlyContinue
 # The parameter carries [ValidateNotNullOrEmpty()], and the attribute stays on the variable, so
 # it cannot simply be set back to empty: the variable is removed and re-created without it.
@@ -971,6 +1113,13 @@ Check (@($laps3 | Where-Object { $_.Item -eq 'Windows LAPS schema' -and $_.Detai
 Check (@($laps3 | Where-Object { $_.Item -eq 'LAPS coverage: contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'the forest schema could not be read' }).Count -eq 1) 'Failure mode: the scoped domain has its own coverage row, Not Assessed, pointing at the schema'
 Check (@($laps3 | Where-Object { $_.Item -eq 'DSRM password backup - contoso.com' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'Failure mode: the scoped domain has its own DSRM row, Not Assessed'
 Check (@($laps3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a Windows LAPS row that measured nothing carries no advice'
+# C5: the same for DcCertificates. With no DC there is nothing to look up or connect to; the
+# section must say so, name the enumeration failure, give the domain its own row, and pass nothing.
+$cert3 = @($findings3 | Where-Object { $_.Section -eq 'DC Certificates' })
+Check (@($cert3 | Where-Object { $_.Item -eq 'DC certificates' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode: DC Certificates reports Not Assessed when no DC was enumerated, and carries the enumeration failure'
+Check (@($cert3 | Where-Object { $_.Item -eq 'DC certificates - contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'could not be enumerated\. Cause: STUB: ADWS unreachable' -and $_.Detail -match 'No certificate of its domain controllers was read' }).Count -eq 1) 'Failure mode: DC Certificates gives the domain whose inventory failed its own Not Assessed row, with the cause'
+Check (@($cert3).Count -eq 2 -and @($cert3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC Certificates reports nothing but Not Assessed, and never Pass ({0} rows, expected 2)" -f @($cert3).Count)
+Check (@($cert3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a DC Certificates row that measured nothing carries no advice'
 # The schema readable and the computer query failing: the schema row stands, the domain rows
 # are Not Assessed with the query's own error.
 $out3l = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_lapsonly_" + [guid]::NewGuid().ToString('N'))
@@ -1065,6 +1214,9 @@ if ($null -ne $result4) {
     # C4: with no forest the Laps section asks nothing and says so in one row.
     $laps4 = @($findings4 | Where-Object { $_.Section -eq 'Windows LAPS' })
     Check (@($laps4).Count -eq 1 -and $laps4[0].Status -eq 'Not Assessed' -and $laps4[0].Detail -match 'The forest could not be read' -and $laps4[0].Detail -match 'not contactable') 'No forest: Windows LAPS is one Not Assessed row carrying the cause'
+    # C5: with no forest no domain is scoped and no DC enumerated; the section says so.
+    $cert4 = @($findings4 | Where-Object { $_.Section -eq 'DC Certificates' })
+    Check (@($cert4).Count -ge 1 -and @($cert4 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("No forest: DC Certificates is present and reports nothing but Not Assessed ({0} rows)" -f @($cert4).Count)
 
     # The critical property: with no forest, nothing may claim to have passed.
     $passes4 = @($findings4 | Where-Object { $_.Status -eq 'Pass' })

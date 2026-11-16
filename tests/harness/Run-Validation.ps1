@@ -2100,7 +2100,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the three sections the file can carry'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the four sections the file can carry (DcCertificates since v1.22.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -2340,6 +2340,96 @@ function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a)
     $o }
 $lapsOddExport = @(Get-AdfaComputerInventory -DomainName 'contoso.com')
 Assert-True ((($lapsOddExport | ConvertTo-Csv -NoTypeInformation) -join ' ') -notmatch 'STUB-ODD-CASE' -and @($lapsOddExport[0].PSObject.Properties | Where-Object { $_.Name -eq 'OperatingSystem' }).Count -eq 1) 'Identity export: a secret attribute is left out whatever case the answer spells its name in'
+
+Write-Host "== DC certificates (C5): pure logic ==" -ForegroundColor Cyan
+$certCfg = $script:Config.DcCertificates
+$certNow = [datetime]::SpecifyKind(([datetime]'2026-11-16T12:00:00'), [System.DateTimeKind]::Utc)
+$certDc = 'dc1.contoso.com'
+function Get-CertVerdict { param($To, $From = -300, [int]$Warn = 30, [int]$Fail = 0)
+    $nb = $null; $na = $null
+    if ($null -ne $From) { $nb = $certNow.AddDays([double]$From) }
+    if ($null -ne $To) { $na = $certNow.AddDays([double]$To) }
+    Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $nb -NotAfterUtc $na -NowUtc $certNow -WarnWithinDays $Warn -FailWithinDays $Fail -ThresholdSource 'tool default, not a Microsoft value' }
+# Declared population: nine points on the expiry scale and their statuses.
+$certScale = [ordered]@{ '65' = 'Pass'; '31' = 'Pass'; '30' = 'Warning'; '0.01' = 'Warning'; '0' = 'Fail'; '-1' = 'Fail'; 'notyet' = 'Warning'; 'missing' = 'Not Assessed'; 'reversed' = 'Not Assessed' }
+$certGot = @()
+foreach ($point in @($certScale.Keys)) {
+    switch ($point) {
+        'notyet' { $certGot += [string](Get-CertVerdict -To 400 -From 2).Status }
+        'missing' { $certGot += [string](Get-CertVerdict -To $null).Status }
+        'reversed' { $certGot += [string](Get-CertVerdict -To 5 -From 10).Status }
+        default { $certGot += [string](Get-CertVerdict -To ([double]$point)).Status }
+    }
+}
+Assert-Equal (@($certScale.Values) -join ',') ($certGot -join ',') 'Certificate expiry: 30 days left is a Warning, 31 a Pass, NotAfter equal to now and before it a Fail, not yet valid a Warning, unreadable or reversed dates Not Assessed (declared population: nine points)'
+Assert-Equal 'FailWindow,ExpiringSoon' ((@((Get-CertVerdict -To 7 -Fail 7).State, (Get-CertVerdict -To 8 -Fail 7).State)) -join ',') 'Certificate expiry: a Fail window of 7 days fails at 7 days left and warns at 8'
+Assert-True ([string](Get-CertVerdict -To 2 -From 2).Reason -match "this tool's rule, not a Microsoft value") 'Certificate expiry: a certificate not yet valid is labelled as this tool''s rule'
+Assert-Equal 'ConnectRefused,ConnectTimedOut,Unresolved,Unresolved,Unresolved,ConnectFailed' ((@('ConnectionRefused', 'TimedOut', 'HostNotFound', 'TryAgain', 'NoData', 'ConnectionReset') | ForEach-Object { Get-AdfaSocketErrorClass -SocketError $_ }) -join ',') 'Certificate handshake: refused, timed out and unresolved are kept apart (declared population: six socket errors)'
+Assert-Equal 'HandshakeTimedOut,HandshakeFailed' ((@((Get-AdfaTlsHandshakeErrorClass -SocketErrors @('TimedOut')), (Get-AdfaTlsHandshakeErrorClass -SocketErrors @()))) -join ',') 'Certificate handshake: a handshake that timed out is not a failed one'
+Assert-Equal 'a\2ab\28c\29d\5ce\2ff' (ConvertTo-AdfaLdapFilterValue -Value 'a*b(c)d\e/f') 'Certificate directory read: the LDAP filter value is escaped as Microsoft documents'
+Assert-True ((Get-AdfaCertificateEkuText -Ekus @() -HasEkuExtension $false -EkuNames $certCfg['EkuNames']) -match 'no EKU extension') 'Certificate EKUs: no EKU extension is said as such, not as a missing purpose'
+$certKey = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve+NamedCurves]::nistP256)
+$certRequest = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest -ArgumentList 'CN=dc1.contoso.com', $certKey, ([System.Security.Cryptography.HashAlgorithmName]::SHA256)
+$certMade = $certRequest.CreateSelfSigned((New-Object System.DateTimeOffset -ArgumentList $certNow.AddDays(-10)), (New-Object System.DateTimeOffset -ArgumentList $certNow.AddDays(-2)))
+$certKey.Dispose()
+$certRecord = ConvertTo-AdfaCertificateRecord -Certificate $certMade.RawData
+Assert-True ($certRecord.Read -and $certRecord.NotAfterUtc.Kind -eq 'Utc' -and -not $certRecord.HasEkuExtension -and $certRecord.Thumbprint -eq $certMade.Thumbprint.ToUpperInvariant()) 'Certificate record: DER bytes are read in memory, with UTC dates and no EKU extension reported as such'
+Assert-True (-not (ConvertTo-AdfaCertificateRecord -Certificate ([byte[]](1, 2, 3))).Read) 'Certificate record: bytes that are not a certificate are Read = false, not an exception'
+$certNotRun = Get-AdfaDcLdapsFinding -DomainController $certDc -HandshakeRun $false -PortAnswered $false -Config $certCfg -NowUtc $certNow
+Assert-True ($certNotRun.Status -eq 'Not Assessed' -and $certNotRun.Detail -match '^Not run: ' -and $certNotRun.Detail -match '-IncludeLdapsHandshake') 'LDAPS row: not run is Not Assessed and names the switch'
+$certClasses = @('ConnectRefused', 'ConnectTimedOut', 'Unresolved', 'ConnectFailed', 'HandshakeTimedOut', 'HandshakeFailed', 'NoCertificate', 'Error')
+$certNa = @($certClasses | ForEach-Object { (Get-AdfaDcLdapsFinding -DomainController $certDc -HandshakeRun $true -PortAnswered $true -Config $certCfg -NowUtc $certNow `
+            -Raw ([pscustomobject]@{ Ok = $false; Class = $_; Error = 'x'; ErrorType = ''; SocketError = ''; Certificate = $null; SslPolicyErrors = ''; ChainStatus = @(); CallbackRan = $false; ElapsedMs = 1 })) })
+Assert-True (@($certNa | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0 -and @($certNa | ForEach-Object { $_.Detail } | Select-Object -Unique).Count -eq 8) 'LDAPS row: each of the eight failure classes is Not Assessed with its own cause (declared population: eight classes)'
+$certPresented = Get-AdfaDcLdapsFinding -DomainController $certDc -HandshakeRun $true -PortAnswered $true -Config $certCfg -NowUtc $certNow `
+    -Raw ([pscustomobject]@{ Ok = $true; Class = 'Presented'; Error = ''; ErrorType = ''; SocketError = ''; Certificate = $certRecord; SslPolicyErrors = 'RemoteCertificateChainErrors'; ChainStatus = @('UntrustedRoot: x'); CallbackRan = $true; ElapsedMs = 1 })
+Assert-True ($certPresented.Status -eq 'Fail' -and $certPresented.Detail -notmatch 'UntrustedRoot' -and $certPresented.ChainStatus -match 'UntrustedRoot') 'LDAPS row: an expired presented certificate is a Fail, and the chain status stays in its own column'
+$certEmpty = @(Get-AdfaDcDirectoryCertificateFinding -DomainController $certDc -Scope 'contoso.com' -Config $certCfg -NowUtc $certNow `
+        -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Server = 'contoso.com'; ObjectCount = 1; AttributeReturned = $true; Values = @() }))
+Assert-True ($certEmpty.Count -eq 1 -and $certEmpty[0].Status -eq 'Info' -and $certEmpty[0].Detail -match 'not evidence that the DC holds no certificate') 'Directory rows: no published value is Info, never "no certificate"'
+$certLone = @(Get-AdfaDcDirectoryCertificateFinding -DomainController $certDc -Scope 'contoso.com' -Config $certCfg -NowUtc $certNow `
+        -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Server = 'contoso.com'; ObjectCount = 1; AttributeReturned = $true; Values = $certMade.RawData }))
+Assert-True ($certLone.Count -eq 1 -and $certLone[0].Status -eq 'Fail') 'Directory rows: a lone byte array is one certificate, not one value per byte'
+$certDenied = @(Get-AdfaDcDirectoryCertificateFinding -DomainController $certDc -Scope 'contoso.com' -Config $certCfg -NowUtc $certNow `
+        -Raw ([pscustomobject]@{ Ok = $false; Error = 'Access is denied.'; ErrorType = 'System.UnauthorizedAccessException'; Server = 'contoso.com'; ObjectCount = 0; AttributeReturned = $false; Values = @() }))
+Assert-True ($certDenied[0].Status -eq 'Not Assessed' -and $certDenied[0].Detail -match '^Access denied: ') 'Directory rows: a refused read is Access denied, not unreachable'
+Assert-Throws { Merge-AdfaDcCertificatesConfig -BaseConfig $certCfg -Override @{ LdapsPort = 3269 } } "unknown key 'LdapsPort'" 'DC certificates override: the port cannot be set from a file'
+Assert-Throws { Merge-AdfaDcCertificatesConfig -BaseConfig $certCfg -Override @{ FailWithinDays = 31 } } 'is above WarnWithinDays' 'DC certificates override: a Fail window above the built-in Warning window is refused'
+Assert-Throws { Merge-AdfaDcCertificatesConfig -BaseConfig $certCfg -Override @{ WarnWithinDays = '30' } } 'JSON number' 'DC certificates override: a quoted number is refused'
+Assert-Equal 45 ([int](Merge-AdfaDcCertificatesConfig -BaseConfig $certCfg -Override @{ WarnWithinDays = 45 })['WarnWithinDays']) 'DC certificates override: a valid window is merged'
+$certRecLdaps = Get-AdfaRecommendation -Section 'DC Certificates' -Item 'LDAPS certificate: backup-dc.contoso.com' -Detail 'replication backup time sync certificate template enrol krbtgt'
+$certRecOther = Get-AdfaRecommendation -Section 'DC Certificates' -Item 'Directory certificates: dc1.contoso.com' -Detail 'replication backup time sync certificate template enrol krbtgt'
+Assert-True ($certRecLdaps -match 'NTDS service store' -and $certRecOther -eq '') 'DC certificates advice: the LDAPS family gets its own advice and a row without advice gets none, whatever the text holds'
+# Found by an independent review of the C5 diff before commit, and fixed in it.
+Assert-Equal 30 ([int](Get-CertVerdict -To 30.75).DaysLeft) 'Certificate expiry: days left are rounded down - 30 days and 18 hours is 30, not 31'
+Assert-Equal 'Warning' ([string](Get-CertVerdict -To 30.75).Status) 'Certificate expiry: 30 days and 18 hours left is inside a 30-day Warning window'
+Assert-Equal 'a\00b' (ConvertTo-AdfaLdapFilterValue -Value ('a{0}b' -f [char]0)) 'Certificate directory read: NUL is escaped as \00, as Microsoft documents'
+$certProbeCases = [ordered]@{
+    ConnectRefused    = @{ Connected = $false; ConnectThrew = $true; ConnectSocketError = 'ConnectionRefused' }
+    ConnectTimedOut   = @{ Connected = $false; ConnectThrew = $false }
+    Presented         = @{ Connected = $true; CertificateSeen = $true; HandshakeThrew = $true }
+    HandshakeTimedOut = @{ Connected = $true; HandshakeThrew = $true; DeadlineExpired = $true }
+    HandshakeFailed   = @{ Connected = $true; HandshakeThrew = $true }
+    NoCertificate     = @{ Connected = $true }
+}
+$certProbeGot = @(foreach ($k in @($certProbeCases.Keys)) { $a = $certProbeCases[$k]; Get-AdfaTlsProbeClass @a })
+Assert-Equal (@($certProbeCases.Keys) -join ',') ($certProbeGot -join ',') 'Certificate handshake: one attempt is classified from what happened, and a certificate received before an error is kept (declared population: six attempts)'
+$certRsa = [System.Security.Cryptography.RSA]::Create(2048)
+$certRsaRequest = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest -ArgumentList 'CN=dc1.contoso.com', $certRsa, ([System.Security.Cryptography.HashAlgorithmName]::SHA256), ([System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+$certWithKey = $certRsaRequest.CreateSelfSigned((New-Object System.DateTimeOffset -ArgumentList $certNow.AddDays(-10)), (New-Object System.DateTimeOffset -ArgumentList $certNow.AddDays(90)))
+$certPfx = $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx)
+$certRsa.Dispose()
+$certFromPfx = ConvertTo-AdfaCertificateRecord -Certificate ([byte[]]$certPfx)
+Assert-True ([string][System.Security.Cryptography.X509Certificates.X509Certificate2]::GetCertContentType([byte[]]$certPfx) -eq 'Pfx' -and -not $certFromPfx.Read -and $certFromPfx.ReadError -match 'Pfx blob' -and $certFromPfx.Subject -eq '') 'Certificate record: a PKCS12 (PFX) value is refused before it is opened, so no private key is imported'
+Assert-True ((ConvertTo-AdfaCertificateRecord -Certificate ([byte[]]$certWithKey.RawData)).Read) 'Certificate record: non-vacuity - the DER form of the same certificate is read'
+Assert-Equal 5000 ([int]$certCfg['ConnectTimeoutMs']) 'DC certificates config: the handshake''s connection has its own bound, 5000 ms, above the ~2 s Windows took to report a refusal'
+Assert-Throws { Merge-AdfaDcCertificatesConfig -BaseConfig $certCfg -Override @{ HandshakeTimeoutMs = 60001 } } 'from 100 to 60000' 'DC certificates override: a handshake bound above 60000 ms is refused'
+Assert-Throws { Merge-AdfaDcCertificatesConfig -BaseConfig $certCfg -Override @{ ConnectTimeoutMs = 99 } } "'ConnectTimeoutMs' to 99" 'DC certificates override: a connection bound below 100 ms is refused'
+Assert-Equal 30 ([int](Merge-AdfaDcCertificatesConfig -BaseConfig $certCfg -Override @{ WarnWithinDays = 30; FailWithinDays = 30 })['FailWithinDays']) 'DC certificates override: a Fail window equal to the Warning window is allowed'
+$certInv = [System.Globalization.CultureInfo]::InvariantCulture
+Assert-Equal ($certNow.AddDays(-10).ToString('yyyy-MM-dd HH:mm:ss', $certInv)) ([string]$certPresented.NotBeforeUtc) 'LDAPS row: NotBeforeUtc carries the start of validity, in UTC'
+$certDirText = [string]$certLone[0].Detail
+Assert-True ($certDirText -match "Directory E-mail Replication" -and $certEmpty[0].Detail -notmatch '(?i)only for .Domain Controller') 'Directory rows: a published value is not said to be a DC certificate, and the Info row does not claim only one template is published'
 
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })

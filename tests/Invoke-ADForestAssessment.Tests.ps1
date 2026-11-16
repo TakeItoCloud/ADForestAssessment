@@ -5279,8 +5279,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcHardening' -and $n.Extent.Text -match '-DomainControllers \$dcNames' }, $true)).Count | Should -Be 0
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the three sections the file can carry (Laps since v1.21.0, PORT-PLAN C4).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps'
+            # Declared population: the four sections the file can carry (Laps since v1.21.0, PORT-PLAN C4;
+            # DcCertificates since v1.22.0, PORT-PLAN C5).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -7277,7 +7278,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # the script is looked at by whoever adds it, and so that the scans below cannot pass on
         # an empty set.
         $script:C4PropertiesArgumentCount = 23
-        $script:C4PropertiesAssignmentCount = 6
+        # 7 since v1.22.0: PORT-PLAN C5 added $computerArgs.Properties = @('userCertificate') in
+        # Get-AdfaDcCertificateDirectoryRaw.
+        $script:C4PropertiesAssignmentCount = 7
         $script:C4SectionFunctionCount = 20
 
         function New-C4Schema {
@@ -7444,8 +7447,8 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaLaps' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the three sections the file can carry.
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps'
+            # Declared population: the four sections the file can carry (DcCertificates since v1.22.0, PORT-PLAN C5).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7497,9 +7500,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.21.0' {
-            [string]$script:Config.Version | Should -Be '1.21.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.21.0'
+        It 'carries the same version in the script and the manifest: 1.22.0 (bumped by PORT-PLAN C5)' {
+            [string]$script:Config.Version | Should -Be '1.22.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.22.0'
         }
     }
 
@@ -8882,6 +8885,1050 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             @($quiet | Where-Object { $_.Recommendation -ne '' }).Count | Should -Be 0
             $partial = Get-AdfaLapsSchemaFinding -SchemaState (Get-C4State -Names @($script:C4Control, $script:C4Win)) -Config $script:Lc
             (ConvertTo-AdfaConsolidatedFinding -Section 'Windows LAPS' -Row $partial -StatusColumn 'Status').Recommendation | Should -Match 'Update-LapsADSchema'
+        }
+    }
+}
+
+Describe 'DC certificates: the LDAPS certificate each DC presents, and those published for it in the directory (C5)' {
+    BeforeAll {
+        $script:Cc = $script:Config.DcCertificates
+        # A fixed "now", in UTC, so no verdict depends on the clock of the host running the tests.
+        $script:C5Now = [datetime]::SpecifyKind(([datetime]'2026-11-16T12:00:00'), [System.DateTimeKind]::Utc)
+        # Held in variables: PSAvoidUsingComputerNameHardcoded flags a literal -ComputerName.
+        $script:C5Dc1 = 'dc1.contoso.com'
+        $script:C5Dc2 = 'dc2.contoso.com'
+        $script:C5Dc3 = 'dc1.fabrikam.com'
+        $script:C5ServerAuth = '1.3.6.1.5.5.7.3.1'
+        $script:C5Kdc = '1.3.6.1.5.2.3.5'
+        # A certificate made in memory with an ephemeral ECDSA key: nothing is written to any
+        # certificate store or key container, on either PowerShell edition.
+        function New-C5Cert {
+            param([string]$Subject = 'CN=dc1.contoso.com', [double]$FromDays = -300, [double]$ToDays = 65, [string[]]$Ekus = @('1.3.6.1.5.5.7.3.1'), [switch]$NoEku, [string]$Dns = 'dc1.contoso.com')
+            $key = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve+NamedCurves]::nistP256)
+            $request = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest -ArgumentList $Subject, $key, ([System.Security.Cryptography.HashAlgorithmName]::SHA256)
+            if (-not $NoEku) {
+                $oids = New-Object System.Security.Cryptography.OidCollection
+                foreach ($e in $Ekus) { [void]$oids.Add((New-Object System.Security.Cryptography.Oid -ArgumentList $e)) }
+                $request.CertificateExtensions.Add((New-Object System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension -ArgumentList $oids, $false))
+            }
+            if ($Dns) {
+                $san = New-Object System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder
+                $san.AddDnsName($Dns)
+                $request.CertificateExtensions.Add($san.Build())
+            }
+            $from = New-Object System.DateTimeOffset -ArgumentList $script:C5Now.AddDays($FromDays)
+            $to = New-Object System.DateTimeOffset -ArgumentList $script:C5Now.AddDays($ToDays)
+            $cert = $request.CreateSelfSigned($from, $to)
+            $key.Dispose()
+            return $cert
+        }
+        # One certificate as the DER bytes the directory holds. The comma keeps the byte array whole: a
+        # function's output is otherwise sent down the pipeline one byte at a time.
+        function New-C5Bytes { param([double]$ToDays = 65, [double]$FromDays = -300, [string]$Subject = 'CN=dc1.contoso.com') return , ((New-C5Cert -ToDays $ToDays -FromDays $FromDays -Subject $Subject).RawData) }
+        # The shape Get-AdfaDcTlsCertificateRaw returns.
+        function New-C5TlsRaw {
+            param([string]$Class = 'Presented', $Cert = $null, [string]$Err = '', [string]$Type = '', [string]$Policy = 'None', [string[]]$Chain = @())
+            $record = $null
+            if ($null -ne $Cert) { $record = ConvertTo-AdfaCertificateRecord -Certificate $Cert }
+            [pscustomobject]@{ Ok = ($Class -eq 'Presented'); Class = $Class; Error = $Err; ErrorType = $Type; SocketError = ''; Certificate = $record
+                SslPolicyErrors = $Policy; ChainStatus = @($Chain); CallbackRan = ($Class -eq 'Presented'); ElapsedMs = 12 }
+        }
+        # The shape Get-AdfaDcCertificateDirectoryRaw returns.
+        function New-C5DirRaw {
+            param([bool]$Ok = $true, [int]$Objects = 1, $Values = @(), [string]$Err = '', [string]$Type = '', [string]$Server = 'contoso.com')
+            [pscustomobject]@{ Ok = $Ok; Error = $Err; ErrorType = $Type; Server = $Server; ObjectCount = $Objects; AttributeReturned = ($Objects -eq 1); Values = @($Values) }
+        }
+        # A whole-second instant in UTC at which this host's local offset is not zero (mid-January
+        # or mid-July 2026, one of which is outside summer time wherever summer time applies), or
+        # $null where the zone is UTC all year.
+        function Get-C5OffsetInstant {
+            foreach ($candidate in @('2026-07-15T12:00:00', '2026-01-15T12:00:00')) {
+                $t = [datetime]::SpecifyKind(([datetime]::ParseExact($candidate, 'yyyy-MM-ddTHH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)), [System.DateTimeKind]::Utc)
+                if ([System.TimeZoneInfo]::Local.GetUtcOffset($t) -ne [TimeSpan]::Zero) { return $t }
+            }
+            return $null
+        }
+        function Get-C5Verdict {
+            param($FromDays = -300, $ToDays = 65, [int]$Warn = 30, [int]$Fail = 0)
+            $nb = $null; $na = $null
+            if ($null -ne $FromDays) { $nb = $script:C5Now.AddDays([double]$FromDays) }
+            if ($null -ne $ToDays) { $na = $script:C5Now.AddDays([double]$ToDays) }
+            Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $nb -NotAfterUtc $na -NowUtc $script:C5Now -WarnWithinDays $Warn -FailWithinDays $Fail -ThresholdSource 'tool default, not a Microsoft value'
+        }
+        function Get-C5Ldaps {
+            param($Raw, [bool]$Run = $true, [bool]$Answered = $true, $Config = $script:Cc, [string]$Dc = $script:C5Dc1)
+            Get-AdfaDcLdapsFinding -DomainController $Dc -Scope 'contoso.com' -HandshakeRun $Run -PortAnswered $Answered -Raw $Raw -Config $Config -NowUtc $script:C5Now -PortTimeoutMs 1200
+        }
+        function Get-C5Dir {
+            param($Raw, [string]$Presented = '', [string]$Scope = 'contoso.com')
+            @(Get-AdfaDcDirectoryCertificateFinding -DomainController $script:C5Dc1 -Scope $Scope -Raw $Raw -Config $script:Cc -NowUtc $script:C5Now -PresentedThumbprint $Presented)
+        }
+        $script:C5Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C5Main = @($script:C5Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C5Function {
+            param([string]$Name)
+            return @($script:C5Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true))
+        }
+        function Get-C5Parameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C5Guard {
+            param($Node)
+            $g = $Node.Parent
+            while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+            return $g.Clauses[0].Item1.Extent.Text
+        }
+        function Get-C5Branch {
+            return @($script:C5Main[0].FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $n.Clauses[0].Item1.Extent.Text -match "^Test-SectionSelected 'DcCertificates' \`$Sections$" }, $true))
+        }
+        # The functions of the section. Declared population: these 15, each found by name below.
+        $script:C5SectionNames = @('New-AdfaDcCertificateRow', 'ConvertTo-AdfaCertificateRecord', 'Get-AdfaCertificateExpiryVerdict', 'Get-AdfaCertificateEkuText',
+            'Get-AdfaSocketErrorClass', 'Get-AdfaTlsHandshakeErrorClass', 'Get-AdfaExceptionChainInfo', 'Get-AdfaTlsProbeClass', 'Get-AdfaDcTlsCertificateRaw', 'ConvertTo-AdfaLdapFilterValue',
+            'Get-AdfaDcCertificateDirectoryRaw', 'Get-AdfaDcLdapsFinding', 'Get-AdfaDcDirectoryCertificateFinding', 'Get-AdfaDcCertificates', 'Merge-AdfaDcCertificatesConfig')
+        $c5Names = @($script:C5SectionNames)
+        $script:C5SectionFunctions = @($script:C5Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $c5Names -contains $n.Name }.GetNewClosure(), $true))
+    }
+
+    Context 'Section wiring' {
+        It 'is a value of the -Sections ValidateSet and part of the default All run' {
+            $param = @($script:C5Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $param.Count | Should -Be 1
+            $set = @($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+            $values = @($set[0].PositionalArguments | ForEach-Object { $_.Value })
+            $values | Should -Contain 'DcCertificates'
+            $values | Should -Contain 'Laps'   # non-vacuity: the list really was read
+            @($values | Where-Object { $_ -match '(?i)cert' }).Count | Should -Be 1
+            Test-SectionSelected 'DcCertificates' @('All') | Should -BeTrue
+            Test-SectionSelected 'DcCertificates' @('Laps') | Should -BeFalse
+        }
+        It 'has an opt-in switch for the handshake, and no other new parameter' {
+            $param = @($script:C5Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'IncludeLdapsHandshake' })
+            $param.Count | Should -Be 1
+            $param[0].StaticType.Name | Should -Be 'SwitchParameter'
+            # A switch is off unless it is given: there is no default value that turns it on.
+            $param[0].DefaultValue | Should -BeNullOrEmpty
+            # "No other new parameter": the parameters of v1.21.0 (read from commit 0c667c9), with
+            # IncludeLdapsHandshake after IncludeDcdiagActiveTests and nothing else added, removed
+            # or moved. A later plan row that adds a parameter changes this list on purpose.
+            # Found by an independent review: the title claimed this, and nothing asserted it.
+            $v121 = @('OutputPath', 'AllDomains', 'Sections', 'IncludeDcdiag', 'IncludeRepadmin', 'IncludeLingeringObjectScan', 'IncludeSysvolBacklog',
+                'SkipTrustVerification', 'IncludeSecureChannelVerify', 'IncludeDcdiagActiveTests', 'Server', 'Credential', 'ExchangeSeConfigPath',
+                'DcSystemConfigPath', 'ConfigOverridePath', 'StaleDays', 'KrbtgtMaxAgeDays', 'EventLookbackDays', 'RpcPortTimeoutMs',
+                'ExternalToolTimeoutSeconds', 'Retries', 'RetryDelaySeconds')
+            # Declared population: the 22 parameters of v1.21.0.
+            $v121.Count | Should -Be 22
+            $expected = @($v121[0..9]) + @('IncludeLdapsHandshake') + @($v121[10..21])
+            $actual = @($script:C5Ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+            ($actual -join ',') | Should -Be ($expected -join ',')
+        }
+        It 'has one branch in Invoke-Main that calls the collector with the targets, the config, the clock, the switch and the scoped domains' {
+            $script:C5Main.Count | Should -Be 1
+            $branches = @(Get-C5Branch)
+            # Declared population: the one branch for this section.
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $calls = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcCertificates' }, $true))
+            $calls.Count | Should -Be 1
+            $expected = [ordered]@{
+                DomainControllers = '$dcCertificatesTargets'
+                Config            = '$dcCertificatesConfig'
+                AdParams          = '$adParams'
+                PortTimeoutMs     = '$script:Config.RpcPortTimeoutMs'
+                Now               = '(Get-Date)'
+                IncludeHandshake  = '([bool]$IncludeLdapsHandshake)'
+                InventoryFailures = '$dcCertificatesFailures'
+                EnumerationError  = '$script:DcEnumerationError'
+                ScopedDomains     = '$targetDomains'
+            }
+            # Declared population: the nine parameters the collector is called with.
+            @($expected.Keys).Count | Should -Be 9
+            foreach ($p in @($expected.Keys)) {
+                $given = Get-C5Parameter -Call $calls[0] -Name $p
+                $given | Should -Not -BeNullOrEmpty -Because "the collector must be given -$p"
+                $given.Extent.Text | Should -Be $expected[$p] -Because "-$p must carry that value"
+            }
+            $assign = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['DC Certificates']" }, $true))
+            $assign.Count | Should -Be 1
+            $configAssigns = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcCertificatesConfig' }, $true))
+            $configAssigns.Count | Should -Be 2
+            $configAssigns[0].Right.Extent.Text | Should -Be '$script:Config.DcCertificates'
+            $configAssigns[1].Right.Extent.Text | Should -Be "`$configOverrides['DcCertificates']"
+            Get-C5Guard $configAssigns[1] | Should -Be "`$configOverrides.ContainsKey('DcCertificates')"
+            # Nowhere else in the script is the collector called.
+            @($script:C5Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcCertificates' }, $true)).Count | Should -Be 1
+        }
+        It 'takes its targets per scoped domain: the DC inventory, then its own enumeration, and the unscoped fallback only last' {
+            $branches = @(Get-C5Branch)
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $targets = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcCertificatesTargets' }, $true))
+            # Declared population: the inventory, the section's own enumeration, the fallback - in that order.
+            $targets.Count | Should -Be 3
+            $targets[0].Right.Extent.Text | Should -Be '@($allDcInventory)'
+            $targets[1].Right.Extent.Text | Should -Be '@($dcCertificatesEnumeration.Targets)'
+            Get-C5Guard $targets[1] | Should -Be '-not $dcInventoryCollected'
+            $targets[2].Right.Extent.Text | Should -Be '@($dcNames)'
+            Get-C5Guard $targets[2] | Should -Be '$dcCertificatesTargets.Count -eq 0'
+            $failures = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcCertificatesFailures' }, $true))
+            $failures.Count | Should -Be 2
+            $failures[0].Right.Extent.Text | Should -Be '@($dcInventoryFailures)'
+            $failures[1].Right.Extent.Text | Should -Be '@($dcCertificatesEnumeration.Failures)'
+            $own = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcTargetsByDomain' }, $true))
+            $own.Count | Should -Be 1
+            (Get-C5Parameter -Call $own[0] -Name 'Domains').Extent.Text | Should -Be '$targetDomains'
+            Get-C5Guard $own[0] | Should -Be '-not $dcInventoryCollected'
+        }
+        It 'is registered for -ConfigOverridePath with its own validator' {
+            # Declared population: the four sections the file can carry (DcCertificates since v1.22.0, PORT-PLAN C5).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates'
+            $entry = $script:ConfigOverrideSections['DcCertificates']
+            [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
+            [string]$entry['Section'] | Should -Be 'DcCertificates'
+            [string]$entry['Merge'] | Should -Be 'Merge-AdfaDcCertificatesConfig'
+            Get-Command -Name 'Merge-AdfaDcCertificatesConfig' -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+            $script:Config.ContainsKey('DcCertificates') | Should -BeTrue
+        }
+        It 'probes port 636 through the shared cache only, calls each seam once, and calls nothing that writes or reads a key' {
+            # Declared population: the section's functions, every one found.
+            $script:C5SectionFunctions.Count | Should -Be $script:C5SectionNames.Count
+            $collector = @(Get-C5Function -Name 'Get-AdfaDcCertificates')
+            $collector.Count | Should -Be 1
+            $inside = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            @($inside | Where-Object { $_ -eq 'Test-AdfaDcPort' }).Count | Should -Be 1
+            @($inside | Where-Object { $_ -eq 'Get-AdfaDcTlsCertificateRaw' }).Count | Should -Be 1
+            @($inside | Where-Object { $_ -eq 'Get-AdfaDcCertificateDirectoryRaw' }).Count | Should -Be 1
+            foreach ($banned in @('Test-TcpPort', 'Get-ADComputer', 'New-CimSession', 'Invoke-CimMethod', 'Get-CimInstance', 'Invoke-Command')) {
+                $inside | Should -Not -Contain $banned -Because "the collector must not call $banned itself"
+            }
+            $adCalls = @()
+            foreach ($f in $script:C5SectionFunctions) {
+                $names = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+                @($names | Where-Object { $_ -match '(?i)^(Set|New|Remove|Add|Clear|Move|Rename|Enable|Disable|Reset|Update|Invoke|Import|Export)-(AD(?!fa)|Cim|Item|Certificate|PfxCertificate)' }).Count | Should -Be 0 -Because "$($f.Name) must not call a state-changing cmdlet"
+                @($names | Where-Object { $_ -match '(?i)^(certutil|certreq)(\.exe)?$|^Get-ChildItem$|^Invoke-Command$|^Invoke-Expression$' }).Count | Should -Be 0 -Because "$($f.Name) must not read a certificate store or run certutil"
+                # No private key, no export, no store.
+                $members = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] }, $true) | ForEach-Object { [string]$_.Member.Extent.Text })
+                @($members | Where-Object { $_ -match '(?i)^(PrivateKey|HasPrivateKey|Export|Import|GetRSAPrivateKey|GetECDsaPrivateKey|CopyWithPrivateKey|BeginAuthenticateAsClient|AuthenticateAsClientAsync|Write|WriteAsync)$' }).Count | Should -Be 0 -Because "$($f.Name) must not touch a private key, export, or write on the stream"
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -match '(?i)X509Store|renewServerCertificate' }, $true)).Count | Should -Be 0 -Because "$($f.Name) must not open a certificate store or ask for a certificate refresh"
+                $adCalls += @($names | Where-Object { $_ -match '(?i)^Get-AD(?!fa)' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
+            }
+            # Declared population: the one directory read of the section, in its seam.
+            ($adCalls -join ',') | Should -Be 'Get-AdfaDcCertificateDirectoryRaw:Get-ADComputer'
+        }
+        It 'makes the handshake synchronously, with no client certificate, and lets the callback neither trust nor reject' {
+            $seam = @(Get-C5Function -Name 'Get-AdfaDcTlsCertificateRaw')
+            $seam.Count | Should -Be 1
+            $auth = @($seam[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member.Extent.Text -eq 'AuthenticateAsClient' }, $true))
+            $auth.Count | Should -Be 1
+            # The one-argument overload: no client certificate, no revocation check.
+            @($auth[0].Arguments).Count | Should -Be 1
+            $auth[0].Arguments[0].Extent.Text | Should -Be '$ComputerName'
+            # One read is bounded: both socket timeouts are set from -HandshakeTimeoutMs.
+            $timeouts = @($seam[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -match '^\$client\.(Receive|Send)Timeout$' }, $true))
+            $timeouts.Count | Should -Be 2
+            foreach ($t in $timeouts) { $t.Right.Extent.Text | Should -Be '$HandshakeTimeoutMs' }
+            # The whole handshake is bounded by a deadline armed with -HandshakeTimeoutMs and the
+            # connection; that it fires is shown against a loopback listener below.
+            $args4 = @($seam[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member.Extent.Text -eq 'AddArgument' }, $true) | ForEach-Object { $_.Arguments[0].Extent.Text })
+            ($args4 -join ',') | Should -Be '$deadlineState,$HandshakeTimeoutMs,$deadlineSignal,$client'
+            # The class comes from the pure classifier, told whether a certificate was seen.
+            $classify = @($seam[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaTlsProbeClass' }, $true))
+            $classify.Count | Should -Be 1
+            (Get-C5Parameter -Call $classify[0] -Name 'CertificateSeen').Extent.Text | Should -Be "(`$null -ne `$seen['Certificate'])"
+            (Get-C5Parameter -Call $classify[0] -Name 'DeadlineExpired').Extent.Text | Should -Be '([bool]$out.DeadlineExpired)'
+            # The callback returns $true and nothing else.
+            $callbacks = @($seam[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.ConvertExpressionAst] -and $n.Type.TypeName.Name -match 'RemoteCertificateValidationCallback' }, $true))
+            $callbacks.Count | Should -Be 1
+            $returns = @($callbacks[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true))
+            $returns.Count | Should -Be 1
+            $returns[0].Pipeline.Extent.Text | Should -Be '$true'
+        }
+        It 'documents the section, the switch and its override key in the help' {
+            $help = $script:C5Ast.GetHelpContent()
+            $help | Should -Not -BeNullOrEmpty
+            [string]$help.Parameters['SECTIONS'] | Should -Match 'DcCertificates'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'DcCertificates'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnWithinDays'
+            ([string]$help.Parameters['INCLUDELDAPSHANDSHAKE'] -replace '\s+', ' ') | Should -Match 'Schannel'
+            ([string]$help.Description -replace '\s+', ' ') | Should -Match '-IncludeLdapsHandshake'
+            ([string]$help.Description -replace '\s+', ' ') | Should -Match 'DC certificates'
+        }
+        It 'has one row in the README Coverage table, and the README says what the row cannot see' {
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' })
+            $row.Count | Should -Be 1
+            $row[0] | Should -Match '-Sections DcCertificates'
+            $row[0] | Should -Match '-IncludeLdapsHandshake'
+            $row[0] | Should -Match 'userCertificate'
+            @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
+        }
+        It 'carries the same version in the script and the manifest: 1.22.0' {
+            [string]$script:Config.Version | Should -Be '1.22.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.22.0'
+        }
+    }
+
+    Context 'Config table' {
+        It 'labels the expiry windows as tool defaults, records the read date, and fixes the port at 636' {
+            [string]$script:Cc['ThresholdSource'] | Should -Be 'tool default, not a Microsoft value'
+            [string]$script:Cc['ReadDate'] | Should -Be '2026-11-16'
+            [int]$script:Cc['WarnWithinDays'] | Should -Be 30
+            [int]$script:Cc['FailWithinDays'] | Should -Be 0
+            [int]$script:Cc['LdapsPort'] | Should -Be 636
+            [int]$script:Cc['HandshakeTimeoutMs'] | Should -Be 5000
+            # Above the ~2 s after which Windows reported a refused loopback connection in this
+            # tool's tests, so a refusal is not reported as a time-out (independent review).
+            [int]$script:Cc['ConnectTimeoutMs'] | Should -Be 5000
+            [string]$script:Cc['SourceUrl'] | Should -Match 'learn\.microsoft\.com'
+            # Declared population: the four EKUs the rows name.
+            $names = $script:Cc['EkuNames']
+            @($names.Keys).Count | Should -Be 4
+            [string]$names['1.3.6.1.5.5.7.3.1'] | Should -Be 'Server Authentication'
+            [string]$names['1.3.6.1.5.5.7.3.2'] | Should -Be 'Client Authentication'
+            [string]$names['1.3.6.1.5.2.3.5'] | Should -Be 'KDC Authentication'
+            [string]$names['1.3.6.1.4.1.311.20.2.2'] | Should -Be 'Smart Card Logon'
+        }
+    }
+
+    Context 'Expiry verdict (pure)' {
+        It 'passes a certificate with more than the Warning window left' {
+            $v = Get-C5Verdict -ToDays 65
+            $v.Status | Should -Be 'Pass'
+            $v.State | Should -Be 'Valid'
+            $v.DaysLeft | Should -Be 65
+            $v.Reason | Should -Match 'tool default, not a Microsoft value'
+        }
+        It 'warns at exactly the Warning window, and passes one day outside it' {
+            (Get-C5Verdict -ToDays 30).Status | Should -Be 'Warning'
+            (Get-C5Verdict -ToDays 30).DaysLeft | Should -Be 30
+            (Get-C5Verdict -ToDays 30.5).Status | Should -Be 'Warning'
+            (Get-C5Verdict -ToDays 31).Status | Should -Be 'Pass'
+            (Get-C5Verdict -ToDays 0.01).Status | Should -Be 'Warning'
+            (Get-C5Verdict -ToDays 0.01).DaysLeft | Should -Be 0
+        }
+        It 'rounds the days left DOWN: 30 days and 18 hours is 30 days, inside a 30-day window (independent review)' {
+            # 30.75 rounds to 31 under Round, to 30 under Floor; 30.5 does not tell them apart.
+            $v = Get-C5Verdict -ToDays 30.75
+            $v.DaysLeft | Should -Be 30
+            $v.Status | Should -Be 'Warning'
+            $v.State | Should -Be 'ExpiringSoon'
+            (Get-C5Verdict -ToDays 7.9 -Fail 7).DaysLeft | Should -Be 7
+            (Get-C5Verdict -ToDays 7.9 -Fail 7).State | Should -Be 'FailWindow'
+        }
+        It 'fails a certificate that has expired, and counts NotAfter equal to now as expired' {
+            $v = Get-C5Verdict -ToDays -3
+            $v.Status | Should -Be 'Fail'
+            $v.State | Should -Be 'Expired'
+            $v.Reason | Should -Match '3 whole day'
+            $edge = Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $script:C5Now.AddDays(-10) -NotAfterUtc $script:C5Now -NowUtc $script:C5Now
+            $edge.Status | Should -Be 'Fail'
+            $edge.State | Should -Be 'Expired'
+            $justBefore = Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $script:C5Now.AddDays(-10) -NotAfterUtc $script:C5Now.AddSeconds(1) -NowUtc $script:C5Now
+            $justBefore.State | Should -Be 'ExpiringSoon'
+        }
+        It 'applies a Fail window only when one is set, at its edge inclusive' {
+            (Get-C5Verdict -ToDays 7 -Fail 7).Status | Should -Be 'Fail'
+            (Get-C5Verdict -ToDays 7 -Fail 7).State | Should -Be 'FailWindow'
+            (Get-C5Verdict -ToDays 8 -Fail 7).Status | Should -Be 'Warning'
+            (Get-C5Verdict -ToDays 0.5 -Fail 0).Status | Should -Be 'Warning'
+            (Get-C5Verdict -ToDays 10 -Warn 0 -Fail 0).Status | Should -Be 'Pass'
+        }
+        It 'reports a certificate that is not yet valid as its own result, a Warning labelled as this tool''s rule' {
+            $v = Get-C5Verdict -FromDays 2 -ToDays 400
+            $v.Status | Should -Be 'Warning'
+            $v.State | Should -Be 'NotYetValid'
+            $v.Reason | Should -Match "this tool's rule, not a Microsoft value"
+        }
+        It 'never passes what it could not read' {
+            (Get-C5Verdict -ToDays $null).Status | Should -Be 'Not Assessed'
+            (Get-C5Verdict -FromDays $null).Status | Should -Be 'Not Assessed'
+            (Get-C5Verdict -FromDays 10 -ToDays 5).Status | Should -Be 'Not Assessed'
+            (Get-C5Verdict -FromDays 10 -ToDays 5).State | Should -Be 'Inconsistent'
+        }
+        It 'compares in UTC: a local "now" and a local NotAfter are converted, on an instant where the local offset is not zero' {
+            # Found by an independent review: the earlier test used ToLocalTime() at an instant
+            # where this host's offset is 0, so removing a conversion changed nothing. This one
+            # picks an instant where the local offset is NOT zero, and proves its inputs tell the
+            # two readings apart before it asserts anything. On a host whose zone is UTC all year
+            # (the Linux CI runner) no such instant exists and the conversion is the identity, so
+            # the test says so and is skipped there.
+            $t = Get-C5OffsetInstant
+            if ($null -eq $t) { Set-ItResult -Skipped -Because 'the local time zone has offset 0 all year on this host, so a local time and UTC are the same value'; return }
+            $offset = [System.TimeZoneInfo]::Local.GetUtcOffset($t)
+            $delta = [TimeSpan]::FromTicks([math]::Abs($offset.Ticks) / 2)
+            $sign = 1
+            if ($offset.Ticks -lt 0) { $sign = -1 }
+            # "now" given in LOCAL time; NotAfter half the offset away, on the side where reading
+            # the local value as UTC would flip expired / not expired.
+            $nowLocal = $t.ToLocalTime()
+            $notAfter = $t.AddTicks($sign * $delta.Ticks)
+            $reference = Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $t.AddDays(-10) -NotAfterUtc $notAfter -NowUtc $t
+            $misread = Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $t.AddDays(-10) -NotAfterUtc $notAfter -NowUtc ([datetime]::SpecifyKind($nowLocal, [System.DateTimeKind]::Utc))
+            # Non-vacuity: reading the local value as UTC gives a different state here.
+            $misread.State | Should -Not -Be $reference.State
+            $given = Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $t.AddDays(-10) -NotAfterUtc $notAfter -NowUtc $nowLocal
+            $given.State | Should -Be $reference.State
+            $given.Status | Should -Be $reference.Status
+            # And the same for NotAfter given in local time against a UTC "now", on the other side.
+            $notAfter2 = $t.AddTicks(-1 * $sign * $delta.Ticks)
+            $reference2 = Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $t.AddDays(-10) -NotAfterUtc $notAfter2 -NowUtc $t
+            $misread2 = Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $t.AddDays(-10) -NotAfterUtc ([datetime]::SpecifyKind($notAfter2.ToLocalTime(), [System.DateTimeKind]::Utc)) -NowUtc $t
+            $misread2.State | Should -Not -Be $reference2.State
+            $given2 = Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $t.AddDays(-10) -NotAfterUtc $notAfter2.ToLocalTime() -NowUtc $t
+            $given2.State | Should -Be $reference2.State
+        }
+    }
+
+    Context 'Certificate record and EKUs (in memory, no store)' {
+        It 'reads subject, thumbprint, UTC dates and EKUs from a certificate and from its DER bytes alike' {
+            $cert = New-C5Cert -ToDays 65 -Ekus @($script:C5ServerAuth, $script:C5Kdc)
+            foreach ($given in @($cert, $cert.RawData)) {
+                $r = ConvertTo-AdfaCertificateRecord -Certificate $given
+                $r.Read | Should -BeTrue
+                $r.Subject | Should -Be 'CN=dc1.contoso.com'
+                $r.Thumbprint | Should -Be $cert.Thumbprint.ToUpperInvariant()
+                $r.NotAfterUtc.Kind | Should -Be 'Utc'
+                $r.NotAfterUtc | Should -Be $cert.NotAfter.ToUniversalTime()
+                (@($r.Ekus) -join ',') | Should -Be ("{0},{1}" -f $script:C5ServerAuth, $script:C5Kdc)
+                $r.HasEkuExtension | Should -BeTrue
+                $r.San | Should -Match 'dc1\.contoso\.com'
+            }
+        }
+        It 'converts the local NotBefore and NotAfter the platform returns to UTC, on an instant where the local offset is not zero (independent review)' {
+            $t = Get-C5OffsetInstant
+            if ($null -eq $t) { Set-ItResult -Skipped -Because 'the local time zone has offset 0 all year on this host, so the platform''s local dates are already UTC'; return }
+            $key = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve+NamedCurves]::nistP256)
+            try {
+                $request = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest -ArgumentList 'CN=dc1.contoso.com', $key, ([System.Security.Cryptography.HashAlgorithmName]::SHA256)
+                $from = $t.AddHours(-6)
+                $cert = $request.CreateSelfSigned((New-Object System.DateTimeOffset -ArgumentList $from), (New-Object System.DateTimeOffset -ArgumentList $t))
+            }
+            finally { $key.Dispose() }
+            # Non-vacuity: the platform hands these dates over in local time, which differs here.
+            $cert.NotAfter.Ticks | Should -Not -Be $t.Ticks
+            $cert.NotBefore.Ticks | Should -Not -Be $from.Ticks
+            foreach ($given in @($cert, [byte[]]$cert.RawData)) {
+                $r = ConvertTo-AdfaCertificateRecord -Certificate $given
+                $r.Read | Should -BeTrue
+                $r.NotAfterUtc.Ticks | Should -Be $t.Ticks
+                $r.NotBeforeUtc.Ticks | Should -Be $from.Ticks
+                $r.NotAfterUtc.Kind | Should -Be 'Utc'
+            }
+        }
+        It 'writes NotBeforeUtc and NotAfterUtc into the row, in UTC (independent review: NotBeforeUtc was never asserted)' {
+            $row = Get-C5Ldaps -Raw (New-C5TlsRaw -Cert (New-C5Cert -FromDays -300 -ToDays 65))
+            $inv = [System.Globalization.CultureInfo]::InvariantCulture
+            $row.NotBeforeUtc | Should -Be $script:C5Now.AddDays(-300).ToString('yyyy-MM-dd HH:mm:ss', $inv)
+            $row.NotAfterUtc | Should -Be $script:C5Now.AddDays(65).ToString('yyyy-MM-dd HH:mm:ss', $inv)
+            $row.DaysLeft | Should -Be '65'
+            $dir = @(Get-C5Dir -Raw (New-C5DirRaw -Values @(, (New-C5Bytes -FromDays -12 -ToDays 200))))
+            $dir.Count | Should -Be 1
+            $dir[0].NotBeforeUtc | Should -Be $script:C5Now.AddDays(-12).ToString('yyyy-MM-dd HH:mm:ss', $inv)
+        }
+        It 'tells a certificate with no EKU extension from one whose EKUs it lists' {
+            $r = ConvertTo-AdfaCertificateRecord -Certificate (New-C5Cert -NoEku)
+            $r.Read | Should -BeTrue
+            $r.HasEkuExtension | Should -BeFalse
+            @($r.Ekus).Count | Should -Be 0
+            Get-AdfaCertificateEkuText -Ekus @() -HasEkuExtension $false -EkuNames $script:Cc['EkuNames'] | Should -Match 'no EKU extension.*all purposes'
+            Get-AdfaCertificateEkuText -Ekus @($script:C5ServerAuth, '1.2.3.4') -HasEkuExtension $true -EkuNames $script:Cc['EkuNames'] | Should -Be 'Server Authentication (1.3.6.1.5.5.7.3.1), 1.2.3.4'
+        }
+        It 'refuses a PKCS12 (PFX) or PKCS7 value before any constructor sees it, so no private key is imported (independent review)' {
+            # An RSA key in memory; the PFX is exported with no password, which is what the
+            # byte-array constructor would open and import the key of.
+            $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+            try {
+                $request = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest -ArgumentList 'CN=dc1.contoso.com', $rsa, ([System.Security.Cryptography.HashAlgorithmName]::SHA256), ([System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+                $withKey = $request.CreateSelfSigned((New-Object System.DateTimeOffset -ArgumentList $script:C5Now.AddDays(-10)), (New-Object System.DateTimeOffset -ArgumentList $script:C5Now.AddDays(90)))
+                $pfx = $withKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx)
+                $collection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+                [void]$collection.Add($withKey)
+                $p7 = $collection.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs7)
+                # Non-vacuity: the platform itself names these blobs as what they are, and the DER
+                # form of the same certificate is read.
+                [string][System.Security.Cryptography.X509Certificates.X509Certificate2]::GetCertContentType([byte[]]$pfx) | Should -Be 'Pfx'
+                [string][System.Security.Cryptography.X509Certificates.X509Certificate2]::GetCertContentType([byte[]]$p7) | Should -Be 'Pkcs7'
+                (ConvertTo-AdfaCertificateRecord -Certificate ([byte[]]$withKey.RawData)).Read | Should -BeTrue
+                $fromPfx = ConvertTo-AdfaCertificateRecord -Certificate ([byte[]]$pfx)
+                $fromPfx.Read | Should -BeFalse
+                $fromPfx.Subject | Should -Be ''
+                $fromPfx.ReadError | Should -Match 'Pfx blob, not a single DER certificate'
+                $fromP7 = ConvertTo-AdfaCertificateRecord -Certificate ([byte[]]$p7)
+                $fromP7.Read | Should -BeFalse
+                $fromP7.ReadError | Should -Match 'Pkcs7 blob'
+                # And the directory row for such a value is Not Assessed, never graded.
+                $rows = @(Get-C5Dir -Raw (New-C5DirRaw -Values @(, [byte[]]$pfx)))
+                $rows.Count | Should -Be 1
+                $rows[0].Status | Should -Be 'Not Assessed'
+                $rows[0].Detail | Should -Match '^Read failed: value 1 of 1'
+                $rows[0].CertSubject | Should -Be ''
+            }
+            finally { $rsa.Dispose() }
+        }
+        It 'returns Read = false with the cause for bytes that are not a certificate, and never throws' {
+            $r = ConvertTo-AdfaCertificateRecord -Certificate ([byte[]](1, 2, 3, 4))
+            $r.Read | Should -BeFalse
+            $r.ReadError | Should -Not -BeNullOrEmpty
+            (ConvertTo-AdfaCertificateRecord -Certificate $null).Read | Should -BeFalse
+            (ConvertTo-AdfaCertificateRecord -Certificate 'not a certificate').Read | Should -BeFalse
+        }
+    }
+
+    Context 'Connection and handshake classes (pure)' {
+        It 'keeps refused, timed out and unresolved apart, and calls anything else a failed connection' {
+            Get-AdfaSocketErrorClass -SocketError 'ConnectionRefused' | Should -Be 'ConnectRefused'
+            Get-AdfaSocketErrorClass -SocketError 'TimedOut' | Should -Be 'ConnectTimedOut'
+            foreach ($e in @('HostNotFound', 'TryAgain', 'NoData')) { Get-AdfaSocketErrorClass -SocketError $e | Should -Be 'Unresolved' -Because $e }
+            Get-AdfaSocketErrorClass -SocketError 'ConnectionReset' | Should -Be 'ConnectFailed'
+            Get-AdfaSocketErrorClass -SocketError '' | Should -Be 'ConnectFailed'
+            Get-AdfaTlsHandshakeErrorClass -SocketErrors @('TimedOut') | Should -Be 'HandshakeTimedOut'
+            Get-AdfaTlsHandshakeErrorClass -SocketErrors @() | Should -Be 'HandshakeFailed'
+            Get-AdfaTlsHandshakeErrorClass -SocketErrors @('ConnectionReset') | Should -Be 'HandshakeFailed'
+        }
+        It 'reads the exception chain past PowerShell''s own wrapper' {
+            $inner = New-Object System.Net.Sockets.SocketException -ArgumentList 10061
+            $outer = New-Object System.Management.Automation.MethodInvocationException -ArgumentList 'Exception calling "EndConnect"', $inner
+            $info = Get-AdfaExceptionChainInfo -Exception $outer
+            (@($info.Types) -join ',') | Should -Be 'System.Net.Sockets.SocketException'
+            (@($info.SocketErrors) -join ',') | Should -Be 'ConnectionRefused'
+        }
+        It 'escapes an LDAP filter value as Microsoft documents' {
+            ConvertTo-AdfaLdapFilterValue -Value 'a*b(c)d\e/f' | Should -Be 'a\2ab\28c\29d\5ce\2ff'
+            # NUL, the sixth escape on the page (independent review: it was not pinned).
+            $withNul = 'a{0}b' -f [char]0
+            $withNul.Length | Should -Be 3   # non-vacuity: the NUL really is in the value
+            ConvertTo-AdfaLdapFilterValue -Value $withNul | Should -Be 'a\00b'
+            ConvertTo-AdfaLdapFilterValue -Value $script:C5Dc1 | Should -Be $script:C5Dc1
+        }
+        It 'classifies one handshake attempt from what happened in it, and keeps a certificate received before an error (independent review)' {
+            $cases = @(
+                @{ Expect = 'ConnectRefused'; Args = @{ Connected = $false; ConnectThrew = $true; ConnectSocketError = 'ConnectionRefused' } }
+                @{ Expect = 'Unresolved'; Args = @{ Connected = $false; ConnectThrew = $true; ConnectSocketError = 'HostNotFound' } }
+                @{ Expect = 'ConnectTimedOut'; Args = @{ Connected = $false; ConnectThrew = $false } }
+                @{ Expect = 'Presented'; Args = @{ Connected = $true; CertificateSeen = $true } }
+                @{ Expect = 'Presented'; Args = @{ Connected = $true; CertificateSeen = $true; HandshakeThrew = $true; HandshakeSocketErrors = @('ConnectionReset') } }
+                @{ Expect = 'Presented'; Args = @{ Connected = $true; CertificateSeen = $true; HandshakeThrew = $true; DeadlineExpired = $true } }
+                @{ Expect = 'HandshakeTimedOut'; Args = @{ Connected = $true; HandshakeThrew = $true; DeadlineExpired = $true; HandshakeSocketErrors = @('Interrupted') } }
+                @{ Expect = 'HandshakeTimedOut'; Args = @{ Connected = $true; HandshakeThrew = $true; HandshakeSocketErrors = @('TimedOut') } }
+                @{ Expect = 'HandshakeFailed'; Args = @{ Connected = $true; HandshakeThrew = $true; HandshakeSocketErrors = @() } }
+                @{ Expect = 'NoCertificate'; Args = @{ Connected = $true } }
+            )
+            # Declared population: ten attempts.
+            $cases.Count | Should -Be 10
+            foreach ($c in $cases) {
+                $a = $c.Args
+                Get-AdfaTlsProbeClass @a | Should -Be $c.Expect -Because (($a.Keys | Sort-Object | ForEach-Object { "{0}={1}" -f $_, ($a[$_] -join '+') }) -join ' ')
+            }
+        }
+    }
+
+    Context 'Handshake seam, run against listeners on the loopback address of this machine only' {
+        # Found by an independent review: the seam was only ever stubbed, so its classes and its
+        # time bound could be broken freely. Every connection here goes to 127.0.0.1, to a
+        # listener this test opens and closes; no other host is contacted.
+        BeforeAll {
+            $script:C5Loopback = '127.0.0.1'
+            $script:C5OnWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or [bool](Get-Variable -Name 'IsWindows' -ValueOnly -ErrorAction SilentlyContinue)
+            function Open-C5Listener {
+                $listener = New-Object System.Net.Sockets.TcpListener -ArgumentList ([System.Net.IPAddress]::Loopback), 0
+                $listener.Start()
+                return $listener
+            }
+            # A loopback port with no listener: opened to be given a free port, then closed.
+            function Get-C5ClosedPort {
+                $listener = Open-C5Listener
+                $port = [int]$listener.LocalEndpoint.Port
+                $listener.Stop()
+                return $port
+            }
+            # A peer that runs in its own runspace, so it can answer while the seam blocks.
+            function Invoke-C5Peer {
+                param($Listener, [string]$Script, [object[]]$Arguments = @())
+                $ps = [powershell]::Create()
+                [void]$ps.AddScript($Script).AddArgument($Listener)
+                foreach ($a in $Arguments) { [void]$ps.AddArgument($a) }
+                return @{ PS = $ps; Handle = $ps.BeginInvoke() }
+            }
+            function Close-C5Peer {
+                param($Peer, $Listener)
+                $Listener.Stop()
+                try { [void]$Peer.PS.EndInvoke($Peer.Handle) } catch { Write-Verbose ("peer ended with: {0}" -f $_.Exception.Message) }
+                $Peer.PS.Dispose()
+            }
+            # Reads the ClientHello, sends the header of a 16 KB handshake record, then one byte
+            # every IntervalMs: each read inside the handshake gets a byte before the socket's
+            # own ReceiveTimeout runs out, so only a deadline on the whole handshake ends it.
+            $script:C5TricklePeer = 'param($Listener, $Count, $IntervalMs)
+$c = $Listener.AcceptTcpClient()
+try {
+    $s = $c.GetStream(); $buf = New-Object byte[] 4096; [void]$s.Read($buf, 0, $buf.Length)
+    $s.Write([byte[]](0x16, 0x03, 0x03, 0x40, 0x00), 0, 5)
+    for ($i = 0; $i -lt $Count; $i++) { Start-Sleep -Milliseconds $IntervalMs; $s.Write([byte[]](0x00), 0, 1) }
+} catch { $null = $_ } finally { $c.Close() }'
+            # Reads the ClientHello, answers with text that is not TLS, and closes.
+            $script:C5GarbagePeer = 'param($Listener)
+$c = $Listener.AcceptTcpClient()
+try {
+    $s = $c.GetStream(); $buf = New-Object byte[] 4096; [void]$s.Read($buf, 0, $buf.Length)
+    $b = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 400 Bad Request`r`n`r`n"); $s.Write($b, 0, $b.Length)
+} catch { $null = $_ } finally { $c.Close() }'
+        }
+        It 'reports a refused connection as ConnectRefused at the configured connection bound' {
+            $port = Get-C5ClosedPort
+            $raw = Get-AdfaDcTlsCertificateRaw -ComputerName $script:C5Loopback -Port $port -ConnectTimeoutMs ([int]$script:Cc['ConnectTimeoutMs']) -HandshakeTimeoutMs 1000
+            $raw.Class | Should -Be 'ConnectRefused'
+            $raw.SocketError | Should -Be 'ConnectionRefused'
+            $raw.Ok | Should -BeFalse
+            $raw.Certificate | Should -BeNullOrEmpty
+            # And the row says Refused, not Timed out.
+            (Get-C5Ldaps -Raw $raw).Detail | Should -Match '^Refused: '
+        }
+        It 'reports a connection not made within a bound shorter than Windows'' refusal delay as ConnectTimedOut' {
+            if (-not $script:C5OnWindows) { Set-ItResult -Skipped -Because 'only Windows was measured to delay a refused connection; elsewhere the refusal arrives at once'; return }
+            $port = Get-C5ClosedPort
+            $raw = Get-AdfaDcTlsCertificateRaw -ComputerName $script:C5Loopback -Port $port -ConnectTimeoutMs 300 -HandshakeTimeoutMs 1000
+            $raw.Class | Should -Be 'ConnectTimedOut'
+            $raw.Error | Should -Match 'within 300 ms'
+            $raw.ElapsedMs | Should -BeLessThan 1500
+        }
+        It 'ends a handshake that a silent peer never answers, as HandshakeTimedOut, within the bound' {
+            $listener = Open-C5Listener
+            try {
+                # Never accepted: the operating system completes the TCP connection from the backlog.
+                $raw = Get-AdfaDcTlsCertificateRaw -ComputerName $script:C5Loopback -Port ([int]$listener.LocalEndpoint.Port) -ConnectTimeoutMs 5000 -HandshakeTimeoutMs 800
+            }
+            finally { $listener.Stop() }
+            $raw.Class | Should -Be 'HandshakeTimedOut'
+            $raw.Ok | Should -BeFalse
+            $raw.ElapsedMs | Should -BeLessThan 3500
+            (Get-C5Ldaps -Raw $raw).Detail | Should -Match '^Handshake timed out: '
+        }
+        It 'ends a handshake that a peer keeps alive one byte at a time, at the deadline, not when the peer stops' {
+            $listener = Open-C5Listener
+            # 40 bytes, one every 250 ms: ten seconds of trickle against a bound of one second.
+            $peer = Invoke-C5Peer -Listener $listener -Script $script:C5TricklePeer -Arguments @(40, 250)
+            try {
+                $raw = Get-AdfaDcTlsCertificateRaw -ComputerName $script:C5Loopback -Port ([int]$listener.LocalEndpoint.Port) -ConnectTimeoutMs 5000 -HandshakeTimeoutMs 1000
+            }
+            finally { Close-C5Peer -Peer $peer -Listener $listener }
+            $raw.Class | Should -Be 'HandshakeTimedOut'
+            $raw.DeadlineExpired | Should -BeTrue
+            $raw.Error | Should -Match 'did not end within 1000 ms'
+            $raw.ElapsedMs | Should -BeLessThan 3500
+        }
+        It 'reports a peer that answers with something that is not TLS as HandshakeFailed, not as a time-out' {
+            $listener = Open-C5Listener
+            $peer = Invoke-C5Peer -Listener $listener -Script $script:C5GarbagePeer
+            try {
+                $raw = Get-AdfaDcTlsCertificateRaw -ComputerName $script:C5Loopback -Port ([int]$listener.LocalEndpoint.Port) -ConnectTimeoutMs 5000 -HandshakeTimeoutMs 5000
+            }
+            finally { Close-C5Peer -Peer $peer -Listener $listener }
+            $raw.Class | Should -Be 'HandshakeFailed'
+            $raw.DeadlineExpired | Should -BeFalse
+            $raw.Error | Should -Not -BeNullOrEmpty
+            $raw.CallbackRan | Should -BeFalse
+        }
+    }
+
+    Context 'LDAPS row (pure)' {
+        It 'is Not Assessed and says the handshake is opt-in when it was not run' {
+            $row = Get-C5Ldaps -Raw $null -Run $false -Answered $false
+            $row.Item | Should -Be ("LDAPS certificate: {0}" -f $script:C5Dc1)
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match '^Not run: '
+            $row.Detail | Should -Match '-IncludeLdapsHandshake'
+            $row.Detail | Should -Match 'Schannel'
+            $row.Evidence | Should -Be 'none'
+        }
+        It 'is Not Assessed, as unreachable and not as "no certificate", when port 636 did not answer the probe' {
+            $row = Get-C5Ldaps -Raw $null -Run $true -Answered $false
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match '^Unreachable: port 636'
+            $row.Detail | Should -Match 'not read as the DC having no certificate'
+        }
+        It 'grades the presented certificate on expiry: Pass, Warning, Fail and not yet valid' {
+            $cases = [ordered]@{ Pass = 65; Warning = 20; Fail = -1 }
+            foreach ($status in @($cases.Keys)) {
+                $row = Get-C5Ldaps -Raw (New-C5TlsRaw -Cert (New-C5Cert -ToDays $cases[$status]))
+                $row.Status | Should -Be $status -Because "$($cases[$status]) days left"
+                $row.Detail | Should -Match '^Presented on LDAPS port 636: '
+                $row.Evidence | Should -Be 'LDAPS handshake'
+                $row.Thumbprint | Should -Not -BeNullOrEmpty
+                $row.CertSubject | Should -Be 'CN=dc1.contoso.com'
+                $row.Ekus | Should -Match 'Server Authentication'
+            }
+            $future = Get-C5Ldaps -Raw (New-C5TlsRaw -Cert (New-C5Cert -FromDays 3 -ToDays 400))
+            $future.Status | Should -Be 'Warning'
+            $future.Detail | Should -Match 'not yet valid'
+        }
+        It 'keeps the subject, the issuer, the EKUs and the platform''s verdicts out of Detail' {
+            $hostile = 'CN=backup replication krbtgt delegation sysvol stale global catalog'
+            $row = Get-C5Ldaps -Raw (New-C5TlsRaw -Cert (New-C5Cert -Subject $hostile -ToDays -2) -Policy 'RemoteCertificateNameMismatch, RemoteCertificateChainErrors' -Chain @('UntrustedRoot: replication backup'))
+            $row.Status | Should -Be 'Fail'
+            $row.CertSubject | Should -Be $hostile
+            $row.CertIssuer | Should -Be $hostile
+            $row.SslPolicyErrors | Should -Match 'RemoteCertificateNameMismatch'
+            $row.ChainStatus | Should -Match 'UntrustedRoot'
+            $row.Detail | Should -Not -Match '(?i)krbtgt|replication|UntrustedRoot|NameMismatch|Server Authentication'
+        }
+        It 'gives every failed handshake its own cause, never a Pass and never "no certificate"' {
+            $expected = [ordered]@{
+                ConnectRefused    = '^Refused: '
+                ConnectTimedOut   = '^Timed out: '
+                Unresolved        = '^Unresolved: '
+                ConnectFailed     = '^Connection failed: '
+                HandshakeTimedOut = '^Handshake timed out: .*5000 ms'
+                HandshakeFailed   = '^Handshake failed: '
+                NoCertificate     = '^No certificate: '
+                Error             = 'defect in the tool'
+            }
+            # Declared population: the eight classes the seam returns besides Presented.
+            @($expected.Keys).Count | Should -Be 8
+            $details = @()
+            foreach ($class in @($expected.Keys)) {
+                $row = Get-C5Ldaps -Raw (New-C5TlsRaw -Class $class -Err 'The handshake failed due to an unexpected packet format.' -Type 'System.IO.IOException')
+                $row.Status | Should -Be 'Not Assessed' -Because $class
+                $row.Detail | Should -Match $expected[$class] -Because $class
+                $row.Detail | Should -Match 'unexpected packet format' -Because "$class quotes what was reported"
+                $details += $row.Detail
+            }
+            @($details | Select-Object -Unique).Count | Should -Be 8
+            (Get-C5Ldaps -Raw (New-C5TlsRaw -Class 'HandshakeFailed')).Detail | Should -Match 'not read as the DC having no certificate'
+        }
+        It 'is Not Assessed when a certificate was handed over but could not be read' {
+            $raw = New-C5TlsRaw -Class 'Presented'
+            $raw.Certificate = ConvertTo-AdfaCertificateRecord -Certificate ([byte[]](9, 9, 9))
+            $row = Get-C5Ldaps -Raw $raw
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match '^Read failed: '
+        }
+    }
+
+    Context 'Directory rows (pure)' {
+        It 'grades each published certificate on expiry and labels it directory evidence' {
+            $valid = New-C5Cert -ToDays 200
+            $expired = New-C5Cert -ToDays -40
+            $rows = @(Get-C5Dir -Raw (New-C5DirRaw -Values @($valid.RawData, $expired.RawData)) -Presented $valid.Thumbprint)
+            # Declared population: two published values, two rows.
+            $rows.Count | Should -Be 2
+            $ok = @($rows | Where-Object { $_.Item -eq ("Directory certificate: {0} [{1}]" -f $script:C5Dc1, $valid.Thumbprint.ToUpperInvariant()) })
+            $ok.Count | Should -Be 1
+            $ok[0].Status | Should -Be 'Pass'
+            $ok[0].Detail | Should -Match 'It is the certificate this DC presented on LDAPS in this run'
+            $ok[0].Evidence | Should -Be 'Directory userCertificate'
+            $old = @($rows | Where-Object { $_.Item -eq ("Directory certificate: {0} [{1}]" -f $script:C5Dc1, $expired.Thumbprint.ToUpperInvariant()) })
+            $old.Count | Should -Be 1
+            $old[0].Status | Should -Be 'Fail'
+            $old[0].Detail | Should -Match 'does not show that the DC still holds or presents it'
+            $old[0].Detail | Should -Match 'It is not the certificate this DC presented'
+            # Microsoft's table publishes 'Directory E-mail Replication' to AD DS too, so a
+            # published value is not said to be a DC certificate (independent review).
+            $old[0].Detail | Should -Match "nor that it is a domain controller certificate \(Microsoft's default 'Directory E-mail Replication' template is published to AD DS too"
+        }
+        It 'reports no published value as Info, never as the DC having no certificate' {
+            $rows = @(Get-C5Dir -Raw (New-C5DirRaw -Values @()))
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be ("Directory certificates: {0}" -f $script:C5Dc1)
+            $rows[0].Status | Should -Be 'Info'
+            $rows[0].Detail | Should -Match 'not evidence that the DC holds no certificate'
+            $rows[0].Detail | Should -Match 'Kerberos Authentication'
+            # It no longer says that only 'Domain Controller' is published (independent review).
+            $rows[0].Detail | Should -Not -Match '(?i)only for .Domain Controller'
+            $rows[0].Detail | Should -Match "Of Microsoft's default domain controller templates, 'Domain Controller' \(version 1\) is published to AD DS"
+        }
+        It 'keeps unreachable, access denied and any other read failure apart' {
+            $unreach = @(Get-C5Dir -Raw (New-C5DirRaw -Ok $false -Err 'Unable to contact the server.' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException'))
+            $denied = @(Get-C5Dir -Raw (New-C5DirRaw -Ok $false -Err 'Insufficient access rights to perform the operation' -Type 'Microsoft.ActiveDirectory.Management.ADException'))
+            $other = @(Get-C5Dir -Raw (New-C5DirRaw -Ok $false -Err 'Something else.' -Type 'System.Exception'))
+            foreach ($r in @($unreach, $denied, $other)) { $r.Count | Should -Be 1; $r[0].Status | Should -Be 'Not Assessed' }
+            $unreach[0].Detail | Should -Match '^Unreachable: '
+            $denied[0].Detail | Should -Match '^Access denied: '
+            $denied[0].Detail | Should -Not -Match '(?i)unreachable'
+            $other[0].Detail | Should -Match '^Read failed: '
+        }
+        It 'does not read a value it cannot place: no object, two objects, or a value that is not a certificate' {
+            (Get-C5Dir -Raw (New-C5DirRaw -Objects 0))[0].Detail | Should -Match '^Not found: '
+            (Get-C5Dir -Raw (New-C5DirRaw -Objects 2))[0].Detail | Should -Match '^Ambiguous: 2 computer objects'
+            $mixed = @(Get-C5Dir -Raw (New-C5DirRaw -Values @((New-C5Bytes -ToDays 90), [byte[]](1, 2, 3), 'text')))
+            $mixed.Count | Should -Be 3
+            @($mixed | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Item -match '\[value [23]\]$' }).Count | Should -Be 2
+            @($mixed | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 1
+        }
+        It 'reads a lone byte array as one certificate, never as one value per byte (found by the C5 mutation pass)' {
+            $raw = New-C5DirRaw -Values @()
+            $raw.Values = New-C5Bytes -ToDays 90
+            ($raw.Values -is [byte[]]) | Should -BeTrue   # non-vacuity: the value really is one byte array
+            $rows = @(Get-C5Dir -Raw $raw)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Pass'
+            $rows[0].Item | Should -Match '^Directory certificate: dc1\.contoso\.com \[[0-9A-F]{40}\]$'
+        }
+        It 'says where it read from, and that it asked the DC itself when the DC has no domain' {
+            (Get-C5Dir -Raw (New-C5DirRaw -Values @()))[0].Detail | Should -Match 'Read from contoso\.com\.'
+            (Get-C5Dir -Raw (New-C5DirRaw -Values @() -Server $script:C5Dc1) -Scope '')[0].Detail | Should -Match 'the DC itself'
+        }
+    }
+
+    Context 'Collector' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            $script:C5Probes = @()
+            $script:C5Handshakes = @()
+            $script:C5Lookups = @()
+        }
+        It 'gives every DC of every domain one LDAPS row and its directory rows, with two DCs in two domains' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C5Probes += ("{0}:{1}" -f $ComputerName, $Port); return $true }
+            function Get-AdfaDcTlsCertificateRaw { param([string]$ComputerName, [int]$Port, [int]$ConnectTimeoutMs, [int]$HandshakeTimeoutMs)
+                $script:C5Handshakes += ("{0}:{1}:{2}:{3}" -f $ComputerName, $Port, $ConnectTimeoutMs, $HandshakeTimeoutMs)
+                New-C5TlsRaw -Cert (New-C5Cert -ToDays 90) }
+            function Get-AdfaDcCertificateDirectoryRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams)
+                $script:C5Lookups += ("{0}@{1}" -f $HostName, $Server)
+                New-C5DirRaw -Values @(, (New-C5Bytes -ToDays 15)) -Server $Server }
+            $targets = @(
+                [pscustomobject]@{ HostName = $script:C5Dc1; Scope = 'contoso.com' }
+                [pscustomobject]@{ HostName = $script:C5Dc3; Scope = 'fabrikam.com' }
+            )
+            # The handshake's connection takes its own bound from the config, not the shared
+            # probe's -PortTimeoutMs (independent review): 2500 here, the probe 1200.
+            $cfg = Merge-AdfaDcCertificatesConfig -BaseConfig $script:Cc -Override @{ ConnectTimeoutMs = 2500 }
+            $rows = @(Get-AdfaDcCertificates -DomainControllers $targets -Config $cfg -Now $script:C5Now -IncludeHandshake $true -PortTimeoutMs 1200 -ScopedDomains @('contoso.com', 'fabrikam.com'))
+            # Declared population: two DCs, each one LDAPS row and one directory row.
+            $rows.Count | Should -Be 4
+            foreach ($t in $targets) {
+                $mine = @($rows | Where-Object { $_.Scope -eq $t.Scope })
+                @($mine | Where-Object { $_.Item -eq ("LDAPS certificate: {0}" -f $t.HostName) -and $_.Status -eq 'Pass' }).Count | Should -Be 1 -Because $t.HostName
+                @($mine | Where-Object { $_.Item -match ("^Directory certificate: {0} \[[0-9A-F]{{40}}\]$" -f [regex]::Escape($t.HostName)) -and $_.Status -eq 'Warning' }).Count | Should -Be 1 -Because $t.HostName
+            }
+            ($script:C5Probes -join ',') | Should -Be 'dc1.contoso.com:636,dc1.fabrikam.com:636'
+            ($script:C5Handshakes -join ',') | Should -Be 'dc1.contoso.com:636:2500:5000,dc1.fabrikam.com:636:2500:5000'
+            ($script:C5Lookups -join ',') | Should -Be 'dc1.contoso.com@contoso.com,dc1.fabrikam.com@fabrikam.com'
+        }
+        It 'probes nothing and connects to nothing when the handshake was not asked for, and still reads the directory' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C5Probes += $ComputerName; return $true }
+            function Get-AdfaDcTlsCertificateRaw { param([string]$ComputerName, [int]$Port, [int]$ConnectTimeoutMs, [int]$HandshakeTimeoutMs) $script:C5Handshakes += $ComputerName }
+            function Get-AdfaDcCertificateDirectoryRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams) $script:C5Lookups += $HostName; New-C5DirRaw -Values @() }
+            $rows = @(Get-AdfaDcCertificates -DomainControllers @($script:C5Dc1, $script:C5Dc2) -Config $script:Cc -Now $script:C5Now)
+            $rows.Count | Should -Be 4
+            @($rows | Where-Object { $_.Item -like 'LDAPS certificate: *' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Not run: ' }).Count | Should -Be 2
+            @($script:C5Probes).Count | Should -Be 0
+            @($script:C5Handshakes).Count | Should -Be 0
+            ($script:C5Lookups -join ',') | Should -Be 'dc1.contoso.com,dc2.contoso.com'
+        }
+        It 'reports an unreachable DC as unreachable without a handshake, and an access-denied directory as access denied, in one mixed run' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C5Probes += $ComputerName; return ($ComputerName -ne 'dc2.contoso.com') }
+            function Get-AdfaDcTlsCertificateRaw { param([string]$ComputerName, [int]$Port, [int]$ConnectTimeoutMs, [int]$HandshakeTimeoutMs)
+                $script:C5Handshakes += $ComputerName
+                New-C5TlsRaw -Cert (New-C5Cert -ToDays -5) }
+            function Get-AdfaDcCertificateDirectoryRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams)
+                if ($HostName -eq 'dc2.contoso.com') { return (New-C5DirRaw -Ok $false -Err 'Acesso negado.' -Type 'System.UnauthorizedAccessException') }
+                New-C5DirRaw -Values @() }
+            $rows = @(Get-AdfaDcCertificates -DomainControllers @($script:C5Dc1, $script:C5Dc2) -Config $script:Cc -Now $script:C5Now -IncludeHandshake $true)
+            $rows.Count | Should -Be 4
+            ($script:C5Handshakes -join ',') | Should -Be 'dc1.contoso.com'
+            (@($rows | Where-Object { $_.Item -eq 'LDAPS certificate: dc1.contoso.com' }))[0].Status | Should -Be 'Fail'
+            $unreach = @($rows | Where-Object { $_.Item -eq 'LDAPS certificate: dc2.contoso.com' })[0]
+            $unreach.Status | Should -Be 'Not Assessed'
+            $unreach.Detail | Should -Match '^Unreachable: '
+            $denied = @($rows | Where-Object { $_.Item -eq 'Directory certificates: dc2.contoso.com' })[0]
+            $denied.Status | Should -Be 'Not Assessed'
+            $denied.Detail | Should -Match '^Access denied: '
+            (@($rows | Where-Object { $_.Item -eq 'Directory certificates: dc1.contoso.com' }))[0].Status | Should -Be 'Info'
+        }
+        It 'probes each DC once per port in the run, through the shared cache' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C5Probes += $ComputerName; return $true }
+            function Get-AdfaDcTlsCertificateRaw { param([string]$ComputerName, [int]$Port, [int]$ConnectTimeoutMs, [int]$HandshakeTimeoutMs) New-C5TlsRaw -Cert (New-C5Cert) }
+            function Get-AdfaDcCertificateDirectoryRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams) New-C5DirRaw -Values @() }
+            Test-AdfaDcPort -ComputerName $script:C5Dc1 -Port 636 | Should -BeTrue
+            Get-AdfaDcCertificates -DomainControllers @($script:C5Dc1) -Config $script:Cc -Now $script:C5Now -IncludeHandshake $true | Out-Null
+            @($script:C5Probes).Count | Should -Be 1
+        }
+        It 'gives each scoped domain without a DC its own row, and says why when no DC was enumerated at all' {
+            $rows = @(Get-AdfaDcCertificates -DomainControllers @() -Config $script:Cc -Now $script:C5Now -EnumerationError 'ADWS unreachable' `
+                    -InventoryFailures @([pscustomobject]@{ Domain = 'fabrikam.com'; Error = 'STUB: denied' }) -ScopedDomains @('contoso.com', 'fabrikam.com'))
+            # Declared population: two scoped domains, plus the no-target row.
+            $rows.Count | Should -Be 3
+            @($rows | Where-Object { $_.Item -eq 'DC certificates - contoso.com' -and $_.Scope -eq 'contoso.com' }).Count | Should -Be 1
+            @($rows | Where-Object { $_.Item -eq 'DC certificates - fabrikam.com' -and $_.Detail -match 'STUB: denied' }).Count | Should -Be 1
+            @($rows | Where-Object { $_.Item -eq 'DC certificates' -and $_.Detail -match 'ADWS unreachable' }).Count | Should -Be 1
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+        }
+        It 'reports a DC with no host name, and one whose handling throws, as Not Assessed without stopping the others' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcTlsCertificateRaw { param([string]$ComputerName, [int]$Port, [int]$ConnectTimeoutMs, [int]$HandshakeTimeoutMs)
+                if ($ComputerName -eq 'dc1.contoso.com') { throw 'STUB: defect' }
+                New-C5TlsRaw -Cert (New-C5Cert -ToDays 90) }
+            function Get-AdfaDcCertificateDirectoryRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams) New-C5DirRaw -Values @() }
+            $targets = @([pscustomobject]@{ HostName = ''; Scope = 'contoso.com' }, $script:C5Dc1, $script:C5Dc2)
+            $rows = @(Get-AdfaDcCertificates -DomainControllers $targets -Config $script:Cc -Now $script:C5Now -IncludeHandshake $true)
+            $rows.Count | Should -Be 5
+            @($rows | Where-Object { $_.Item -eq 'LDAPS certificate: (unnamed)' -and $_.Status -eq 'Not Assessed' }).Count | Should -Be 1
+            @($rows | Where-Object { $_.Item -like '*: dc1.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'STUB: defect' }).Count | Should -Be 2
+            @($rows | Where-Object { $_.Item -eq 'LDAPS certificate: dc2.contoso.com' -and $_.Status -eq 'Pass' }).Count | Should -Be 1
+        }
+        It 'gives every row the same columns' {
+            function Get-AdfaDcCertificateDirectoryRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams) New-C5DirRaw -Values @(, (New-C5Bytes)) }
+            $rows = @(Get-AdfaDcCertificates -DomainControllers @([pscustomobject]@{ HostName = $script:C5Dc1; Scope = 'contoso.com' }) -Config $script:Cc -Now $script:C5Now -ScopedDomains @('contoso.com', 'fabrikam.com'))
+            # Declared population: the gap row of fabrikam.com, and the LDAPS and directory rows of the DC.
+            $rows.Count | Should -Be 3
+            $first = (@($rows[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ',')
+            $first | Should -Be 'Scope,Area,Item,Status,Detail,NotRun,Evidence,Thumbprint,NotBeforeUtc,NotAfterUtc,DaysLeft,CertSubject,CertIssuer,CertSan,Ekus,SslPolicyErrors,ChainStatus'
+            foreach ($r in $rows) { (@($r.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') | Should -Be $first }
+        }
+    }
+
+    Context 'Directory seam' {
+        It 'asks one domain for the DC by its DNS host name, for userCertificate only, and keeps a single value whole' {
+            function Get-ADComputer { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ErrorAction)
+                $script:C5Asked = ("{0}|{1}|{2}" -f $Server, $LDAPFilter, ($Properties -join ','))
+                [pscustomobject]@{ Name = 'DC1'; userCertificate = [byte[]](1, 2, 3) } }
+            $raw = Get-AdfaDcCertificateDirectoryRaw -HostName $script:C5Dc1 -Server 'contoso.com'
+            $script:C5Asked | Should -Be 'contoso.com|(&(objectClass=computer)(dNSHostName=dc1.contoso.com))|userCertificate'
+            $raw.Ok | Should -BeTrue
+            $raw.ObjectCount | Should -Be 1
+            @($raw.Values).Count | Should -Be 1
+            ($raw.Values[0] -is [byte[]]) | Should -BeTrue
+        }
+        It 'keeps every value of a multi-valued answer, and never throws' {
+            function Get-ADComputer { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ErrorAction)
+                [pscustomobject]@{ Name = 'DC1'; userCertificate = @([byte[]](1, 2), [byte[]](3, 4), [byte[]](5)) } }
+            @((Get-AdfaDcCertificateDirectoryRaw -HostName $script:C5Dc1 -Server 'contoso.com').Values).Count | Should -Be 3
+            function Get-ADComputer { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ErrorAction) throw 'STUB: refused' }
+            $failed = Get-AdfaDcCertificateDirectoryRaw -HostName $script:C5Dc1 -Server 'contoso.com'
+            $failed.Ok | Should -BeFalse
+            $failed.Error | Should -Match 'STUB: refused'
+        }
+    }
+
+    Context 'Config override' {
+        It 'merges the windows and the timeout, and cites the file for exactly the windows it supplied' {
+            $m = Merge-AdfaDcCertificatesConfig -BaseConfig $script:Cc -Override ([pscustomobject]@{ WarnWithinDays = 45; FailWithinDays = 7 }) -OverrideSource 'C:\cfg\over.json'
+            $m['WarnWithinDays'] | Should -Be 45
+            $m['FailWithinDays'] | Should -Be 7
+            $m['ThresholdSource'] | Should -Match '^C:\\cfg\\over\.json \(loaded \d{4}-\d{2}-\d{2}\) for WarnWithinDays, FailWithinDays$'
+            $one = Merge-AdfaDcCertificatesConfig -BaseConfig $script:Cc -Override @{ WarnWithinDays = 60 } -OverrideSource 'C:\cfg\over.json'
+            $one['ThresholdSource'] | Should -Match 'for WarnWithinDays; tool default, not a Microsoft value, for FailWithinDays$'
+            $t = Merge-AdfaDcCertificatesConfig -BaseConfig $script:Cc -Override @{ HandshakeTimeoutMs = 2500; ConnectTimeoutMs = 60000 }
+            $t['HandshakeTimeoutMs'] | Should -Be 2500
+            $t['ConnectTimeoutMs'] | Should -Be 60000
+            $t['ThresholdSource'] | Should -Be 'tool default, not a Microsoft value'
+            # Both bounds of both timeouts are accepted (independent review: the upper bound was untested).
+            foreach ($key in @('HandshakeTimeoutMs', 'ConnectTimeoutMs')) {
+                foreach ($ms in @(100, 60000)) { (Merge-AdfaDcCertificatesConfig -BaseConfig $script:Cc -Override @{ $key = $ms })[$key] | Should -Be $ms -Because "$key $ms" }
+            }
+            # A Fail window EQUAL to the Warning window is allowed: only a wider one is refused
+            # (independent review: this edge was untested).
+            $equal = Merge-AdfaDcCertificatesConfig -BaseConfig $script:Cc -Override @{ WarnWithinDays = 30; FailWithinDays = 30 }
+            $equal['FailWithinDays'] | Should -Be 30
+            $equal['WarnWithinDays'] | Should -Be 30
+            # The built-in table is not changed by a merge.
+            [int]$script:Cc['WarnWithinDays'] | Should -Be 30
+            # The merged window reaches the verdict.
+            (Get-C5Ldaps -Raw (New-C5TlsRaw -Cert (New-C5Cert -ToDays 40)) -Config $m).Status | Should -Be 'Warning'
+            (Get-C5Ldaps -Raw (New-C5TlsRaw -Cert (New-C5Cert -ToDays 5)) -Config $m).Status | Should -Be 'Fail'
+        }
+        It 'refuses every shape it could not use' {
+            $bad = [ordered]@{
+                'not an object'          = @{ Value = @(1, 2); Expect = 'single object' }
+                'an empty object'        = @{ Value = @{}; Expect = 'empty object' }
+                'the port'               = @{ Value = @{ LdapsPort = 3269 }; Expect = "unknown key 'LdapsPort'" }
+                'the EKU names'          = @{ Value = @{ EkuNames = @{} }; Expect = "unknown key 'EkuNames'" }
+                'a null'                 = @{ Value = @{ WarnWithinDays = $null }; Expect = 'to null' }
+                'a quoted number'        = @{ Value = @{ WarnWithinDays = '30' }; Expect = 'JSON number' }
+                'a fraction of a day'    = @{ Value = @{ WarnWithinDays = 30.5 }; Expect = 'whole number of days' }
+                'a negative window'      = @{ Value = @{ FailWithinDays = -1 }; Expect = 'whole number of days' }
+                'a window over 10 years' = @{ Value = @{ WarnWithinDays = 3651 }; Expect = 'whole number of days' }
+                'a short timeout'        = @{ Value = @{ HandshakeTimeoutMs = 99 }; Expect = "'HandshakeTimeoutMs' to 99. It must be a whole number of milliseconds from 100 to 60000" }
+                'a long timeout'         = @{ Value = @{ HandshakeTimeoutMs = 60001 }; Expect = "'HandshakeTimeoutMs' to 60001. It must be a whole number of milliseconds from 100 to 60000" }
+                'a short connect bound'  = @{ Value = @{ ConnectTimeoutMs = 99 }; Expect = "'ConnectTimeoutMs' to 99. It must be a whole number of milliseconds from 100 to 60000" }
+                'a long connect bound'   = @{ Value = @{ ConnectTimeoutMs = 60001 }; Expect = "'ConnectTimeoutMs' to 60001. It must be a whole number of milliseconds from 100 to 60000" }
+                'a fractional timeout'   = @{ Value = @{ ConnectTimeoutMs = 1500.5 }; Expect = 'whole number of milliseconds' }
+                'a Fail above Warning'   = @{ Value = @{ FailWithinDays = 31 }; Expect = 'is above WarnWithinDays' }
+            }
+            # Declared population: fifteen shapes.
+            @($bad.Keys).Count | Should -Be 15
+            foreach ($name in @($bad.Keys)) {
+                { Merge-AdfaDcCertificatesConfig -BaseConfig $script:Cc -Override $bad[$name]['Value'] } | Should -Throw -ExpectedMessage ("*{0}*" -f $bad[$name]['Expect']) -Because $name
+            }
+        }
+        It 'is reached through the generic loader, which refuses a key written twice' {
+            $merged = Resolve-AdfaConfigOverride -Override ([pscustomobject]@{ DcCertificates = [pscustomobject]@{ WarnWithinDays = 14 } }) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'x.json'
+            $merged['DcCertificates']['WarnWithinDays'] | Should -Be 14
+            { Resolve-AdfaConfigOverride -Override ([pscustomobject]@{ DcCertificates = [pscustomobject]@{ LdapsPort = 3269 } }) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
+                Should -Throw -ExpectedMessage "*section 'DcCertificates'*unknown key 'LdapsPort'*"
+            $path = Join-Path ([IO.Path]::GetTempPath()) ("adfa_c5_" + [guid]::NewGuid().ToString('N') + '.json')
+            try {
+                '{ "DcCertificates": { "WarnWithinDays": 10, "WarnWithinDays": 60 } }' | Out-File -LiteralPath $path -Encoding UTF8
+                { Import-AdfaConfigOverride -Path $path -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*'DcCertificates.WarnWithinDays' more than once*"
+            }
+            finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'Recommendations' {
+        BeforeAll {
+            $script:C5Hostile = 'Threshold source: C:\Backup\replication\sysvol-dfsr\stale-delegation.json. time sync w32tm clock global catalog port 636 not reachable does not resolve certificate template enrol NOT a pass krbtgt pdc emulator dcdiag'
+        }
+        It 'gives each row family that can be a Warning or a Fail its own advice, whatever the host name or a file path contains' {
+            $ldaps = Get-AdfaRecommendation -Section 'DC Certificates' -Item ("LDAPS certificate: {0}" -f $script:C5Dc1) -Detail $script:C5Hostile
+            $dir = Get-AdfaRecommendation -Section 'DC Certificates' -Item ("Directory certificate: {0} [ABCDEF]" -f $script:C5Dc1) -Detail $script:C5Hostile
+            $ldaps | Should -Match 'request a new valid'
+            $ldaps | Should -Match 'NTDS service store'
+            $ldaps | Should -Match '1\.3\.6\.1\.5\.5\.7\.3\.1'
+            $dir | Should -Match 'userCertificate'
+            $dir | Should -Match 'request a new valid domain controller certificate'
+            $dir | Should -Match 'It is not necessarily a domain controller certificate'
+            $dir | Should -Match 'Directory E-mail Replication'
+            $ldaps | Should -Not -Be $dir
+            foreach ($rec in @($ldaps, $dir)) {
+                $rec | Should -Match 'not Microsoft values'
+                $rec | Should -Not -Match 'repadmin|wbadmin|dfsrmig|w32tm /config|New-KrbtgtKeys|ENROLLEE_SUPPLIES_SUBJECT|ipconfig'
+            }
+            (Get-AdfaRecommendation -Section 'DC Certificates' -Item 'LDAPS certificate: backup-replication-dc.stale.contoso.com' -Detail $script:C5Hostile) | Should -Be $ldaps
+        }
+        It 'gives every other row of the section no advice, rather than an unrelated one' {
+            foreach ($item in @('DC certificates - contoso.com', 'DC certificates', 'Directory certificates: dc1.contoso.com', 'Something new: dc1.contoso.com')) {
+                Get-AdfaRecommendation -Section 'DC Certificates' -Item $item -Detail $script:C5Hostile | Should -Be '' -Because $item
+            }
+            # Non-vacuity: the same text outside the section does attract advice.
+            Get-AdfaRecommendation -Section 'Somewhere Else' -Item 'x' -Detail $script:C5Hostile | Should -Not -Be ''
+        }
+        It 'places its entries before every unscoped entry of the map' {
+            $map = @($script:RecommendationMap)
+            $mine = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Section -eq '(?i)^dc certificates') { $i } })
+            # Declared population: two families and the catch-all.
+            $mine.Count | Should -Be 3
+            $firstUnscoped = @(for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $i } })[0]
+            foreach ($i in $mine) { $i | Should -BeLessThan $firstUnscoped }
+            [string]$map[$mine[2]].Match | Should -Be '.'
+            [string]$map[$mine[2]].Text | Should -Be ''
+        }
+        It 'attaches advice to Warning and Fail rows only, chosen without the certificate''s own text' {
+            $hostile = 'CN=replication backup krbtgt sysvol time sync'
+            $rows = @(
+                (Get-C5Ldaps -Raw (New-C5TlsRaw -Cert (New-C5Cert -Subject $hostile -ToDays -1)))
+                (Get-C5Ldaps -Raw (New-C5TlsRaw -Cert (New-C5Cert -Subject $hostile -ToDays 200)))
+                (Get-C5Ldaps -Raw $null -Run $false)
+            ) + @(Get-C5Dir -Raw (New-C5DirRaw -Values @(, (New-C5Bytes -Subject $hostile -ToDays 10))))
+            $findings = @($rows | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'DC Certificates' -Row $_ -StatusColumn 'Status' })
+            $findings.Count | Should -Be 4
+            $findings[0].Status | Should -Be 'Fail'
+            $findings[0].Recommendation | Should -Match 'NTDS service store'
+            $findings[0].Detail | Should -Match 'PORT-PLAN C5a'
+            $findings[0].Detail | Should -Not -Match 'krbtgt'
+            $findings[1].Recommendation | Should -Be ''
+            $findings[2].Recommendation | Should -Be ''
+            $findings[3].Status | Should -Be 'Warning'
+            $findings[3].Recommendation | Should -Match 'userCertificate'
         }
     }
 }
