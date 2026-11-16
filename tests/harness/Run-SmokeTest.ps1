@@ -117,6 +117,40 @@ $script:SmokeCertValid = New-StubCertificate -Subject 'CN=dc1.contoso.com' -From
 $script:SmokeCertExpired = New-StubCertificate -Subject 'CN=dc1.contoso.com' -FromDays -375 -ToDays -10
 # $script:SmokeCertDirFail makes the userCertificate read throw, as a refused directory read would.
 $script:SmokeCertDirFail = $false
+# C6 (RidPool): CN=RID Manager$ of each domain, keyed by the -Server the section sends (the
+# Get-ADDomain stub gives every domain the same DN, so the DN cannot tell the domains apart), in
+# the shape the module returns: rIDAvailablePool an Int64, msDS-RIDPoolAllocationEnabled a Boolean
+# and absent from the answer when it is not set. The values are built from their two 32-bit halves.
+#   contoso.com        2,100 of the 30-bit space issued (Microsoft's own sample value), not set
+#   north.contoso.com  150,000,000 of the 30-bit space (13.97 %), allocation FALSE
+#   south.contoso.com  5,000 of the 31-bit space, allocation TRUE
+# Each DC's computer object names its RID Set in rIDSetReferences (multi-valued, so a collection),
+# and the RID Set holds the pool 2100-2599, next RID 2150, and the prefetched pool 3100-3599.
+# $script:SmokeRidFail makes every read of CN=RID Manager$ throw; $script:SmokeRidSetAbsent takes
+# rIDSetReferences away and makes the one-level search find nothing; $script:SmokeRidDcRefused
+# makes the computer read throw an access-denied exception.
+function New-StubInterval { param([int64]$Low, [int64]$High) return ([int64]$High * [int64]4294967296) + [int64]$Low }
+$script:SmokeRidDomains = @{
+    'contoso.com'       = @{ Pool = (New-StubInterval -Low 2100 -High 1073741823); Allocation = $null }
+    'north.contoso.com' = @{ Pool = (New-StubInterval -Low 150000000 -High 1073741823); Allocation = $false }
+    'south.contoso.com' = @{ Pool = (New-StubInterval -Low 5000 -High 2147483647); Allocation = $true }
+}
+$script:SmokeRidSchema = @('rIDAvailablePool', 'msDS-RIDPoolAllocationEnabled')
+$script:SmokeRidFail = $false
+$script:SmokeRidSetAbsent = $false
+$script:SmokeRidDcRefused = $false
+function New-StubRidSet { param([string]$Dn)
+    [pscustomobject]@{ DistinguishedName = $Dn; ObjectClass = 'rIDSet'; rIDPreviousAllocationPool = (New-StubInterval -Low 2100 -High 2599)
+        rIDAllocationPool = (New-StubInterval -Low 3100 -High 3599); rIDNextRID = [int32]2150; rIDUsedPool = (New-StubInterval -Low 1100 -High 1599) } }
+# The named arguments a remaining-arguments stub was called with: a splatted -Name value arrives as
+# the string "-Name:" followed by the value.
+function ConvertTo-StubArgument { param($Given)
+    $named = @{}
+    $list = @($Given)
+    for ($i = 0; $i -lt $list.Count; $i++) {
+        if ($list[$i] -is [string] -and $list[$i] -match '^-(\w+):?$' -and ($i + 1) -lt $list.Count) { $named[$Matches[1]] = $list[$i + 1]; $i++ }
+    }
+    return $named }
 function Get-ADComputer {
     param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$LDAPFilter, [Parameter(ValueFromRemainingArguments)]$a)
     if ([string]::IsNullOrWhiteSpace($Server)) { throw 'A referral was returned from the server' }
@@ -124,9 +158,17 @@ function Get-ADComputer {
     # attribute comes back as the module returns a multi-valued attribute - a collection whose
     # elements are the DER bytes of one certificate each.
     if ($LDAPFilter -match '^\(&\(objectClass=computer\)\(dNSHostName=([^()*\\]+)\)\)$') {
+        $certHost = $Matches[1]
+        # C6: the same lookup, asked for rIDSetReferences alone.
+        if ((@($Properties) -join ',') -eq 'rIDSetReferences') {
+            if ($script:SmokeRidDcRefused) { throw [System.UnauthorizedAccessException]'STUB: computer read refused' }
+            $ridDn = ("CN=DC1,OU=Domain Controllers,DC={0}" -f (($Server -split '\.') -join ',DC='))
+            $ridObject = [pscustomobject]@{ DistinguishedName = $ridDn; DNSHostName = $certHost; Name = 'DC1'; ObjectClass = 'computer'; Enabled = $true }
+            if (-not $script:SmokeRidSetAbsent) { $ridObject | Add-Member -NotePropertyName 'rIDSetReferences' -NotePropertyValue @(("CN=RID Set,{0}" -f $ridDn)) }
+            return $ridObject
+        }
         if ($script:SmokeCertDirFail) { throw 'STUB: certificate read refused' }
         if ((@($Properties) -join ',') -ne 'userCertificate') { throw ("STUB: the certificate read asked for '{0}', not userCertificate alone" -f (@($Properties) -join ',')) }
-        $certHost = $Matches[1]
         $certObject = [pscustomobject]@{ DistinguishedName = ("CN=DC1,OU=Domain Controllers,DC={0}" -f (($Server -split '\.') -join ',DC=')); DNSHostName = $certHost; Name = 'DC1'; ObjectClass = 'computer'; Enabled = $true }
         $certObject | Add-Member -NotePropertyName 'userCertificate' -NotePropertyValue @($script:SmokeCertValid.RawData, $script:SmokeCertExpired.RawData)
         return $certObject
@@ -308,9 +350,28 @@ function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a)
 # other call receives the single object it always received.
 function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubAsked = (@($a | ForEach-Object { [string]$_ }) -join ' ')
+    $stubNamed = ConvertTo-StubArgument -Given $a
+    # C6: CN=RID Manager$ of the domain named by -Server, with the one attribute asked for.
+    if ($stubNamed.ContainsKey('Identity') -and [string]$stubNamed['Identity'] -match '^CN=RID Manager\$,CN=System,') {
+        if ($script:SmokeRidFail) { throw 'STUB: RID Manager read refused' }
+        $ridState = $script:SmokeRidDomains[[string]$stubNamed['Server']]
+        if ($null -eq $ridState) { throw ("STUB: no RID Manager stubbed for server '{0}'" -f [string]$stubNamed['Server']) }
+        $ridManager = [pscustomobject]@{ DistinguishedName = [string]$stubNamed['Identity']; ObjectClass = 'rIDManager' }
+        $ridAsked = @($stubNamed['Properties'])
+        if ($ridAsked -contains 'rIDAvailablePool') { $ridManager | Add-Member -NotePropertyName 'rIDAvailablePool' -NotePropertyValue ([int64]$ridState['Pool']) }
+        if ($ridAsked -contains 'msDS-RIDPoolAllocationEnabled' -and $null -ne $ridState['Allocation']) { $ridManager | Add-Member -NotePropertyName 'msDS-RIDPoolAllocationEnabled' -NotePropertyValue ([bool]$ridState['Allocation']) }
+        return $ridManager
+    }
+    # C6: the RID Set by the DN rIDSetReferences named, and the one-level search under the computer.
+    if ($stubNamed.ContainsKey('Identity') -and [string]$stubNamed['Identity'] -match '^CN=RID Set,') { return (New-StubRidSet -Dn ([string]$stubNamed['Identity'])) }
+    if ([string]$stubNamed['LDAPFilter'] -eq '(objectClass=rIDSet)') {
+        if ([string]$stubNamed['SearchScope'] -ne 'OneLevel') { throw 'STUB: the RID Set search must be one level' }
+        if ($script:SmokeRidSetAbsent) { return }
+        return (New-StubRidSet -Dn ("CN=RID Set,{0}" -f [string]$stubNamed['SearchBase']))
+    }
     if ($stubAsked -match 'lDAPDisplayName=') {
         if ($script:SmokeLapsFail) { throw 'STUB: schema query refused' }
-        foreach ($schemaName in @($script:SmokeLapsSchema)) {
+        foreach ($schemaName in @(@($script:SmokeLapsSchema) + @($script:SmokeRidSchema))) {
             if ($stubAsked -match ("\(lDAPDisplayName={0}\)" -f [regex]::Escape($schemaName))) {
                 [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Schema,CN=Configuration,DC=contoso,DC=com" -f $schemaName); ObjectClass = 'attributeSchema'; lDAPDisplayName = $schemaName }
             }
@@ -566,6 +627,29 @@ if (Test-Path $certCsv) {
     Check (@(Import-Csv $certCsv | Where-Object { $_.Ekus -match 'Server Authentication \(1\.3\.6\.1\.5\.5\.7\.3\.1\)' }).Count -eq 2) 'DC Certificates: the EKUs of both published certificates are named in their column'
 }
 else { Check $false 'DC Certificates CSV exists' }
+# C6: the RidPool section must be wired, must read CN=RID Manager$ and the DC's RID Set through the
+# AD stubs, and must report the stub domain's two rows and the stub DC's pool. Declared population:
+# one domain (two rows) and one DC (one row).
+$ridRows = @($smokeFindings | Where-Object { $_.Section -eq 'RID Pool' })
+Check (@($ridRows).Count -eq 3) ("Section 'RID Pool' is wired into Invoke-Main and gives two rows for the stub domain and one for its DC ({0} rows, expected 3)" -f @($ridRows).Count)
+$ridAlloc = @($ridRows | Where-Object { $_.Item -eq 'RID pool allocation: contoso.com' })
+Check (@($ridAlloc).Count -eq 1 -and $ridAlloc[0].Status -eq 'Not Assessed' -and $ridAlloc[0].Detail -match '^Not returned: ' -and $ridAlloc[0].Detail -match 'NOT SET' -and $ridAlloc[0].Detail -match "cannot be told from 'not readable'") 'RID Pool: an allocation attribute that is not returned, on a schema that defines it, is Not Assessed - never a pass, because an unset value and one this account cannot read look the same - and says why'
+$ridSpace = @($ridRows | Where-Object { $_.Item -eq 'Global RID space: contoso.com' })
+Check (@($ridSpace).Count -eq 1 -and $ridSpace[0].Status -eq 'Pass' -and $ridSpace[0].Detail -match '^2,100 of 1,073,741,823 RIDs issued \(0\.0001 % used\)') 'RID Pool: the global space is decoded from Microsoft''s sample value - 2,100 issued of 1,073,741,823 - and passes'
+$ridDc = @($ridRows | Where-Object { $_.Item -eq 'RID pool: dc1.contoso.com' })
+Check (@($ridDc).Count -eq 1 -and $ridDc[0].Status -eq 'Info' -and $ridDc[0].Detail -match 'Current pool \(rIDPreviousAllocationPool\): 2100-2599, 500 RIDs\. Next RID \(rIDNextRID\): 2150\. Remaining in this pool: 450') 'RID Pool: the DC''s pool is read through rIDSetReferences and reported as Info, never Pass'
+Check (@($ridRows | Where-Object { $_.Scope -eq 'contoso.com' }).Count -eq 3) 'RID Pool: every row carries its domain as Scope'
+Check (@($ridRows | Where-Object { $_.Recommendation }).Count -eq 0) 'RID Pool: a row that is not a Warning or a Fail carries no advice'
+Check (@($ridRows | Where-Object { $_.Detail -match 'SidCompatibilityVersion' }).Count -eq 2) 'RID Pool: both domain rows say, in their NotRun note, that SidCompatibilityVersion was not read'
+$ridCsv = Join-Path $result.CsvPath 'RID Pool.csv'
+if (Test-Path $ridCsv) {
+    $ridCsvRows = @(Import-Csv $ridCsv)
+    $ridCsvSpace = @($ridCsvRows | Where-Object { $_.Item -eq 'Global RID space: contoso.com' })
+    Check (@($ridCsvSpace).Count -eq 1 -and $ridCsvSpace[0].Ceiling -eq '1073741823' -and $ridCsvSpace[0].Issued -eq '2100' -and $ridCsvSpace[0].CeilingSource -eq '30-bit (default)' -and $ridCsvSpace[0].RidMaster -eq 'dc1.contoso.com') 'RID Pool: the section CSV carries the ceiling, the RIDs issued, the ceiling''s label and the RID master in their own columns'
+    $ridCsvDc = @($ridCsvRows | Where-Object { $_.Item -eq 'RID pool: dc1.contoso.com' })
+    Check (@($ridCsvDc).Count -eq 1 -and $ridCsvDc[0].PoolStart -eq '2100' -and $ridCsvDc[0].PoolEnd -eq '2599' -and $ridCsvDc[0].NextPoolStart -eq '3100' -and $ridCsvDc[0].ObjectDn -eq 'CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com') 'RID Pool: the DC row carries its pool bounds, the prefetched pool and the RID Set DN in their own columns'
+}
+else { Check $false 'RID Pool CSV exists' }
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
@@ -607,7 +691,7 @@ Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scop
 $findings2 = @(Import-Csv (Join-Path $result2.CsvPath 'Findings-Consolidated.csv'))
 Check ($findings2.Count -gt 0) ("Multi-domain: consolidated findings are not empty ({0} rows)" -f $findings2.Count)
 
-foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space', 'DC Hardening', 'Windows LAPS', 'DC Certificates')) {
+foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space', 'DC Hardening', 'Windows LAPS', 'DC Certificates', 'RID Pool')) {
     $n = @($findings2 | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Multi-domain: section '{0}' reached the consolidated findings ({1} rows)" -f $sec, $n)
 }
@@ -659,6 +743,23 @@ foreach ($d in $multiDomains) {
     Check (@($forDomainC).Count -eq 3) ("Multi-domain: DC Certificates has three rows scoped '{0}' ({1})" -f $d, @($forDomainC).Count)
     Check (@($forDomainC | Where-Object { $_.Item -like 'Directory certificate: *' -and $_.Detail -match ("Read from {0}\." -f [regex]::Escape($d)) }).Count -eq 2) ("Multi-domain: the directory rows of '{0}' were read from that domain" -f $d)
 }
+
+# C6: two rows per domain and one per domain's DC, each set carrying its own domain and graded on
+# that domain's own CN=RID Manager$ - not three copies of the first domain.
+$rid2 = @($findings2 | Where-Object { $_.Section -eq 'RID Pool' })
+Check (@($rid2).Count -eq 9) ("Multi-domain: RID Pool has two rows for each of the three domains and one for each domain's DC ({0}, expected 9)" -f @($rid2).Count)
+foreach ($d in $multiDomains) {
+    $forDomainR = @($rid2 | Where-Object { $_.Scope -eq $d })
+    Check (@($forDomainR).Count -eq 3) ("Multi-domain: RID Pool has three rows scoped '{0}' ({1})" -f $d, @($forDomainR).Count)
+    Check (@($forDomainR | Where-Object { $_.Item -eq 'RID pool: dc1.contoso.com' -and $_.Status -eq 'Info' -and $_.Detail -match ("Read from {0}\." -f [regex]::Escape($d)) }).Count -eq 1) ("Multi-domain: the DC of '{0}' has its RID pool read from that domain" -f $d)
+}
+$ridNorthAlloc = @($rid2 | Where-Object { $_.Item -eq 'RID pool allocation: north.contoso.com' })
+Check (@($ridNorthAlloc).Count -eq 1 -and $ridNorthAlloc[0].Status -eq 'Fail' -and $ridNorthAlloc[0].Detail -match 'is FALSE' -and $ridNorthAlloc[0].Recommendation -match 'msDS-RIDPoolAllocationEnabled' -and $ridNorthAlloc[0].Recommendation -notmatch 'repadmin|wbadmin|scavenging') 'Multi-domain: north.contoso.com, whose allocation attribute is FALSE, is a Fail carrying the RID pool advice'
+$ridNorthSpace = @($rid2 | Where-Object { $_.Item -eq 'Global RID space: north.contoso.com' })
+Check (@($ridNorthSpace).Count -eq 1 -and $ridNorthSpace[0].Status -eq 'Warning' -and $ridNorthSpace[0].Detail -match '^150,000,000 of 1,073,741,823 RIDs issued \(13\.9698 % used\)' -and $ridNorthSpace[0].Recommendation -match '16658') 'Multi-domain: north.contoso.com, with 13.97 % of its space issued, is a Warning carrying the RID space advice'
+$ridSouthSpace = @($rid2 | Where-Object { $_.Item -eq 'Global RID space: south.contoso.com' })
+Check (@($ridSouthSpace).Count -eq 1 -and $ridSouthSpace[0].Status -eq 'Pass' -and $ridSouthSpace[0].Detail -match '^5,000 of 2,147,483,647 RIDs issued' -and $ridSouthSpace[0].Detail -match 'inferred') 'Multi-domain: south.contoso.com is judged against the 31-bit size it holds, and the row calls that size inferred'
+Check (@($rid2 | Where-Object { $_.Item -eq 'RID pool allocation: south.contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match 'is TRUE' }).Count -eq 1) 'Multi-domain: south.contoso.com, whose allocation attribute is TRUE, passes'
 
 # C2: the same three domains with DcDisk selected WITHOUT DomainControllers. There is then no DC
 # inventory, and the section used to fall back to one unscoped Get-ADDomainController call,
@@ -736,6 +837,21 @@ Check (@($certC | Where-Object { $_.Item -like 'LDAPS certificate: *' -and $_.De
 Check ((Get-Content $resultC.LogFile -Raw) -match 'IncludeLdapsHandshake is set') 'Multi-domain, DcCertificates alone: the log says the handshake switch was given'
 Check (-not (Test-Path (Join-Path $resultC.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, DcCertificates alone: non-vacuity - the DomainControllers section itself was not run'
 Remove-Item -Recurse -Force $outC -ErrorAction SilentlyContinue
+# C6: RidPool alone. No DC inventory, so the section enumerates each scoped domain itself; every
+# domain gets its two rows and its DC row, and no row is without a domain.
+$outR = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_ridonly_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outR
+$script:Sections = @('RidPool')
+$resultR = Invoke-Main
+$ridR = @(@(Import-Csv $resultR.FindingsFile) | Where-Object { $_.Section -eq 'RID Pool' })
+Check (@($ridR).Count -eq 9) ("Multi-domain, RidPool alone: two rows per domain and one per domain's DC, with no DC inventory ({0}, expected 9)" -f @($ridR).Count)
+foreach ($d in $multiDomains) {
+    $forDomainRR = @($ridR | Where-Object { $_.Scope -eq $d })
+    Check (@($forDomainRR).Count -eq 3 -and @($forDomainRR | Where-Object { $_.Item -eq 'RID pool: dc1.contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) ("Multi-domain, RidPool alone: domain '{0}' is in the section, with its DC's pool read ({1} rows)" -f $d, @($forDomainRR).Count)
+}
+Check (@($ridR | Where-Object { -not $_.Scope }).Count -eq 0) 'Multi-domain, RidPool alone: no row is without a domain'
+Check (-not (Test-Path (Join-Path $resultR.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, RidPool alone: non-vacuity - the DomainControllers section itself was not run'
+Remove-Item -Recurse -Force $outR -ErrorAction SilentlyContinue
 # C4, found by the independent review: a DC whose expiry time is the last date .NET holds (the
 # FILETIME of [datetime]::MaxValue, which an administrator gets by setting "never") threw out of
 # the section and ended the run with no report. The run must finish, and every DC row must be graded.
@@ -983,6 +1099,29 @@ Check (@($certF | Where-Object { $_.Item -eq 'Directory certificates: dc1.contos
 Check (@($certF | Where-Object { $_.Item -eq 'LDAPS certificate: dc1.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Certificate read refused: non-vacuity - the presented certificate is still graded'
 Remove-Item -Recurse -Force $outCF -ErrorAction SilentlyContinue
 
+# C6: the DC's computer object has no rIDSetReferences and the one-level search finds no RID Set.
+# The row says "RID Set object absent", names the known defect, and is never Info or Pass; the
+# domain rows are still graded. Then the computer read refused: Access denied, not absent.
+$outRA = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_ridabsent_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outRA
+$script:Sections = @('DomainControllers', 'RidPool')
+$script:SmokeRidSetAbsent = $true
+$resultRA = Invoke-Main
+$script:SmokeRidSetAbsent = $false
+$ridA = @(@(Import-Csv $resultRA.FindingsFile) | Where-Object { $_.Section -eq 'RID Pool' })
+Check (@($ridA).Count -eq 3) ("RID Set absent: two domain rows and one DC row ({0}, expected 3)" -f @($ridA).Count)
+Check (@($ridA | Where-Object { $_.Item -eq 'RID pool: dc1.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^RID Set object absent: rIDSetReferences of dc1\.contoso\.com has no value' -and $_.Detail -match 'KB 2618669' }).Count -eq 1) 'RID Set absent: the DC row says so, after both instruments, names the known defect, and is Not Assessed'
+Check (@($ridA | Where-Object { $_.Item -eq 'Global RID space: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1 -and @($ridA | Where-Object { $_.Item -eq 'RID pool allocation: contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Not returned: ' }).Count -eq 1) 'RID Set absent: non-vacuity - the domain rows are still read (the space graded, the allocation attribute not returned)'
+Remove-Item -Recurse -Force $outRA -ErrorAction SilentlyContinue
+$outRD = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_riddenied_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outRD
+$script:SmokeRidDcRefused = $true
+$resultRD = Invoke-Main
+$script:SmokeRidDcRefused = $false
+$ridD = @(@(Import-Csv $resultRD.FindingsFile) | Where-Object { $_.Section -eq 'RID Pool' })
+Check (@($ridD | Where-Object { $_.Item -eq 'RID pool: dc1.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Access denied: ' -and $_.Detail -notmatch 'absent' }).Count -eq 1) 'RID computer read refused: the DC row is Access denied, not absent and not unreachable'
+Remove-Item -Recurse -Force $outRD -ErrorAction SilentlyContinue
+
 # A file that cannot be used: the run must stop, name the file, and collect nothing.
 $badFiles = @(
     @{ Name = 'an unknown section'; Text = '{ "DcDisks": { "WarnBelowPercent": 70 } }'; Expect = "unknown section 'DcDisks'" }
@@ -1005,6 +1144,10 @@ $badFiles = @(
     @{ Name = 'a DcCertificates port'; Text = '{ "DcCertificates": { "LdapsPort": 3269 } }'; Expect = "unknown key 'LdapsPort'" }
     # C5: a Fail window wider than the Warning window.
     @{ Name = 'a DcCertificates Fail window above the Warning window'; Text = '{ "DcCertificates": { "FailWithinDays": 60 } }'; Expect = 'is above WarnWithinDays' }
+    # C6: a file that tries to grade against a ceiling the tool did not read.
+    @{ Name = 'a RidPool ceiling list'; Text = '{ "RidPool": { "KnownCeilings": [] } }'; Expect = "unknown key 'KnownCeilings'" }
+    # C6: a Warning point above the built-in Fail point, which would hide the Warning.
+    @{ Name = 'a RidPool Warning point above the Fail point'; Text = '{ "RidPool": { "WarnAtPercentUsed": 95 } }'; Expect = 'must be above WarnAtPercentUsed' }
 )
 $script:Sections = @('All')
 foreach ($bad in $badFiles) {
@@ -1019,7 +1162,7 @@ foreach ($bad in $badFiles) {
     Check ($written.Count -eq 0) ("Override: with {0}, nothing was collected before the run stopped ({1} CSV files)" -f $bad.Name, $written.Count)
     Remove-Item -Recurse -Force $outB -ErrorAction SilentlyContinue
 }
-Check (@($badFiles).Count -eq 12) 'Override: non-vacuity - twelve declared unusable files were tried'
+Check (@($badFiles).Count -eq 14) 'Override: non-vacuity - fourteen declared unusable files were tried'
 Remove-Item -LiteralPath $overrideFile -Force -ErrorAction SilentlyContinue
 # The parameter carries [ValidateNotNullOrEmpty()], and the attribute stays on the variable, so
 # it cannot simply be set back to empty: the variable is removed and re-created without it.
@@ -1046,6 +1189,9 @@ function Get-AdfaFsmoRole { param([Parameter(ValueFromRemainingArguments)]$a) th
 # C4: the Laps section does not use Get-ADDomainController, so breaking that leaves it working.
 # Its own two reads are made to fail instead: the schema query and the computer query throw.
 $script:SmokeLapsFail = $true
+# C6: the RidPool section does not use Get-ADDomainController for its domain rows, so every read of
+# CN=RID Manager$ is made to fail too.
+$script:SmokeRidFail = $true
 
 $out3 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out3
@@ -1120,6 +1266,14 @@ Check (@($cert3 | Where-Object { $_.Item -eq 'DC certificates' -and $_.Status -e
 Check (@($cert3 | Where-Object { $_.Item -eq 'DC certificates - contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'could not be enumerated\. Cause: STUB: ADWS unreachable' -and $_.Detail -match 'No certificate of its domain controllers was read' }).Count -eq 1) 'Failure mode: DC Certificates gives the domain whose inventory failed its own Not Assessed row, with the cause'
 Check (@($cert3).Count -eq 2 -and @($cert3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC Certificates reports nothing but Not Assessed, and never Pass ({0} rows, expected 2)" -f @($cert3).Count)
 Check (@($cert3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a DC Certificates row that measured nothing carries no advice'
+# C6: CN=RID Manager$ refused and no DC enumerated. The domain's two rows are Not Assessed with the
+# cause, the domain has its own population row, the section says no DC was enumerated, nothing passes.
+$rid3 = @($findings3 | Where-Object { $_.Section -eq 'RID Pool' })
+Check (@($rid3).Count -eq 4 -and @($rid3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: RID Pool reports nothing but Not Assessed, and never Pass ({0} rows, expected 4)" -f @($rid3).Count)
+Check (@($rid3 | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Item -like '*: contoso.com' -and $_.Detail -match '^Read failed: ' -and $_.Detail -match 'STUB: RID Manager read refused' }).Count -eq 2) 'Failure mode: both domain rows of RID Pool carry the cause of the refused read'
+Check (@($rid3 | Where-Object { $_.Item -eq 'RID pool - contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'could not be enumerated\. Cause: STUB: ADWS unreachable' -and $_.Detail -match 'No RID Set of its domain controllers was read' }).Count -eq 1) 'Failure mode: RID Pool gives the domain whose inventory failed its own population row, with the cause'
+Check (@($rid3 | Where-Object { $_.Item -eq 'RID pools' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode: RID Pool says no DC was enumerated, and why'
+Check (@($rid3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a RID Pool row that measured nothing carries no advice'
 # The schema readable and the computer query failing: the schema row stands, the domain rows
 # are Not Assessed with the query's own error.
 $out3l = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_lapsonly_" + [guid]::NewGuid().ToString('N'))
@@ -1217,6 +1371,9 @@ if ($null -ne $result4) {
     # C5: with no forest no domain is scoped and no DC enumerated; the section says so.
     $cert4 = @($findings4 | Where-Object { $_.Section -eq 'DC Certificates' })
     Check (@($cert4).Count -ge 1 -and @($cert4 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("No forest: DC Certificates is present and reports nothing but Not Assessed ({0} rows)" -f @($cert4).Count)
+    # C6: with no forest no domain is scoped; the section asks nothing and says so in one row.
+    $rid4 = @($findings4 | Where-Object { $_.Section -eq 'RID Pool' })
+    Check (@($rid4).Count -eq 1 -and $rid4[0].Status -eq 'Not Assessed' -and $rid4[0].Detail -match 'The forest could not be read' -and $rid4[0].Detail -match 'not contactable') 'No forest: RID Pool is one Not Assessed row carrying the cause'
 
     # The critical property: with no forest, nothing may claim to have passed.
     $passes4 = @($findings4 | Where-Object { $_.Status -eq 'Pass' })
