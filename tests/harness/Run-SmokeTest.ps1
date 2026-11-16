@@ -46,10 +46,18 @@ function Get-ADForest { param([Parameter(ValueFromRemainingArguments)]$a)
         PartitionsContainer='CN=Partitions,CN=Configuration,DC=contoso,DC=com'
         Domains=@('contoso.com'); Sites=@('Default-First-Site-Name'); GlobalCatalogs=@('dc1.contoso.com')
         SchemaMaster='dc1.contoso.com'; DomainNamingMaster='dc1.contoso.com'; UPNSuffixes=@() } }
+# C7 (SID history) gives each domain of the stub forest its own SID, keyed by the -Identity the
+# caller names, so a historic SID can be matched to the domain it came from and a same-domain value
+# can be told from a value of another forest domain. A call that names no domain (the current
+# domain) gets contoso.com's, as before. Everything else the stub returns is unchanged.
+$script:SmokeDomainSids = @{ 'contoso.com' = 'S-1-5-21-1-2-3'; 'north.contoso.com' = 'S-1-5-21-1-2-4'; 'south.contoso.com' = 'S-1-5-21-1-2-5' }
 function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a)
+    $stubDomainNamed = ConvertTo-StubArgument -Given $a
+    $stubDomainSid = 'S-1-5-21-1-2-3'
+    if ($stubDomainNamed.ContainsKey('Identity') -and $script:SmokeDomainSids.ContainsKey([string]$stubDomainNamed['Identity'])) { $stubDomainSid = $script:SmokeDomainSids[[string]$stubDomainNamed['Identity']] }
     [pscustomobject]@{ DNSRoot='contoso.com'; NetBIOSName='CONTOSO'; DomainMode='Windows2016Domain'
         PDCEmulator='dc1.contoso.com'; RIDMaster='dc1.contoso.com'; InfrastructureMaster='dc1.contoso.com'
-        DomainSID=(New-StubSid 'S-1-5-21-1-2-3'); DistinguishedName='DC=contoso,DC=com' } }
+        DomainSID=(New-StubSid $stubDomainSid); DistinguishedName='DC=contoso,DC=com' } }
 function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ HostName='dc1.contoso.com'; Name='DC1'; Site='Default-First-Site-Name'
         IPv4Address='10.0.0.1'; IsGlobalCatalog=$true; IsReadOnly=$false; ComputerObjectDN='CN=DC1,OU=DCs,DC=contoso,DC=com' } }
@@ -142,6 +150,49 @@ $script:SmokeRidDcRefused = $false
 function New-StubRidSet { param([string]$Dn)
     [pscustomobject]@{ DistinguishedName = $Dn; ObjectClass = 'rIDSet'; rIDPreviousAllocationPool = (New-StubInterval -Low 2100 -High 2599)
         rIDAllocationPool = (New-StubInterval -Low 3100 -High 3599); rIDNextRID = [int32]2150; rIDUsedPool = (New-StubInterval -Low 1100 -High 1599) } }
+# C7 (SID history): the principals of each domain that carry sIDHistory, keyed by the -Server the
+# row sends, in the shape Get-ADObject returns - the default properties (DistinguishedName, Name,
+# ObjectClass, ObjectGUID) always, a requested attribute only where the object has a value. What the
+# module returns for a String(Sid) attribute is not published, so the two domains use two shapes:
+# contoso.com hands back bytes (sIDHistory a collection of byte arrays, objectSid a byte array),
+# north.contoso.com objects that carry the SID text in Value, as SecurityIdentifier does.
+#   contoso.com        mig.user1 (enabled user): a SID of fabrikam.com, the trust partner;
+#                      mig.group1 (group): a SID of north.contoso.com;
+#                      ws-mig$ (disabled computer): a SID of a domain neither in the forest nor trusted
+#   north.contoso.com  svc.north (enabled user): a SID of north.contoso.com itself (same-domain) and
+#                      the Enterprise Admins SID of contoso.com (RID 519)
+#   south.contoso.com  none
+# The query REFUSES a wildcard or any attribute outside the six the row declares. contoso.com has one
+# trusted domain object, fabrikam.com, under CN=System. $script:SmokeSidHistoryFail makes the
+# principal query throw an access-denied exception.
+$script:SmokeSidHistoryFail = $false
+$script:SmokeSidHistoryAllowed = @('sIDHistory', 'objectSid', 'objectClass', 'sAMAccountName', 'distinguishedName', 'userAccountControl')
+$script:SmokeFabrikamSid = 'S-1-5-21-7-8-9'
+$script:SmokeLostSid = 'S-1-5-21-99-98-97'
+# A SID in its binary form, built here without the script's parser: revision 1, the sub-authority
+# count, the 6-byte authority big-endian, each sub-authority 4 bytes little-endian.
+function New-StubSidBytes { param([string]$Sid)
+    $stubSidParts = $Sid.Split('-')
+    $stubSidSubs = @($stubSidParts | Select-Object -Skip 3)
+    $stubSidList = New-Object System.Collections.Generic.List[byte]
+    $stubSidList.Add([byte]1); $stubSidList.Add([byte]$stubSidSubs.Count)
+    $stubSidAuthority = [uint64]$stubSidParts[2]
+    for ($i = 5; $i -ge 0; $i--) { $stubSidList.Add([byte](($stubSidAuthority -shr (8 * $i)) -band 255)) }
+    foreach ($s in $stubSidSubs) { $stubSidValue = [uint64]$s; for ($i = 0; $i -lt 4; $i++) { $stubSidList.Add([byte](($stubSidValue -shr (8 * $i)) -band 255)) } }
+    return , $stubSidList.ToArray() }
+function New-StubSidHistoryPrincipal {
+    param([string]$Sam, [string]$Class, [string]$Domain, [string]$Rid, [object[]]$History, [string[]]$Asked, $Uac = $null, [switch]$AsText)
+    $stubPrincipalDn = ("CN={0},OU=Migrated,DC={1}" -f $Sam, (($Domain -split '\.') -join ',DC='))
+    $o = [pscustomobject]@{ DistinguishedName = $stubPrincipalDn; Name = $Sam; ObjectClass = $Class; ObjectGUID = [guid]::NewGuid() }
+    $stubOwnSid = ("{0}-{1}" -f $script:SmokeDomainSids[$Domain], $Rid)
+    $stubHistory = New-Object System.Collections.ArrayList
+    foreach ($h in $History) { if ($AsText) { [void]$stubHistory.Add((New-StubSid $h)) } else { [void]$stubHistory.Add((New-StubSidBytes -Sid $h)) } }
+    if ($Asked -contains 'sIDHistory') { $o | Add-Member -NotePropertyName 'sIDHistory' -NotePropertyValue $stubHistory }
+    if ($Asked -contains 'objectSid') { if ($AsText) { $o | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue (New-StubSid $stubOwnSid) } else { $o | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue (New-StubSidBytes -Sid $stubOwnSid) } }
+    if ($Asked -contains 'sAMAccountName') { $o | Add-Member -NotePropertyName 'sAMAccountName' -NotePropertyValue $Sam }
+    if ($null -ne $Uac -and $Asked -contains 'userAccountControl') { $o | Add-Member -NotePropertyName 'userAccountControl' -NotePropertyValue ([int]$Uac) }
+    return $o
+}
 # The named arguments a remaining-arguments stub was called with: a splatted -Name value arrives as
 # the string "-Name:" followed by the value.
 function ConvertTo-StubArgument { param($Given)
@@ -351,6 +402,38 @@ function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a)
 function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubAsked = (@($a | ForEach-Object { [string]$_ }) -join ' ')
     $stubNamed = ConvertTo-StubArgument -Given $a
+    # C7: the principals with sIDHistory of the domain named by -Server, and its trusted domains.
+    if ([string]$stubNamed['LDAPFilter'] -eq '(sIDHistory=*)') {
+        if ($script:SmokeSidHistoryFail) { throw [System.UnauthorizedAccessException]'STUB: sIDHistory query refused' }
+        $shAsked = @($stubNamed['Properties'] | ForEach-Object { [string]$_ })
+        foreach ($p in $shAsked) {
+            if ($p -match '[*?]' -or $script:SmokeSidHistoryAllowed -notcontains $p) { throw ("STUB: the SID history query asked for '{0}', which it does not declare" -f $p) }
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$stubNamed['SearchBase'])) { throw 'STUB: the SID history query must search the whole domain' }
+        switch ([string]$stubNamed['Server']) {
+            'contoso.com' {
+                return @(
+                    (New-StubSidHistoryPrincipal -Sam 'mig.user1' -Class 'user' -Domain 'contoso.com' -Rid '1601' -Uac 512 -Asked $shAsked -History @(("{0}-1105" -f $script:SmokeFabrikamSid)))
+                    (New-StubSidHistoryPrincipal -Sam 'mig.group1' -Class 'group' -Domain 'contoso.com' -Rid '1602' -Asked $shAsked -History @(("{0}-1200" -f $script:SmokeDomainSids['north.contoso.com'])))
+                    (New-StubSidHistoryPrincipal -Sam 'ws-mig$' -Class 'computer' -Domain 'contoso.com' -Rid '1603' -Uac 4098 -Asked $shAsked -History @(("{0}-1300" -f $script:SmokeLostSid)))
+                )
+            }
+            'north.contoso.com' {
+                return (New-StubSidHistoryPrincipal -Sam 'svc.north' -Class 'user' -Domain 'north.contoso.com' -Rid '1700' -Uac 512 -Asked $shAsked -AsText `
+                        -History @(("{0}-1500" -f $script:SmokeDomainSids['north.contoso.com']), ("{0}-519" -f $script:SmokeDomainSids['contoso.com'])))
+            }
+        }
+        return
+    }
+    if ([string]$stubNamed['LDAPFilter'] -eq '(objectClass=trustedDomain)') {
+        foreach ($p in @($stubNamed['Properties'])) { if ([string]$p -match '[*?]') { throw 'STUB: the trust query asked for every attribute' } }
+        if ([string]$stubNamed['SearchBase'] -ne 'CN=System,DC=contoso,DC=com') { throw ("STUB: trusted domain objects are under CN=System, not '{0}'" -f [string]$stubNamed['SearchBase']) }
+        if ([string]$stubNamed['Server'] -eq 'contoso.com') {
+            return [pscustomobject]@{ DistinguishedName = 'CN=fabrikam.com,CN=System,DC=contoso,DC=com'; Name = 'fabrikam.com'; ObjectClass = 'trustedDomain'; ObjectGUID = [guid]::NewGuid()
+                trustPartner = 'fabrikam.com'; flatName = 'FABRIKAM'; securityIdentifier = (New-StubSidBytes -Sid $script:SmokeFabrikamSid) }
+        }
+        return
+    }
     # C6: CN=RID Manager$ of the domain named by -Server, with the one attribute asked for.
     if ($stubNamed.ContainsKey('Identity') -and [string]$stubNamed['Identity'] -match '^CN=RID Manager\$,CN=System,') {
         if ($script:SmokeRidFail) { throw 'STUB: RID Manager read refused' }
@@ -650,6 +733,29 @@ if (Test-Path $ridCsv) {
     Check (@($ridCsvDc).Count -eq 1 -and $ridCsvDc[0].PoolStart -eq '2100' -and $ridCsvDc[0].PoolEnd -eq '2599' -and $ridCsvDc[0].NextPoolStart -eq '3100' -and $ridCsvDc[0].ObjectDn -eq 'CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com') 'RID Pool: the DC row carries its pool bounds, the prefetched pool and the RID Set DN in their own columns'
 }
 else { Check $false 'RID Pool CSV exists' }
+# C7: the SID history rows must be wired into Security Posture, must read the principals of the
+# scoped domain through the stubbed query (bytes), and must keep names and SIDs out of Detail.
+$shRows = @($smokeFindings | Where-Object { $_.Section -eq 'Security Posture' -and $_.Item -like 'SID history*' })
+Check (@($shRows).Count -eq 4) ("SID history: wired into Security Posture with four rows for the stub domain ({0} rows, expected 4)" -f @($shRows).Count)
+Check (@($shRows | Where-Object { $_.Scope -eq 'contoso.com' }).Count -eq 4) 'SID history: every row carries its domain as Scope'
+Check (@($smokeFindings | Where-Object { $_.Section -eq 'Security Posture' -and $_.Item -eq 'krbtgt password age' }).Count -eq 1) 'SID history: non-vacuity - the older Security Posture rows are still there'
+$shCount = @($shRows | Where-Object { $_.Item -eq 'SID history: contoso.com' })
+Check (@($shCount).Count -eq 1 -and $shCount[0].Status -eq 'Warning' -and $shCount[0].Detail -match '^3 security principal\(s\) with sIDHistory visible to this account in contoso\.com: 1 user, 1 computer .*, 1 group, 0 other; 1 enabled, 1 disabled, 1 with no enabled state' -and $shCount[0].Detail -match 'tool default, not a Microsoft value') 'SID history: three principals read from bytes - a user, a computer and a group, enabled state from userAccountControl - graded Warning as a labelled tool default'
+Check (@($shCount).Count -eq 1 -and $shCount[0].Recommendation -match 'Set-ADUser' -and $shCount[0].Recommendation -notmatch 'krbtgt|wbadmin|repadmin') 'SID history: the count row carries its own advice'
+Check (@($shRows | Where-Object { $_.Item -eq 'SID history same-domain: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1 -and @($shRows | Where-Object { $_.Item -eq 'SID history privileged: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'SID history: no same-domain and no privileged value in contoso.com, so both pass'
+$shSources = @($shRows | Where-Object { $_.Item -eq 'SID history sources: contoso.com' })
+Check (@($shSources).Count -eq 1 -and $shSources[0].Status -eq 'Info' -and $shSources[0].Detail -match '3 distinct domain part\(s\) - 0 in this forest, 1 trust partner\(s\) of this domain, 0 builtin or well-known, 2 unresolved' -and $shSources[0].Detail -match 'Trusts section') 'SID history: one source resolved through the trusted domain object, two unresolved (north.contoso.com is not in this single-domain forest), and the Trusts section named for SID filtering'
+Check (@($shRows | Where-Object { $_.Detail -match 'mig\.user1|ws-mig|S-1-5-21-7-8-9' }).Count -eq 0) 'SID history: no account name and no SID in any Detail'
+$spCsv = Join-Path $result.CsvPath 'Security Posture.csv'
+if (Test-Path $spCsv) {
+    $spCsvRows = @(Import-Csv $spCsv)
+    $spCsvCount = @($spCsvRows | Where-Object { $_.Item -eq 'SID history: contoso.com' })
+    Check (@($spCsvCount).Count -eq 1 -and $spCsvCount[0].PrincipalCount -eq '3' -and $spCsvCount[0].Principals -eq 'mig.user1; mig.group1; ws-mig$' -and $spCsvCount[0].DomainSid -eq 'S-1-5-21-1-2-3') 'SID history: the section CSV carries the count, the names and the domain SID in their own columns'
+    $spCsvSources = @($spCsvRows | Where-Object { $_.Item -eq 'SID history sources: contoso.com' })
+    Check (@($spCsvSources).Count -eq 1 -and $spCsvSources[0].SourceDomains -match 'S-1-5-21-7-8-9 \(fabrikam\.com, trust partner\) x1' -and $spCsvSources[0].SourceDomains -match 'S-1-5-21-99-98-97 \(unresolved\) x1') 'SID history: the source domains column names the trust partner and the unresolved domain'
+    Check (@($spCsvRows | Where-Object { $_.Item -eq 'krbtgt password age' }).Count -eq 1) 'SID history: non-vacuity - the CSV holds the older rows too'
+}
+else { Check $false 'Security Posture CSV exists' }
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
@@ -760,6 +866,18 @@ Check (@($ridNorthSpace).Count -eq 1 -and $ridNorthSpace[0].Status -eq 'Warning'
 $ridSouthSpace = @($rid2 | Where-Object { $_.Item -eq 'Global RID space: south.contoso.com' })
 Check (@($ridSouthSpace).Count -eq 1 -and $ridSouthSpace[0].Status -eq 'Pass' -and $ridSouthSpace[0].Detail -match '^5,000 of 2,147,483,647 RIDs issued' -and $ridSouthSpace[0].Detail -match 'inferred') 'Multi-domain: south.contoso.com is judged against the 31-bit size it holds, and the row calls that size inferred'
 Check (@($rid2 | Where-Object { $_.Item -eq 'RID pool allocation: south.contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match 'is TRUE' }).Count -eq 1) 'Multi-domain: south.contoso.com, whose allocation attribute is TRUE, passes'
+# C7: four SID history rows per scoped domain, each read from that domain's own principals - not
+# three copies of the first domain - with the forest's domain SIDs resolving historic SIDs.
+$sh2 = @($findings2 | Where-Object { $_.Section -eq 'Security Posture' -and $_.Item -like 'SID history*' })
+Check (@($sh2).Count -eq 12) ("Multi-domain: SID history has four rows for each of the three domains ({0}, expected 12)" -f @($sh2).Count)
+foreach ($d in $multiDomains) {
+    Check (@($sh2 | Where-Object { $_.Scope -eq $d -and $_.Item -like ('*: {0}' -f $d) }).Count -eq 4) ("Multi-domain: SID history has four rows scoped '{0}'" -f $d)
+}
+Check (@($sh2 | Where-Object { $_.Item -eq 'SID history sources: contoso.com' -and $_.Detail -match '3 distinct domain part\(s\) - 1 in this forest, 1 trust partner\(s\) of this domain, 0 builtin or well-known, 1 unresolved' }).Count -eq 1) 'Multi-domain: contoso.com''s historic SID from north.contoso.com now resolves to a domain of this forest'
+Check (@($sh2 | Where-Object { $_.Item -eq 'SID history same-domain: north.contoso.com' -and $_.Status -eq 'Fail' -and $_.Detail -match '^Same-domain SID history: 1 historic SID value\(s\) on 1 principal\(s\) belong to north\.contoso\.com itself' -and $_.Recommendation -match 'DsAddSidHistory' }).Count -eq 1) 'Multi-domain: north.contoso.com''s own SID in svc.north''s SID history (read as SecurityIdentifier-like objects) is a same-domain Fail carrying its advice'
+Check (@($sh2 | Where-Object { $_.Item -eq 'SID history privileged: north.contoso.com' -and $_.Status -eq 'Fail' -and $_.Detail -match 'Enterprise Admins \(RID 519\) x1' -and $_.Recommendation -match 'Enterprise Admins' -and $_.Recommendation -notmatch 'New-KrbtgtKeys|wbadmin' }).Count -eq 1) 'Multi-domain: the Enterprise Admins SID of contoso.com in north.contoso.com is a privileged Fail, named, with its advice'
+Check (@($sh2 | Where-Object { $_.Item -eq 'SID history same-domain: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Multi-domain: the same-domain row is per domain - contoso.com, whose values come from other domains, passes'
+Check (@($sh2 | Where-Object { $_.Scope -eq 'south.contoso.com' -and $_.Item -ne 'SID history sources: south.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 3 -and @($sh2 | Where-Object { $_.Item -eq 'SID history: south.contoso.com' -and $_.Detail -match '^None visible: ' }).Count -eq 1) 'Multi-domain: south.contoso.com, with no principal returned, passes worded "none visible to this account"'
 
 # C2: the same three domains with DcDisk selected WITHOUT DomainControllers. There is then no DC
 # inventory, and the section used to fall back to one unscoped Get-ADDomainController call,
@@ -1192,6 +1310,9 @@ $script:SmokeLapsFail = $true
 # C6: the RidPool section does not use Get-ADDomainController for its domain rows, so every read of
 # CN=RID Manager$ is made to fail too.
 $script:SmokeRidFail = $true
+# C7: the SID history rows read the directory without Get-ADDomainController either, so their
+# principal query is refused too (an access-denied exception).
+$script:SmokeSidHistoryFail = $true
 
 $out3 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out3
@@ -1274,6 +1395,12 @@ Check (@($rid3 | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Item -like '*
 Check (@($rid3 | Where-Object { $_.Item -eq 'RID pool - contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'could not be enumerated\. Cause: STUB: ADWS unreachable' -and $_.Detail -match 'No RID Set of its domain controllers was read' }).Count -eq 1) 'Failure mode: RID Pool gives the domain whose inventory failed its own population row, with the cause'
 Check (@($rid3 | Where-Object { $_.Item -eq 'RID pools' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode: RID Pool says no DC was enumerated, and why'
 Check (@($rid3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a RID Pool row that measured nothing carries no advice'
+# C7: the principal query refused. All four SID history rows of the domain are Not Assessed, say
+# "Access denied" with the cause, carry no count and no advice, and none passes.
+$sh3 = @($findings3 | Where-Object { $_.Section -eq 'Security Posture' -and $_.Item -like 'SID history*' })
+Check (@($sh3).Count -eq 4 -and @($sh3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: SID history reports nothing but Not Assessed, and never Pass ({0} rows, expected 4)" -f @($sh3).Count)
+Check (@($sh3 | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Detail -match '^Access denied: ' -and $_.Detail -match 'STUB: sIDHistory query refused' -and $_.Detail -match 'not a clean result' }).Count -eq 4) 'Failure mode: every SID history row says Access denied, not unreachable, with the cause'
+Check (@($sh3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a SID history row that measured nothing carries no advice'
 # The schema readable and the computer query failing: the schema row stands, the domain rows
 # are Not Assessed with the query's own error.
 $out3l = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_lapsonly_" + [guid]::NewGuid().ToString('N'))
@@ -1374,6 +1501,9 @@ if ($null -ne $result4) {
     # C6: with no forest no domain is scoped; the section asks nothing and says so in one row.
     $rid4 = @($findings4 | Where-Object { $_.Section -eq 'RID Pool' })
     Check (@($rid4).Count -eq 1 -and $rid4[0].Status -eq 'Not Assessed' -and $rid4[0].Detail -match 'The forest could not be read' -and $rid4[0].Detail -match 'not contactable') 'No forest: RID Pool is one Not Assessed row carrying the cause'
+    # C7: with no forest no domain is scoped; the SID history rows ask nothing and say so in one row.
+    $sh4 = @($findings4 | Where-Object { $_.Section -eq 'Security Posture' -and $_.Item -like 'SID history*' })
+    Check (@($sh4).Count -eq 1 -and $sh4[0].Item -eq 'SID history' -and $sh4[0].Status -eq 'Not Assessed' -and $sh4[0].Detail -match 'The forest could not be read' -and $sh4[0].Detail -match 'not contactable') 'No forest: SID history is one Not Assessed row carrying the cause'
 
     # The critical property: with no forest, nothing may claim to have passed.
     $passes4 = @($findings4 | Where-Object { $_.Status -eq 'Pass' })

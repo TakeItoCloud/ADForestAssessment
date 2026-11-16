@@ -2100,7 +2100,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the five sections the file can carry (RidPool since v1.23.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the six sections the file can carry (SidHistory since v1.24.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -2510,6 +2510,74 @@ $ridHostile = 'event 16658 on dc1 restored from backup dcdiag /test:RidManager a
 $ridRecSpace = Get-AdfaRecommendation -Section 'RID Pool' -Item 'Global RID space: contoso.com' -Detail $ridHostile
 $ridRecDc = Get-AdfaRecommendation -Section 'RID Pool' -Item 'RID pool: dc1.contoso.com' -Detail $ridHostile
 Assert-True ($ridRecSpace -match '16658' -and $ridRecSpace -notmatch 'wbadmin|scavenging|repadmin' -and $ridRecDc -eq '') 'RID pool advice: the global space row gets its own advice and a per-DC row none, whatever the text holds'
+
+Write-Host "== SID history (C7): pure logic ==" -ForegroundColor Cyan
+$shCfg = $script:Config.SidHistory
+# A SID's bytes, built here without the script: revision, count, authority big-endian, sub-authorities little-endian.
+function New-ShBytes { param([string]$Sid)
+    $parts = $Sid.Split('-'); $subs = @($parts | Select-Object -Skip 3); $list = New-Object System.Collections.Generic.List[byte]
+    $list.Add([byte]1); $list.Add([byte]$subs.Count); $auth = [uint64]$parts[2]
+    for ($i = 5; $i -ge 0; $i--) { $list.Add([byte](($auth -shr (8 * $i)) -band 255)) }
+    foreach ($s in $subs) { $v = [uint64]$s; for ($i = 0; $i -lt 4; $i++) { $list.Add([byte](($v -shr (8 * $i)) -band 255)) } }
+    return , $list.ToArray() }
+# The byte parser at its edges, by the fallback alone and as a caller gets it, on whichever edition runs this harness.
+$shVectors = @('S-1-5-21-1000-2000-3000-4294967295', 'S-1-5-21-4294967295-4294967295-4294967295-500', 'S-1-5-32-544', 'S-1-5-9', 'S-1-20015998343868-5', 'S-1-5-1-2-3-4-5-6-7-8-9-10-11-12-13-14-15')
+$shGot = @(foreach ($v in $shVectors) { $b = New-ShBytes -Sid $v; ("{0}|{1}" -f (ConvertFrom-AdfaSidValue -Value $b -NoPlatform).Text, (ConvertFrom-AdfaSidValue -Value $b).Text) })
+Assert-Equal (@($shVectors | ForEach-Object { "{0}|{0}" -f $_ }) -join ',') ($shGot -join ',') 'SID history: a SID read from its bytes round-trips by the fallback and as a caller gets it, RID 4294967295, a 48-bit authority and 15 sub-authorities included (declared population: six SIDs)'
+$shMax = ConvertFrom-AdfaSidValue -Value (New-ShBytes -Sid 'S-1-5-21-1000-2000-3000-4294967295') -NoPlatform
+Assert-True ($shMax.Rid -is [uint32] -and $shMax.Rid -eq [uint32]4294967295 -and $shMax.DomainPart -eq 'S-1-5-21-1000-2000-3000' -and $shMax.IsAccountDomain) 'SID history: a RID at UInt32 max stays unsigned, and the domain part is everything before it'
+$shGood = New-ShBytes -Sid 'S-1-5-32-544'
+$shBadRev = [byte[]]$shGood.Clone(); $shBadRev[0] = 2
+$shMalformed = [ordered]@{ 'empty' = [byte[]]@(); 'three bytes' = [byte[]](1, 1, 0); 'revision 2' = $shBadRev; 'count 16' = [byte[]](@(1, 16, 0, 0, 0, 0, 0, 5) + @(0) * 64); 'short by one' = [byte[]]($shGood[0..($shGood.Length - 2)]); 'trailing bytes' = [byte[]](@($shGood) + @(9)); 'text' = 'contoso\admin'; 'RID above UInt32' = 'S-1-5-21-1-2-3-4294967296'; 'authority above 2^48 - 1' = 'S-1-281474976710656-5' }
+$shMalGot = @(foreach ($k in @($shMalformed.Keys)) { $r = ConvertFrom-AdfaSidValue -Value $shMalformed[$k]; ("{0}:{1}" -f $k, ($r.Ok -or $r.Error -eq '')) })
+Assert-Equal (@($shMalformed.Keys | ForEach-Object { "{0}:False" -f $_ }) -join ',') ($shMalGot -join ',') 'SID history: a malformed value is not read and carries a reason, without throwing (declared population: nine values)'
+# The platform's reading, replaced through its test seam: a disagreement and a refusal are not read; a platform that cannot run leaves the fallback.
+$shReaders = [ordered]@{ 'disagrees' = @{ Reader = { param($b) 'S-1-5-32-545' }; Expect = 'False' }; 'refuses' = @{ Reader = { param($b) throw [System.ArgumentException]'STUB' }; Expect = 'False' }; 'cannot run' = @{ Reader = { param($b) throw [System.PlatformNotSupportedException]'STUB' }; Expect = 'True:Fallback' }; 'agrees' = @{ Reader = { param($b) 'S-1-5-32-544' }; Expect = 'True:Platform' } }
+$shReaderGot = @(foreach ($k in @($shReaders.Keys)) { $r = ConvertFrom-AdfaSidValue -Value $shGood -PlatformReader $shReaders[$k]['Reader']; if ($r.Ok) { "{0}:{1}" -f $r.Ok, $r.Parser } else { [string]$r.Ok } })
+Assert-Equal (@($shReaders.Values | ForEach-Object { $_['Expect'] }) -join ',') ($shReaderGot -join ',') 'SID history: a value the platform reads differently or refuses is not read; a platform that cannot run leaves the fallback (declared population: four readers)'
+Assert-Equal 1 @(Get-AdfaSidValueList -Value $shGood).Count 'SID history: one byte array is one value, never unrolled into its bytes'
+# The verdicts, from a raw read built here.
+function New-ShRec { param([string]$Sam, [object[]]$History, [string]$Class = 'user', $Enabled = $true) [pscustomobject]@{ Dn = "CN=$Sam,DC=contoso,DC=com"; Sam = $Sam; Name = $Sam; Class = $Class; Enabled = $Enabled; ObjectSid = $null; History = @($History) } }
+function New-ShRaw { param($Records = @(), [bool]$Ok = $true, [string]$Err = '', [string]$Type = '', [string]$DomainSid = 'S-1-5-21-1-2-3')
+    [pscustomobject]@{ Ok = $Ok; Refused = $false; Error = $Err; ErrorType = $Type; Server = 'contoso.com'; DomainDn = 'DC=contoso,DC=com'; DomainSid = $DomainSid; DomainSidError = 'x'; Records = @($Records); TrustOk = $true; TrustError = ''; TrustErrorType = ''; Trusts = @() } }
+$shMap = [pscustomobject]@{ Map = @{ 'S-1-5-21-1-2-3' = 'contoso.com' }; Failures = @() }
+$shStatus = { param($Raw) @(Get-AdfaSidHistoryDomainFinding -Domain 'contoso.com' -Raw $Raw -ForestMap $shMap -Config $shCfg | ForEach-Object { $_.Status }) -join ',' }
+$shCases = [ordered]@{
+    'none returned'          = @{ Raw = (New-ShRaw); Expect = 'Pass,Pass,Pass,Info' }
+    'benign'                 = @{ Raw = (New-ShRaw -Records @(New-ShRec -Sam 'a' -History @('S-1-5-21-7-8-9-1105'))); Expect = 'Warning,Pass,Pass,Info' }
+    'same-domain'            = @{ Raw = (New-ShRaw -Records @(New-ShRec -Sam 'a' -History @('S-1-5-21-1-2-3-1500'))); Expect = 'Warning,Fail,Pass,Info' }
+    'privileged'             = @{ Raw = (New-ShRaw -Records @(New-ShRec -Sam 'a' -History @(, (New-ShBytes -Sid 'S-1-5-21-7-8-9-519')))); Expect = 'Warning,Pass,Fail,Info' }
+    'domain SID not read'    = @{ Raw = (New-ShRaw -DomainSid '' -Records @(New-ShRec -Sam 'a' -History @('S-1-5-21-7-8-9-1105'))); Expect = 'Warning,Not Assessed,Pass,Info' }
+    'unparsed only'          = @{ Raw = (New-ShRaw -Records @(New-ShRec -Sam 'a' -History @(, [byte[]](1, 2, 0)))); Expect = 'Warning,Not Assessed,Not Assessed,Info' }
+    'query failed'           = @{ Raw = (New-ShRaw -Ok $false -Err 'STUB' -Type 'System.UnauthorizedAccessException'); Expect = 'Not Assessed,Not Assessed,Not Assessed,Not Assessed' }
+    'no value read'          = @{ Raw = (New-ShRaw -Records @(New-ShRec -Sam 'a' -History @())); Expect = 'Warning,Not Assessed,Not Assessed,Not Assessed' }
+}
+$shCaseGot = @(foreach ($k in @($shCases.Keys)) { & $shStatus $shCases[$k]['Raw'] })
+Assert-Equal (@($shCases.Values | ForEach-Object { $_['Expect'] }) -join ' / ') ($shCaseGot -join ' / ') 'SID history: four rows per domain - present is the tool-default Warning, same-domain and privileged fail, an unknown domain SID, an unparsed value or a principal with no value read is Not Assessed, a failed query fails closed (declared population: eight reads)'
+# The Principals and HistoricSids columns of the privileged row: a '|' in a DN, no SID in Detail, and the cap.
+$shPipe = [pscustomobject]@{ Dn = 'CN=x|y,DC=contoso,DC=com'; Sam = 'alice'; Name = 'alice'; Class = 'user'; Enabled = $true; ObjectSid = $null; History = @('S-1-5-32-544', 'S-1-5-9') }
+$shPipeRow = @(Get-AdfaSidHistoryDomainFinding -Domain 'contoso.com' -Raw (New-ShRaw -Records @($shPipe)) -ForestMap $shMap -Config $shCfg)[2]
+Assert-True ($shPipeRow.Status -eq 'Fail' -and $shPipeRow.Principals -eq 'alice' -and $shPipeRow.HistoricSids -eq 'alice=S-1-5-32-544 (Administrators),S-1-5-9 (Enterprise Domain Controllers)' -and $shPipeRow.Detail -notmatch 'S-1-') 'SID history: a privileged row names the principal whose DN holds a ''|'' by its own name, and keeps the fixed SIDs out of Detail'
+$shPrivThree = New-ShRaw -Records @(1..3 | ForEach-Object { New-ShRec -Sam "p$_" -History @("S-1-5-21-1-2-3-150$_", 'S-1-5-21-7-8-9-519') })
+$shCap2 = Merge-AdfaSidHistoryConfig -BaseConfig $shCfg -Override @{ NameListCap = 2 }
+$shCapRows = @(Get-AdfaSidHistoryDomainFinding -Domain 'contoso.com' -Raw $shPrivThree -ForestMap $shMap -Config $shCap2)
+Assert-Equal '2/1,2/1' (@($shCapRows[1], $shCapRows[2] | ForEach-Object { "{0}/{1}" -f $_.Listed, $_.NotListed }) -join ',') 'SID history: the name cap applies to the same-domain and privileged rows (declared population: two rows, three principals, cap 2)'
+$shLeads = [ordered]@{ 'Microsoft.ActiveDirectory.Management.ADServerDownException' = '^Unreachable: '; 'System.UnauthorizedAccessException' = '^Access denied: '; 'System.TimeoutException' = '^Timed out: ' }
+$shLeadGot = @(foreach ($t in @($shLeads.Keys)) { $d = @(Get-AdfaSidHistoryDomainFinding -Domain 'contoso.com' -Raw (New-ShRaw -Ok $false -Err 'STUB' -Type $t) -ForestMap $shMap -Config $shCfg)[0].Detail; [bool]($d -match $shLeads[$t]) })
+Assert-Equal 'True,True,True' ($shLeadGot -join ',') 'SID history: unreachable, access denied and timed out are three different Not Assessed results (declared population: three exception types)'
+# The cap, around three principals.
+$shThree = New-ShRaw -Records @(1..3 | ForEach-Object { New-ShRec -Sam "u$_" -History @("S-1-5-21-7-8-9-11$_") })
+$shCapGot = @(foreach ($cap in @(0, 2, 3, 4)) { $c = Merge-AdfaSidHistoryConfig -BaseConfig $shCfg -Override @{ NameListCap = $cap }; $r = @(Get-AdfaSidHistoryDomainFinding -Domain 'contoso.com' -Raw $shThree -ForestMap $shMap -Config $c)[0]; "{0}/{1}" -f $r.Listed, $r.NotListed })
+Assert-Equal '0/3,2/1,3/0,3/0' ($shCapGot -join ',') 'SID history: names listed up to the cap, the rest counted (declared population: four caps)'
+# The validator and the advice.
+Assert-Throws { Merge-AdfaSidHistoryConfig -BaseConfig $shCfg -Override @{ PresentStatus = 'Pass' } } 'Warning or Info' 'SID history override: present SID history can never be configured to pass'
+Assert-Throws { Merge-AdfaSidHistoryConfig -BaseConfig $shCfg -Override @{ PrivilegedSids = @() } } "unknown key 'PrivilegedSids'" 'SID history override: the privileged list cannot be set from a file'
+Assert-Throws { Merge-AdfaSidHistoryConfig -BaseConfig $shCfg -Override @{ NameListCap = 1001 } } 'whole number from 0 to 1000' 'SID history override: a cap above 1000 is refused'
+$shHostile = 'KRBTGT Backup Operators replication global catalog stale NOT a pass event 1106 on dc1 C:\Backup\stale.json'
+$shRecPriv = Get-AdfaRecommendation -Section 'Security Posture' -Item 'SID history privileged: contoso.com' -Detail $shHostile
+$shRecSrc = Get-AdfaRecommendation -Section 'Security Posture' -Item 'SID history sources: contoso.com' -Detail $shHostile
+$shRecKrb = Get-AdfaRecommendation -Section 'Security Posture' -Item 'krbtgt password age' -Detail '400 days'
+Assert-True ($shRecPriv -match 'Enterprise Admins' -and $shRecPriv -notmatch 'New-KrbtgtKeys|wbadmin|Disable first' -and $shRecSrc -eq '' -and $shRecKrb -match 'krbtgt') 'SID history advice: the privileged row gets its own advice, the sources row none, and the older krbtgt row still gets its own'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue

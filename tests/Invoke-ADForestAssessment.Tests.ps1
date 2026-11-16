@@ -5279,9 +5279,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcHardening' -and $n.Extent.Text -match '-DomainControllers \$dcNames' }, $true)).Count | Should -Be 0
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the five sections the file can carry (RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
+            # Declared population: the six sections the file can carry (SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
             # DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -7282,7 +7282,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # Get-AdfaDcCertificateDirectoryRaw.
         # 12 since v1.23.0: PORT-PLAN C6 added five splatted property lists, two in Get-AdfaRidManagerRaw and
         # three in Get-AdfaDcRidSetRaw, each a fixed attribute name from the RidPool config table.
-        $script:C4PropertiesAssignmentCount = 12
+        # 14 since v1.24.0: PORT-PLAN C7 added two splatted property lists in Get-AdfaSidHistoryRaw,
+        # the principals' and the trusted domains', each from the SidHistory config table.
+        $script:C4PropertiesAssignmentCount = 14
         $script:C4SectionFunctionCount = 20
 
         function New-C4Schema {
@@ -7449,8 +7451,8 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaLaps' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the five sections the file can carry (DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool'
+            # Declared population: the six sections the file can carry (SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7502,9 +7504,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.23.0 (bumped by PORT-PLAN C6)' {
-            [string]$script:Config.Version | Should -Be '1.23.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.23.0'
+        It 'carries the same version in the script and the manifest: 1.24.0 (bumped by PORT-PLAN C7)' {
+            [string]$script:Config.Version | Should -Be '1.24.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.24.0'
         }
     }
 
@@ -9092,8 +9094,8 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             Get-C5Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the five sections the file can carry (DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool'
+            # Declared population: the six sections the file can carry (SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory'
             $entry = $script:ConfigOverrideSections['DcCertificates']
             [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
             [string]$entry['Section'] | Should -Be 'DcCertificates'
@@ -9174,9 +9176,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.23.0 (bumped by PORT-PLAN C6)' {
-            [string]$script:Config.Version | Should -Be '1.23.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.23.0'
+        It 'carries the same version in the script and the manifest: 1.24.0 (bumped by PORT-PLAN C7)' {
+            [string]$script:Config.Version | Should -Be '1.24.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.24.0'
         }
     }
 
@@ -10092,8 +10094,8 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             Get-C6Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the five sections the file can carry (RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool'
+            # Declared population: the six sections the file can carry (SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory'
             $entry = $script:ConfigOverrideSections['RidPool']
             [string]$entry['ConfigKey'] | Should -Be 'RidPool'
             [string]$entry['Section'] | Should -Be 'RidPool'
@@ -10153,7 +10155,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'rIDAvailablePool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'RidPool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnAtPercentUsed'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Five sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Six sections can be named'
         }
         It 'has one row in the README Coverage table, and the README says what the row cannot see' {
             $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
@@ -10164,9 +10166,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.23.0' {
-            [string]$script:Config.Version | Should -Be '1.23.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.23.0'
+        It 'carries the same version in the script and the manifest: 1.24.0 (bumped by PORT-PLAN C7)' {
+            [string]$script:Config.Version | Should -Be '1.24.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.24.0'
         }
     }
 
@@ -10918,6 +10920,924 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $findings[2].Recommendation | Should -Be ''
             $findings[3].Recommendation | Should -Be ''
             $findings[4].Recommendation | Should -Be ''
+        }
+    }
+}
+
+Describe 'SID history: principals with sIDHistory, same-domain and privileged historic SIDs, their source domains (C7)' {
+    BeforeAll {
+        $script:Sh = $script:Config.SidHistory
+        # Fictional domain SIDs. contoso and north are in the forest; fabrikam is a trust partner.
+        $script:C7Contoso = 'S-1-5-21-1000-2000-3000'
+        $script:C7North = 'S-1-5-21-1000-2000-3001'
+        $script:C7Fabrikam = 'S-1-5-21-4000-5000-6000'
+        $script:C7Lost = 'S-1-5-21-7000-8000-9000'
+        # A SID as the directory stores it (MS-DTYP 2.4.2.2): revision, sub-authority count, the
+        # 6-byte authority big-endian, then each sub-authority as 4 bytes little-endian. Built here
+        # with no help from the script, so the parser is checked against an independent encoder.
+        function New-C7SidBytes {
+            param([string]$Sid)
+            $parts = $Sid.Split('-')
+            $authority = [uint64]$parts[2]
+            $subs = @($parts | Select-Object -Skip 3)
+            $bytes = New-Object System.Collections.Generic.List[byte]
+            $bytes.Add([byte]1)
+            $bytes.Add([byte]$subs.Count)
+            for ($i = 5; $i -ge 0; $i--) { $bytes.Add([byte](($authority -shr (8 * $i)) -band 255)) }
+            foreach ($s in $subs) {
+                $v = [uint64]$s
+                for ($i = 0; $i -lt 4; $i++) { $bytes.Add([byte](($v -shr (8 * $i)) -band 255)) }
+            }
+            return , $bytes.ToArray()
+        }
+        # The record ConvertTo-AdfaSidHistoryRecord returns.
+        function New-C7Record {
+            param([string]$Sam, [string]$Class = 'user', $Enabled = $true, [object[]]$History = @(), [string]$Dn = '')
+            if ($Dn -eq '') { $Dn = ("CN={0},OU=Migrated,DC=contoso,DC=com" -f $Sam) }
+            [pscustomobject]@{ Dn = $Dn; Sam = $Sam; Name = $Sam; Class = $Class; Enabled = $Enabled; ObjectSid = $null; History = @($History) }
+        }
+        # The shape Get-AdfaSidHistoryRaw returns.
+        function New-C7Raw {
+            param([bool]$Ok = $true, [string]$Err = '', [string]$Type = '', [bool]$Refused = $false, $Records = @(), [string]$DomainSid = $script:C7Contoso,
+                [string]$DomainSidError = '', [bool]$TrustOk = $true, [string]$TrustError = '', [string]$TrustType = '', $Trusts = @(), [string]$Server = 'contoso.com')
+            [pscustomobject]@{ Ok = $Ok; Refused = $Refused; Error = $Err; ErrorType = $Type; Server = $Server; DomainDn = 'DC=contoso,DC=com'; DomainSid = $DomainSid
+                DomainSidError = $DomainSidError; Records = @($Records); TrustOk = $TrustOk; TrustError = $TrustError; TrustErrorType = $TrustType; Trusts = @($Trusts) }
+        }
+        function New-C7Trust { param([string]$Partner, $Sid, [string]$Flat = '') [pscustomobject]@{ Partner = $Partner; FlatName = $Flat; Sid = $Sid } }
+        function New-C7Forest { param([hashtable]$Map = @{}, [string[]]$Failures = @()) [pscustomobject]@{ Map = $Map; Failures = @($Failures) } }
+        $script:C7ForestBoth = New-C7Forest -Map @{ $script:C7Contoso = 'contoso.com'; $script:C7North = 'north.contoso.com' }
+        function Get-C7Rows { param($Raw, $Forest = $script:C7ForestBoth, $Config = $script:Sh, [string]$Domain = 'contoso.com')
+            @(Get-AdfaSidHistoryDomainFinding -Domain $Domain -Raw $Raw -ForestMap $Forest -Config $Config) }
+        function Get-C7Row { param($Rows, [string]$Prefix) @($Rows | Where-Object { $_.Item -like ("{0}: *" -f $Prefix) }) }
+        $script:C7Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C7Main = @($script:C7Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C7Function { param([string]$Name)
+            return @($script:C7Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
+        function Get-C7Parameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C7Guard { param($Node)
+            $g = $Node.Parent
+            while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+            return $g.Clauses[0].Item1.Extent.Text }
+        function Get-C7Branch {
+            return @($script:C7Main[0].FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $n.Clauses[0].Item1.Extent.Text -match "^Test-SectionSelected 'SecurityPosture' \`$Sections$" }, $true)) }
+        # The functions of the row. Declared population: these 17, each found by name below.
+        $script:C7SectionNames = @('New-AdfaSidHistoryRow', 'ConvertFrom-AdfaSidValue', 'Get-AdfaSidValueList', 'Get-AdfaSidHistoryRefusedProperty', 'ConvertTo-AdfaSidHistoryRecord',
+            'Get-AdfaSidHistoryClassification', 'Get-AdfaSidHistoryCountVerdict', 'Get-AdfaSidHistorySameDomainVerdict', 'Get-AdfaSidHistoryPrivilegedVerdict', 'Get-AdfaSidHistorySourceVerdict',
+            'Get-AdfaSidHistoryDomainFinding', 'Get-AdfaSidHistoryRaw', 'Get-AdfaSidHistoryForestMap', 'Get-AdfaSidHistory', 'Merge-AdfaSidHistoryConfig', 'Get-AdfaSidHistoryCapText',
+            'Get-AdfaSidHistoryHolderText')
+        $c7Names = @($script:C7SectionNames)
+        $script:C7SectionFunctions = @($script:C7Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $c7Names -contains $n.Name }.GetNewClosure(), $true))
+        $script:C7Hostile = 'krbtgt Backup Operators replication global catalog stale leftover NOT a pass tombstone lifetime delegation pdc emulator event 1106 on dc1 certificate template lingering object C:\Backup\stale-aging.json sid filtering'
+    }
+
+    Context 'Section wiring' {
+        It 'adds no -Sections value: SecurityPosture is the one value, and part of the default All run' {
+            $param = @($script:C7Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $param.Count | Should -Be 1
+            $values = @(@($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })[0].PositionalArguments | ForEach-Object { $_.Value })
+            $values | Should -Contain 'SecurityPosture'
+            $values | Should -Contain 'RidPool'   # non-vacuity: the list really was read
+            @($values | Where-Object { $_ -match '(?i)sid' }).Count | Should -Be 0
+            Test-SectionSelected 'SecurityPosture' @('All') | Should -BeTrue
+        }
+        It 'is called once, from the SecurityPosture branch of Invoke-Main, with the scoped domains, the forest''s domains, the AD parameters and its config' {
+            $script:C7Main.Count | Should -Be 1
+            $branches = @(Get-C7Branch)
+            # Declared population: the one SecurityPosture branch.
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $calls = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaSidHistory' }, $true))
+            $calls.Count | Should -Be 1
+            $expected = [ordered]@{ Domains = '$targetDomains'; ForestDomains = '@($forest.Domains)'; AdParams = '$adParams'; Config = '$sidHistoryConfig' }
+            # Declared population: the four parameters the collector is called with.
+            @($expected.Keys).Count | Should -Be 4
+            foreach ($p in @($expected.Keys)) {
+                $given = Get-C7Parameter -Call $calls[0] -Name $p
+                $given | Should -Not -BeNullOrEmpty -Because "the collector must be given -$p"
+                $given.Extent.Text | Should -Be $expected[$p] -Because "-$p must carry that value"
+            }
+            Get-C7Guard $calls[0] | Should -Be '$forestError'
+            $rowAssign = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$sidHistoryRows' }, $true))
+            # Declared population: the forest-unreadable row and the collector's rows.
+            $rowAssign.Count | Should -Be 2
+            $rowAssign[0].Right.Extent.Text | Should -Match 'New-AdfaSidHistoryRow '
+            $rowAssign[0].Right.Extent.Text | Should -Match "-Status `\`$script:Status.NotAssessed"
+            $configAssigns = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$sidHistoryConfig' }, $true))
+            $configAssigns.Count | Should -Be 2
+            $configAssigns[0].Right.Extent.Text | Should -Be '$script:Config.SidHistory'
+            $configAssigns[1].Right.Extent.Text | Should -Be "`$configOverrides['SidHistory']"
+            Get-C7Guard $configAssigns[1] | Should -Be "`$configOverrides.ContainsKey('SidHistory')"
+            # The section's data holds the existing rows AND the SID history rows.
+            $section = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['Security Posture']" }, $true))
+            $section.Count | Should -Be 1
+            $section[0].Right.Extent.Text | Should -Be '@(@($sp) + @($sidHistoryRows))'
+            # The existing collector is still called, unchanged, for every scoped domain.
+            @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaSecurityPosture' }, $true)).Count | Should -Be 1
+            @($script:C7Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaSidHistory' }, $true)).Count | Should -Be 1
+        }
+        It 'is registered for -ConfigOverridePath under SidHistory, used by SecurityPosture, with its own validator' {
+            # Declared population: the six sections the file can carry (SidHistory since v1.24.0, PORT-PLAN C7).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory'
+            $entry = $script:ConfigOverrideSections['SidHistory']
+            [string]$entry['ConfigKey'] | Should -Be 'SidHistory'
+            [string]$entry['Section'] | Should -Be 'SecurityPosture'
+            [string]$entry['Merge'] | Should -Be 'Merge-AdfaSidHistoryConfig'
+            Get-Command -Name 'Merge-AdfaSidHistoryConfig' -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        }
+        It 'reads through its two seams only, with three named AD cmdlets, and never writes sIDHistory' {
+            # Declared population: the section's functions, every one found.
+            $script:C7SectionFunctions.Count | Should -Be $script:C7SectionNames.Count
+            $collector = @(Get-C7Function -Name 'Get-AdfaSidHistory')
+            $collector.Count | Should -Be 1
+            $inside = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            foreach ($seam in @('Get-AdfaSidHistoryRaw', 'Get-AdfaSidHistoryForestMap')) {
+                @($inside | Where-Object { $_ -eq $seam }).Count | Should -Be 1 -Because "the collector calls $seam once"
+            }
+            $adCalls = @()
+            foreach ($f in $script:C7SectionFunctions) {
+                $names = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+                @($names | Where-Object { $_ -match '(?i)^(Set|New|Remove|Add|Clear|Move|Rename|Enable|Disable|Reset|Update|Invoke|Import|Export|Start|Stop|Restore|Sync)-(AD(?!fa)|Cim|Item|WmiObject)' }).Count | Should -Be 0 -Because "$($f.Name) must not call a state-changing cmdlet"
+                @($names | Where-Object { $_ -match '(?i)^(netdom|nltest|dcdiag|repadmin|ldifde|ntdsutil|dsmod|admod)(\.exe)?$|^Invoke-Expression$|^Invoke-ExternalCommand$' }).Count | Should -Be 0 -Because "$($f.Name) must not run an external tool"
+                $members = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] }, $true) | ForEach-Object { [string]$_.Member.Extent.Text })
+                @($members | Where-Object { $_ -match '(?i)^(Put|PutEx|SetInfo|CommitChanges|InvokeSet|Invoke|SetSidFilteringStatus)$' }).Count | Should -Be 0 -Because "$($f.Name) must not write through ADSI or System.DirectoryServices"
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -match '(?i)^(Replace|Add|Remove|Clear|Instance)$' }, $true)).Count | Should -Be 0 -Because "$($f.Name) must not pass a write parameter"
+                $adCalls += @($names | Where-Object { $_ -match '(?i)^Get-AD(?!fa)' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
+            }
+            # Declared population: the four directory reads of the row, in its two seams.
+            ($adCalls -join ',') | Should -Be 'Get-AdfaSidHistoryRaw:Get-ADDomain,Get-AdfaSidHistoryRaw:Get-ADObject,Get-AdfaSidHistoryRaw:Get-ADObject,Get-AdfaSidHistoryForestMap:Get-ADDomain'
+        }
+        It 'asks for named attributes only, from the config table, by splat' {
+            $assigned = @()
+            foreach ($f in $script:C7SectionFunctions) {
+                $assigned += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Left.Member.Extent.Text -eq 'Properties' }, $true) | ForEach-Object { [string]$_.Right.Extent.Text })
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -eq 'Properties' }, $true)).Count | Should -Be 0 -Because "$($f.Name) passes its property list by splat"
+            }
+            # Declared population: the two property lists, the principals and the trusts.
+            ($assigned -join ' | ') | Should -Be "@(`$objectProperties) | @(`$trustProperties)"
+        }
+        It 'documents the rows and the SidHistory override key in the help' {
+            $help = $script:C7Ast.GetHelpContent()
+            ([string]$help.Description -replace '\s+', ' ') | Should -Match 'SID history'
+            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'sIDHistory'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Six sections can be named'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'SidHistory'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'PresentStatus'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'NameListCap'
+        }
+        It 'has SID history in the README Coverage row of Security posture, and a README section of its own' {
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($readme | Where-Object { $_ -match '^\| Security posture \|' })
+            $row.Count | Should -Be 1
+            $row[0] | Should -Match 'SID history'
+            @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
+            @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
+        }
+        It 'carries the same version in the script and the manifest: 1.24.0 (bumped by PORT-PLAN C7)' {
+            [string]$script:Config.Version | Should -Be '1.24.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.24.0'
+        }
+    }
+
+    Context 'Config table' {
+        It 'holds the two tool defaults, labelled as such, and the read date' {
+            [string]$script:Sh['PresentStatus'] | Should -Be 'Warning'
+            [int]$script:Sh['NameListCap'] | Should -Be 25
+            [string]$script:Sh['ThresholdSource'] | Should -Match 'tool default'
+            [string]$script:Sh['ThresholdSource'] | Should -Match 'not a Microsoft value'
+            [string]$script:Sh['ReadDate'] | Should -Be '2026-11-16'
+            [string]$script:Sh['SourceUrl'] | Should -Match 'a-sidhistory'
+            [string]$script:Sh['SourceUrl'] | Should -Match 'security-posture-assessments/accounts'
+            [string]$script:Sh['SourceUrl'] | Should -Match 'using-dsaddsidhistory'
+            [string]$script:Sh['SearchFilter'] | Should -Be '(sIDHistory=*)'
+            [string]$script:Sh['TrustFilter'] | Should -Be '(objectClass=trustedDomain)'
+            (@($script:Sh['ObjectProperties']) -join ',') | Should -Be 'sIDHistory,objectSid,objectClass,sAMAccountName,distinguishedName,userAccountControl'
+            (@($script:Sh['TrustProperties']) -join ',') | Should -Be 'securityIdentifier,trustPartner,flatName'
+            [int]$script:Sh['AccountDisableFlag'] | Should -Be 2
+        }
+        It 'holds the privileged RIDs and SIDs Microsoft publishes, and nothing else' {
+            # Declared population: ten domain-relative RIDs and six fixed SIDs.
+            $rids = @($script:Sh['PrivilegedDomainRids'])
+            $rids.Count | Should -Be 10
+            (@($rids | ForEach-Object { [string]$_['Rid'] }) -join ',') | Should -Be '500,502,512,516,517,518,519,520,526,527'
+            (@($rids | Where-Object { $_['Rid'] -eq 519 })[0]['Name']) | Should -Be 'Enterprise Admins'
+            $sids = @($script:Sh['PrivilegedSids'])
+            $sids.Count | Should -Be 6
+            (@($sids | ForEach-Object { [string]$_['Sid'] }) -join ',') | Should -Be 'S-1-5-32-544,S-1-5-32-548,S-1-5-32-549,S-1-5-32-550,S-1-5-32-551,S-1-5-9'
+            (@($sids | Where-Object { $_['Sid'] -eq 'S-1-5-32-551' })[0]['Name']) | Should -Be 'Backup Operators'
+        }
+    }
+
+    Context 'ConvertFrom-AdfaSidValue (pure; byte form parsed on Windows PowerShell 5.1 and PowerShell 7)' {
+        It 'reads a SID from its bytes at the edges, by the fallback parser and, where the platform has one, by SecurityIdentifier too' {
+            $vectors = @(
+                ('S-1-5-21-{0}-{1}-{2}-4294967295' -f 1000, 2000, 3000)
+                'S-1-5-21-4294967295-4294967295-4294967295-500'
+                'S-1-5-32-544'
+                'S-1-5-9'
+                'S-1-5-21-1000-2000-3000-0'
+                'S-1-20015998343868-5'
+                'S-1-5-1-2-3-4-5-6-7-8-9-10-11-12-13-14-15'
+            )
+            # Declared population: seven vectors.
+            $vectors.Count | Should -Be 7
+            foreach ($v in $vectors) {
+                $bytes = New-C7SidBytes -Sid $v
+                $fb = ConvertFrom-AdfaSidValue -Value $bytes -NoPlatform
+                $fb.Ok | Should -BeTrue -Because $v
+                $fb.Text | Should -Be $v -Because $v
+                $fb.Parser | Should -Be 'Fallback'
+                $auto = ConvertFrom-AdfaSidValue -Value $bytes
+                $auto.Ok | Should -BeTrue -Because $v
+                $auto.Text | Should -Be $v -Because $v
+                $auto.Parser | Should -BeIn @('Platform', 'Fallback')
+            }
+            if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+                # On Windows the platform reads it: the two parsers are cross-checked above.
+                (ConvertFrom-AdfaSidValue -Value (New-C7SidBytes -Sid 'S-1-5-32-544')).Parser | Should -Be 'Platform'
+            }
+        }
+        It 'splits the domain part from the RID, and keeps a RID at UInt32 max unsigned' {
+            $max = ConvertFrom-AdfaSidValue -Value (New-C7SidBytes -Sid ('{0}-4294967295' -f $script:C7Contoso)) -NoPlatform
+            $max.Rid | Should -Be ([uint32]4294967295)
+            $max.Rid.GetType().Name | Should -Be 'UInt32'
+            $max.DomainPart | Should -Be $script:C7Contoso
+            $max.IsAccountDomain | Should -BeTrue
+            $builtin = ConvertFrom-AdfaSidValue -Value 'S-1-5-32-544'
+            $builtin.DomainPart | Should -Be 'S-1-5-32'
+            $builtin.Rid | Should -Be ([uint32]544)
+            $builtin.IsAccountDomain | Should -BeFalse
+            $edc = ConvertFrom-AdfaSidValue -Value 's-1-5-9'
+            $edc.Text | Should -Be 'S-1-5-9'
+            $edc.DomainPart | Should -Be 'S-1-5'
+            $edc.IsAccountDomain | Should -BeFalse
+            # A domain SID itself (four sub-authorities after 5) is not an account SID.
+            (ConvertFrom-AdfaSidValue -Value $script:C7Contoso).IsAccountDomain | Should -BeFalse
+        }
+        It 'reads the text form, and an object that carries the text in Value, as SecurityIdentifier does' {
+            (ConvertFrom-AdfaSidValue -Value ('{0}-1105' -f $script:C7Fabrikam)).Parser | Should -Be 'Text'
+            $wrapped = ConvertFrom-AdfaSidValue -Value ([pscustomobject]@{ Value = ('{0}-519' -f $script:C7Fabrikam) })
+            $wrapped.Ok | Should -BeTrue
+            $wrapped.Rid | Should -Be ([uint32]519)
+        }
+        It 'reports a malformed value as not read, with the reason, and never throws' {
+            $good = New-C7SidBytes -Sid 'S-1-5-32-544'
+            $revision2 = [byte[]]$good.Clone(); $revision2[0] = 2
+            $count16 = [byte[]](@(1, 16, 0, 0, 0, 0, 0, 5) + @(0) * 64)
+            $trailing = [byte[]](@($good) + @(9, 9))
+            $cases = [ordered]@{
+                'empty'                 = [byte[]]@()
+                'three bytes'           = [byte[]](1, 1, 0)
+                'revision 2'            = $revision2
+                'sixteen sub-authorities' = $count16
+                'short by one byte'     = [byte[]]($good[0..($good.Length - 2)])
+                'trailing bytes'        = $trailing
+                'text not a SID'        = 'contoso\admin'
+                'RID above UInt32'      = 'S-1-5-21-1-2-3-4294967296'
+                'authority above 2^48 - 1' = 'S-1-281474976710656-5'
+                'a number'              = 42
+                'null'                  = $null
+            }
+            # Declared population: eleven malformed values.
+            @($cases.Keys).Count | Should -Be 11
+            foreach ($k in @($cases.Keys)) {
+                foreach ($noPlatform in @($true, $false)) {
+                    $r = $null
+                    { $script:C7Out = ConvertFrom-AdfaSidValue -Value $cases[$k] -NoPlatform:$noPlatform } | Should -Not -Throw -Because $k
+                    $r = $script:C7Out
+                    $r.Ok | Should -BeFalse -Because $k
+                    $r.Error | Should -Not -BeNullOrEmpty -Because $k
+                    $r.Text | Should -Be '' -Because $k
+                }
+            }
+        }
+        It 'splits a multi-valued attribute into its values, whatever the collection, and never unrolls one byte array into bytes' {
+            $one = New-C7SidBytes -Sid ('{0}-1105' -f $script:C7Fabrikam)
+            $two = New-C7SidBytes -Sid ('{0}-1106' -f $script:C7Fabrikam)
+            @(Get-AdfaSidValueList -Value $one).Count | Should -Be 1
+            @(Get-AdfaSidValueList -Value $one)[0].GetType().Name | Should -Be 'Byte[]'
+            $list = New-Object System.Collections.ArrayList
+            [void]$list.Add($one); [void]$list.Add($two)
+            @(Get-AdfaSidValueList -Value $list).Count | Should -Be 2
+            @(Get-AdfaSidValueList -Value @($one, $two)).Count | Should -Be 2
+            @(Get-AdfaSidValueList -Value 'S-1-5-32-544').Count | Should -Be 1
+            @(Get-AdfaSidValueList -Value @('S-1-5-32-544', 'S-1-5-9')).Count | Should -Be 2
+            @(Get-AdfaSidValueList -Value $null).Count | Should -Be 0
+        }
+    }
+
+    Context 'Verdicts (pure): one domain''s read to four rows' {
+        It 'gives four rows, in Item order, each scoped to the domain, with the same columns' {
+            $rows = Get-C7Rows -Raw (New-C7Raw -Records @(New-C7Record -Sam 'mig.user1' -History @(('{0}-1105' -f $script:C7Fabrikam))))
+            # Declared population: four rows per domain.
+            $rows.Count | Should -Be 4
+            ($rows | ForEach-Object { $_.Item }) -join ',' | Should -Be 'SID history: contoso.com,SID history same-domain: contoso.com,SID history privileged: contoso.com,SID history sources: contoso.com'
+            @($rows | Where-Object { $_.Scope -ne 'contoso.com' -or $_.Area -ne 'Security' }).Count | Should -Be 0
+            $first = (@($rows[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ',')
+            $first | Should -Be 'Scope,Area,Item,Status,Detail,NotRun,Evidence,DomainSid,PrincipalCount,ValueCount,UserCount,ComputerCount,GroupCount,OtherCount,EnabledCount,DisabledCount,UnparsedCount,Listed,NotListed,Principals,HistoricSids,SourceDomains'
+            foreach ($r in $rows) { (@($r.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') | Should -Be $first }
+        }
+        It 'passes a successful query that returned nothing, worded "none visible to this account", and never says nothing exists' {
+            $rows = Get-C7Rows -Raw (New-C7Raw -Records @())
+            (Get-C7Row $rows 'SID history')[0].Status | Should -Be 'Pass'
+            (Get-C7Row $rows 'SID history')[0].Detail | Should -Match '^None visible: '
+            (Get-C7Row $rows 'SID history')[0].Detail | Should -Match 'visible to this account'
+            (Get-C7Row $rows 'SID history')[0].PrincipalCount | Should -Be '0'
+            (Get-C7Row $rows 'SID history same-domain')[0].Status | Should -Be 'Pass'
+            (Get-C7Row $rows 'SID history privileged')[0].Status | Should -Be 'Pass'
+            (Get-C7Row $rows 'SID history sources')[0].Status | Should -Be 'Info'
+            @($rows | Where-Object { $_.Detail -match '(?i)could not|failed|unreachable' -and $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'grades SID history that is present, none same-domain and none privileged as the configured PresentStatus, labelled a tool default' {
+            $records = @(
+                New-C7Record -Sam 'mig.user1' -History @(('{0}-1105' -f $script:C7Fabrikam))
+                New-C7Record -Sam 'mig.user2' -Enabled $false -History @(('{0}-1106' -f $script:C7Fabrikam), ('{0}-1107' -f $script:C7North))
+                New-C7Record -Sam 'mig.group1' -Class 'group' -Enabled $null -History @(, (New-C7SidBytes -Sid ('{0}-1200' -f $script:C7North)))
+                New-C7Record -Sam 'ws-mig$' -Class 'computer' -History @(('{0}-1300' -f $script:C7Lost))
+                New-C7Record -Sam 'gmsa1$' -Class 'msDS-GroupManagedServiceAccount' -Enabled $null -History @(('{0}-1301' -f $script:C7Lost))
+            )
+            $rows = Get-C7Rows -Raw (New-C7Raw -Records $records)
+            $count = (Get-C7Row $rows 'SID history')[0]
+            $count.Status | Should -Be 'Warning'
+            $count.PrincipalCount | Should -Be '5'
+            $count.ValueCount | Should -Be '6'
+            $count.UserCount | Should -Be '2'
+            $count.ComputerCount | Should -Be '2'
+            $count.GroupCount | Should -Be '1'
+            $count.OtherCount | Should -Be '0'
+            $count.EnabledCount | Should -Be '2'
+            $count.DisabledCount | Should -Be '1'
+            $count.Detail | Should -Match 'tool default'
+            $count.Detail | Should -Match 'not a Microsoft value'
+            # Names are in their own column and never in Detail.
+            $count.Principals | Should -Match 'mig\.user1'
+            foreach ($r in $rows) { $r.Detail | Should -Not -Match 'mig\.|ws-mig|gmsa1|S-1-' -Because $r.Item }
+            (Get-C7Row $rows 'SID history same-domain')[0].Status | Should -Be 'Pass'
+            (Get-C7Row $rows 'SID history privileged')[0].Status | Should -Be 'Pass'
+            $info = Merge-AdfaSidHistoryConfig -BaseConfig $script:Sh -Override @{ PresentStatus = 'Info' }
+            (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records $records) -Config $info) 'SID history')[0].Status | Should -Be 'Info'
+        }
+        It 'lists names up to the cap and says how many were not listed, at the edge of the cap' {
+            $records = @(1..3 | ForEach-Object { New-C7Record -Sam ("mig.user{0}" -f $_) -History @(('{0}-{1}' -f $script:C7Fabrikam, (1100 + $_))) })
+            $cases = [ordered]@{ '2' = @{ Listed = '2'; NotListed = '1' }; '3' = @{ Listed = '3'; NotListed = '0' }; '4' = @{ Listed = '3'; NotListed = '0' }; '0' = @{ Listed = '0'; NotListed = '3' } }
+            # Declared population: four caps around three principals.
+            @($cases.Keys).Count | Should -Be 4
+            foreach ($cap in @($cases.Keys)) {
+                $cfg = Merge-AdfaSidHistoryConfig -BaseConfig $script:Sh -Override @{ NameListCap = [int]$cap }
+                $row = (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records $records) -Config $cfg) 'SID history')[0]
+                $row.Listed | Should -Be $cases[$cap]['Listed'] -Because "cap $cap"
+                $row.NotListed | Should -Be $cases[$cap]['NotListed'] -Because "cap $cap"
+                @($row.Principals -split '; ' | Where-Object { $_ -ne '' }).Count | Should -Be ([int]$cases[$cap]['Listed']) -Because "cap $cap"
+                $row.Detail | Should -Match ("{0} not listed" -f $cases[$cap]['NotListed'])
+            }
+        }
+        It 'fails a historic SID from the object''s own domain, and passes when every value belongs elsewhere' {
+            $same = New-C7Record -Sam 'svc.same' -History @(('{0}-1500' -f $script:C7Contoso))
+            $other = New-C7Record -Sam 'mig.user1' -History @(('{0}-1105' -f $script:C7Fabrikam))
+            $rows = Get-C7Rows -Raw (New-C7Raw -Records @($same, $other))
+            $row = (Get-C7Row $rows 'SID history same-domain')[0]
+            $row.Status | Should -Be 'Fail'
+            $row.Detail | Should -Match '^Same-domain SID history: '
+            $row.Detail | Should -Match 'DsAddSidHistory'
+            $row.Detail | Should -Match '(?i)inference'
+            $row.Principals | Should -Be 'svc.same'
+            $row.HistoricSids | Should -Match ([regex]::Escape(('{0}-1500' -f $script:C7Contoso)))
+            $row.DomainSid | Should -Be $script:C7Contoso
+            (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records @($other))) 'SID history same-domain')[0].Status | Should -Be 'Pass'
+            # Same domain part on a different domain: north is not contoso.
+            (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records @(New-C7Record -Sam 'x' -History @(('{0}-1500' -f $script:C7North))))) 'SID history same-domain')[0].Status | Should -Be 'Pass'
+        }
+        It 'does not grade same-domain SID history without the domain''s own SID, or with an unparsed value and no Fail; a Fail found stands' {
+            $other = New-C7Record -Sam 'mig.user1' -History @(('{0}-1105' -f $script:C7Fabrikam))
+            $noSid = (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records @($other) -DomainSid '' -DomainSidError 'STUB: domain not read')) 'SID history same-domain')[0]
+            $noSid.Status | Should -Be 'Not Assessed'
+            $noSid.Detail | Should -Match 'STUB: domain not read'
+            $bad = New-C7Record -Sam 'mig.bad' -History @(, [byte[]](1, 2, 0))
+            $unparsed = (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records @($other, $bad))) 'SID history same-domain')[0]
+            $unparsed.Status | Should -Be 'Not Assessed'
+            $unparsed.UnparsedCount | Should -Be '1'
+            $stands = (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records @($bad, (New-C7Record -Sam 'svc.same' -History @(('{0}-1500' -f $script:C7Contoso)))))) 'SID history same-domain')[0]
+            $stands.Status | Should -Be 'Fail'
+            $stands.Detail | Should -Match '1 value\(s\) could not be parsed and were not compared'
+        }
+        It 'fails a privileged well-known RID or SID in SID history and names which, and nothing else' {
+            $records = @(
+                New-C7Record -Sam 'mig.ea' -History @(('{0}-519' -f $script:C7Fabrikam))
+                New-C7Record -Sam 'mig.bo' -History @('S-1-5-32-551')
+                New-C7Record -Sam 'mig.edc' -History @('S-1-5-9')
+                New-C7Record -Sam 'mig.krb' -History @(, (New-C7SidBytes -Sid ('{0}-502' -f $script:C7Lost)))
+            )
+            $row = (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records $records)) 'SID history privileged')[0]
+            $row.Status | Should -Be 'Fail'
+            foreach ($name in @('Enterprise Admins', 'Backup Operators', 'Enterprise Domain Controllers', 'KRBTGT')) { $row.Detail | Should -Match $name }
+            # Declared population: four privileged values on four principals.
+            @($row.Principals -split '; ').Count | Should -Be 4
+            $row.HistoricSids | Should -Match 'mig\.ea='
+            # Not privileged: Domain Users (513), a high RID, RID 519 under the builtin authority, RID 512 under a domain SID that is not an account SID shape.
+            $benign = @(
+                New-C7Record -Sam 'a' -History @(('{0}-513' -f $script:C7Fabrikam))
+                New-C7Record -Sam 'b' -History @(('{0}-5190' -f $script:C7Fabrikam))
+                New-C7Record -Sam 'c' -History @('S-1-5-32-519')
+                New-C7Record -Sam 'd' -History @('S-1-5-21-512')
+                New-C7Record -Sam 'e' -History @('S-1-5-32-545')
+            )
+            (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records $benign)) 'SID history privileged')[0].Status | Should -Be 'Pass'
+            # Each privileged RID in the table, alone, fails.
+            foreach ($entry in @($script:Sh['PrivilegedDomainRids'])) {
+                $one = @(New-C7Record -Sam 'p' -History @(('{0}-{1}' -f $script:C7Fabrikam, $entry['Rid'])))
+                (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records $one)) 'SID history privileged')[0].Status | Should -Be 'Fail' -Because ("RID {0}" -f $entry['Rid'])
+            }
+            foreach ($entry in @($script:Sh['PrivilegedSids'])) {
+                $one = @(New-C7Record -Sam 'p' -History @([string]$entry['Sid']))
+                (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records $one)) 'SID history privileged')[0].Status | Should -Be 'Fail' -Because $entry['Sid']
+            }
+        }
+        It 'labels each source domain from the forest, the trusts, or as unresolved - never foreign or deleted' {
+            $trust = New-C7Trust -Partner 'fabrikam.com' -Flat 'FABRIKAM' -Sid (New-C7SidBytes -Sid $script:C7Fabrikam)
+            $records = @(
+                New-C7Record -Sam 'a' -History @(('{0}-1105' -f $script:C7Fabrikam), ('{0}-1106' -f $script:C7Fabrikam))
+                New-C7Record -Sam 'b' -History @(('{0}-1200' -f $script:C7North))
+                New-C7Record -Sam 'c' -History @(('{0}-1300' -f $script:C7Lost))
+                New-C7Record -Sam 'd' -History @('S-1-5-32-544')
+            )
+            $row = (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records $records -Trusts @($trust))) 'SID history sources')[0]
+            $row.Status | Should -Be 'Info'
+            $row.SourceDomains | Should -Match ([regex]::Escape(("{0} (fabrikam.com, trust partner) x2" -f $script:C7Fabrikam)))
+            $row.SourceDomains | Should -Match ([regex]::Escape(("{0} (north.contoso.com, this forest) x1" -f $script:C7North)))
+            $row.SourceDomains | Should -Match ([regex]::Escape(("{0} (unresolved) x1" -f $script:C7Lost)))
+            $row.SourceDomains | Should -Match ([regex]::Escape('S-1-5-32 (builtin or well-known) x1'))
+            $row.Detail | Should -Match '4 distinct'
+            ($row.Detail + $row.SourceDomains) | Should -Not -Match '(?i)foreign|deleted'
+            $row.NotRun | Should -Match 'Trusts section'
+            # A trust read that failed, and a forest domain whose SID was not read, are said.
+            $partial = (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records $records -TrustOk $false -TrustError 'STUB: trusts refused') -Forest (New-C7Forest -Map @{ $script:C7Contoso = 'contoso.com' } -Failures @('north.contoso.com: STUB: no answer'))) 'SID history sources')[0]
+            $partial.Status | Should -Be 'Info'
+            $partial.Detail | Should -Match 'STUB: trusts refused'
+            $partial.Detail | Should -Match 'STUB: no answer'
+            $partial.SourceDomains | Should -Match ([regex]::Escape(("{0} (unresolved) x2" -f $script:C7Fabrikam)))
+        }
+        It 'keeps an unreachable domain, an access-denied read and a timed-out read apart, all Not Assessed, never Pass' {
+            $cases = [ordered]@{
+                Unreachable  = @{ Type = 'Microsoft.ActiveDirectory.Management.ADServerDownException'; Lead = '^Unreachable: ' }
+                AccessDenied = @{ Type = 'System.UnauthorizedAccessException'; Lead = '^Access denied: ' }
+                TimedOut     = @{ Type = 'System.TimeoutException'; Lead = '^Timed out: ' }
+                Other        = @{ Type = 'System.InvalidOperationException'; Lead = '^Read failed: ' }
+            }
+            # Declared population: four failure classes.
+            @($cases.Keys).Count | Should -Be 4
+            foreach ($k in @($cases.Keys)) {
+                $rows = Get-C7Rows -Raw (New-C7Raw -Ok $false -Err 'STUB: the query did not complete' -Type $cases[$k]['Type'])
+                $rows.Count | Should -Be 4 -Because $k
+                foreach ($r in $rows) {
+                    $r.Status | Should -Be 'Not Assessed' -Because ("{0} {1}" -f $k, $r.Item)
+                    $r.Detail | Should -Match $cases[$k]['Lead'] -Because ("{0} {1}" -f $k, $r.Item)
+                    $r.Detail | Should -Match 'STUB: the query did not complete'
+                    $r.PrincipalCount | Should -Be '' -Because 'a count that was not measured is empty, never 0'
+                }
+            }
+            # A refused property list asked nothing.
+            $refused = Get-C7Rows -Raw (New-C7Raw -Ok $false -Refused $true -Err 'the property list holds *')
+            @($refused | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            $refused[0].Detail | Should -Match 'defect in the tool'
+        }
+    }
+
+    Context 'Get-AdfaSidHistoryRaw (the directory seam)' {
+        BeforeEach { $script:C7Asked = @() }
+        It 'reads the domain, then the principals with sIDHistory and the trusted domains of that domain, asking for the named attributes only' {
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $ErrorAction)
+                $script:C7Asked += ("Get-ADDomain|{0}" -f $Identity)
+                [pscustomobject]@{ DistinguishedName = 'DC=fabrikam,DC=com'; DomainSID = [pscustomobject]@{ Value = $script:C7Fabrikam } } }
+            function Get-ADObject { param([string]$LDAPFilter, [string]$Server, [string]$SearchBase, [string]$SearchScope, [string[]]$Properties, $ErrorAction)
+                $script:C7Asked += ("Get-ADObject|{0}|{1}|{2}|{3}" -f $Server, $LDAPFilter, $SearchBase, ($Properties -join ','))
+                if ($LDAPFilter -eq '(sIDHistory=*)') {
+                    $list = New-Object System.Collections.ArrayList
+                    [void]$list.Add((New-C7SidBytes -Sid ('{0}-1105' -f $script:C7Contoso)))
+                    [void]$list.Add((New-C7SidBytes -Sid ('{0}-1106' -f $script:C7Contoso)))
+                    [pscustomobject]@{ DistinguishedName = 'CN=u1,DC=fabrikam,DC=com'; ObjectClass = 'user'; sAMAccountName = 'u1'; userAccountControl = 514; sIDHistory = $list
+                        objectSid = (New-C7SidBytes -Sid ('{0}-1105' -f $script:C7Fabrikam)) }
+                    [pscustomobject]@{ DistinguishedName = 'CN=g1,DC=fabrikam,DC=com'; ObjectClass = 'group'; sAMAccountName = 'g1'; sIDHistory = ('{0}-1200' -f $script:C7Contoso) }
+                    return
+                }
+                [pscustomobject]@{ DistinguishedName = 'CN=contoso.com,CN=System,DC=fabrikam,DC=com'; ObjectClass = 'trustedDomain'; trustPartner = 'contoso.com'; flatName = 'CONTOSO'
+                    securityIdentifier = (New-C7SidBytes -Sid $script:C7Contoso) } }
+            $raw = Get-AdfaSidHistoryRaw -DomainName 'fabrikam.com' -Config $script:Sh
+            ($script:C7Asked -join ' ; ') | Should -Be 'Get-ADDomain|fabrikam.com ; Get-ADObject|fabrikam.com|(sIDHistory=*)||sIDHistory,objectSid,objectClass,sAMAccountName,distinguishedName,userAccountControl ; Get-ADObject|fabrikam.com|(objectClass=trustedDomain)|CN=System,DC=fabrikam,DC=com|securityIdentifier,trustPartner,flatName'
+            $raw.Ok | Should -BeTrue
+            $raw.DomainSid | Should -Be $script:C7Fabrikam
+            # Declared population: two principals, three historic values, one trust.
+            @($raw.Records).Count | Should -Be 2
+            @($raw.Records[0].History).Count | Should -Be 2
+            @($raw.Records[1].History).Count | Should -Be 1
+            $raw.Records[0].Enabled | Should -BeFalse
+            $raw.Records[0].Class | Should -Be 'user'
+            $raw.Records[1].Enabled | Should -BeNullOrEmpty
+            $raw.TrustOk | Should -BeTrue
+            @($raw.Trusts).Count | Should -Be 1
+            $raw.Trusts[0].Partner | Should -Be 'contoso.com'
+        }
+        It 'keeps the principals when the domain or the trusts cannot be read, and reports a failed query with its type, never throwing' {
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $ErrorAction) throw 'STUB: domain not read' }
+            function Get-ADObject { param([string]$LDAPFilter, [string]$Server, [string]$SearchBase, [string[]]$Properties, $ErrorAction)
+                $script:C7Asked += $LDAPFilter
+                [pscustomobject]@{ DistinguishedName = 'CN=u1,DC=contoso,DC=com'; ObjectClass = 'user'; sAMAccountName = 'u1'; sIDHistory = 'S-1-5-32-544' } }
+            $raw = Get-AdfaSidHistoryRaw -DomainName 'contoso.com' -Config $script:Sh
+            $raw.Ok | Should -BeTrue
+            $raw.DomainSid | Should -Be ''
+            $raw.DomainSidError | Should -Match 'STUB: domain not read'
+            $raw.TrustOk | Should -BeFalse
+            ($script:C7Asked -join ',') | Should -Be '(sIDHistory=*)'
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; DomainSID = $script:C7Contoso } }
+            function Get-ADObject { param([string]$LDAPFilter, [string]$Server, [string]$SearchBase, [string[]]$Properties, $ErrorAction)
+                if ($LDAPFilter -eq '(sIDHistory=*)') { throw [System.UnauthorizedAccessException]'STUB: refused' }
+                throw [System.TimeoutException]'STUB: slow' }
+            $denied = Get-AdfaSidHistoryRaw -DomainName 'contoso.com' -Config $script:Sh
+            $denied.Ok | Should -BeFalse
+            $denied.ErrorType | Should -Be 'System.UnauthorizedAccessException'
+            $denied.TrustOk | Should -BeFalse
+            $denied.TrustErrorType | Should -Be 'System.TimeoutException'
+            $denied.DomainSid | Should -Be $script:C7Contoso
+        }
+        It 'asks nothing when the property list holds a wildcard, a blank or is empty' {
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $ErrorAction) $script:C7Asked += 'domain'; [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com' } }
+            function Get-ADObject { param([string]$LDAPFilter, [string]$Server, [string]$SearchBase, [string[]]$Properties, $ErrorAction) $script:C7Asked += 'object' }
+            foreach ($bad in @(@('sIDHistory', '*'), @('sIDHistory', ' '), @())) {
+                $cfg = @{}
+                foreach ($k in @($script:Sh.Keys)) { $cfg[$k] = $script:Sh[$k] }
+                $cfg['ObjectProperties'] = $bad
+                $raw = Get-AdfaSidHistoryRaw -DomainName 'contoso.com' -Config $cfg
+                $raw.Ok | Should -BeFalse
+                $raw.Refused | Should -BeTrue
+            }
+            @($script:C7Asked).Count | Should -Be 0
+            @(Get-AdfaSidHistoryRefusedProperty -PropertyNames @('sIDHistory', 'objectSid', 'sid*', '')).Count | Should -Be 2
+        }
+    }
+
+    Context 'Get-AdfaSidHistoryForestMap (the forest seam)' {
+        It 'maps the SID of every forest domain to its name, and keeps the domains it could not read' {
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $ErrorAction)
+                switch ($Identity) {
+                    'contoso.com' { return [pscustomobject]@{ DomainSID = [pscustomobject]@{ Value = $script:C7Contoso } } }
+                    'north.contoso.com' { return [pscustomobject]@{ DomainSID = $script:C7North } }
+                }
+                throw 'STUB: no answer' }
+            $map = Get-AdfaSidHistoryForestMap -Domains @('contoso.com', 'north.contoso.com', 'south.contoso.com') -AdParams @{}
+            # Declared population: two domains read, one not.
+            @($map.Map.Keys).Count | Should -Be 2
+            $map.Map[$script:C7North] | Should -Be 'north.contoso.com'
+            @($map.Failures).Count | Should -Be 1
+            $map.Failures[0] | Should -Match '^south\.contoso\.com: STUB: no answer'
+        }
+    }
+
+    Context 'Collector: Get-AdfaSidHistory' {
+        BeforeEach {
+            $script:C7Domains = @()
+            $script:C7Maps = 0
+            function Get-AdfaSidHistoryForestMap { param([string[]]$Domains, [hashtable]$AdParams) $script:C7Maps++; $script:C7ForestBoth }
+        }
+        It 'gives every scoped domain its four rows, reading each domain once and the forest map once' {
+            function Get-AdfaSidHistoryRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config)
+                $script:C7Domains += $DomainName
+                if ($DomainName -eq 'north.contoso.com') { return (New-C7Raw -Server $DomainName -DomainSid $script:C7North -Records @(New-C7Record -Sam 'svc.north' -History @(('{0}-1500' -f $script:C7North), ('{0}-519' -f $script:C7Contoso)))) }
+                New-C7Raw -Server $DomainName -Records @() }
+            $rows = @(Get-AdfaSidHistory -Domains @('contoso.com', 'north.contoso.com', 'south.contoso.com') -ForestDomains @('contoso.com', 'north.contoso.com', 'south.contoso.com') -Config $script:Sh)
+            # Declared population: three domains with four rows each.
+            $rows.Count | Should -Be 12
+            ($script:C7Domains -join ',') | Should -Be 'contoso.com,north.contoso.com,south.contoso.com'
+            $script:C7Maps | Should -Be 1
+            foreach ($d in @('contoso.com', 'north.contoso.com', 'south.contoso.com')) {
+                foreach ($prefix in @('SID history', 'SID history same-domain', 'SID history privileged', 'SID history sources')) {
+                    @($rows | Where-Object { $_.Scope -eq $d -and $_.Item -eq ("{0}: {1}" -f $prefix, $d) }).Count | Should -Be 1 -Because "$prefix $d"
+                }
+            }
+            (@($rows | Where-Object { $_.Item -eq 'SID history same-domain: north.contoso.com' }))[0].Status | Should -Be 'Fail'
+            (@($rows | Where-Object { $_.Item -eq 'SID history privileged: north.contoso.com' }))[0].Status | Should -Be 'Fail'
+            (@($rows | Where-Object { $_.Item -eq 'SID history: south.contoso.com' }))[0].Status | Should -Be 'Pass'
+        }
+        It 'keeps an unreachable domain, an access-denied domain and a domain that was read apart, in one mixed run' {
+            function Get-AdfaSidHistoryRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config)
+                switch ($DomainName) {
+                    'north.contoso.com' { return (New-C7Raw -Ok $false -Err 'STUB: down' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException') }
+                    'south.contoso.com' { return (New-C7Raw -Ok $false -Err 'STUB: refused' -Type 'System.UnauthorizedAccessException') }
+                }
+                New-C7Raw -Records @(New-C7Record -Sam 'a' -History @(('{0}-1105' -f $script:C7Fabrikam))) }
+            $rows = @(Get-AdfaSidHistory -Domains @('contoso.com', 'north.contoso.com', 'south.contoso.com') -ForestDomains @('contoso.com') -Config $script:Sh)
+            $rows.Count | Should -Be 12
+            @($rows | Where-Object { $_.Scope -eq 'north.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Unreachable: ' }).Count | Should -Be 4
+            @($rows | Where-Object { $_.Scope -eq 'south.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Access denied: ' }).Count | Should -Be 4
+            (@($rows | Where-Object { $_.Item -eq 'SID history: contoso.com' }))[0].Status | Should -Be 'Warning'
+        }
+        It 'turns a domain whose handling throws into four Not Assessed rows without stopping the others' {
+            function Get-AdfaSidHistoryRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config)
+                if ($DomainName -eq 'contoso.com') { throw 'STUB: defect' }
+                New-C7Raw -Server $DomainName -Records @() }
+            $rows = @(Get-AdfaSidHistory -Domains @('contoso.com', 'north.contoso.com') -ForestDomains @('contoso.com', 'north.contoso.com') -Config $script:Sh)
+            $rows.Count | Should -Be 8
+            @($rows | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'STUB: defect' -and $_.Detail -match 'defect in the tool' }).Count | Should -Be 4
+            @($rows | Where-Object { $_.Scope -eq 'north.contoso.com' -and $_.Status -eq 'Pass' }).Count | Should -Be 3
+        }
+        It 'says so in one row when no domain was scoped, and reads nothing' {
+            function Get-AdfaSidHistoryRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config) $script:C7Domains += $DomainName }
+            $rows = @(Get-AdfaSidHistory -Domains @() -ForestDomains @() -Config $script:Sh)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'SID history (no domain scoped)'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            @($script:C7Domains).Count | Should -Be 0
+            $script:C7Maps | Should -Be 0
+        }
+    }
+
+    Context 'Merge-AdfaSidHistoryConfig (the SidHistory validator)' {
+        It 'merges the two keys and cites the file for exactly the keys it supplied' {
+            $m = Merge-AdfaSidHistoryConfig -BaseConfig $script:Sh -Override ([pscustomobject]@{ PresentStatus = 'info'; NameListCap = 10 }) -OverrideSource 'C:\cfg\over.json'
+            $m['PresentStatus'] | Should -Be 'Info'
+            $m['NameListCap'] | Should -Be 10
+            $m['ThresholdSource'] | Should -Match '^C:\\cfg\\over\.json \(loaded \d{4}-\d{2}-\d{2}\) for PresentStatus, NameListCap$'
+            $one = Merge-AdfaSidHistoryConfig -BaseConfig $script:Sh -Override @{ NameListCap = 0 } -OverrideSource 'C:\cfg\over.json'
+            $one['ThresholdSource'] | Should -Match 'for NameListCap; tool default .*, for PresentStatus$'
+            (Merge-AdfaSidHistoryConfig -BaseConfig $script:Sh -Override @{ NameListCap = 1000 })['NameListCap'] | Should -Be 1000
+            [string]$script:Sh['PresentStatus'] | Should -Be 'Warning'
+            [int]$script:Sh['NameListCap'] | Should -Be 25
+        }
+        It 'refuses every shape it could not use' {
+            $bad = [ordered]@{
+                'not an object'        = @{ Value = @(1, 2); Expect = 'single object' }
+                'an empty object'      = @{ Value = @{}; Expect = 'empty object' }
+                'the privileged RIDs'  = @{ Value = @{ PrivilegedDomainRids = @() }; Expect = "unknown key 'PrivilegedDomainRids'" }
+                'the privileged SIDs'  = @{ Value = @{ PrivilegedSids = @() }; Expect = "unknown key 'PrivilegedSids'" }
+                'a property list'      = @{ Value = @{ ObjectProperties = @('*') }; Expect = "unknown key 'ObjectProperties'" }
+                'the filter'           = @{ Value = @{ SearchFilter = '(objectClass=*)' }; Expect = "unknown key 'SearchFilter'" }
+                'a null'               = @{ Value = @{ PresentStatus = $null }; Expect = 'to null' }
+                'Pass'                 = @{ Value = @{ PresentStatus = 'Pass' }; Expect = 'Warning or Info' }
+                'Fail'                 = @{ Value = @{ PresentStatus = 'Fail' }; Expect = 'Warning or Info' }
+                'a status as a number' = @{ Value = @{ PresentStatus = 1 }; Expect = 'Warning or Info' }
+                'a quoted cap'         = @{ Value = @{ NameListCap = '10' }; Expect = 'JSON number' }
+                'a fractional cap'     = @{ Value = @{ NameListCap = 2.5 }; Expect = 'whole number from 0 to 1000' }
+                'a negative cap'       = @{ Value = @{ NameListCap = -1 }; Expect = 'whole number from 0 to 1000' }
+                'a cap above 1000'     = @{ Value = @{ NameListCap = 1001 }; Expect = 'whole number from 0 to 1000' }
+            }
+            # Declared population: fourteen shapes.
+            @($bad.Keys).Count | Should -Be 14
+            foreach ($name in @($bad.Keys)) {
+                { Merge-AdfaSidHistoryConfig -BaseConfig $script:Sh -Override $bad[$name]['Value'] } | Should -Throw -ExpectedMessage ("*{0}*" -f $bad[$name]['Expect']) -Because $name
+            }
+        }
+        It 'is reached through the generic loader, which refuses a key written twice' {
+            $merged = Resolve-AdfaConfigOverride -Override ([pscustomobject]@{ SidHistory = [pscustomobject]@{ NameListCap = 5 } }) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'x.json'
+            $merged['SidHistory']['NameListCap'] | Should -Be 5
+            { Resolve-AdfaConfigOverride -Override ([pscustomobject]@{ SidHistory = [pscustomobject]@{ TrustProperties = @('*') } }) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
+                Should -Throw -ExpectedMessage "*section 'SidHistory'*unknown key 'TrustProperties'*"
+            $path = Join-Path ([IO.Path]::GetTempPath()) ("adfa_c7_" + [guid]::NewGuid().ToString('N') + '.json')
+            try {
+                '{ "SidHistory": { "NameListCap": 10, "NameListCap": 20 } }' | Out-File -LiteralPath $path -Encoding UTF8
+                { Import-AdfaConfigOverride -Path $path -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*'SidHistory.NameListCap' more than once*"
+            }
+            finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'Found by the independent review before commit' {
+        It 'never passes the same-domain, privileged or sources rows when principals came back with no sIDHistory value read' {
+            # As the directory hands it over: returned by (sIDHistory=*), yet the value is absent, null or empty.
+            $objects = @(
+                [pscustomobject]@{ distinguishedName = 'CN=a,OU=Migrated,DC=contoso,DC=com'; sAMAccountName = 'a'; objectClass = 'user'; userAccountControl = 512 }
+                [pscustomobject]@{ distinguishedName = 'CN=b,OU=Migrated,DC=contoso,DC=com'; sAMAccountName = 'b'; objectClass = 'group'; sIDHistory = $null }
+                [pscustomobject]@{ distinguishedName = 'CN=c,OU=Migrated,DC=contoso,DC=com'; sAMAccountName = 'c'; objectClass = 'user'; sIDHistory = (New-Object System.Collections.ArrayList) }
+            )
+            $records = @($objects | ForEach-Object { ConvertTo-AdfaSidHistoryRecord -Object $_ -Config $script:Sh })
+            # Declared population: three principals, none with a value read.
+            $records.Count | Should -Be 3
+            @($records | Where-Object { @($_.History).Count -ne 0 }).Count | Should -Be 0
+            $rows = Get-C7Rows -Raw (New-C7Raw -Records $records)
+            $rows.Count | Should -Be 4
+            $count = (Get-C7Row $rows 'SID history')[0]
+            $count.Status | Should -Be 'Warning'
+            $count.PrincipalCount | Should -Be '3'
+            $count.Detail | Should -Match '3 principal\(s\) came back with no sIDHistory value read'
+            foreach ($prefix in @('SID history same-domain', 'SID history privileged', 'SID history sources')) {
+                $row = (Get-C7Row $rows $prefix)[0]
+                $row.Status | Should -Be 'Not Assessed' -Because $prefix
+                $row.Detail | Should -Match '^Not assessed: 3 principal\(s\) in contoso\.com were returned' -Because $prefix
+                $row.Detail | Should -Match 'not a clean result' -Because $prefix
+            }
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+            # Mixed: one benign value read, one principal with none - nothing can be ruled out.
+            $mixed = Get-C7Rows -Raw (New-C7Raw -Records @((New-C7Record -Sam 'mig.user1' -History @(('{0}-1105' -f $script:C7Fabrikam))), $records[0]))
+            (Get-C7Row $mixed 'SID history same-domain')[0].Status | Should -Be 'Not Assessed'
+            (Get-C7Row $mixed 'SID history same-domain')[0].Detail | Should -Match '1 principal\(s\) came back with no sIDHistory value read'
+            (Get-C7Row $mixed 'SID history privileged')[0].Status | Should -Be 'Not Assessed'
+            (Get-C7Row $mixed 'SID history sources')[0].Status | Should -Be 'Info'
+            (Get-C7Row $mixed 'SID history sources')[0].Detail | Should -Match '1 principal\(s\) came back with no sIDHistory value read'
+            # A Fail found stands beside a principal with no value read.
+            $failStands = Get-C7Rows -Raw (New-C7Raw -Records @((New-C7Record -Sam 'svc.same' -History @(('{0}-1500' -f $script:C7Contoso), ('{0}-519' -f $script:C7Fabrikam))), $records[0]))
+            (Get-C7Row $failStands 'SID history same-domain')[0].Status | Should -Be 'Fail'
+            (Get-C7Row $failStands 'SID history privileged')[0].Status | Should -Be 'Fail'
+            # Non-vacuity: no principal at all still passes, worded "None visible".
+            (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records @())) 'SID history same-domain')[0].Status | Should -Be 'Pass'
+        }
+        It 'names the principal right on the same-domain and privileged rows when its DN holds a ''|''' {
+            $dnPipe = 'CN=x|y,OU=Migrated,DC=contoso,DC=com'
+            $alice = New-C7Record -Sam 'alice' -Dn $dnPipe -History @(('{0}-1105' -f $script:C7Contoso), 'S-1-5-32-544')
+            $rows = Get-C7Rows -Raw (New-C7Raw -Records @($alice))
+            $same = (Get-C7Row $rows 'SID history same-domain')[0]
+            $same.Status | Should -Be 'Fail'
+            $same.Principals | Should -Be 'alice'
+            $same.HistoricSids | Should -Be ('alice={0}-1105' -f $script:C7Contoso)
+            $priv = (Get-C7Row $rows 'SID history privileged')[0]
+            $priv.Status | Should -Be 'Fail'
+            $priv.Principals | Should -Be 'alice'
+            $priv.HistoricSids | Should -Be 'alice=S-1-5-32-544 (Administrators)'
+            # Two principals whose DN and name would join to the same text are still two.
+            $first = New-C7Record -Sam 'z' -Dn 'CN=x|y' -History @('S-1-5-32-544')
+            $second = New-C7Record -Sam 'y|z' -Dn 'CN=x' -History @('S-1-5-32-544')
+            $two = (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records @($first, $second))) 'SID history privileged')[0]
+            # Declared population: two principals.
+            $two.PrincipalCount | Should -Be '2'
+            $two.Principals | Should -Be 'z; y|z'
+        }
+        It 'keeps every SID out of the privileged row''s Detail, the fixed SIDs included, and puts them in HistoricSids' {
+            $records = @(
+                New-C7Record -Sam 'mig.adm' -History @('S-1-5-32-544', ('{0}-512' -f $script:C7Fabrikam))
+                New-C7Record -Sam 'mig.edc' -History @('S-1-5-9')
+            )
+            $rows = Get-C7Rows -Raw (New-C7Raw -Records $records)
+            $priv = (Get-C7Row $rows 'SID history privileged')[0]
+            $priv.Status | Should -Be 'Fail'
+            $priv.Detail | Should -Match 'Administrators \(well-known SID\) x1'
+            $priv.Detail | Should -Match 'Domain Admins \(RID 512\) x1'
+            $priv.Detail | Should -Match 'Enterprise Domain Controllers \(well-known SID\) x1'
+            $priv.HistoricSids | Should -Match ([regex]::Escape('mig.adm=S-1-5-32-544 (Administrators)'))
+            $priv.HistoricSids | Should -Match ([regex]::Escape('mig.edc=S-1-5-9 (Enterprise Domain Controllers)'))
+            # Declared population: the four rows of the domain, none with a SID in Detail.
+            $rows.Count | Should -Be 4
+            foreach ($r in $rows) { $r.Detail | Should -Not -Match 'S-1-' -Because $r.Item }
+        }
+        It 'does not read a value the platform reads differently, or refuses; keeps the fallback where the platform cannot run' {
+            $bytes = New-C7SidBytes -Sid 'S-1-5-32-544'
+            $agree = ConvertFrom-AdfaSidValue -Value $bytes -PlatformReader { param($b) 'S-1-5-32-544' }
+            $agree.Ok | Should -BeTrue
+            $agree.Parser | Should -Be 'Platform'
+            $disagree = ConvertFrom-AdfaSidValue -Value $bytes -PlatformReader { param($b) 'S-1-5-32-545' }
+            $disagree.Ok | Should -BeFalse
+            $disagree.Text | Should -Be ''
+            $disagree.Error | Should -Match "reads this value as 'S-1-5-32-545'"
+            $refusals = [ordered]@{
+                'an ArgumentException' = { param($b) throw [System.ArgumentException]'STUB: not a SID' }
+                'one inside a MethodInvocationException' = { param($b) throw (New-Object System.Management.Automation.MethodInvocationException -ArgumentList 'STUB: outer', (New-Object System.ArgumentException -ArgumentList 'STUB: inner')) }
+            }
+            # Declared population: two refusals.
+            @($refusals.Keys).Count | Should -Be 2
+            foreach ($k in @($refusals.Keys)) {
+                $r = ConvertFrom-AdfaSidValue -Value $bytes -PlatformReader $refusals[$k]
+                $r.Ok | Should -BeFalse -Because $k
+                $r.Error | Should -Match 'refused it as a SID' -Because $k
+            }
+            $unsupported = ConvertFrom-AdfaSidValue -Value $bytes -PlatformReader { param($b) throw [System.PlatformNotSupportedException]'STUB: not here' }
+            $unsupported.Ok | Should -BeTrue
+            $unsupported.Parser | Should -Be 'Fallback'
+            $unsupported.Text | Should -Be 'S-1-5-32-544'
+            # -NoPlatform never runs the reader.
+            (ConvertFrom-AdfaSidValue -Value $bytes -NoPlatform -PlatformReader { param($b) 'S-1-5-32-545' }).Ok | Should -BeTrue
+        }
+        It 'labels S-1-5-9 builtin or well-known, and a SID under another authority or a service SID not an account-domain SID' {
+            $records = @(
+                New-C7Record -Sam 'a' -History @('S-1-5-9')
+                New-C7Record -Sam 'b' -History @('S-1-5-32-544')
+                New-C7Record -Sam 'c' -History @('S-1-16-12288')
+                New-C7Record -Sam 'd' -History @('S-1-5-80-1-2-3-4-5')
+            )
+            $row = (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records $records)) 'SID history sources')[0]
+            $row.SourceDomains | Should -Match ([regex]::Escape('S-1-5 (builtin or well-known) x1'))
+            $row.SourceDomains | Should -Match ([regex]::Escape('S-1-5-32 (builtin or well-known) x1'))
+            $row.SourceDomains | Should -Match ([regex]::Escape('S-1-16 (not an account-domain SID) x1'))
+            $row.SourceDomains | Should -Match ([regex]::Escape('S-1-5-80-1-2-3-4 (not an account-domain SID) x1'))
+            # Declared population: four distinct domain parts.
+            $row.Detail | Should -Match '4 distinct domain part\(s\) - 0 in this forest, 0 trust partner\(s\) of this domain, 2 builtin or well-known, 0 unresolved, 2 not an account-domain SID'
+        }
+        It 'applies the name cap to the same-domain and privileged rows too, at the edge of the cap' {
+            $records = @(1..3 | ForEach-Object { New-C7Record -Sam ("svc.same{0}" -f $_) -History @(('{0}-{1}' -f $script:C7Contoso, (1500 + $_)), ('{0}-519' -f $script:C7Fabrikam)) })
+            $cases = [ordered]@{ '0' = @(0, 3); '2' = @(2, 1); '3' = @(3, 0); '4' = @(3, 0) }
+            # Declared population: four caps around three principals, on two rows.
+            @($cases.Keys).Count | Should -Be 4
+            foreach ($cap in @($cases.Keys)) {
+                $cfg = Merge-AdfaSidHistoryConfig -BaseConfig $script:Sh -Override @{ NameListCap = [int]$cap }
+                $rows = Get-C7Rows -Raw (New-C7Raw -Records $records) -Config $cfg
+                foreach ($prefix in @('SID history same-domain', 'SID history privileged')) {
+                    $row = (Get-C7Row $rows $prefix)[0]
+                    $because = "$prefix, cap $cap"
+                    $row.Status | Should -Be 'Fail' -Because $because
+                    $row.PrincipalCount | Should -Be '3' -Because $because
+                    $row.Listed | Should -Be ([string]$cases[$cap][0]) -Because $because
+                    $row.NotListed | Should -Be ([string]$cases[$cap][1]) -Because $because
+                    @($row.Principals -split '; ' | Where-Object { $_ -ne '' }).Count | Should -Be $cases[$cap][0] -Because $because
+                    @($row.HistoricSids -split '; ' | Where-Object { $_ -ne '' }).Count | Should -Be $cases[$cap][0] -Because $because
+                    $row.Detail | Should -Match ("{0} listed in the Principals column, {1} not listed \(NameListCap {2}," -f $cases[$cap][0], $cases[$cap][1], $cap) -Because $because
+                }
+            }
+        }
+        It 'takes the most specific objectClass from the whole chain, and gives no enabled state to a group or other class' {
+            $chain = New-Object System.Collections.ArrayList
+            foreach ($c in @('top', 'person', 'organizationalPerson', 'user', 'computer')) { [void]$chain.Add($c) }
+            $history = ('{0}-1105' -f $script:C7Fabrikam)
+            $cases = [ordered]@{
+                'user, whole chain'        = @{ Object = [pscustomobject]@{ distinguishedName = 'CN=u1,DC=contoso,DC=com'; sAMAccountName = 'u1'; objectClass = @('top', 'person', 'organizationalPerson', 'user'); userAccountControl = 514; sIDHistory = $history }; Class = 'user'; Enabled = $false }
+                'computer, chain in a list' = @{ Object = [pscustomobject]@{ distinguishedName = 'CN=ws1,DC=contoso,DC=com'; sAMAccountName = 'ws1$'; objectClass = $chain; userAccountControl = 4096; sIDHistory = $history }; Class = 'computer'; Enabled = $true }
+                'user, one class'          = @{ Object = [pscustomobject]@{ distinguishedName = 'CN=u2,DC=contoso,DC=com'; sAMAccountName = 'u2'; objectClass = 'user'; userAccountControl = 512; sIDHistory = $history }; Class = 'user'; Enabled = $true }
+                'group with UAC'           = @{ Object = [pscustomobject]@{ distinguishedName = 'CN=g1,DC=contoso,DC=com'; sAMAccountName = 'g1'; objectClass = @('top', 'group'); userAccountControl = 512; sIDHistory = $history }; Class = 'group'; Enabled = $null }
+                'other class with UAC'     = @{ Object = [pscustomobject]@{ distinguishedName = 'CN=f1,DC=contoso,DC=com'; sAMAccountName = 'f1'; objectClass = @('top', 'foreignSecurityPrincipal'); userAccountControl = 512; sIDHistory = $history }; Class = 'foreignSecurityPrincipal'; Enabled = $null }
+            }
+            # Declared population: five principals.
+            @($cases.Keys).Count | Should -Be 5
+            $records = @()
+            foreach ($k in @($cases.Keys)) {
+                $r = ConvertTo-AdfaSidHistoryRecord -Object $cases[$k]['Object'] -Config $script:Sh
+                $r.Class | Should -Be $cases[$k]['Class'] -Because $k
+                if ($null -eq $cases[$k]['Enabled']) { ($null -eq $r.Enabled) | Should -BeTrue -Because "$k has no enabled state" }
+                else {
+                    ($r.Enabled -is [bool]) | Should -BeTrue -Because $k
+                    $r.Enabled | Should -Be $cases[$k]['Enabled'] -Because $k
+                }
+                $records += $r
+            }
+            $count = (Get-C7Row (Get-C7Rows -Raw (New-C7Raw -Records $records)) 'SID history')[0]
+            $count.UserCount | Should -Be '2'
+            $count.ComputerCount | Should -Be '1'
+            $count.GroupCount | Should -Be '1'
+            $count.OtherCount | Should -Be '1'
+            $count.EnabledCount | Should -Be '2'
+            $count.DisabledCount | Should -Be '1'
+            $count.Detail | Should -Match '2 with no enabled state'
+        }
+        It 'refuses a text-form authority above 2^48 - 1 and reads one at the limit' {
+            $limit = ConvertFrom-AdfaSidValue -Value 'S-1-281474976710655-5'
+            $limit.Ok | Should -BeTrue
+            $limit.Authority | Should -Be ([uint64]281474976710655)
+            $over = ConvertFrom-AdfaSidValue -Value 'S-1-281474976710656-5'
+            $over.Ok | Should -BeFalse
+            $over.Error | Should -Match 'does not fit in 48 bits'
+        }
+    }
+
+    Context 'Recommendations' {
+        It 'gives each graded family its own advice, whatever the Detail holds' {
+            $count = Get-AdfaRecommendation -Section 'Security Posture' -Item 'SID history: contoso.com' -Detail $script:C7Hostile
+            $same = Get-AdfaRecommendation -Section 'Security Posture' -Item 'SID history same-domain: contoso.com' -Detail $script:C7Hostile
+            $priv = Get-AdfaRecommendation -Section 'Security Posture' -Item 'SID history privileged: contoso.com' -Detail $script:C7Hostile
+            $count | Should -Match 'Set-ADUser'
+            $count | Should -Match 'token'
+            $same | Should -Match 'DsAddSidHistory'
+            $priv | Should -Match 'Enterprise Admins'
+            @($count, $same, $priv | Select-Object -Unique).Count | Should -Be 3
+            foreach ($rec in @($count, $same, $priv)) {
+                $rec | Should -Match 'changes nothing'
+                $rec | Should -Not -Match 'New-KrbtgtKeys|wbadmin|repadmin|reset the krbtgt|Disable first|setspn'
+            }
+            # A domain name that looks like other advice changes nothing.
+            (Get-AdfaRecommendation -Section 'Security Posture' -Item 'SID history: krbtgt-backup.contoso.com' -Detail $script:C7Hostile) | Should -Be $count
+        }
+        It 'gives every other SID history row no advice, and leaves the existing Security Posture rows to their own entries' {
+            foreach ($item in @('SID history sources: contoso.com', 'SID history (no domain scoped)', 'SID history', 'SID history something new: x')) {
+                Get-AdfaRecommendation -Section 'Security Posture' -Item $item -Detail $script:C7Hostile | Should -Be '' -Because $item
+            }
+            (Get-AdfaRecommendation -Section 'Security Posture' -Item 'krbtgt password age' -Detail '400 days') | Should -Match 'krbtgt'
+            (Get-AdfaRecommendation -Section 'Security Posture' -Item 'Machine account quota' -Detail 'ms-DS-MachineAccountQuota = 10') | Should -Match 'MachineAccountQuota'
+            (Get-AdfaRecommendation -Section 'Security Posture' -Item 'AD Recycle Bin' -Detail 'Not enabled') | Should -Match 'Recycle Bin'
+        }
+        It 'places its entries before every unscoped entry of the map, with no section-wide catch-all' {
+            $map = @($script:RecommendationMap)
+            $mine = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Section -eq '(?i)^security posture') { $i } })
+            # Declared population: three graded families and the prefix catch-all.
+            $mine.Count | Should -Be 4
+            $firstUnscoped = @(for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $i } })[0]
+            foreach ($i in $mine) { $i | Should -BeLessThan $firstUnscoped }
+            foreach ($i in $mine) { [string]$map[$i].Match | Should -Match '^\(\?i\)\^Security Posture :: SID history' }
+            [string]$map[$mine[3]].Text | Should -Be ''
+        }
+        It 'attaches advice to Warning and Fail rows only, chosen without the NotRun note' {
+            $records = @(New-C7Record -Sam 'svc.same' -History @(('{0}-1500' -f $script:C7Contoso), ('{0}-519' -f $script:C7Fabrikam)))
+            $rows = Get-C7Rows -Raw (New-C7Raw -Records $records)
+            $findings = @($rows | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'Security Posture' -Row $_ -StatusColumn 'Status' })
+            $findings.Count | Should -Be 4
+            ($findings | ForEach-Object { $_.Status }) -join ',' | Should -Be 'Warning,Fail,Fail,Info'
+            $findings[0].Recommendation | Should -Match 'Set-ADUser'
+            $findings[1].Recommendation | Should -Match 'DsAddSidHistory'
+            $findings[2].Recommendation | Should -Match 'Enterprise Admins'
+            $findings[3].Recommendation | Should -Be ''
+            $findings[3].Detail | Should -Match 'Trusts section'
         }
     }
 }

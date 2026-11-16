@@ -31,6 +31,12 @@
         - Privileged group membership and security posture
           (krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota,
           AdminSDHolder, stale / never-expiring / RC4-DES accounts)
+        - SID history, per scoped domain (rows of the security posture section): how many
+          security principals carry sIDHistory, whether a historic SID belongs to the
+          principal's own domain or is a privileged well-known SID, and which domains the
+          historic SIDs came from. Directory reads only; sIDHistory is never written. An empty
+          answer is "none visible to this account", because a read returns no attribute the
+          account may not see
         - Stale user / computer objects
         - Full user & computer export with ALL populated attributes (CSV; HTML shows a summary),
           except the attributes that hold a LAPS password, which are left out of the computer
@@ -213,9 +219,24 @@
     pool as Info. A missing RID Set, a refused read and an unreachable server are each their own
     Not Assessed result. It runs no dcdiag test and never reads or writes SidCompatibilityVersion.
 
+    SecurityPosture also gives every scoped domain four SID history rows, from a directory read
+    with domain read access: one search for (sIDHistory=*) against the domain, asking for
+    sIDHistory, objectSid, objectClass, sAMAccountName, distinguishedName and userAccountControl
+    only; the trustedDomain objects under CN=System; and the SID of every domain of the forest.
+    "SID history" counts the principals by class (Warning when there are any - a tool default,
+    Info by override; Pass, worded "none visible to this account", when the read succeeded and
+    returned none). "SID history same-domain" is a Fail when a historic SID belongs to the
+    principal's own domain; "SID history privileged" is a Fail when one is a privileged
+    well-known RID or SID, naming which; "SID history sources" lists the domains the historic SIDs
+    came from, as a forest domain, a trust partner or "unresolved". Principals returned with no
+    sIDHistory value read make the same-domain, privileged and sources rows Not Assessed, never
+    Pass. Unreachable, access denied and timed out are each their own Not Assessed result. Names
+    and SIDs are in their own columns, never in Detail. Whether a trust filters SID history is in
+    the Trusts section.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Five sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Six sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -257,6 +278,14 @@
     the RID ceiling). The ceilings and every attribute name are refused:
 
         { "RidPool": { "WarnAtPercentUsed": 5 } }
+
+    And SidHistory, used by the SecurityPosture section, whose keys are PresentStatus (the grade
+    of SID history that is present and neither same-domain nor privileged: Warning or Info) and
+    NameListCap (how many names one row lists, a whole number from 0 to 1000). Both are tool
+    defaults, not Microsoft values. The privileged list, the filters and the property lists are
+    refused:
+
+        { "SidHistory": { "PresentStatus": "Info", "NameListCap": 50 } }
 
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
@@ -449,7 +478,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates" and "RidPool" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool" and "SidHistory" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -483,7 +512,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.23.0'
+    Version                 = '1.24.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1369,6 +1398,135 @@ $script:Config = @{
         RidSetClass            = 'rIDSet'
         # In this order: the current pool, the prefetched next pool, the next RID, the used pools.
         RidSetAttributes       = @('rIDPreviousAllocationPool', 'rIDAllocationPool', 'rIDNextRID', 'rIDUsedPool')
+    }
+    # --- SID history: principals with sIDHistory, same-domain and privileged historic SIDs, and
+    #     the domains those SIDs came from (PORT-PLAN C7; rows of the SecurityPosture section) ---
+    # Directory reads only, per scoped domain: one (sIDHistory=*) search, the trustedDomain objects
+    # under CN=System, and Get-ADDomain for the SID of every domain of the forest. sIDHistory is
+    # never written. Every URL below was read on 2026-11-16.
+    #
+    # The attribute:
+    #   sIDHistory: "Contains previous SIDs used for the object if the object was moved from another
+    #   domain." Syntax String(Sid), Is-Single-Valued False (multi-valued), indexed, in the global
+    #   catalog, Search-Flags 0x00000001 (not confidential), "Classes used in: Security-Principal".
+    #     https://learn.microsoft.com/windows/win32/adschema/a-sidhistory
+    #   String(Sid) is an octet string; its .NET type is System.Byte[].
+    #     https://learn.microsoft.com/windows/win32/adschema/s-string-sid
+    #   The user class and the group class carry Security-Principal as an auxiliary class (c-user,
+    #   c-group); computer derives from user, and the managed service account classes from computer
+    #   - an INFERENCE from the class hierarchy, not re-read for each class.
+    #   "This property can hold multiple values." "any one of the SIDs in the access token
+    #   (including one of the SIDs in the SIDHistory property), can allow or deny the user access."
+    #   "All values up to, but not including, the last value in the series collectively identify a
+    #   domain ... The last value in the series, the RID". Builtin SIDs use domain identifier 32.
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-identifiers
+    #   SID layout (MS-DTYP 2.4.2.2): Revision MUST be 0x01; SubAuthorityCount at most 15; a 6-byte
+    #   IdentifierAuthority; SubAuthority "unsigned 32-bit integers". The page leaves the byte order
+    #   of a sub-authority to the protocol: little-endian is the layout the fallback parser uses, and
+    #   it is cross-checked against .NET SecurityIdentifier on every Windows run - measured, not read.
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-dtyp/f992ad60-0fe4-4b87-9fed-beb478836861
+    #
+    # Who can read it: sIDHistory and objectSid are members of the General-Information property set,
+    # which the user class's default security descriptor grants Authenticated Users read access to
+    # ((OA;;RP;59ba2f42-79a2-11d0-9020-00c04fc2d3cf;;AU)); the group and trustedDomain classes grant
+    # Authenticated Users (A;;RPLCLORC;;;AU). These are SCHEMA DEFAULTS for new objects: Learn has no
+    # sentence that a deployed domain keeps them, and "a search operation can succeed, but the search
+    # results don't include objects or properties to which the caller doesn't have access". An empty
+    # answer is therefore "none visible to this account", never "none".
+    #     https://learn.microsoft.com/windows/win32/adschema/r-general-information
+    #     https://learn.microsoft.com/windows/win32/adschema/c-user
+    #     https://learn.microsoft.com/windows/win32/adschema/c-group
+    #     https://learn.microsoft.com/windows/win32/adschema/c-trusteddomain
+    #     https://learn.microsoft.com/windows/win32/ad/access-control-and-read-operations
+    #   trustedDomain securityIdentifier: String(Sid), single-valued, the SID of the trusted domain.
+    #     https://learn.microsoft.com/windows/win32/adschema/a-securityidentifier
+    #
+    # The risk, as Microsoft states it:
+    #   Defender for Identity, "Unsecure SID History attributes": "a nonsensitive account in a domain
+    #   can contain the Enterprise Admin SID in its SID History from another domain in the Active
+    #   Directory forest"; "If you have a forest trust without SID Filtering enabled (also called
+    #   Quarantine), it's possible to inject a SID from another forest"; the remediation removes the
+    #   value with Set-ADUser -Remove @{SIDHistory=...}. NO SEVERITY IS PUBLISHED.
+    #     https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts
+    #   DsAddSidHistory: "The source and destination domains must not be in the same forest ... This
+    #   inter-forest constraint ensures that duplicate SIDs, whether appearing as primary SIDs or
+    #   sIDHistory values, are not created in the same forest"; it refuses "Accounts with Well Known
+    #   SIDs"; and "Adding SIDs to a security principal's sIDHistory is a security-sensitive
+    #   operation that effectively grants to the destination principal access to all resources
+    #   accessible to the source principal".
+    #     https://learn.microsoft.com/windows/win32/ad/using-dsaddsidhistory
+    #   "the ultimate solution to token bloat is to reduce the number of SIDs associated with user
+    #   accounts, whether by rationalizing group memberships, eliminating SID history, or a
+    #   combination of both" - no grade is given.
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/planning-for-compromise
+    #
+    # Privileged SIDs (the well-known SID table of the Security identifiers page above, and
+    # https://learn.microsoft.com/windows/win32/secauthz/well-known-sids for the 0x220.. aliases and
+    # 0x20E/0x20F). Domain-relative RIDs are matched only on an account-domain SID
+    # (S-1-5-21-x-y-z-RID); the fixed SIDs only on the whole SID. Learn writes Key Admins as
+    # "S-1-5-root domain-526" and Enterprise Key Admins as "S-1-5-domain-527", the other way round
+    # from their names (the Active Directory security groups page gives <domain> for both); the match
+    # is on the RID alone, so this does not change the check. Protected Users (525), Read-only Domain
+    # Controllers (521), Enterprise Read-only Domain Controllers (498) and Replicators (S-1-5-32-552)
+    # are NOT in the list: the brief for this row did not name them and the AdAssessment26 reference
+    # list differs (it has 525, not 500/502/516) - PORT-PLAN C7b asks the operator.
+    #
+    # NOT PUBLISHED ON MICROSOFT LEARN, and labelled where a row relies on it:
+    #   - Any grade for SID history that is present, not same-domain and not privileged. PresentStatus
+    #     Warning is a TOOL DEFAULT, the operator-approved rule of the AdAssessment26 catalogue
+    #     (ADA-OBJ-009, "Warning when count > 0"); a file may set Info instead.
+    #   - That a same-domain historic SID indicates abuse. The Fail rests on the DsAddSidHistory
+    #     constraint and on moves always issuing a new SID from ANOTHER domain - an inference.
+    #   - Which privileged list Microsoft would use: it gives only the Enterprise Admins example.
+    #   - How many names one row should list. NameListCap 25 is a tool default, as Laps.SampleLimit.
+    #   - What the ActiveDirectory module returns for sIDHistory, objectSid and securityIdentifier
+    #     (byte[], SecurityIdentifier, or a collection of either). The parser accepts all of them.
+    #
+    # Replaceable from a file via -ConfigOverridePath, under the key "SidHistory": PresentStatus
+    # (Warning or Info) and NameListCap (0 to 1000). Nothing else - not the privileged list, the
+    # filters or any property list, so a file cannot make the tool ask for every attribute.
+    SidHistory              = @{
+        SourceUrl            = 'https://learn.microsoft.com/windows/win32/adschema/a-sidhistory and https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts and https://learn.microsoft.com/windows/win32/ad/using-dsaddsidhistory'
+        ReadDate             = '2026-11-16'
+        ThresholdSource      = 'tool default (AdAssessment26 catalogue ADA-OBJ-009, operator-approved), not a Microsoft value'
+        # Tool defaults, both.
+        PresentStatus        = 'Warning'
+        NameListCap          = 25
+        # What is asked, and of what. Fixed: a file cannot change them.
+        SearchFilter         = '(sIDHistory=*)'
+        TrustFilter          = '(objectClass=trustedDomain)'
+        TrustContainerRdn    = 'CN=System'
+        ObjectProperties     = @('sIDHistory', 'objectSid', 'objectClass', 'sAMAccountName', 'distinguishedName', 'userAccountControl')
+        TrustProperties      = @('securityIdentifier', 'trustPartner', 'flatName')
+        # ACCOUNTDISABLE, read from userAccountControl of users and computers only.
+        # https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties
+        AccountDisableFlag   = 2
+        # Class buckets for the counts. The managed service account classes count as computers (an
+        # inference from the class hierarchy); anything not listed counts as other.
+        UserClasses          = @('user', 'inetOrgPerson')
+        ComputerClasses      = @('computer', 'msDS-GroupManagedServiceAccount', 'msDS-ManagedServiceAccount')
+        GroupClasses         = @('group')
+        # Vendor values (Learn, read 2026-11-16).
+        PrivilegedDomainRids = @(
+            @{ Rid = 500; Name = 'Administrator' }
+            @{ Rid = 502; Name = 'KRBTGT' }
+            @{ Rid = 512; Name = 'Domain Admins' }
+            @{ Rid = 516; Name = 'Domain Controllers' }
+            @{ Rid = 517; Name = 'Cert Publishers' }
+            @{ Rid = 518; Name = 'Schema Admins' }
+            @{ Rid = 519; Name = 'Enterprise Admins' }
+            @{ Rid = 520; Name = 'Group Policy Creator Owners' }
+            @{ Rid = 526; Name = 'Key Admins' }
+            @{ Rid = 527; Name = 'Enterprise Key Admins' }
+        )
+        PrivilegedSids       = @(
+            @{ Sid = 'S-1-5-32-544'; Name = 'Administrators' }
+            @{ Sid = 'S-1-5-32-548'; Name = 'Account Operators' }
+            @{ Sid = 'S-1-5-32-549'; Name = 'Server Operators' }
+            @{ Sid = 'S-1-5-32-550'; Name = 'Print Operators' }
+            @{ Sid = 'S-1-5-32-551'; Name = 'Backup Operators' }
+            @{ Sid = 'S-1-5-9'; Name = 'Enterprise Domain Controllers' }
+        )
     }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
     DsEventsOfInterest      = @(
@@ -10192,6 +10350,1060 @@ function Merge-AdfaRidPoolConfig {
 }
 
 # ---------------------------------------------------------------------------
+# SID history: principals with sIDHistory, historic SIDs of the principal's own domain, privileged
+# historic SIDs, and the domains they came from (PORT-PLAN C7). Rows of the SecurityPosture section.
+# ---------------------------------------------------------------------------
+
+function New-AdfaSidHistoryRow {
+    <#
+    .SYNOPSIS
+        Pure: one SID history row. Every row has the same columns, so a consumer never has to test
+        whether a column exists.
+    .DESCRIPTION
+        Account names, historic SIDs, the domain's SID and the source domains go in their own
+        columns, never in Detail: the consolidated findings choose a recommendation from Detail,
+        and none of these columns is read there. A count that was not measured is an empty string,
+        never 0.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$NotRun = '',
+        [AllowEmptyString()][string]$Evidence = '',
+        [AllowEmptyString()][string]$DomainSid = '',
+        [AllowNull()]$PrincipalCount = $null,
+        [AllowNull()]$ValueCount = $null,
+        [AllowNull()]$UserCount = $null,
+        [AllowNull()]$ComputerCount = $null,
+        [AllowNull()]$GroupCount = $null,
+        [AllowNull()]$OtherCount = $null,
+        [AllowNull()]$EnabledCount = $null,
+        [AllowNull()]$DisabledCount = $null,
+        [AllowNull()]$UnparsedCount = $null,
+        [AllowNull()]$Listed = $null,
+        [AllowNull()]$NotListed = $null,
+        [AllowEmptyString()][string]$Principals = '',
+        [AllowEmptyString()][string]$HistoricSids = '',
+        [AllowEmptyString()][string]$SourceDomains = ''
+    )
+    $row = New-Finding -Scope $Scope -Area 'Security' -Item $Item -Status $Status -Detail $Detail
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $asText = { param($Number) if ($null -eq $Number) { return '' } return ([int64]$Number).ToString($inv) }
+    $row | Add-Member -NotePropertyName 'NotRun' -NotePropertyValue $NotRun
+    $row | Add-Member -NotePropertyName 'Evidence' -NotePropertyValue $Evidence
+    $row | Add-Member -NotePropertyName 'DomainSid' -NotePropertyValue $DomainSid
+    $row | Add-Member -NotePropertyName 'PrincipalCount' -NotePropertyValue (& $asText $PrincipalCount)
+    $row | Add-Member -NotePropertyName 'ValueCount' -NotePropertyValue (& $asText $ValueCount)
+    $row | Add-Member -NotePropertyName 'UserCount' -NotePropertyValue (& $asText $UserCount)
+    $row | Add-Member -NotePropertyName 'ComputerCount' -NotePropertyValue (& $asText $ComputerCount)
+    $row | Add-Member -NotePropertyName 'GroupCount' -NotePropertyValue (& $asText $GroupCount)
+    $row | Add-Member -NotePropertyName 'OtherCount' -NotePropertyValue (& $asText $OtherCount)
+    $row | Add-Member -NotePropertyName 'EnabledCount' -NotePropertyValue (& $asText $EnabledCount)
+    $row | Add-Member -NotePropertyName 'DisabledCount' -NotePropertyValue (& $asText $DisabledCount)
+    $row | Add-Member -NotePropertyName 'UnparsedCount' -NotePropertyValue (& $asText $UnparsedCount)
+    $row | Add-Member -NotePropertyName 'Listed' -NotePropertyValue (& $asText $Listed)
+    $row | Add-Member -NotePropertyName 'NotListed' -NotePropertyValue (& $asText $NotListed)
+    $row | Add-Member -NotePropertyName 'Principals' -NotePropertyValue $Principals
+    $row | Add-Member -NotePropertyName 'HistoricSids' -NotePropertyValue $HistoricSids
+    $row | Add-Member -NotePropertyName 'SourceDomains' -NotePropertyValue $SourceDomains
+    return $row
+}
+
+function Get-AdfaSidHistoryCapText {
+    <#
+    .SYNOPSIS
+        Pure: the sentence that says how many names a row lists and how many it leaves out.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([int]$Listed, [int]$NotListed, [int]$Cap, [Parameter(Mandatory)][string]$Column)
+    return ("{0} listed in the {1} column, {2} not listed (NameListCap {3}, a tool default, not a Microsoft value)." -f $Listed, $Column, $NotListed, $Cap)
+}
+
+function ConvertFrom-AdfaSidValue {
+    <#
+    .SYNOPSIS
+        Pure: one SID - as bytes, as text, or as an object that carries its text in Value, as
+        System.Security.Principal.SecurityIdentifier does - in its parts. Never throws.
+    .DESCRIPTION
+        sIDHistory, objectSid and securityIdentifier have the String(Sid) syntax, an octet string
+        whose .NET type is System.Byte[] (https://learn.microsoft.com/windows/win32/adschema/s-string-sid,
+        read 2026-11-16). What the ActiveDirectory module hands over for them is not published, so
+        bytes, text and SecurityIdentifier-like objects are all read.
+
+        BYTES. The layout is checked first, the same way on every platform (MS-DTYP 2.4.2.2):
+        revision 1, at most 15 sub-authorities, and a length of exactly 8 + 4 x count bytes. The
+        6-byte identifier authority is read big-endian and each sub-authority as an unsigned
+        32-bit little-endian number, by arithmetic on [uint64] - never through [int] - so a RID of
+        4294967295 survives on Windows PowerShell 5.1 and PowerShell 7 alike. Then, unless
+        -NoPlatform is given, .NET SecurityIdentifier(byte[], 0) reads the same bytes: a value the
+        platform refuses (an ArgumentException anywhere in the chain) is not read, a platform that
+        cannot run it (the type missing, or not supported off Windows) leaves the fallback's
+        reading, and a platform that reads it differently from the fallback makes the value NOT
+        read, so the two parsers are cross-checked on every Windows run. The byte order of a
+        sub-authority is left to the protocol by MS-DTYP; little-endian is measured by that
+        cross-check, not read on Learn.
+
+        -PlatformReader replaces the platform's reading, for tests only: a scriptblock given the
+        bytes that returns the SID text or throws. No real value reaches the refusal or the
+        disagreement branch - the layout check runs first, and SecurityIdentifier agrees with the
+        fallback on every value that passes it - so without this seam neither branch could be
+        tested. Every caller in this script leaves it out.
+
+        TEXT. S-1-<authority>-<sub>... with up to 15 sub-authorities, the authority at most 2^48 - 1
+        and each sub-authority an unsigned 32-bit number, in the invariant culture.
+
+        DomainPart is every part but the last sub-authority (the domain identifier, Learn), Rid the
+        last sub-authority as [uint32]. IsAccountDomain is true for S-1-5-21-x-y-z-RID only: the
+        shape of a SID issued by a domain to an account or group.
+    .OUTPUTS
+        [pscustomobject] Ok, Text, Authority, SubAuthorities, DomainPart, Rid, IsAccountDomain,
+        Parser (Text | Platform | Fallback), Error.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Value, [switch]$NoPlatform, [scriptblock]$PlatformReader = $null)
+    $out = [pscustomobject]@{ Ok = $false; Text = ''; Authority = $null; SubAuthorities = @(); DomainPart = ''; Rid = $null; IsAccountDomain = $false; Parser = ''; Error = '' }
+    $reader = $PlatformReader
+    if ($null -eq $reader) { $reader = { param($SidBytes) [string]([System.Security.Principal.SecurityIdentifier]::new($SidBytes, 0)).Value } }
+    if ($null -eq $Value) { $out.Error = 'no value was given'; return $out }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $authority = [uint64]0
+    $subs = New-Object 'System.Collections.Generic.List[uint32]'
+    $parser = ''
+    if ($Value -is [byte[]]) {
+        $bytes = [byte[]]$Value
+        if ($bytes.Length -lt 8) { $out.Error = ("{0} bytes is shorter than the 8-byte header of a SID" -f $bytes.Length); return $out }
+        if ([int]$bytes[0] -ne 1) { $out.Error = ("the revision byte is {0}, and a SID's revision must be 1" -f [int]$bytes[0]); return $out }
+        $count = [int]$bytes[1]
+        if ($count -gt 15) { $out.Error = ("the value says it has {0} sub-authorities, and a SID has at most 15" -f $count); return $out }
+        $expected = 8 + (4 * $count)
+        if ($bytes.Length -ne $expected) { $out.Error = ("the value is {0} bytes long, and a SID with {1} sub-authorities is {2}" -f $bytes.Length, $count, $expected); return $out }
+        for ($i = 2; $i -le 7; $i++) { $authority = ($authority * [uint64]256) + [uint64]$bytes[$i] }
+        for ($k = 0; $k -lt $count; $k++) {
+            $o = 8 + (4 * $k)
+            $number = [uint64]$bytes[$o] + ([uint64]$bytes[$o + 1] * [uint64]256) + ([uint64]$bytes[$o + 2] * [uint64]65536) + ([uint64]$bytes[$o + 3] * [uint64]16777216)
+            $subs.Add([uint32]$number)
+        }
+        $parser = 'Fallback'
+        if (-not $NoPlatform) {
+            $fallbackText = ('S-1-{0}{1}' -f $authority.ToString($inv), (@($subs | ForEach-Object { '-' + $_.ToString($inv) }) -join ''))
+            try {
+                $platformText = [string](& $reader $bytes)
+                if ($platformText -cne $fallbackText) {
+                    $out.Error = ("the platform reads this value as '{0}' and its byte layout gives '{1}', so it is not read" -f $platformText, $fallbackText)
+                    return $out
+                }
+                $parser = 'Platform'
+            }
+            catch {
+                $e = $_.Exception
+                $refused = $false
+                while ($null -ne $e) {
+                    if ($e -is [System.ArgumentException]) { $refused = $true; break }
+                    $e = $e.InnerException
+                }
+                if ($refused) { $out.Error = ("the platform refused it as a SID: {0}" -f [string]$_.Exception.Message); return $out }
+                # The type is missing, or not supported on this platform: the fallback's reading stands.
+            }
+        }
+    }
+    else {
+        $text = $null
+        if ($Value -is [string]) { $text = [string]$Value }
+        else {
+            $valueProp = $Value.PSObject.Properties['Value']
+            if ($null -ne $valueProp -and $valueProp.Value -is [string]) { $text = [string]$valueProp.Value }
+        }
+        if ($null -eq $text) { $out.Error = ("a value of type {0} is not a SID" -f $Value.GetType().FullName); return $out }
+        $text = $text.Trim()
+        if ($text -notmatch '^[Ss]-1-(\d{1,15})((?:-\d{1,10}){0,15})$') { $out.Error = ("'{0}' is not a SID in its text form" -f $text); return $out }
+        $authorityText = $Matches[1]
+        $subText = $Matches[2]
+        if (-not [uint64]::TryParse($authorityText, [System.Globalization.NumberStyles]::None, $inv, [ref]$authority) -or $authority -gt [uint64]281474976710655) {
+            $out.Error = ("the identifier authority of '{0}' does not fit in 48 bits" -f $text); return $out
+        }
+        foreach ($part in @($subText.Split([char]'-') | Where-Object { $_ -ne '' })) {
+            $number = [uint32]0
+            if (-not [uint32]::TryParse($part, [System.Globalization.NumberStyles]::None, $inv, [ref]$number)) {
+                $out.Error = ("the sub-authority {0} of '{1}' is not an unsigned 32-bit number" -f $part, $text); return $out
+            }
+            $subs.Add($number)
+        }
+        $parser = 'Text'
+    }
+    $out.Authority = $authority
+    $out.SubAuthorities = $subs.ToArray()
+    $authorityString = $authority.ToString($inv)
+    $out.Text = ('S-1-{0}{1}' -f $authorityString, (@($subs | ForEach-Object { '-' + $_.ToString($inv) }) -join ''))
+    if ($subs.Count -ge 1) {
+        $out.Rid = [uint32]$subs[$subs.Count - 1]
+        $domainSubs = @()
+        for ($i = 0; $i -lt ($subs.Count - 1); $i++) { $domainSubs += ('-' + $subs[$i].ToString($inv)) }
+        $out.DomainPart = ('S-1-{0}{1}' -f $authorityString, ($domainSubs -join ''))
+    }
+    $out.IsAccountDomain = ($authority -eq [uint64]5 -and $subs.Count -eq 5 -and $subs[0] -eq [uint32]21)
+    $out.Parser = $parser
+    $out.Ok = $true
+    return $out
+}
+
+function Get-AdfaSidValueList {
+    <#
+    .SYNOPSIS
+        Pure: the values of a multi-valued SID attribute, one pipeline object per value.
+    .DESCRIPTION
+        A single byte array is ONE value and is written as one object: PowerShell would otherwise
+        unroll it into its bytes. A string is one value. Any other collection - an array, an
+        ArrayList, the module's own property value collection - gives each of its elements. $null
+        gives nothing.
+    .OUTPUTS
+        [object] one per value.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+    if ($null -eq $Value) { return }
+    if ($Value -is [byte[]] -or $Value -is [string]) { , $Value; return }
+    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [System.Collections.IDictionary]) {
+        foreach ($element in $Value) { if ($null -ne $element) { , $element } }
+        return
+    }
+    , $Value
+}
+
+function Get-AdfaSidHistoryRefusedProperty {
+    <#
+    .SYNOPSIS
+        Pure: the names in a property list that this row must never send - a blank, or a wildcard,
+        which would ask the directory for every attribute of every principal.
+    .OUTPUTS
+        [string[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$PropertyNames = @())
+    $refused = @()
+    foreach ($name in @($PropertyNames)) {
+        if ([string]::IsNullOrWhiteSpace($name)) { $refused += '(blank)'; continue }
+        if ($name -match '[*?]') { $refused += $name }
+    }
+    return @($refused)
+}
+
+function ConvertTo-AdfaSidHistoryRecord {
+    <#
+    .SYNOPSIS
+        Pure: one directory object with sIDHistory as the small record the verdicts read.
+    .DESCRIPTION
+        Every value is read through PSObject.Properties, so an attribute the object does not carry
+        is $null and never an error under StrictMode, and none of them passes through a function's
+        return - which would unroll a byte array into its bytes. Enabled is read from
+        userAccountControl (ACCOUNTDISABLE, Config.AccountDisableFlag) for users and computers;
+        for a group, or where userAccountControl was not returned, it is $null.
+    .OUTPUTS
+        [pscustomobject] Dn, Sam, Name, Class, Enabled, ObjectSid, History.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Object,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    # Each value straight from its property, never through a function's return.
+    $values = @{}
+    foreach ($attribute in @('distinguishedName', 'sAMAccountName', 'Name', 'objectClass', 'userAccountControl')) {
+        $values[$attribute] = $null
+        $p = $Object.PSObject.Properties[$attribute]
+        if ($null -ne $p) { $values[$attribute] = $p.Value }
+    }
+    $dn = [string]$values['distinguishedName']
+    $sam = [string]$values['sAMAccountName']
+    $name = $sam
+    if ([string]::IsNullOrWhiteSpace($name)) { $name = [string]$values['Name'] }
+    if ([string]::IsNullOrWhiteSpace($name)) { $name = $dn }
+    if ([string]::IsNullOrWhiteSpace($name)) { $name = '(unnamed)' }
+    # objectClass may come back as the most specific class or as the whole chain; the last value is
+    # the most specific either way.
+    $class = ''
+    $classes = @(Get-AdfaSidValueList -Value $values['objectClass'] | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+    if ($classes.Count -gt 0) { $class = $classes[$classes.Count - 1] }
+    $enabled = $null
+    $isAccount = (@(@($Config['UserClasses']) + @($Config['ComputerClasses']) | Where-Object { $_ -eq $class }).Count -gt 0)
+    $uacRaw = $values['userAccountControl']
+    if ($isAccount -and $null -ne $uacRaw) {
+        $uac = [int64]0
+        if ([int64]::TryParse(([string]$uacRaw).Trim(), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$uac)) {
+            $enabled = (($uac -band [int64]$Config['AccountDisableFlag']) -eq 0)
+        }
+    }
+    $sidProp = $Object.PSObject.Properties['objectSid']
+    $objectSid = $null
+    if ($null -ne $sidProp) { $objectSid = $sidProp.Value }
+    $historyProp = $Object.PSObject.Properties['sIDHistory']
+    $history = @()
+    if ($null -ne $historyProp) { $history = @(Get-AdfaSidValueList -Value $historyProp.Value) }
+    return [pscustomobject]@{ Dn = $dn; Sam = $sam; Name = $name; Class = $class; Enabled = $enabled; ObjectSid = $objectSid; History = $history }
+}
+
+function Get-AdfaSidHistoryRaw {
+    <#
+    .SYNOPSIS
+        The directory seam of C7: one domain's SID, its principals with sIDHistory, and its
+        trusted domain objects. Read-only. Never throws.
+    .DESCRIPTION
+        Three reads:
+          Get-ADDomain -Identity <domain>   its DistinguishedName and DomainSID, with the caller's AD
+                                            parameters unchanged, as the Laps and RidPool sections
+                                            read it
+          Get-ADObject -LDAPFilter (sIDHistory=*) -Server <domain>, asking for
+                                            Config.ObjectProperties only
+          Get-ADObject -LDAPFilter (objectClass=trustedDomain) -SearchBase CN=System,<domain DN>
+                                            -Server <domain>, asking for Config.TrustProperties only
+        The principal query relies on the paging the ActiveDirectory module does by itself (default
+        256 objects per page, all results: https://learn.microsoft.com/powershell/module/activedirectory/get-adobject,
+        read 2026-11-16); no page size and no result limit is set, as nowhere else in this script.
+        Each object is reduced to a small record as it arrives.
+
+        The three are independent: a domain that could not be read leaves the principals (only
+        the same-domain row then needs its SID), and a trust read that failed leaves both.
+
+        A property list that is empty or holds a blank or a wildcard is refused before any call:
+        Refused = $true and nothing is asked. Nothing here writes: no Set-ADUser, no Set-ADObject,
+        no -Remove, and sIDHistory is never modified.
+    .OUTPUTS
+        [pscustomobject] Ok (the principal query succeeded), Refused, Error, ErrorType, Server,
+        DomainDn, DomainSid (text, '' when not read), DomainSidError, Records, TrustOk, TrustError,
+        TrustErrorType, Trusts (Partner, FlatName, Sid).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $out = [pscustomobject]@{
+        Ok = $false; Refused = $false; Error = ''; ErrorType = ''; Server = $DomainName; DomainDn = ''; DomainSid = ''; DomainSidError = ''
+        Records = @(); TrustOk = $false; TrustError = ''; TrustErrorType = ''; Trusts = @()
+    }
+    $objectProperties = @(@($Config['ObjectProperties']) | ForEach-Object { [string]$_ })
+    $trustProperties = @(@($Config['TrustProperties']) | ForEach-Object { [string]$_ })
+    $refused = @(Get-AdfaSidHistoryRefusedProperty -PropertyNames @($objectProperties + $trustProperties))
+    if ($objectProperties.Count -eq 0 -or $trustProperties.Count -eq 0 -or $refused.Count -gt 0) {
+        $out.Refused = $true
+        $out.Error = ("the property list is empty or holds a blank or a wildcard ({0}), so nothing was asked of the directory." -f ($refused -join ', '))
+        return $out
+    }
+
+    # The domain: its DN, for the trusts, and its SID, for the same-domain comparison.
+    try {
+        $domainArgs = @{} + $AdParams
+        $domainArgs.Identity = $DomainName
+        $domainArgs.ErrorAction = 'Stop'
+        $domain = Get-ADDomain @domainArgs
+        if ($null -ne $domain) {
+            $dnProp = $domain.PSObject.Properties['DistinguishedName']
+            if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $out.DomainDn = ([string]$dnProp.Value).Trim() }
+            $sidProp = $domain.PSObject.Properties['DomainSID']
+            if ($null -ne $sidProp -and $null -ne $sidProp.Value) {
+                $parsed = ConvertFrom-AdfaSidValue -Value $sidProp.Value
+                if ($parsed.Ok) { $out.DomainSid = $parsed.Text }
+                else { $out.DomainSidError = ("the DomainSID that Get-ADDomain returned for {0} could not be read as a SID: {1}" -f $DomainName, $parsed.Error) }
+            }
+            else { $out.DomainSidError = ("Get-ADDomain returned no DomainSID for {0}." -f $DomainName) }
+        }
+        else { $out.DomainSidError = ("Get-ADDomain returned nothing for {0}." -f $DomainName) }
+    }
+    catch { $out.DomainSidError = ("Get-ADDomain for {0}: {1}" -f $DomainName, [string]$_.Exception.Message) }
+
+    # The principals with sIDHistory.
+    try {
+        $objectArgs = @{} + $AdParams
+        $objectArgs.Server = $DomainName
+        $objectArgs.LDAPFilter = [string]$Config['SearchFilter']
+        $objectArgs.Properties = @($objectProperties)
+        $objectArgs.ErrorAction = 'Stop'
+        $records = New-Object System.Collections.ArrayList
+        Get-ADObject @objectArgs | ForEach-Object {
+            if ($null -ne $_) { [void]$records.Add((ConvertTo-AdfaSidHistoryRecord -Object $_ -Config $Config)) }
+        }
+        $out.Records = $records.ToArray()
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+
+    # The trusted domain objects, for the source domains.
+    if ($out.DomainDn -eq '') {
+        $out.TrustError = ("the distinguished name of {0} was not read, so its trusted domain objects were not looked up" -f $DomainName)
+    }
+    else {
+        try {
+            $trustArgs = @{} + $AdParams
+            $trustArgs.Server = $DomainName
+            $trustArgs.LDAPFilter = [string]$Config['TrustFilter']
+            $trustArgs.SearchBase = ("{0},{1}" -f [string]$Config['TrustContainerRdn'], $out.DomainDn)
+            $trustArgs.Properties = @($trustProperties)
+            $trustArgs.ErrorAction = 'Stop'
+            $trusts = New-Object System.Collections.ArrayList
+            Get-ADObject @trustArgs | ForEach-Object {
+                if ($null -ne $_) {
+                    $partnerProp = $_.PSObject.Properties['trustPartner']
+                    $flatProp = $_.PSObject.Properties['flatName']
+                    $tdoSidProp = $_.PSObject.Properties['securityIdentifier']
+                    $partner = ''
+                    if ($null -ne $partnerProp -and $null -ne $partnerProp.Value) { $partner = ([string]$partnerProp.Value).Trim() }
+                    $flat = ''
+                    if ($null -ne $flatProp -and $null -ne $flatProp.Value) { $flat = ([string]$flatProp.Value).Trim() }
+                    $tdoSid = $null
+                    if ($null -ne $tdoSidProp) { $tdoSid = $tdoSidProp.Value }
+                    [void]$trusts.Add([pscustomobject]@{ Partner = $partner; FlatName = $flat; Sid = $tdoSid })
+                }
+            }
+            $out.Trusts = $trusts.ToArray()
+            $out.TrustOk = $true
+        }
+        catch {
+            $out.TrustError = [string]$_.Exception.Message
+            $out.TrustErrorType = [string]$_.Exception.GetType().FullName
+        }
+    }
+    return $out
+}
+
+function Get-AdfaSidHistoryForestMap {
+    <#
+    .SYNOPSIS
+        The forest seam of C7: the SID of every domain of the forest, to name the domain a historic
+        SID came from. Read-only. Never throws.
+    .DESCRIPTION
+        Get-ADDomain -Identity <domain> for each name given, with the caller's AD parameters
+        unchanged. A domain that could not be read is kept in Failures with the reason; it makes
+        the sources row partial and never fails a domain.
+    .OUTPUTS
+        [pscustomobject] Map (domain SID text -> domain name), Failures ("<domain>: <reason>").
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$Domains = @(),
+        [hashtable]$AdParams = @{}
+    )
+    $map = @{}
+    $failures = New-Object System.Collections.ArrayList
+    $seen = @()
+    foreach ($name in @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ([string]$_).Trim() })) {
+        if ($seen -contains $name) { continue }
+        $seen += $name
+        try {
+            $domainArgs = @{} + $AdParams
+            $domainArgs.Identity = $name
+            $domainArgs.ErrorAction = 'Stop'
+            $domain = Get-ADDomain @domainArgs
+            $sidProp = $null
+            if ($null -ne $domain) { $sidProp = $domain.PSObject.Properties['DomainSID'] }
+            if ($null -eq $sidProp -or $null -eq $sidProp.Value) { [void]$failures.Add(("{0}: Get-ADDomain returned no DomainSID" -f $name)); continue }
+            $parsed = ConvertFrom-AdfaSidValue -Value $sidProp.Value
+            if (-not $parsed.Ok) { [void]$failures.Add(("{0}: its DomainSID could not be read as a SID ({1})" -f $name, $parsed.Error)); continue }
+            $map[$parsed.Text] = $name
+        }
+        catch { [void]$failures.Add(("{0}: {1}" -f $name, [string]$_.Exception.Message)) }
+    }
+    return [pscustomobject]@{ Map = $map; Failures = $failures.ToArray() }
+}
+
+function Get-AdfaSidHistoryClassification {
+    <#
+    .SYNOPSIS
+        Pure: every historic SID value of a domain's principals, parsed and classified.
+    .DESCRIPTION
+        For each value: whether it was parsed; SameDomain (its domain part equals the domain's own
+        SID); PrivilegedName (the name of the privileged RID - on an account-domain SID only - or of
+        the privileged fixed SID, or '') and Privileged, the label Detail carries ("<name> (RID n)"
+        or "<name> (well-known SID)", never the SID text); and Source, the label of its domain part:
+        "<name>, this forest", "<name>, trust partner", "builtin or well-known" (S-1-5-32-x, and
+        SIDs with no domain identifier such as S-1-5-9), "not an account-domain SID", or
+        "unresolved" - which says only that it matched neither, never what the domain is.
+        NoValue counts the principals that came back with no sIDHistory value at all.
+    .OUTPUTS
+        [pscustomobject] OwnSid ('' when not known), Values (Record, Parsed, SameDomain, Privileged,
+        PrivilegedName, SourceKey, Source), Unparsed, NoValue.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$Records = @(),
+        [AllowEmptyString()][string]$DomainSid = '',
+        [AllowNull()]$ForestMap = $null,
+        [AllowNull()][AllowEmptyCollection()]$Trusts = @(),
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $own = ''
+    if (-not [string]::IsNullOrWhiteSpace($DomainSid)) {
+        $ownParsed = ConvertFrom-AdfaSidValue -Value $DomainSid
+        if ($ownParsed.Ok) { $own = $ownParsed.Text }
+    }
+    $forest = @{}
+    if ($null -ne $ForestMap) {
+        $mapProp = $ForestMap.PSObject.Properties['Map']
+        if ($null -ne $mapProp -and $mapProp.Value -is [System.Collections.IDictionary]) {
+            foreach ($k in @($mapProp.Value.Keys)) {
+                $p = ConvertFrom-AdfaSidValue -Value ([string]$k)
+                if ($p.Ok) { $forest[$p.Text] = [string]$mapProp.Value[$k] }
+            }
+        }
+    }
+    $trustMap = @{}
+    foreach ($t in @($Trusts | Where-Object { $null -ne $_ })) {
+        $p = ConvertFrom-AdfaSidValue -Value $t.Sid
+        if (-not $p.Ok) { continue }
+        $label = [string]$t.Partner
+        if ([string]::IsNullOrWhiteSpace($label)) { $label = [string]$t.FlatName }
+        if ([string]::IsNullOrWhiteSpace($label)) { $label = '(unnamed trust)' }
+        if (-not $trustMap.ContainsKey($p.Text)) { $trustMap[$p.Text] = $label }
+    }
+    $privRids = @{}
+    foreach ($e in @($Config['PrivilegedDomainRids'])) { $privRids[([uint32]$e['Rid']).ToString([System.Globalization.CultureInfo]::InvariantCulture)] = [string]$e['Name'] }
+    $privSids = @{}
+    foreach ($e in @($Config['PrivilegedSids'])) { $privSids[([string]$e['Sid']).ToUpperInvariant()] = [string]$e['Name'] }
+
+    $values = New-Object System.Collections.ArrayList
+    $unparsed = 0
+    $noValue = 0
+    foreach ($r in @($Records | Where-Object { $null -ne $_ })) {
+        $recordValues = @(Get-AdfaSidValueList -Value $r.History)
+        # Returned by (sIDHistory=*) and yet no value came back on it: not measured, never clean.
+        if ($recordValues.Count -eq 0) { $noValue++ }
+        foreach ($v in $recordValues) {
+            $p = ConvertFrom-AdfaSidValue -Value $v
+            $entry = [pscustomobject]@{ Record = $r; Parsed = $p; SameDomain = $false; Privileged = ''; PrivilegedName = ''; SourceKey = ''; Source = '' }
+            if (-not $p.Ok) { $unparsed++; [void]$values.Add($entry); continue }
+            $entry.SameDomain = ($own -ne '' -and $p.DomainPart -eq $own)
+            $ridKey = ''
+            if ($null -ne $p.Rid) { $ridKey = ([uint32]$p.Rid).ToString([System.Globalization.CultureInfo]::InvariantCulture) }
+            # Privileged is the label Detail carries, with no SID text in it; the SID itself goes
+            # only to the HistoricSids column, with PrivilegedName.
+            if ($p.IsAccountDomain -and $privRids.ContainsKey($ridKey)) { $entry.PrivilegedName = $privRids[$ridKey]; $entry.Privileged = ("{0} (RID {1})" -f $privRids[$ridKey], $ridKey) }
+            elseif ($privSids.ContainsKey($p.Text)) { $entry.PrivilegedName = $privSids[$p.Text]; $entry.Privileged = ("{0} (well-known SID)" -f $privSids[$p.Text]) }
+            $key = $p.DomainPart
+            if ($key -eq '') { $key = $p.Text }
+            $entry.SourceKey = $key
+            $subs = @($p.SubAuthorities)
+            if ($forest.ContainsKey($key)) { $entry.Source = ("{0}, this forest" -f $forest[$key]) }
+            elseif ($trustMap.ContainsKey($key)) { $entry.Source = ("{0}, trust partner" -f $trustMap[$key]) }
+            elseif ($p.IsAccountDomain) { $entry.Source = 'unresolved' }
+            elseif ($p.Authority -eq [uint64]5 -and ($subs.Count -le 1 -or $subs[0] -eq [uint32]32)) { $entry.Source = 'builtin or well-known' }
+            else { $entry.Source = 'not an account-domain SID' }
+            [void]$values.Add($entry)
+        }
+    }
+    return [pscustomobject]@{ OwnSid = $own; Values = $values.ToArray(); Unparsed = $unparsed; NoValue = $noValue }
+}
+
+function Get-AdfaSidHistoryHolderText {
+    <#
+    .SYNOPSIS
+        Pure: the Principals and HistoricSids columns for a set of classified values, the number of
+        principals they belong to, and how many were listed under the cap.
+    .OUTPUTS
+        [pscustomobject] Count, Listed, NotListed, Principals, HistoricSids.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][AllowEmptyCollection()]$Values = @(), [int]$Cap = 0, [switch]$WithPrivilegedName)
+    $holders = New-Object System.Collections.ArrayList
+    $byHolder = @{}
+    $nameOf = @{}
+    foreach ($v in @($Values | Where-Object { $null -ne $_ })) {
+        # The key only groups; it is never split. The DN's length in front makes it unambiguous,
+        # since a DN may hold an unescaped '|' (RFC 4514). The name is kept on its own.
+        $dn = [string]$v.Record.Dn
+        $key = ("{0}:{1}|{2}" -f $dn.Length, $dn, [string]$v.Record.Name)
+        if (-not $byHolder.ContainsKey($key)) { $byHolder[$key] = New-Object System.Collections.ArrayList; [void]$holders.Add($key); $nameOf[$key] = [string]$v.Record.Name }
+        $text = [string]$v.Parsed.Text
+        if ($WithPrivilegedName -and [string]$v.PrivilegedName -ne '') { $text = ("{0} ({1})" -f $text, [string]$v.PrivilegedName) }
+        [void]$byHolder[$key].Add($text)
+    }
+    $listed = [math]::Min($Cap, $holders.Count)
+    $names = @()
+    $sids = @()
+    for ($i = 0; $i -lt $listed; $i++) {
+        $name = [string]$nameOf[$holders[$i]]
+        $names += $name
+        $sids += ("{0}={1}" -f $name, (@($byHolder[$holders[$i]]) -join ','))
+    }
+    return [pscustomobject]@{ Count = $holders.Count; Listed = $listed; NotListed = ($holders.Count - $listed); Principals = ($names -join '; '); HistoricSids = ($sids -join '; ') }
+}
+
+function Get-AdfaSidHistoryCountVerdict {
+    <#
+    .SYNOPSIS
+        Pure: row 1, "SID history: <domain>" - how many principals carry sIDHistory, by class.
+    .DESCRIPTION
+        Called only for a query that succeeded (the domain finding handles a failed one).
+          none returned        Pass, worded "None visible": Microsoft documents that a search
+                               returns no property the caller may not read, so this is what this
+                               account can see
+          one or more          Config.PresentStatus - Warning by default, Info by override: a TOOL
+                               DEFAULT (catalogue ADA-OBJ-009), not a Microsoft value. Microsoft
+                               publishes no grade; the same-domain and privileged rows carry the Fail
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [Parameter(Mandatory)]$Raw,
+        [Parameter(Mandatory)]$Classified,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("SID history: {0}" -f $Domain)
+    $evidence = ("Get-ADObject -LDAPFilter '{0}' -Server {1}" -f [string]$Config['SearchFilter'], $Domain)
+    $records = @($Raw.Records | Where-Object { $null -ne $_ })
+    $values = @($Classified.Values)
+    if ($records.Count -eq 0) {
+        $detail = ("None visible: no security principal with sIDHistory is visible to this account in {0}; the query {1} completed and returned no object. By the default security descriptors of the user, group and computer classes Authenticated Users may read sIDHistory, but Microsoft documents that a search returns no object or property the caller has no access to, so this is what this account can see, not proof that none exists." -f $Domain, [string]$Config['SearchFilter'])
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.Pass -Detail $detail -Evidence $evidence -DomainSid ([string]$Classified.OwnSid) `
+                -PrincipalCount 0 -ValueCount 0 -UserCount 0 -ComputerCount 0 -GroupCount 0 -OtherCount 0 -EnabledCount 0 -DisabledCount 0 -UnparsedCount 0 -Listed 0 -NotListed 0)
+    }
+    $users = 0; $computers = 0; $groups = 0; $others = 0; $enabled = 0; $disabled = 0; $noState = 0
+    foreach ($r in $records) {
+        $class = [string]$r.Class
+        if (@(@($Config['UserClasses']) | Where-Object { $_ -eq $class }).Count -gt 0) { $users++ }
+        elseif (@(@($Config['ComputerClasses']) | Where-Object { $_ -eq $class }).Count -gt 0) { $computers++ }
+        elseif (@(@($Config['GroupClasses']) | Where-Object { $_ -eq $class }).Count -gt 0) { $groups++ }
+        else { $others++ }
+        if ($r.Enabled -is [bool]) { if ([bool]$r.Enabled) { $enabled++ } else { $disabled++ } }
+        else { $noState++ }
+    }
+    $cap = [int]$Config['NameListCap']
+    $listed = [math]::Min($cap, $records.Count)
+    $names = @()
+    for ($i = 0; $i -lt $listed; $i++) { $names += [string]$records[$i].Name }
+    $status = [string]$Config['PresentStatus']
+    $noValueNote = ''
+    $noValue = [int]$Classified.NoValue
+    if ($noValue -gt 0) { $noValueNote = (" {0} principal(s) came back with no sIDHistory value read, so their historic SIDs were not measured." -f $noValue) }
+    $detail = ("{0} security principal(s) with sIDHistory visible to this account in {1}: {2} user, {3} computer (managed service accounts included), {4} group, {5} other; {6} enabled, {7} disabled, {8} with no enabled state (groups, or userAccountControl not returned). {9} historic SID value(s) in all, {10} of them not parsed.{14} {11} Graded {12}: the grade for SID history that is present is a tool default, not a Microsoft value (setting from: {13}). Microsoft publishes no grade for it; it names eliminating SID history as one way to reduce token size, and Defender for Identity reports SID history it judges unsecure for removal. Whether a value belongs to this domain itself or is privileged is graded in the two rows that follow." -f `
+            $records.Count, $Domain, $users, $computers, $groups, $others, $enabled, $disabled, $noState, $values.Count, [int]$Classified.Unparsed,
+            (Get-AdfaSidHistoryCapText -Listed $listed -NotListed ($records.Count - $listed) -Cap $cap -Column 'Principals'), $status, [string]$Config['ThresholdSource'], $noValueNote)
+    return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $status -Detail $detail -Evidence $evidence -DomainSid ([string]$Classified.OwnSid) `
+            -PrincipalCount $records.Count -ValueCount $values.Count -UserCount $users -ComputerCount $computers -GroupCount $groups -OtherCount $others `
+            -EnabledCount $enabled -DisabledCount $disabled -UnparsedCount ([int]$Classified.Unparsed) -Listed $listed -NotListed ($records.Count - $listed) -Principals ($names -join '; '))
+}
+
+function Get-AdfaSidHistorySameDomainVerdict {
+    <#
+    .SYNOPSIS
+        Pure: row 2, "SID history same-domain: <domain>" - a historic SID of the principal's own
+        domain.
+    .DESCRIPTION
+        Called only for a query that succeeded. In this order:
+          no principal returned                    Pass ("None visible")
+          principals returned, no value read       Not Assessed
+          the domain's own SID not read            Not Assessed, with the reason
+          a value whose domain part is that SID    Fail (it stands even when other values were not
+                                                   parsed or not read)
+          a value that could not be parsed, or a   Not Assessed
+          principal with no value read
+          otherwise                                Pass
+        The Fail is this tool's rule, from Microsoft's DsAddSidHistory constraint (source and
+        destination "must not be in the same forest", so that duplicate SIDs are not created in
+        it) and from a move issuing a new SID in the domain moved TO: Microsoft documents no origin
+        for a historic SID of the object's own domain. That it indicates abuse is an inference.
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [Parameter(Mandatory)]$Raw,
+        [Parameter(Mandatory)]$Classified,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("SID history same-domain: {0}" -f $Domain)
+    $evidence = ("Get-ADObject -LDAPFilter '{0}' -Server {1}; Get-ADDomain -Identity {1}" -f [string]$Config['SearchFilter'], $Domain)
+    $values = @($Classified.Values)
+    $unparsed = [int]$Classified.Unparsed
+    $noValue = [int]$Classified.NoValue
+    $own = [string]$Classified.OwnSid
+    $records = @($Raw.Records | Where-Object { $null -ne $_ })
+    if ($records.Count -eq 0) {
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.Pass -Evidence $evidence -DomainSid $own -ValueCount 0 -UnparsedCount 0 -Listed 0 -NotListed 0 `
+                -Detail ("None visible: no historic SID is visible to this account in {0}, so none belongs to the domain itself." -f $Domain))
+    }
+    if ($values.Count -eq 0) {
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -DomainSid $own -ValueCount 0 -UnparsedCount 0 `
+                -Detail ("Not assessed: {0} principal(s) in {1} were returned for {2}, but no sIDHistory value was read on any of them, so none was compared with the domain's own SID. This is not a clean result." -f $records.Count, $Domain, [string]$Config['SearchFilter']))
+    }
+    if ($own -eq '') {
+        $why = ([string]$Raw.DomainSidError).Trim()
+        if ($why -eq '') { $why = '(no reason was recorded)' }
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -ValueCount $values.Count -UnparsedCount $unparsed `
+                -Detail ("Not assessed: the SID of {0} was not read, so no historic SID was compared with it. This is not a clean result. Reported - {1}" -f $Domain, $why))
+    }
+    $hits = @($values | Where-Object { $_.SameDomain })
+    $unparsedNote = ''
+    if ($unparsed -gt 0) { $unparsedNote = (" {0} value(s) could not be parsed and were not compared." -f $unparsed) }
+    if ($noValue -gt 0) { $unparsedNote += (" {0} principal(s) came back with no sIDHistory value read and were not compared." -f $noValue) }
+    $cap = [int]$Config['NameListCap']
+    if ($hits.Count -gt 0) {
+        $holders = Get-AdfaSidHistoryHolderText -Values $hits -Cap $cap
+        $detail = ("Same-domain SID history: {0} historic SID value(s) on {1} principal(s) belong to {2} itself - the domain part of each equals the domain's own SID (in the DomainSid column). Microsoft documents that DsAddSidHistory, the supported way to add SID history, requires the source and destination domains to be in different forests so that duplicate SIDs are not created in one forest, and that moving an object between domains keeps the SID it had in the domain it left; a SID of the object's own domain therefore has no documented origin. That it points to tampering is this tool's inference, not a Microsoft statement.{3} {4}" -f `
+                $hits.Count, $holders.Count, $Domain, $unparsedNote, (Get-AdfaSidHistoryCapText -Listed $holders.Listed -NotListed $holders.NotListed -Cap $cap -Column 'Principals'))
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.Fail -Detail $detail -Evidence $evidence -DomainSid $own -PrincipalCount $holders.Count `
+                -ValueCount $hits.Count -UnparsedCount $unparsed -Listed $holders.Listed -NotListed $holders.NotListed -Principals $holders.Principals -HistoricSids $holders.HistoricSids)
+    }
+    if ($unparsed -gt 0 -or $noValue -gt 0) {
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -DomainSid $own -ValueCount $values.Count -UnparsedCount $unparsed `
+                -Detail ("Not assessed: none of the parsed historic SIDs belongs to {0}, but {1} value(s) could not be parsed and {2} principal(s) came back with no sIDHistory value read, so a same-domain value cannot be ruled out. This is not a clean result." -f $Domain, $unparsed, $noValue))
+    }
+    return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.Pass -Evidence $evidence -DomainSid $own -ValueCount $values.Count -UnparsedCount 0 -Listed 0 -NotListed 0 `
+            -Detail ("None found: none of the {0} historic SID value(s) visible to this account belongs to {1} itself." -f $values.Count, $Domain))
+}
+
+function Get-AdfaSidHistoryPrivilegedVerdict {
+    <#
+    .SYNOPSIS
+        Pure: row 3, "SID history privileged: <domain>" - a privileged well-known RID or SID in SID
+        history, named.
+    .DESCRIPTION
+        Called only for a query that succeeded. Privileged: a RID in Config.PrivilegedDomainRids on
+        an account-domain SID (S-1-5-21-x-y-z-RID), whatever its domain, or a SID equal to one in
+        Config.PrivilegedSids. No principal returned: Pass. Principals returned and no value read:
+        Not Assessed. A privileged value: Fail, naming each privileged RID or well-known group by
+        name and count in Detail (the SIDs themselves only in HistoricSids); it stands even when
+        other values were not parsed or not read. A value not parsed, or a principal with no value
+        read, and none privileged: Not Assessed. Otherwise Pass. Microsoft's Defender for Identity gives
+        the Enterprise Admins SID in another account's SID history as its example of unsecure SID
+        history; which SIDs count as privileged is this tool's list, from Microsoft's tables.
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [Parameter(Mandatory)]$Raw,
+        [Parameter(Mandatory)]$Classified,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("SID history privileged: {0}" -f $Domain)
+    $evidence = ("Get-ADObject -LDAPFilter '{0}' -Server {1}" -f [string]$Config['SearchFilter'], $Domain)
+    $notRun = 'Whether a trust lets these SIDs through (SID filtering, also called quarantine) is reported in the Trusts section, not here.'
+    $values = @($Classified.Values)
+    $unparsed = [int]$Classified.Unparsed
+    $noValue = [int]$Classified.NoValue
+    $own = [string]$Classified.OwnSid
+    $records = @($Raw.Records | Where-Object { $null -ne $_ })
+    if ($records.Count -eq 0) {
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.Pass -Evidence $evidence -NotRun $notRun -DomainSid $own -ValueCount 0 -UnparsedCount 0 -Listed 0 -NotListed 0 `
+                -Detail ("None visible: no historic SID is visible to this account in {0}, so none is privileged." -f $Domain))
+    }
+    if ($values.Count -eq 0) {
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -NotRun $notRun -DomainSid $own -ValueCount 0 -UnparsedCount 0 `
+                -Detail ("Not assessed: {0} principal(s) in {1} were returned for {2}, but no sIDHistory value was read on any of them, so none was checked against the privileged list. This is not a clean result." -f $records.Count, $Domain, [string]$Config['SearchFilter']))
+    }
+    $hits = @($values | Where-Object { [string]$_.Privileged -ne '' })
+    $cap = [int]$Config['NameListCap']
+    if ($hits.Count -gt 0) {
+        # Privileged is "<name> (RID n)" or "<name> (well-known SID)": no SID text reaches Detail.
+        $named = @($hits | Group-Object -Property { [string]$_.Privileged } | Sort-Object -Property Name | ForEach-Object { ("{0} x{1}" -f $_.Name, $_.Count) })
+        $unparsedNote = ''
+        if ($unparsed -gt 0) { $unparsedNote = (" {0} other value(s) could not be parsed." -f $unparsed) }
+        if ($noValue -gt 0) { $unparsedNote += (" {0} principal(s) came back with no sIDHistory value read." -f $noValue) }
+        $holders = Get-AdfaSidHistoryHolderText -Values $hits -Cap $cap -WithPrivilegedName
+        $detail = ("Privileged SID in SID history: {0} historic SID value(s) on {1} principal(s) are privileged well-known SIDs: {2}. A SID in sIDHistory is added to the holder's access token at sign-in and can grant access as that SID; Microsoft's Defender for Identity gives the Enterprise Admins SID in another account's SID history as its example of unsecure SID history, and Microsoft documents that DsAddSidHistory refuses accounts with well-known SIDs and adds a well-known RID only to a principal that holds the same RID. Which RIDs and SIDs count as privileged is this tool's list, read from Microsoft's well-known SID tables.{3} {4}" -f `
+                $hits.Count, $holders.Count, ($named -join ', '), $unparsedNote, (Get-AdfaSidHistoryCapText -Listed $holders.Listed -NotListed $holders.NotListed -Cap $cap -Column 'Principals'))
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.Fail -Detail $detail -Evidence $evidence -NotRun $notRun -DomainSid $own -PrincipalCount $holders.Count `
+                -ValueCount $hits.Count -UnparsedCount $unparsed -Listed $holders.Listed -NotListed $holders.NotListed -Principals $holders.Principals -HistoricSids $holders.HistoricSids)
+    }
+    if ($unparsed -gt 0 -or $noValue -gt 0) {
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -NotRun $notRun -DomainSid $own -ValueCount $values.Count -UnparsedCount $unparsed `
+                -Detail ("Not assessed: none of the parsed historic SIDs is privileged, but {0} value(s) could not be parsed and {1} principal(s) came back with no sIDHistory value read, so a privileged value cannot be ruled out. This is not a clean result." -f $unparsed, $noValue))
+    }
+    return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.Pass -Evidence $evidence -NotRun $notRun -DomainSid $own -ValueCount $values.Count -UnparsedCount 0 -Listed 0 -NotListed 0 `
+            -Detail ("None found: none of the {0} historic SID value(s) visible to this account is a privileged RID or SID of this tool's list ({1} RIDs and {2} SIDs, from Microsoft's well-known SID tables)." -f $values.Count, @($Config['PrivilegedDomainRids']).Count, @($Config['PrivilegedSids']).Count))
+}
+
+function Get-AdfaSidHistorySourceVerdict {
+    <#
+    .SYNOPSIS
+        Pure: row 4, "SID history sources: <domain>" - the domains the historic SIDs came from. Info.
+    .DESCRIPTION
+        Each distinct domain part, with its count, labelled from the SIDs of the forest's domains
+        and of this domain's trusted domain objects, as "this forest", "trust partner",
+        "builtin or well-known", "not an account-domain SID" or "unresolved". "Unresolved" says only
+        that the domain part matched neither list; this read cannot say what that domain is. The
+        row says when the forest's SIDs or the trusts were read only in part, or when a principal
+        came back with no sIDHistory value read. When principals were returned and no value was read
+        on any of them, the row is Not Assessed: no source was measured.
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [Parameter(Mandatory)]$Raw,
+        [Parameter(Mandatory)]$Classified,
+        [AllowNull()]$ForestMap = $null,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("SID history sources: {0}" -f $Domain)
+    $evidence = ("Get-ADObject -LDAPFilter '{0}' and '{1}' under {2} -Server {3}; Get-ADDomain for each forest domain" -f [string]$Config['SearchFilter'], [string]$Config['TrustFilter'], [string]$Config['TrustContainerRdn'], $Domain)
+    $notRun = 'Whether a trust filters SIDs from these domains (SID filtering, also called quarantine) is reported in the Trusts section, not here. Only the trusted domain objects of this domain are read for this row.'
+    $values = @($Classified.Values)
+    $own = [string]$Classified.OwnSid
+    $notes = @()
+    if (-not [bool]$Raw.TrustOk) {
+        $why = ([string]$Raw.TrustError).Trim()
+        if ($why -eq '') { $why = '(no reason was recorded)' }
+        $notes += ("The trusted domain objects of {0} could not be read ({1}), so a trust partner's SID shows as unresolved." -f $Domain, $why)
+    }
+    $failures = @()
+    if ($null -ne $ForestMap) {
+        $failProp = $ForestMap.PSObject.Properties['Failures']
+        if ($null -ne $failProp) { $failures = @($failProp.Value | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) }
+    }
+    if ($failures.Count -gt 0) {
+        $notes += ("The SID of {0} forest domain(s) could not be read ({1}), so a SID from one of them shows as unresolved." -f $failures.Count, ($failures -join '; '))
+    }
+    $noValue = [int]$Classified.NoValue
+    $records = @($Raw.Records | Where-Object { $null -ne $_ })
+    if ($noValue -gt 0 -and $values.Count -gt 0) {
+        $notes += ("{0} principal(s) came back with no sIDHistory value read, so their source domains are not listed." -f $noValue)
+    }
+    $noteText = ''
+    if ($notes.Count -gt 0) { $noteText = ' ' + ($notes -join ' ') }
+    if ($values.Count -eq 0 -and $records.Count -gt 0) {
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -NotRun $notRun -DomainSid $own -ValueCount 0 -UnparsedCount 0 `
+                -Detail ("Not assessed: {0} principal(s) in {1} were returned for {2}, but no sIDHistory value was read on any of them, so no source domain was measured. This is not a clean result.{3}" -f $records.Count, $Domain, [string]$Config['SearchFilter'], $noteText))
+    }
+    if ($values.Count -eq 0) {
+        return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.Info -Evidence $evidence -NotRun $notRun -DomainSid $own -ValueCount 0 -UnparsedCount 0 `
+                -Detail ("No historic SID is visible to this account in {0}, so there is no source domain to report.{1}" -f $Domain, $noteText))
+    }
+    $parsed = @($values | Where-Object { $_.Parsed.Ok })
+    $groups = @($parsed | Group-Object -Property { [string]$_.SourceKey } | Sort-Object -Property Name)
+    $forestCount = 0; $trustCount = 0; $wellKnown = 0; $unresolved = 0; $other = 0
+    $listing = @()
+    foreach ($g in $groups) {
+        $label = [string]@($g.Group)[0].Source
+        if ($label -match ', this forest$') { $forestCount++ }
+        elseif ($label -match ', trust partner$') { $trustCount++ }
+        elseif ($label -eq 'builtin or well-known') { $wellKnown++ }
+        elseif ($label -eq 'unresolved') { $unresolved++ }
+        else { $other++ }
+        $listing += ("{0} ({1}) x{2}" -f $g.Name, $label, $g.Count)
+    }
+    $detail = ("Sources of {0} historic SID value(s) visible to this account in {1}: {2} distinct domain part(s) - {3} in this forest, {4} trust partner(s) of this domain, {5} builtin or well-known, {6} unresolved, {7} not an account-domain SID; {8} value(s) not parsed. Listed in the SourceDomains column. 'Unresolved' means only that the domain part matched neither a domain of this forest nor a trusted domain object of this domain; this read cannot say what that domain is.{9}" -f `
+            $values.Count, $Domain, $groups.Count, $forestCount, $trustCount, $wellKnown, $unresolved, $other, [int]$Classified.Unparsed, $noteText)
+    return (New-AdfaSidHistoryRow -Scope $Domain -Item $item -Status $script:Status.Info -Detail $detail -Evidence $evidence -NotRun $notRun -DomainSid $own `
+            -ValueCount $values.Count -UnparsedCount ([int]$Classified.Unparsed) -SourceDomains ($listing -join '; '))
+}
+
+function Get-AdfaSidHistoryDomainFinding {
+    <#
+    .SYNOPSIS
+        Pure: one domain's raw read to its four SID history rows, in Item order.
+    .DESCRIPTION
+        A principal query that did not succeed - unreachable, access denied, timed out, any other
+        failure, or a property list refused before any call - makes all four rows Not Assessed with
+        the same cause, worded by class from the exception type first (Get-AdfaLapsReadFailureLead).
+        A count that was not measured is left empty.
+    .OUTPUTS
+        [pscustomobject[]] four rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [AllowNull()]$Raw,
+        [AllowNull()]$ForestMap = $null,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $items = @('SID history', 'SID history same-domain', 'SID history privileged', 'SID history sources')
+    if ($null -eq $Raw -or -not [bool]$Raw.Ok) {
+        $why = 'Not assessed: the directory read returned nothing. This is a defect in the tool, not a result.'
+        if ($null -ne $Raw -and [bool]$Raw.Refused) {
+            $why = ("Not assessed: {0} This is a defect in the tool, not a result." -f ([string]$Raw.Error).Trim())
+        }
+        elseif ($null -ne $Raw) {
+            $why = ("{0} This is not a clean result." -f (Get-AdfaLapsReadFailureLead -Message ([string]$Raw.Error) -TypeName ([string]$Raw.ErrorType) -What ("the security principals of {0} that carry sIDHistory" -f $Domain)))
+        }
+        $evidence = ("Get-ADObject -LDAPFilter '{0}' -Server {1}" -f [string]$Config['SearchFilter'], $Domain)
+        return @($items | ForEach-Object { New-AdfaSidHistoryRow -Scope $Domain -Item ("{0}: {1}" -f $_, $Domain) -Status $script:Status.NotAssessed -Detail $why -Evidence $evidence })
+    }
+    $classified = Get-AdfaSidHistoryClassification -Records @($Raw.Records) -DomainSid ([string]$Raw.DomainSid) -ForestMap $ForestMap -Trusts @($Raw.Trusts) -Config $Config
+    $rows = @()
+    $rows += Get-AdfaSidHistoryCountVerdict -Domain $Domain -Raw $Raw -Classified $classified -Config $Config
+    $rows += Get-AdfaSidHistorySameDomainVerdict -Domain $Domain -Raw $Raw -Classified $classified -Config $Config
+    $rows += Get-AdfaSidHistoryPrivilegedVerdict -Domain $Domain -Raw $Raw -Classified $classified -Config $Config
+    $rows += Get-AdfaSidHistorySourceVerdict -Domain $Domain -Raw $Raw -Classified $classified -ForestMap $ForestMap -Config $Config
+    return @($rows)
+}
+
+function Get-AdfaSidHistory {
+    <#
+    .SYNOPSIS
+        SID history, per scoped domain: principals with sIDHistory, historic SIDs of their own
+        domain, privileged historic SIDs, and the domains the historic SIDs came from. Directory
+        reads only.
+    .DESCRIPTION
+        Two seams, each read-only and neither of which throws: Get-AdfaSidHistoryForestMap once per
+        run (the SID of every forest domain) and Get-AdfaSidHistoryRaw once per scoped domain. No
+        cmdlet that writes is called: sIDHistory is never removed or changed (Microsoft's own
+        remediation, Set-ADUser -Remove, is quoted in the advice and never run), and no trust's SID
+        filtering is read or set here - netdom and Forest.SetSidFilteringStatus are not used.
+
+        DECLARED POPULATION: the domains named in -Domains. Each gets exactly four rows,
+        "SID history: <domain>", "SID history same-domain: <domain>", "SID history privileged:
+        <domain>" and "SID history sources: <domain>", whatever happened to its read; with none
+        scoped there is one "SID history (no domain scoped)" row. An exception while one domain is
+        handled makes its four rows Not Assessed and never ends the section.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$Domains = @(),
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$ForestDomains = @(),
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rows = @()
+    $scoped = New-Object System.Collections.ArrayList
+    foreach ($name in @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if (@($scoped | Where-Object { $_ -eq $name.Trim() }).Count -eq 0) { [void]$scoped.Add($name.Trim()) }
+    }
+    if ($scoped.Count -eq 0) {
+        $rows += New-AdfaSidHistoryRow -Item 'SID history (no domain scoped)' -Status $script:Status.NotAssessed -Evidence 'none' `
+            -Detail 'No domain was scoped for this run, so no security principal was read for sIDHistory. This is not a clean result.'
+        return @($rows)
+    }
+    $mapDomains = @(@($ForestDomains) + @($scoped) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $forestMap = Get-AdfaSidHistoryForestMap -Domains $mapDomains -AdParams $AdParams
+    foreach ($domain in $scoped) {
+        try {
+            $raw = Get-AdfaSidHistoryRaw -DomainName $domain -AdParams $AdParams -Config $Config
+            $rows += @(Get-AdfaSidHistoryDomainFinding -Domain $domain -Raw $raw -ForestMap $forestMap -Config $Config)
+        }
+        catch {
+            # A defect in this tool, not in the directory. Fail closed for this domain only.
+            $why = ("Not assessed: handling the SID history of {0} failed inside this tool, so nothing about this domain is graded; this is a defect in the tool, not a result. Error: {1}" -f $domain, [string]$_.Exception.Message)
+            foreach ($prefix in @('SID history', 'SID history same-domain', 'SID history privileged', 'SID history sources')) {
+                $rows += New-AdfaSidHistoryRow -Scope $domain -Item ("{0}: {1}" -f $prefix, $domain) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why
+            }
+        }
+    }
+    return @($rows)
+}
+
+function Merge-AdfaSidHistoryConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in SID history table, with validation. The
+        SidHistory validator for -ConfigOverridePath.
+    .DESCRIPTION
+        What a file can change: PresentStatus (Warning or Info, the grade of SID history that is
+        present and neither same-domain nor privileged) and NameListCap (a whole number from 0 to
+        1000, how many names one row lists):
+
+            { "SidHistory": { "PresentStatus": "Info", "NameListCap": 50 } }
+
+        What it cannot: the privileged RIDs and SIDs, the filters, the property lists, the class
+        buckets and the sources. Every such key is refused as unknown, so a file cannot make the
+        tool ask for every attribute or stop a privileged SID from failing.
+
+        Refused with the reason: an override that is not one object, an empty object, an unknown
+        key, a null, a PresentStatus that is not the text Warning or Info (SID history that is
+        present is never reported as a pass), a NameListCap that is not a JSON number or not a
+        whole number from 0 to 1000.
+
+        Provenance follows the keys: ThresholdSource is rewritten to name the override's source for
+        exactly the keys it supplied.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) {
+        throw ("SID history config override must be a single object with named keys (for example {{ ""PresentStatus"": ""Info"" }}), not a {0}." -f $Override.GetType().Name)
+    }
+    if ($table.Count -eq 0) {
+        throw 'SID history config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    $known = @('PresentStatus', 'NameListCap')
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $supplied = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("SID history config override names an unknown key '{0}'. Known keys: {1}. The privileged RIDs and SIDs, the filters, the property lists, the class buckets and the sources cannot be set from a file." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        if ($supplied -contains $name) { throw ("SID history config override names '{0}' more than once." -f $name) }
+        $value = $table[$k]
+        if ($null -eq $value) {
+            throw ("SID history config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name)
+        }
+        if ($name -eq 'PresentStatus') {
+            $allowed = @('Warning', 'Info')
+            $statusMatch = @()
+            if ($value -is [string]) { $statusMatch = @($allowed | Where-Object { $_ -eq $value.Trim() }) }
+            if ($statusMatch.Count -eq 0) {
+                throw ("SID history config override sets 'PresentStatus' to '{0}'. It must be Warning or Info: SID history that is present is never reported as a pass, and a Fail is kept for same-domain and privileged SIDs." -f [string]$value)
+            }
+            $merged['PresentStatus'] = [string]$statusMatch[0]
+        }
+        else {
+            # A JSON number only: how a quoted string becomes a number depends on the host's culture.
+            if ($value -is [array] -or $numericTypes -notcontains $value.GetType()) {
+                throw ("SID history config override sets 'NameListCap' to a {0}. It must be a JSON number, written without quotes." -f $value.GetType().Name)
+            }
+            $number = [double]$value
+            if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or $number -ne [math]::Floor($number) -or $number -lt 0 -or $number -gt 1000) {
+                throw ("SID history config override sets 'NameListCap' to {0}. It must be a whole number from 0 to 1000 (names listed in one row)." -f $number.ToString('0.####', $inv))
+            }
+            $merged['NameListCap'] = [int]$number
+        }
+        $supplied += $name
+    }
+    $from = 'an override whose source was not recorded'
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+    $fromOverride = @($known | Where-Object { $supplied -contains $_ })
+    $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+    $builtIn = @($known | Where-Object { $supplied -notcontains $_ })
+    if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
+    $merged['ThresholdSource'] = $text
+    return $merged
+}
+
+# ---------------------------------------------------------------------------
 # -ConfigOverridePath: one JSON file, one top-level key per section (PORT-PLAN C2)
 # ---------------------------------------------------------------------------
 # The sections whose built-in table that file can replace. A top-level key of the file is one of
@@ -10214,6 +11426,7 @@ $script:ConfigOverrideSections = [ordered]@{
     Laps           = @{ ConfigKey = 'Laps'; Section = 'Laps'; Merge = 'Merge-AdfaLapsConfig' }
     DcCertificates = @{ ConfigKey = 'DcCertificates'; Section = 'DcCertificates'; Merge = 'Merge-AdfaDcCertificatesConfig' }
     RidPool        = @{ ConfigKey = 'RidPool'; Section = 'RidPool'; Merge = 'Merge-AdfaRidPoolConfig' }
+    SidHistory     = @{ ConfigKey = 'SidHistory'; Section = 'SecurityPosture'; Merge = 'Merge-AdfaSidHistoryConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -14273,6 +15486,34 @@ $script:RecommendationMap = @(
        Text  = 'Find out why so much of the global RID space has been issued. Microsoft calls reaching the first event 16658 milestone (10 % used) not expected, and says to investigate the user, computer and group creation processes in the domain immediately. Check the System log of the domain controllers for Directory-Services-SAM events 16658, 16656 and 16657, and look for the causes Microsoft lists: provisioning software or scripts that bulk-created objects, many unused groups, domain controllers demoted, restored or metadata-cleaned repeatedly, forest recoveries, frequent InvalidateRidPool operations and an incorrectly raised RID Block Size (from Windows Server 2012 a value above 15,000 is treated as 15,000). At 90 % used the RID master stops issuing RID pools until an administrator lifts the block, and after that there is no further ceiling before the space runs out, which only a domain migration or a forest recovery resolves. Unlocking the 31st bit (SidCompatibilityVersion) doubles the space but is irreversible except by a forest recovery and is meant only for a domain that has reached the ceiling. The thresholds this finding was judged against are Microsoft''s published points or your own override.' }
     @{ Section = '(?i)^rid pool'; Match = '.'
        Text  = '' }
+    # --- Section-scoped: SID history rows of Security Posture (PORT-PLAN C7). Anchored on the Item
+    #     prefix this tool writes ("SID history...: <domain>"), NOT on the section: the section's
+    #     older rows (krbtgt password age, AD Recycle Bin, Machine account quota, ...) rely on the
+    #     unscoped entries below and must still reach them. The prefix catch-all gives every other
+    #     SID history row no advice, so a privileged group's name in a Detail ("KRBTGT", "Backup
+    #     Operators") cannot reach the unscoped 'krbtgt' or 'backup' entries, nor can 'replication',
+    #     'global catalog', 'stale', 'NOT a pass' or 'event \d+ on'. Tests pin each family.
+    #     Sources, read 2026-11-16:
+    #       remediation (Get-ADUser -Properties SidHistory; Set-ADUser -Remove @{SIDHistory=...}),
+    #       Enterprise Admins example, forest trusts without SID filtering (quarantine)
+    #         - https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts
+    #       "eliminating SID history" to reduce token size
+    #         - https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/planning-for-compromise
+    #       DsAddSidHistory: different forests, Domain Admins in the destination, "Add Sid History"
+    #       audit events in the destination domain, well-known SIDs refused
+    #         - https://learn.microsoft.com/windows/win32/ad/using-dsaddsidhistory
+    #       MDI alert "Suspected SID-History injection" (external ID 1106)
+    #         - https://learn.microsoft.com/defender-for-identity/alerts-mdi-classic
+    #       netdom trust /quarantine:Yes accepts only SIDs from the directly trusted domain
+    #         - https://learn.microsoft.com/windows-server/administration/windows-commands/netdom-trust
+    @{ Section = '(?i)^security posture'; Match = '(?i)^Security Posture :: SID history same-domain: '
+       Text  = 'Investigate the principals listed in this finding before changing anything: a historic SID of the principal''s own domain has no documented origin. Microsoft documents that DsAddSidHistory, the supported way to add SID history, works only between domains in different forests, requires Domain Admins membership in the destination domain, and writes an "Add Sid History" audit event in the destination domain for each attempt, so look in the Security logs of the domain controllers for those events and for directory changes to sIDHistory, and check whether Microsoft Defender for Identity raised "Suspected SID-History injection" (external ID 1106) for these principals. Treat the principals and the accounts that could have written the value as possibly compromised until explained. Removing the value is Microsoft''s remediation for unsecure SID history (Get-ADUser -Identity <account> -Properties SidHistory, then Set-ADUser -Identity <account> -Remove @{SIDHistory=''<SID>''}); this report reads only and changes nothing, and that the value indicates tampering is this tool''s inference, not a Microsoft statement.' }
+    @{ Section = '(?i)^security posture'; Match = '(?i)^Security Posture :: SID history privileged: '
+       Text  = 'Remove each privileged SID named in this finding from the sIDHistory of the principals listed, unless a documented migration still needs it: a SID in sIDHistory is added to the holder''s access token, so the holder can act with that group''s rights. Microsoft''s Defender for Identity gives an Enterprise Admins SID in another account''s SID history as its example of unsecure SID history, and its remediation is to identify the value (Get-ADUser -Identity <account> -Properties SidHistory) and remove it (Set-ADUser -Identity <account> -Remove @{SIDHistory=''<SID>''}); use the matching Set-ADGroup or Set-ADComputer cmdlet for a group or a computer. Find out how the value got there: Microsoft documents that DsAddSidHistory refuses accounts with well-known SIDs and writes an "Add Sid History" audit event in the destination domain. Where the SID belongs to another forest, confirm that SID filtering (quarantine) is enabled on the trust (netdom trust /quarantine:Yes accepts only SIDs from the directly trusted domain; the Trusts section of this report shows its state). This report reads only and changes nothing.' }
+    @{ Section = '(?i)^security posture'; Match = '(?i)^Security Posture :: SID history: '
+       Text  = 'Confirm that the migrations that left this SID history are finished, re-permission the resources that still grant access to the old SIDs so they name the current principals, and then remove the values. Microsoft''s Defender for Identity remediation for SID history is to identify the value (Get-ADUser -Identity <account> -Properties SidHistory) and remove it (Set-ADUser -Identity <account> -Remove @{SIDHistory=''<SID>''}); removing a value removes any access granted through it, so check first. Microsoft also names eliminating SID history as one way to reduce token size. Same-domain and privileged values are graded in their own findings and come first. That present SID history is graded at all is this tool''s default (catalogue ADA-OBJ-009), not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^security posture'; Match = '(?i)^Security Posture :: SID history'
+       Text  = '' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
     # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
@@ -15078,7 +16319,21 @@ function Invoke-Main {
     if (Test-SectionSelected 'SecurityPosture' $Sections) {
         Write-Stage 'Security posture'
         $sp = foreach ($d in $targetDomains) { Get-AdfaSecurityPosture -DomainName $d -IsRootDomain:($d -eq $rootDomain) -AdParams $adParams -KrbtgtMaxAgeDays $script:Config.KrbtgtMaxAgeDays }
-        $sectionData['Security Posture'] = @($sp)
+        # SID history (PORT-PLAN C7): four rows per scoped domain, directory reads only. The table
+        # the file supplied where it supplied one, otherwise the built-in table; the file was
+        # validated before any section ran.
+        $sidHistoryConfig = $script:Config.SidHistory
+        if ($configOverrides.ContainsKey('SidHistory')) { $sidHistoryConfig = $configOverrides['SidHistory'] }
+        # With the forest unreadable there is no domain to scope and no forest domain SID to read,
+        # and the rows say so in one row instead of asking whatever the default server is.
+        if ($forestError) {
+            $sidHistoryRows = @(New-AdfaSidHistoryRow -Item 'SID history' -Status $script:Status.NotAssessed -Evidence 'none' `
+                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no security principal was read for sIDHistory. This is not a clean result." -f $forestError))
+        }
+        else {
+            $sidHistoryRows = @(Get-AdfaSidHistory -Domains $targetDomains -ForestDomains @($forest.Domains) -AdParams $adParams -Config $sidHistoryConfig)
+        }
+        $sectionData['Security Posture'] = @(@($sp) + @($sidHistoryRows))
     }
     if (Test-SectionSelected 'StaleObjects' $Sections) {
         $so = foreach ($d in $targetDomains) { Get-AdfaStaleObject -DomainName $d -AdParams $adParams -StaleDays $script:Config.StaleDays }
