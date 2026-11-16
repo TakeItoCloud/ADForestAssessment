@@ -208,16 +208,22 @@ Assert-True (-not (Test-AdfaEsc1Template -Template $safeT).Vulnerable) 'ESC1: ap
 $approvalT = [pscustomobject]@{ 'msPKI-Certificate-Name-Flag' = 1; 'msPKI-Enrollment-Flag' = 2; 'msPKI-RA-Signature' = 0; 'pKIExtendedKeyUsage' = @('1.3.6.1.5.5.7.3.2') }
 Assert-True (-not (Test-AdfaEsc1Template -Template $approvalT).Vulnerable) 'ESC1: manager approval required => not vulnerable'
 
-# DCSync ACE detection
-$getChanges = $script:Config.DcSyncRightGuids['DS-Replication-Get-Changes-All']
-$syncAce = [pscustomobject]@{ AccessControlType = 'Allow'; ActiveDirectoryRights = 'ExtendedRight'; ObjectType = $getChanges; IdentityReference = 'CONTOSO\eviluser' }
-Assert-True (Test-AdfaDcSyncAce -Ace $syncAce) 'DCSync ACE: Get-Changes-All extended right => detected'
-$denyAce = [pscustomobject]@{ AccessControlType = 'Deny'; ActiveDirectoryRights = 'ExtendedRight'; ObjectType = $getChanges; IdentityReference = 'x' }
-Assert-True (-not (Test-AdfaDcSyncAce -Ace $denyAce)) 'DCSync ACE: Deny ACE => not flagged'
-$readAce = [pscustomobject]@{ AccessControlType = 'Allow'; ActiveDirectoryRights = 'ReadProperty'; ObjectType = '00000000-0000-0000-0000-000000000000'; IdentityReference = 'x' }
-Assert-True (-not (Test-AdfaDcSyncAce -Ace $readAce)) 'DCSync ACE: ordinary read => not flagged'
-$genericAll = [pscustomobject]@{ AccessControlType = 'Allow'; ActiveDirectoryRights = 'GenericAll'; ObjectType = '00000000-0000-0000-0000-000000000000'; IdentityReference = 'x' }
-Assert-True (Test-AdfaDcSyncAce -Ace $genericAll) 'DCSync ACE: GenericAll => detected'
+# DCSync ACE detection. Migrated by PORT-PLAN C9 from the retired Test-AdfaDcSyncAce (rights matched as
+# text, principals by name) to the access mask and the SID; the same four claims.
+$aclCfg = $script:Config.Acl
+$getChanges = @($aclCfg['ReplicationRights'] | Where-Object { $_['Name'] -eq 'DS-Replication-Get-Changes-All' })[0]['Guid']
+function New-ValAce { param([string]$Sid, [int64]$Mask, [string]$ObjectType = '', [bool]$Allow = $true, [bool]$InheritOnly = $false, [string]$Kind = '')
+    if ($Kind -eq '') { if ($ObjectType -ne '') { $Kind = 'Object' } else { $Kind = 'Common' } }
+    [pscustomobject]@{ Index = 0; Sid = $Sid; Allow = $Allow; Deny = (-not $Allow); Kind = $Kind; Mask = $Mask; InheritOnly = $InheritOnly; Inherited = $false; ObjectType = $ObjectType; InheritedObjectType = '' } }
+function New-ValDescriptor { param($Aces = @(), [string]$Owner = 'S-1-5-32-544')
+    $list = @($Aces); for ($i = 0; $i -lt $list.Count; $i++) { $list[$i].Index = $i }
+    [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; OwnerSid = $Owner; Aces = $list; AceCount = $list.Count } }
+Assert-True (@((Get-AdfaAclAceRight -Ace (New-ValAce -Sid 'S-1-5-21-1-2-3-1105' -Mask 0x100 -ObjectType $getChanges) -ObjectKind 'DomainRoot' -Config $aclCfg).Atoms) -contains 'DS-Replication-Get-Changes-All') 'DCSync ACE: Get-Changes-All extended right => detected'
+$denyOnly = Get-AdfaAclAnalysis -Descriptor (New-ValDescriptor -Aces @(New-ValAce -Sid 'S-1-5-21-1-2-3-1105' -Mask 0x100 -ObjectType $getChanges -Allow $false)) -ObjectKind 'DomainRoot' -RowKey 'DCSync' -DomainSid 'S-1-5-21-1-2-3' -RootDomainSid 'S-1-5-21-1-2-3' -Config $aclCfg
+Assert-Equal 0 @($denyOnly.Flagged).Count 'DCSync ACE: Deny ACE => not flagged'
+Assert-Equal 0 @((Get-AdfaAclAceRight -Ace (New-ValAce -Sid 'x' -Mask 0x10) -ObjectKind 'DomainRoot' -Config $aclCfg).Atoms).Count 'DCSync ACE: ordinary read => not flagged'
+$gaRight = Get-AdfaAclAceRight -Ace (New-ValAce -Sid 'x' -Mask 983551) -ObjectKind 'DomainRoot' -Config $aclCfg
+Assert-True ($gaRight.GenericAll -and @($gaRight.Atoms) -contains 'DS-Replication-Get-Changes-All') 'DCSync ACE: GenericAll => detected'
 
 # Duplicate SPN detection
 $objs = @(
@@ -2100,7 +2106,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the seven sections the file can carry (Gpo since v1.25.0, SidHistory since v1.24.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the eight sections the file can carry (Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -2650,6 +2656,91 @@ $gpRecMis = Get-AdfaRecommendation -Section 'GPO Inventory' -Item ("GPO version:
 $gpRecOrphan = Get-AdfaRecommendation -Section 'GPO Inventory' -Item ("GPO folder without container: {0}" -f $gpOrphan) -Detail $gpHostile
 $gpRecList = Get-AdfaRecommendation -Section 'GPO Inventory' -Item 'GPO folder listing: contoso.com' -Detail $gpHostile
 Assert-True ($gpRecMis -match 'converged' -and $gpRecMis -notmatch 'dfsrmig|wbadmin|krbtgt' -and $gpRecOrphan -match 'orphaned' -and $gpRecList -eq '') 'GPO version advice: a mismatch and an orphan folder get their own advice, whatever the Detail holds, and the listing row none'
+Write-Host "== C9. Dangerous rights: replication and control rights, matched by SID ==" -ForegroundColor Cyan
+$aclRoot = 'S-1-5-21-1000-2000-3000'
+$aclRep = @{}; foreach ($r in @($aclCfg['ReplicationRights'])) { $aclRep[[string]$r['Name']] = [string]$r['Guid'] }
+$aclHead = @(
+    (New-ValAce -Sid 'S-1-5-11' -Mask 0x20094)
+    (New-ValAce -Sid ('{0}-512' -f $aclRoot) -Mask 0xE01BD)
+    (New-ValAce -Sid 'S-1-5-32-544' -Mask 0xF01BD)
+    (New-ValAce -Sid 'S-1-5-18' -Mask 0xF01FF)
+    (New-ValAce -Sid ('{0}-519' -f $aclRoot) -Mask 0xF01FF)
+    (New-ValAce -Sid 'S-1-5-9' -Mask 0x100 -ObjectType $aclRep['DS-Replication-Get-Changes'])
+    (New-ValAce -Sid ('{0}-516' -f $aclRoot) -Mask 0x100 -ObjectType $aclRep['DS-Replication-Get-Changes-All'])
+    (New-ValAce -Sid ('{0}-498' -f $aclRoot) -Mask 0x100 -ObjectType $aclRep['DS-Replication-Get-Changes'])
+)
+$aclVerdict = { param($Aces, [string]$RowKey = 'DCSync', [string]$Owner = ('{0}-512' -f $aclRoot), [string]$DomainSid = $aclRoot, $Read = $null, [scriptblock]$Resolver = $null)
+    if ($null -eq $Read) { $Read = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Dn = 'DC=contoso,DC=com'; Server = 'contoso.com'; Descriptor = (New-ValDescriptor -Aces $Aces -Owner $Owner) } }
+    Get-AdfaAclObjectVerdict -Domain 'contoso.com' -Item ('{0}: contoso.com' -f $RowKey) -ObjectKind 'DomainRoot' -RowKey $RowKey -What 'the domain head of contoso.com' -Read $Read -DomainSid $DomainSid -RootDomainSid $aclRoot -Config $aclCfg -NameResolver $Resolver }
+# Rights by mask (declared population: eight masks).
+$aclMasks = @(@(0xF01FF, ''), @(0x10000000, ''), @(0x40000000, ''), @(131112, ''), @(131220, ''), @(0x20, 'bf967a68-0de6-11d0-a285-00aa003049e2'), @(0x100, 'edacfd8f-ffb3-11d1-b41d-00a0c968f939'), @(0x80000, ''))
+$aclGot = @(foreach ($m in $aclMasks) { @((Get-AdfaAclAceRight -Ace (New-ValAce -Sid 'x' -Mask $m[0] -ObjectType $m[1]) -ObjectKind 'DomainRoot' -Config $aclCfg).Atoms).Count })
+Assert-Equal '7,7,1,1,0,0,0,1' ($aclGot -join ',') 'Dangerous rights: full control and GENERIC_ALL grant every graded right, GENERIC_WRITE and GenericWrite only write-all-properties, a read, a one-property write and Apply-Group-Policy nothing, WriteOwner itself (declared population: eight masks)'
+# The verdicts: the default holders pass; a SID outside the allowlist is flagged whatever its name.
+Assert-Equal 'Pass,Pass' (@((& $aclVerdict $aclHead).Status, (& $aclVerdict $aclHead 'DomainRootControl').Status) -join ',') 'Dangerous rights: Microsoft''s default holders of the domain head pass both head rows'
+$aclFake = ('{0}-1105' -f $aclRoot)
+$aclFakeRow = & $aclVerdict (@($aclHead) + @(New-ValAce -Sid $aclFake -Mask 0x100 -ObjectType $aclRep['DS-Replication-Get-Changes-All'])) 'DCSync' ('{0}-512' -f $aclRoot) $aclRoot $null { param($Sid) 'BUILTIN\Administrators' }
+Assert-True ($aclFakeRow.Status -eq 'Warning' -and $aclFakeRow.FlaggedSids -eq $aclFake -and $aclFakeRow.Detail -notmatch 'Administrators\b.*=' -and $aclFakeRow.Principals -eq ('{0} = BUILTIN\Administrators' -f $aclFake)) 'Dangerous rights: a SID outside the allowlist is flagged even when it resolves to the name of a default group - the name is never read'
+$aclErodc = & $aclVerdict (@($aclHead) + @(New-ValAce -Sid ('{0}-498' -f $aclRoot) -Mask 0x100 -ObjectType $aclRep['DS-Replication-Get-Changes-All']))
+Assert-True ($aclErodc.Status -eq 'Warning' -and $aclErodc.RightsHeld -eq ('{0}-498: DS-Replication-Get-Changes-All' -f $aclRoot)) 'Dangerous rights: Enterprise Read-only DCs holding Replicating Directory Changes All are flagged'
+# Deny ordering, inherit-only, owner (declared population: five cases).
+$x = ('{0}-1300' -f $aclRoot)
+$aclCases = @(
+    (& $aclVerdict (@($aclHead) + @((New-ValAce -Sid $x -Mask 0x100 -Allow $false), (New-ValAce -Sid $x -Mask 0x100)))).Status
+    (& $aclVerdict (@($aclHead) + @((New-ValAce -Sid $x -Mask 0x100), (New-ValAce -Sid $x -Mask 0x100 -Allow $false)))).Status
+    (& $aclVerdict (@($aclHead) + @(New-ValAce -Sid $x -Mask 0xF01FF -InheritOnly $true))).Status
+    (& $aclVerdict $aclHead 'DomainRootControl' $x).Status
+    (& $aclVerdict $aclHead 'DCSync' ('{0}-512' -f $aclRoot) '').Status
+)
+Assert-Equal 'Pass,Warning,Pass,Warning,Not Assessed' ($aclCases -join ',') 'Dangerous rights: a deny before the allow cancels it, after it does not; an inherit-only ACE is skipped; a non-default owner is flagged; an account SID that cannot be decided fails closed (declared population: five cases)'
+# Failed reads: each its own Not Assessed lead (declared population: six classes).
+$aclLeads = @(foreach ($c in @(@('Unreachable', 'Unable to contact the server.', 'Microsoft.ActiveDirectory.Management.ADServerDownException'), @('AccessDenied', 'Access is denied.', 'System.UnauthorizedAccessException'), @('TimedOut', 'timed out', 'System.TimeoutException'), @('NotReturned', 'x', ''), @('DaclAbsent', 'x', ''), @('Unparseable', 'x', ''))) {
+        $r = & $aclVerdict @() 'DCSync' '' $aclRoot ([pscustomobject]@{ Ok = $false; Class = $c[0]; Error = $c[1]; ErrorType = $c[2]; Dn = 'DC=contoso,DC=com'; Server = 'contoso.com'; Descriptor = $null })
+        '{0}:{1}' -f $r.Status, ($r.Detail -replace ':.*$', '')
+    })
+Assert-Equal 'Not Assessed:Unreachable,Not Assessed:Access denied,Not Assessed:Timed out,Not Assessed:Not returned,Not Assessed:No DACL returned,Not Assessed:Not read' ($aclLeads -join ',') 'Dangerous rights: unreachable, access denied, timed out, not returned, no DACL and unreadable are six different Not Assessed results, never Pass'
+# A domain: rows in order, and the GPO population counted.
+$aclGpoRead = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Dn = 'CN={G},CN=Policies'; Server = 'contoso.com'; Descriptor = (New-ValDescriptor -Owner ('{0}-512' -f $aclRoot) -Aces @((New-ValAce -Sid ('{0}-512' -f $aclRoot) -Mask 0xF00FF), (New-ValAce -Sid 'S-1-3-0' -Mask 0xF00FF -InheritOnly $true))) }
+$aclHeadRead = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Dn = 'DC=contoso,DC=com'; Server = 'contoso.com'; Descriptor = (New-ValDescriptor -Aces $aclHead -Owner ('{0}-512' -f $aclRoot)) }
+$aclAdminRead = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Dn = 'CN=AdminSDHolder,CN=System,DC=contoso,DC=com'; Server = 'contoso.com'; Descriptor = (New-ValDescriptor -Owner ('{0}-512' -f $aclRoot) -Aces @((New-ValAce -Sid ('{0}-512' -f $aclRoot) -Mask 0xE01BD), (New-ValAce -Sid 'S-1-5-18' -Mask 0xF01FF))) }
+$aclDenied = [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Error = 'Access is denied.'; ErrorType = 'System.UnauthorizedAccessException'; Dn = 'CN={H},CN=Policies'; Server = 'contoso.com'; Descriptor = $null }
+$aclGpoRaw = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; SearchBase = 'CN=Policies,CN=System,DC=contoso,DC=com'; Items = @([pscustomobject]@{ Guid = '{G}'; Dn = 'x'; Read = $aclGpoRead }, [pscustomobject]@{ Guid = '{H}'; Dn = 'y'; Read = $aclDenied }) }
+$aclDomainRows = @(Get-AdfaAclDomainFinding -Domain 'contoso.com' -DomainRaw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; DomainDn = 'DC=contoso,DC=com'; DomainSid = $aclRoot; DomainSidError = '' }) -RootRaw ([pscustomobject]@{ Sid = $aclRoot; Error = '' }) -HeadRead $aclHeadRead -AdminRead $aclAdminRead -GpoRaw $aclGpoRaw -Config $aclCfg)
+Assert-Equal 'DCSync rights=Pass,Domain root control rights=Pass,AdminSDHolder rights=Pass,GPO rights=Pass,GPO rights=Not Assessed,GPO rights summary=Not Assessed' (@($aclDomainRows | ForEach-Object { '{0}={1}' -f ($_.Item -replace ': .*$', ''), $_.Status }) -join ',') 'Dangerous rights: a domain gives its three object rows, one row per GPO and a summary that is Not Assessed when one GPO could not be read (declared population: six rows)'
+$aclSum = @($aclDomainRows | Where-Object { $_.Item -eq 'GPO rights summary: contoso.com' })[0]
+Assert-Equal '2/1/0/1' ('{0}/{1}/{2}/{3}' -f $aclSum.Population, $aclSum.ReadCount, $aclSum.FlaggedCount, $aclSum.NotAssessedCount) 'Dangerous rights: the GPO summary''s counts add up to the population'
+# The validator and the advice.
+Assert-Throws { Merge-AdfaAclConfig -BaseConfig $aclCfg -Override @{ FlaggedStatus = 'Pass' } } 'Warning or Fail' 'Acl override: a flagged principal can never be configured to pass'
+Assert-Throws { Merge-AdfaAclConfig -BaseConfig $aclCfg -Override @{ AdditionalAllowed = @(@{ Sid = 'CONTOSO\svc'; Objects = @('DomainRoot'); Rights = @('DS-Replication-Get-Changes'); Reason = 'r' }) } } 'names are refused' 'Acl override: a name is refused, the allowlist is matched by SID only'
+Assert-Throws { Merge-AdfaAclConfig -BaseConfig $aclCfg -Override @{ AdditionalAllowed = @(@{ Sid = 'S-1-1-0'; Objects = @('DomainRoot'); Rights = @('DS-Replication-Get-Changes'); Reason = 'r' }) } } 'never be allowlisted' 'Acl override: Everyone can never be allowlisted'
+Assert-Throws { Merge-AdfaAclConfig -BaseConfig $aclCfg -Override @{ Allowlist = @() } } "unknown key 'Allowlist'" 'Acl override: the built-in allowlist cannot be replaced from a file'
+$aclHostile = 'replication backup stale sysvol dfsr pdc emulator delegation dcsync C:\Backup\stale.json'
+$aclRecs = @(foreach ($i in @('DCSync rights: contoso.com', 'Domain root control rights: contoso.com', 'AdminSDHolder rights: contoso.com', 'GPO rights: {G}', 'GPO rights summary: contoso.com', 'Dangerous ACLs (no domain scoped)')) { Get-AdfaRecommendation -Section 'Dangerous ACLs (DCSync)' -Item $i -Detail $aclHostile })
+Assert-True ($aclRecs[0] -match 'Entra Connect' -and $aclRecs[1] -match 'WriteDacl' -and $aclRecs[2] -match 'SDProp' -and $aclRecs[3] -match 'Group Policy' -and $aclRecs[4] -eq $aclRecs[3] -and $aclRecs[5] -eq '' -and @($aclRecs | Where-Object { $_ -match 'dfsrmig|wbadmin|repadmin' }).Count -eq 0) 'Dangerous rights advice: each family gets its own advice whatever the Detail holds, and no unscoped entry reaches the section (declared population: six items)'
+# The Windows seam, where SecurityIdentifier exists: a descriptor with no DACL is never "Everyone, full control".
+if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+    $aclNoDacl = New-Object System.Security.AccessControl.RawSecurityDescriptor -ArgumentList ('O:{0}-512G:{0}-512' -f $aclRoot)
+    $aclBytes = New-Object byte[] $aclNoDacl.BinaryLength
+    $aclNoDacl.GetBinaryForm($aclBytes, 0)
+    $aclConv = ConvertTo-AdfaAclDescriptor -Value $aclBytes
+    Assert-True ($aclConv.Class -eq 'DaclAbsent' -and -not $aclConv.Ok -and @($aclConv.Aces).Count -eq 0) 'Dangerous rights: a descriptor without a DACL is DaclAbsent, never read as Everyone with full control'
+}
+Assert-Equal 'NotReturned' (ConvertTo-AdfaAclDescriptor -Value $null).Class 'Dangerous rights: no value is NotReturned'
+# Found by the review before commit (C9).
+$aclDomainDns = '19195a5b-6da0-11d0-afd3-00c04fd930c9'
+$aclClassRow = & $aclVerdict (@($aclHead) + @(New-ValAce -Sid $aclFake -Mask 0x120 -ObjectType $aclDomainDns))
+Assert-True ($aclClassRow.Status -eq 'Warning' -and $aclClassRow.FlaggedSids -eq $aclFake) 'Dangerous rights: control access granted through an ACE scoped to the domainDNS class is graded as unscoped (DCSync), never passed'
+$aclNodeRights = @((Get-AdfaAclAceRight -Ace (New-ValAce -Sid 'S-1-1-0' -Mask 0xF01FF -ObjectType 'bf967a86-0de6-11d0-a285-00aa003049e2') -ObjectKind 'DomainRoot' -Config $aclCfg).Atoms)
+Assert-Equal 0 $aclNodeRights.Count 'Dangerous rights: full control scoped to another class (computer) grants no right on the domain head'
+$aclMixed = & $aclVerdict (@($aclHead) + @((New-ValAce -Sid 'S-1-1-0' -Mask 0x10000000), (New-ValAce -Sid 'S-1-1-0' -Mask 0x100 -Kind 'Other')))
+Assert-True ($aclMixed.Status -eq 'Warning' -and $aclMixed.FlaggedSids -eq 'S-1-1-0' -and $aclMixed.Detail -match 'not interpreted') 'Dangerous rights: a flagged SID is reported even when another ACE is not interpreted, and the Detail names that ACE'
+$aclNoRoot = Get-AdfaAclObjectVerdict -Domain 'contoso.com' -Item 'DCSync: contoso.com' -ObjectKind 'DomainRoot' -RowKey 'DCSync' -What 'the domain head of contoso.com' -Read ([pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Dn = 'DC=contoso,DC=com'; Server = 'contoso.com'; Descriptor = (New-ValDescriptor -Aces @(New-ValAce -Sid ('{0}-519' -f $aclRoot) -Mask 0xF01FF)) }) -DomainSid $aclRoot -RootDomainSid '' -Config $aclCfg
+Assert-True ($aclNoRoot.Status -eq 'Not Assessed' -and $aclNoRoot.FlaggedSids -eq '' -and $aclNoRoot.Undecided -eq ('{0}-519' -f $aclRoot)) 'Dangerous rights: with the forest root SID unread, the scoped domain''s own -519 is undecided, never flagged'
+$aclFailCfg = Merge-AdfaAclConfig -BaseConfig $aclCfg -Override @{ FlaggedStatus = 'Fail' }
+$aclBadGpo = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Dn = 'CN={G},CN=Policies'; Server = 'contoso.com'; Descriptor = (New-ValDescriptor -Owner ('{0}-512' -f $aclRoot) -Aces @(New-ValAce -Sid 'S-1-5-11' -Mask 0x40000)) }
+$aclFailRows = @(Get-AdfaAclDomainFinding -Domain 'contoso.com' -DomainRaw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; DomainDn = 'DC=contoso,DC=com'; DomainSid = $aclRoot; DomainSidError = '' }) -RootRaw ([pscustomobject]@{ Sid = $aclRoot; Error = '' }) -HeadRead $aclHeadRead -AdminRead $aclAdminRead -GpoRaw ([pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; SearchBase = 'CN=Policies,CN=System,DC=contoso,DC=com'; Items = @([pscustomobject]@{ Guid = '{G}'; Dn = 'x'; Read = $aclBadGpo }) }) -Config $aclFailCfg)
+$aclFailSum = @($aclFailRows | Where-Object { $_.Item -eq 'GPO rights summary: contoso.com' })[0]
+Assert-Equal 'Fail|1/1/1/0' ('{0}|{1}/{2}/{3}/{4}' -f $aclFailSum.Status, $aclFailSum.Population, $aclFailSum.ReadCount, $aclFailSum.FlaggedCount, $aclFailSum.NotAssessedCount) 'Dangerous rights: under a Fail override a flagged GPO makes the summary Fail and is counted as flagged'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue

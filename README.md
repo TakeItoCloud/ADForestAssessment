@@ -36,9 +36,9 @@ Extracted from
 | Group Policy | Linked / unlinked GPOs (GroupPolicy module), central store; and **GPO version consistency** per scoped domain (part of `-Sections Gpo`, no module needed): each GPO's version in the directory (`versionNumber`) against its `GPT.INI` in SYSVOL, user and computer halves, both read from the domain's **PDC emulator**. A difference is a `Warning` (a **tool default**, `Fail` by override) that names the half and both numbers and says it can be replication in flight; a GPO that could not be compared is `Not Assessed` with its cause (unreachable, access denied, folder or `GPT.INI` absent, not parsed, `versionNumber` not returned, a `gPCFileSysPath` that is not the GPO's own folder); a SYSVOL folder named by a GPO GUID with no container visible is a `Warning`. A per-domain summary row states the containers read, compared, mismatched and not compared, and passes only when every one was compared and none differs. Details under [GPO version consistency](#gpo-version-consistency) |
 | Policy | Default and fine-grained password and lockout policy |
 | Privilege | DA/EA/SA/Administrators membership, adminCount orphans, SPNs on privileged accounts, Protected Users |
-| Security posture | krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota, AdminSDHolder, stale / never-expiring / RC4-DES accounts; and **SID history** per scoped domain (directory reads only, `sIDHistory` never written): the principals that carry it (`Warning` when any - a tool default, `Info` by override; `Pass` worded "none visible to this account" when the read succeeded and returned none), a historic SID of the principal's own domain (`Fail`), a privileged well-known RID or SID (`Fail`, named), and the source domains (`Info`: this forest, a trust partner, or "unresolved"). Details under [SID history](#sid-history) |
+| Security posture | krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota, stale / never-expiring / RC4-DES accounts (the permissions of AdminSDHolder are in Dangerous ACLs); and **SID history** per scoped domain (directory reads only, `sIDHistory` never written): the principals that carry it (`Warning` when any - a tool default, `Info` by override; `Pass` worded "none visible to this account" when the read succeeded and returned none), a historic SID of the principal's own domain (`Fail`), a privileged well-known RID or SID (`Fail`, named), and the source domains (`Info`: this forest, a trust partner, or "unresolved"). Details under [SID history](#sid-history) |
 | AD CS / PKI | Enrolment CAs, ESC1-susceptible certificate templates |
-| Dangerous ACLs | Non-default principals holding DCSync rights on the domain head |
+| Dangerous ACLs | `-Sections Acl`. Directory reads of `nTSecurityDescriptor` only, per scoped domain, read in memory (nothing written). Every principal is a **SID**, matched by SID against an allowlist - Microsoft's published default holders plus labelled tool defaults - and **never by name**, so a group named like a default group is still flagged. **DCSync rights** (a replication right on the domain head, alone or through all extended rights or full control), **Domain root control rights** (WriteDacl, WriteOwner, write of all properties, full control, or a non-default owner), **AdminSDHolder rights**, and one row per **GPO** with a per-domain summary. A flagged SID is a `Warning` (a **tool default**, `Fail` by override) and every row says the allowlist is **provisional**. A descriptor not returned, without a DACL, or unreadable is `Not Assessed` with its cause; unreachable, access denied and timed out are told apart. Details under [Dangerous rights in the directory](#dangerous-rights-in-the-directory) |
 | Kerberos exposure | Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation |
 | **DC hardening** | `-Sections DcHardening`. Per DC, six registry values and three CIM classes read in one session: **LDAP server signing** (`LDAPServerIntegrity`) and its Windows Server 2025 **enforcement** (`LDAPServerEnforceIntegrity`), **LDAP channel binding** (`LdapEnforceChannelBinding`), **SMB server and client signing** (`RequireSecuritySignature`), the **LAN Manager authentication level** (`LmCompatibilityLevel`), the **Print Spooler** service and the **SMBv1** server. Each value is graded against what Microsoft's security baselines expect on a domain controller. A value that is **not set** is graded on the default Microsoft documents for the DC's OS build where it documents one, named as a default; where it documents none it is `Not Assessed`, never a pass and never a failure. Unreachable, access denied, not set, key absent and wrong type are separate results. These rows show the **configured policy, not what a client and the DC negotiate on the wire**. The **SMBv1** row is `Not Assessed` on any DC whose SMB configuration class returns no instance to a query, which is what the one host measured does (PORT-PLAN C3f). Details under [DC hardening](#dc-hardening) |
 | **DC system** | `-Sections DcSystem`. **OS lifecycle**: each DC's operating system against Microsoft's extended support end date, from a versioned table. Past the date is a `Fail` whose text says whether an Extended Security Updates (ESU) programme is still running, has also ended, or was never published — and always that **ESU enrolment is not assessed**. An OS the table does not list, or one that could not be read, is `Not Assessed` with the raw values, never `Pass`. Reads only the directory, so it needs no rights on any DC. **Patch level**: per DC, OS build, uptime and the latest update install date over remote CIM. This half is **inventory** (`Info` or `Not Assessed`, never `Pass`): Microsoft publishes no maximum uptime or update age for a DC, so none is applied. Unreachable, access denied and other read failures are three different results |
@@ -923,11 +923,104 @@ Nothing is written: no `Set-GP*`, no `Backup-GPO`, no `gpupdate`, and `GPT.INI` 
 writing. A GPO's display name and its `gPCFileSysPath` are in their own columns (`GPOName`,
 `FileSysPath`), never in the text a recommendation is chosen from.
 
+## Dangerous rights in the directory
+
+`-Sections Acl` (part of `All`) replaces the old DCSync check, which matched principals by **name**
+(`Not Domain Controllers` passed because it contains `Domain Controllers`, and a localised name
+failed), read through the `AD:` drive with `Get-Acl` (which ignores `-Server` and `-Credential`),
+and turned every error into one row. It covers the AdAssessment26 catalogue rows ADA-ACL-001
+(domain root), ADA-ACL-002 (AdminSDHolder) and ADA-ACL-003 (GPOs). **Run against stubs only** so
+far; the first run against a real forest is PORT-PLAN C17, and C9a lists what it must confirm.
+
+**What it reads**, per scoped domain, each from that domain (`-Server <domain>`, with
+`-Credential` when given), asking for `nTSecurityDescriptor` and nothing else:
+
+1. `Get-ADDomain -Identity <domain>` for the domain's DN and SID, and once for the forest root
+   domain's SID (Enterprise Admins and Enterprise Read-only Domain Controllers are root SIDs).
+2. `Get-ADObject -Identity <domain DN>` - the domain head.
+3. `Get-ADObject -Identity CN=AdminSDHolder,CN=System,<domain DN>`.
+4. `Get-ADObject -SearchBase CN=Policies,CN=System,<domain DN> -SearchScope OneLevel
+   -LDAPFilter '(objectClass=groupPolicyContainer)'` - every GPO, linked or not.
+
+The descriptor is turned into its binary form and read in memory with `RawSecurityDescriptor`:
+the owner SID, whether a DACL is present, and every ACE in order. Not `GetAccessRules`: measured
+on 2026-11-16, it reports a descriptor with **no DACL** as one "Everyone, full control" rule.
+Reading the owner and the DACL needs `READ_CONTROL` on each object; Microsoft's default descriptors
+give it to Authenticated Users on the domain head and on GPOs, and AdminSDHolder's default DACL is
+not published. Which descriptor parts the ActiveDirectory module asks for is not published either:
+if it asks for the SACL, an ordinary account may get `Not returned:` everywhere (PORT-PLAN C9a).
+The SACL is not read. Nothing is written: no `Set-Acl`, no `Set-ADObject`, no `Persist`.
+
+**How a right is decided** - by access mask bits, never by a rights name:
+full control (`0xF01FF`, or the GENERIC_ALL bit), `WriteDacl` (`0x40000`), `WriteOwner`
+(`0x80000`), write of all properties (`WriteProperty` with no object type, or GENERIC_WRITE),
+all extended rights (`ExtendedRight` with no object type, which includes the three replication
+rights), and each replication right by its GUID. A write scoped to one property, or another
+extended right (Apply-Group-Policy on a GPO), is not graded. An object ACE scoped to the object's
+own class or a class above it (for the domain head domainDNS, domain and top) is graded as if it had
+no object type - the object itself is the top of the object type list, and a grant there applies to
+everything below it; reading the whole class chain as the object is a tool rule that may over-report
+and never under-reports. An object ACE scoped to any other GUID grants only that node: never
+`WriteDacl`, `WriteOwner` or full control on the object, and only the replication right whose GUID it
+names. An inherit-only ACE is skipped; an ACE
+scoped to a child class without inherit-only **is** effective on the object (Microsoft documents
+this) and is graded. A deny ACE cancels a grant only when it names the same SID, comes first,
+applies to the object and covers every graded bit. The owner is graded as holding `WriteDacl`.
+
+**The allowlist**, by SID only (`Config.Acl.Allowlist`):
+
+| Principal | Where | Rights | Origin |
+| --- | --- | --- | --- |
+| SYSTEM `S-1-5-18` | domain head | all | Microsoft (domainDNS default descriptor) |
+| SYSTEM `S-1-5-18` | AdminSDHolder | all | **tool default** (D14) |
+| Administrators `S-1-5-32-544` | domain head, AdminSDHolder | all | Microsoft |
+| Administrators `S-1-5-32-544` | GPOs | all | **tool default** (D14) |
+| Domain Admins `<domain>-512` | domain head, AdminSDHolder | all | Microsoft |
+| Enterprise Admins `<root>-519` | domain head, AdminSDHolder | all | Microsoft |
+| Domain Admins, Enterprise Admins, SYSTEM, CREATOR OWNER `S-1-3-0` | GPOs | WriteDacl, WriteOwner, write of all properties | Microsoft (groupPolicyContainer default descriptor, which grants them no control access) |
+| Domain Admins, Enterprise Admins, SYSTEM, CREATOR OWNER | GPOs | all extended rights, the replication rights | **tool default** (C9) |
+| Enterprise Domain Controllers `S-1-5-9` | domain head | Get-Changes, In-Filtered-Set | Microsoft (domainDNS default descriptor) |
+| Enterprise Domain Controllers `S-1-5-9` | domain head | Get-Changes-All | Microsoft (the RODC article: "only writeable DCs"; the domainDNS descriptor does not list it - the two pages disagree, PORT-PLAN C9d) |
+| Domain Controllers `<domain>-516` | domain head | Get-Changes-All | Microsoft |
+| Enterprise Read-only DCs `<root>-498` | domain head | Get-Changes **only** | Microsoft (RODCPREP; Get-Changes-All held by them is the misconfiguration Microsoft says to change back) |
+
+A GPO's creator gets full control and ownership through Creator Owner, so a delegated creator is
+flagged on purpose, so that the delegation is seen. Legitimate non-default holders exist -
+Microsoft documents both replication rights for the Entra Connect AD DS connector account - and
+are added by SID with `AdditionalAllowed` in the `Acl` section of the override file (below).
+
+| Row | Results |
+| --- | --- |
+| `DCSync rights: <domain>` | ADA-ACL-001. The flagged grade (`Warning`, a tool default; `Fail` by override) naming each SID outside the allowlist that holds a replication right, and which; `Pass` otherwise |
+| `Domain root control rights: <domain>` | ADA-ACL-001. The same for `WriteDacl`, `WriteOwner`, write of all properties, full control and ownership |
+| `AdminSDHolder rights: <domain>` | ADA-ACL-002. Every graded right and ownership |
+| `GPO rights: {GUID}` | ADA-ACL-003. One per GPO the search returned |
+| `GPO rights summary: <domain>` | `Population`, `ReadCount`, `FlaggedCount`, `NotAssessedCount`; `Not Assessed` as a defect in the tool unless there is one GPO row per container returned. The flagged grade when any GPO is flagged; `Not Assessed` when any could not be read, when none is visible (a domain holds its two default GPOs) or when the search failed; `Pass` only when every GPO was read and none is flagged |
+| `Dangerous ACLs (no domain scoped)`, `Dangerous ACLs` | `Not Assessed`: no domain scoped, or the forest unreadable |
+
+`Not Assessed`, each in its own words: `Unreachable:`, `Access denied:`, `Timed out:`, `Read
+failed:`, `Not returned:` (the answer held no `nTSecurityDescriptor` - a read can succeed without
+the attributes the account may not see), `No DACL returned:` (cannot be told from an object with no
+DACL, which lets anyone do anything), `Not read:` (not a descriptor), an ACE of a type the tool
+does not interpret, and an account SID that could not be decided because a domain SID was not
+read (with the forest root's SID unread, the scoped domain's own -519 and -498 too). The last two
+apply only when no SID is flagged: a flagged SID takes the grade, and the Detail names what was not
+interpreted or decided. A NULL DACL (`NULL DACL:` - the present flag set and no ACL), which Microsoft
+documents as granting full access to any user, is graded as Everyone (`S-1-1-0`) holding every right
+of the row. Detail names SIDs only; display names are in the `Principals` column, resolved for display
+only and marked `unresolved` when they cannot be, and never used for a decision.
+
+**Not read, not done**: the SACL; group membership (a group is graded as its own SID, and a deny on
+a group the principal belongs to is not honoured); the permissions of a GPO's folder in SYSVOL
+(PORT-PLAN C9b); objects other than the three kinds above. Which .NET type the ActiveDirectory
+module returns for `nTSecurityDescriptor`, and which descriptor parts it asks for, is not
+published; an `ActiveDirectorySecurity` and a byte array are both read, and anything else is
+`Not Assessed`.
 ## One override file for section config: `-ConfigOverridePath`
 
 A JSON file whose top-level keys are section names. Each value is checked by that section's own
-rules. Seven sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates`,
-`RidPool`, `SidHistory` (used by `SecurityPosture`) and `Gpo`;
+rules. Eight sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates`,
+`RidPool`, `SidHistory` (used by `SecurityPosture`), `Gpo` and `Acl`;
 later checks add their own key.
 
 ```json
@@ -969,6 +1062,17 @@ later checks add their own key.
   "Gpo": {
     "MismatchStatus": "Warning",
     "OrphanFolderStatus": "Warning"
+  },
+  "Acl": {
+    "FlaggedStatus": "Warning",
+    "AdditionalAllowed": [
+      {
+        "Sid": "S-1-5-21-1-2-3-1105",
+        "Objects": [ "DomainRoot" ],
+        "Rights": [ "DS-Replication-Get-Changes", "DS-Replication-Get-Changes-All" ],
+        "Reason": "Entra Connect AD DS connector account"
+      }
+    ]
   }
 }
 ```
@@ -1030,6 +1134,15 @@ later checks add their own key.
   `Fail`, and `OrphanFolderStatus` the text `Warning` or `Info` (neither is ever a pass). The
   filter, the property list, the share, the folder and file names, the port and the size bound
   are refused, so a file cannot make the tool read another path or ask for every attribute.
+- For `Acl` the two keys above are the only ones: `FlaggedStatus` is the text `Warning` or `Fail`
+  (a principal outside the allowlist is never a pass), and `AdditionalAllowed` a non-empty list
+  of objects with exactly `Sid` (a SID in its text form - a name is refused), `Objects`
+  (`DomainRoot`, `AdminSDHolder`, `Gpo`), `Rights` (`WriteDacl`, `WriteOwner`,
+  `WriteAllProperties`, `AllExtendedRights`, `DS-Replication-Get-Changes`,
+  `DS-Replication-Get-Changes-All`, `DS-Replication-Get-Changes-In-Filtered-Set`; no `*`) and a
+  `Reason` that is not blank. Everyone, Anonymous Logon, Authenticated Users, Users, Guests and
+  RIDs 513, 514 and 515 of any domain can never be added. The built-in allowlist, the masks, the
+  GUIDs, the filter and the property list are refused.
 - For `DcDisk`, `WsmanPort` and `RpcPort` change the port that is **probed** before a read. The
   CIM session itself is opened without a port, so it still goes to the default one: setting
   either key to anything but the default can make a reachable DC read as unreachable, and does

@@ -235,6 +235,86 @@ function Get-AdfaGptIniRaw {
     $script:SmokeGptIniCalls += $Path
     [pscustomobject]@{ Ok = $true; Class = 'Read'; Bytes = [byte[]][System.Text.Encoding]::ASCII.GetBytes("[General]`r`nVersion=65537`r`ndisplayName=New Group Policy Object`r`n"); Error = ''; ErrorType = ''; HResult = 0; Path = $Path }
 }
+# C9 (Acl): the security descriptors of the domain head, CN=AdminSDHolder,CN=System and every
+# groupPolicyContainer. The Get-ADObject stub below answers a read only when it asks for
+# nTSecurityDescriptor alone and names the domain itself as -Server (the Get-ADDomain stub gives every
+# domain the same DN, so the domain comes from -Server); anything else throws. The value it hands back
+# is a marker, and ConvertTo-AdfaAclDescriptor - the Windows seam that reads a real descriptor in
+# memory - is stubbed to turn the marker into the records the real seam returns, because
+# ActiveDirectorySecurity and SecurityIdentifier are not available off Windows and this harness must
+# run anywhere. The real seam is tested on Windows by the Pester suite, from SDDL. Per domain:
+#   contoso.com        the head holds Microsoft's default grants plus Get-Changes-All for
+#                      S-1-5-21-1-2-3-1105, a group whose name resolves to "Fake Administrators"
+#   north.contoso.com  the head holds only the defaults - Enterprise Admins and Enterprise Read-only
+#                      DCs as SIDs of the forest root - and AdminSDHolder has a non-default writer
+#   south.contoso.com  only the defaults
+# Two GPOs per domain, with the groupPolicyContainer default grants. $script:SmokeAclFail makes every
+# descriptor read throw an access-denied exception, $script:SmokeAclUnreachable an unreachable one,
+# and $script:SmokeAclDaclAbsent makes every descriptor come back without a DACL.
+$script:SmokeAclFail = $false
+$script:SmokeAclUnreachable = $false
+$script:SmokeAclDaclAbsent = $false
+$script:SmokeAclCalls = @()
+$script:SmokeAclFake = 'S-1-5-21-1-2-3-1105'
+$script:SmokeAclRep = @{ Get = '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'; All = '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'; Filtered = '89e95b76-444d-4c62-991a-0facbeda640c' }
+function New-StubAce {
+    param([string]$Sid, [int64]$Mask, [string]$ObjectType = '', [bool]$Allow = $true, [bool]$InheritOnly = $false)
+    $stubAceKind = 'Common'
+    if ($ObjectType -ne '') { $stubAceKind = 'Object' }
+    [pscustomobject]@{ Index = 0; Sid = $Sid; Allow = $Allow; Deny = (-not $Allow); Kind = $stubAceKind; Mask = $Mask; InheritOnly = $InheritOnly; Inherited = $false; ObjectType = $ObjectType; InheritedObjectType = '' }
+}
+function ConvertTo-AdfaAclDescriptor {
+    param($Value)
+    $stubAclDomain = [string]$Value.SmokeDomain
+    $stubAclSid = $script:SmokeDomainSids[$stubAclDomain]
+    $stubAclRoot = $script:SmokeDomainSids['contoso.com']
+    if ($script:SmokeAclDaclAbsent) { return [pscustomobject]@{ Ok = $false; Class = 'DaclAbsent'; Error = 'the descriptor carries no DACL'; OwnerSid = ("{0}-512" -f $stubAclSid); Aces = @(); AceCount = 0 } }
+    $stubAces = @()
+    switch ([string]$Value.SmokeSdKind) {
+        'Head' {
+            $stubAces = @(
+                (New-StubAce -Sid 'S-1-5-11' -Mask 0x20094)
+                (New-StubAce -Sid ("{0}-512" -f $stubAclSid) -Mask 0xE01BD)
+                (New-StubAce -Sid 'S-1-5-32-544' -Mask 0xF01BD)
+                (New-StubAce -Sid 'S-1-5-18' -Mask 0xF01FF)
+                (New-StubAce -Sid ("{0}-519" -f $stubAclRoot) -Mask 0xF01FF)
+                (New-StubAce -Sid 'S-1-5-9' -Mask 0x100 -ObjectType $script:SmokeAclRep.Get)
+                (New-StubAce -Sid 'S-1-5-9' -Mask 0x100 -ObjectType $script:SmokeAclRep.Filtered)
+                (New-StubAce -Sid ("{0}-516" -f $stubAclSid) -Mask 0x100 -ObjectType $script:SmokeAclRep.All)
+                (New-StubAce -Sid 'S-1-5-32-544' -Mask 0x100 -ObjectType $script:SmokeAclRep.All)
+                (New-StubAce -Sid ("{0}-498" -f $stubAclRoot) -Mask 0x100 -ObjectType $script:SmokeAclRep.Get)
+                (New-StubAce -Sid 'S-1-5-10' -Mask 0x20 -InheritOnly $true)
+            )
+            if ($stubAclDomain -eq 'contoso.com') { $stubAces += (New-StubAce -Sid $script:SmokeAclFake -Mask 0x100 -ObjectType $script:SmokeAclRep.All) }
+        }
+        'AdminSDHolder' {
+            $stubAces = @(
+                (New-StubAce -Sid ("{0}-512" -f $stubAclSid) -Mask 0xE01BD)
+                (New-StubAce -Sid 'S-1-5-32-544' -Mask 0xF01BD)
+                (New-StubAce -Sid 'S-1-5-18' -Mask 0xF01FF)
+                (New-StubAce -Sid ("{0}-519" -f $stubAclRoot) -Mask 0xF01FF)
+                (New-StubAce -Sid 'S-1-5-11' -Mask 0x20094)
+            )
+            if ($stubAclDomain -eq 'north.contoso.com') { $stubAces += (New-StubAce -Sid ("{0}-1500" -f $stubAclSid) -Mask 0x20) }
+        }
+        'Gpo' {
+            $stubAces = @(
+                (New-StubAce -Sid ("{0}-512" -f $stubAclSid) -Mask 0xF00FF)
+                (New-StubAce -Sid ("{0}-519" -f $stubAclRoot) -Mask 0xF00FF)
+                (New-StubAce -Sid 'S-1-3-0' -Mask 0xF00FF -InheritOnly $true)
+                (New-StubAce -Sid 'S-1-5-18' -Mask 0xF00FF)
+                (New-StubAce -Sid 'S-1-5-11' -Mask 0x20094)
+                (New-StubAce -Sid 'S-1-5-11' -Mask 0x100 -ObjectType 'edacfd8f-ffb3-11d1-b41d-00a0c968f939')
+                (New-StubAce -Sid 'S-1-5-9' -Mask 0x20094)
+            )
+        }
+        default { throw ("STUB: no descriptor stubbed for '{0}'" -f [string]$Value.SmokeSdKind) }
+    }
+    for ($i = 0; $i -lt $stubAces.Count; $i++) { $stubAces[$i].Index = $i }
+    [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; OwnerSid = ("{0}-512" -f $stubAclSid); Aces = $stubAces; AceCount = $stubAces.Count }
+}
+# Display names only: no LSA lookup is made from the harness.
+function Resolve-AdfaAclSidName { param([string]$Sid) if ($Sid -eq $script:SmokeAclFake) { return 'CONTOSO\Fake Administrators' } return '' }
 # The named arguments a remaining-arguments stub was called with: a splatted -Name value arrives as
 # the string "-Name:" followed by the value.
 function ConvertTo-StubArgument { param($Given)
@@ -475,6 +555,32 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
                 trustPartner = 'fabrikam.com'; flatName = 'FABRIKAM'; securityIdentifier = (New-StubSidBytes -Sid $script:SmokeFabrikamSid) }
         }
         return
+    }
+    # C9: a security descriptor read - the domain head, AdminSDHolder, or the GPO search - told apart
+    # from the C8 version read by what it asks for.
+    if (@(@($stubNamed['Properties']) | ForEach-Object { [string]$_ }) -contains 'nTSecurityDescriptor') {
+        $aclAsked = @(@($stubNamed['Properties']) | ForEach-Object { [string]$_ })
+        if (($aclAsked -join ',') -ne 'nTSecurityDescriptor') { throw ("STUB: the security descriptor read asked for '{0}', not nTSecurityDescriptor alone" -f ($aclAsked -join ',')) }
+        $aclServer = [string]$stubNamed['Server']
+        if (-not $script:SmokeDomainSids.ContainsKey($aclServer)) { throw ("STUB: a security descriptor must be read from its own domain, not from '{0}'" -f $aclServer) }
+        $aclTarget = [string]$stubNamed['Identity']
+        if ([string]$stubNamed['LDAPFilter'] -ne '') { $aclTarget = ("search {0} {1}" -f [string]$stubNamed['SearchBase'], [string]$stubNamed['SearchScope']) }
+        $script:SmokeAclCalls += ("{0}@{1}" -f $aclTarget, $aclServer)
+        if ($script:SmokeAclUnreachable) { throw 'Unable to contact the server. This may be because this server does not exist, it is currently down, or it does not have the Active Directory Web Services running.' }
+        if ($script:SmokeAclFail) { throw [System.UnauthorizedAccessException]'STUB: security descriptor read refused' }
+        if ([string]$stubNamed['LDAPFilter'] -eq '(objectClass=groupPolicyContainer)') {
+            if ([string]$stubNamed['SearchBase'] -ne 'CN=Policies,CN=System,DC=contoso,DC=com' -or [string]$stubNamed['SearchScope'] -ne 'OneLevel') { throw 'STUB: the GPO descriptors are one level under CN=Policies,CN=System' }
+            return @(foreach ($aclGuid in $script:SmokeGpoGuids) {
+                    [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Policies,CN=System,DC=contoso,DC=com" -f $aclGuid); Name = $aclGuid; ObjectClass = 'groupPolicyContainer'; ObjectGUID = [guid]::NewGuid()
+                        nTSecurityDescriptor = [pscustomobject]@{ SmokeSdKind = 'Gpo'; SmokeDomain = $aclServer } }
+                })
+        }
+        $aclKind = ''
+        if ($aclTarget -eq 'DC=contoso,DC=com') { $aclKind = 'Head' }
+        elseif ($aclTarget -eq 'CN=AdminSDHolder,CN=System,DC=contoso,DC=com') { $aclKind = 'AdminSDHolder' }
+        else { throw ("STUB: no security descriptor stubbed for '{0}'" -f $aclTarget) }
+        return [pscustomobject]@{ DistinguishedName = $aclTarget; Name = $aclKind; ObjectClass = 'container'; ObjectGUID = [guid]::NewGuid()
+            nTSecurityDescriptor = [pscustomobject]@{ SmokeSdKind = $aclKind; SmokeDomain = $aclServer } }
     }
     # C8: the groupPolicyContainer objects, one level under CN=Policies,CN=System, read from the PDC.
     if ([string]$stubNamed['LDAPFilter'] -eq '(objectClass=groupPolicyContainer)') {
@@ -832,6 +938,26 @@ if (Test-Path $gpoCsv) {
     Check (@($gpoCsvSum).Count -eq 1 -and $gpoCsvSum[0].Evidence -eq 'directory and SYSVOL') 'GPO version: the summary''s Evidence names SYSVOL, which was listed and read'
 }
 else { Check $false 'GPO Inventory CSV exists' }
+# C9: the Dangerous ACLs rows must be wired, must read each descriptor from the scoped domain with
+# nTSecurityDescriptor alone (the stub throws otherwise), and must flag the non-default SID by SID.
+$aclRows = @($smokeFindings | Where-Object { $_.Section -eq 'Dangerous ACLs (DCSync)' })
+Check (@($aclRows).Count -eq 6) ("Dangerous ACLs: wired, with three object rows, one row per GPO (two) and a GPO summary for the stub domain ({0} rows, expected 6)" -f @($aclRows).Count)
+Check (@($aclRows | Where-Object { $_.Scope -ne 'contoso.com' }).Count -eq 0) 'Dangerous ACLs: every row carries its domain as Scope'
+$aclDcsync = @($aclRows | Where-Object { $_.Item -eq 'DCSync rights: contoso.com' })
+Check (@($aclDcsync).Count -eq 1 -and $aclDcsync[0].Status -eq 'Warning' -and $aclDcsync[0].Detail -match ("{0} \(DS-Replication-Get-Changes-All\)" -f [regex]::Escape($script:SmokeAclFake)) -and $aclDcsync[0].Detail -match 'matched by SID only, never by name' -and $aclDcsync[0].Detail -match 'allowlist provisional') 'Dangerous ACLs: the non-default SID holding Get-Changes-All is a Warning, named by SID, matched by SID only, allowlist provisional'
+Check (@($aclDcsync).Count -eq 1 -and $aclDcsync[0].Recommendation -match 'Entra Connect' -and $aclDcsync[0].Recommendation -notmatch 'repadmin|dfsrmig|wbadmin|New-KrbtgtKeys') 'Dangerous ACLs: the DCSync row carries its own advice, not the replication or backup advice its Detail words would attract'
+Check (@($aclRows | Where-Object { $_.Item -ne 'DCSync rights: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 5) 'Dangerous ACLs: the control row, AdminSDHolder, both GPOs and the GPO summary pass on Microsoft''s default holders'
+Check (@($aclRows | Where-Object { $_.Detail -match 'Fake Administrators' }).Count -eq 0) 'Dangerous ACLs: no display name in any Detail'
+Check (@($script:SmokeAclCalls).Count -eq 3 -and @($script:SmokeAclCalls | Where-Object { $_ -notmatch '@contoso\.com$' }).Count -eq 0) ("Dangerous ACLs: three descriptor reads - the head, AdminSDHolder and the GPO search - each from the domain itself ({0})" -f ($script:SmokeAclCalls -join ', '))
+$aclCsv = Join-Path $result.CsvPath 'Dangerous ACLs (DCSync).csv'
+if (Test-Path $aclCsv) {
+    $aclCsvRows = @(Import-Csv $aclCsv)
+    $aclCsvSync = @($aclCsvRows | Where-Object { $_.Item -eq 'DCSync rights: contoso.com' })
+    Check (@($aclCsvSync).Count -eq 1 -and $aclCsvSync[0].FlaggedSids -eq $script:SmokeAclFake -and $aclCsvSync[0].Principals -eq ("{0} = CONTOSO\Fake Administrators" -f $script:SmokeAclFake) -and $aclCsvSync[0].CatalogueId -eq 'ADA-ACL-001' -and $aclCsvSync[0].AceCount -eq '12') 'Dangerous ACLs: the CSV carries the flagged SID, its display name in its own column, the catalogue id and the ACE count'
+    $aclCsvSum = @($aclCsvRows | Where-Object { $_.Item -eq 'GPO rights summary: contoso.com' })
+    Check (@($aclCsvSum).Count -eq 1 -and $aclCsvSum[0].Population -eq '2' -and $aclCsvSum[0].ReadCount -eq '2' -and $aclCsvSum[0].FlaggedCount -eq '0' -and $aclCsvSum[0].NotAssessedCount -eq '0') 'Dangerous ACLs: the GPO summary carries the declared population and the counts in their own columns'
+}
+else { Check $false 'Dangerous ACLs CSV exists' }
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
@@ -865,6 +991,7 @@ $out2 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_multi_" + [guid]::NewG
 $script:OutputPath = $out2
 $script:AllDomains = $true
 $script:SmokeGptIniCalls = @()
+$script:SmokeAclCalls = @()
 $result2 = Invoke-Main
 
 Check ($null -ne $result2) 'Multi-domain: Invoke-Main returned a summary object'
@@ -969,6 +1096,19 @@ Check (@($gpo2 | Where-Object { $_.Item -eq ("GPO version: {0}" -f $script:Smoke
 Check (@($gpo2 | Where-Object { $_.Item -eq 'GPO version summary: north.contoso.com' -and $_.Status -eq 'Warning' }).Count -eq 1) 'Multi-domain: north.contoso.com''s summary is a Warning'
 Check (@($gpo2 | Where-Object { $_.Item -eq ("GPO folder without container: {0}" -f $script:SmokeGpoOrphan) -and $_.Scope -eq 'south.contoso.com' -and $_.Status -eq 'Warning' -and $_.Recommendation -match 'orphaned' }).Count -eq 1) 'Multi-domain: the GUID folder of south.contoso.com with no container is a Warning with its own advice'
 Check (@($gpo2 | Where-Object { $_.Item -eq 'GPO version summary: south.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Multi-domain: south.contoso.com''s versions agree, so its summary passes beside the orphan folder row'
+# C9: six Dangerous ACLs rows per scoped domain, each read from that domain and graded on its own
+# descriptors, with Enterprise Admins and ERODC recognised as SIDs of the forest root - not three
+# copies of the first domain.
+$acl2 = @($findings2 | Where-Object { $_.Section -eq 'Dangerous ACLs (DCSync)' })
+Check (@($acl2).Count -eq 18) ("Multi-domain: Dangerous ACLs has six rows for each of the three domains ({0}, expected 18)" -f @($acl2).Count)
+foreach ($d in $multiDomains) {
+    Check (@($acl2 | Where-Object { $_.Scope -eq $d }).Count -eq 6) ("Multi-domain: Dangerous ACLs has six rows scoped '{0}'" -f $d)
+    Check (@($script:SmokeAclCalls | Where-Object { $_ -match ("@{0}$" -f [regex]::Escape($d)) }).Count -eq 3) ("Multi-domain: the three descriptor reads of '{0}' went to that domain" -f $d)
+}
+Check (@($acl2 | Where-Object { $_.Item -eq 'DCSync rights: contoso.com' -and $_.Status -eq 'Warning' }).Count -eq 1) 'Multi-domain: contoso.com''s non-default replication grant is still flagged'
+Check (@($acl2 | Where-Object { $_.Item -eq 'DCSync rights: north.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Multi-domain: north.contoso.com''s head passes - the forest root''s Enterprise Admins and Enterprise Read-only DCs are recognised by the root domain SID'
+Check (@($acl2 | Where-Object { $_.Item -eq 'AdminSDHolder rights: north.contoso.com' -and $_.Status -eq 'Warning' -and $_.Detail -match 'S-1-5-21-1-2-4-1500 \(WriteAllProperties\)' -and $_.Recommendation -match 'SDProp' }).Count -eq 1) 'Multi-domain: the non-default writer on north.contoso.com''s AdminSDHolder is a Warning with the AdminSDHolder advice'
+Check (@($acl2 | Where-Object { $_.Scope -eq 'south.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 6) 'Multi-domain: south.contoso.com, with only default grants, passes on all six rows'
 
 # C2: the same three domains with DcDisk selected WITHOUT DomainControllers. There is then no DC
 # inventory, and the section used to fall back to one unscoped Get-ADDomainController call,
@@ -1408,6 +1548,9 @@ $script:SmokeSidHistoryFail = $true
 # query is refused (an access-denied exception).
 $script:SmokeGpoFail = $true
 $script:SmokeGptIniCalls = @()
+# C9: the descriptor reads do not use Get-ADDomainController either, so every one is refused (an
+# access-denied exception).
+$script:SmokeAclFail = $true
 
 $out3 =Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out3
@@ -1509,6 +1652,37 @@ if (Test-Path $gpoCsv3) {
 }
 else { Check $false 'Failure mode: GPO Inventory CSV exists' }
 Check (@($gpo3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a GPO version row that measured nothing carries no advice'
+# C9: every descriptor read refused. The domain's three object rows and its GPO summary are Not
+# Assessed, say "Access denied" with the cause, and none passes or carries advice.
+$acl3 = @($findings3 | Where-Object { $_.Section -eq 'Dangerous ACLs (DCSync)' })
+Check (@($acl3).Count -eq 4 -and @($acl3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: Dangerous ACLs reports nothing but Not Assessed, and never Pass ({0} rows, expected 4)" -f @($acl3).Count)
+Check (@($acl3 | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Detail -match '^Access denied: ' -and $_.Detail -match 'STUB: security descriptor read refused' -and $_.Detail -match 'not a clean result' }).Count -eq 4) 'Failure mode: every Dangerous ACLs row says Access denied, not unreachable, with the cause'
+Check (@($acl3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a Dangerous ACLs row that measured nothing carries no advice'
+# The same reads unreachable, and then answered without a DACL, with Acl selected alone: each is its
+# own Not Assessed result, and nothing passes.
+$out3a = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_aclonly_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $out3a
+$script:Sections = @('Acl')
+$script:SmokeAclFail = $false
+$script:SmokeAclUnreachable = $true
+$result3a = Invoke-Main
+$acl3a = @(@(Import-Csv $result3a.FindingsFile) | Where-Object { $_.Section -eq 'Dangerous ACLs (DCSync)' })
+Check (@($acl3a).Count -eq 4 -and @($acl3a | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Unreachable: ' }).Count -eq 4) ("Failure mode, Acl alone: an unreachable domain gives four Not Assessed rows that say Unreachable ({0} rows)" -f @($acl3a).Count)
+Remove-Item -Recurse -Force $out3a -ErrorAction SilentlyContinue
+$script:SmokeAclUnreachable = $false
+$script:SmokeAclDaclAbsent = $true
+$out3a = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_acldacl_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $out3a
+$result3a = Invoke-Main
+$acl3d = @(@(Import-Csv $result3a.FindingsFile) | Where-Object { $_.Section -eq 'Dangerous ACLs (DCSync)' })
+# Declared population: three object rows, two GPO rows, one summary.
+Check (@($acl3d).Count -eq 6 -and @($acl3d | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode, Acl alone: descriptors without a DACL give nothing but Not Assessed, and never Pass ({0} rows, expected 6)" -f @($acl3d).Count)
+Check (@($acl3d | Where-Object { $_.Item -ne 'GPO rights summary: contoso.com' -and $_.Detail -match '^No DACL returned: ' }).Count -eq 5) 'Failure mode, Acl alone: each object without a DACL says so, and is never read as "no ACE" or as "Everyone, full control"'
+Remove-Item -Recurse -Force $out3a -ErrorAction SilentlyContinue
+$script:SmokeAclDaclAbsent = $false
+$script:SmokeAclFail = $true
+$script:OutputPath = $out3
+$script:Sections = @('All')
 # The schema readable and the computer query failing: the schema row stands, the domain rows
 # are Not Assessed with the query's own error.
 $out3l = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_lapsonly_" + [guid]::NewGuid().ToString('N'))
@@ -1615,6 +1789,9 @@ if ($null -ne $result4) {
     # C8: with no forest no domain is scoped; the GPO version check asks nothing and says so in one row.
     $gpo4 = @($findings4 | Where-Object { $_.Section -eq 'GPO Inventory' })
     Check (@($gpo4).Count -eq 1 -and $gpo4[0].Item -eq 'GPO version' -and $gpo4[0].Status -eq 'Not Assessed' -and $gpo4[0].Detail -match 'The forest could not be read' -and $gpo4[0].Detail -match 'not contactable') 'No forest: GPO Inventory is one Not Assessed GPO version row carrying the cause'
+    # C9: with no forest no domain is scoped and no root SID read; the section asks nothing and says so.
+    $acl4 = @($findings4 | Where-Object { $_.Section -eq 'Dangerous ACLs (DCSync)' })
+    Check (@($acl4).Count -eq 1 -and $acl4[0].Item -eq 'Dangerous ACLs' -and $acl4[0].Status -eq 'Not Assessed' -and $acl4[0].Detail -match 'The forest could not be read' -and $acl4[0].Detail -match 'not contactable') 'No forest: Dangerous ACLs is one Not Assessed row carrying the cause'
 
     # The critical property: with no forest, nothing may claim to have passed.
     $passes4 = @($findings4 | Where-Object { $_.Status -eq 'Pass' })
