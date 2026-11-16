@@ -34,7 +34,13 @@
           read-only file read over SMB; the GroupPolicy module is not needed for it and nothing
           is written
         - Password & lockout policy (default + fine-grained)
-        - Privileged group membership and security posture
+        - Privileged groups, per scoped domain: Schema Admins and Enterprise Admins membership
+          (forest root; a member is a Warning, as Microsoft says both should be empty day to
+          day), and the transitive member count of every privileged group, each located by SID
+          and never by name, with nested groups, primary-group members and foreign security
+          principals (by SID) followed; a member that could not be resolved makes the count Not
+          Assessed, never lower
+        - Security posture
           (krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota,
           stale / never-expiring / RC4-DES accounts; the permissions of AdminSDHolder are in
           the Dangerous ACLs section)
@@ -56,8 +62,15 @@
           ownership on AdminSDHolder or on any GPO. Directory reads of nTSecurityDescriptor only;
           the descriptor is read in memory and nothing is written. The allowlist is Microsoft's
           published default holders plus labelled tool defaults, and is provisional
-        - Kerberos exposure: Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation
-        - Privileged hygiene: adminCount orphans, SPNs on privileged accounts, Protected Users
+        - Kerberos exposure: Kerberoastable (SPN) users, AS-REP-roastable accounts, and per
+          scoped domain unconstrained delegation and protocol transition outside the domain
+          controllers (excluded by the DN of their computer account, never by name), Kerberos-only
+          constrained delegation (inventory) and resource-based constrained delegation with the
+          SIDs it allows
+        - Privileged hygiene, per scoped domain: adminCount=1 objects outside every protected
+          group ("orphan" is this tool's word for what Microsoft calls formerly protected),
+          enabled privileged user accounts with an SPN, privileged accounts that can be delegated,
+          and the Protected Users member count
         - DC hardening, per DC: LDAP server signing and its Windows Server 2025 enforcement,
           LDAP channel binding, SMB server and client signing, the LAN Manager authentication
           level (LmCompatibilityLevel), the Print Spooler service and the SMBv1 server. Six
@@ -284,9 +297,41 @@
     full access, is flagged as Everyone. A flagged principal is reported even when another ACE is of
     a type the tool does not interpret. Group membership is not expanded.
 
+    PrivilegedAccounts, PrivilegedHygiene and Kerberos share one set of directory reads, made once
+    per run for the sections selected, and change nothing. Every domain of the forest is read with
+    Get-ADDomain for its DN and SID, so a member is read from the domain that holds it. Per scoped
+    domain, each group of the Privileged table is located by SID (objectSid, never a name) and
+    expanded transitively: every member DN read with Get-ADObject from its own domain, nested groups
+    followed (security and distribution alike), and the members whose primaryGroupID is the group's
+    RID added. A foreign security principal is counted and reported by SID; a member in a forest
+    domain this run did not scope, unreachable, refused or not found, or a member list cut at a
+    range-retrieval limit (exactly 1500 or 5000 values), makes the count Not Assessed - never lower.
+    PrivilegedAccounts: "Schema Admins members" and "Enterprise Admins members" for the forest root
+    (Warning at one member, a tool default from the catalogue; Learn names the root's Administrator
+    as a possible Enterprise Admins exception, which a config switch can apply), one "Privileged
+    group" count per group (inventory, no threshold) and a population row per domain.
+    PrivilegedHygiene: "adminCount orphans" (adminCount=1 on an object no protected group of
+    Appendix C reaches - plus Enterprise Read-only Domain Controllers, which Learn's security-groups
+    page also marks as protected - and not Administrator or krbtgt; an object protected only through
+    an operator group is not judged when dSHeuristics' dwAdminSDExMask is not 0), "Privileged accounts
+    with SPN" (enabled user accounts only), "Privileged accounts delegable" (neither "Account is
+    sensitive and cannot be delegated" nor a Protected Users membership at domain functional level
+    Windows Server 2012 R2 or later, where Learn says it blocks delegation; a C10 addition, not a
+    catalogue rule) and "Protected Users members". Kerberos: the Kerberoast and AS-REP rows, then
+    unconstrained delegation and protocol transition outside the domain controllers - which are
+    excluded by the DN of their computer account, read from serverReference of each server object
+    holding an nTDSDSA child in the configuration partition, never by name or primaryGroupID -
+    Kerberos-only constrained delegation (inventory) and resource-based constrained delegation,
+    whose descriptor is read in memory to list the SIDs it allows. A row that could not be read is
+    Not Assessed, with unreachable, access denied and timed out told apart; every grade is a tool
+    default. Nothing passes on an empty answer: the group reads must find the domain's registered
+    DCs in its DC groups, the adminCount search and the privileged-account population must hold
+    the domain's Administrator (RID 500), and the delegation search must return every DC registered
+    for the domain; otherwise the rows built on them are Not Assessed.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Eight sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Nine sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -358,6 +403,17 @@
         { "Acl": { "AdditionalAllowed": [ { "Sid": "S-1-5-21-1-2-3-1105", "Objects": [ "DomainRoot" ],
                    "Rights": [ "DS-Replication-Get-Changes", "DS-Replication-Get-Changes-All" ],
                    "Reason": "Entra Connect AD DS connector account" } ] } }
+
+    And Privileged, used by the PrivilegedAccounts, PrivilegedHygiene and Kerberos sections, whose
+    keys are the eight grades SchemaAdminsStatus, EnterpriseAdminsStatus, OrphanStatus,
+    PrivilegedSpnStatus, DelegableStatus, UnconstrainedStatus, ProtocolTransitionStatus and
+    RbcdStatus (each Warning or Fail; Warning is a tool default), EnterpriseAdminsExemptRootAdministrator
+    (true leaves the forest root's built-in Administrator out of the Enterprise Admins count),
+    NameListCap (0 to 1000) and MaxExpandedObjects (objects read per run, member reads and
+    primary-group search results together, 1 to 100000). The groups,
+    the userAccountControl bits, the filters and the property lists are refused:
+
+        { "Privileged": { "SchemaAdminsStatus": "Fail", "EnterpriseAdminsExemptRootAdministrator": true } }
 
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
@@ -550,7 +606,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo" and "Acl" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl" and "Privileged" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -584,20 +640,13 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.26.0'
+    Version                 = '1.27.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
     ExternalToolTimeoutSec  = $ExternalToolTimeoutSeconds
     Retries                 = $Retries
     RetryDelaySeconds       = $RetryDelaySeconds
-    # Well-known RID suffixes for privileged groups (domain-relative unless noted).
-    PrivilegedGroupRids     = @{
-        'Domain Admins'     = 512
-        'Enterprise Admins' = 519   # root domain only
-        'Schema Admins'     = 518   # root domain only
-    }
-    BuiltinAdministrators   = 'S-1-5-32-544'
     ReplicationStaleMinutes = 180
     # --- Replication convergence lag ------------------------------------------------------
     # OURS, not vendor limits, and the findings say so. Reasoning: intra-site replication is
@@ -1945,6 +1994,226 @@ $script:Config = @{
         # Domain Users, Domain Guests and Domain Computers of any domain (RIDs 513, 514, 515). Tool rule.
         RefusedOverrideSids  = @('S-1-1-0', 'S-1-5-7', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-32-546')
         RefusedOverrideRids  = @(513, 514, 515)
+    }
+    # --- Privileged groups and delegation (PORT-PLAN C10; sections PrivilegedAccounts, PrivilegedHygiene
+    #     and Kerberos, report sections "Privileged Accounts", "Privileged Hygiene" and "Kerberos
+    #     Exposure"; AdAssessment26 catalogue ADA-PRIV-001..002, ADA-OBJ-001..004, ADA-OBJ-006,
+    #     ADA-INV-005 and ADA-INV-017) ---
+    # Instrument: Get-ADDomain for every domain of the forest (its DN and SID, so a member DN is read
+    # from the domain that holds it); per scoped domain, a Get-ADObject search by objectSid for each
+    # group of the table below, Get-ADObject -Identity for every member DN (nested groups followed,
+    # security and distribution alike), a (primaryGroupID=<RID>) search for every group with an
+    # account-domain SID, one (adminCount=1) search, one delegation search and the two Kerberos roast
+    # reads (Get-ADUser, unchanged); once per run, the nTDSDSA and server objects (serverReference)
+    # under CN=Sites of the configuration partition, and dSHeuristics. Nothing is written: no Set-AD*,
+    # no Add-ADGroupMember, no Set-ADAccountControl, and no rootDSE modify (RunProtectAdminGroupsTask,
+    # which Appendix C documents, is a write and is never sent). Every URL below was read on 2026-11-16.
+    #
+    # Vendor facts:
+    #   The protected accounts and groups: Account Operators, Administrator, Administrators, Backup
+    #   Operators, Domain Admins, Domain Controllers, Enterprise Admins, Enterprise Key Admins, Key
+    #   Admins, Krbtgt, Print Operators, Read-only Domain Controllers, Replicator, Schema Admins, Server
+    #   Operators; SDProp runs every 60 minutes by default on the PDC emulator:
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory
+    #   The security-groups reference gives each SID and RID used below, the forest-root-only scope of
+    #   Schema Admins and Enterprise Admins, Protected Users (RID 525, "Protected by AdminSDHolder? No"),
+    #   and marks Enterprise Read-only Domain Controllers (<root>-498) as protected - which Appendix C
+    #   does not list. THE TWO PAGES DISAGREE: -498 is treated as protected, which can only keep an
+    #   object from being called an orphan, never make one. The security-identifiers page gives Key
+    #   Admins as a root-domain SID and the security-groups page as <domain>: -526 is looked up by RID
+    #   in every scoped domain, and one that is absent is "not present", not a failure. Enterprise Key
+    #   Admins (-527): the security-groups page gives <domain>-527, but the domain-wide updates page
+    #   (Operation 85) names "rootdomain\Enterprise Key Admins" and says that in nonroot domains the
+    #   update "resulted in a bogus domain-relative ACE with a nonresolvable -527 SID" (removed again by
+    #   Operation 87), so -527 is read from the forest root only (Scope ForestRoot), like -518 and -519,
+    #   and counts as a protected source for every child domain. The same page: "The Enterprise Key
+    #   Admins and Key Admins groups are only created after a Windows Server 2016 Domain Controller is
+    #   promoted and takes over the PDC Emulator FSMO role" - why both are Always $false.
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-groups
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-identifiers
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/deploy/domain-wide-updates
+    #   "When an account is flagged as a protected account, the value of the adminCount attribute on
+    #   the object is set to 1"; the domain's Administrator (RID 500) is a protected account (Appendix
+    #   C). So an (adminCount=1) search that does not return the domain's RID-500 Administrator did not
+    #   return its declared population, and nothing is passed on it (the same page as below).
+    #   "When an account is removed from a protected group, it is no longer considered a protected
+    #   account, but its adminCount attribute remains set to 1 if it is not manually changed"; the object
+    #   "still does not inherit permissions"; protection follows "direct or transitive membership ...
+    #   regardless of whether the membership is derived from security or distribution groups"; Schema
+    #   Admins "is intended to be populated only temporarily and occasionally". Learn says "formerly
+    #   protected" and never "orphan": that word is this tool's label, an INFERENCE.
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/reducing-the-active-directory-attack-surface
+    #   Enterprise Admins "should contain no users on a day-to-day basis, with the possible exception of
+    #   the root domain's Administrator account":
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/appendix-e--securing-enterprise-admins-groups-in-active-directory
+    #   userAccountControl: ACCOUNTDISABLE 2, SERVER_TRUST_ACCOUNT 8192, TRUSTED_FOR_DELEGATION 524288,
+    #   NOT_DELEGATED 1048576, TRUSTED_TO_AUTH_FOR_DELEGATION 16777216, PARTIAL_SECRETS_ACCOUNT 67108864:
+    #     https://learn.microsoft.com/windows/win32/adschema/a-useraccountcontrol
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties
+    #   A writable DC carries SERVER_TRUST_ACCOUNT and TRUSTED_FOR_DELEGATION; an RODC is typically
+    #   0x5001000, which holds TRUSTED_TO_AUTH_FOR_DELEGATION - why every registered DC is excluded from
+    #   both bit rows, and why the one delegation search, which asks for either bit, is expected to
+    #   return every DC registered for the domain (a TOOL RULE built on those defaults: a registered DC
+    #   the search did not return makes a "none" answer Not Assessed, never Pass):
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8453
+    #   msDS-AllowedToDelegateTo holds the SPNs of constrained delegation; "use any authentication
+    #   protocol" adds TRUSTED_TO_AUTH_FOR_DELEGATION; msDS-AllowedToActOnBehalfOfOtherIdentity is a
+    #   String(NT-Sec-Desc) holding the principals allowed (RBCD); the KDC always allows protocol
+    #   transition for RBCD:
+    #     https://learn.microsoft.com/windows/win32/adschema/a-msds-allowedtodelegateto
+    #     https://learn.microsoft.com/windows/win32/adschema/a-msds-allowedtoactonbehalfofotheridentity
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-managed-service-accounts/group-managed-service-accounts/configure-kerberos-delegation-group-managed-service-accounts
+    #     https://learn.microsoft.com/windows-server/security/kerberos/kerberos-constrained-delegation-overview
+    #   "Account is sensitive and cannot be delegated" is a best practice for all sensitive accounts; a
+    #   Protected Users member "might not have this setting configured"; Protected Users members cannot be
+    #   delegated, and service and computer accounts must never be added. That delegation restriction is
+    #   DC-side: "If the domain functional level is Windows Server 2012 R2, members of the group can no
+    #   longer ... Be delegated by using unconstrained or constrained delegation", and "To provide domain
+    #   controller-side restrictions for Protected Users ... the domain functional level must be Windows
+    #   Server 2012 R2" (how-to-configure-protected-accounts); the functional-levels page lists it under
+    #   the 2012 R2 DFL. So Protected Users membership counts as delegation protection only when Get-ADDomain
+    #   reported a DomainMode in ProtectedUsersDelegationModes; a lower mode makes the member delegable,
+    #   and a mode that was not read or is not in either list leaves it undecided. The DomainMode values
+    #   are those Set-ADDomainMode accepts:
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/active-directory-functional-levels
+    #     https://learn.microsoft.com/powershell/module/activedirectory/set-addomainmode
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-default-user-accounts
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/how-to-configure-protected-accounts
+    #     https://learn.microsoft.com/windows-server/security/credentials-protection-and-management/protected-users-security-group
+    #   Defender for Identity: "Ensure privileged accounts are not delegated", "Unsecure Kerberos
+    #   delegation" (non-domain-controller entities), "Remove a Service Principal Name" (shown for
+    #   sensitive accounts); default primary group IDs 516 (DCs) and 521 (RODCs); no severity:
+    #     https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts
+    #   serverReference, on a server object, "contains the distinguished name of the domain controller in
+    #   the domain naming context"; nTDSDSARO (an RODC's) is a subclass of nTDSDSA, so (objectClass=nTDSDSA)
+    #   is taken to match it (an inference from the class page):
+    #     https://learn.microsoft.com/windows/win32/adschema/a-serverreference
+    #     https://learn.microsoft.com/windows/win32/adschema/c-ntdsdsaro
+    #   dSHeuristics, on CN=Directory Service,CN=Windows NT,CN=Services,<configuration NC>, does not exist
+    #   by default and every unset character is "0"; character 16 is dwAdminSDExMask, the groups taken
+    #   out of AdminSDHolder protection:
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/e5899be4-862e-496f-9a38-33950617d2c5
+    #   A SID in a filter is its encoded byte string, one \XX per byte; a bitwise rule takes a decimal:
+    #     https://learn.microsoft.com/windows/win32/ad/how-to-specify-comparison-values
+    #     https://learn.microsoft.com/windows/win32/adsi/search-filter-syntax
+    #   A DC returns no more values of one attribute than MaxValRange without range retrieval:
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/domain-controller-returns-500-values-ldap-response
+    #   Get-ADObject takes -ResultSetSize (Int32) in its LdapFilter set; "ResultSetSize controls the
+    #   maximum number of returned objects" - how a primary-group search is held to what is left of
+    #   MaxExpandedObjects:
+    #     https://learn.microsoft.com/powershell/module/activedirectory/get-adobject
+    #     https://learn.microsoft.com/powershell/module/activedirectory/about/about_activedirectory_filter
+    #
+    # NOT PUBLISHED ON MICROSOFT LEARN, and labelled where a row relies on it:
+    #   - Any grade or severity for these findings. Every *Status below is a TOOL DEFAULT: the
+    #     operator-approved AdAssessment26 catalogue rules, and for the delegable-account row a C10
+    #     addition. Severity is the catalogue's proposed value.
+    #   - Whether Get-ADObject -Properties member does range retrieval past MaxValRange. A member list of
+    #     exactly 1500 or 5000 values (MemberRangeLimits, a tool rule) makes that group Not Assessed.
+    #   - What the module returns for a requested attribute that has no value, and the .NET type of
+    #     msDS-AllowedToActOnBehalfOfOtherIdentity. Both are read defensively.
+    #   - Which bit of dwAdminSDExMask removes which operator group (Learn points to KB 817433, off
+    #     Learn). When the character is not 0, or dSHeuristics was not read, an adminCount=1 object
+    #     protected only through Account, Server, Print or Backup Operators is not judged.
+    #   - NameListCap and MaxExpandedObjects (a cap on the objects read per run, member reads and
+    #     primary-group search results together) are tool defaults.
+    #   - That a domain's naming context is named by the trailing DC= components of a DN: used to tell
+    #     which domain a registered DC belongs to (an inference, as in Resolve-AdfaPrivDnDomain).
+    #
+    # Replaceable from a file via -ConfigOverridePath, under the key "Privileged": the eight *Status
+    # keys (Warning or Fail), EnterpriseAdminsExemptRootAdministrator (true or false), NameListCap (0 to
+    # 1000) and MaxExpandedObjects (1 to 100000). Nothing else - not the groups, the bits, the filters,
+    # the property lists or the range limits.
+    Privileged              = @{
+        SourceUrl            = 'https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory and https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-groups and https://learn.microsoft.com/windows/win32/adschema/a-useraccountcontrol and https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts'
+        ReadDate             = '2026-11-16'
+        ThresholdSource      = 'tool default (AdAssessment26 catalogue ADA-PRIV-001..002, ADA-OBJ-001..004 and ADA-OBJ-006, operator-approved 2026-09-24; the delegable-account rule is a C10 addition), not a Microsoft value'
+        # Tool defaults, all eight.
+        SchemaAdminsStatus       = 'Warning'
+        EnterpriseAdminsStatus   = 'Warning'
+        OrphanStatus             = 'Warning'
+        PrivilegedSpnStatus      = 'Warning'
+        DelegableStatus          = 'Warning'
+        UnconstrainedStatus      = 'Warning'
+        ProtocolTransitionStatus = 'Warning'
+        RbcdStatus               = 'Warning'
+        # The catalogue counts the forest root's Administrator; Learn names it as a possible exception.
+        EnterpriseAdminsExemptRootAdministrator = $false
+        # Tool defaults.
+        NameListCap          = 25
+        MaxExpandedObjects   = 5000
+        # Tool rule: a member list of exactly one of these sizes may be cut at MaxValRange.
+        MemberRangeLimits    = @(1500, 5000)
+        # What is asked, and of what. Fixed: a file cannot change them.
+        ObjectProperties     = @('objectClass', 'objectSid', 'sAMAccountName', 'userAccountControl', 'adminCount', 'servicePrincipalName', 'primaryGroupID', 'member')
+        DelegationProperties = @('objectClass', 'objectSid', 'sAMAccountName', 'userAccountControl', 'primaryGroupID', 'msDS-AllowedToDelegateTo', 'msDS-AllowedToActOnBehalfOfOtherIdentity')
+        AdminCountFilter     = '(adminCount=1)'
+        SitesRdn             = 'CN=Sites'
+        NtdsDsaFilter        = '(objectClass=nTDSDSA)'
+        DsaProperties        = @('objectClass')
+        ServerFilter         = '(objectClass=server)'
+        ServerProperties     = @('serverReference')
+        DirectoryServiceRdn  = 'CN=Directory Service,CN=Windows NT,CN=Services'
+        HeuristicsProperties = @('dSHeuristics')
+        AdminSdExMaskPosition = 16
+        # userAccountControl bits (Learn, read 2026-11-16).
+        Uac                  = @{ AccountDisable = 2; ServerTrust = 8192; TrustedForDelegation = 524288; NotDelegated = 1048576; TrustedToAuthForDelegation = 16777216; PartialSecrets = 67108864 }
+        # Defender for Identity's default primary group IDs of DCs and RODCs. Reported, never used to exclude.
+        DcPrimaryGroupIds    = @(516, 521)
+        UserClasses          = @('user', 'inetOrgPerson')
+        ComputerClasses      = @('computer', 'msDS-GroupManagedServiceAccount', 'msDS-ManagedServiceAccount')
+        GroupClasses         = @('group')
+        ForeignClasses       = @('foreignSecurityPrincipal')
+        ProtectedUsersRid    = 525
+        # Get-ADDomain DomainMode values (Set-ADDomainMode's accepted values, Learn, read 2026-11-16):
+        # at or above Windows Server 2012 R2 the DC-side Protected Users restrictions, delegation among
+        # them, are in force; below it they are not. Any other value (UnknownDomain, unread, a later
+        # release) leaves a Protected Users member undecided. A new release is a config edit.
+        ProtectedUsersDelegationModes = @('Windows2012R2Domain', 'Windows2016Domain', 'Windows2025Domain')
+        BelowProtectedUsersModes      = @('Windows2000Domain', 'Windows2003InterimDomain', 'Windows2003Domain', 'Windows2008Domain', 'Windows2008R2Domain', 'Windows2012Domain')
+        # Learn's protected accounts, protected as themselves: Administrator and krbtgt.
+        ProtectedAccountRids = @(500, 502)
+        KrbtgtRid            = 502
+        RootAdministratorRid = 500
+        # Account, Server, Print and Backup Operators: the groups dwAdminSDExMask can take out of protection.
+        OperatorGroupSids    = @('S-1-5-32-548', 'S-1-5-32-549', 'S-1-5-32-550', 'S-1-5-32-551')
+        # The groups, by SID only. Builtin: a fixed SID in every domain. Domain: <domain SID>-RID in every
+        # scoped domain. ForestRoot: <forest root SID>-RID, read in the root domain only. Protected: on
+        # Appendix C (or -498, see above). Always: Learn documents it in every such domain; a group that
+        # is not Always and not found is "not present". Name labels a row; no decision reads it.
+        Groups               = @(
+            @{ Key = 'Administrators'; Name = 'Administrators'; Sid = 'S-1-5-32-544'; Scope = 'Builtin'; Protected = $true; Always = $true }
+            @{ Key = 'DomainAdmins'; Name = 'Domain Admins'; Rid = 512; Scope = 'Domain'; Protected = $true; Always = $true }
+            @{ Key = 'EnterpriseAdmins'; Name = 'Enterprise Admins'; Rid = 519; Scope = 'ForestRoot'; Protected = $true; Always = $true }
+            @{ Key = 'SchemaAdmins'; Name = 'Schema Admins'; Rid = 518; Scope = 'ForestRoot'; Protected = $true; Always = $true }
+            @{ Key = 'AccountOperators'; Name = 'Account Operators'; Sid = 'S-1-5-32-548'; Scope = 'Builtin'; Protected = $true; Always = $true }
+            @{ Key = 'ServerOperators'; Name = 'Server Operators'; Sid = 'S-1-5-32-549'; Scope = 'Builtin'; Protected = $true; Always = $true }
+            @{ Key = 'PrintOperators'; Name = 'Print Operators'; Sid = 'S-1-5-32-550'; Scope = 'Builtin'; Protected = $true; Always = $true }
+            @{ Key = 'BackupOperators'; Name = 'Backup Operators'; Sid = 'S-1-5-32-551'; Scope = 'Builtin'; Protected = $true; Always = $true }
+            @{ Key = 'Replicator'; Name = 'Replicator'; Sid = 'S-1-5-32-552'; Scope = 'Builtin'; Protected = $true; Always = $true }
+            @{ Key = 'DomainControllers'; Name = 'Domain Controllers'; Rid = 516; Scope = 'Domain'; Protected = $true; Always = $true }
+            @{ Key = 'ReadOnlyDomainControllers'; Name = 'Read-only Domain Controllers'; Rid = 521; Scope = 'Domain'; Protected = $true; Always = $false }
+            @{ Key = 'EnterpriseReadOnlyDomainControllers'; Name = 'Enterprise Read-only Domain Controllers'; Rid = 498; Scope = 'ForestRoot'; Protected = $true; Always = $false }
+            @{ Key = 'KeyAdmins'; Name = 'Key Admins'; Rid = 526; Scope = 'Domain'; Protected = $true; Always = $false }
+            @{ Key = 'EnterpriseKeyAdmins'; Name = 'Enterprise Key Admins'; Rid = 527; Scope = 'ForestRoot'; Protected = $true; Always = $false }
+            @{ Key = 'CertPublishers'; Name = 'Cert Publishers'; Rid = 517; Scope = 'Domain'; Protected = $false; Always = $true }
+            @{ Key = 'GroupPolicyCreatorOwners'; Name = 'Group Policy Creator Owners'; Rid = 520; Scope = 'Domain'; Protected = $false; Always = $true }
+            @{ Key = 'ProtectedUsers'; Name = 'Protected Users'; Rid = 525; Scope = 'Domain'; Protected = $false; Always = $false }
+        )
+        # Catalogue ids and their PROPOSED severities (AdAssessment26 FindingCatalog.psd1), not Microsoft
+        # values. The delegable-account row has no catalogue id.
+        Catalogue            = @{
+            SchemaAdmins       = @{ Id = 'ADA-PRIV-001'; Severity = 'Medium (proposed)' }
+            EnterpriseAdmins   = @{ Id = 'ADA-PRIV-002'; Severity = 'Medium (proposed)' }
+            Inventory          = @{ Id = 'ADA-INV-005'; Severity = 'Informational' }
+            Orphan             = @{ Id = 'ADA-OBJ-001'; Severity = 'Low (proposed)' }
+            Unconstrained      = @{ Id = 'ADA-OBJ-002'; Severity = 'High (proposed)' }
+            ProtocolTransition = @{ Id = 'ADA-OBJ-003'; Severity = 'Medium (proposed)' }
+            Rbcd               = @{ Id = 'ADA-OBJ-004'; Severity = 'Low (proposed)' }
+            PrivilegedSpn      = @{ Id = 'ADA-OBJ-006'; Severity = 'High (proposed)' }
+            Constrained        = @{ Id = 'ADA-INV-017'; Severity = 'Informational' }
+            Delegable          = @{ Id = ''; Severity = 'tool default (C10 addition)' }
+        }
     }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
     DsEventsOfInterest      = @(
@@ -4659,43 +4928,6 @@ function Get-AdfaPasswordPolicy {
 # region Privileged accounts & security posture
 # ===========================================================================
 
-function Get-AdfaPrivilegedAccount {
-    [CmdletBinding()]
-    [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string]$DomainName, [bool]$IsRootDomain, [hashtable]$AdParams = @{})
-    $rows = @()
-    $dp = @{} + $AdParams; $dp.Identity = $DomainName
-    $domainSid = (Get-ADDomain @dp).DomainSID.Value
-
-    $groups = @{}
-    $groups['Domain Admins'] = "$domainSid-512"
-    if ($IsRootDomain) {
-        $groups['Enterprise Admins'] = "$domainSid-519"
-        $groups['Schema Admins'] = "$domainSid-518"
-    }
-    $groups['Administrators'] = $script:Config.BuiltinAdministrators
-
-    foreach ($name in $groups.Keys) {
-        try {
-            $gp = @{} + $AdParams; $gp.Identity = $groups[$name]; $gp.Server = $DomainName
-            # -Recursive can return the same principal via multiple nested paths; de-duplicate.
-            $members = @(Get-ADGroupMember @gp -Recursive -ErrorAction Stop |
-                Sort-Object -Property SID -Unique)
-            $names = @($members | Select-Object -ExpandProperty SamAccountName -ErrorAction SilentlyContinue)
-            $rows += [pscustomobject]@{
-                Scope = $DomainName; Group = $name; MemberCount = $members.Count
-                Members = ($names -join '; ')
-                Status = $(if ($members.Count -gt 10) { $script:Status.Warning } else { $script:Status.Info })
-                Detail = $(if ($members.Count -gt 10) { 'Large privileged group membership - review for least privilege.' } else { '' })
-            }
-        }
-        catch {
-            $rows += [pscustomobject]@{ Scope = $DomainName; Group = $name; MemberCount = $null; Members = ''; Status = $script:Status.NotAssessed; Detail = $_.Exception.Message }
-        }
-    }
-    return @($rows)
-}
-
 function Get-AdfaSecurityPosture {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -5618,14 +5850,15 @@ function Get-AdfaAclDomainRaw {
         (-Credential): the read goes to the domain it is about, as the descriptor reads do, never to the
         run's -Server (Learn: -Server takes a fully qualified domain name). Ok is true when the
         distinguished name was read; the SID is parsed with ConvertFrom-AdfaSidValue and is '' with
-        DomainSidError when it was not.
+        DomainSidError when it was not. DomainMode (C10: whether the Protected Users delegation restriction
+        is in force) is the text of the DomainMode property, '' when the answer did not carry it.
     .OUTPUTS
-        [pscustomobject] Ok, Error, ErrorType, DomainDn, DomainSid, DomainSidError.
+        [pscustomobject] Ok, Error, ErrorType, DomainDn, DomainSid, DomainSidError, DomainMode.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
-    $out = [pscustomobject]@{ Ok = $false; Error = ''; ErrorType = ''; DomainDn = ''; DomainSid = ''; DomainSidError = '' }
+    $out = [pscustomobject]@{ Ok = $false; Error = ''; ErrorType = ''; DomainDn = ''; DomainSid = ''; DomainSidError = ''; DomainMode = '' }
     try {
         $domainArgs = @{} + $AdParams
         $domainArgs.Identity = $DomainName
@@ -5642,6 +5875,8 @@ function Get-AdfaAclDomainRaw {
                 else { $out.DomainSidError = ("the DomainSID Get-ADDomain returned for {0} could not be read as a SID: {1}" -f $DomainName, $parsed.Error) }
             }
             else { $out.DomainSidError = ("Get-ADDomain returned no DomainSID for {0}" -f $DomainName) }
+            $modeProp = $domain.PSObject.Properties['DomainMode']
+            if ($null -ne $modeProp -and $null -ne $modeProp.Value) { $out.DomainMode = ([string]$modeProp.Value).Trim() }
         }
         if ($out.DomainDn -eq '') { $out.Error = ("Get-ADDomain returned no DistinguishedName for {0}" -f $DomainName) }
         else { $out.Ok = $true }
@@ -6122,82 +6357,2300 @@ function Merge-AdfaAclConfig {
     return $merged
 }
 
-function Get-AdfaKerberosExposure {
+# ---------------------------------------------------------------------------
+# Privileged groups and delegation (PORT-PLAN C10): Schema Admins and Enterprise Admins membership,
+# privileged group counts, adminCount objects outside every protected group, SPNs and delegation on
+# privileged accounts, and unconstrained, protocol-transition, constrained and resource-based
+# delegation. Rows of the PrivilegedAccounts, PrivilegedHygiene and Kerberos sections. Directory
+# reads only; the sources are in the Privileged config table.
+# ---------------------------------------------------------------------------
+
+function New-AdfaPrivilegedRow {
     <#
     .SYNOPSIS
-        Kerberoastable (SPN) users, AS-REP-roastable accounts, and delegation exposure.
+        Pure: one row of the three C10 sections. Every row has the same columns, so a consumer never
+        has to test whether a column exists.
+    .DESCRIPTION
+        Account names, SIDs, DNs and SPNs go in their own columns (Principals, PrincipalSids,
+        ForeignSids, Unresolved, Targets, AllowedSids), never in Detail: the consolidated findings
+        choose a recommendation from Detail, and none of these columns is read there. A count that was
+        not measured is an empty string, never 0.
     .OUTPUTS
-        [pscustomobject[]]
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][ValidateSet('Privileged', 'PrivHygiene', 'Kerberos')][string]$Area,
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$NotRun = '',
+        [AllowEmptyString()][string]$Evidence = '',
+        [AllowEmptyString()][string]$CatalogueId = '',
+        [AllowEmptyString()][string]$Severity = '',
+        [AllowEmptyString()][string]$DomainSid = '',
+        [AllowEmptyString()][string]$GroupSid = '',
+        [AllowNull()]$Count = $null,
+        [AllowNull()]$UserCount = $null,
+        [AllowNull()]$ComputerCount = $null,
+        [AllowNull()]$GroupCount = $null,
+        [AllowNull()]$ForeignCount = $null,
+        [AllowNull()]$UnresolvedCount = $null,
+        [AllowNull()]$ExcludedCount = $null,
+        [AllowNull()]$Listed = $null,
+        [AllowNull()]$NotListed = $null,
+        [AllowEmptyString()][string]$Principals = '',
+        [AllowEmptyString()][string]$PrincipalSids = '',
+        [AllowEmptyString()][string]$ForeignSids = '',
+        [AllowEmptyString()][string]$Unresolved = '',
+        [AllowEmptyString()][string]$Targets = '',
+        [AllowEmptyString()][string]$AllowedSids = ''
+    )
+    $row = New-Finding -Scope $Scope -Area $Area -Item $Item -Status $Status -Detail $Detail
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $asText = { param($Number) if ($null -eq $Number) { return '' } return ([int64]$Number).ToString($inv) }
+    $row | Add-Member -NotePropertyName 'NotRun' -NotePropertyValue $NotRun
+    $row | Add-Member -NotePropertyName 'Evidence' -NotePropertyValue $Evidence
+    $row | Add-Member -NotePropertyName 'CatalogueId' -NotePropertyValue $CatalogueId
+    $row | Add-Member -NotePropertyName 'Severity' -NotePropertyValue $Severity
+    $row | Add-Member -NotePropertyName 'DomainSid' -NotePropertyValue $DomainSid
+    $row | Add-Member -NotePropertyName 'GroupSid' -NotePropertyValue $GroupSid
+    $row | Add-Member -NotePropertyName 'Count' -NotePropertyValue (& $asText $Count)
+    $row | Add-Member -NotePropertyName 'UserCount' -NotePropertyValue (& $asText $UserCount)
+    $row | Add-Member -NotePropertyName 'ComputerCount' -NotePropertyValue (& $asText $ComputerCount)
+    $row | Add-Member -NotePropertyName 'GroupCount' -NotePropertyValue (& $asText $GroupCount)
+    $row | Add-Member -NotePropertyName 'ForeignCount' -NotePropertyValue (& $asText $ForeignCount)
+    $row | Add-Member -NotePropertyName 'UnresolvedCount' -NotePropertyValue (& $asText $UnresolvedCount)
+    $row | Add-Member -NotePropertyName 'ExcludedCount' -NotePropertyValue (& $asText $ExcludedCount)
+    $row | Add-Member -NotePropertyName 'Listed' -NotePropertyValue (& $asText $Listed)
+    $row | Add-Member -NotePropertyName 'NotListed' -NotePropertyValue (& $asText $NotListed)
+    $row | Add-Member -NotePropertyName 'Principals' -NotePropertyValue $Principals
+    $row | Add-Member -NotePropertyName 'PrincipalSids' -NotePropertyValue $PrincipalSids
+    $row | Add-Member -NotePropertyName 'ForeignSids' -NotePropertyValue $ForeignSids
+    $row | Add-Member -NotePropertyName 'Unresolved' -NotePropertyValue $Unresolved
+    $row | Add-Member -NotePropertyName 'Targets' -NotePropertyValue $Targets
+    $row | Add-Member -NotePropertyName 'AllowedSids' -NotePropertyValue $AllowedSids
+    return $row
+}
+
+function ConvertTo-AdfaLdapSidFilterValue {
+    <#
+    .SYNOPSIS
+        Pure: a SID in its text form as the encoded byte string an LDAP filter takes for objectSid,
+        or '' when the text is not a SID.
+    .DESCRIPTION
+        Learn: for the Sid syntax "the value specified in a filter is the encoded byte string
+        representation of the SID", each byte a backslash and two hexadecimal digits
+        (https://learn.microsoft.com/windows/win32/ad/how-to-specify-comparison-values, read
+        2026-11-16). The bytes are those of MS-DTYP 2.4.2.2, the layout ConvertFrom-AdfaSidValue
+        checks: revision 1, the sub-authority count, the 6-byte authority big-endian, each
+        sub-authority little-endian. Arithmetic on [uint64] only, so 5.1 and 7 agree.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowEmptyString()][string]$Sid = '')
+    if ([string]::IsNullOrWhiteSpace($Sid)) { return '' }
+    $parsed = ConvertFrom-AdfaSidValue -Value $Sid -NoPlatform
+    if (-not [bool]$parsed.Ok) { return '' }
+    $subs = @($parsed.SubAuthorities)
+    $parts = New-Object System.Collections.Generic.List[string]
+    $parts.Add('\01')
+    $parts.Add(('\{0:x2}' -f $subs.Count))
+    $authority = [uint64]$parsed.Authority
+    for ($i = 5; $i -ge 0; $i--) { $parts.Add(('\{0:x2}' -f [int](($authority -shr (8 * $i)) -band [uint64]255))) }
+    foreach ($s in $subs) {
+        $v = [uint64]$s
+        for ($i = 0; $i -lt 4; $i++) { $parts.Add(('\{0:x2}' -f [int](($v -shr (8 * $i)) -band [uint64]255))) }
+    }
+    return ($parts -join '')
+}
+
+function ConvertTo-AdfaPrivInteger {
+    <#
+    .SYNOPSIS
+        Pure: an integer attribute value as [int64], or $null when there is none or it is not a whole
+        number. Never throws.
+    .OUTPUTS
+        [int64] or $null
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+    if ($null -eq $Value) { return $null }
+    $first = $Value
+    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+        $items = @($Value | Where-Object { $null -ne $_ })
+        if ($items.Count -ne 1) { return $null }
+        $first = $items[0]
+    }
+    $number = [int64]0
+    if ([int64]::TryParse(([string]$first).Trim(), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$number)) { return $number }
+    return $null
+}
+
+function ConvertTo-AdfaPrivRecord {
+    <#
+    .SYNOPSIS
+        Pure: one directory object as the small record the C10 verdicts read. Never throws on a
+        missing attribute.
+    .DESCRIPTION
+        Every value is read through PSObject.Properties, so an attribute the answer does not carry is
+        $null and never an error under StrictMode, and no value passes through a function's return,
+        which would unroll a byte array. Kind is User, Computer, Group, Foreign or Other, from the most
+        specific objectClass (the last value) and the class lists of the config table. Enabled is read
+        from ACCOUNTDISABLE in userAccountControl for users and computers; it is $null when
+        userAccountControl was not returned. msDS-AllowedToActOnBehalfOfOtherIdentity, when present,
+        is read in memory by ConvertTo-AdfaAclDescriptor (the C9 converter, which reads a byte array
+        or an ActiveDirectorySecurity and names anything else as Unparseable).
+    .OUTPUTS
+        [pscustomobject] Dn, Sam, Name, Class, Kind, Sid, DomainPart, Rid, IsAccountDomainSid, Uac,
+        Enabled, AdminCount, Spns, PrimaryGroupId, Members, DelegateTo, HasRbcd, Rbcd.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Object,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $values = @{}
+    foreach ($attribute in @('distinguishedName', 'sAMAccountName', 'Name', 'objectClass', 'objectSid', 'userAccountControl', 'adminCount',
+            'servicePrincipalName', 'primaryGroupID', 'member', 'msDS-AllowedToDelegateTo', 'msDS-AllowedToActOnBehalfOfOtherIdentity')) {
+        $values[$attribute] = $null
+        $p = $Object.PSObject.Properties[$attribute]
+        if ($null -ne $p) { $values[$attribute] = $p.Value }
+    }
+    $dn = ([string]$values['distinguishedName']).Trim()
+    $sam = ([string]$values['sAMAccountName']).Trim()
+    $name = $sam
+    if ($name -eq '') { $name = ([string]$values['Name']).Trim() }
+    if ($name -eq '') { $name = $dn }
+    if ($name -eq '') { $name = '(unnamed)' }
+    $class = ''
+    $classes = @(Get-AdfaSidValueList -Value $values['objectClass'] | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+    if ($classes.Count -gt 0) { $class = $classes[$classes.Count - 1] }
+    $kind = 'Other'
+    if (@(@($Config['UserClasses']) | Where-Object { $_ -eq $class }).Count -gt 0) { $kind = 'User' }
+    elseif (@(@($Config['ComputerClasses']) | Where-Object { $_ -eq $class }).Count -gt 0) { $kind = 'Computer' }
+    elseif (@(@($Config['GroupClasses']) | Where-Object { $_ -eq $class }).Count -gt 0) { $kind = 'Group' }
+    elseif (@(@($Config['ForeignClasses']) | Where-Object { $_ -eq $class }).Count -gt 0) { $kind = 'Foreign' }
+    $sid = ''; $domainPart = ''; $rid = $null; $isAccount = $false
+    if ($null -ne $values['objectSid']) {
+        $parsed = ConvertFrom-AdfaSidValue -Value $values['objectSid']
+        if ([bool]$parsed.Ok) { $sid = [string]$parsed.Text; $domainPart = [string]$parsed.DomainPart; $rid = $parsed.Rid; $isAccount = [bool]$parsed.IsAccountDomain }
+    }
+    $uac = ConvertTo-AdfaPrivInteger -Value $values['userAccountControl']
+    $enabled = $null
+    if (($kind -eq 'User' -or $kind -eq 'Computer') -and $null -ne $uac) {
+        $enabled = (($uac -band [int64]$Config['Uac']['AccountDisable']) -eq 0)
+    }
+    $hasRbcd = $false
+    $rbcd = $null
+    if ($null -ne $values['msDS-AllowedToActOnBehalfOfOtherIdentity']) {
+        $hasRbcd = $true
+        $rbcd = ConvertTo-AdfaAclDescriptor -Value $values['msDS-AllowedToActOnBehalfOfOtherIdentity']
+    }
+    return [pscustomobject]@{
+        Dn = $dn; Sam = $sam; Name = $name; Class = $class; Kind = $kind
+        Sid = $sid; DomainPart = $domainPart; Rid = $rid; IsAccountDomainSid = $isAccount
+        Uac = $uac; Enabled = $enabled; AdminCount = (ConvertTo-AdfaPrivInteger -Value $values['adminCount'])
+        Spns = @(Get-AdfaSidValueList -Value $values['servicePrincipalName'] | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+        PrimaryGroupId = (ConvertTo-AdfaPrivInteger -Value $values['primaryGroupID'])
+        Members = @(Get-AdfaSidValueList -Value $values['member'] | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+        DelegateTo = @(Get-AdfaSidValueList -Value $values['msDS-AllowedToDelegateTo'] | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+        HasRbcd = $hasRbcd; Rbcd = $rbcd
+    }
+}
+
+function Get-AdfaPrivReadClass {
+    <#
+    .SYNOPSIS
+        Pure: the class of a directory read that threw - NotFound for the module's identity-not-found
+        exception, otherwise Unreachable, AccessDenied, TimedOut or Error (Get-AdfaDirectoryReadErrorClass).
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$Message, [AllowNull()][AllowEmptyString()][string]$TypeName)
+    if (-not [string]::IsNullOrWhiteSpace($TypeName) -and $TypeName -match '(?i)ADIdentityNotFoundException') { return 'NotFound' }
+    return (Get-AdfaDirectoryReadErrorClass -Message $Message -TypeName $TypeName)
+}
+
+function Get-AdfaPrivSearchRaw {
+    <#
+    .SYNOPSIS
+        Directory seam of C10: one Get-ADObject search, asking for a named property list. Read-only.
+        Never throws.
+    .DESCRIPTION
+        Get-ADObject -Server <server> -LDAPFilter <filter> -Properties <list> [-SearchBase] [-SearchScope],
+        with the caller's other AD parameters (-Credential). The paging the ActiveDirectory module does
+        by itself is relied on. No result limit is set unless -ResultSetSize is above 0, when it is
+        passed on (Learn: it controls the maximum number of returned objects); only the primary-group
+        searches use it, to stay inside MaxExpandedObjects. A property list that is empty or holds a blank
+        or a wildcard is refused before any call (Class Refused). The objects are handed back as the
+        module returned them; nothing is written.
+    .OUTPUTS
+        [pscustomobject] Ok, Class (Read | Refused | Unreachable | AccessDenied | TimedOut | Error),
+        Error, ErrorType, Server, Filter, Objects.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Server,
+        [Parameter(Mandatory)][string]$LDAPFilter,
+        [AllowNull()][AllowEmptyCollection()][string[]]$Properties = @(),
+        [AllowEmptyString()][string]$SearchBase = '',
+        [AllowEmptyString()][string]$SearchScope = '',
+        [hashtable]$AdParams = @{},
+        [int]$ResultSetSize = 0
+    )
+    $out = [pscustomobject]@{ Ok = $false; Class = ''; Error = ''; ErrorType = ''; Server = $Server; Filter = $LDAPFilter; Objects = @() }
+    $names = @(@($Properties) | ForEach-Object { [string]$_ })
+    $refused = @(Get-AdfaSidHistoryRefusedProperty -PropertyNames $names)
+    if ($names.Count -eq 0 -or $refused.Count -gt 0) {
+        $out.Class = 'Refused'
+        $out.Error = ("the property list is empty or holds a blank or a wildcard ({0}), so nothing was asked of the directory" -f ($refused -join ', '))
+        return $out
+    }
+    try {
+        $searchArgs = @{} + $AdParams
+        $searchArgs.Server = $Server
+        $searchArgs.LDAPFilter = $LDAPFilter
+        $searchArgs.Properties = @($names)
+        if ($SearchBase -ne '') { $searchArgs.SearchBase = $SearchBase }
+        if ($SearchScope -ne '') { $searchArgs.SearchScope = $SearchScope }
+        if ($ResultSetSize -gt 0) { $searchArgs.ResultSetSize = $ResultSetSize }
+        $searchArgs.ErrorAction = 'Stop'
+        $objects = New-Object System.Collections.ArrayList
+        Get-ADObject @searchArgs | ForEach-Object { if ($null -ne $_) { [void]$objects.Add($_) } }
+        $out.Objects = $objects.ToArray()
+        $out.Class = 'Read'
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+        $out.Class = Get-AdfaPrivReadClass -Message $out.Error -TypeName $out.ErrorType
+    }
+    return $out
+}
+
+function Get-AdfaPrivObjectRaw {
+    <#
+    .SYNOPSIS
+        Directory seam of C10: one object by its distinguished name. Read-only. Never throws.
+    .DESCRIPTION
+        Get-ADObject -Identity <DN> -Server <server> -Properties <list>, with the caller's other AD
+        parameters. The same property-list guard as Get-AdfaPrivSearchRaw. An identity the module
+        cannot find is NotFound; any other failure is classed by Get-AdfaDirectoryReadErrorClass.
+    .OUTPUTS
+        [pscustomobject] Ok, Class (Read | NotFound | Refused | Unreachable | AccessDenied | TimedOut |
+        Error), Error, ErrorType, Server, Object.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Identity,
+        [Parameter(Mandatory)][string]$Server,
+        [AllowNull()][AllowEmptyCollection()][string[]]$Properties = @(),
+        [hashtable]$AdParams = @{}
+    )
+    $out = [pscustomobject]@{ Ok = $false; Class = ''; Error = ''; ErrorType = ''; Server = $Server; Object = $null }
+    $names = @(@($Properties) | ForEach-Object { [string]$_ })
+    $refused = @(Get-AdfaSidHistoryRefusedProperty -PropertyNames $names)
+    if ($names.Count -eq 0 -or $refused.Count -gt 0) {
+        $out.Class = 'Refused'
+        $out.Error = ("the property list is empty or holds a blank or a wildcard ({0}), so nothing was asked of the directory" -f ($refused -join ', '))
+        return $out
+    }
+    try {
+        $objectArgs = @{} + $AdParams
+        $objectArgs.Identity = $Identity
+        $objectArgs.Server = $Server
+        $objectArgs.Properties = @($names)
+        $objectArgs.ErrorAction = 'Stop'
+        $object = Get-ADObject @objectArgs
+        if ($null -eq $object) { $out.Class = 'NotFound'; $out.Error = 'the read returned no object' }
+        else { $out.Object = $object; $out.Class = 'Read'; $out.Ok = $true }
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+        $out.Class = Get-AdfaPrivReadClass -Message $out.Error -TypeName $out.ErrorType
+    }
+    return $out
+}
+
+function Get-AdfaPrivForestRaw {
+    <#
+    .SYNOPSIS
+        Directory seam of C10, once per run: the domain controllers registered in the configuration
+        partition, by the DN of their computer account, and dSHeuristics. Read-only. Never throws.
+    .DESCRIPTION
+        Get-ADRootDSE (sent to the forest root domain when one is known) for configurationNamingContext;
+        then two one-subtree searches under CN=Sites,<configuration NC>: every nTDSDSA object (nTDSDSARO,
+        the RODC's, is a subclass of it - an inference from Learn's class page that the filter matches
+        it) and every server object with serverReference, which Learn describes as the DN of the domain
+        controller in the domain naming context. A DC is a server object that holds an nTDSDSA child;
+        its serverReference is the DN that excludes its computer account from the delegation rows.
+        Last, CN=Directory Service,CN=Windows NT,CN=Services,<configuration NC> asking for dSHeuristics
+        only. Absent dSHeuristics is Microsoft's documented default (every character 0), not "unread".
+        DcOk says only that both searches answered; DsaCount, NoReference and the DNs found are checked
+        by Get-AdfaPrivDcPopulationState before any row relies on the population.
+    .OUTPUTS
+        [pscustomobject] ConfigNc, DcOk, DcClass, DcError, DcErrorType, DcDns (lower-case DNs),
+        DsaCount, ServerCount, NoReference (server DNs of DCs with no serverReference),
+        HeuristicsOk, HeuristicsClass, HeuristicsError, HeuristicsErrorType, HeuristicsPresent,
+        HeuristicsValue.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$RootDomain = '',
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $out = [pscustomobject]@{
+        ConfigNc = ''; DcOk = $false; DcClass = ''; DcError = ''; DcErrorType = ''; DcDns = @(); DsaCount = 0; ServerCount = 0; NoReference = @()
+        HeuristicsOk = $false; HeuristicsClass = ''; HeuristicsError = ''; HeuristicsErrorType = ''; HeuristicsPresent = $false; HeuristicsValue = ''
+    }
+    $server = ''
+    try {
+        $rootArgs = @{} + $AdParams
+        if (-not [string]::IsNullOrWhiteSpace($RootDomain)) { $rootArgs.Server = $RootDomain.Trim() }
+        $rootArgs.ErrorAction = 'Stop'
+        $rootDse = Get-ADRootDSE @rootArgs
+        $cfgProp = $null
+        if ($null -ne $rootDse) { $cfgProp = $rootDse.PSObject.Properties['configurationNamingContext'] }
+        if ($null -ne $cfgProp -and $null -ne $cfgProp.Value) { $out.ConfigNc = ([string]$cfgProp.Value).Trim() }
+        if ($rootArgs.ContainsKey('Server')) { $server = [string]$rootArgs.Server }
+    }
+    catch {
+        $message = [string]$_.Exception.Message
+        $type = [string]$_.Exception.GetType().FullName
+        $class = Get-AdfaPrivReadClass -Message $message -TypeName $type
+        $out.DcClass = $class; $out.DcError = $message; $out.DcErrorType = $type
+        $out.HeuristicsClass = $class; $out.HeuristicsError = $message; $out.HeuristicsErrorType = $type
+        return $out
+    }
+    if ($out.ConfigNc -eq '') {
+        $out.DcClass = 'Error'; $out.DcError = 'the root DSE returned no configurationNamingContext'
+        $out.HeuristicsClass = 'Error'; $out.HeuristicsError = $out.DcError
+        return $out
+    }
+    if ($server -eq '' -and $AdParams.ContainsKey('Server')) { $server = [string]$AdParams['Server'] }
+    $sitesBase = ("{0},{1}" -f [string]$Config['SitesRdn'], $out.ConfigNc)
+    $searchArgs = @{ SearchBase = $sitesBase; SearchScope = 'Subtree'; AdParams = $AdParams }
+    if ($server -eq '') {
+        # No server named anywhere: the module's default, as every other read of this run.
+        $out.DcClass = 'Error'; $out.DcError = 'no server to send the configuration reads to was known'
+        $out.HeuristicsClass = 'Error'; $out.HeuristicsError = $out.DcError
+        return $out
+    }
+    $dsas = Get-AdfaPrivSearchRaw -Server $server -LDAPFilter ([string]$Config['NtdsDsaFilter']) -Properties @($Config['DsaProperties']) @searchArgs
+    $servers = $null
+    if ([bool]$dsas.Ok) { $servers = Get-AdfaPrivSearchRaw -Server $server -LDAPFilter ([string]$Config['ServerFilter']) -Properties @($Config['ServerProperties']) @searchArgs }
+    if (-not [bool]$dsas.Ok) { $out.DcClass = [string]$dsas.Class; $out.DcError = [string]$dsas.Error; $out.DcErrorType = [string]$dsas.ErrorType }
+    elseif (-not [bool]$servers.Ok) { $out.DcClass = [string]$servers.Class; $out.DcError = [string]$servers.Error; $out.DcErrorType = [string]$servers.ErrorType }
+    else {
+        $serverDns = @{}
+        foreach ($dsa in @($dsas.Objects)) {
+            $dnProp = $dsa.PSObject.Properties['DistinguishedName']
+            if ($null -eq $dnProp -or $null -eq $dnProp.Value) { continue }
+            $dsaDn = ([string]$dnProp.Value).Trim()
+            $comma = $dsaDn.IndexOf(',')
+            if ($comma -lt 0) { continue }
+            $serverDns[$dsaDn.Substring($comma + 1).ToLowerInvariant()] = $true
+            $out.DsaCount++
+        }
+        $dcDns = New-Object System.Collections.ArrayList
+        $noReference = New-Object System.Collections.ArrayList
+        foreach ($srv in @($servers.Objects)) {
+            $out.ServerCount++
+            $dnProp = $srv.PSObject.Properties['DistinguishedName']
+            if ($null -eq $dnProp -or $null -eq $dnProp.Value) { continue }
+            $srvDn = ([string]$dnProp.Value).Trim()
+            if (-not $serverDns.ContainsKey($srvDn.ToLowerInvariant())) { continue }
+            $refProp = $srv.PSObject.Properties['serverReference']
+            if ($null -ne $refProp -and $null -ne $refProp.Value -and ([string]$refProp.Value).Trim() -ne '') { [void]$dcDns.Add(([string]$refProp.Value).Trim().ToLowerInvariant()) }
+            else { [void]$noReference.Add($srvDn) }
+        }
+        $out.DcDns = $dcDns.ToArray()
+        $out.NoReference = $noReference.ToArray()
+        $out.DcClass = 'Read'
+        $out.DcOk = $true
+    }
+    $heuristics = Get-AdfaPrivObjectRaw -Identity ("{0},{1}" -f [string]$Config['DirectoryServiceRdn'], $out.ConfigNc) -Server $server -Properties @($Config['HeuristicsProperties']) -AdParams $AdParams
+    $out.HeuristicsClass = [string]$heuristics.Class
+    $out.HeuristicsError = [string]$heuristics.Error
+    $out.HeuristicsErrorType = [string]$heuristics.ErrorType
+    if ([bool]$heuristics.Ok) {
+        $out.HeuristicsOk = $true
+        $valueProp = $heuristics.Object.PSObject.Properties['dSHeuristics']
+        if ($null -ne $valueProp -and $null -ne $valueProp.Value) { $out.HeuristicsPresent = $true; $out.HeuristicsValue = [string]$valueProp.Value }
+    }
+    return $out
+}
+
+function Get-AdfaPrivHeuristicsState {
+    <#
+    .SYNOPSIS
+        Pure: what dSHeuristics says about AdminSDHolder exclusions - Known (the character was read or
+        is the documented default), MaskZero (it is 0), and the character itself.
+    .DESCRIPTION
+        Character 16 is dwAdminSDExMask (MS-ADTS). An absent attribute, or a value shorter than 16
+        characters, is the documented default "0". Learn does not publish which bit removes which
+        operator group, so a character other than 0 makes every object protected only through
+        Account, Server, Print or Backup Operators undecided, never judged.
+    .OUTPUTS
+        [pscustomobject] Known, MaskZero, Character, Text.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Forest, [Parameter(Mandatory)][hashtable]$Config)
+    $position = [int]$Config['AdminSdExMaskPosition']
+    if ($null -eq $Forest -or -not [bool]$Forest.HeuristicsOk) {
+        $why = 'the forest-wide configuration was not read'
+        if ($null -ne $Forest) { $why = ("dSHeuristics could not be read ({0}: {1})" -f [string]$Forest.HeuristicsClass, ([string]$Forest.HeuristicsError).Trim()) }
+        return [pscustomobject]@{ Known = $false; MaskZero = $false; Character = ''; Text = $why }
+    }
+    $value = [string]$Forest.HeuristicsValue
+    $char = '0'
+    $source = 'dSHeuristics is not set, so every character is the documented default 0'
+    if ([bool]$Forest.HeuristicsPresent) {
+        if ($value.Length -ge $position) { $char = $value.Substring($position - 1, 1); $source = ("dSHeuristics is set and its character {0} (dwAdminSDExMask) is '{1}'" -f $position, $char) }
+        else { $source = ("dSHeuristics is set with {0} character(s), so character {1} (dwAdminSDExMask) is the documented default 0" -f $value.Length, $position) }
+    }
+    return [pscustomobject]@{ Known = $true; MaskZero = ($char -eq '0'); Character = $char; Text = $source }
+}
+
+function Get-AdfaPrivDcPopulationState {
+    <#
+    .SYNOPSIS
+        Pure: whether the domain controllers registered in the configuration partition were read
+        completely enough to tell a DC's computer account apart - Known, Why, and the set of DNs.
+    .DESCRIPTION
+        Known only when both configuration searches answered (DcOk), at least one nTDSDSA object came
+        back (a forest always has a domain controller, so none is a visibility gap, not an empty
+        forest), every DC server object carried serverReference (NoReference empty), and each nTDSDSA
+        object was matched to a server object (DcDns + NoReference = DsaCount). Otherwise Why names
+        what is missing, and no row may exclude or judge a DC on it.
+    .OUTPUTS
+        [pscustomobject] Known, Why, Set (lower-case DN -> $true).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Forest)
+    $set = @{}
+    if ($null -eq $Forest) { return [pscustomobject]@{ Known = $false; Why = 'the forest-wide configuration was not read'; Set = $set } }
+    $okProp = $Forest.PSObject.Properties['DcOk']
+    if ($null -eq $okProp -or -not [bool]$okProp.Value) {
+        $classProp = $Forest.PSObject.Properties['DcClass']; $errProp = $Forest.PSObject.Properties['DcError']
+        $class = ''; $err = ''
+        if ($null -ne $classProp) { $class = [string]$classProp.Value }
+        if ($null -ne $errProp) { $err = [string]$errProp.Value }
+        return [pscustomobject]@{ Known = $false; Why = (Get-AdfaPrivUnresolvedText -Read ([pscustomobject]@{ Class = $class; Error = $err })); Set = $set }
+    }
+    $dns = @()
+    $dnsProp = $Forest.PSObject.Properties['DcDns']
+    if ($null -ne $dnsProp) { $dns = @(@($dnsProp.Value) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() }) }
+    foreach ($dn in $dns) { $set[$dn] = $true }
+    $countProp = $Forest.PSObject.Properties['DsaCount']
+    $noRefProp = $Forest.PSObject.Properties['NoReference']
+    if ($null -eq $countProp -or $null -eq $noRefProp) {
+        return [pscustomobject]@{ Known = $false; Why = 'the number of nTDSDSA objects and the server objects without serverReference were not recorded, so the population cannot be checked. This is a defect in the tool'; Set = @{} }
+    }
+    $dsaCount = [int]$countProp.Value
+    $noRef = @(@($noRefProp.Value) | Where-Object { $null -ne $_ })
+    if ($dsaCount -le 0) {
+        return [pscustomobject]@{ Known = $false; Why = 'the nTDSDSA search under CN=Sites of the configuration partition returned no object, and a forest always has at least one domain controller, so the domain controllers were not visible to this account'; Set = @{} }
+    }
+    if ($noRef.Count -gt 0) {
+        return [pscustomobject]@{ Known = $false; Why = ("{0} registered domain controller(s) have a server object with no serverReference returned, so their computer accounts cannot be told apart from other accounts" -f $noRef.Count); Set = @{} }
+    }
+    if ($set.Count -ne $dsaCount) {
+        return [pscustomobject]@{ Known = $false; Why = ("{0} nTDSDSA object(s) were returned but {1} domain controller computer account(s) were matched through their server objects, so the population is incomplete" -f $dsaCount, $set.Count); Set = @{} }
+    }
+    return [pscustomobject]@{ Known = $true; Why = ''; Set = $set }
+}
+
+function Get-AdfaPrivDnDomainPart {
+    <#
+    .SYNOPSIS
+        Pure: the trailing DC= components of a distinguished name, lower case - the naming context of
+        the domain that holds the object (an inference: a domain's naming context is named by DC=
+        components). '' when the DN ends in anything else.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowEmptyString()][string]$Dn = '')
+    $parts = @($Dn.Trim().ToLowerInvariant() -split '(?<!\\),' | ForEach-Object { $_.Trim() })
+    $kept = @()
+    for ($i = $parts.Count - 1; $i -ge 0; $i--) {
+        if ($parts[$i] -match '^dc=') { $kept = @($parts[$i]) + $kept } else { break }
+    }
+    return ($kept -join ',')
+}
+
+function Get-AdfaPrivDomainDcList {
+    <#
+    .SYNOPSIS
+        Pure: the registered DCs (lower-case computer-account DNs) whose DN lies in the naming context
+        DomainDn - exactly, not in a child domain below it.
+    .OUTPUTS
+        [string[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([AllowNull()]$DcState, [AllowEmptyString()][string]$DomainDn = '')
+    if ($null -eq $DcState -or -not [bool]$DcState.Known -or [string]::IsNullOrWhiteSpace($DomainDn)) { return @() }
+    $want = Get-AdfaPrivDnDomainPart -Dn $DomainDn
+    return @(@($DcState.Set.Keys) | Where-Object { (Get-AdfaPrivDnDomainPart -Dn ([string]$_)) -eq $want } | Sort-Object)
+}
+
+function Get-AdfaPrivDcMembershipGap {
+    <#
+    .SYNOPSIS
+        Pure: the non-vacuity check of a domain's group reads - every DC registered for the domain must
+        be found among the members of its Domain Controllers (516) or Read-only Domain Controllers (521)
+        groups as read (directly, nested or by primaryGroupID, which Microsoft documents as 516 and 521
+        by default). '' when it holds; otherwise why the membership reads cannot be trusted to be complete.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Domain, [AllowEmptyString()][string]$DomainDn = '', [AllowNull()]$Groups, [AllowNull()]$Forest)
+    $dcState = Get-AdfaPrivDcPopulationState -Forest $Forest
+    if (-not [bool]$dcState.Known) { return ("the domain controllers registered in the configuration partition were not read completely ({0}), so the membership reads could not be checked against them" -f $dcState.Why) }
+    if ([string]::IsNullOrWhiteSpace($DomainDn)) { return ("the distinguished name of {0} was not read, so its registered domain controllers could not be told" -f $Domain) }
+    $dcs = @(Get-AdfaPrivDomainDcList -DcState $dcState -DomainDn $DomainDn)
+    if ($dcs.Count -eq 0) { return ("no domain controller registered in the configuration partition belongs to {0}, and every domain has at least one, so what was read is incomplete" -f $Domain) }
+    $seen = @{}
+    foreach ($key in @('DomainControllers', 'ReadOnlyDomainControllers')) {
+        if ($null -eq $Groups -or -not $Groups.Contains($key)) { continue }
+        $entry = $Groups[$key]
+        if ($null -eq $entry -or $null -eq $entry.Closure) { continue }
+        foreach ($p in @($entry.Closure.Principals)) { $seen[([string]$p.Record.Dn).ToLowerInvariant()] = $true }
+    }
+    $missing = @($dcs | Where-Object { -not $seen.ContainsKey([string]$_) })
+    if ($missing.Count -gt 0) {
+        return ("{0} of the {1} domain controller(s) registered for {2} were not found among the members of Domain Controllers or Read-only Domain Controllers as read (directly, nested or by primaryGroupID 516/521, Microsoft's defaults), so the membership reads did not return their declared population" -f $missing.Count, $dcs.Count, $Domain)
+    }
+    return ''
+}
+
+function Get-AdfaPrivGroupSpec {
+    <#
+    .SYNOPSIS
+        Pure: the groups of the Privileged table that apply to one scoped domain, in table order, each
+        with the SID it is located by.
+    .DESCRIPTION
+        Scope Builtin: the fixed SID (S-1-5-32-x), present in every domain. Scope Domain: <domain
+        SID>-RID. Scope ForestRoot: <forest root SID>-RID, and only for the forest root domain. A group
+        whose SID cannot be built (the domain's SID was not read) carries Sid '' and is Not Assessed.
+    .OUTPUTS
+        [pscustomobject[]] Key, Name, Rid, Scope, Protected, Always, Sid.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyString()][string]$DomainSid = '',
+        [bool]$IsRoot = $false,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $specs = @()
+    foreach ($g in @($Config['Groups'])) {
+        $scope = [string]$g['Scope']
+        if ($scope -eq 'ForestRoot' -and -not $IsRoot) { continue }
+        $sid = ''
+        $rid = $null
+        if ($scope -eq 'Builtin') { $sid = [string]$g['Sid'] }
+        else {
+            $rid = [int]$g['Rid']
+            if ($DomainSid -ne '') { $sid = ("{0}-{1}" -f $DomainSid, $rid) }
+        }
+        $specs += [pscustomobject]@{ Key = [string]$g['Key']; Name = [string]$g['Name']; Rid = $rid; Scope = $scope; Protected = [bool]$g['Protected']; Always = [bool]$g['Always']; Sid = $sid }
+    }
+    return @($specs)
+}
+
+function Resolve-AdfaPrivDnDomain {
+    <#
+    .SYNOPSIS
+        Pure: the scoped domain a distinguished name belongs to, so it is read from that domain.
+    .DESCRIPTION
+        The forest domain whose DN is the longest suffix of the DN. Routed when that domain is scoped;
+        OutOfScope when it is a forest domain that is not scoped, or when no forest domain's DN is a
+        suffix (the reference rule, AdAssessment26 decision 56: a member in a domain that is not read
+        makes the count Not Assessed, never lower); Ambiguous when two domains share that DN, or when a
+        forest domain whose DN was not read is a DNS child of the matched one and the DN has a DC=
+        component above the matched domain's DN, so that child could own it. When no read DN matches
+        but the DN's trailing DC= components spell a scoped forest domain whose Get-ADDomain read
+        failed, the class is that read's own (Unreachable, AccessDenied, TimedOut or Error), never
+        OutOfScope.
+    .OUTPUTS
+        [pscustomobject] Class (Routed | OutOfScope | Ambiguous | Unreachable | AccessDenied | TimedOut |
+        Error), Domain, Why.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Dn = '',
+        [Parameter(Mandatory)][hashtable]$DomainMap,
+        [AllowNull()][AllowEmptyCollection()][string[]]$Scoped = @()
+    )
+    $lower = $Dn.Trim().ToLowerInvariant()
+    $best = @(); $bestLength = -1
+    $unread = @()
+    foreach ($name in @($DomainMap.Keys)) {
+        $entry = $DomainMap[$name]
+        $domainDn = ''
+        if ($null -ne $entry -and [bool]$entry.Ok) { $domainDn = ([string]$entry.DomainDn).Trim().ToLowerInvariant() }
+        if ($domainDn -eq '') { $unread += [string]$name; continue }
+        if ($lower -eq $domainDn -or $lower.EndsWith(',' + $domainDn)) {
+            if ($domainDn.Length -gt $bestLength) { $best = @([string]$name); $bestLength = $domainDn.Length }
+            elseif ($domainDn.Length -eq $bestLength) { $best += [string]$name }
+        }
+    }
+    if ($best.Count -eq 0) {
+        # A forest domain whose Get-ADDomain read failed has no DN to match. When the DN's trailing DC=
+        # components spell that domain's DNS name, its own read failure is the cause - unreachable,
+        # access denied, timed out - kept apart from "out of scope".
+        $dnsName = ((Get-AdfaPrivDnDomainPart -Dn $lower) -split ',' | Where-Object { $_ -ne '' } | ForEach-Object { $_.Substring(3) }) -join '.'
+        $owner = @($unread | Where-Object { $dnsName -ne '' -and ([string]$_).ToLowerInvariant() -eq $dnsName })
+        if ($owner.Count -eq 1) {
+            $ownerName = [string]$owner[0]
+            $ownerScoped = (@(@($Scoped) | Where-Object { ([string]$_).ToLowerInvariant() -eq $ownerName.ToLowerInvariant() }).Count -gt 0)
+            if ($ownerScoped) {
+                $entry = $DomainMap[$ownerName]
+                $err = ''; $type = ''
+                if ($null -ne $entry) {
+                    $errProp = $entry.PSObject.Properties['Error']; $typeProp = $entry.PSObject.Properties['ErrorType']
+                    if ($null -ne $errProp) { $err = ([string]$errProp.Value).Trim() }
+                    if ($null -ne $typeProp) { $type = [string]$typeProp.Value }
+                }
+                $class = Get-AdfaPrivReadClass -Message $err -TypeName $type
+                if ($class -eq 'NotFound' -or $class -eq '') { $class = 'Error' }
+                if ($err -eq '') { $err = 'no error text was returned' }
+                return [pscustomobject]@{ Class = $class; Domain = $ownerName; Why = ("its domain {0}, scoped by this run, could not be read: {1}" -f $ownerName, $err) }
+            }
+            return [pscustomobject]@{ Class = 'OutOfScope'; Domain = $ownerName; Why = ("it is in {0}, a domain of this forest that this run did not scope and whose distinguished name was not read" -f $ownerName) }
+        }
+        return [pscustomobject]@{ Class = 'OutOfScope'; Domain = ''; Why = 'it is not under any domain of this forest whose distinguished name was read' }
+    }
+    if ($best.Count -gt 1) {
+        return [pscustomobject]@{ Class = 'Ambiguous'; Domain = ''; Why = ("{0} domains report the same distinguished name ({1}), so the domain that holds it cannot be told" -f $best.Count, (($best | Sort-Object) -join ', ')) }
+    }
+    $match = [string]$best[0]
+    # Only a DN with a DC= component above the matched domain's own DN could sit in a child domain
+    # (a domain's naming context is named by DC= components - an inference, used only to make the
+    # routing MORE cautious).
+    $above = $lower.Substring(0, $lower.Length - $bestLength).TrimEnd(',')
+    $children = @()
+    if ($above -match '(^|,)dc=') { $children = @($unread | Where-Object { ([string]$_).ToLowerInvariant().EndsWith('.' + $match.ToLowerInvariant()) }) }
+    if ($children.Count -gt 0) {
+        return [pscustomobject]@{ Class = 'Ambiguous'; Domain = ''; Why = ("the distinguished name of {0}, a child of {1}, was not read, so it may hold this object" -f (($children | Sort-Object) -join ', '), $match) }
+    }
+    $isScoped = (@(@($Scoped) | Where-Object { ([string]$_).ToLowerInvariant() -eq $match.ToLowerInvariant() }).Count -gt 0)
+    if (-not $isScoped) {
+        return [pscustomobject]@{ Class = 'OutOfScope'; Domain = $match; Why = ("it is in {0}, a domain of this forest that this run did not scope (-AllDomains scopes every domain)" -f $match) }
+    }
+    return [pscustomobject]@{ Class = 'Routed'; Domain = $match; Why = '' }
+}
+
+function New-AdfaPrivContext {
+    <#
+    .SYNOPSIS
+        Pure: the per-run reading context of C10 - the forest's domains, the scoped ones, the caches of
+        object and primary-group reads, and the read budget.
+    .DESCRIPTION
+        Object reads are cached by DN and primary-group searches by "<domain>|<RID>", for the whole run,
+        so a member of several privileged groups is read once. Offline = $true (tests only) answers any
+        DN that is not in the cache as NotFound instead of reading the directory.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$DomainMap,
+        [AllowNull()][AllowEmptyCollection()][string[]]$Scoped = @(),
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config,
+        [switch]$Offline
+    )
+    return @{
+        DomainMap = $DomainMap; Scoped = @($Scoped); AdParams = $AdParams; Config = $Config
+        Objects = @{}; Primary = @{}; Used = 0; Limit = [int]$Config['MaxExpandedObjects']; Offline = [bool]$Offline
+    }
+}
+
+function Read-AdfaPrivObject {
+    <#
+    .SYNOPSIS
+        One member DN as a record, through the run's cache: routed to its own domain, read once.
+        Read-only. Never throws.
+    .OUTPUTS
+        [pscustomobject] Ok, Class, Error, ErrorType, Record.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][hashtable]$Context, [Parameter(Mandatory)][string]$Dn)
+    $key = $Dn.Trim().ToLowerInvariant()
+    if ($Context['Objects'].ContainsKey($key)) { return $Context['Objects'][$key] }
+    if ([bool]$Context['Offline']) {
+        return [pscustomobject]@{ Ok = $false; Class = 'NotFound'; Error = 'not in the offline directory'; ErrorType = ''; Record = $null }
+    }
+    $route = Resolve-AdfaPrivDnDomain -Dn $Dn -DomainMap $Context['DomainMap'] -Scoped @($Context['Scoped'])
+    if ([string]$route.Class -ne 'Routed') {
+        $result = [pscustomobject]@{ Ok = $false; Class = [string]$route.Class; Error = [string]$route.Why; ErrorType = ''; Record = $null }
+        $Context['Objects'][$key] = $result
+        return $result
+    }
+    if ([int]$Context['Used'] -ge [int]$Context['Limit']) {
+        return [pscustomobject]@{ Ok = $false; Class = 'Limit'; Error = ("the run reached MaxExpandedObjects ({0}, a tool default, not a Microsoft value) and read no further member" -f [int]$Context['Limit']); ErrorType = ''; Record = $null }
+    }
+    $Context['Used'] = [int]$Context['Used'] + 1
+    $raw = Get-AdfaPrivObjectRaw -Identity $Dn -Server ([string]$route.Domain) -Properties @($Context['Config']['ObjectProperties']) -AdParams $Context['AdParams']
+    $record = $null
+    if ([bool]$raw.Ok) { $record = ConvertTo-AdfaPrivRecord -Object $raw.Object -Config $Context['Config'] }
+    $result = [pscustomobject]@{ Ok = [bool]$raw.Ok; Class = [string]$raw.Class; Error = [string]$raw.Error; ErrorType = [string]$raw.ErrorType; Record = $record }
+    $Context['Objects'][$key] = $result
+    return $result
+}
+
+function Read-AdfaPrivPrimary {
+    <#
+    .SYNOPSIS
+        The principals whose primaryGroupID is a group's RID, read once per run from the group's own
+        domain. Read-only. Never throws.
+    .DESCRIPTION
+        Membership through the primary group is not in the member attribute (Learn, Defender for
+        Identity, and AdAssessment26 N56), so it is read with (primaryGroupID=<RID>) in the domain that
+        holds the group. A group whose SID is not an account-domain SID (a builtin group) cannot be a
+        primary group and is skipped as Read with no record. The results count against the run's
+        MaxExpandedObjects budget, as member reads do: the search asks for one more object than is
+        left (-ResultSetSize), and an answer larger than what is left is Class Limit with no record.
+    .OUTPUTS
+        [pscustomobject] Ok, Class, Error, ErrorType, Records.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][hashtable]$Context, [Parameter(Mandatory)]$Group)
+    if (-not [bool]$Group.IsAccountDomainSid -or $null -eq $Group.Rid) {
+        return [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Records = @() }
+    }
+    $route = $null
+    if ([bool]$Context['Offline']) { $route = [pscustomobject]@{ Class = 'Routed'; Domain = 'offline'; Why = '' } }
+    else { $route = Resolve-AdfaPrivDnDomain -Dn ([string]$Group.Dn) -DomainMap $Context['DomainMap'] -Scoped @($Context['Scoped']) }
+    $key = ("{0}|{1}" -f ([string]$route.Domain).ToLowerInvariant(), [string]$Group.Rid)
+    if ([bool]$Context['Offline']) { $key = ("{0}|{1}" -f ([string]$Group.Dn).ToLowerInvariant(), [string]$Group.Rid) }
+    if ($Context['Primary'].ContainsKey($key)) { return $Context['Primary'][$key] }
+    if ([bool]$Context['Offline']) {
+        return [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Records = @() }
+    }
+    if ([string]$route.Class -ne 'Routed') {
+        $result = [pscustomobject]@{ Ok = $false; Class = [string]$route.Class; Error = [string]$route.Why; ErrorType = ''; Records = @() }
+        $Context['Primary'][$key] = $result
+        return $result
+    }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $filter = ("(primaryGroupID={0})" -f ([int64]$Group.Rid).ToString($inv))
+    # The run's read budget covers these results too: the search asks for one more object than is left,
+    # so "more than is left" is seen without reading the rest.
+    $left = [int]$Context['Limit'] - [int]$Context['Used']
+    $capText = ("the run reached MaxExpandedObjects ({0}, a tool default, not a Microsoft value) and the {1} search was not counted" -f [int]$Context['Limit'], $filter)
+    if ($left -le 0) {
+        $result = [pscustomobject]@{ Ok = $false; Class = 'Limit'; Error = $capText; ErrorType = ''; Records = @() }
+        $Context['Primary'][$key] = $result
+        return $result
+    }
+    $raw = Get-AdfaPrivSearchRaw -Server ([string]$route.Domain) -LDAPFilter $filter -Properties @($Context['Config']['ObjectProperties']) -AdParams $Context['AdParams'] -ResultSetSize ($left + 1)
+    if ([bool]$raw.Ok -and @($raw.Objects).Count -gt $left) {
+        $Context['Used'] = [int]$Context['Limit']
+        $result = [pscustomobject]@{ Ok = $false; Class = 'Limit'; Error = ("the {0} search returned more than the {1} object(s) left under MaxExpandedObjects ({2}, a tool default, not a Microsoft value), so its members were not counted" -f $filter, $left, [int]$Context['Limit']); ErrorType = ''; Records = @() }
+        $Context['Primary'][$key] = $result
+        return $result
+    }
+    if ([bool]$raw.Ok) { $Context['Used'] = [int]$Context['Used'] + @($raw.Objects).Count }
+    $records = @()
+    if ([bool]$raw.Ok) {
+        foreach ($o in @($raw.Objects)) {
+            $r = ConvertTo-AdfaPrivRecord -Object $o -Config $Context['Config']
+            $records += $r
+            if ($r.Dn -ne '') {
+                $objKey = $r.Dn.ToLowerInvariant()
+                if (-not $Context['Objects'].ContainsKey($objKey)) { $Context['Objects'][$objKey] = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Record = $r } }
+            }
+        }
+    }
+    $result = [pscustomobject]@{ Ok = [bool]$raw.Ok; Class = [string]$raw.Class; Error = [string]$raw.Error; ErrorType = [string]$raw.ErrorType; Records = @($records) }
+    $Context['Primary'][$key] = $result
+    return $result
+}
+
+function Find-AdfaPrivGroup {
+    <#
+    .SYNOPSIS
+        One privileged group of a domain, located by its SID - never by name. Read-only. Never throws.
+    .DESCRIPTION
+        Get-ADObject -Server <domain> -LDAPFilter (objectSid=<encoded SID>) asking for the record's
+        property list. No object is NotFound ("not visible to this account"); more than one is
+        Duplicate - the read succeeded, and its answer cannot name one group.
+    .OUTPUTS
+        [pscustomobject] Ok, Class (Read | NotFound | Duplicate | NoSid | Refused | Unreachable |
+        AccessDenied | TimedOut | Error), Error, ErrorType, Filter, Record.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][hashtable]$Context, [Parameter(Mandatory)][string]$Server, [AllowEmptyString()][string]$Sid = '')
+    $encoded = ConvertTo-AdfaLdapSidFilterValue -Sid $Sid
+    if ($encoded -eq '') {
+        return [pscustomobject]@{ Ok = $false; Class = 'NoSid'; Error = 'the SID of the group could not be built, because the SID of its domain was not read'; ErrorType = ''; Filter = ''; Record = $null }
+    }
+    $filter = ("(objectSid={0})" -f $encoded)
+    $raw = Get-AdfaPrivSearchRaw -Server $Server -LDAPFilter $filter -Properties @($Context['Config']['ObjectProperties']) -AdParams $Context['AdParams']
+    if (-not [bool]$raw.Ok) {
+        return [pscustomobject]@{ Ok = $false; Class = [string]$raw.Class; Error = [string]$raw.Error; ErrorType = [string]$raw.ErrorType; Filter = $filter; Record = $null }
+    }
+    $objects = @($raw.Objects)
+    if ($objects.Count -eq 0) {
+        return [pscustomobject]@{ Ok = $false; Class = 'NotFound'; Error = 'the search returned no object'; ErrorType = ''; Filter = $filter; Record = $null }
+    }
+    if ($objects.Count -gt 1) {
+        return [pscustomobject]@{ Ok = $false; Class = 'Duplicate'; Error = ("the search by SID returned {0} objects" -f $objects.Count); ErrorType = ''; Filter = $filter; Record = $null }
+    }
+    $record = ConvertTo-AdfaPrivRecord -Object $objects[0] -Config $Context['Config']
+    if ($record.Dn -ne '') { $Context['Objects'][$record.Dn.ToLowerInvariant()] = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Record = $record } }
+    return [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Filter = $filter; Record = $record }
+}
+
+function Get-AdfaPrivUnresolvedText {
+    <#
+    .SYNOPSIS
+        Pure: why one member reference was not resolved, in words, by class.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Read)
+    if ($null -eq $Read) { return 'not read (no answer)' }
+    $err = ([string]$Read.Error).Trim()
+    switch ([string]$Read.Class) {
+        'OutOfScope' { return ("out of scope: {0}" -f $err) }
+        'Ambiguous' { return ("domain not decided: {0}" -f $err) }
+        'NotFound' { return 'not found in its domain' }
+        'Duplicate' { return ("ambiguous answer: {0}" -f $err) }
+        'Limit' { return 'not read: the read cap was reached' }
+        'Unreachable' { return ("unreachable: {0}" -f $err) }
+        'AccessDenied' { return ("access denied: {0}" -f $err) }
+        'TimedOut' { return ("timed out: {0}" -f $err) }
+        'Refused' { return ("not asked: {0}" -f $err) }
+        default { return ("read failed: {0}" -f $err) }
+    }
+}
+
+function Resolve-AdfaPrivGroupClosure {
+    <#
+    .SYNOPSIS
+        A group's transitive membership: every member DN followed through nested groups (security and
+        distribution alike, as Learn's protection rule counts both) and every group's primary-group
+        members, each object read once. Cycle-safe. Read-only; the reads go through the context.
+    .DESCRIPTION
+        Leaf principals are unique by DN and carry how they were reached: direct (a value of the
+        group's own member attribute), nested (through another group) or primary (primaryGroupID).
+        A foreign security principal is kept with its SID and never expanded. A member DN that could
+        not be read - out of scope, domain not decided, not found, unreachable, access denied, timed
+        out, read cap - is kept in Unresolved with the reason; so is a group whose member list came
+        back holding exactly one of MemberRangeLimits values (a range-retrieval limit), which may be
+        truncated. Complete is true only when nothing is unresolved.
+    .OUTPUTS
+        [pscustomobject] Group, Complete, Principals (Record, Via), Groups, Foreign, Unresolved (Ref, Reason).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Group,
+        [Parameter(Mandatory)][hashtable]$Context,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $principals = [ordered]@{}
+    $groups = New-Object System.Collections.ArrayList
+    $foreign = New-Object System.Collections.ArrayList
+    $unresolved = New-Object System.Collections.ArrayList
+    $visited = @{}
+    $rootKey = ([string]$Group.Dn).ToLowerInvariant()
+    $visited[$rootKey] = $true
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue($Group)
+    $limits = @(@($Config['MemberRangeLimits']) | ForEach-Object { [int]$_ })
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    while ($queue.Count -gt 0) {
+        $g = $queue.Dequeue()
+        $isRoot = (([string]$g.Dn).ToLowerInvariant() -eq $rootKey)
+        $via = 'nested'
+        if ($isRoot) { $via = 'direct' }
+        $members = @($g.Members)
+        if ($limits -contains $members.Count) {
+            [void]$unresolved.Add([pscustomobject]@{ Ref = [string]$g.Dn; Reason = ("its member list came back with exactly {0} values, a range-retrieval limit (MaxValRange), so it may be truncated" -f $members.Count.ToString($inv)) })
+        }
+        foreach ($m in $members) {
+            $key = ([string]$m).ToLowerInvariant()
+            if ($visited.ContainsKey($key)) { continue }
+            $visited[$key] = $true
+            $read = Read-AdfaPrivObject -Context $Context -Dn ([string]$m)
+            if ($null -eq $read -or -not [bool]$read.Ok -or $null -eq $read.Record) {
+                [void]$unresolved.Add([pscustomobject]@{ Ref = [string]$m; Reason = (Get-AdfaPrivUnresolvedText -Read $read) })
+                continue
+            }
+            $rec = $read.Record
+            if ([string]$rec.Kind -eq 'Group') { [void]$groups.Add($rec); $queue.Enqueue($rec) }
+            elseif ([string]$rec.Kind -eq 'Foreign') { [void]$foreign.Add($rec) }
+            else { $principals[$key] = [pscustomobject]@{ Record = $rec; Via = $via } }
+        }
+        $primary = Read-AdfaPrivPrimary -Context $Context -Group $g
+        if ($null -eq $primary -or -not [bool]$primary.Ok) {
+            [void]$unresolved.Add([pscustomobject]@{ Ref = ("primaryGroupID={0} of {1}" -f [string]$g.Rid, [string]$g.Dn); Reason = (Get-AdfaPrivUnresolvedText -Read $primary) })
+            continue
+        }
+        foreach ($rec in @($primary.Records)) {
+            $key = ([string]$rec.Dn).ToLowerInvariant()
+            if ($key -eq '' -or $visited.ContainsKey($key)) { continue }
+            $visited[$key] = $true
+            if ([string]$rec.Kind -eq 'Group') { [void]$groups.Add($rec); $queue.Enqueue($rec) }
+            else { $principals[$key] = [pscustomobject]@{ Record = $rec; Via = 'primary' } }
+        }
+    }
+    return [pscustomobject]@{
+        Group = $Group; Complete = ($unresolved.Count -eq 0); Principals = @($principals.Values)
+        Groups = $groups.ToArray(); Foreign = $foreign.ToArray(); Unresolved = $unresolved.ToArray()
+    }
+}
+
+function Get-AdfaPrivDelegationFilter {
+    <#
+    .SYNOPSIS
+        Pure: the one search that finds every delegation setting of a domain - TRUSTED_FOR_DELEGATION,
+        TRUSTED_TO_AUTH_FOR_DELEGATION, msDS-AllowedToDelegateTo and
+        msDS-AllowedToActOnBehalfOfOtherIdentity - with the bits as decimals (Learn: a bitwise rule
+        takes a decimal value).
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][hashtable]$Config)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    return ('(|(userAccountControl:1.2.840.113556.1.4.803:={0})(userAccountControl:1.2.840.113556.1.4.803:={1})(msDS-AllowedToDelegateTo=*)(msDS-AllowedToActOnBehalfOfOtherIdentity=*))' -f `
+            ([int64]$Config['Uac']['TrustedForDelegation']).ToString($inv), ([int64]$Config['Uac']['TrustedToAuthForDelegation']).ToString($inv))
+}
+
+function Get-AdfaKerberosRoastRaw {
+    <#
+    .SYNOPSIS
+        Directory seam: the Kerberoast and AS-REP reads of one domain, unchanged from before C10 except
+        that names are kept apart from the verdict. Read-only. Never throws.
+    .OUTPUTS
+        [pscustomobject] RoastOk, RoastClass, RoastError, RoastErrorType, Roast (Name, Enabled),
+        AsRepOk, AsRepClass, AsRepError, AsRepErrorType, AsRep (Name, Enabled).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
     param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
-    $rows = @()
+    $out = [pscustomobject]@{
+        RoastOk = $false; RoastClass = ''; RoastError = ''; RoastErrorType = ''; Roast = @()
+        AsRepOk = $false; AsRepClass = ''; AsRepError = ''; AsRepErrorType = ''; AsRep = @()
+    }
     $srv = @{} + $AdParams; $srv.Server = $DomainName
-
-    try {
-        $kerberoast = @(Get-ADUser -LDAPFilter '(&(servicePrincipalName=*)(!(objectClass=computer))(!(cn=krbtgt)))' -Properties servicePrincipalName, msDS-SupportedEncryptionTypes @srv -ErrorAction Stop |
-            Where-Object { "$($_.Enabled)" -ne 'False' })
-        $rows += New-Finding -Scope $DomainName -Area 'Kerberos' -Item 'Kerberoastable user accounts (SPN set)' -Status $(if ($kerberoast.Count -eq 0) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0}: {1}" -f $kerberoast.Count, ((@($kerberoast | Select-Object -First 15).SamAccountName) -join ', '))
+    $toRecord = {
+        param($User)
+        $samProp = $User.PSObject.Properties['SamAccountName']
+        $enabledProp = $User.PSObject.Properties['Enabled']
+        $name = ''
+        if ($null -ne $samProp -and $null -ne $samProp.Value) { $name = [string]$samProp.Value }
+        $enabled = $null
+        if ($null -ne $enabledProp -and $enabledProp.Value -is [bool]) { $enabled = [bool]$enabledProp.Value }
+        [pscustomobject]@{ Name = $name; Enabled = $enabled }
     }
-    catch { $rows += New-Finding -Scope $DomainName -Area 'Kerberos' -Item 'Kerberoastable user accounts (SPN set)' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-
     try {
-        $asrep = @(Get-ADUser -LDAPFilter ('(&(userAccountControl:1.2.840.113556.1.4.803:={0})(!(objectClass=computer)))' -f $script:Config.Uac.DONT_REQ_PREAUTH) -Properties userAccountControl @srv -ErrorAction Stop |
-            Where-Object { "$($_.Enabled)" -ne 'False' })
-        $rows += New-Finding -Scope $DomainName -Area 'Kerberos' -Item 'AS-REP roastable accounts (no pre-auth)' -Status $(if ($asrep.Count -eq 0) { $script:Status.Pass } else { $script:Status.Fail }) -Detail ("{0}: {1}" -f $asrep.Count, ((@($asrep | Select-Object -First 15).SamAccountName) -join ', '))
+        $out.Roast = @(Get-ADUser -LDAPFilter '(&(servicePrincipalName=*)(!(objectClass=computer))(!(cn=krbtgt)))' -Properties servicePrincipalName, msDS-SupportedEncryptionTypes @srv -ErrorAction Stop | ForEach-Object { & $toRecord $_ })
+        $out.RoastOk = $true; $out.RoastClass = 'Read'
     }
-    catch { $rows += New-Finding -Scope $DomainName -Area 'Kerberos' -Item 'AS-REP roastable accounts (no pre-auth)' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-
+    catch {
+        $out.RoastError = [string]$_.Exception.Message; $out.RoastErrorType = [string]$_.Exception.GetType().FullName
+        $out.RoastClass = Get-AdfaPrivReadClass -Message $out.RoastError -TypeName $out.RoastErrorType
+    }
     try {
-        $unconstrained = @(Get-ADObject -LDAPFilter ('(&(userAccountControl:1.2.840.113556.1.4.803:={0})(|(objectClass=user)(objectClass=computer)))' -f $script:Config.Uac.TRUSTED_FOR_DELEGATION) -Properties samAccountName, userAccountControl, primaryGroupID @srv -ErrorAction Stop |
-            Where-Object { "$($_.samAccountName)" -notmatch '\$$' -or $true })
-        # Exclude domain controllers (they legitimately have unconstrained delegation).
-        $dcNamesLocal = @((Get-ADDomainController -Filter * -Server $DomainName).Name)
-        $nonDc = @($unconstrained | Where-Object { $n = "$($_.samAccountName)".TrimEnd('$'); $dcNamesLocal -notcontains $n })
-        $rows += New-Finding -Scope $DomainName -Area 'Kerberos' -Item 'Unconstrained delegation (non-DC)' -Status $(if ($nonDc.Count -eq 0) { $script:Status.Pass } else { $script:Status.Fail }) -Detail ("{0}: {1}" -f $nonDc.Count, ((@($nonDc | Select-Object -First 15).samAccountName) -join ', '))
+        $out.AsRep = @(Get-ADUser -LDAPFilter ('(&(userAccountControl:1.2.840.113556.1.4.803:={0})(!(objectClass=computer)))' -f $script:Config.Uac.DONT_REQ_PREAUTH) -Properties userAccountControl @srv -ErrorAction Stop | ForEach-Object { & $toRecord $_ })
+        $out.AsRepOk = $true; $out.AsRepClass = 'Read'
     }
-    catch { $rows += New-Finding -Scope $DomainName -Area 'Kerberos' -Item 'Unconstrained delegation (non-DC)' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-
-    try {
-        $rbcd = @(Get-ADObject -LDAPFilter '(msDS-AllowedToActOnBehalfOfOtherIdentity=*)' -Properties samAccountName @srv -ErrorAction Stop)
-        $rows += New-Finding -Scope $DomainName -Area 'Kerberos' -Item 'Resource-based constrained delegation configured' -Status $script:Status.Info -Detail ("{0} object(s) with RBCD" -f $rbcd.Count)
+    catch {
+        $out.AsRepError = [string]$_.Exception.Message; $out.AsRepErrorType = [string]$_.Exception.GetType().FullName
+        $out.AsRepClass = Get-AdfaPrivReadClass -Message $out.AsRepError -TypeName $out.AsRepErrorType
     }
-    catch { $rows += New-Finding -Scope $DomainName -Area 'Kerberos' -Item 'Resource-based constrained delegation configured' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
+    return $out
+}
 
+function Get-AdfaPrivilegedState {
+    <#
+    .SYNOPSIS
+        Every C10 directory read of the run, once, for the three sections that use them. Read-only.
+        Never throws.
+    .DESCRIPTION
+        Parts says which reads are made: Groups (the privileged groups of every scoped domain and their
+        transitive membership - PrivilegedAccounts and PrivilegedHygiene), Hygiene (one (adminCount=1)
+        search per domain) and Delegation (one delegation search per domain and the two Kerberos roast
+        reads). With any part, the DC population of the configuration partition and dSHeuristics are
+        read once (Get-AdfaPrivForestRaw): every part checks its answers against the registered DCs. The domains of
+        the forest are each read once with Get-ADDomain (their DN and SID), so a member DN is read from
+        the domain that holds it. A domain whose handling throws is kept with the error, and the
+        sections report it as a defect of the tool for that domain only.
+    .OUTPUTS
+        [pscustomobject] Scoped, RootDomain, RootScoped, Parts, DomainMap, Forest, Context, Domains
+        (domain -> Domain, Raw, Groups (Key -> Spec, Locate, Closure), AdminCount, Delegation, Roast, Error).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$Domains = @(),
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$ForestDomains = @(),
+        [AllowEmptyString()][string]$RootDomain = '',
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config,
+        [ValidateSet('Groups', 'Hygiene', 'Delegation')][string[]]$Parts = @('Groups', 'Hygiene', 'Delegation')
+    )
+    $scoped = New-Object System.Collections.ArrayList
+    foreach ($name in @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if (@($scoped | Where-Object { $_ -eq $name.Trim() }).Count -eq 0) { [void]$scoped.Add($name.Trim()) }
+    }
+    $root = ''
+    if (-not [string]::IsNullOrWhiteSpace($RootDomain)) { $root = $RootDomain.Trim() }
+    $state = [pscustomobject]@{
+        Scoped = @($scoped.ToArray()); RootDomain = $root; RootScoped = (@($scoped | Where-Object { $_ -eq $root }).Count -gt 0 -and $root -ne '')
+        Parts = @($Parts); DomainMap = @{}; Forest = $null; Context = $null; Domains = @{}
+    }
+    if ($scoped.Count -eq 0) { return $state }
+    $mapNames = New-Object System.Collections.ArrayList
+    foreach ($name in @(@($ForestDomains) + @($scoped.ToArray()) + @($root) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ([string]$_).Trim() })) {
+        if (@($mapNames | Where-Object { $_ -eq $name }).Count -eq 0) { [void]$mapNames.Add($name) }
+    }
+    foreach ($name in $mapNames) { $state.DomainMap[$name] = Get-AdfaAclDomainRaw -DomainName $name -AdParams $AdParams }
+    $context = New-AdfaPrivContext -DomainMap $state.DomainMap -Scoped @($scoped.ToArray()) -AdParams $AdParams -Config $Config
+    $state.Context = $context
+    # Every part needs the registered DCs: the group rows check their membership reads against them,
+    # the hygiene rows read dSHeuristics, and the delegation rows exclude DCs by them.
+    if (@($Parts).Count -gt 0) { $state.Forest = Get-AdfaPrivForestRaw -RootDomain $root -AdParams $AdParams -Config $Config }
+    foreach ($domain in $scoped) {
+        $entry = [pscustomobject]@{ Domain = $domain; Raw = $state.DomainMap[$domain]; Groups = [ordered]@{}; AdminCount = $null; Delegation = $null; Roast = $null; Error = '' }
+        try {
+            $raw = $entry.Raw
+            if ($null -ne $raw -and [bool]$raw.Ok) {
+                if (@($Parts) -contains 'Groups') {
+                    $isRoot = ($domain -eq $root)
+                    foreach ($spec in @(Get-AdfaPrivGroupSpec -DomainSid ([string]$raw.DomainSid) -IsRoot $isRoot -Config $Config)) {
+                        $locate = Find-AdfaPrivGroup -Context $context -Server $domain -Sid ([string]$spec.Sid)
+                        $closure = $null
+                        if ([bool]$locate.Ok) { $closure = Resolve-AdfaPrivGroupClosure -Group $locate.Record -Context $context -Config $Config }
+                        $entry.Groups[[string]$spec.Key] = [pscustomobject]@{ Spec = $spec; Locate = $locate; Closure = $closure }
+                    }
+                }
+                if (@($Parts) -contains 'Hygiene') {
+                    $search = Get-AdfaPrivSearchRaw -Server $domain -LDAPFilter ([string]$Config['AdminCountFilter']) -Properties @($Config['ObjectProperties']) -AdParams $AdParams
+                    $entry.AdminCount = [pscustomobject]@{ Ok = [bool]$search.Ok; Class = [string]$search.Class; Error = [string]$search.Error; ErrorType = [string]$search.ErrorType; Filter = [string]$search.Filter
+                        Records = @(@($search.Objects) | ForEach-Object { ConvertTo-AdfaPrivRecord -Object $_ -Config $Config }) }
+                }
+                if (@($Parts) -contains 'Delegation') {
+                    $search = Get-AdfaPrivSearchRaw -Server $domain -LDAPFilter (Get-AdfaPrivDelegationFilter -Config $Config) -Properties @($Config['DelegationProperties']) -AdParams $AdParams
+                    $entry.Delegation = [pscustomobject]@{ Ok = [bool]$search.Ok; Class = [string]$search.Class; Error = [string]$search.Error; ErrorType = [string]$search.ErrorType; Filter = [string]$search.Filter
+                        Records = @(@($search.Objects) | ForEach-Object { ConvertTo-AdfaPrivRecord -Object $_ -Config $Config }) }
+                }
+            }
+            if (@($Parts) -contains 'Delegation') { $entry.Roast = Get-AdfaKerberosRoastRaw -DomainName $domain -AdParams $AdParams }
+        }
+        catch { $entry.Error = [string]$_.Exception.Message }
+        $state.Domains[$domain] = $entry
+    }
+    return $state
+}
+
+function Get-AdfaPrivNameList {
+    <#
+    .SYNOPSIS
+        Pure: the names and SIDs of a list of records, capped at NameListCap, for the display columns.
+    .DESCRIPTION
+        Records holds the listed records themselves, in the listed order, so that every other display
+        column of a row (Targets, AllowedSids) is built from the same accounts Principals names.
+    .OUTPUTS
+        [pscustomobject] Listed, NotListed, Names, Sids, Records.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][AllowEmptyCollection()][object[]]$Records = @(), [Parameter(Mandatory)][hashtable]$Config)
+    # Ordinal order, so 5.1 and 7 on any platform list the same names in the same order.
+    # The keys carry each record's position, and only the string array is sorted in place: PowerShell
+    # copies an object array it hands to the two-array Sort overload, so that one would sort nothing.
+    $given = @(@($Records) | Where-Object { $null -ne $_ })
+    $keys = New-Object 'string[]' $given.Count
+    for ($i = 0; $i -lt $given.Count; $i++) { $keys[$i] = ("{0}`n{1}`n{2:D9}" -f [string]$given[$i].Name, [string]$given[$i].Dn, $i) }
+    [System.Array]::Sort($keys, [System.StringComparer]::OrdinalIgnoreCase)
+    $all = @($keys | ForEach-Object { $given[[int]($_.Substring($_.LastIndexOf("`n") + 1))] })
+    $cap = [int]$Config['NameListCap']
+    $listed = [math]::Min($cap, $all.Count)
+    $names = @(); $sids = @(); $kept = @()
+    for ($i = 0; $i -lt $listed; $i++) {
+        $kept += $all[$i]
+        $names += [string]$all[$i].Name
+        $sid = [string]$all[$i].Sid
+        if ($sid -eq '') { $sid = '(no SID read)' }
+        $sids += $sid
+    }
+    return [pscustomobject]@{ Listed = $listed; NotListed = ($all.Count - $listed); Names = ($names -join '; '); Sids = ($sids -join '; '); Records = @($kept) }
+}
+
+function Get-AdfaPrivLocateLead {
+    <#
+    .SYNOPSIS
+        Pure: the opening of a Not Assessed row for a privileged group that was not located, or (with
+        -Search) for a search that failed, by class.
+    .DESCRIPTION
+        NotFound means "no group with that SID" only for a group lookup. For a search (-Search: the
+        adminCount, delegation and roast reads), the module's identity-not-found exception means the
+        directory refused an object the search needed (its base, for instance), and is worded so.
+        Duplicate is a lookup that succeeded and returned more than one object: not a refusal.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Locate, [Parameter(Mandatory)][string]$What, [switch]$Search)
+    if ($null -eq $Locate) { return 'Not assessed: the group was not looked up. This is a defect in the tool, not a result.' }
+    switch ([string]$Locate.Class) {
+        'NotFound' {
+            if ([bool]$Search) { return ("Not found: the search for {0} was answered that an object it needed does not exist (the module's identity-not-found exception: {1}), so nothing was read. This is not an empty result. This is not a clean result." -f $What, ([string]$Locate.Error).Trim()) }
+            return ("Not found: no group with the SID of {0} is visible to this account, so its members were not read. That group exists in every such domain, so this is not an empty group; it is what this account can see. This is not a clean result." -f $What)
+        }
+        'Duplicate' { return ("Not assessed: the lookup of {0} by SID succeeded but its answer is ambiguous - {1} - so which object is the group cannot be told. This is not a refusal and not a missing right. This is not a clean result." -f $What, ([string]$Locate.Error).Trim()) }
+        'NoSid' { return ("Not assessed: {0} - {1}. This is not a clean result." -f $What, ([string]$Locate.Error).Trim()) }
+        'Refused' { return ("Not assessed: {0} - {1}. This is a defect in the tool, not a result." -f $What, ([string]$Locate.Error).Trim()) }
+        default { return ("{0} This is not a clean result." -f (Get-AdfaLapsReadFailureLead -Message ([string]$Locate.Error) -TypeName ([string]$Locate.ErrorType) -What $What)) }
+    }
+}
+
+function Get-AdfaPrivMemberSummary {
+    <#
+    .SYNOPSIS
+        Pure: the leaf members of a closure, counted by kind, with the display columns.
+    .DESCRIPTION
+        Counted: every leaf principal (user, computer or other) and every foreign security principal,
+        each once. Nested groups are counted apart and are not members in the count. -ExcludeSid takes
+        principals out of the count (the Enterprise Admins exemption of the forest root's
+        Administrator, when the config switches it on); they are returned in Excluded.
+    .OUTPUTS
+        [pscustomobject] Count, Users, Computers, Others, Foreign, Groups, Unresolved, Counted, Excluded,
+        Names (Get-AdfaPrivNameList), ForeignSids, UnresolvedText.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)]$Closure, [Parameter(Mandatory)][hashtable]$Config, [AllowEmptyString()][string]$ExcludeSid = '')
+    $counted = @(); $excluded = @()
+    foreach ($p in @($Closure.Principals)) {
+        $rec = $p.Record
+        if ($ExcludeSid -ne '' -and [string]$rec.Sid -eq $ExcludeSid) { $excluded += $rec } else { $counted += $rec }
+    }
+    $foreign = @($Closure.Foreign)
+    $unresolved = @($Closure.Unresolved)
+    $users = @($counted | Where-Object { $_.Kind -eq 'User' }).Count
+    $computers = @($counted | Where-Object { $_.Kind -eq 'Computer' }).Count
+    $others = $counted.Count - $users - $computers
+    $names = Get-AdfaPrivNameList -Records $counted -Config $Config
+    return [pscustomobject]@{
+        Count = ($counted.Count + $foreign.Count); Users = $users; Computers = $computers; Others = $others; Foreign = $foreign.Count
+        Groups = @($Closure.Groups).Count; Unresolved = $unresolved.Count; Counted = $counted; Excluded = $excluded; Names = $names
+        ForeignSids = (@($foreign | ForEach-Object { $s = [string]$_.Sid; if ($s -eq '') { $s = [string]$_.Dn }; $s }) -join '; ')
+        UnresolvedText = (@($unresolved | ForEach-Object { "{0} ({1})" -f [string]$_.Ref, [string]$_.Reason }) -join '; ')
+    }
+}
+
+function Get-AdfaPrivEmptyGroupVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Schema Admins members: <root>" (ADA-PRIV-001) or "Enterprise Admins members: <root>"
+        (ADA-PRIV-002) - a group Microsoft says should be empty day to day.
+    .DESCRIPTION
+        In this order:
+          group not located, or not read          Not Assessed, with the cause
+          one or more members                     Config.<Key>Status (Warning by default; a TOOL
+                                                  DEFAULT, the catalogue rule) - it stands when other
+                                                  references could not be resolved, which Detail says
+          none counted, a reference unresolved    Not Assessed
+          none, but the root domain's membership
+          reads failed their non-vacuity check
+          (PopulationGap, Get-AdfaPrivDcMembershipGap) Not Assessed: an empty answer is not trusted
+          none                                    Pass ("no member visible to this account")
+        Members are transitive leaf principals and foreign security principals; nested groups are
+        followed, not counted. For Enterprise Admins, EnterpriseAdminsExemptRootAdministrator ($false
+        by default, the catalogue rule) takes the forest root's built-in Administrator (RID 500) out of
+        the count; Detail always quotes Learn's exception for it.
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [Parameter(Mandatory)][ValidateSet('SchemaAdmins', 'EnterpriseAdmins')][string]$Key,
+        [AllowNull()]$Entry,
+        [AllowEmptyString()][string]$DomainSid = '',
+        [Parameter(Mandatory)][hashtable]$Config,
+        [AllowEmptyString()][string]$PopulationGap = ''
+    )
+    $label = 'Schema Admins'
+    $catalogue = $Config['Catalogue']['SchemaAdmins']
+    $learn = 'Microsoft documents that Schema Admins is intended to be populated only temporarily and occasionally, when the schema must be modified'
+    if ($Key -eq 'EnterpriseAdmins') {
+        $label = 'Enterprise Admins'
+        $catalogue = $Config['Catalogue']['EnterpriseAdmins']
+        $learn = 'Microsoft documents that Enterprise Admins should contain no users on a day-to-day basis, with the possible exception of the forest root domain''s Administrator account'
+    }
+    $item = ("{0} members: {1}" -f $label, $Domain)
+    $common = @{ Scope = $Domain; Area = 'Privileged'; Item = $item; CatalogueId = [string]$catalogue['Id']; Severity = [string]$catalogue['Severity']; DomainSid = $DomainSid }
+    $notRun = 'Not read: whether a member is used only during a change window; who added it and when. Names are in the Principals column only.'
+    if ($null -eq $Entry) {
+        return (New-AdfaPrivilegedRow @common -Status $script:Status.NotAssessed -NotRun $notRun -Evidence 'none' -Detail 'Not assessed: the group was not looked up. This is a defect in the tool, not a result.')
+    }
+    $what = ("{0} of {1}" -f $label, $Domain)
+    $evidence = ("Get-ADObject -Server {0} -LDAPFilter '{1}', then every member DN read from its own domain and (primaryGroupID=<RID>) for every group reached" -f $Domain, [string]$Entry.Locate.Filter)
+    if (-not [bool]$Entry.Locate.Ok -or $null -eq $Entry.Closure) {
+        return (New-AdfaPrivilegedRow @common -GroupSid ([string]$Entry.Spec.Sid) -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -Detail (Get-AdfaPrivLocateLead -Locate $Entry.Locate -What $what))
+    }
+    $exclude = ''
+    $rootAdmin = ''
+    if ($DomainSid -ne '') { $rootAdmin = ("{0}-{1}" -f $DomainSid, [int]$Config['RootAdministratorRid']) }
+    if ($Key -eq 'EnterpriseAdmins' -and [bool]$Config['EnterpriseAdminsExemptRootAdministrator']) { $exclude = $rootAdmin }
+    $s = Get-AdfaPrivMemberSummary -Closure $Entry.Closure -Config $Config -ExcludeSid $exclude
+    $columns = @{ GroupSid = ([string]$Entry.Spec.Sid); Count = $s.Count; UserCount = $s.Users; ComputerCount = $s.Computers; GroupCount = $s.Groups; ForeignCount = $s.Foreign
+        UnresolvedCount = $s.Unresolved; ExcludedCount = @($s.Excluded).Count; Listed = $s.Names.Listed; NotListed = $s.Names.NotListed
+        Principals = [string]$s.Names.Names; PrincipalSids = [string]$s.Names.Sids; ForeignSids = [string]$s.ForeignSids; Unresolved = [string]$s.UnresolvedText }
+    $defaultNote = ''
+    if ($rootAdmin -ne '' -and @(@($Entry.Closure.Principals) | Where-Object { [string]$_.Record.Sid -eq $rootAdmin }).Count -gt 0) {
+        $defaultNote = ' The forest root domain''s built-in Administrator (RID 500) is among the members; Microsoft documents it as the default member of this group.'
+    }
+    $exemptNote = ''
+    if (@($s.Excluded).Count -gt 0) { $exemptNote = ' The forest root domain''s built-in Administrator is not counted, because EnterpriseAdminsExemptRootAdministrator is set (Learn''s possible exception).' }
+    $unresolvedNote = ''
+    if ($s.Unresolved -gt 0) { $unresolvedNote = (" {0} member reference(s) could not be resolved (listed in the Unresolved column), so the true number may be higher." -f $s.Unresolved) }
+    if ($s.Count -gt 0) {
+        $status = [string]$Config[("{0}Status" -f $Key)]
+        $detail = ("{0} member(s) of {1} visible to this account: {2} user, {3} computer, {4} other, {5} foreign security principal(s) reported by SID, reached directly, through {6} nested group(s) or as primary group.{7}{8}{9} {10}. Graded {11}: the grade is a tool default, not a Microsoft value (setting from: {12})." -f `
+                $s.Count, $what, $s.Users, $s.Computers, $s.Others, $s.Foreign, $s.Groups, $defaultNote, $exemptNote, $unresolvedNote, $learn, $status, [string]$Config['ThresholdSource'])
+        return (New-AdfaPrivilegedRow @common @columns -Status $status -NotRun $notRun -Evidence $evidence -Detail $detail)
+    }
+    if ($s.Unresolved -gt 0) {
+        return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Not assessed: no member of {0} was resolved, but {1} member reference(s) could not be (listed in the Unresolved column), so the group cannot be called empty. This is not a clean result." -f $what, $s.Unresolved))
+    }
+    if ($PopulationGap -ne '') {
+        return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Not assessed: no member of {0} was read, but the membership reads of this domain failed their check: {1}. An empty answer from them is not taken as an empty group. This is not a clean result." -f $what, $PopulationGap))
+    }
+    return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.Pass -NotRun $notRun -Evidence $evidence `
+            -Detail ("No member of {0} is visible to this account, directly, through a nested group or as primary group.{1} {2}." -f $what, $exemptNote, $learn))
+}
+
+function Get-AdfaPrivGroupCountVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Privileged group: <name>: <domain>" (ADA-INV-005) - the transitive member count of one
+        privileged group. Info, or Not Assessed; no threshold (the reference sets none).
+    .DESCRIPTION
+        A group the search did not find is Info "not present" when Microsoft documents it only from a
+        later functional level or release (Always $false in the table), and Not Assessed otherwise. A
+        closure with an unresolved reference is Not Assessed with the count left empty: never a lower
+        number.
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Domain, [Parameter(Mandatory)]$Spec, [AllowNull()]$Entry, [AllowEmptyString()][string]$DomainSid = '', [Parameter(Mandatory)][hashtable]$Config)
+    $catalogue = $Config['Catalogue']['Inventory']
+    $item = ("Privileged group: {0}: {1}" -f [string]$Spec.Name, $Domain)
+    $common = @{ Scope = $Domain; Area = 'Privileged'; Item = $item; CatalogueId = [string]$catalogue['Id']; Severity = [string]$catalogue['Severity']; DomainSid = $DomainSid; GroupSid = [string]$Spec.Sid }
+    $what = ("{0} of {1}" -f [string]$Spec.Name, $Domain)
+    if ($null -eq $Entry) {
+        return (New-AdfaPrivilegedRow @common -Status $script:Status.NotAssessed -Evidence 'none' -Detail 'Not assessed: the group was not looked up. This is a defect in the tool, not a result.')
+    }
+    $evidence = ("Get-ADObject -Server {0} -LDAPFilter '{1}'; member DNs read from their own domain; (primaryGroupID=<RID>)" -f $Domain, [string]$Entry.Locate.Filter)
+    if ([string]$Entry.Locate.Class -eq 'NotFound' -and -not [bool]$Spec.Always) {
+        return (New-AdfaPrivilegedRow @common -Status $script:Status.Info -Evidence $evidence `
+                -Detail ("Not present: no group with the SID of {0} is visible to this account. Microsoft documents this group only from a later functional level or release, so it may not exist in this domain." -f $what))
+    }
+    if (-not [bool]$Entry.Locate.Ok -or $null -eq $Entry.Closure) {
+        return (New-AdfaPrivilegedRow @common -Status $script:Status.NotAssessed -Evidence $evidence -Detail (Get-AdfaPrivLocateLead -Locate $Entry.Locate -What $what))
+    }
+    $s = Get-AdfaPrivMemberSummary -Closure $Entry.Closure -Config $Config
+    if ($s.Unresolved -gt 0) {
+        return (New-AdfaPrivilegedRow @common -Status $script:Status.NotAssessed -Evidence $evidence -GroupCount $s.Groups -UnresolvedCount $s.Unresolved -Unresolved ([string]$s.UnresolvedText) `
+                -Detail ("Not assessed: {0} member reference(s) of {1} could not be resolved (listed in the Unresolved column), so no count is given - never a lower number. This is not a clean result." -f $s.Unresolved, $what))
+    }
+    return (New-AdfaPrivilegedRow @common -Status $script:Status.Info -Evidence $evidence -Count $s.Count -UserCount $s.Users -ComputerCount $s.Computers -GroupCount $s.Groups -ForeignCount $s.Foreign -UnresolvedCount 0 `
+            -Listed $s.Names.Listed -NotListed $s.Names.NotListed -Principals ([string]$s.Names.Names) -PrincipalSids ([string]$s.Names.Sids) -ForeignSids ([string]$s.ForeignSids) `
+            -Detail ("{0} member(s) of {1} visible to this account: {2} user, {3} computer, {4} other, {5} foreign security principal(s) reported by SID, through {6} nested group(s) and primary groups. Inventory: no threshold is applied." -f `
+                $s.Count, $what, $s.Users, $s.Computers, $s.Others, $s.Foreign, $s.Groups))
+}
+
+function Get-AdfaPrivGroupPopulationVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Privileged group population: <domain>" - the non-vacuity row of the group table for one
+        domain: every declared group located (or documented as optional and absent) and expanded
+        completely, and the membership reads found the domain's registered DCs where Microsoft puts
+        them by default (PopulationGap from Get-AdfaPrivDcMembershipGap is ''). Counting groups alone
+        would pass a domain whose every group came back empty.
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Domain, [AllowNull()][AllowEmptyCollection()][object[]]$Specs = @(), [AllowNull()]$Groups, [AllowEmptyString()][string]$DomainSid = '',
+        [AllowEmptyString()][string]$PopulationGap = '')
+    $item = ("Privileged group population: {0}" -f $Domain)
+    $declared = @($Specs).Count
+    $complete = 0; $absent = 0; $notDone = @()
+    foreach ($spec in @($Specs)) {
+        $entry = $null
+        if ($null -ne $Groups -and $Groups.Contains([string]$spec.Key)) { $entry = $Groups[[string]$spec.Key] }
+        if ($null -ne $entry -and [bool]$entry.Locate.Ok -and $null -ne $entry.Closure -and [bool]$entry.Closure.Complete) { $complete++ }
+        elseif ($null -ne $entry -and [string]$entry.Locate.Class -eq 'NotFound' -and -not [bool]$spec.Always) { $absent++ }
+        else { $notDone += [string]$spec.Name }
+    }
+    $evidence = ("{0} group(s) of the Privileged table apply to {1}, each located by SID" -f $declared, $Domain)
+    if ($declared -eq 0) {
+        return (New-AdfaPrivilegedRow -Scope $Domain -Area 'Privileged' -Item $item -Status $script:Status.NotAssessed -DomainSid $DomainSid -Evidence $evidence -Count 0 `
+                -Detail 'Not assessed: no group of the table applies to this domain. This is a defect in the tool, not a result.')
+    }
+    if ($notDone.Count -gt 0) {
+        return (New-AdfaPrivilegedRow -Scope $Domain -Area 'Privileged' -Item $item -Status $script:Status.NotAssessed -DomainSid $DomainSid -Evidence $evidence -Count $declared -UnresolvedCount $notDone.Count `
+                -Detail ("Not assessed: of {0} privileged group(s) declared for {1}, {2} were located and expanded completely and {3} are documented as optional and not present; {4} were not: {5}. Each is in its own row." -f $declared, $Domain, $complete, $absent, $notDone.Count, ($notDone -join ', ')))
+    }
+    if ($PopulationGap -ne '') {
+        return (New-AdfaPrivilegedRow -Scope $Domain -Area 'Privileged' -Item $item -Status $script:Status.NotAssessed -DomainSid $DomainSid -Evidence $evidence -Count $declared -UnresolvedCount 0 `
+                -Detail ("Not assessed: all {0} privileged group(s) declared for {1} were located or documented as absent, but {2}. This is not a clean result." -f $declared, $Domain, $PopulationGap))
+    }
+    return (New-AdfaPrivilegedRow -Scope $Domain -Area 'Privileged' -Item $item -Status $script:Status.Pass -DomainSid $DomainSid -Evidence $evidence -Count $declared -UnresolvedCount 0 `
+            -Detail ("All {0} privileged group(s) declared for {1} were accounted for: {2} located by SID and expanded completely, {3} documented as optional and not present." -f $declared, $Domain, $complete, $absent))
+}
+
+function Get-AdfaPrivilegedAccount {
+    <#
+    .SYNOPSIS
+        Privileged Accounts rows: "Schema Admins members" and "Enterprise Admins members" for the
+        forest root, one "Privileged group: <name>" row per group of the table and a population row
+        per scoped domain. Pure over the run's C10 state (Get-AdfaPrivilegedState).
+    .DESCRIPTION
+        DECLARED POPULATION: the two root rows once per run, scoped to the forest root - Not Assessed
+        when the root domain was not scoped - and, for each domain in State.Scoped, one row per group
+        Get-AdfaPrivGroupSpec gives it and one population row. With none scoped, one "Privileged groups
+        (no domain scoped)" row. An exception while one domain is handled makes its population row Not
+        Assessed and never ends the section. Each domain's group reads are checked against its
+        registered DCs (Get-AdfaPrivDcMembershipGap): when they fail, the population row is Not
+        Assessed, and an empty Schema Admins or Enterprise Admins is not passed.
+    .OUTPUTS
+        [pscustomobject[]] rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][hashtable]$Config)
+    $rows = @()
+    if (@($State.Scoped).Count -eq 0) {
+        $rows += New-AdfaPrivilegedRow -Area 'Privileged' -Item 'Privileged groups (no domain scoped)' -Status $script:Status.NotAssessed -Evidence 'none' `
+            -Detail 'No domain was scoped for this run, so no privileged group was read. This is not a clean result.'
+        return @($rows)
+    }
+    $root = [string]$State.RootDomain
+    foreach ($key in @('SchemaAdmins', 'EnterpriseAdmins')) {
+        $label = 'Schema Admins'
+        if ($key -eq 'EnterpriseAdmins') { $label = 'Enterprise Admins' }
+        $catalogue = $Config['Catalogue'][$key]
+        $scopeName = $root
+        if ($scopeName -eq '') { $scopeName = '(forest root unknown)' }
+        $why = ''
+        if ($root -eq '') { $why = 'Not assessed: the forest reported no root domain, so this group, which exists only in the forest root, was not read. This is not a clean result.' }
+        elseif (-not [bool]$State.RootScoped) { $why = ("Not assessed: this group exists only in the forest root domain {0}, which this run did not scope (-AllDomains scopes every domain). This is not a clean result." -f $root) }
+        if ($why -ne '') {
+            $rows += New-AdfaPrivilegedRow -Scope $scopeName -Area 'Privileged' -Item ("{0} members: {1}" -f $label, $scopeName) -Status $script:Status.NotAssessed -Evidence 'none' -CatalogueId ([string]$catalogue['Id']) -Severity ([string]$catalogue['Severity']) -Detail $why
+            continue
+        }
+        try {
+            $domainState = $State.Domains[$root]
+            $entry = $null
+            $sid = ''
+            if ($null -ne $domainState -and [string]$domainState.Error -eq '' -and $null -ne $domainState.Raw -and [bool]$domainState.Raw.Ok) {
+                $sid = [string]$domainState.Raw.DomainSid
+                if ($domainState.Groups.Contains($key)) { $entry = $domainState.Groups[$key] }
+                $rootGap = Get-AdfaPrivDcMembershipGap -Domain $root -DomainDn ([string]$domainState.Raw.DomainDn) -Groups $domainState.Groups -Forest $State.Forest
+                $rows += Get-AdfaPrivEmptyGroupVerdict -Domain $root -Key $key -Entry $entry -DomainSid $sid -Config $Config -PopulationGap $rootGap
+            }
+            else {
+                $detail = 'Not assessed: the forest root domain was not handled. This is a defect in the tool, not a result.'
+                if ($null -ne $domainState -and [string]$domainState.Error -ne '') { $detail = ("Not assessed: handling the forest root domain failed inside this tool; this is a defect in the tool, not a result. Error: {0}" -f [string]$domainState.Error) }
+                elseif ($null -ne $domainState -and $null -ne $domainState.Raw) { $detail = ("{0} This is not a clean result." -f (Get-AdfaLapsReadFailureLead -Message ([string]$domainState.Raw.Error) -TypeName ([string]$domainState.Raw.ErrorType) -What ("the domain {0} (its distinguished name and SID)" -f $root))) }
+                $rows += New-AdfaPrivilegedRow -Scope $root -Area 'Privileged' -Item ("{0} members: {1}" -f $label, $root) -Status $script:Status.NotAssessed -Evidence 'none' -CatalogueId ([string]$catalogue['Id']) -Severity ([string]$catalogue['Severity']) -Detail $detail
+            }
+        }
+        catch {
+            $rows += New-AdfaPrivilegedRow -Scope $root -Area 'Privileged' -Item ("{0} members: {1}" -f $label, $root) -Status $script:Status.NotAssessed -Evidence 'none' -CatalogueId ([string]$catalogue['Id']) -Severity ([string]$catalogue['Severity']) `
+                -Detail ("Not assessed: grading this group failed inside this tool; this is a defect in the tool, not a result. Error: {0}" -f [string]$_.Exception.Message)
+        }
+    }
+    foreach ($domain in @($State.Scoped)) {
+        try {
+            $domainState = $State.Domains[$domain]
+            $sid = ''
+            if ($null -ne $domainState -and $null -ne $domainState.Raw) { $sid = [string]$domainState.Raw.DomainSid }
+            $specs = @(Get-AdfaPrivGroupSpec -DomainSid $sid -IsRoot ($domain -eq $root) -Config $Config)
+            if ($null -eq $domainState -or [string]$domainState.Error -ne '' -or $null -eq $domainState.Raw -or -not [bool]$domainState.Raw.Ok) {
+                $why = 'Not assessed: the domain was not handled. This is a defect in the tool, not a result.'
+                if ($null -ne $domainState -and [string]$domainState.Error -ne '') { $why = ("Not assessed: handling {0} failed inside this tool; this is a defect in the tool, not a result. Error: {1}" -f $domain, [string]$domainState.Error) }
+                elseif ($null -ne $domainState -and $null -ne $domainState.Raw) { $why = ("{0} No privileged group of this domain was read. This is not a clean result." -f (Get-AdfaLapsReadFailureLead -Message ([string]$domainState.Raw.Error) -TypeName ([string]$domainState.Raw.ErrorType) -What ("the domain {0} (its distinguished name and SID)" -f $domain))) }
+                foreach ($spec in $specs) { $rows += New-AdfaPrivilegedRow -Scope $domain -Area 'Privileged' -Item ("Privileged group: {0}: {1}" -f [string]$spec.Name, $domain) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why -CatalogueId ([string]$Config['Catalogue']['Inventory']['Id']) }
+                $rows += New-AdfaPrivilegedRow -Scope $domain -Area 'Privileged' -Item ("Privileged group population: {0}" -f $domain) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why
+                continue
+            }
+            foreach ($spec in $specs) {
+                $entry = $null
+                if ($domainState.Groups.Contains([string]$spec.Key)) { $entry = $domainState.Groups[[string]$spec.Key] }
+                $rows += Get-AdfaPrivGroupCountVerdict -Domain $domain -Spec $spec -Entry $entry -DomainSid $sid -Config $Config
+            }
+            $gap = Get-AdfaPrivDcMembershipGap -Domain $domain -DomainDn ([string]$domainState.Raw.DomainDn) -Groups $domainState.Groups -Forest $State.Forest
+            $rows += Get-AdfaPrivGroupPopulationVerdict -Domain $domain -Specs $specs -Groups $domainState.Groups -DomainSid $sid -PopulationGap $gap
+        }
+        catch {
+            $rows += New-AdfaPrivilegedRow -Scope $domain -Area 'Privileged' -Item ("Privileged group population: {0}" -f $domain) -Status $script:Status.NotAssessed -Evidence 'none' `
+                -Detail ("Not assessed: grading the privileged groups of {0} failed inside this tool, so nothing about this domain is graded; this is a defect in the tool, not a result. Error: {1}" -f $domain, [string]$_.Exception.Message)
+        }
+    }
     return @($rows)
+}
+
+function Get-AdfaPrivProtectedSet {
+    <#
+    .SYNOPSIS
+        Pure: what is protected for one domain - every object reached from its protected groups (the
+        Appendix C groups of the domain and its builtin container, and the forest root's protected
+        groups), the groups themselves, and why the set may be incomplete.
+    .DESCRIPTION
+        BySid and ByDn map each protected object to the keys of the groups that reach it. Complete is
+        false when a protected group that always exists was not located, when a group was not read,
+        when a closure has an unresolved reference, or when the forest root's groups were not read
+        (the root was not scoped). Learn's protected accounts (Administrator, krbtgt) are protected by
+        RID, not by membership, and are decided by the verdict.
+    .OUTPUTS
+        [pscustomobject] Complete, Missing, BySid, ByDn, Members (records of protected users and
+        computers, by DN), ProtectedUsers (Known, Dns, Why, DelegationEnforced - $true, $false or $null
+        from the domain functional level - and ModeText), DomainSid.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][string]$Domain, [Parameter(Mandatory)][hashtable]$Config)
+    $bySid = @{}; $byDn = @{}; $missing = @(); $members = [ordered]@{}
+    $domainState = $State.Domains[$Domain]
+    $domainSid = ''
+    if ($null -ne $domainState -and $null -ne $domainState.Raw) { $domainSid = [string]$domainState.Raw.DomainSid }
+    $root = [string]$State.RootDomain
+    $sources = @()
+    foreach ($spec in @(Get-AdfaPrivGroupSpec -DomainSid $domainSid -IsRoot ($Domain -eq $root) -Config $Config | Where-Object { [bool]$_.Protected })) {
+        $entry = $null
+        if ($null -ne $domainState -and $domainState.Groups.Contains([string]$spec.Key)) { $entry = $domainState.Groups[[string]$spec.Key] }
+        $sources += [pscustomobject]@{ Spec = $spec; Entry = $entry; Where = $Domain }
+    }
+    if ($Domain -ne $root) {
+        $rootSpecs = @(@($Config['Groups']) | Where-Object { [string]$_['Scope'] -eq 'ForestRoot' -and [bool]$_['Protected'] })
+        if (-not [bool]$State.RootScoped) {
+            if ($rootSpecs.Count -gt 0) { $missing += ("the forest root's protected groups ({0}) were not read, because the forest root domain was not scoped" -f (@($rootSpecs | ForEach-Object { [string]$_['Name'] }) -join ', ')) }
+        }
+        else {
+            $rootState = $State.Domains[$root]
+            $rootSid = ''
+            if ($null -ne $rootState -and $null -ne $rootState.Raw) { $rootSid = [string]$rootState.Raw.DomainSid }
+            foreach ($spec in @(Get-AdfaPrivGroupSpec -DomainSid $rootSid -IsRoot $true -Config $Config | Where-Object { [bool]$_.Protected -and $_.Scope -eq 'ForestRoot' })) {
+                $entry = $null
+                if ($null -ne $rootState -and $rootState.Groups.Contains([string]$spec.Key)) { $entry = $rootState.Groups[[string]$spec.Key] }
+                $sources += [pscustomobject]@{ Spec = $spec; Entry = $entry; Where = $root }
+            }
+        }
+    }
+    $add = {
+        param($Rec, [string]$Key)
+        $sidKey = [string]$Rec.Sid
+        if ($sidKey -ne '') { if (-not $bySid.ContainsKey($sidKey)) { $bySid[$sidKey] = @() }; $bySid[$sidKey] = @($bySid[$sidKey]) + $Key }
+        $dnKey = ([string]$Rec.Dn).ToLowerInvariant()
+        if ($dnKey -ne '') { if (-not $byDn.ContainsKey($dnKey)) { $byDn[$dnKey] = @() }; $byDn[$dnKey] = @($byDn[$dnKey]) + $Key }
+    }
+    foreach ($source in $sources) {
+        $spec = $source.Spec; $entry = $source.Entry
+        $label = ("{0} of {1}" -f [string]$spec.Name, [string]$source.Where)
+        if ($null -eq $entry) { $missing += ("{0}: not looked up" -f $label); continue }
+        if (-not [bool]$entry.Locate.Ok -or $null -eq $entry.Closure) {
+            if ([string]$entry.Locate.Class -eq 'NotFound' -and -not [bool]$spec.Always) { continue }
+            $missing += ("{0}: {1}" -f $label, (Get-AdfaPrivUnresolvedText -Read $entry.Locate))
+            continue
+        }
+        & $add $entry.Locate.Record ([string]$spec.Key)
+        foreach ($g in @($entry.Closure.Groups)) { & $add $g ([string]$spec.Key) }
+        foreach ($f in @($entry.Closure.Foreign)) { & $add $f ([string]$spec.Key) }
+        foreach ($p in @($entry.Closure.Principals)) {
+            & $add $p.Record ([string]$spec.Key)
+            $dnKey = ([string]$p.Record.Dn).ToLowerInvariant()
+            if ($dnKey -ne '' -and -not $members.Contains($dnKey)) { $members[$dnKey] = $p.Record }
+        }
+        if (-not [bool]$entry.Closure.Complete) { $missing += ("{0}: {1} member reference(s) not resolved" -f $label, @($entry.Closure.Unresolved).Count) }
+    }
+    $puKnown = $false; $puDns = @{}; $puWhy = 'Protected Users was not looked up'
+    if ($null -ne $domainState -and $domainState.Groups.Contains('ProtectedUsers')) {
+        $pu = $domainState.Groups['ProtectedUsers']
+        if ([bool]$pu.Locate.Ok -and $null -ne $pu.Closure -and [bool]$pu.Closure.Complete) {
+            $puKnown = $true; $puWhy = ''
+            foreach ($p in @($pu.Closure.Principals)) { $puDns[([string]$p.Record.Dn).ToLowerInvariant()] = $true }
+        }
+        elseif ([string]$pu.Locate.Class -eq 'NotFound') { $puKnown = $true; $puWhy = '' }
+        elseif ([bool]$pu.Locate.Ok) { $puWhy = 'the membership of Protected Users was not resolved completely' }
+        else { $puWhy = ("Protected Users was not read ({0})" -f (Get-AdfaPrivUnresolvedText -Read $pu.Locate)) }
+    }
+    # Learn: the DC-side Protected Users restrictions, delegation among them, need domain functional
+    # level Windows Server 2012 R2. $true at or above it, $false below it, $null when not known.
+    $mode = ''
+    if ($null -ne $domainState -and $null -ne $domainState.Raw) {
+        $modeProp = $domainState.Raw.PSObject.Properties['DomainMode']
+        if ($null -ne $modeProp -and $null -ne $modeProp.Value) { $mode = ([string]$modeProp.Value).Trim() }
+    }
+    $enforced = $null
+    $modeText = ("the domain functional level of {0} was not read" -f $Domain)
+    if ($mode -ne '') {
+        if (@(@($Config['ProtectedUsersDelegationModes']) | Where-Object { [string]$_ -eq $mode }).Count -gt 0) { $enforced = $true; $modeText = ("the domain functional level is {0}" -f $mode) }
+        elseif (@(@($Config['BelowProtectedUsersModes']) | Where-Object { [string]$_ -eq $mode }).Count -gt 0) { $enforced = $false; $modeText = ("the domain functional level is {0}, below Windows Server 2012 R2" -f $mode) }
+        else { $modeText = ("the domain functional level {0} is not one this tool knows" -f $mode) }
+    }
+    return [pscustomobject]@{
+        Complete = ($missing.Count -eq 0); Missing = @($missing); BySid = $bySid; ByDn = $byDn; Members = @($members.Values)
+        ProtectedUsers = [pscustomobject]@{ Known = $puKnown; Dns = $puDns; Why = $puWhy; DelegationEnforced = $enforced; ModeText = $modeText }; DomainSid = $domainSid
+    }
+}
+
+function Get-AdfaPrivOrphanVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "adminCount orphans: <domain>" (ADA-OBJ-001) - objects with adminCount=1 that no
+        protected group reaches and that are not a protected account.
+    .DESCRIPTION
+        Population: every object the (adminCount=1) search returned - users, computers and groups,
+        enabled or disabled, since an object left with adminCount=1 keeps its inheritance broken
+        whatever its state (Learn). Protected: reached by any protected group of the domain or the
+        forest root (by SID or DN), or the domain's Administrator (RID 500) or krbtgt (RID 502).
+        "Orphan" is this tool's label: Learn calls these objects "formerly protected".
+        In this order:
+          the search failed                                   Not Assessed, with the cause
+          the protected set is incomplete                     Not Assessed (an object may be protected
+                                                              through what was not read); the candidates
+                                                              are listed
+          an object outside it                                Config.OrphanStatus (Warning; a TOOL
+                                                              DEFAULT, catalogue D21)
+          an object protected only through an operator group,
+          and dSHeuristics' dwAdminSDExMask is not 0 or unread Not Assessed (the bit mapping is not
+                                                              published on Learn)
+          the domain's Administrator (RID 500) is not among
+          the objects returned                                Not Assessed: the search did not return
+                                                              its declared population (Learn: a
+                                                              protected account has adminCount=1)
+          otherwise                                           Pass ("none visible")
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Domain, [AllowNull()]$AdminCount, [Parameter(Mandatory)]$Protected, [Parameter(Mandatory)]$Heuristics, [Parameter(Mandatory)][hashtable]$Config)
+    $catalogue = $Config['Catalogue']['Orphan']
+    $common = @{ Scope = $Domain; Area = 'PrivHygiene'; Item = ("adminCount orphans: {0}" -f $Domain); CatalogueId = [string]$catalogue['Id']; Severity = [string]$catalogue['Severity']; DomainSid = [string]$Protected.DomainSid }
+    $notRun = 'Not read: the ACL of each object (whether inheritance is still disabled), and the history of its memberships. "Orphan" is this tool''s label for what Microsoft calls formerly protected.'
+    if ($null -eq $AdminCount) {
+        return (New-AdfaPrivilegedRow @common -Status $script:Status.NotAssessed -NotRun $notRun -Evidence 'none' -Detail 'Not assessed: the adminCount search was not made. This is a defect in the tool, not a result.')
+    }
+    $evidence = ("Get-ADObject -Server {0} -LDAPFilter '{1}'; protected groups expanded transitively by SID; {2}" -f $Domain, [string]$AdminCount.Filter, [string]$Heuristics.Text)
+    if (-not [bool]$AdminCount.Ok) {
+        $lead = Get-AdfaPrivLocateLead -Locate $AdminCount -What ("the objects with adminCount=1 in {0}" -f $Domain) -Search
+        return (New-AdfaPrivilegedRow @common -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -Detail $lead)
+    }
+    $records = @($AdminCount.Records | Where-Object { $null -ne $_ })
+    # Non-vacuity: the domain's Administrator (RID 500) is a protected account, and Learn says a
+    # protected account has adminCount set to 1, so a search that did not return it is incomplete.
+    $adminRid = [int64]$Config['RootAdministratorRid']
+    $adminSeen = ([string]$Protected.DomainSid -ne '' -and @($records | Where-Object { [string]$_.DomainPart -eq [string]$Protected.DomainSid -and $null -ne $_.Rid -and [int64]$_.Rid -eq $adminRid }).Count -gt 0)
+    $populationGap = ''
+    if (-not $adminSeen) {
+        $populationGap = ("the search returned {0} object(s) but not the built-in Administrator (RID 500) of {1}, a protected account whose adminCount Microsoft documents as set to 1, so it did not return its declared population" -f $records.Count, $Domain)
+        if ([string]$Protected.DomainSid -eq '') { $populationGap = ("the SID of {0} was not read, so its built-in Administrator (RID 500) could not be looked for among the {1} object(s) returned" -f $Domain, $records.Count) }
+    }
+    $operatorKeys = @(@($Config['Groups']) | Where-Object { @($Config['OperatorGroupSids']) -contains [string]$_['Sid'] } | ForEach-Object { [string]$_['Key'] })
+    $orphans = @(); $undecided = @(); $protectedCount = 0
+    foreach ($r in $records) {
+        $keys = @()
+        if ([string]$r.Sid -ne '' -and $Protected.BySid.ContainsKey([string]$r.Sid)) { $keys += @($Protected.BySid[[string]$r.Sid]) }
+        $dnKey = ([string]$r.Dn).ToLowerInvariant()
+        if ($dnKey -ne '' -and $Protected.ByDn.ContainsKey($dnKey)) { $keys += @($Protected.ByDn[$dnKey]) }
+        $isAccount = ([string]$Protected.DomainSid -ne '' -and [string]$r.DomainPart -eq [string]$Protected.DomainSid -and $null -ne $r.Rid -and @($Config['ProtectedAccountRids']) -contains [int64]$r.Rid)
+        if ($isAccount) { $protectedCount++; continue }
+        if ($keys.Count -eq 0) { $orphans += $r; continue }
+        $other = @($keys | Where-Object { $operatorKeys -notcontains $_ })
+        if ($other.Count -eq 0 -and -not ([bool]$Heuristics.Known -and [bool]$Heuristics.MaskZero)) { $undecided += $r; continue }
+        $protectedCount++
+    }
+    $names = Get-AdfaPrivNameList -Records $orphans -Config $Config
+    $users = @($orphans | Where-Object { $_.Kind -eq 'User' }).Count
+    $computers = @($orphans | Where-Object { $_.Kind -eq 'Computer' }).Count
+    $groups = @($orphans | Where-Object { $_.Kind -eq 'Group' }).Count
+    $columns = @{ Count = $orphans.Count; UserCount = $users; ComputerCount = $computers; GroupCount = $groups; UnresolvedCount = $undecided.Count; ExcludedCount = $protectedCount
+        Listed = $names.Listed; NotListed = $names.NotListed; Principals = [string]$names.Names; PrincipalSids = [string]$names.Sids
+        Unresolved = (@($Protected.Missing) -join '; ') }
+    $learn = 'Microsoft documents that when an account is removed from a protected group its adminCount attribute remains set to 1 if it is not manually changed, and that the object still does not inherit permissions'
+    if (-not [bool]$Protected.Complete) {
+        return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Not assessed: {0} object(s) with adminCount=1 in {1} were not reached from a protected group that was read, but the protected groups were not all read completely ({2} gap(s), listed in the Unresolved column), so an object may be protected through what was not read. They are candidates only, listed in the Principals column. This is not a clean result." -f $orphans.Count, $Domain, @($Protected.Missing).Count))
+    }
+    if ($orphans.Count -gt 0) {
+        $status = [string]$Config['OrphanStatus']
+        $undecidedNote = ''
+        if ($undecided.Count -gt 0) { $undecidedNote = (" {0} other object(s) are protected only through Account, Server, Print or Backup Operators, and whether dSHeuristics removes those groups from protection could not be decided, so they are not counted." -f $undecided.Count) }
+        if ($populationGap -ne '') { $undecidedNote += (" The search may be incomplete - {0} - so there may be more." -f $populationGap) }
+        return (New-AdfaPrivilegedRow @common @columns -Status $status -NotRun $notRun -Evidence $evidence `
+                -Detail ("{0} object(s) with adminCount=1 in {1} are outside every protected group and are not a protected account: {2} user, {3} computer, {4} group, {5} other; {6} object(s) with adminCount=1 are protected.{7} {8}. Calling them orphans is this tool's inference, not a Microsoft term. Graded {9}: a tool default, not a Microsoft value (setting from: {10})." -f `
+                    $orphans.Count, $Domain, $users, $computers, $groups, ($orphans.Count - $users - $computers - $groups), $protectedCount, $undecidedNote, $learn, $status, [string]$Config['ThresholdSource']))
+    }
+    if ($populationGap -ne '') {
+        return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Not assessed: no object with adminCount=1 in {0} was found outside every protected group, but {1}. This is not a clean result." -f $Domain, $populationGap))
+    }
+    if ($undecided.Count -gt 0) {
+        return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Not assessed: no object with adminCount=1 in {0} is outside every protected group, but {1} are protected only through Account, Server, Print or Backup Operators, and dSHeuristics' AdminSDHolder exclusion mask is not 0 or was not read. Microsoft does not publish on Learn which bit excludes which group, so whether these objects are still protected is not decided. This is not a clean result." -f $Domain, $undecided.Count))
+    }
+    return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.Pass -NotRun $notRun -Evidence $evidence `
+            -Detail ("None visible: every one of the {0} object(s) with adminCount=1 visible to this account in {1} is reached from a protected group or is a protected account." -f $records.Count, $Domain))
+}
+
+function Get-AdfaPrivAccountPopulation {
+    <#
+    .SYNOPSIS
+        Pure: the privileged user accounts of one domain - members (transitively) of its protected
+        groups whose SID belongs to the domain, the domain's Administrator, and, with
+        -IncludeAdminCount, every user the (adminCount=1) search returned. krbtgt is never in it.
+        DECLARED POPULATION: it always holds the domain's built-in Administrator (RID 500), a protected
+        account (Appendix C); when that account is not in what was read, a gap says so and the
+        population is not Complete.
+    .OUTPUTS
+        [pscustomobject] Records, Complete, Gaps.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)]$Protected, [AllowNull()]$AdminCount, [Parameter(Mandatory)][hashtable]$Config, [switch]$IncludeAdminCount)
+    $byDn = [ordered]@{}
+    $gaps = @(@($Protected.Missing))
+    $domainSid = [string]$Protected.DomainSid
+    $krbtgt = [int64]$Config['KrbtgtRid']
+    $adminRid = [int64]$Config['RootAdministratorRid']
+    $take = {
+        param($Rec)
+        if ([string]$Rec.Kind -ne 'User') { return }
+        if ([string]$Rec.DomainPart -ne $domainSid) { return }
+        if ($null -ne $Rec.Rid -and [int64]$Rec.Rid -eq $krbtgt) { return }
+        $k = ([string]$Rec.Dn).ToLowerInvariant()
+        if ($k -ne '' -and -not $byDn.Contains($k)) { $byDn[$k] = $Rec }
+    }
+    foreach ($r in @($Protected.Members)) { & $take $r }
+    if ($null -eq $AdminCount -or -not [bool]$AdminCount.Ok) {
+        $gaps += 'the adminCount search did not complete'
+    }
+    else {
+        foreach ($r in @($AdminCount.Records)) {
+            if ([bool]$IncludeAdminCount -or ($null -ne $r.Rid -and [int64]$r.Rid -eq $adminRid -and [string]$r.DomainPart -eq $domainSid)) { & $take $r }
+        }
+    }
+    if ($domainSid -eq '') { $gaps += 'the SID of the domain was not read' }
+    elseif (@(@($byDn.Values) | Where-Object { $null -ne $_.Rid -and [int64]$_.Rid -eq $adminRid }).Count -eq 0) {
+        # Non-vacuity: the domain's Administrator is always a protected account (Appendix C).
+        $gaps += 'the built-in Administrator (RID 500) of the domain, always a protected account, is not in the population read, so the population is incomplete'
+    }
+    return [pscustomobject]@{ Records = @($byDn.Values); Complete = ($gaps.Count -eq 0); Gaps = @($gaps) }
+}
+
+function Get-AdfaPrivSpnVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Privileged accounts with SPN: <domain>" (ADA-OBJ-006) - enabled privileged user accounts
+        (protected-group members or adminCount=1) that carry a servicePrincipalName. Computer accounts
+        are not in the population; krbtgt is not either.
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Domain, [Parameter(Mandatory)]$Population, [Parameter(Mandatory)][hashtable]$Config, [AllowEmptyString()][string]$DomainSid = '')
+    $catalogue = $Config['Catalogue']['PrivilegedSpn']
+    $common = @{ Scope = $Domain; Area = 'PrivHygiene'; Item = ("Privileged accounts with SPN: {0}" -f $Domain); CatalogueId = [string]$catalogue['Id']; Severity = [string]$catalogue['Severity']; DomainSid = $DomainSid }
+    $evidence = 'servicePrincipalName and userAccountControl of the members of the protected groups and of the objects with adminCount=1'
+    $notRun = 'Not read: whether a service actually uses each SPN, and the password age or strength of the account.'
+    $hits = @(); $unknown = 0; $disabled = 0
+    foreach ($r in @($Population.Records)) {
+        if (@($r.Spns).Count -eq 0) { continue }
+        if ($null -eq $r.Enabled) { $unknown++; continue }
+        if (-not [bool]$r.Enabled) { $disabled++; continue }
+        $hits += $r
+    }
+    $names = Get-AdfaPrivNameList -Records $hits -Config $Config
+    $columns = @{ Count = $hits.Count; UserCount = @($Population.Records).Count; UnresolvedCount = $unknown; ExcludedCount = $disabled; Listed = $names.Listed; NotListed = $names.NotListed
+        Principals = [string]$names.Names; PrincipalSids = [string]$names.Sids; Unresolved = (@($Population.Gaps) -join '; ')
+        Targets = (@(@($names.Records) | ForEach-Object { "{0}: {1}" -f [string]$_.Name, (@($_.Spns) -join ', ') }) -join '; ') }
+    if ($hits.Count -eq 0 -and @($Population.Records).Count -eq 0) {
+        return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Not assessed: no privileged user account of {0} was read, and the population always holds the domain's built-in Administrator (RID 500), so nothing was measured. This is not a clean result." -f $Domain))
+    }
+    if ($hits.Count -gt 0) {
+        $status = [string]$Config['PrivilegedSpnStatus']
+        $gapNote = ''
+        if (-not [bool]$Population.Complete -or $unknown -gt 0) { $gapNote = ' The population was not read completely (the gaps are in the Unresolved column), so there may be more.' }
+        return (New-AdfaPrivilegedRow @common @columns -Status $status -NotRun $notRun -Evidence $evidence `
+                -Detail ("{0} enabled privileged user account(s) of {1} carry a service principal name.{2} Microsoft Defender for Identity recommends removing an SPN from a user account and shows that recommendation for sensitive accounts. Graded {3}: a tool default, not a Microsoft value (setting from: {4})." -f $hits.Count, $Domain, $gapNote, $status, [string]$Config['ThresholdSource']))
+    }
+    if (-not [bool]$Population.Complete -or $unknown -gt 0) {
+        return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Not assessed: none of the privileged user accounts read in {0} is an enabled account with an SPN, but the population was not read completely ({1} gap(s)) or {2} account(s) with an SPN came back without userAccountControl. This is not a clean result." -f $Domain, @($Population.Gaps).Count, $unknown))
+    }
+    return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.Pass -NotRun $notRun -Evidence $evidence `
+            -Detail ("None visible: none of the {0} privileged user account(s) of {1} visible to this account is an enabled account with a service principal name." -f @($Population.Records).Count, $Domain))
+}
+
+function Get-AdfaPrivDelegableVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Privileged accounts delegable: <domain>" - enabled privileged user accounts with neither
+        NOT_DELEGATED ("Account is sensitive and cannot be delegated") nor transitive membership of
+        Protected Users. Not in the AdAssessment26 catalogue: a C10 addition from Learn guidance.
+    .DESCRIPTION
+        Population: the protected-group members of the domain and its Administrator (not every
+        adminCount=1 object, whose protection may be historic). NOT_DELEGATED always counts. Protected
+        Users membership counts only at domain functional level Windows Server 2012 R2 or later (Learn:
+        the DC-side restrictions, delegation among them, need that level): below it the member is
+        delegable and graded; with the level unread or unknown it is undecided. When Protected Users
+        was not read, an account without the flag is undecided, never a finding and never a pass. An
+        empty population is Not Assessed: it always holds the domain's Administrator.
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Domain, [Parameter(Mandatory)]$Population, [Parameter(Mandatory)]$ProtectedUsers, [Parameter(Mandatory)][hashtable]$Config, [AllowEmptyString()][string]$DomainSid = '')
+    $catalogue = $Config['Catalogue']['Delegable']
+    $common = @{ Scope = $Domain; Area = 'PrivHygiene'; Item = ("Privileged accounts delegable: {0}" -f $Domain); CatalogueId = [string]$catalogue['Id']; Severity = [string]$catalogue['Severity']; DomainSid = $DomainSid }
+    $evidence = ("userAccountControl bit NOT_DELEGATED ({0}) of the protected-group members, and the transitive membership of Protected Users (RID {1})" -f [int64]$Config['Uac']['NotDelegated'], [int]$Config['ProtectedUsersRid'])
+    $notRun = 'Not read: whether an account has a documented need to be delegated. Protected Users is not recommended here as the only remedy: Microsoft warns against adding highly privileged accounts before testing, and never service or computer accounts.'
+    $flag = [int64]$Config['Uac']['NotDelegated']
+    $enforced = $null
+    $enforcedProp = $ProtectedUsers.PSObject.Properties['DelegationEnforced']
+    if ($null -ne $enforcedProp -and $null -ne $enforcedProp.Value) { $enforced = [bool]$enforcedProp.Value }
+    $modeText = 'the domain functional level was not read'
+    $modeProp = $ProtectedUsers.PSObject.Properties['ModeText']
+    if ($null -ne $modeProp -and -not [string]::IsNullOrWhiteSpace([string]$modeProp.Value)) { $modeText = [string]$modeProp.Value }
+    $hits = @(); $undecided = 0; $mitigated = 0; $disabled = 0; $puUndecided = 0; $puBelow = 0
+    foreach ($r in @($Population.Records)) {
+        if ($null -eq $r.Enabled -or $null -eq $r.Uac) { $undecided++; continue }
+        if (-not [bool]$r.Enabled) { $disabled++; continue }
+        if (([int64]$r.Uac -band $flag) -ne 0) { $mitigated++; continue }
+        if (-not [bool]$ProtectedUsers.Known) { $undecided++; continue }
+        if ($ProtectedUsers.Dns.ContainsKey(([string]$r.Dn).ToLowerInvariant())) {
+            # Learn: Protected Users blocks delegation only at domain functional level 2012 R2 or later.
+            if ($null -eq $enforced) { $undecided++; $puUndecided++; continue }
+            if ([bool]$enforced) { $mitigated++; continue }
+            $puBelow++
+        }
+        $hits += $r
+    }
+    $gaps = @(@($Population.Gaps))
+    if (-not [bool]$ProtectedUsers.Known) { $gaps += [string]$ProtectedUsers.Why }
+    if ($puUndecided -gt 0) { $gaps += ("{0} account(s) without the flag are members of Protected Users, but {1}, and Microsoft documents that Protected Users blocks delegation only at domain functional level Windows Server 2012 R2 or later" -f $puUndecided, $modeText) }
+    $names = Get-AdfaPrivNameList -Records $hits -Config $Config
+    $columns = @{ Count = $hits.Count; UserCount = @($Population.Records).Count; UnresolvedCount = $undecided; ExcludedCount = ($mitigated + $disabled); Listed = $names.Listed; NotListed = $names.NotListed
+        Principals = [string]$names.Names; PrincipalSids = [string]$names.Sids; Unresolved = ($gaps -join '; ') }
+    $learn = 'Microsoft calls "Account is sensitive and cannot be delegated" a best practice for all sensitive accounts, and Defender for Identity lists privileged accounts without it'
+    if ($hits.Count -gt 0) {
+        $status = [string]$Config['DelegableStatus']
+        $belowNote = ''
+        if ($puBelow -gt 0) { $belowNote = (" {0} of them are members of Protected Users, but {1}, and Microsoft documents that Protected Users blocks delegation only at domain functional level Windows Server 2012 R2 or later." -f $puBelow, $modeText) }
+        return (New-AdfaPrivilegedRow @common @columns -Status $status -NotRun $notRun -Evidence $evidence `
+                -Detail ("{0} enabled privileged user account(s) of {1} can be delegated: the NOT_DELEGATED flag is not set, and no Protected Users membership blocks delegation; {2} are protected.{3} {4}. This row is a C10 addition, not an AdAssessment26 catalogue rule. Graded {5}: a tool default, not a Microsoft value (setting from: {6})." -f $hits.Count, $Domain, $mitigated, $belowNote, $learn, $status, [string]$Config['ThresholdSource']))
+    }
+    if (@($Population.Records).Count -eq 0) {
+        return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Not assessed: no privileged user account of {0} was read, and the population always holds the domain's built-in Administrator (RID 500), so nothing was measured. This is not a clean result." -f $Domain))
+    }
+    if (-not [bool]$Population.Complete -or $undecided -gt 0) {
+        return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Not assessed: no privileged user account read in {0} was found delegable, but {1} could not be decided and {2} gap(s) remain (in the Unresolved column). This is not a clean result." -f $Domain, $undecided, @($gaps).Count))
+    }
+    return (New-AdfaPrivilegedRow @common @columns -Status $script:Status.Pass -NotRun $notRun -Evidence $evidence `
+            -Detail ("None visible: every enabled privileged user account of {0} visible to this account ({1}) has the NOT_DELEGATED flag, or is a member of Protected Users at a domain functional level (Windows Server 2012 R2 or later) where Microsoft documents that it blocks delegation." -f $Domain, $mitigated))
+}
+
+function Get-AdfaPrivProtectedUsersVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Protected Users members: <domain>" - the transitive member count of Protected Users
+        (RID 525). Info, or Not Assessed. Not a grade: Learn warns against adding accounts blindly.
+    .OUTPUTS
+        [pscustomobject] a row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Domain, [AllowNull()]$Entry, [Parameter(Mandatory)][hashtable]$Config, [AllowEmptyString()][string]$DomainSid = '')
+    $item = ("Protected Users members: {0}" -f $Domain)
+    $common = @{ Scope = $Domain; Area = 'PrivHygiene'; Item = $item; DomainSid = $DomainSid }
+    if ($null -eq $Entry) { return (New-AdfaPrivilegedRow @common -Status $script:Status.NotAssessed -Evidence 'none' -Detail 'Not assessed: Protected Users was not looked up. This is a defect in the tool, not a result.') }
+    $evidence = ("Get-ADObject -Server {0} -LDAPFilter '{1}'; members expanded transitively" -f $Domain, [string]$Entry.Locate.Filter)
+    if ([string]$Entry.Locate.Class -eq 'NotFound') {
+        return (New-AdfaPrivilegedRow @common -GroupSid ([string]$Entry.Spec.Sid) -Status $script:Status.Info -Evidence $evidence `
+                -Detail ("Not present: no group with the SID of Protected Users is visible to this account in {0}. Microsoft documents that the group needs a domain controller running Windows Server 2012 R2 or later to be created." -f $Domain))
+    }
+    if (-not [bool]$Entry.Locate.Ok -or $null -eq $Entry.Closure) {
+        return (New-AdfaPrivilegedRow @common -GroupSid ([string]$Entry.Spec.Sid) -Status $script:Status.NotAssessed -Evidence $evidence -Detail (Get-AdfaPrivLocateLead -Locate $Entry.Locate -What ("Protected Users of {0}" -f $Domain)))
+    }
+    $s = Get-AdfaPrivMemberSummary -Closure $Entry.Closure -Config $Config
+    if ($s.Unresolved -gt 0) {
+        return (New-AdfaPrivilegedRow @common -GroupSid ([string]$Entry.Spec.Sid) -Status $script:Status.NotAssessed -Evidence $evidence -UnresolvedCount $s.Unresolved -Unresolved ([string]$s.UnresolvedText) `
+                -Detail ("Not assessed: {0} member reference(s) of Protected Users in {1} could not be resolved, so no count is given. This is not a clean result." -f $s.Unresolved, $Domain))
+    }
+    return (New-AdfaPrivilegedRow @common -GroupSid ([string]$Entry.Spec.Sid) -Status $script:Status.Info -Evidence $evidence -Count $s.Count -UserCount $s.Users -ComputerCount $s.Computers -GroupCount $s.Groups -ForeignCount $s.Foreign -UnresolvedCount 0 `
+            -Listed $s.Names.Listed -NotListed $s.Names.NotListed -Principals ([string]$s.Names.Names) -PrincipalSids ([string]$s.Names.Sids) `
+            -Detail ("{0} member(s) of Protected Users visible to this account in {1}: {2} user, {3} computer (Microsoft says never to add computer or service accounts), through {4} nested group(s). Inventory: no threshold is applied." -f $s.Count, $Domain, $s.Users, $s.Computers, $s.Groups))
 }
 
 function Get-AdfaPrivilegedHygiene {
     <#
     .SYNOPSIS
-        adminCount orphans, Protected Users adoption, and SPNs on privileged accounts.
+        Privileged Hygiene rows per scoped domain: "adminCount orphans", "Privileged accounts with SPN",
+        "Privileged accounts delegable" and "Protected Users members". Pure over the run's C10 state.
+    .DESCRIPTION
+        DECLARED POPULATION: the domains in State.Scoped. Each gets exactly these four rows, whatever
+        happened to its reads; with none scoped there is one "Privileged hygiene (no domain scoped)"
+        row. An exception while one domain is handled makes its four rows Not Assessed and never ends
+        the section.
     .OUTPUTS
-        [pscustomobject[]]
+        [pscustomobject[]] rows.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
+    param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][hashtable]$Config)
     $rows = @()
-    $srv = @{} + $AdParams; $srv.Server = $DomainName
-    try {
-        $adminCount = @(Get-ADUser -LDAPFilter '(&(admincount=1)(!(cn=krbtgt)))' -Properties adminCount, servicePrincipalName, memberOf @srv -ErrorAction Stop |
-            Where-Object { "$($_.Enabled)" -ne 'False' })
-        $rows += New-Finding -Scope $DomainName -Area 'PrivHygiene' -Item 'adminCount=1 users' -Status $script:Status.Info -Detail ("{0} enabled users carry adminCount=1 (protected by SDProp)." -f $adminCount.Count)
-        $privWithSpn = @($adminCount | Where-Object { $_.PSObject.Properties.Name -contains 'servicePrincipalName' -and $_.servicePrincipalName })
-        $rows += New-Finding -Scope $DomainName -Area 'PrivHygiene' -Item 'Privileged accounts with SPNs (Kerberoast risk)' -Status $(if ($privWithSpn.Count -eq 0) { $script:Status.Pass } else { $script:Status.Fail }) -Detail ("{0}: {1}" -f $privWithSpn.Count, ((@($privWithSpn | Select-Object -First 15).SamAccountName) -join ', '))
+    $prefixes = @('adminCount orphans', 'Privileged accounts with SPN', 'Privileged accounts delegable', 'Protected Users members')
+    if (@($State.Scoped).Count -eq 0) {
+        $rows += New-AdfaPrivilegedRow -Area 'PrivHygiene' -Item 'Privileged hygiene (no domain scoped)' -Status $script:Status.NotAssessed -Evidence 'none' `
+            -Detail 'No domain was scoped for this run, so no privileged account was read. This is not a clean result.'
+        return @($rows)
     }
-    catch { $rows += New-Finding -Scope $DomainName -Area 'PrivHygiene' -Item 'adminCount review' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-
-    try {
-        $dp = @{} + $AdParams; $dp.Identity = $DomainName
-        $sid = (Get-ADDomain @dp).DomainSID.Value
-        $pu = @(Get-ADGroupMember -Identity "$sid-525" -Server $DomainName -ErrorAction Stop)
-        $rows += New-Finding -Scope $DomainName -Area 'PrivHygiene' -Item 'Protected Users group members' -Status $(if ($pu.Count -gt 0) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0} members (privileged accounts should be enrolled)." -f $pu.Count)
+    $heuristics = Get-AdfaPrivHeuristicsState -Forest $State.Forest -Config $Config
+    foreach ($domain in @($State.Scoped)) {
+        try {
+            $domainState = $State.Domains[$domain]
+            if ($null -eq $domainState -or [string]$domainState.Error -ne '' -or $null -eq $domainState.Raw -or -not [bool]$domainState.Raw.Ok) {
+                $why = 'Not assessed: the domain was not handled. This is a defect in the tool, not a result.'
+                if ($null -ne $domainState -and [string]$domainState.Error -ne '') { $why = ("Not assessed: handling {0} failed inside this tool; this is a defect in the tool, not a result. Error: {1}" -f $domain, [string]$domainState.Error) }
+                elseif ($null -ne $domainState -and $null -ne $domainState.Raw) { $why = ("{0} No privileged account of this domain was read. This is not a clean result." -f (Get-AdfaLapsReadFailureLead -Message ([string]$domainState.Raw.Error) -TypeName ([string]$domainState.Raw.ErrorType) -What ("the domain {0} (its distinguished name and SID)" -f $domain))) }
+                foreach ($prefix in $prefixes) { $rows += New-AdfaPrivilegedRow -Scope $domain -Area 'PrivHygiene' -Item ("{0}: {1}" -f $prefix, $domain) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why }
+                continue
+            }
+            $sid = [string]$domainState.Raw.DomainSid
+            $protected = Get-AdfaPrivProtectedSet -State $State -Domain $domain -Config $Config
+            $rows += Get-AdfaPrivOrphanVerdict -Domain $domain -AdminCount $domainState.AdminCount -Protected $protected -Heuristics $heuristics -Config $Config
+            $spnPopulation = Get-AdfaPrivAccountPopulation -Protected $protected -AdminCount $domainState.AdminCount -Config $Config -IncludeAdminCount
+            $rows += Get-AdfaPrivSpnVerdict -Domain $domain -Population $spnPopulation -Config $Config -DomainSid $sid
+            $delegablePopulation = Get-AdfaPrivAccountPopulation -Protected $protected -AdminCount $domainState.AdminCount -Config $Config
+            $rows += Get-AdfaPrivDelegableVerdict -Domain $domain -Population $delegablePopulation -ProtectedUsers $protected.ProtectedUsers -Config $Config -DomainSid $sid
+            $puEntry = $null
+            if ($domainState.Groups.Contains('ProtectedUsers')) { $puEntry = $domainState.Groups['ProtectedUsers'] }
+            $rows += Get-AdfaPrivProtectedUsersVerdict -Domain $domain -Entry $puEntry -Config $Config -DomainSid $sid
+        }
+        catch {
+            $why = ("Not assessed: grading the privileged accounts of {0} failed inside this tool, so nothing about this domain is graded; this is a defect in the tool, not a result. Error: {1}" -f $domain, [string]$_.Exception.Message)
+            foreach ($prefix in $prefixes) { $rows += New-AdfaPrivilegedRow -Scope $domain -Area 'PrivHygiene' -Item ("{0}: {1}" -f $prefix, $domain) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why }
+        }
     }
-    catch { $rows += New-Finding -Scope $DomainName -Area 'PrivHygiene' -Item 'Protected Users group members' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-
     return @($rows)
+}
+
+function Get-AdfaKerberosRoastVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the two rows kept from before C10 - "Kerberoastable user accounts (SPN set)" (Warning) and
+        "AS-REP roastable accounts (no pre-auth)" (Fail) - with the account names moved out of Detail
+        into Principals, and a failed read worded by class.
+    .OUTPUTS
+        [pscustomobject[]] two rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)][string]$Domain, [AllowNull()]$Roast, [Parameter(Mandatory)][hashtable]$Config)
+    $rows = @()
+    $specs = @(
+        @{ Item = 'Kerberoastable user accounts (SPN set)'; Ok = 'RoastOk'; Class = 'RoastClass'; Err = 'RoastError'; Type = 'RoastErrorType'; List = 'Roast'; Bad = $script:Status.Warning
+            Evidence = "Get-ADUser -LDAPFilter '(&(servicePrincipalName=*)(!(objectClass=computer))(!(cn=krbtgt)))'"; What = 'the user accounts with a service principal name'; Noun = 'user account(s) with a service principal name' }
+        @{ Item = 'AS-REP roastable accounts (no pre-auth)'; Ok = 'AsRepOk'; Class = 'AsRepClass'; Err = 'AsRepError'; Type = 'AsRepErrorType'; List = 'AsRep'; Bad = $script:Status.Fail
+            Evidence = "Get-ADUser -LDAPFilter '(&(userAccountControl:1.2.840.113556.1.4.803:=4194304)(!(objectClass=computer)))'"; What = 'the accounts that do not require Kerberos pre-authentication'; Noun = 'account(s) that do not require Kerberos pre-authentication' }
+    )
+    foreach ($spec in $specs) {
+        if ($null -eq $Roast) {
+            $rows += New-AdfaPrivilegedRow -Scope $Domain -Area 'Kerberos' -Item $spec.Item -Status $script:Status.NotAssessed -Evidence 'none' -Detail 'Not assessed: the read was not made. This is a defect in the tool, not a result.'
+            continue
+        }
+        if (-not [bool]$Roast.($spec.Ok)) {
+            $lead = Get-AdfaPrivLocateLead -Locate ([pscustomobject]@{ Class = [string]$Roast.($spec.Class); Error = [string]$Roast.($spec.Err); ErrorType = [string]$Roast.($spec.Type) }) -What $spec.What -Search
+            $rows += New-AdfaPrivilegedRow -Scope $Domain -Area 'Kerberos' -Item $spec.Item -Status $script:Status.NotAssessed -Evidence $spec.Evidence -Detail $lead
+            continue
+        }
+        $enabled = @(@($Roast.($spec.List)) | Where-Object { $null -eq $_.Enabled -or [bool]$_.Enabled })
+        $names = Get-AdfaPrivNameList -Records @($enabled | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Dn = ''; Sid = '' } }) -Config $Config
+        $status = $script:Status.Pass
+        if ($enabled.Count -gt 0) { $status = $spec.Bad }
+        $rows += New-AdfaPrivilegedRow -Scope $Domain -Area 'Kerberos' -Item $spec.Item -Status $status -Evidence $spec.Evidence -Count $enabled.Count -Listed $names.Listed -NotListed $names.NotListed -Principals ([string]$names.Names) `
+            -Detail ("{0} enabled {1} visible to this account; names are in the Principals column." -f $enabled.Count, $spec.Noun)
+    }
+    return @($rows)
+}
+
+function Get-AdfaPrivDelegationVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the four delegation rows of one domain from its one delegation search - "Unconstrained
+        delegation" (ADA-OBJ-002), "Protocol transition delegation" (ADA-OBJ-003), "Constrained
+        delegation" (ADA-INV-017, Info) and "Resource-based delegation" (ADA-OBJ-004).
+    .DESCRIPTION
+        Domain controllers are excluded from the first two by the DN of their computer account, taken
+        from serverReference of each server object that holds an nTDSDSA child - never by name and never
+        by primaryGroupID 516/521, which is read only to report accounts that carry it without being a
+        registered DC (they are graded). Learn: a writable DC carries TRUSTED_FOR_DELEGATION and an RODC
+        TRUSTED_TO_AUTH_FOR_DELEGATION by default. When the DC population was not read completely
+        (Get-AdfaPrivDcPopulationState: no nTDSDSA object, a DC server object without serverReference,
+        or an nTDSDSA object without its server object), those two rows are Not Assessed: no DC could
+        be told apart. DCs are not excluded from constrained delegation and RBCD, which no default sets.
+        DECLARED POPULATION of the search: every DC registered for this domain (its computer account DN
+        under DomainDn, not a child domain's) - each carries one of the two bits by default, so the
+        search must return it. When one is missing, when the domain has none registered, or when the DC
+        population is unknown, no row is Pass and the Constrained count is not given; a row that found
+        accounts keeps its grade and says the search may be incomplete. An object whose
+        userAccountControl was not returned is undecided for the two bit rows. RBCD lists the principals
+        of each listed descriptor's allow ACEs by SID in AllowedSids; a descriptor that could not be
+        read is counted and marked unparsed. Targets and AllowedSids are built from the same records
+        Principals names (Get-AdfaPrivNameList), never from a different selection.
+    .OUTPUTS
+        [pscustomobject[]] four rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)][string]$Domain, [AllowNull()]$Delegation, [AllowNull()]$Forest, [Parameter(Mandatory)][hashtable]$Config, [AllowEmptyString()][string]$DomainSid = '',
+        [AllowEmptyString()][string]$DomainDn = '')
+    $rows = @()
+    $c = $Config['Catalogue']
+    $families = @(
+        @{ Key = 'Unconstrained'; Prefix = 'Unconstrained delegation'; Bit = 'TrustedForDelegation'; Status = 'UnconstrainedStatus' }
+        @{ Key = 'ProtocolTransition'; Prefix = 'Protocol transition delegation'; Bit = 'TrustedToAuthForDelegation'; Status = 'ProtocolTransitionStatus' }
+        @{ Key = 'Constrained'; Prefix = 'Constrained delegation'; Bit = ''; Status = '' }
+        @{ Key = 'Rbcd'; Prefix = 'Resource-based delegation'; Bit = ''; Status = 'RbcdStatus' }
+    )
+    $filter = Get-AdfaPrivDelegationFilter -Config $Config
+    $evidence = ("Get-ADObject -Server {0} -LDAPFilter '{1}'" -f $Domain, $filter)
+    if ($null -eq $Delegation -or -not [bool]$Delegation.Ok) {
+        $why = 'Not assessed: the delegation search was not made. This is a defect in the tool, not a result.'
+        if ($null -ne $Delegation) { $why = Get-AdfaPrivLocateLead -Locate $Delegation -What ("the accounts with a delegation setting in {0}" -f $Domain) -Search }
+        foreach ($f in $families) { $rows += New-AdfaPrivilegedRow -Scope $Domain -Area 'Kerberos' -Item ("{0}: {1}" -f $f.Prefix, $Domain) -Status $script:Status.NotAssessed -Evidence $evidence -CatalogueId ([string]$c[$f.Key]['Id']) -Severity ([string]$c[$f.Key]['Severity']) -DomainSid $DomainSid -Detail $why }
+        return @($rows)
+    }
+    $dcState = Get-AdfaPrivDcPopulationState -Forest $Forest
+    $dcKnown = [bool]$dcState.Known
+    $dcSet = $dcState.Set
+    $dcWhy = [string]$dcState.Why
+    $dcPgids = @(@($Config['DcPrimaryGroupIds']) | ForEach-Object { [int64]$_ })
+    $records = @($Delegation.Records | Where-Object { $null -ne $_ })
+    $isDc = { param($Rec) return ($dcKnown -and $dcSet.ContainsKey(([string]$Rec.Dn).ToLowerInvariant())) }
+    # Non-vacuity (a tool rule on Learn's defaults): every DC registered for this domain carries
+    # TRUSTED_FOR_DELEGATION (writable) or TRUSTED_TO_AUTH_FOR_DELEGATION (RODC), so the one search,
+    # which asks for either bit, must return each of them. A "none" answer is never passed without it.
+    $searchGap = ''
+    if (-not $dcKnown) { $searchGap = ("the domain controllers registered in the configuration partition were not read completely ({0}), so whether this search returned what it should could not be checked" -f $dcWhy) }
+    elseif ($DomainDn -eq '') { $searchGap = ("the distinguished name of {0} was not given, so its registered domain controllers could not be told and this search could not be checked against them" -f $Domain) }
+    else {
+        $domainDcs = @(Get-AdfaPrivDomainDcList -DcState $dcState -DomainDn $DomainDn)
+        $returned = @{}
+        foreach ($r in $records) { $returned[([string]$r.Dn).ToLowerInvariant()] = $true }
+        $missingDcs = @($domainDcs | Where-Object { -not $returned.ContainsKey([string]$_) })
+        if ($domainDcs.Count -eq 0) { $searchGap = ("no domain controller registered in the configuration partition belongs to {0}, and every domain has at least one, so this search could not be checked" -f $Domain) }
+        elseif ($missingDcs.Count -gt 0) { $searchGap = ("{0} of the {1} domain controller(s) registered for {2} were not returned by this search, although Microsoft documents that a writable DC carries TRUSTED_FOR_DELEGATION and an RODC TRUSTED_TO_AUTH_FOR_DELEGATION by default, so it did not return its declared population" -f $missingDcs.Count, $domainDcs.Count, $Domain) }
+    }
+    $pgidNotDc = @($records | Where-Object { $null -ne $_.PrimaryGroupId -and $dcPgids -contains [int64]$_.PrimaryGroupId -and -not (& $isDc $_) })
+    $dcEvidence = 'DCs and RODCs excluded by the DN of their computer account (serverReference of each server object holding an nTDSDSA child under CN=Sites of the configuration partition); primaryGroupID 516/521 is not used to exclude'
+    $pgidNote = ''
+    if ($dcKnown -and $pgidNotDc.Count -gt 0) { $pgidNote = (" {0} account(s) here carry the primary group of domain controllers (516 or 521) but are not registered DCs; they are graded like any account." -f $pgidNotDc.Count) }
+    foreach ($f in $families) {
+        $item = ("{0}: {1}" -f $f.Prefix, $Domain)
+        $common = @{ Scope = $Domain; Area = 'Kerberos'; Item = $item; CatalogueId = [string]$c[$f.Key]['Id']; Severity = [string]$c[$f.Key]['Severity']; DomainSid = $DomainSid }
+        if ($f.Bit -ne '') {
+            $bit = [int64]$Config['Uac'][$f.Bit]
+            $rowEvidence = ("{0}; bit {1} ({2}); {3}" -f $evidence, $f.Bit, $bit, $dcEvidence)
+            if (-not $dcKnown) {
+                $rows += New-AdfaPrivilegedRow @common -Status $script:Status.NotAssessed -Evidence $rowEvidence `
+                    -Detail ("Not assessed: the domain controllers registered in the configuration partition were not read ({0}), so the accounts that legitimately carry this setting could not be told apart, and none is graded. Names are never used to exclude a DC. This is not a clean result." -f $dcWhy)
+                continue
+            }
+            $set = @($records | Where-Object { $null -ne $_.Uac -and (([int64]$_.Uac -band $bit) -ne 0) })
+            $excluded = @($set | Where-Object { & $isDc $_ })
+            $hits = @($set | Where-Object { -not (& $isDc $_) })
+            $unknown = @($records | Where-Object { $null -eq $_.Uac })
+            $names = Get-AdfaPrivNameList -Records $hits -Config $Config
+            $columns = @{ Count = $hits.Count; ExcludedCount = $excluded.Count; UnresolvedCount = $unknown.Count; Listed = $names.Listed; NotListed = $names.NotListed; Principals = [string]$names.Names; PrincipalSids = [string]$names.Sids
+                Targets = (@(@($names.Records) | Where-Object { @($_.DelegateTo).Count -gt 0 } | ForEach-Object { "{0}: {1}" -f [string]$_.Name, (@($_.DelegateTo) -join ', ') }) -join '; ') }
+            $kindText = 'unconstrained delegation (TRUSTED_FOR_DELEGATION), which Microsoft documents as letting a service running under the account impersonate a client requesting the service'
+            if ($f.Key -eq 'ProtocolTransition') { $kindText = 'protocol transition (TRUSTED_TO_AUTH_FOR_DELEGATION, "use any authentication protocol"), which Microsoft calls a security-sensitive setting that should be strictly controlled' }
+            if ($hits.Count -gt 0) {
+                $status = [string]$Config[$f.Status]
+                $gapNote = ''
+                if ($searchGap -ne '') { $gapNote = (" The search may be incomplete - {0} - so there may be more." -f $searchGap) }
+                $rows += New-AdfaPrivilegedRow @common @columns -Status $status -Evidence $rowEvidence `
+                    -Detail ("{0} account(s) of {1} other than its domain controllers are set for {2}; {3} DC account(s) carrying it were excluded by DN.{4}{5} Graded {6}: a tool default, not a Microsoft value (setting from: {7})." -f $hits.Count, $Domain, $kindText, $excluded.Count, $pgidNote, $gapNote, $status, [string]$Config['ThresholdSource'])
+                continue
+            }
+            if ($unknown.Count -gt 0) {
+                $rows += New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -Evidence $rowEvidence `
+                    -Detail ("Not assessed: no account of {0} other than its domain controllers was found set for this, but {1} object(s) the search returned came back without userAccountControl. This is not a clean result." -f $Domain, $unknown.Count)
+                continue
+            }
+            if ($searchGap -ne '') {
+                $rows += New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -Evidence $rowEvidence `
+                    -Detail ("Not assessed: no account of {0} other than its domain controllers was found set for this, but {1}. This is not a clean result." -f $Domain, $searchGap)
+                continue
+            }
+            $rows += New-AdfaPrivilegedRow @common @columns -Status $script:Status.Pass -Evidence $rowEvidence `
+                -Detail ("None visible: no account of {0} other than its domain controllers is set for {1}; {2} DC account(s) carrying it were excluded by DN.{3}" -f $Domain, $kindText, $excluded.Count, $pgidNote)
+            continue
+        }
+        if ($f.Key -eq 'Constrained') {
+            $ptBit = [int64]$Config['Uac']['TrustedToAuthForDelegation']
+            $withTargets = @($records | Where-Object { @($_.DelegateTo).Count -gt 0 })
+            $plain = @($withTargets | Where-Object { $null -ne $_.Uac -and (([int64]$_.Uac -band $ptBit) -eq 0) })
+            $unknown = @($withTargets | Where-Object { $null -eq $_.Uac })
+            $names = Get-AdfaPrivNameList -Records $plain -Config $Config
+            $columns = @{ Count = $plain.Count; UnresolvedCount = $unknown.Count; Listed = $names.Listed; NotListed = $names.NotListed; Principals = [string]$names.Names; PrincipalSids = [string]$names.Sids
+                Targets = (@(@($names.Records) | ForEach-Object { "{0}: {1}" -f [string]$_.Name, (@($_.DelegateTo) -join ', ') }) -join '; ') }
+            if ($unknown.Count -gt 0) {
+                $rows += New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -Evidence ("{0}; msDS-AllowedToDelegateTo present and bit TrustedToAuthForDelegation clear" -f $evidence) `
+                    -Detail ("Not assessed: {0} account(s) of {1} with constrained delegation targets came back without userAccountControl, so Kerberos-only constrained delegation cannot be told from protocol transition for them. {2} account(s) use Kerberos-only constrained delegation. This is not a clean result." -f $unknown.Count, $Domain, $plain.Count)
+                continue
+            }
+            if ($searchGap -ne '') {
+                $columns['Count'] = $null
+                $rows += New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -Evidence ("{0}; msDS-AllowedToDelegateTo present and bit TrustedToAuthForDelegation clear" -f $evidence) `
+                    -Detail ("Not assessed: {0} account(s) of {1} were found with Kerberos-only constrained delegation (listed in the Principals column), but {2}, so no count is given. This is not a clean result." -f $plain.Count, $Domain, $searchGap)
+                continue
+            }
+            $rows += New-AdfaPrivilegedRow @common @columns -Status $script:Status.Info -Evidence ("{0}; msDS-AllowedToDelegateTo present and bit TrustedToAuthForDelegation clear" -f $evidence) `
+                -Detail ("{0} account(s) of {1} use Kerberos-only constrained delegation (msDS-AllowedToDelegateTo set, protocol transition not); their target services are in the Targets column. Inventory: no threshold is applied; protocol transition is graded in its own row." -f $plain.Count, $Domain)
+            continue
+        }
+        # Resource-based constrained delegation.
+        $rbcd = @($records | Where-Object { [bool]$_.HasRbcd })
+        $unparsed = @($rbcd | Where-Object { $null -eq $_.Rbcd -or -not [bool]$_.Rbcd.Ok })
+        $allowed = @()
+        $names = Get-AdfaPrivNameList -Records $rbcd -Config $Config
+        foreach ($r in @($names.Records)) {
+            if ($null -eq $r.Rbcd -or -not [bool]$r.Rbcd.Ok) {
+                $class = 'not returned'
+                if ($null -ne $r.Rbcd) { $class = [string]$r.Rbcd.Class }
+                $allowed += ("{0}: descriptor not parsed ({1})" -f [string]$r.Name, $class)
+                continue
+            }
+            $allow = @(@($r.Rbcd.Aces) | Where-Object { [bool]$_.Allow -and [string]$_.Sid -ne '' } | ForEach-Object { [string]$_.Sid } | Select-Object -Unique)
+            $deny = @(@($r.Rbcd.Aces) | Where-Object { [bool]$_.Deny -and [string]$_.Sid -ne '' } | ForEach-Object { [string]$_.Sid } | Select-Object -Unique)
+            $other = @(@($r.Rbcd.Aces) | Where-Object { [string]$_.Kind -eq 'Other' }).Count
+            $text = ("{0}: allowed {1}" -f [string]$r.Name, ($allow -join ', '))
+            if ($deny.Count -gt 0) { $text += ("; denied {0}" -f ($deny -join ', ')) }
+            if ($other -gt 0) { $text += ("; {0} ACE(s) not interpreted" -f $other) }
+            $allowed += $text
+        }
+        $columns = @{ Count = $rbcd.Count; UnresolvedCount = $unparsed.Count; Listed = $names.Listed; NotListed = $names.NotListed; Principals = [string]$names.Names; PrincipalSids = [string]$names.Sids; AllowedSids = ($allowed -join ' | ') }
+        $rowEvidence = ("{0}; msDS-AllowedToActOnBehalfOfOtherIdentity present, its descriptor read in memory" -f $evidence)
+        if ($rbcd.Count -gt 0) {
+            $status = [string]$Config[$f.Status]
+            $unparsedNote = ''
+            if ($unparsed.Count -gt 0) { $unparsedNote = (" The descriptor of {0} could not be read, so the principals allowed on them are not listed." -f $unparsed.Count) }
+            if ($searchGap -ne '') { $unparsedNote += (" The search may be incomplete - {0} - so there may be more." -f $searchGap) }
+            $rows += New-AdfaPrivilegedRow @common @columns -Status $status -Evidence $rowEvidence `
+                -Detail ("{0} account(s) of {1} carry resource-based constrained delegation (msDS-AllowedToActOnBehalfOfOtherIdentity): the principals allowed to delegate to each are listed by SID in the AllowedSids column.{2} Microsoft documents that the KDC always allows protocol transition for resource-based constrained delegation. Graded {3}: a tool default, not a Microsoft value (setting from: {4})." -f $rbcd.Count, $Domain, $unparsedNote, $status, [string]$Config['ThresholdSource'])
+            continue
+        }
+        if ($searchGap -ne '') {
+            $rows += New-AdfaPrivilegedRow @common @columns -Status $script:Status.NotAssessed -Evidence $rowEvidence `
+                -Detail ("Not assessed: no account of {0} was found with resource-based constrained delegation, but {1}. This is not a clean result." -f $Domain, $searchGap)
+            continue
+        }
+        $rows += New-AdfaPrivilegedRow @common @columns -Status $script:Status.Pass -Evidence $rowEvidence `
+            -Detail ("None visible: no account of {0} visible to this account carries resource-based constrained delegation." -f $Domain)
+    }
+    return @($rows)
+}
+
+function Get-AdfaKerberosExposure {
+    <#
+    .SYNOPSIS
+        Kerberos Exposure rows per scoped domain: the Kerberoast and AS-REP rows kept from before C10,
+        then "Unconstrained delegation", "Protocol transition delegation", "Constrained delegation" and
+        "Resource-based delegation". Pure over the run's C10 state.
+    .DESCRIPTION
+        DECLARED POPULATION: the domains in State.Scoped. Each gets exactly these six rows, whatever
+        happened to its reads; with none scoped there is one "Kerberos exposure (no domain scoped)" row.
+        An exception while one domain is handled makes its six rows Not Assessed and never ends the
+        section.
+    .OUTPUTS
+        [pscustomobject[]] rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][hashtable]$Config)
+    $rows = @()
+    if (@($State.Scoped).Count -eq 0) {
+        $rows += New-AdfaPrivilegedRow -Area 'Kerberos' -Item 'Kerberos exposure (no domain scoped)' -Status $script:Status.NotAssessed -Evidence 'none' `
+            -Detail 'No domain was scoped for this run, so no account was read. This is not a clean result.'
+        return @($rows)
+    }
+    foreach ($domain in @($State.Scoped)) {
+        try {
+            $domainState = $State.Domains[$domain]
+            if ($null -eq $domainState -or [string]$domainState.Error -ne '') {
+                throw ("the domain's reads failed: {0}" -f $(if ($null -eq $domainState) { 'it was not handled' } else { [string]$domainState.Error }))
+            }
+            $sid = ''
+            if ($null -ne $domainState.Raw) { $sid = [string]$domainState.Raw.DomainSid }
+            $rows += @(Get-AdfaKerberosRoastVerdict -Domain $domain -Roast $domainState.Roast -Config $Config)
+            $delegation = $domainState.Delegation
+            if ($null -eq $delegation -and $null -ne $domainState.Raw -and -not [bool]$domainState.Raw.Ok) {
+                $delegation = [pscustomobject]@{ Ok = $false; Class = (Get-AdfaPrivReadClass -Message ([string]$domainState.Raw.Error) -TypeName ([string]$domainState.Raw.ErrorType)); Error = [string]$domainState.Raw.Error; ErrorType = [string]$domainState.Raw.ErrorType; Filter = ''; Records = @() }
+            }
+            $domainDn = ''
+            if ($null -ne $domainState.Raw) { $domainDn = [string]$domainState.Raw.DomainDn }
+            $rows += @(Get-AdfaPrivDelegationVerdict -Domain $domain -Delegation $delegation -Forest $State.Forest -Config $Config -DomainSid $sid -DomainDn $domainDn)
+        }
+        catch {
+            $why = ("Not assessed: grading the Kerberos exposure of {0} failed inside this tool, so nothing about this domain is graded; this is a defect in the tool, not a result. Error: {1}" -f $domain, [string]$_.Exception.Message)
+            foreach ($item in @('Kerberoastable user accounts (SPN set)', 'AS-REP roastable accounts (no pre-auth)')) { $rows += New-AdfaPrivilegedRow -Scope $domain -Area 'Kerberos' -Item $item -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why }
+            foreach ($prefix in @('Unconstrained delegation', 'Protocol transition delegation', 'Constrained delegation', 'Resource-based delegation')) { $rows += New-AdfaPrivilegedRow -Scope $domain -Area 'Kerberos' -Item ("{0}: {1}" -f $prefix, $domain) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why }
+        }
+    }
+    return @($rows)
+}
+
+function Merge-AdfaPrivilegedConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in Privileged table, with validation. The Privileged
+        validator for -ConfigOverridePath.
+    .DESCRIPTION
+        What a file can change: the eight grades - SchemaAdminsStatus, EnterpriseAdminsStatus,
+        OrphanStatus, PrivilegedSpnStatus, DelegableStatus, UnconstrainedStatus,
+        ProtocolTransitionStatus and RbcdStatus, each the text Warning or Fail -
+        EnterpriseAdminsExemptRootAdministrator (a JSON true or false), NameListCap (a whole number from
+        0 to 1000) and MaxExpandedObjects (a whole number from 1 to 100000):
+
+            { "Privileged": { "SchemaAdminsStatus": "Fail", "EnterpriseAdminsExemptRootAdministrator": true } }
+
+        What it cannot: the groups, the protected list, the bits, the filters, the property lists, the
+        class lists and the range limits. Every such key is refused as unknown.
+
+        Refused with the reason: an override that is not one object, an empty object, an unknown key,
+        a key written twice, a null, a grade that is not the text Warning or Fail (a finding is never
+        reported as a pass), a switch that is not a JSON boolean, a number that is not a JSON number or
+        is out of range.
+
+        Provenance follows the keys: ThresholdSource is rewritten to name the override's source for
+        exactly the keys it supplied.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) {
+        throw ("Privileged config override must be a single object with named keys (for example {{ ""SchemaAdminsStatus"": ""Fail"" }}), not a {0}." -f $Override.GetType().Name)
+    }
+    if ($table.Count -eq 0) {
+        throw 'Privileged config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    $statusKeys = @('SchemaAdminsStatus', 'EnterpriseAdminsStatus', 'OrphanStatus', 'PrivilegedSpnStatus', 'DelegableStatus', 'UnconstrainedStatus', 'ProtocolTransitionStatus', 'RbcdStatus')
+    $ranges = @{ NameListCap = @(0, 1000, 'names listed in one row'); MaxExpandedObjects = @(1, 100000, 'objects read in one run, member reads and primary-group search results together') }
+    $known = @($statusKeys + @('EnterpriseAdminsExemptRootAdministrator', 'NameListCap', 'MaxExpandedObjects'))
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $supplied = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("Privileged config override names an unknown key '{0}'. Known keys: {1}. The groups, the protected list, the userAccountControl bits, the filters, the property lists and the range limits cannot be set from a file." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        if ($supplied -contains $name) { throw ("Privileged config override names '{0}' more than once." -f $name) }
+        $value = $table[$k]
+        if ($null -eq $value) { throw ("Privileged config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name) }
+        if ($statusKeys -contains $name) {
+            $statusMatch = @()
+            if ($value -is [string]) { $statusMatch = @(@('Warning', 'Fail') | Where-Object { $_ -eq $value.Trim() }) }
+            if ($statusMatch.Count -eq 0) {
+                throw ("Privileged config override sets '{0}' to '{1}'. It must be Warning or Fail: a finding of this section is never reported as a pass." -f $name, [string]$value)
+            }
+            $merged[$name] = [string]$statusMatch[0]
+        }
+        elseif ($name -eq 'EnterpriseAdminsExemptRootAdministrator') {
+            if ($value -isnot [bool]) { throw ("Privileged config override sets 'EnterpriseAdminsExemptRootAdministrator' to a {0}. It must be a JSON true or false, written without quotes." -f $value.GetType().Name) }
+            $merged[$name] = [bool]$value
+        }
+        else {
+            $range = $ranges[$name]
+            if ($value -is [array] -or $numericTypes -notcontains $value.GetType()) {
+                throw ("Privileged config override sets '{0}' to a {1}. It must be a JSON number, written without quotes." -f $name, $value.GetType().Name)
+            }
+            $number = [double]$value
+            if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or $number -ne [math]::Floor($number) -or $number -lt [double]$range[0] -or $number -gt [double]$range[1]) {
+                throw ("Privileged config override sets '{0}' to {1}. It must be a whole number from {2} to {3} ({4})." -f $name, $number.ToString('0.####', $inv), $range[0], $range[1], $range[2])
+            }
+            $merged[$name] = [int]$number
+        }
+        $supplied += $name
+    }
+    $from = 'an override whose source was not recorded'
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+    $fromOverride = @($known | Where-Object { $supplied -contains $_ })
+    $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+    $builtIn = @($known | Where-Object { $supplied -notcontains $_ })
+    if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for the other keys" -f $text, [string]$BaseConfig['ThresholdSource']) }
+    $merged['ThresholdSource'] = $text
+    return $merged
 }
 
 # ---------------------------------------------------------------------------
@@ -13933,6 +16386,9 @@ $script:ConfigOverrideSections = [ordered]@{
     SidHistory     = @{ ConfigKey = 'SidHistory'; Section = 'SecurityPosture'; Merge = 'Merge-AdfaSidHistoryConfig' }
     Gpo            = @{ ConfigKey = 'Gpo'; Section = 'Gpo'; Merge = 'Merge-AdfaGpoConfig' }
     Acl            = @{ ConfigKey = 'Acl'; Section = 'Acl'; Merge = 'Merge-AdfaAclConfig' }
+    # One table for three sections (PORT-PLAN C10): Section names the first, AlsoUsedBy the other two, so
+    # the "validated but not used" log is right whichever of them a run selects.
+    Privileged     = @{ ConfigKey = 'Privileged'; Section = 'PrivilegedAccounts'; AlsoUsedBy = @('PrivilegedHygiene', 'Kerberos'); Merge = 'Merge-AdfaPrivilegedConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -18079,6 +20535,51 @@ $script:RecommendationMap = @(
        Text  = 'Review who can change the Group Policy objects this finding names. Microsoft''s default descriptor of a Group Policy container gives full control to Domain Admins, Enterprise Admins, SYSTEM and, through Creator Owner, the account that created the GPO; Microsoft also documents that a member of Group Policy Creator Owners who creates a GPO owns it. A delegated creator is therefore expected here and is reported so that the delegation is seen. Remove write and control rights and ownership from anyone who should not edit the GPO; if a delegation is intended, add its SID to AdditionalAllowed in the Acl section of the config override file, with the reason. The permissions of the GPO''s folder in SYSVOL were not read and need the same review. This report reads only and changes nothing, and the allowlist it judged against is provisional.' }
     @{ Section = '(?i)^dangerous acls'; Match = '(?i)^Dangerous ACLs \(DCSync\) :: '
        Text  = '' }
+    # --- Section-scoped: Privileged Accounts, Privileged Hygiene and Kerberos Exposure (PORT-PLAN C10). One
+    #     entry per graded row family, anchored on the Item prefix this tool writes, and a catch-all that
+    #     gives every other new row no advice. Detail names groups such as Backup Operators and Replicator,
+    #     the word delegation and, under an override, a file path, so without these the unscoped 'backup',
+    #     'replication', 'delegation', 'krbtgt' and 'stale' entries would answer them with the fix for a
+    #     different fault; the unscoped 'delegation' advice ("replace with resource-based constrained
+    #     delegation") would even be wrong for the RBCD row. The Kerberos catch-all names only the new
+    #     delegation prefixes, so the Kerberoast and AS-REP rows still reach their unscoped entries. Tests
+    #     pin each family. Sources, read 2026-11-16:
+    #       Schema Admins "populated only temporarily and occasionally"; adminCount stays 1 and inheritance
+    #       stays off after removal from a protected group
+    #         - https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/reducing-the-active-directory-attack-surface
+    #       Enterprise Admins empty day to day, the root Administrator a possible exception
+    #         - https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/appendix-e--securing-enterprise-admins-groups-in-active-directory
+    #       "Account is sensitive and cannot be delegated"; Protected Users cautions
+    #         - https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-default-user-accounts
+    #         - https://learn.microsoft.com/windows-server/security/credentials-protection-and-management/protected-users-security-group
+    #       Defender for Identity: privileged accounts not delegated, unsecure Kerberos delegation, remove an SPN
+    #         - https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts
+    #       TRUSTED_FOR_DELEGATION and TRUSTED_TO_AUTH_FOR_DELEGATION wording
+    #         - https://learn.microsoft.com/windows/win32/adschema/a-useraccountcontrol
+    #       RBCD read with PrincipalsAllowedToDelegateToAccount; protocol transition always allowed for RBCD
+    #         - https://learn.microsoft.com/windows-server/security/kerberos/kerberos-constrained-delegation-overview
+    @{ Section = '(?i)^privileged accounts'; Match = '(?i)^Privileged Accounts :: Schema Admins members: '
+       Text  = 'Remove every member that is not needed for a schema change being made now. Microsoft documents that Schema Admins is intended to be populated only temporarily and occasionally, when the schema must be modified, and that its default member is the forest root domain''s built-in Administrator account: add an account when a schema change is scheduled and remove it when the change is done. Review the members this finding lists (names in the Principals column, SIDs in PrincipalSids) before removing anything. The grade is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^privileged accounts'; Match = '(?i)^Privileged Accounts :: Enterprise Admins members: '
+       Text  = 'Remove day-to-day accounts from Enterprise Admins. Microsoft documents that Enterprise Admins should contain no users on a day-to-day basis, with the possible exception of the forest root domain''s Administrator account, secured as its guidance for that account describes: add an account only for a task that needs forest-wide rights and remove it afterwards. Review the members this finding lists (names in the Principals column, SIDs in PrincipalSids) before removing anything. The grade is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^privileged accounts'; Match = '(?i)^Privileged Accounts :: '
+       Text  = '' }
+    @{ Section = '(?i)^privileged hygiene'; Match = '(?i)^Privileged Hygiene :: adminCount orphans: '
+       Text  = 'Confirm, for each object this finding lists, that it should no longer be protected - that no protected group reaches it through a path this account could not see - and then re-enable permission inheritance on it and clear its adminCount attribute. Microsoft documents that when an account is removed from a protected group its adminCount attribute remains set to 1 if it is not manually changed, and that the object still does not inherit permissions. Microsoft calls these objects formerly protected; orphan is this tool''s word. The grade is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^privileged hygiene'; Match = '(?i)^Privileged Hygiene :: Privileged accounts with SPN: '
+       Text  = 'Remove the service principal names from the privileged user accounts this finding lists, and run each service under its own non-privileged account. Microsoft Defender for Identity recommends removing an SPN from a user account and shows that recommendation for sensitive accounts. Confirm what each SPN is used for (the Targets column lists them) before removing it. The grade is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^privileged hygiene'; Match = '(?i)^Privileged Hygiene :: Privileged accounts delegable: '
+       Text  = 'Select "Account is sensitive and cannot be delegated" on each privileged account this finding lists, unless a documented need requires that account to be delegated. Microsoft calls this setting a best practice for all sensitive accounts, and Defender for Identity reports privileged accounts that lack it. Membership of Protected Users also prevents delegation, but Microsoft warns against adding highly privileged accounts to that group before testing, and never to add service or computer accounts, so decide that separately. The grade is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^privileged hygiene'; Match = '(?i)^Privileged Hygiene :: '
+       Text  = '' }
+    @{ Section = '(?i)^kerberos exposure'; Match = '(?i)^Kerberos Exposure :: Unconstrained delegation: '
+       Text  = 'Review each account this finding lists and remove "Trust this computer for delegation to any service" (TRUSTED_FOR_DELEGATION) from it, or move it to constrained delegation limited to the services it actually needs. Microsoft documents that a service running under an account trusted for delegation can impersonate a client requesting the service, and Defender for Identity reports unconstrained delegation on accounts other than domain controllers as unsecure. The domain controllers registered in the configuration partition were excluded by the DN of their computer account. The grade is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^kerberos exposure'; Match = '(?i)^Kerberos Exposure :: Protocol transition delegation: '
+       Text  = 'Review each account this finding lists: it is set for constrained delegation with protocol transition ("Use any authentication protocol", TRUSTED_TO_AUTH_FOR_DELEGATION). Microsoft describes this setting as security-sensitive and says accounts with it enabled should be strictly controlled. Keep it only where a service needs it, change the account to Kerberos-only constrained delegation where it does not, and confirm the target services in the Targets column. The domain controllers and read-only domain controllers registered in the configuration partition were excluded. The grade is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^kerberos exposure'; Match = '(?i)^Kerberos Exposure :: Resource-based delegation: '
+       Text  = 'Review each resource this finding lists and the principals allowed to delegate to it, by SID in the AllowedSids column. Microsoft documents that this setting holds the principals allowed to delegate to the resource, and that the KDC always allows protocol transition for resource-based constrained delegation. Microsoft documents reading the setting with Get-ADComputer, Get-ADServiceAccount or Get-ADUser -Properties PrincipalsAllowedToDelegateToAccount; remove an entry nobody can explain. The grade is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^kerberos exposure'; Match = '(?i)^Kerberos Exposure :: (Unconstrained|Protocol transition|Constrained|Resource-based) delegation: '
+       Text  = '' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
     # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
@@ -18614,9 +21115,11 @@ function Invoke-Main {
         }
         foreach ($name in @($configOverrides.Keys | Sort-Object)) {
             Write-Log -Level INFO ("Config override: section {0} taken from {1}" -f $name, $ConfigOverridePath)
-            $usedBy = [string]$script:ConfigOverrideSections[[string]$name]['Section']
-            if (-not (Test-SectionSelected -Name $usedBy -Selected $Sections)) {
-                Write-Log -Level WARN -Message ("Config override: section {0} was validated but is not used by this run, because -Sections does not include {1}." -f $name, $usedBy)
+            # A table may serve more than one section (AlsoUsedBy, PORT-PLAN C10); it is unused only when
+            # none of them is selected.
+            $usedBy = @(@([string]$script:ConfigOverrideSections[[string]$name]['Section']) + @(@($script:ConfigOverrideSections[[string]$name]['AlsoUsedBy']) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ }))
+            if (@($usedBy | Where-Object { Test-SectionSelected -Name $_ -Selected $Sections }).Count -eq 0) {
+                Write-Log -Level WARN -Message ("Config override: section {0} was validated but is not used by this run, because -Sections does not include {1}." -f $name, ($usedBy -join ' or '))
             }
         }
     }
@@ -18893,9 +21396,34 @@ function Invoke-Main {
         $pp = foreach ($d in $targetDomains) { Get-AdfaPasswordPolicy -DomainName $d -AdParams $adParams }
         $sectionData['Password Policy'] = @($pp)
     }
+    # Privileged groups and delegation (PORT-PLAN C10): the directory is read ONCE for the three sections
+    # that use it - the privileged groups and their transitive membership (PrivilegedAccounts and
+    # PrivilegedHygiene), the adminCount objects and dSHeuristics (PrivilegedHygiene), and the DC
+    # population and delegation settings (Kerberos) - and each section builds its rows from that state.
+    # The table the file supplied where it supplied one, otherwise the built-in table; the file was
+    # validated before any section ran.
+    $privConfig = $script:Config.Privileged
+    if ($configOverrides.ContainsKey('Privileged')) { $privConfig = $configOverrides['Privileged'] }
+    $privParts = @()
+    if (Test-SectionSelected 'PrivilegedAccounts' $Sections) { $privParts += 'Groups' }
+    if (Test-SectionSelected 'PrivilegedHygiene' $Sections) { $privParts += @('Groups', 'Hygiene') }
+    if (Test-SectionSelected 'Kerberos' $Sections) { $privParts += 'Delegation' }
+    $privState = $null
+    if (@($privParts).Count -gt 0 -and -not $forestError) {
+        Write-Stage 'Privileged groups and delegation (directory reads for three sections)'
+        $privState = Get-AdfaPrivilegedState -Domains $targetDomains -ForestDomains @($forest.Domains) -RootDomain $rootDomain -AdParams $adParams -Config $privConfig -Parts $privParts
+    }
     if (Test-SectionSelected 'PrivilegedAccounts' $Sections) {
-        $pa = foreach ($d in $targetDomains) { Get-AdfaPrivilegedAccount -DomainName $d -IsRootDomain:($d -eq $rootDomain) -AdParams $adParams }
-        $sectionData['Privileged Accounts'] = @($pa)
+        # With the forest unreadable there is no domain to scope, and the rows say so in one row instead of
+        # asking whatever the default server is.
+        if ($forestError) {
+            $paRows = @(New-AdfaPrivilegedRow -Area 'Privileged' -Item 'Privileged groups' -Status $script:Status.NotAssessed -Evidence 'none' `
+                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no privileged group was read. This is not a clean result." -f $forestError))
+        }
+        else {
+            $paRows = @(Get-AdfaPrivilegedAccount -State $privState -Config $privConfig)
+        }
+        $sectionData['Privileged Accounts'] = @($paRows)
     }
     if (Test-SectionSelected 'SecurityPosture' $Sections) {
         Write-Stage 'Security posture'
@@ -18947,12 +21475,24 @@ function Invoke-Main {
     }
     if (Test-SectionSelected 'Kerberos' $Sections) {
         Write-Stage 'Kerberos exposure (roasting / delegation)'
-        $kRows = foreach ($d in $targetDomains) { Get-AdfaKerberosExposure -DomainName $d -AdParams $adParams }
+        if ($forestError) {
+            $kRows = @(New-AdfaPrivilegedRow -Area 'Kerberos' -Item 'Kerberos exposure' -Status $script:Status.NotAssessed -Evidence 'none' `
+                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no account was read. This is not a clean result." -f $forestError))
+        }
+        else {
+            $kRows = @(Get-AdfaKerberosExposure -State $privState -Config $privConfig)
+        }
         $sectionData['Kerberos Exposure'] = @($kRows)
     }
     if (Test-SectionSelected 'PrivilegedHygiene' $Sections) {
         Write-Stage 'Privileged hygiene'
-        $phRows = foreach ($d in $targetDomains) { Get-AdfaPrivilegedHygiene -DomainName $d -AdParams $adParams }
+        if ($forestError) {
+            $phRows = @(New-AdfaPrivilegedRow -Area 'PrivHygiene' -Item 'Privileged hygiene' -Status $script:Status.NotAssessed -Evidence 'none' `
+                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no privileged account was read. This is not a clean result." -f $forestError))
+        }
+        else {
+            $phRows = @(Get-AdfaPrivilegedHygiene -State $privState -Config $privConfig)
+        }
         $sectionData['Privileged Hygiene'] = @($phRows)
     }
     if (Test-SectionSelected 'DcHardening' $Sections) {
