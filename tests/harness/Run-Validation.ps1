@@ -2100,7 +2100,246 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the two sections the file can carry'
+Assert-Equal 'DcDisk,DcHardening,Laps' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the three sections the file can carry'
+
+Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
+$lapsCfg = $script:Config.Laps
+$lapsNow = [datetime]::SpecifyKind(([datetime]'2026-11-15T12:00:00'), [System.DateTimeKind]::Utc)
+$lapsWin = 'msLAPS-PasswordExpirationTime'
+$lapsLegacy = 'ms-Mcs-AdmPwdExpirationTime'
+# Declared population: the seven attributes that are never requested.
+$lapsSecret = @('msLAPS-Password', 'msLAPS-EncryptedPassword', 'msLAPS-EncryptedPasswordHistory', 'msLAPS-EncryptedDSRMPassword',
+    'msLAPS-EncryptedDSRMPasswordHistory', 'msLAPS-CurrentPasswordVersion', 'ms-Mcs-AdmPwd')
+$lapsFullSchema = @('operatingSystemVersion', 'msLAPS-PasswordExpirationTime', 'msLAPS-Password', 'msLAPS-EncryptedPassword', 'msLAPS-EncryptedPasswordHistory',
+    'msLAPS-EncryptedDSRMPassword', 'msLAPS-EncryptedDSRMPasswordHistory')
+function New-LapsSchema { param([string[]]$Names = $lapsFullSchema, [bool]$Ok = $true, [string]$Err = '', [string]$Type = '')
+    [pscustomobject]@{ Ok = $Ok; Error = $Err; ErrorType = $Type; SchemaNamingContext = 'CN=Schema,CN=Configuration,DC=contoso,DC=com'; Names = @($Names) } }
+function Get-LapsState { param([string[]]$Names = $lapsFullSchema) Get-AdfaLapsSchemaState -Raw (New-LapsSchema -Names $Names) -Config $lapsCfg }
+function New-LapsRecord {
+    param([string]$Name, [string]$Os = 'Windows 11 Enterprise', [string]$OsVersion = '10.0 (22631)', $Uac = 4096, $LogonDaysAgo = 1, $WinExpiryDays = $null, $LegacyExpiryDays = $null, [string[]]$Classes = @('computer'))
+    $logon = $null; if ($null -ne $LogonDaysAgo) { $logon = $lapsNow.AddDays(-1 * [double]$LogonDaysAgo).ToFileTimeUtc() }
+    $win = $null; if ($null -ne $WinExpiryDays) { $win = $lapsNow.AddDays([double]$WinExpiryDays).ToFileTimeUtc() }
+    $legacy = $null; if ($null -ne $LegacyExpiryDays) { $legacy = $lapsNow.AddDays([double]$LegacyExpiryDays).ToFileTimeUtc() }
+    [pscustomobject]@{ Name = $Name; OperatingSystem = $Os; OperatingSystemVersion = $OsVersion; UserAccountControl = $Uac
+        LastLogonTimestamp = $logon; ObjectClasses = @($Classes); WindowsExpiry = $win; LegacyExpiry = $legacy }
+}
+function New-LapsRaw { param($Computers = @(), [string]$Level = '7', [bool]$Ok = $true, [string]$Err = '', [string]$Type = '')
+    [pscustomobject]@{ Ok = $Ok; Refused = $false; Error = $Err; ErrorType = $Type; DomainLevel = $Level; DomainLevelError = ''; Computers = @($Computers); PropertyNames = @() } }
+function Get-LapsRows { param($Computers = @(), [string[]]$SchemaNames = $lapsFullSchema, $Config = $lapsCfg, [int]$StaleDays = 90)
+    @(Get-AdfaLapsDomainFinding -DomainName 'contoso.com' -Raw (New-LapsRaw -Computers $Computers) -SchemaState (Get-LapsState -Names $SchemaNames) -Config $Config -StaleDays $StaleDays -Now $lapsNow) }
+function Get-LapsRow { param($Rows, [string]$Item) @($Rows | Where-Object { [string]$_.Item -eq $Item })[0] }
+function Get-LapsDsrm { param($Build = 17763, [string]$Level = '7', $ExpiryDays = $null, [bool]$Proof = $true, [bool]$HasWindowsExpiry = $true, [bool]$ReadOnly = $false, [bool]$SchemaRead = $true)
+    $expiry = $null; $present = $false
+    if ($null -ne $ExpiryDays) { $expiry = $lapsNow.AddDays([double]$ExpiryDays); $present = $true }
+    Get-AdfaLapsDsrmVerdict -Build $Build -DomainLevel $Level -ExpiryPresent $present -ExpiryUtc $expiry -Now $lapsNow -ProofOfRead $Proof -SchemaRead $SchemaRead -HasWindowsExpiry $HasWindowsExpiry -IsReadOnly $ReadOnly -Config $lapsCfg }
+function Get-LapsCoverage { param([int]$In, [int]$None, [int]$Total = -1, [bool]$Proof = $true, [bool]$HasExpiry = $true, $Config = $lapsCfg)
+    if ($Total -lt 0) { $Total = $In }
+    Get-AdfaLapsCoverageVerdict -TotalReturned $Total -InPopulation $In -NoneVisible $None -ProofOfRead $Proof -SchemaHasExpiry $HasExpiry -Config $Config }
+
+# The hard rule: no password attribute is ever requested.
+Assert-Equal ($lapsSecret -join ',') (@($lapsCfg['NeverRead']) -join ',') 'LAPS config: the never-read list is the seven confidential attributes, in order (declared population: seven)'
+Assert-Equal 0 (@(Get-AdfaLapsRefusedProperty -PropertyNames @($lapsCfg['ComputerProperties']) -NeverRead @($lapsCfg['NeverRead'])).Count) 'LAPS guard: the fixed property list holds nothing that is refused'
+Assert-Equal 7 (@($lapsSecret | Where-Object { @(Get-AdfaLapsRefusedProperty -PropertyNames @('operatingSystem', $_) -NeverRead $lapsSecret).Count -eq 1 }).Count) 'LAPS guard: each of the seven secret names is refused (declared population: seven)'
+Assert-Equal 0 (@(Get-AdfaLapsRefusedProperty -PropertyNames @($lapsWin, $lapsLegacy) -NeverRead $lapsSecret).Count) 'LAPS guard: the two expiry attributes are not refused, although their names hold "Password" and "Pwd"'
+Assert-Equal 3 (@(Get-AdfaLapsRefusedProperty -PropertyNames @('*', 'unicodePwd', ' ') -NeverRead $lapsSecret).Count) 'LAPS guard: a wildcard, a password-like name on no list and a blank are refused'
+Assert-Equal 1 (@(Get-AdfaLapsRefusedProperty -PropertyNames @('operatingSystem') -NeverRead @()).Count) 'LAPS guard: with no never-read list everything is refused (fail closed)'
+$lapsAllSchema = @($lapsFullSchema + @('msLAPS-CurrentPasswordVersion', $lapsLegacy, 'ms-Mcs-AdmPwd'))
+Assert-Equal ("operatingSystem,operatingSystemVersion,userAccountControl,lastLogonTimestamp,dNSHostName,objectClass,{0},{1}" -f $lapsWin, $lapsLegacy) (@(Get-AdfaLapsPropertyList -SchemaState (Get-LapsState -Names $lapsAllSchema) -Config $lapsCfg) -join ',') 'LAPS property list: the fixed names plus the two expiry attributes, and nothing else, when the schema holds all nine'
+$lapsBadCfg = @{} + $lapsCfg; $lapsBadCfg['WindowsExpiry'] = 'msLAPS-Password'
+Assert-Throws { Get-AdfaLapsPropertyList -SchemaState (Get-AdfaLapsSchemaState -Raw (New-LapsSchema) -Config $lapsBadCfg) -Config $lapsBadCfg } 'never read' 'LAPS property list: a config that pointed the expiry name at a password attribute is a terminating error'
+$lapsSeamCalls = 0
+function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a) $script:lapsSeamCalls++; [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com' } }
+function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a) $script:lapsSeamCalls++; [pscustomobject]@{ 'msDS-Behavior-Version' = 7 } }
+function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a) $script:lapsSeamCalls++; @() }
+$script:lapsSeamCalls = 0
+$lapsRefused = Get-AdfaLapsDirectoryRaw -DomainName 'contoso.com' -PropertyNames @('operatingSystem', 'ms-Mcs-AdmPwd') -NeverRead $lapsSecret
+Assert-True ($lapsRefused.Refused -and -not $lapsRefused.Ok -and $script:lapsSeamCalls -eq 0) 'LAPS seam: a list holding a secret attribute is refused before any directory call'
+$lapsClean = Get-AdfaLapsDirectoryRaw -DomainName 'contoso.com' -PropertyNames @('operatingSystem') -NeverRead $lapsSecret
+Assert-True (-not $lapsClean.Refused -and $lapsClean.Ok -and $script:lapsSeamCalls -eq 3) 'LAPS seam: non-vacuity - a clean list does reach the directory, in three calls'
+
+# FILETIME, the same on both editions.
+$lapsWhen = [datetime]::SpecifyKind(([datetime]'2026-12-01T08:30:00'), [System.DateTimeKind]::Utc)
+Assert-Equal $lapsWhen.ToString('o') (ConvertTo-AdfaFileTimeUtc -Value $lapsWhen.ToFileTimeUtc()).ToString('o') 'FILETIME: a 64-bit count is read as the UTC instant it denotes'
+Assert-Equal $lapsWhen.ToString('o') (ConvertTo-AdfaFileTimeUtc -Value ([string]$lapsWhen.ToFileTimeUtc())).ToString('o') 'FILETIME: the same count as text gives the same instant'
+Assert-True ($null -eq (ConvertTo-AdfaFileTimeUtc -Value ([int64]::MaxValue)) -and $null -eq (ConvertTo-AdfaFileTimeUtc -Value ([int64]-1)) -and $null -eq (ConvertTo-AdfaFileTimeUtc -Value 'x') -and $null -eq (ConvertTo-AdfaFileTimeUtc -Value $null)) 'FILETIME: the directory''s "never", a negative count, text and null are not a time, and nothing throws'
+
+# Schema: absent, present and "the query failed" are three results.
+Assert-Equal 'Complete,Partial,LegacyOnly,Absent,ControlMissing,NotRead' ((@(
+            (Get-LapsState).State
+            (Get-LapsState -Names @('operatingSystemVersion', $lapsWin)).State
+            (Get-LapsState -Names @('operatingSystemVersion', $lapsLegacy)).State
+            (Get-LapsState -Names @('operatingSystemVersion')).State
+            (Get-LapsState -Names @($lapsWin)).State
+            (Get-AdfaLapsSchemaState -Raw (New-LapsSchema -Ok $false -Err 'boom' -Names @()) -Config $lapsCfg).State) -join ',')) 'LAPS schema: the six states (declared population: six)'
+Assert-Equal 'Pass,Warning,Info,Info,Not Assessed,Not Assessed' ((@(
+            (Get-LapsState)
+            (Get-LapsState -Names @('operatingSystemVersion', $lapsWin))
+            (Get-LapsState -Names @('operatingSystemVersion', $lapsLegacy))
+            (Get-LapsState -Names @('operatingSystemVersion'))
+            (Get-LapsState -Names @($lapsWin))
+            (Get-AdfaLapsSchemaState -Raw (New-LapsSchema -Ok $false -Err 'boom' -Names @()) -Config $lapsCfg)) | ForEach-Object { [string](Get-AdfaLapsSchemaFinding -SchemaState $_ -Config $lapsCfg).Status }) -join ',') 'LAPS schema row: complete passes, partial warns, legacy-only and absent are Info, an answer without the control attribute and a failed query are Not Assessed'
+Assert-Equal 'Unreachable,AccessDenied,Error' ((@(
+            (Get-AdfaDirectoryReadErrorClass -TypeName 'Microsoft.ActiveDirectory.Management.ADServerDownException' -Message 'x')
+            (Get-AdfaDirectoryReadErrorClass -TypeName 'System.UnauthorizedAccessException' -Message 'Unable to contact the server')
+            (Get-AdfaDirectoryReadErrorClass -TypeName 'System.Exception' -Message 'A referral was returned from the server')) -join ',')) 'Directory read failure: unreachable, access denied and anything else are three classes, the exception type deciding before the text'
+
+# Population: who is graded.
+$lapsCutoff = $lapsNow.AddDays(-90)
+Assert-Equal 'InPopulation,ServiceAccount,DomainController,DomainController,AccountControlNotRead,Disabled,NoOperatingSystem,NonWindows,BuildNotRead,NotCapable,NoLogonRecorded,Stale' ((@(
+            (New-LapsRecord -Name 'ws1')
+            (New-LapsRecord -Name 'gmsa1$' -Classes @('msDS-GroupManagedServiceAccount'))
+            (New-LapsRecord -Name 'dc1' -Uac 532480)
+            (New-LapsRecord -Name 'rodc1' -Uac 83890176)
+            (New-LapsRecord -Name 'ws2' -Uac $null)
+            (New-LapsRecord -Name 'ws3' -Uac 4098)
+            (New-LapsRecord -Name 'cluster1' -Os '' -OsVersion '')
+            (New-LapsRecord -Name 'linux1' -Os 'Ubuntu' -OsVersion '22.04')
+            (New-LapsRecord -Name 'ws4' -OsVersion '')
+            (New-LapsRecord -Name 'old1' -Os 'Windows Server 2016 Standard' -OsVersion '10.0 (14393)')
+            (New-LapsRecord -Name 'ws5' -LogonDaysAgo $null)
+            (New-LapsRecord -Name 'ws6' -LogonDaysAgo 91)) | ForEach-Object { Get-AdfaLapsComputerClass -Computer $_ -Config $lapsCfg -StaleCutoffUtc $lapsCutoff }) -join ',') 'LAPS population: each kind of computer object falls in its own class (declared population: twelve objects, eleven classes)'
+Assert-Equal 'NotCapable,InPopulation,NotCapable,NotCapable,InPopulation,InPopulation' ((@(17762, 17763, 17764, 19040, 19041, 26100) | ForEach-Object {
+            Get-AdfaLapsComputerClass -Computer (New-LapsRecord -Name 'x' -OsVersion ("10.0 ({0})" -f $_)) -Config $lapsCfg -StaleCutoffUtc $lapsCutoff }) -join ',') 'LAPS population: capable is build 17763, and 19041 and later - both edges of both ranges'
+$lapsEdge = New-LapsRecord -Name 'edge'
+$lapsEdge.LastLogonTimestamp = $lapsCutoff.ToFileTimeUtc()
+$lapsAtCutoff = Get-AdfaLapsComputerClass -Computer $lapsEdge -Config $lapsCfg -StaleCutoffUtc $lapsCutoff
+$lapsEdge.LastLogonTimestamp = $lapsCutoff.ToFileTimeUtc() - 1
+Assert-Equal 'InPopulation,Stale' ("{0},{1}" -f $lapsAtCutoff, (Get-AdfaLapsComputerClass -Computer $lapsEdge -Config $lapsCfg -StaleCutoffUtc $lapsCutoff)) 'LAPS population: an account at the stale cutoff is in, one tick older is out (off by one)'
+
+# Coverage verdict.
+Assert-Equal 'Not Assessed/NoObjects,Info/EmptyPopulation,Warning/SchemaAbsent,Not Assessed/NoProofOfRead,Pass/AllVisible,Warning/AboveWarn' ((@(
+            (Get-LapsCoverage -In 0 -None 0 -Total 0)
+            (Get-LapsCoverage -In 0 -None 0 -Total 5)
+            (Get-LapsCoverage -In 4 -None 4 -HasExpiry $false -Proof $false)
+            (Get-LapsCoverage -In 4 -None 4 -Proof $false)
+            (Get-LapsCoverage -In 4 -None 0)
+            (Get-LapsCoverage -In 4 -None 1)) | ForEach-Object { "{0}/{1}" -f $_.Status, $_.State }) -join ',') 'LAPS coverage verdict: the six outcomes of the built-in thresholds - nothing readable is never a Pass and never a Warning'
+$lapsMoved = Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ WarnAbovePercent = 10; FailAbovePercent = 50 }
+Assert-Equal 'Pass,Warning,Warning,Fail' ((@(1, 2, 5, 6) | ForEach-Object { [string](Get-LapsCoverage -In 10 -None $_ -Config $lapsMoved).Status }) -join ',') 'LAPS coverage verdict: a share equal to a threshold is not above it (10 % and 50 % of ten computers)'
+
+# DSRM verdict.
+Assert-Equal 'Pass/Current,Warning/Expired,Warning/NoneVisible,Not Assessed/NoProofOfRead,Warning/SchemaAbsent,Not Assessed/SchemaNotRead,Info/NotApplicableLevel,Info/NotApplicableBuild,Not Assessed/LevelNotRead,Not Assessed/LevelUnknown,Not Assessed/BuildNotRead,Not Assessed/RodcNotPublished' ((@(
+            (Get-LapsDsrm -ExpiryDays 20)
+            (Get-LapsDsrm -ExpiryDays -30)
+            (Get-LapsDsrm)
+            (Get-LapsDsrm -Proof $false)
+            (Get-LapsDsrm -HasWindowsExpiry $false)
+            (Get-LapsDsrm -SchemaRead $false)
+            (Get-LapsDsrm -Level '6' -ExpiryDays 20)
+            (Get-LapsDsrm -Build 14393)
+            (Get-LapsDsrm -Level '' -ExpiryDays 20)
+            (Get-LapsDsrm -Level '8')
+            (Get-LapsDsrm -Build $null -ExpiryDays 20)
+            (Get-LapsDsrm -ReadOnly $true)) | ForEach-Object { "{0}/{1}" -f $_.Status, $_.State }) -join ',') 'LAPS DSRM verdict: twelve states (declared population: twelve) - an ineligible DC is Info, an unread level or build is Not Assessed'
+Assert-Equal 'NotApplicableBuild,NoneVisible,NotApplicableLevel,NoneVisible' ("{0},{1},{2},{3}" -f (Get-LapsDsrm -Build 17762).State, (Get-LapsDsrm -Build 17763).State, (Get-LapsDsrm -Level '6').State, (Get-LapsDsrm -Level '7').State) 'LAPS DSRM verdict: the eligibility lines are build 17763 and domain level 7, not one below (off by one)'
+$lapsGrace = [int]$lapsCfg['ExpiredGraceDays']
+Assert-Equal 'Current,Expired' ("{0},{1}" -f (Get-AdfaLapsDsrmVerdict -Build 17763 -DomainLevel '7' -ExpiryPresent $true -ExpiryUtc $lapsNow.AddDays(-1 * $lapsGrace) -Now $lapsNow -ProofOfRead $true -SchemaRead $true -HasWindowsExpiry $true -IsReadOnly $false -Config $lapsCfg).State,
+    (Get-AdfaLapsDsrmVerdict -Build 17763 -DomainLevel '7' -ExpiryPresent $true -ExpiryUtc $lapsNow.AddDays(-1 * $lapsGrace).AddSeconds(-1) -Now $lapsNow -ProofOfRead $true -SchemaRead $true -HasWindowsExpiry $true -IsReadOnly $false -Config $lapsCfg).State) 'LAPS DSRM verdict: exactly the grace period after the expiry time is still current, one second more is expired'
+
+# Rows.
+$lapsMixed = @(
+    (New-LapsRecord -Name 'dc1.contoso.com' -Os 'Windows Server 2019 Standard' -OsVersion '10.0 (17763)' -Uac 532480 -WinExpiryDays 20)
+    (New-LapsRecord -Name 'dc2.contoso.com' -Os 'Windows Server 2019 Standard' -OsVersion '10.0 (17763)' -Uac 532480)
+    (New-LapsRecord -Name 'ws1.contoso.com' -WinExpiryDays 3)
+    (New-LapsRecord -Name 'ws2.contoso.com')
+    (New-LapsRecord -Name 'linux1.contoso.com' -Os 'Ubuntu' -OsVersion '22.04')
+    (New-LapsRecord -Name 'cluster1.contoso.com' -Os '' -OsVersion '')
+    (New-LapsRecord -Name 'ws-off.contoso.com' -Uac 4098))
+$lapsRows = Get-LapsRows -Computers $lapsMixed
+Assert-Equal 3 $lapsRows.Count 'LAPS rows: one coverage row and one DSRM row per domain controller (declared population: one domain, two DCs)'
+$lapsCovRow = Get-LapsRow $lapsRows 'LAPS coverage: contoso.com'
+Assert-True ([string]$lapsCovRow.Status -eq 'Warning' -and [string]$lapsCovRow.Detail -match '^1 of 2 computer account\(s\) in population \(50 %\) have no LAPS expiry time visible to this account' -and [string]$lapsCovRow.Detail -match 'No LAPS expiry time visible: ws2\.contoso\.com\.') 'LAPS coverage row: the share is over the population, and only an in-population computer is named'
+Assert-True ([string]$lapsCovRow.Detail -notmatch 'visible: .*(linux1|cluster1|ws-off)' -and [string]$lapsCovRow.Detail -match 'disabled 1; no operatingSystem recorded 1; operatingSystem not Windows 1') 'LAPS coverage row: a non-Windows host, a cluster object and a disabled account are counted out of the population, never named as missing LAPS'
+Assert-True ([string]$lapsCovRow.Detail -match 'tool default, not a Microsoft value' -and [string]$lapsCovRow.Detail -match 'not set and not readable look the same' -and [string]$lapsCovRow.Detail -match 'Microsoft Entra ID') 'LAPS coverage row: the thresholds are labelled tool defaults, and the row says what it cannot tell apart or see'
+Assert-Equal 'Pass,Warning' ("{0},{1}" -f (Get-LapsRow $lapsRows 'DSRM password backup: dc1.contoso.com').Status, (Get-LapsRow $lapsRows 'DSRM password backup: dc2.contoso.com').Status) 'LAPS DSRM rows: every DC gets its own row and its own verdict, not only the first'
+Assert-Equal 0 (@($lapsRows | Where-Object { $null -eq $_.PSObject.Properties['NotRun'] }).Count) 'LAPS rows: every row carries the NotRun column'
+$lapsQuiet = Get-LapsRows -Computers @((New-LapsRecord -Name 'dc1.contoso.com' -Os 'Windows Server 2019 Standard' -OsVersion '10.0 (17763)' -Uac 532480), (New-LapsRecord -Name 'ws1'), (New-LapsRecord -Name 'ws2'))
+Assert-Equal 2 (@($lapsQuiet | Where-Object { [string]$_.Status -eq 'Not Assessed' }).Count) 'LAPS rows: with the attribute in the schema and no value visible anywhere, the coverage row and the DC row are both Not Assessed - never Warning, never Pass'
+$lapsNoSchema = Get-LapsRows -Computers @((New-LapsRecord -Name 'ws1'), (New-LapsRecord -Name 'ws2')) -SchemaNames @('operatingSystemVersion')
+Assert-True ([string](Get-LapsRow $lapsNoSchema 'LAPS coverage: contoso.com').Status -eq 'Warning' -and [string](Get-LapsRow $lapsNoSchema 'LAPS coverage: contoso.com').Detail -match '^The forest schema carries neither ') 'LAPS rows: a schema with neither expiry attribute is a measured absence - a Warning that names the schema as the cause'
+$lapsFailed = @(@(
+        (New-LapsRaw -Ok $false -Err 'Unable to contact the server.' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException')
+        (New-LapsRaw -Ok $false -Err 'Access is denied' -Type 'System.UnauthorizedAccessException')
+        (New-LapsRaw -Ok $false -Err 'A referral was returned from the server' -Type 'Microsoft.ActiveDirectory.Management.ADException')) | ForEach-Object {
+        $r = @(Get-AdfaLapsDomainFinding -DomainName 'contoso.com' -Raw $_ -SchemaState (Get-LapsState) -Config $lapsCfg -StaleDays 90 -Now $lapsNow)
+        "{0}:{1}:{2}" -f $r.Count, (@($r | Where-Object { [string]$_.Status -eq 'Not Assessed' }).Count), (([string]$r[0].Detail -split ':')[0]) })
+Assert-Equal '2:2:Unreachable,2:2:Access denied,2:2:Read failed' ($lapsFailed -join ',') 'LAPS rows: a failed read gives the domain two Not Assessed rows, and unreachable, access denied and another failure are worded apart'
+$lapsMany = @(New-LapsRecord -Name 'ws-ok' -WinExpiryDays 5)
+foreach ($i in 1..30) { $lapsMany += New-LapsRecord -Name ("ws{0:d2}.contoso.com" -f $i) }
+$lapsManyRow = Get-LapsRow (Get-LapsRows -Computers $lapsMany) 'LAPS coverage: contoso.com'
+Assert-True ([string]$lapsManyRow.Detail -match 'showing 25 of 30, in name order' -and [string]$lapsManyRow.Detail -match 'ws25\.contoso\.com\.' -and [string]$lapsManyRow.Detail -notmatch 'ws26\.contoso\.com') 'LAPS coverage row: the names are capped at SampleLimit, and the row says it cut the list'
+Assert-True ([string](Get-LapsRow (Get-LapsRows -Computers $lapsMany -Config (Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ SampleLimit = 30 })) 'LAPS coverage: contoso.com').Detail -notmatch 'showing') 'LAPS coverage row: at the limit exactly nothing is cut (off by one)'
+
+# Config override.
+$lapsMerged = Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override ('{ "WarnAbovePercent": 5, "SampleLimit": 10 }' | ConvertFrom-Json) -OverrideSource 'C:\cfg\laps.json'
+Assert-True ([double]$lapsMerged['WarnAbovePercent'] -eq 5 -and [int]$lapsMerged['SampleLimit'] -eq 10 -and [double]$lapsMerged['FailAbovePercent'] -eq 100 -and [string]$lapsMerged['ThresholdSource'] -match 'for WarnAbovePercent, SampleLimit; tool default, not a Microsoft value, for FailAbovePercent, ExpiredGraceDays') 'LAPS override: only the named keys change, and the source is cited for exactly those'
+Assert-Equal 'tool default, not a Microsoft value' ([string]$lapsCfg['ThresholdSource']) 'LAPS override: the built-in table is not changed by a merge'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @(1, 2) } 'single object' 'LAPS override: an array is refused'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override ('{}' | ConvertFrom-Json) } 'empty object' 'LAPS override: an empty object is refused'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ Typo = 1 } } "unknown key 'Typo'" 'LAPS override: an unknown key is refused'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ NeverRead = @() } } "unknown key 'NeverRead'" 'LAPS override: the never-read list cannot be set from a file'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ WindowsExpiry = 'ms-Mcs-AdmPwd' } } "unknown key 'WindowsExpiry'" 'LAPS override: an attribute name cannot be set from a file'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override ('{ "SampleLimit": null }' | ConvertFrom-Json) } 'to null' 'LAPS override: a null is refused'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override ('{ "SampleLimit": [] }' | ConvertFrom-Json) } 'JSON number' 'LAPS override: an empty list is refused'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ WarnAbovePercent = '5' } } 'JSON number' 'LAPS override: a number written as a string is refused'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ FailAbovePercent = 101 } } 'range 0 to 100' 'LAPS override: a percentage above 100 is refused'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ WarnAbovePercent = 100 } } 'would ever be reported' 'LAPS override: a Warning threshold nothing can exceed is refused - it would switch the check off'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ WarnAbovePercent = 30; FailAbovePercent = 20 } } 'is below WarnAbovePercent' 'LAPS override: Fail below Warning is refused'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ SampleLimit = 1001 } } 'whole number from 0 to 1000' 'LAPS override: a sample of thousands is refused'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ ExpiredGraceDays = -1 } } 'whole number of days from 0 to 365' 'LAPS override: a negative grace period is refused'
+$lapsOvr = Resolve-AdfaConfigOverride -Override ('{ "Laps": { "FailAbovePercent": 50 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
+Assert-True ((@($lapsOvr.Keys) -join ',') -eq 'Laps' -and [double]$lapsOvr['Laps']['FailAbovePercent'] -eq 50) 'Config override: the Laps section goes through its own validator'
+
+# Recommendations: section-scoped, anchored on the Item the tool writes.
+$lapsHostile = 'Threshold source: C:\Backup\replication\sysvol-dfsr\stale.json. managing aging scavenging password policy lockout global catalog tombstone lifetime krbtgt'
+Assert-True ((Get-AdfaRecommendation -Section 'Windows LAPS' -Item 'LAPS coverage: backup.contoso.com' -Detail $lapsHostile) -match 'Set-LapsADComputerSelfPermission' -and (Get-AdfaRecommendation -Section 'Windows LAPS' -Item 'DSRM password backup: dc1.contoso.com' -Detail $lapsHostile) -match 'ADBackupDSRMPassword' -and (Get-AdfaRecommendation -Section 'Windows LAPS' -Item 'Windows LAPS schema' -Detail $lapsHostile) -match 'Update-LapsADSchema') 'LAPS advice: each row family gets its own advice whatever the detail, the host name or a file path contains (declared population: three families)'
+Assert-Equal '' (Get-AdfaRecommendation -Section 'Windows LAPS' -Item 'DSRM password backup - contoso.com' -Detail $lapsHostile) 'LAPS advice: a row of the section with no advice of its own gets none, not an unrelated one'
+Assert-True ((Get-AdfaRecommendation -Section 'Somewhere Else' -Item 'x' -Detail $lapsHostile) -ne '') 'LAPS advice: non-vacuity - the same text outside the section does attract advice'
+
+# Found by the independent review of the C4 diff, and fixed in it.
+Assert-Equal 'TimedOut,TimedOut,Unreachable,AccessDenied' ((@(
+            (Get-AdfaDirectoryReadErrorClass -TypeName 'System.TimeoutException' -Message 'x')
+            (Get-AdfaDirectoryReadErrorClass -TypeName 'System.ServiceModel.ServerTooBusyException' -Message 'x')
+            (Get-AdfaDirectoryReadErrorClass -TypeName 'System.Exception' -Message 'The server is unavailable')
+            (Get-AdfaDirectoryReadErrorClass -TypeName 'System.ServiceModel.Security.SecurityAccessDeniedException' -Message 'x'))) -join ',') 'Directory read failure: a timeout or a busy server is its own class, not "unreachable" (declared population: four patterns)'
+$lapsTimeoutLead = Get-AdfaLapsReadFailureLead -Message 'Tempo limite excedido' -TypeName 'System.TimeoutException' -What 'the computer objects of contoso.com'
+Assert-True ($lapsTimeoutLead -match '^Timed out: ' -and $lapsTimeoutLead -notmatch 'no directory server answered') 'LAPS rows: a timed-out query does not say that no directory server answered'
+$lapsEndOfTime = [datetime]::SpecifyKind([datetime]::MaxValue, [System.DateTimeKind]::Utc)
+$lapsEndStates = @()
+foreach ($lapsGraceCfg in @($lapsCfg, (Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ ExpiredGraceDays = 365 }))) {
+    foreach ($lapsEnd in @($lapsEndOfTime, $lapsEndOfTime.AddDays(-3))) {
+        $lapsEndStates += [string](Get-AdfaLapsDsrmVerdict -Build 20348 -DomainLevel '7' -ExpiryPresent $true -ExpiryUtc $lapsEnd -Now $lapsNow -ProofOfRead $true -SchemaRead $true -HasWindowsExpiry $true -IsReadOnly $false -Config $lapsGraceCfg).State
+    }
+}
+Assert-Equal 'Current,Current,Current,Current' ($lapsEndStates -join ',') 'LAPS DSRM verdict: an expiry time at the end of the calendar is current and does not throw, with 7 or 365 days of grace (declared population: four)'
+$lapsUnc = Get-LapsRows -Computers @(
+    (New-LapsRecord -Name 'dc1.contoso.com' -Os 'Windows Server 2019 Standard' -OsVersion '10.0 (17763)' -Uac 532480 -WinExpiryDays 5)
+    (New-LapsRecord -Name 'ws1.contoso.com' -WinExpiryDays 5)
+    (New-LapsRecord -Name 'ws-nobuild.contoso.com' -OsVersion '')
+    (New-LapsRecord -Name 'dc2.contoso.com' -Uac $null))
+Assert-Equal 'Not Assessed' ([string](Get-LapsRow $lapsUnc 'LAPS coverage: contoso.com').Status) 'LAPS coverage row: objects that could not be classified keep a would-be Pass at Not Assessed'
+Assert-True ([string](Get-LapsRow $lapsUnc 'DSRM password backup - contoso.com').Status -eq 'Not Assessed' -and [string](Get-LapsRow $lapsUnc 'DSRM password backup - contoso.com').Detail -match 'Without account control flags: dc2\.contoso\.com\.') 'LAPS DSRM rows: an object without account control flags, which may be a DC, is named in a Not Assessed row'
+$lapsBoth = Get-LapsRow (Get-LapsRows -Computers @((New-LapsRecord -Name 'ws-both' -WinExpiryDays 5 -LegacyExpiryDays 5), (New-LapsRecord -Name 'ws-legacy' -LegacyExpiryDays 5)) -SchemaNames @($lapsFullSchema + @($lapsLegacy))) 'LAPS coverage: contoso.com'
+Assert-True ([string]$lapsBoth.Detail -match 'Windows LAPS expiry time visible 1; legacy Microsoft LAPS expiry time only 1;') 'LAPS coverage row: a computer with both expiry times counts as Windows LAPS, once'
+Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ ExpiredGraceDays = 366 } } 'whole number of days from 0 to 365' 'LAPS override: a grace period over a year is refused'
+
+# The Identity export no longer writes a LAPS password attribute (the full fix is PORT-PLAN C4b).
+function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a)
+    $o = [pscustomobject]@{ Name = 'WS1'; OperatingSystem = 'Windows 11 Enterprise' }
+    $o | Add-Member -NotePropertyName 'ms-Mcs-AdmPwd' -NotePropertyValue 'STUB-VALUE'
+    $o | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue 'STUB-VALUE'
+    $o | Add-Member -NotePropertyName 'msLAPS-PasswordExpirationTime' -NotePropertyValue 134000000000000000
+    $o }
+$lapsExport = @(Get-AdfaComputerInventory -DomainName 'contoso.com')
+$lapsExportColumns = @($lapsExport[0].PSObject.Properties | ForEach-Object { $_.Name })
+Assert-True ($lapsExportColumns -notcontains 'ms-Mcs-AdmPwd' -and $lapsExportColumns -notcontains 'msLAPS-Password' -and $lapsExportColumns -contains 'msLAPS-PasswordExpirationTime' -and (($lapsExport | ConvertTo-Csv -NoTypeInformation) -join ' ') -notmatch 'STUB-VALUE') 'Identity export: the LAPS password attributes are left out of the computer export, and the non-secret expiry time stays'
+function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a)
+    $o = [pscustomobject]@{ Name = 'WS2'; OperatingSystem = 'Windows 11 Enterprise' }
+    $o | Add-Member -NotePropertyName 'MS-MCS-ADMPWD' -NotePropertyValue 'STUB-ODD-CASE'
+    $o | Add-Member -NotePropertyName 'mslaps-encryptedpassword' -NotePropertyValue 'STUB-ODD-CASE'
+    $o }
+$lapsOddExport = @(Get-AdfaComputerInventory -DomainName 'contoso.com')
+Assert-True ((($lapsOddExport | ConvertTo-Csv -NoTypeInformation) -join ' ') -notmatch 'STUB-ODD-CASE' -and @($lapsOddExport[0].PSObject.Properties | Where-Object { $_.Name -eq 'OperatingSystem' }).Count -eq 1) 'Identity export: a secret attribute is left out whatever case the answer spells its name in'
 
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })

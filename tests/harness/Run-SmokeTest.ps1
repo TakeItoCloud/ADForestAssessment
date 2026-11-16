@@ -58,10 +58,72 @@ function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]
 # DC, which answers with an LDAP referral rather than the object. Every child-domain DC lost its
 # OperatingSystem, and the Exchange SE verdict called them "unverified, not compatible".
 # The stub refuses exactly as the directory did, so the bug cannot come back unnoticed.
+#
+# C4 (Laps) adds two behaviours, each selected by what the caller sends, so that the callers that
+# existed before it receive exactly what they received before:
+#   -LDAPFilter (only the Laps section sends one): the computer objects of the domain named by
+#     -Server, in the shape the cmdlet returns - the default properties always, a requested
+#     attribute only where the object has a value, the times as raw Int64 FILETIME. The stub
+#     REFUSES a property list that holds a wildcard or one of the seven secret LAPS attributes:
+#     a section that asked for a password would fail here, not appear to work.
+#     Eight objects: one DC with a current Windows LAPS expiry time; three in the population
+#     (two with an expiry time, one without); a disabled workstation, a Linux host, a cluster
+#     object with no operatingSystem and a stale workstation, none of which may be graded.
+#     $script:SmokeLapsFail makes this query, and the schema query, throw;
+#     $script:SmokeLapsComputerFail makes this query alone throw.
+#     $script:SmokeLapsDcExpiryFileTime, when set, is the raw expiry value of the DC instead of
+#     "in 20 days" - the end-of-calendar value that once threw out of the section.
+#   -Properties * (only the Identity export sends it): the same single object as before, plus
+#     the attributes a privileged account would be handed, the secret ones included. Their value
+#     is a sentinel string, and the harness asserts it appears nowhere in the output bundle.
+$script:SmokeLapsFail = $false
+$script:SmokeLapsComputerFail = $false
+$script:SmokeLapsDcExpiryFileTime = $null
+$script:SmokeSecretSentinel = 'ADFA-SMOKE-SENTINEL-NOT-A-PASSWORD'
+$script:SmokeLapsSecretNames = @('msLAPS-Password', 'msLAPS-EncryptedPassword', 'msLAPS-EncryptedPasswordHistory', 'msLAPS-EncryptedDSRMPassword',
+    'msLAPS-EncryptedDSRMPasswordHistory', 'msLAPS-CurrentPasswordVersion', 'ms-Mcs-AdmPwd')
+# What the stub forest's schema defines: the control attribute and the six attributes
+# Update-LapsADSchema adds. No legacy attributes and no Windows Server 2025 attribute.
+$script:SmokeLapsSchema = @('operatingSystemVersion', 'msLAPS-PasswordExpirationTime', 'msLAPS-Password', 'msLAPS-EncryptedPassword',
+    'msLAPS-EncryptedPasswordHistory', 'msLAPS-EncryptedDSRMPassword', 'msLAPS-EncryptedDSRMPasswordHistory')
+function New-StubLapsComputer {
+    param([string]$Name, [string]$Domain, [string[]]$Asked, [string]$Os, [string]$OsVersion, [int]$Uac = 4096, $LogonDaysAgo = 1, $ExpiryDays = $null, $ExpiryFileTime = $null)
+    $o = [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Computers,DC={1}" -f $Name.ToUpperInvariant(), (($Domain -split '\.') -join ',DC='))
+        DNSHostName = ("{0}.{1}" -f $Name, $Domain); Name = $Name.ToUpperInvariant(); ObjectClass = 'computer'; Enabled = (($Uac -band 2) -eq 0) }
+    if ($Os -and ($Asked -contains 'operatingSystem')) { $o | Add-Member -NotePropertyName 'operatingSystem' -NotePropertyValue $Os }
+    if ($OsVersion -and ($Asked -contains 'operatingSystemVersion')) { $o | Add-Member -NotePropertyName 'operatingSystemVersion' -NotePropertyValue $OsVersion }
+    if ($Asked -contains 'userAccountControl') { $o | Add-Member -NotePropertyName 'userAccountControl' -NotePropertyValue $Uac }
+    if ($null -ne $LogonDaysAgo -and ($Asked -contains 'lastLogonTimestamp')) { $o | Add-Member -NotePropertyName 'lastLogonTimestamp' -NotePropertyValue ([int64]$now.AddDays(-1 * $LogonDaysAgo).ToFileTimeUtc()) }
+    if ($null -ne $ExpiryFileTime -and ($Asked -contains 'msLAPS-PasswordExpirationTime')) { $o | Add-Member -NotePropertyName 'msLAPS-PasswordExpirationTime' -NotePropertyValue ([int64]$ExpiryFileTime) }
+    elseif ($null -ne $ExpiryDays -and ($Asked -contains 'msLAPS-PasswordExpirationTime')) { $o | Add-Member -NotePropertyName 'msLAPS-PasswordExpirationTime' -NotePropertyValue ([int64]$now.AddDays($ExpiryDays).ToFileTimeUtc()) }
+    return $o
+}
 function Get-ADComputer {
-    param([string]$Identity, [string]$Server, [string[]]$Properties, [Parameter(ValueFromRemainingArguments)]$a)
+    param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$LDAPFilter, [Parameter(ValueFromRemainingArguments)]$a)
     if ([string]::IsNullOrWhiteSpace($Server)) { throw 'A referral was returned from the server' }
-    [pscustomobject]@{ OperatingSystem='Windows Server 2019'; OperatingSystemVersion='10.0 (17763)'; Enabled=$true; whenCreated=$now } }
+    if (-not [string]::IsNullOrWhiteSpace($LDAPFilter)) {
+        if ($script:SmokeLapsFail -or $script:SmokeLapsComputerFail) { throw 'STUB: computer query refused' }
+        foreach ($p in @($Properties)) {
+            if ($p -match '[*?]' -or $script:SmokeLapsSecretNames -contains $p) { throw ("STUB: the section asked for '{0}', which it must never request" -f $p) }
+        }
+        if ($LDAPFilter -ne '(objectClass=computer)') { throw ("STUB: unexpected LDAP filter '{0}'" -f $LDAPFilter) }
+        return @(
+            (New-StubLapsComputer -Name 'dc1' -Domain $Server -Asked $Properties -Os 'Windows Server 2019 Standard' -OsVersion '10.0 (17763)' -Uac 532480 -ExpiryDays 20 -ExpiryFileTime $script:SmokeLapsDcExpiryFileTime)
+            (New-StubLapsComputer -Name 'srv1' -Domain $Server -Asked $Properties -Os 'Windows Server 2022 Standard' -OsVersion '10.0 (20348)' -ExpiryDays 10)
+            (New-StubLapsComputer -Name 'ws1' -Domain $Server -Asked $Properties -Os 'Windows 11 Enterprise' -OsVersion '10.0 (22631)' -ExpiryDays 5)
+            (New-StubLapsComputer -Name 'ws2' -Domain $Server -Asked $Properties -Os 'Windows 11 Enterprise' -OsVersion '10.0 (22631)')
+            (New-StubLapsComputer -Name 'ws-off' -Domain $Server -Asked $Properties -Os 'Windows 10 Enterprise' -OsVersion '10.0 (19045)' -Uac 4098)
+            (New-StubLapsComputer -Name 'linux1' -Domain $Server -Asked $Properties -Os 'Ubuntu' -OsVersion '22.04')
+            (New-StubLapsComputer -Name 'cluster1' -Domain $Server -Asked $Properties -Os '' -OsVersion '')
+            (New-StubLapsComputer -Name 'ws-stale' -Domain $Server -Asked $Properties -Os 'Windows 11 Enterprise' -OsVersion '10.0 (22631)' -LogonDaysAgo 200)
+        )
+    }
+    $stubComputer = [pscustomobject]@{ OperatingSystem='Windows Server 2019'; OperatingSystemVersion='10.0 (17763)'; Enabled=$true; whenCreated=$now }
+    if (@($Properties) -contains '*') {
+        foreach ($secretName in $script:SmokeLapsSecretNames) { $stubComputer | Add-Member -NotePropertyName $secretName -NotePropertyValue $script:SmokeSecretSentinel }
+        $stubComputer | Add-Member -NotePropertyName 'msLAPS-PasswordExpirationTime' -NotePropertyValue ([int64]$now.AddDays(20).ToFileTimeUtc())
+    }
+    $stubComputer }
 # C1 (DcSystem): the CIM cmdlets, stubbed in the shape the real ones return for the classes the
 # sections read. Any other class throws, so a section that asked for a class nobody stubbed
 # degrades to Not Assessed instead of quietly "succeeding" against an object that has none of
@@ -210,7 +272,21 @@ function Get-ADOptionalFeature { param([Parameter(ValueFromRemainingArguments)]$
     [pscustomobject]@{ Name='Recycle Bin Feature'; EnabledScopes=@('CN=Partitions') } }
 function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ configurationNamingContext='CN=Configuration,DC=contoso,DC=com'; schemaNamingContext='CN=Schema,CN=Configuration,DC=contoso,DC=com' } }
+# C4 (Laps): one more behaviour, selected by the filter. A search for attributeSchema objects by
+# lDAPDisplayName - which only the Laps schema read sends - is answered with one object per name
+# that is both asked for and in $script:SmokeLapsSchema, in the shape the cmdlet returns. Every
+# other call receives the single object it always received.
 function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
+    $stubAsked = (@($a | ForEach-Object { [string]$_ }) -join ' ')
+    if ($stubAsked -match 'lDAPDisplayName=') {
+        if ($script:SmokeLapsFail) { throw 'STUB: schema query refused' }
+        foreach ($schemaName in @($script:SmokeLapsSchema)) {
+            if ($stubAsked -match ("\(lDAPDisplayName={0}\)" -f [regex]::Escape($schemaName))) {
+                [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Schema,CN=Configuration,DC=contoso,DC=com" -f $schemaName); ObjectClass = 'attributeSchema'; lDAPDisplayName = $schemaName }
+            }
+        }
+        return
+    }
     [pscustomobject]@{ tombstoneLifetime=180; 'ms-DS-MachineAccountQuota'=0; rangeUpper=15334; whenChanged=$now
         'msDS-Behavior-Version'=7 } }
 # No verification tools on this host -> trust health should degrade to Not Assessed honestly.
@@ -393,6 +469,33 @@ Check (@($hardRows | Where-Object { $_.Status -eq 'Warning' }).Count -eq 2 -and 
 Check (@($hardRows | Where-Object { $_.Status -eq 'Pass' -and $_.Recommendation }).Count -eq 0 -and @($hardRows | Where-Object { $_.Status -eq 'Info' -and $_.Recommendation }).Count -eq 0) 'DC Hardening: a Pass or Info row carries no advice'
 Check ($hardCb.Recommendation -match 'LDAP server channel binding token requirements' -and $hardClient.Recommendation -match 'Microsoft network client: Digitally sign communications') 'DC Hardening: each Warning row carries the advice of its own family'
 Check (@($hardRows | Where-Object { $_.Item -like '*: Print Spooler' -or $_.Item -like '*: SMBv1' -or $_.Item -like '*: LDAP signing required' }).Count -eq 0) 'DC Hardening: the pre-1.20.0 row names are gone, so nothing is reported twice'
+# C4: the Laps section must be wired, must read the schema and the computers through the AD
+# stubs, and must grade only what is in its population. The stub domain holds eight computer
+# objects: one DC, three in population (one of them with no expiry time), four left out.
+$lapsRows = @($smokeFindings | Where-Object { $_.Section -eq 'Windows LAPS' })
+Check (@($lapsRows).Count -eq 3) ("Section 'Windows LAPS' is wired into Invoke-Main and gives the schema row, one coverage row and one DSRM row for the stub domain ({0} rows, expected 3)" -f @($lapsRows).Count)
+$lapsSchema = @($lapsRows | Where-Object { $_.Item -eq 'Windows LAPS schema' })
+Check (@($lapsSchema).Count -eq 1 -and $lapsSchema[0].Status -eq 'Pass' -and $lapsSchema[0].Detail -match 'six attributes' -and $lapsSchema[0].Scope -eq 'contoso.com') 'Windows LAPS: the schema row passes on the six attributes the schema stub defines, and carries the forest as Scope'
+Check (@($lapsSchema).Count -eq 1 -and $lapsSchema[0].Detail -match 'msLAPS-CurrentPasswordVersion: absent' -and $lapsSchema[0].Detail -match 'Legacy Microsoft LAPS attributes: absent') 'Windows LAPS: the schema row reports the 2025 attribute and the legacy attributes as absent, without requiring either'
+$lapsCov = @($lapsRows | Where-Object { $_.Item -eq 'LAPS coverage: contoso.com' })
+Check (@($lapsCov).Count -eq 1 -and $lapsCov[0].Status -eq 'Warning' -and $lapsCov[0].Scope -eq 'contoso.com') 'Windows LAPS: the coverage row is a Warning for a domain with one in-population computer without an expiry time, and carries its domain'
+Check (@($lapsCov).Count -eq 1 -and $lapsCov[0].Detail -match '^1 of 3 computer account\(s\) in population \(33\.33 %\) have no LAPS expiry time visible to this account') 'Windows LAPS: the share is counted over the population - three computers, not the eight objects read'
+Check (@($lapsCov).Count -eq 1 -and $lapsCov[0].Detail -match 'Read 8 computer object\(s\)' -and $lapsCov[0].Detail -match 'In population 3: Windows LAPS expiry time visible 2; legacy Microsoft LAPS expiry time only 0; no LAPS expiry time visible to this account 1\.') 'Windows LAPS: the counts reconcile - 8 read, 3 in population, 2 with and 1 without'
+Check (@($lapsCov).Count -eq 1 -and $lapsCov[0].Detail -match 'Out of population 5: domain controllers 1 .*; managed service accounts 0; disabled 1; no operatingSystem recorded 1; operatingSystem not Windows 1; .* stale 1;') 'Windows LAPS: the disabled, non-Windows, cluster and stale objects and the DC are each counted out of the population, by name of class'
+Check (@($lapsCov).Count -eq 1 -and $lapsCov[0].Detail -match 'No LAPS expiry time visible: ws2\.contoso\.com\.' -and $lapsCov[0].Detail -notmatch 'visible: .*(linux1|cluster1|ws-off|ws-stale)') 'Windows LAPS: only the in-population computer is named as having no expiry time visible - not the Linux host, the cluster object, the disabled or the stale one'
+Check (@($lapsCov).Count -eq 1 -and $lapsCov[0].Detail -match 'tool default, not a Microsoft value' -and $lapsCov[0].Detail -match 'Microsoft Entra ID' -and $lapsCov[0].Detail -match 'not set and not readable look the same') 'Windows LAPS: the coverage row labels its thresholds as tool defaults and says what the read cannot tell apart or see'
+Check (@($lapsCov).Count -eq 1 -and $lapsCov[0].Recommendation -match 'Set-LapsADComputerSelfPermission' -and $lapsCov[0].Recommendation -notmatch 'wbadmin|scavenging|Disable first, delete later|repadmin') 'Windows LAPS: the Warning carries the LAPS advice, not the backup, scavenging, stale-account or replication advice its wording would otherwise attract'
+$lapsDsrm = @($lapsRows | Where-Object { $_.Item -eq 'DSRM password backup: dc1.contoso.com' })
+Check (@($lapsDsrm).Count -eq 1 -and $lapsDsrm[0].Status -eq 'Pass' -and $lapsDsrm[0].Scope -eq 'contoso.com' -and $lapsDsrm[0].Detail -match 'A Windows LAPS expiry time is visible' -and $lapsDsrm[0].Detail -match 'inference') 'Windows LAPS: the stub DC (build 17763, domain level 7) has a current expiry time, so its DSRM row passes and says the evidence is an inference'
+Check (@($lapsDsrm).Count -eq 1 -and $lapsDsrm[0].Detail -match 'PORT-PLAN C4a' -and -not $lapsDsrm[0].Recommendation) 'Windows LAPS: the DSRM row says the registry policy was not read, and a passing row carries no advice'
+# The hard rule, end to end. The Identity export of this same run was handed the seven secret
+# attributes by the stub, each holding a sentinel string. It must be in no file of the bundle.
+$sentinelHits = @(Get-ChildItem -Path $result.OutputRoot -Recurse -File | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match [regex]::Escape($script:SmokeSecretSentinel) })
+Check ($sentinelHits.Count -eq 0) ("Hard rule: no file of the output bundle holds a value of a LAPS password attribute ({0} file(s) do)" -f $sentinelHits.Count)
+$allComputersCsv = @(Get-ChildItem -Path $result.CsvPath -Filter 'AllComputers_*.csv')
+$allComputersColumns = @((Import-Csv $allComputersCsv[0].FullName | Select-Object -First 1).PSObject.Properties.Name)
+Check (@($script:SmokeLapsSecretNames | Where-Object { $allComputersColumns -contains $_ }).Count -eq 0) 'Hard rule: the computer export has no column for any of the seven secret LAPS attributes'
+Check ($allComputersColumns -contains 'msLAPS-PasswordExpirationTime' -and $allComputersColumns -contains 'OperatingSystem') 'Hard rule: non-vacuity - the export did receive the all-attributes object, and kept the non-secret expiry time'
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
@@ -434,7 +537,7 @@ Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scop
 $findings2 = @(Import-Csv (Join-Path $result2.CsvPath 'Findings-Consolidated.csv'))
 Check ($findings2.Count -gt 0) ("Multi-domain: consolidated findings are not empty ({0} rows)" -f $findings2.Count)
 
-foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space', 'DC Hardening')) {
+foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space', 'DC Hardening', 'Windows LAPS')) {
     $n = @($findings2 | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Multi-domain: section '{0}' reached the consolidated findings ({1} rows)" -f $sec, $n)
 }
@@ -463,6 +566,19 @@ foreach ($d in $multiDomains) {
     Check (@($forDomainH).Count -eq 8) ("Multi-domain: DC Hardening has eight rows scoped '{0}' ({1})" -f $d, @($forDomainH).Count)
     Check (@($forDomainH | Where-Object { $_.Status -eq 'Pass' }).Count -eq 4) ("Multi-domain: the DC Hardening settings of '{0}' are judged, not skipped" -f $d)
     Check (@($forDomainH | Where-Object { $_.Item -like 'SMBv1: *' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) ("Multi-domain: the SMBv1 row of '{0}' is Not Assessed, never Pass, on a class that returned no instance" -f $d)
+}
+
+# C4: one schema row for the forest, and for EACH of the three domains its own coverage row and
+# its own DSRM row, each carrying its domain and naming that domain's computers - not three
+# copies of the first domain, and not one row for the forest.
+$laps2 = @($findings2 | Where-Object { $_.Section -eq 'Windows LAPS' })
+Check (@($laps2).Count -eq 7) ("Multi-domain: Windows LAPS has one schema row and two rows for each of the three domains ({0}, expected 7)" -f @($laps2).Count)
+Check (@($laps2 | Where-Object { $_.Item -eq 'Windows LAPS schema' }).Count -eq 1) 'Multi-domain: the schema is read once for the forest, not once per domain'
+foreach ($d in $multiDomains) {
+    $forDomainL = @($laps2 | Where-Object { $_.Scope -eq $d -and $_.Item -ne 'Windows LAPS schema' })
+    Check (@($forDomainL).Count -eq 2) ("Multi-domain: Windows LAPS has two rows scoped '{0}' ({1})" -f $d, @($forDomainL).Count)
+    Check (@($forDomainL | Where-Object { $_.Item -eq ("LAPS coverage: {0}" -f $d) -and $_.Status -eq 'Warning' -and $_.Detail -match ("visible: ws2\.{0}\." -f [regex]::Escape($d)) }).Count -eq 1) ("Multi-domain: the coverage row of '{0}' is graded on that domain's own computers" -f $d)
+    Check (@($forDomainL | Where-Object { $_.Item -eq ("DSRM password backup: dc1.{0}" -f $d) -and $_.Status -eq 'Pass' }).Count -eq 1) ("Multi-domain: the DC of '{0}' has its own DSRM row" -f $d)
 }
 
 # C2: the same three domains with DcDisk selected WITHOUT DomainControllers. There is then no DC
@@ -502,6 +618,36 @@ foreach ($d in $multiDomains) {
 Check (@($hardH | Where-Object { -not $_.Scope }).Count -eq 0) 'Multi-domain, DcHardening alone: no row is without a domain'
 Check (-not (Test-Path (Join-Path $resultH.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, DcHardening alone: non-vacuity - the DomainControllers section itself was not run'
 Remove-Item -Recurse -Force $outH -ErrorAction SilentlyContinue
+# C4: Laps alone. It takes no DC list, so with no DC inventory it must still cover every domain.
+$outL = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_lapsonly_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outL
+$script:Sections = @('Laps')
+$resultL = Invoke-Main
+$lapsL = @(@(Import-Csv $resultL.FindingsFile) | Where-Object { $_.Section -eq 'Windows LAPS' })
+Check (@($lapsL).Count -eq 7) ("Multi-domain, Laps alone: one schema row and two rows per domain, with no DC inventory ({0}, expected 7)" -f @($lapsL).Count)
+foreach ($d in $multiDomains) {
+    Check (@($lapsL | Where-Object { $_.Scope -eq $d }).Count -eq $(if ($d -eq 'contoso.com') { 3 } else { 2 })) ("Multi-domain, Laps alone: domain '{0}' is in the section" -f $d)
+}
+Check (-not (Test-Path (Join-Path $resultL.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, Laps alone: non-vacuity - the DomainControllers section itself was not run'
+Remove-Item -Recurse -Force $outL -ErrorAction SilentlyContinue
+# C4, found by the independent review: a DC whose expiry time is the last date .NET holds (the
+# FILETIME of [datetime]::MaxValue, which an administrator gets by setting "never") threw out of
+# the section and ended the run with no report. The run must finish, and every DC row must be graded.
+$script:SmokeLapsDcExpiryFileTime = [int64]2650467743999999999
+$outE = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_lapsend_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outE
+$script:Sections = @('Laps')
+$resultE = $null
+try { $resultE = Invoke-Main } catch { Check $false ("End-of-calendar expiry: the run ended with an error - {0}" -f $_.Exception.Message) }
+$script:SmokeLapsDcExpiryFileTime = $null
+if ($null -ne $resultE) {
+    $lapsE = @(@(Import-Csv $resultE.FindingsFile) | Where-Object { $_.Section -eq 'Windows LAPS' })
+    Check (@($lapsE).Count -eq 7) ("End-of-calendar expiry: the run finished with the whole section, one schema row and two rows per domain ({0}, expected 7)" -f @($lapsE).Count)
+    foreach ($d in $multiDomains) {
+        Check (@($lapsE | Where-Object { $_.Item -eq ("DSRM password backup: dc1.{0}" -f $d) -and $_.Scope -eq $d -and $_.Status -eq 'Pass' -and $_.Detail -match '9999-12-31 23:59 UTC' }).Count -eq 1) ("End-of-calendar expiry: the DC of '{0}' is graded, as a time not past" -f $d)
+    }
+}
+Remove-Item -Recurse -Force $outE -ErrorAction SilentlyContinue
 $script:OutputPath = $out2
 $script:Sections = @('All')
 
@@ -616,6 +762,22 @@ $logO = Get-Content $resultO.LogFile -Raw
 Check ($logO -match 'Config override: section DcDisk taken from') 'Override: the log records which section was taken from the file'
 Remove-Item -Recurse -Force $outO -ErrorAction SilentlyContinue
 
+# C4: the same for the Laps key of the file. One of three in-population computers has no expiry
+# time (33.33 %): a Warning by the built-in thresholds, a Fail once the file sets Fail above 20 %.
+'{ "Laps": { "FailAbovePercent": 20, "SampleLimit": 0 } }' | Out-File -LiteralPath $overrideFile -Encoding UTF8
+$outOL = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outOL
+$script:Sections = @('Laps')
+$resultOL = Invoke-Main
+$lapsO = @(@(Import-Csv $resultOL.FindingsFile) | Where-Object { $_.Section -eq 'Windows LAPS' })
+$lapsOCov = @($lapsO | Where-Object { $_.Item -eq 'LAPS coverage: contoso.com' })
+Check (@($lapsOCov).Count -eq 1 -and $lapsOCov[0].Status -eq 'Fail' -and $lapsOCov[0].Detail -match 'above the Fail threshold of 20 %') 'Override: the file reached the Laps section - 33.33 % without an expiry time is now a Fail (above 20 %)'
+Check (@($lapsOCov).Count -eq 1 -and $lapsOCov[0].Detail -match [regex]::Escape($overrideFile) -and $lapsOCov[0].Detail -match 'for FailAbovePercent, SampleLimit; tool default, not a Microsoft value, for WarnAbovePercent, ExpiredGraceDays') 'Override: the finding cites the file for the values it supplied, and still calls the rest tool defaults'
+Check (@($lapsOCov).Count -eq 1 -and $lapsOCov[0].Detail -match 'names are not listed \(SampleLimit is 0\)' -and $lapsOCov[0].Detail -notmatch 'ws2\.contoso\.com') 'Override: a sample limit of 0 lists no computer name'
+Check (@($lapsOCov).Count -eq 1 -and $lapsOCov[0].Recommendation -match 'Set-LapsADComputerSelfPermission' -and $lapsOCov[0].Recommendation -notmatch 'wbadmin|repadmin|dfsrmig') 'Override: a row that cites a file path still carries the advice of its own family'
+Check ((Get-Content $resultOL.LogFile -Raw) -match 'Config override: section Laps taken from') 'Override: the log records that the Laps section was taken from the file'
+Remove-Item -Recurse -Force $outOL -ErrorAction SilentlyContinue
+
 # C3: the same for the DcHardening key of the file. The stub DC's SMB client signing value is not
 # set, which is a Warning by the documented pre-2025 default; the file turns a value below the
 # expectation into a Fail for that setting only, and the finding cites the file.
@@ -697,6 +859,10 @@ $badFiles = @(
     @{ Name = 'a DcHardening status that is not Warning or Fail'; Text = '{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Pass" } } } }'; Expect = 'It must be Warning or Fail' }
     # C3: a port for DcHardening. The section's CIM session does not use it, so it is refused.
     @{ Name = 'a DcHardening port'; Text = '{ "DcHardening": { "WsmanPort": 5986 } }'; Expect = 'The ports of this section cannot be set from a file' }
+    # C4: a file that tries to change which attributes the Laps section reads.
+    @{ Name = 'a Laps attribute list'; Text = '{ "Laps": { "ComputerProperties": [ "ms-Mcs-AdmPwd" ] } }'; Expect = "unknown key 'ComputerProperties'" }
+    # C4: a Warning threshold that nothing could exceed, which would switch the check off.
+    @{ Name = 'a Laps Warning threshold of 100'; Text = '{ "Laps": { "WarnAbovePercent": 100 } }'; Expect = 'no domain would ever be reported' }
 )
 $script:Sections = @('All')
 foreach ($bad in $badFiles) {
@@ -711,7 +877,7 @@ foreach ($bad in $badFiles) {
     Check ($written.Count -eq 0) ("Override: with {0}, nothing was collected before the run stopped ({1} CSV files)" -f $bad.Name, $written.Count)
     Remove-Item -Recurse -Force $outB -ErrorAction SilentlyContinue
 }
-Check (@($badFiles).Count -eq 8) 'Override: non-vacuity - eight declared unusable files were tried'
+Check (@($badFiles).Count -eq 10) 'Override: non-vacuity - ten declared unusable files were tried'
 Remove-Item -LiteralPath $overrideFile -Force -ErrorAction SilentlyContinue
 # The parameter carries [ValidateNotNullOrEmpty()], and the attribute stays on the variable, so
 # it cannot simply be set back to empty: the variable is removed and re-created without it.
@@ -735,6 +901,9 @@ function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]
 function Get-ADFineGrainedPasswordPolicy { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: FGPP query denied' }
 function Get-AdfaDomainSummary { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: domain summary unavailable' }
 function Get-AdfaFsmoRole { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: FSMO lookup denied' }
+# C4: the Laps section does not use Get-ADDomainController, so breaking that leaves it working.
+# Its own two reads are made to fail instead: the schema query and the computer query throw.
+$script:SmokeLapsFail = $true
 
 $out3 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out3
@@ -794,6 +963,30 @@ Check (@($hard3 | Where-Object { $_.Item -eq 'DC hardening' -and $_.Status -eq '
 Check (@($hard3 | Where-Object { $_.Item -eq 'DC hardening - contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'could not be enumerated\. Cause: STUB: ADWS unreachable' -and $_.Detail -match 'None of its hardening settings was read' }).Count -eq 1) 'Failure mode: DC Hardening gives the domain whose inventory failed its own Not Assessed row, with the cause'
 Check (@($hard3).Count -eq 2 -and @($hard3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC Hardening reports nothing but Not Assessed, and never Pass ({0} rows, expected 2)" -f @($hard3).Count)
 Check (@($hard3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a DC Hardening row that measured nothing carries no advice'
+# C4: the same for Laps. The schema could not be read, so no domain is queried; the forest row
+# and both rows of the scoped domain are Not Assessed, name the cause, and nothing passes.
+$laps3 = @($findings3 | Where-Object { $_.Section -eq 'Windows LAPS' })
+Check (@($laps3).Count -eq 3 -and @($laps3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: Windows LAPS reports nothing but Not Assessed, and never Pass ({0} rows, expected 3)" -f @($laps3).Count)
+Check (@($laps3 | Where-Object { $_.Item -eq 'Windows LAPS schema' -and $_.Detail -match '^Read failed: ' -and $_.Detail -match 'STUB: schema query refused' -and $_.Detail -match 'it is not reported as absent' }).Count -eq 1) 'Failure mode: the schema row carries the cause, and does not report the attributes as absent'
+Check (@($laps3 | Where-Object { $_.Item -eq 'LAPS coverage: contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'the forest schema could not be read' }).Count -eq 1) 'Failure mode: the scoped domain has its own coverage row, Not Assessed, pointing at the schema'
+Check (@($laps3 | Where-Object { $_.Item -eq 'DSRM password backup - contoso.com' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'Failure mode: the scoped domain has its own DSRM row, Not Assessed'
+Check (@($laps3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a Windows LAPS row that measured nothing carries no advice'
+# The schema readable and the computer query failing: the schema row stands, the domain rows
+# are Not Assessed with the query's own error.
+$out3l = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_lapsonly_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $out3l
+$script:Sections = @('Laps')
+$script:SmokeLapsFail = $false
+$script:SmokeLapsComputerFail = $true
+$result3l = Invoke-Main
+$script:SmokeLapsComputerFail = $false
+$laps3l = @(@(Import-Csv $result3l.FindingsFile) | Where-Object { $_.Section -eq 'Windows LAPS' })
+Check (@($laps3l).Count -eq 3) ("Failure mode, Laps alone: the schema row and two rows for the domain ({0}, expected 3)" -f @($laps3l).Count)
+Check (@($laps3l | Where-Object { $_.Item -eq 'Windows LAPS schema' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Failure mode, Laps alone: non-vacuity - the schema was read, so only the computer query is failing'
+Check (@($laps3l | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Item -ne 'Windows LAPS schema' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Read failed: ' -and $_.Detail -match 'STUB: computer query refused' -and $_.Detail -match 'not a clean result' }).Count -eq 2) 'Failure mode, Laps alone: both domain rows are Not Assessed with the cause, and never Pass'
+Check (@($laps3l | Where-Object { $_.Item -ne 'Windows LAPS schema' -and $_.Status -ne 'Not Assessed' }).Count -eq 0) 'Failure mode, Laps alone: no computer and no DC is graded on a query that threw'
+Remove-Item -Recurse -Force $out3l -ErrorAction SilentlyContinue
+$script:SmokeLapsFail = $true
 $out3h = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_hardonly_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out3h
 $script:Sections = @('DcHardening')
@@ -868,6 +1061,10 @@ if ($null -ne $result4) {
         Check ($scope[0].Detail -match 'not contactable') 'No forest: the underlying cause is carried into the report'
         Check ($scope[0].Detail -match 'NOTHING in this report was assessed') 'No forest: the finding refuses to imply anything was assessed'
     }
+
+    # C4: with no forest the Laps section asks nothing and says so in one row.
+    $laps4 = @($findings4 | Where-Object { $_.Section -eq 'Windows LAPS' })
+    Check (@($laps4).Count -eq 1 -and $laps4[0].Status -eq 'Not Assessed' -and $laps4[0].Detail -match 'The forest could not be read' -and $laps4[0].Detail -match 'not contactable') 'No forest: Windows LAPS is one Not Assessed row carrying the cause'
 
     # The critical property: with no forest, nothing may claim to have passed.
     $passes4 = @($findings4 | Where-Object { $_.Status -eq 'Pass' })

@@ -43,6 +43,7 @@ Extracted from
 | **DC hardening** | `-Sections DcHardening`. Per DC, six registry values and three CIM classes read in one session: **LDAP server signing** (`LDAPServerIntegrity`) and its Windows Server 2025 **enforcement** (`LDAPServerEnforceIntegrity`), **LDAP channel binding** (`LdapEnforceChannelBinding`), **SMB server and client signing** (`RequireSecuritySignature`), the **LAN Manager authentication level** (`LmCompatibilityLevel`), the **Print Spooler** service and the **SMBv1** server. Each value is graded against what Microsoft's security baselines expect on a domain controller. A value that is **not set** is graded on the default Microsoft documents for the DC's OS build where it documents one, named as a default; where it documents none it is `Not Assessed`, never a pass and never a failure. Unreachable, access denied, not set, key absent and wrong type are separate results. These rows show the **configured policy, not what a client and the DC negotiate on the wire**. The **SMBv1** row is `Not Assessed` on any DC whose SMB configuration class returns no instance to a query, which is what the one host measured does (PORT-PLAN C3f). Details under [DC hardening](#dc-hardening) |
 | **DC system** | `-Sections DcSystem`. **OS lifecycle**: each DC's operating system against Microsoft's extended support end date, from a versioned table. Past the date is a `Fail` whose text says whether an Extended Security Updates (ESU) programme is still running, has also ended, or was never published — and always that **ESU enrolment is not assessed**. An OS the table does not list, or one that could not be read, is `Not Assessed` with the raw values, never `Pass`. Reads only the directory, so it needs no rights on any DC. **Patch level**: per DC, OS build, uptime and the latest update install date over remote CIM. This half is **inventory** (`Info` or `Not Assessed`, never `Pass`): Microsoft publishes no maximum uptime or update age for a DC, so none is applied. Unreachable, access denied and other read failures are three different results |
 | **DC disk space** | `-Sections DcDisk`. Free space on the volumes that hold the **NTDS database**, the **NTDS logs** and **SYSVOL**, per DC. The three paths are read from each DC's own registry and matched to a volume by the longest mount path, so a database under a mounted folder is judged on the right volume. One row per distinct volume, listing the roles it holds. `Fail` below 10 % free or below 2 GB free, `Warning` below 20 % or below 5 GB — **tool defaults, not Microsoft values**, labelled as such in every finding and overridable with `-ConfigOverridePath`. A path or a volume that could not be read is `Not Assessed` with its cause; unreachable, access denied, a registry value that is not set and any other read failure are different results. Covers the DCs of every scoped domain, with or without `DomainControllers` selected; a domain whose DCs could not be enumerated gets its own `Not Assessed` row. Needs local Administrators rights on each DC |
+| **Windows LAPS** | `-Sections Laps`. Directory reads only, with domain read access. **Schema**: whether the forest schema carries the six attributes `Update-LapsADSchema` adds, and the legacy Microsoft LAPS ones; absent, present and "the query failed" are three different results. **DSRM password backup**, one row per domain controller: `Pass` where a Windows LAPS expiry time that is not past is visible on the DC's computer object, `Info` (not applicable) for a DC below Windows Server 2019 or a domain below functional level 2016, `Warning` where nothing is visible although the account can read the attribute elsewhere in the domain. **LAPS coverage**, one row per scoped domain: how many enabled Windows computers that can run Windows LAPS have **no LAPS expiry time visible to this account** (Windows LAPS or legacy), with counts for every class left out of the population and a capped list of names. The section **never reads a password**: no password, encrypted password or password history attribute is ever requested. An attribute the account has no right to read looks exactly like one that is not set, and a device that backs its password up to Microsoft Entra ID has nothing here either, so no row calls a computer unmanaged with certainty; where nothing at all is visible in a domain the rows are `Not Assessed`. The thresholds are **tool defaults, not Microsoft values**, overridable with `-ConfigOverridePath`. The policy in each DC's registry is not read (PORT-PLAN C4a). Details under [Windows LAPS](#windows-laps) |
 | Resilience | Directory backup status (`repadmin /showbackup`), time sync (`w32tm`), DC count, duplicate SPNs |
 | **Recovery: DNS vs AD** | DC locator SRV records compared against the DCs the directory actually contains — **on every DC's DNS server separately**, with a divergence summary ("3 of 7 answering servers advertise a DC that no longer exists"); plus the PDC locator record per server |
 | **Recovery: DSA CNAMEs** | Per-DC `<DSA-GUID>._msdcs` alias verification (missing / wrong target, per DNS server) — the usual cause of RPC 1722 after metadata cleanup or restore — and orphaned NTDS Settings objects |
@@ -84,6 +85,21 @@ Domain read access is enough for most sections. Trust verification, `DcHardening
 patch-level half of `DcSystem` (CIM), `DcDisk` (CIM) and `dcdiag` need administrative rights on
 the domain controllers. The OS lifecycle half of `DcSystem` needs
 domain read only.
+
+`Laps` reads the directory only. What it can see depends on what the account can read: the
+LAPS expiry time of a computer is returned only where the account has read access to that
+attribute. Microsoft publishes, in general terms, that authenticated users can read every
+attribute that is not confidential, and that the Windows LAPS expiry attribute is not
+confidential; it publishes no LAPS-specific statement of who can read the expiry attributes,
+and permissions can be changed per organizational unit. Run with more rights and the section
+may see more; it never asks for a password attribute, whatever the rights.
+
+**Running `Identity` (part of `All`) with rights to read LAPS passwords.** The Identity export
+asks for every attribute of every computer (`Get-ADComputer -Properties *`), and the directory
+hands an account with those rights the attributes that hold LAPS passwords too. Since v1.21.0
+they are left out of `AllComputers_<domain>.csv`; before it they were written there, the
+legacy one in clear text. They are still requested (PORT-PLAN C4b). Delete any
+`AllComputers_*.csv` an earlier version produced under such an account.
 
 ## Usage
 
@@ -564,11 +580,127 @@ Spooler and SMBv1 are read through the same CIM session as everything else, so t
 to pass, is now `Not Assessed`, and so is a class that returns no instance at all. The registry values are read with `StdRegProv` `GetDWORDValue`,
 a third `Get*` method beside the two `DcDisk` uses, on the same reasoning.
 
+## Windows LAPS
+
+`-Sections Laps`, part of the default `All` run. Added in v1.21.0 (PORT-PLAN C4; catalogue rows
+ADA-LAPS-001 and ADA-LAPS-002). **It has run only against stubs**: no query in it has met a real
+directory (PORT-PLAN C17).
+
+**The section never reads a password.** It reads attribute *definitions* in the schema
+partition, `msDS-Behavior-Version` on each domain head, and this fixed list on computer
+objects: `operatingSystem`, `operatingSystemVersion`, `userAccountControl`,
+`lastLogonTimestamp`, `dNSHostName`, `objectClass`, plus `msLAPS-PasswordExpirationTime` and
+`ms-Mcs-AdmPwdExpirationTime` where the schema defines them. The seven attributes that hold a
+password, an encrypted password, a password history or the password version
+(`msLAPS-Password`, `msLAPS-EncryptedPassword`, `msLAPS-EncryptedPasswordHistory`,
+`msLAPS-EncryptedDSRMPassword`, `msLAPS-EncryptedDSRMPasswordHistory`,
+`msLAPS-CurrentPasswordVersion`, `ms-Mcs-AdmPwd`) are never put in a property list and never
+used in a search filter on a computer object. The list is checked where it is built and again
+where it is sent; a list holding one of those names, a wildcard or any other password-like
+name is refused before the directory is asked, and tests fail if one of the names appears in
+the script outside the config table. No cmdlet of the LAPS module is called -
+`Get-LapsADPassword` returns the password.
+
+**What it reports.**
+
+| Row | From | Status |
+| --- | --- | --- |
+| `Windows LAPS schema` (one, forest) | Attribute definitions in the schema partition, by name, with `operatingSystemVersion` asked for in the same query as a control | `Pass` all six `Update-LapsADSchema` attributes; `Warning` some of them; `Info` none (legacy only, or neither); `Not Assessed` the query failed, or answered without the control attribute |
+| `DSRM password backup: <dc>` (one per DC computer object) | `msLAPS-PasswordExpirationTime` on the DC's computer object, the DC's `operatingSystemVersion`, the domain's `msDS-Behavior-Version` | `Pass` an expiry time not more than 7 days past; `Warning` one further past, or none visible while another object of the domain returned one, or no such attribute in the schema; `Info` not applicable (DC below build 17763, or domain below level 7); `Not Assessed` otherwise |
+| `DSRM password backup - <domain>` | - | `Not Assessed`: the domain's read failed, or returned no DC object, or returned an object without `userAccountControl` that may be a DC |
+| `LAPS coverage: <domain>` (one per scoped domain) | Either expiry attribute on each computer object in population | `Pass` every one has an expiry time visible; `Warning` any has none; `Fail` only where a config file sets a threshold; `Info` nothing in population; `Not Assessed` see below |
+
+**Not set and not readable look the same.** A directory does not say "you may not read this
+attribute"; it leaves it out. So a computer with no expiry time in the answer is reported as
+"no LAPS expiry time visible to this account", never as unmanaged. Microsoft publishes that
+`msLAPS-PasswordExpirationTime` is not confidential, and in general terms that authenticated
+users can read every attribute that is not, but no LAPS-specific statement of who can read it,
+and nothing at all about the legacy attribute's flags. The rule the section applies (decision D13
+of the AdAssessment26 plan):
+
+- the schema has **neither** expiry attribute: no computer can have a LAPS password in this
+  directory, a measured absence, graded;
+- the schema has one and **at least one** computer object in the domain returned a value: the
+  account can read the attribute somewhere in the domain, so absences are counted - still
+  worded as "not visible", because permissions can differ between organizational units;
+- the schema has one and **no** object in the domain returned a value: `Not Assessed`. Not
+  deployed, not readable and "every device backs up to Microsoft Entra ID" cannot be told apart.
+
+**Microsoft Entra ID.** A device backs its password up to Active Directory or to Microsoft
+Entra ID, never both, and a forest that uses only Entra ID does not need the schema extension.
+This read cannot see Entra ID, and every graded row says so.
+
+**The population of the coverage row**, stated in the row with a count for each class left out:
+enabled computer accounts that are not domain controllers and not managed service accounts,
+whose `operatingSystem` begins with `Windows`, whose OS build can run Windows LAPS, and whose
+`lastLogonTimestamp` is within `-StaleDays` (default 90, the threshold the `StaleObjects`
+section uses; there is no second one). Left out, each with its own count: domain controllers
+(they have the DSRM rows), managed service accounts, disabled accounts, objects with no
+`operatingSystem` (which is also how cluster and other virtual computer objects are left out -
+a tool heuristic, no Microsoft-documented marker was found), non-Windows computers, Windows
+computers whose build could not be read, Windows releases that cannot run Windows LAPS (with
+how many of them show a legacy LAPS expiry time), accounts with no logon recorded, stale
+accounts, and objects whose `userAccountControl` was not returned.
+
+An object whose `userAccountControl` was not returned, or a Windows computer whose build could
+not be read, is **not measured**, not measured-out: while there is one, the coverage row is
+never `Pass` and never `Info` ("nothing to grade") - it is `Not Assessed` and names them, up to
+`SampleLimit`. A `Warning` or `Fail` stands, and says that the share is over the computers that
+could be classified. An object without `userAccountControl` may also be a domain controller,
+so the domain gets a `DSRM password backup - <domain>` `Not Assessed` row naming it beside the
+rows of the DCs that were recognised.
+
+"Can run Windows LAPS" is the OS build: 17763, or 19041 and later, from the builds Microsoft's
+LAPS CSP page lists. The directory holds the build and not the revision, so it does not show
+whether the April 11, 2023 update that brought Windows LAPS is installed: capable means the
+release, not the patch level. A Windows release older than that is out of the population even
+though legacy Microsoft LAPS may manage it; the row counts how many of those show a legacy
+expiry time.
+
+**The DSRM rows rest on an inference.** The attribute that holds the DSRM password is
+confidential and is not read. The row uses `msLAPS-PasswordExpirationTime` on the DC's own
+computer object. Microsoft does not state in prose that DSRM password backup writes it; its
+`Get-LapsADPassword` example shows an expiration time for a DC whose source is the DSRM
+password. Every DSRM row says this. A DC promoted from a member server that Windows LAPS
+managed can carry a value from before the promotion until it expires. A read-only domain
+controller with nothing visible is `Not Assessed`: Microsoft does not say, on the pages read,
+whether the feature is supported there. That a DC without DSRM password backup is a `Warning`
+is the catalogue's rule; Microsoft documents the feature as off by default, not as a
+requirement.
+
+**Thresholds are tool defaults, not Microsoft values**: Warning above 0 % (any computer), Fail
+above 100 % (never, unless a file lowers it), 25 names per row, 7 days of grace on a DC's
+expiry time. Microsoft publishes none of them. See
+[`-ConfigOverridePath`](#one-override-file-for-section-config--configoverridepath).
+
+**Four different failures.** A domain whose query threw is `Not Assessed` and begins
+`Unreachable:`, `Access denied:`, `Timed out:` or `Read failed:`, told apart by the type of the
+exception and then by its text. A timeout or a "server too busy" answer is not called
+unreachable: it can come from a server that accepted the query and then took too long, which
+the one unpaged computer query over a large domain makes likely. Microsoft does not publish the
+exceptions the ActiveDirectory cmdlets throw, and none of them has been produced by a real
+directory in a test of this tool.
+
+**A domain whose rows could not be built** - an exception inside the grading, a defect of the
+tool - gets its two rows as `Not Assessed` with the error, and the other domains are still
+graded. An expiry time at the end of the calendar (an administrator who set it to "never") is a
+time not past, so a DC carrying one is `Pass`; before the fix it threw out of the section and
+ended the run.
+
+**Not read**: the Windows LAPS policy in each DC's registry (`BackupDirectory`,
+`ADBackupDSRMPassword`, `ADPasswordEncryptionEnabled`), which is what would say whether DSRM
+backup is *configured* - PORT-PLAN C4a. The presence of the confidential DSRM attribute is not
+tested either - PORT-PLAN C4d.
+
+**No paging or size limit is set.** The computer query relies on the paging the
+ActiveDirectory module does by itself, as every other query in this script does. Its time and
+memory on a very large domain have not been measured.
+
 ## One override file for section config: `-ConfigOverridePath`
 
 A JSON file whose top-level keys are section names. Each value is checked by that section's own
-rules. Two sections can be named so far, `DcDisk` and `DcHardening`; later checks add their own
-key.
+rules. Three sections can be named so far, `DcDisk`, `DcHardening` and `Laps`; later checks add
+their own key.
 
 ```json
 {
@@ -585,6 +717,12 @@ key.
       "LmCompatibilityLevel": { "ExpectedMinimum": 3 },
       "SmbServerSigning": { "OtherStatus": "Fail" }
     }
+  },
+  "Laps": {
+    "WarnAbovePercent": 5,
+    "FailAbovePercent": 50,
+    "SampleLimit": 25,
+    "ExpiredGraceDays": 7
   }
 }
 ```
@@ -620,6 +758,14 @@ key.
   expectation can never be configured to read as a pass. The registry key and value a setting
   reads, the meanings of its numbers, its documented defaults and its sources cannot be set
   from the file.
+- For `Laps` the four keys above are the only ones, and each must be a JSON number.
+  `WarnAbovePercent` and `FailAbovePercent` are 0 to 100, `Fail` may not be below `Warning`
+  once merged, and a `WarnAbovePercent` of 100 is refused because no share can exceed it and
+  no domain would ever be reported. `SampleLimit` is a whole number from 0 to 1000 (0 lists no
+  computer name) and `ExpiredGraceDays` a whole number from 0 to 365. **No attribute name can be
+  set from the file**: `NeverRead`, `WindowsExpiry`, `ComputerProperties` and every other key
+  of the built-in table are refused as unknown, so a file cannot make the tool request a
+  password attribute.
 - For `DcDisk`, `WsmanPort` and `RpcPort` change the port that is **probed** before a read. The
   CIM session itself is opened without a port, so it still goes to the default one: setting
   either key to anything but the default can make a reachable DC read as unreachable, and does

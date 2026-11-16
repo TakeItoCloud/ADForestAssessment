@@ -32,7 +32,10 @@
           (krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota,
           AdminSDHolder, stale / never-expiring / RC4-DES accounts)
         - Stale user / computer objects
-        - Full user & computer export with ALL populated attributes (CSV; HTML shows a summary)
+        - Full user & computer export with ALL populated attributes (CSV; HTML shows a summary),
+          except the attributes that hold a LAPS password, which are left out of the computer
+          export since v1.21.0. The export still ASKS the directory for every attribute
+          (-Properties *), those included; replacing the wildcard is PORT-PLAN C4b
         - AD CS / PKI: enrolment CAs and ESC1-susceptible certificate templates
         - Dangerous ACLs: non-default principals holding DCSync rights on the domain head
         - Kerberos exposure: Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation
@@ -57,6 +60,20 @@
           logs and SYSVOL, per DC. The three paths are read from each DC's registry and the
           volumes from Win32_Volume (remote CIM, needs local admin on the DC). Judged against
           thresholds that are tool defaults, not Microsoft values, and are labelled as such
+        - Windows LAPS: whether the forest schema carries the Windows LAPS attributes (and
+          the legacy Microsoft LAPS ones); per domain controller, whether a DSRM password
+          backup is visible; and per scoped domain, how many enabled Windows computers have
+          no LAPS expiry time visible. Directory reads only, with domain read access. This
+          section never reads a password: the attributes that hold a LAPS password, an
+          encrypted password or a password history are never requested by it, and presence
+          is judged from the two expiry time attributes alone. (The Identity export above is
+          the one place in the tool that can still be handed them by the directory; it does
+          not write them out.) A value the account has no right to read
+          looks like a value that is not set, so a row says "no LAPS expiry time visible to
+          this account" and never calls a computer unmanaged with certainty; where nothing
+          at all is visible in a domain the rows are Not Assessed. A device that backs its
+          password up to Microsoft Entra ID is not visible to this read. The policy in each
+          DC's registry is not read (PORT-PLAN C4a)
         - Directory backup status (repadmin /showbackup), time synchronization (w32tm)
         - DNS depth: critical SRV records, secure dynamic updates
         - Redundancy: DC count, GPO central store, duplicate SPNs
@@ -157,9 +174,16 @@
     no DC row a Not Assessed row of its own. Its rows show configured policy, not what is
     negotiated on the wire.
 
+    Laps reads the directory only and needs domain read access: the forest schema once, and
+    for every scoped domain its functional level and its computer objects. It gives the
+    forest one schema row, every scoped domain one "LAPS coverage" row, and every domain
+    controller one "DSRM password backup" row; a scoped domain that could not be read gets
+    Not Assessed rows naming the cause. It never requests a password attribute. The
+    population the coverage row grades is stated in the row, and uses -StaleDays.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Two sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Three sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -174,6 +198,17 @@
 
     DcHardening refuses WsmanPort and RpcPort: its CIM session always uses the default ports,
     so a port set in the file would change the probe and not the connection.
+
+    And Laps, whose keys are WarnAbovePercent and FailAbovePercent (the share of in-population
+    computers with no LAPS expiry time visible above which a domain is a Warning or a Fail),
+    SampleLimit (how many computer names one row lists, 0 to 1000) and ExpiredGraceDays (how
+    long after its expiry time a DC's value still counts as current). All four are tool
+    defaults, not Microsoft values:
+
+        { "Laps": { "WarnAbovePercent": 5, "FailAbovePercent": 50 } }
+
+    Laps refuses every other key. In particular no attribute name can be set from a file, so
+    a file cannot make the tool request a password attribute.
 
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
@@ -300,7 +335,7 @@ param(
         'DnsDepth', 'Redundancy', 'ExchangeSchema', 'ExchangeSeReadiness',
         'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
         'DsEvents', 'RestoreIntegrity', 'MsdcsDelegation', 'TimeHierarchy', 'SiteGc',
-        'DcSystem', 'DcDisk')]
+        'DcSystem', 'DcDisk', 'Laps')]
     [string[]]$Sections = @('All'),
 
     [switch]$IncludeDcdiag,
@@ -347,7 +382,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk" and "DcHardening" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening" and "Laps" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -381,7 +416,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.20.0'
+    Version                 = '1.21.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -952,6 +987,128 @@ $script:Config = @{
                 SourceUrl = 'https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level'; ReadDate = '2026-11-13'
             }
         )
+    }
+    # --- Windows LAPS: schema, DSRM password backup per DC, computers with no expiry time (PORT-PLAN C4) ---
+    # DIRECTORY READS ONLY, and never a password. The section asks for attribute DEFINITIONS in
+    # the schema partition, for msDS-Behavior-Version on each domain head, and for a fixed list
+    # of non-secret attributes on computer objects. The seven names in NeverRead are never put
+    # in a property list and never used in a search filter on a computer object; a test fails
+    # if any of them appears in the script outside this table.
+    #
+    # Every URL below was read on 2026-11-15.
+    #   The seven Windows LAPS attribute names, and that msLAPS-PasswordExpirationTime is "a
+    #   64-bit integer that specifies the currently scheduled password expiration time in UTC"
+    #   with SearchFlags 0, while the other six carry SearchFlags 904 (fRODCFilteredAttribute,
+    #   fNEVERVALUEAUDIT, fCONFIDENTIAL, fPRESERVEONDELETE). "The Update-LapsADSchema cmdlet adds
+    #   the schema attributes to the directory and to the mayContain list on the computer schema
+    #   class." msLAPS-CurrentPasswordVersion "is only available when using the Windows Server
+    #   2025 forest schema ... it's not installed by running the Update-LapsADSchema cmdlet",
+    #   so it is reported and never required. The legacy names, from the mapping table:
+    #     https://learn.microsoft.com/windows-server/identity/laps/laps-technical-reference
+    #   DSRM: "If your domain functional level (DFL) is earlier than 2016 ... You can't configure
+    #   domain controllers to manage their local DSRM account", and "any Windows Server 2016 and
+    #   earlier domain controllers that you run don't support Windows LAPS":
+    #     https://learn.microsoft.com/windows-server/identity/laps/laps-scenarios-windows-server-active-directory
+    #   msDS-Behavior-Version 7 = DS_BEHAVIOR_WIN2016, 10 = DS_BEHAVIOR_WIN2025; 8 and 9 are not
+    #   defined. CAVEAT: this page is MS-ADTS 6.1.4.4, the FOREST functional level on the
+    #   crossRefContainer object. KnownDomainLevels applies its table to the DOMAIN head; the
+    #   MS-ADTS page for the domain level was searched for and not found in session (re-checked
+    #   2026-11-16), so that the domain table holds the same values is an assumption (PORT-PLAN
+    #   C4f). A level that is not in KnownDomainLevels is reported Not Assessed, never graded:
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/564dc969-6db3-49b3-891a-f2f8d0a68a7f
+    #   Windows Server 2019 = OS build 17763:
+    #     https://learn.microsoft.com/windows-server/get-started/windows-server-release-info
+    #   The OS builds that can run Windows LAPS (CapableBuilds), from the "Applicable OS" row of
+    #   every policy: 10.0.17763.4244, 10.0.19041.2784, 10.0.20348.1663, 10.0.22000.1754,
+    #   10.0.22621.1480, 10.0.25145 "and later". operatingSystemVersion in the directory carries
+    #   the build and not the revision, so "capable" here means the release, not the patch level:
+    #     https://learn.microsoft.com/windows/client-management/mdm/laps-csp
+    #   userAccountControl: ACCOUNTDISABLE 0x2, SERVER_TRUST_ACCOUNT 0x2000 (a domain
+    #   controller), PARTIAL_SECRETS_ACCOUNT 0x04000000 (a read-only domain controller):
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties
+    #   A group managed service account is a "Subclass of Computer":
+    #     https://learn.microsoft.com/windows/win32/adschema/c-msds-groupmanagedserviceaccount
+    #
+    # NOT PUBLISHED ON MICROSOFT LEARN, and labelled so wherever a finding relies on it:
+    #   - A LAPS-specific statement of who can read the two expiry attributes by default. What
+    #     IS published, in general terms: "Default security in Active Directory is set so that
+    #     authenticated users have read access to all attributes" (KB 922836, which applies to
+    #     Windows Server 2003; re-read 2026-11-16):
+    #       https://learn.microsoft.com/troubleshoot/windows-server/windows-security/mark-attribute-as-confidential
+    #     and that the Windows one is not confidential (SearchFlags 0, technical reference
+    #     above). Permissions can still differ per organizational unit, and the legacy
+    #     attribute's flags are not published. An attribute this account has no right to read
+    #     looks exactly like one that is not set, so a row says "no LAPS expiry time visible to
+    #     this account".
+    #   - That DSRM password backup writes msLAPS-PasswordExpirationTime to the computer object
+    #     of the DC. The Get-LapsADPassword example shows an ExpirationTimestamp for a DC whose
+    #     Source is the DSRM one; no page states it in prose. Every DSRM row calls it an inference.
+    #   - Whether DSRM password backup is supported on a read-only domain controller.
+    #   - The syntax and searchFlags of ms-Mcs-AdmPwdExpirationTime.
+    #   - A marker for cluster and other virtual computer objects. They are left out by having
+    #     no operatingSystem value, which is a tool heuristic.
+    #   - Any share of computers without LAPS that should warn or fail. The four values below
+    #     marked "tool default" are this tool's, and every row that uses one says so.
+    #
+    # How the defaults were chosen. WarnAbovePercent 0 is the rule the AdAssessment26 catalogue
+    # gives (ADA-LAPS-002): any enabled non-DC computer without a LAPS expiry time is a Warning.
+    # FailAbovePercent 100 can never be exceeded, so the row never fails unless a file lowers it:
+    # this read cannot rule out a device that backs its password up to Microsoft Entra ID, or an
+    # attribute it has no right to read, and a Fail would claim more than was measured.
+    # SampleLimit 25 bounds the names listed in one row. ExpiredGraceDays 7 is how long after its
+    # expiry time a DC's value still counts as current: a managed device rotates at the first
+    # policy cycle after expiry, and a DC that was off for a few days is not a finding.
+    #
+    # Replaceable from a file via -ConfigOverridePath, under the key "Laps": WarnAbovePercent,
+    # FailAbovePercent, SampleLimit, ExpiredGraceDays. Nothing else - in particular not an
+    # attribute name and not NeverRead, or a file could put a secret attribute in a property list.
+    Laps                    = @{
+        SourceUrl          = 'https://learn.microsoft.com/windows-server/identity/laps/laps-technical-reference'
+        ReadDate           = '2026-11-15'
+        ThresholdSource    = 'tool default, not a Microsoft value'
+        # Tool defaults, all four.
+        WarnAbovePercent   = 0
+        FailAbovePercent   = 100
+        SampleLimit        = 25
+        ExpiredGraceDays   = 7
+        # Vendor values.
+        MinDomainLevel     = 7
+        KnownDomainLevels  = @(0, 1, 2, 3, 4, 5, 6, 7, 10)
+        MinDsrmDcBuild     = 17763
+        AccountDisableFlag = 2
+        ServerTrustFlag    = 8192
+        PartialSecretsFlag = 67108864
+        WindowsExpiry      = 'msLAPS-PasswordExpirationTime'
+        LegacyExpiry       = 'ms-Mcs-AdmPwdExpirationTime'
+        # An attribute every schema defines. It is asked for in the same schema query, so that
+        # an answer without the LAPS attributes can be told from an answer that is not an answer.
+        SchemaControl      = 'operatingSystemVersion'
+        # Set: WindowsLaps = added by Update-LapsADSchema; WindowsServer2025 = arrives with that
+        # forest schema; LegacyLaps = added by the legacy product's own schema update.
+        SchemaAttributes   = @(
+            @{ Name = 'msLAPS-PasswordExpirationTime';       Set = 'WindowsLaps';       Secret = $false }
+            @{ Name = 'msLAPS-Password';                     Set = 'WindowsLaps';       Secret = $true }
+            @{ Name = 'msLAPS-EncryptedPassword';            Set = 'WindowsLaps';       Secret = $true }
+            @{ Name = 'msLAPS-EncryptedPasswordHistory';     Set = 'WindowsLaps';       Secret = $true }
+            @{ Name = 'msLAPS-EncryptedDSRMPassword';        Set = 'WindowsLaps';       Secret = $true }
+            @{ Name = 'msLAPS-EncryptedDSRMPasswordHistory'; Set = 'WindowsLaps';       Secret = $true }
+            @{ Name = 'msLAPS-CurrentPasswordVersion';       Set = 'WindowsServer2025'; Secret = $true }
+            @{ Name = 'ms-Mcs-AdmPwdExpirationTime';         Set = 'LegacyLaps';        Secret = $false }
+            @{ Name = 'ms-Mcs-AdmPwd';                       Set = 'LegacyLaps';        Secret = $true }
+        )
+        # Never in a property list, never in a filter on a computer object.
+        NeverRead          = @('msLAPS-Password', 'msLAPS-EncryptedPassword', 'msLAPS-EncryptedPasswordHistory',
+            'msLAPS-EncryptedDSRMPassword', 'msLAPS-EncryptedDSRMPasswordHistory', 'msLAPS-CurrentPasswordVersion', 'ms-Mcs-AdmPwd')
+        # What is asked of every computer object, besides the expiry attributes the schema holds.
+        ComputerProperties = @('operatingSystem', 'operatingSystemVersion', 'userAccountControl', 'lastLogonTimestamp', 'dNSHostName', 'objectClass')
+        # MaxBuild $null = no upper bound. 17763 is Windows 10 version 1809 and Windows Server
+        # 2019; 19041 and later covers Windows 10 version 2004 and later, Windows Server 2022,
+        # Windows 11 and Windows Server 2025. Builds 18362 and 18363 are not listed by Microsoft.
+        CapableBuilds      = @(
+            @{ MinBuild = 17763; MaxBuild = 17763 }
+            @{ MinBuild = 19041; MaxBuild = $null }
+        )
+        ExcludedClasses    = @('msDS-GroupManagedServiceAccount', 'msDS-ManagedServiceAccount')
     }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
     DsEventsOfInterest      = @(
@@ -2828,11 +2985,25 @@ function Get-AdfaComputerInventory {
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{},
+        # Attributes that are never written to the export, whatever the directory returned.
+        [AllowNull()][AllowEmptyCollection()][string[]]$NeverExport = @($script:Config.Laps['NeverRead'])
+    )
     $srv = @{} + $AdParams; $srv.Server = $DomainName
     $computers = @(Get-ADComputer -Filter * -Properties * @srv)
     if ($computers.Count -eq 0) { return @() }
-    $props = Get-AdfaObjectPropertyUnion -Objects $computers
+    # Since v1.21.0 (PORT-PLAN C4). "-Properties *" asks for every attribute this account can
+    # read, and for an account with the rights that includes the attributes that hold a LAPS
+    # password - the legacy one in clear text. Before v1.21.0 they went into AllComputers_*.csv
+    # with everything else. They are now left out of what is returned, so they are never
+    # written to the CSV, by attribute name compared without regard to case, so a property the
+    # answer spells in another case is left out too (a test pins it). This does NOT stop them
+    # being requested:
+    # that needs the wildcard replaced by a list, which is PORT-PLAN C4b.
+    $never = @($NeverExport | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $props = @(Get-AdfaObjectPropertyUnion -Objects $computers | Where-Object { $never -notcontains $_ })
     $flat = foreach ($c in $computers) { ConvertTo-AdfaFlatObject -InputObject $c -Property $props }
     return @($flat)
 }
@@ -6453,6 +6624,1230 @@ function Merge-AdfaDcHardeningConfig {
 }
 
 # ---------------------------------------------------------------------------
+# Windows LAPS: schema, DSRM password backup per DC, computers with no LAPS expiry time (PORT-PLAN C4)
+# ---------------------------------------------------------------------------
+
+function New-AdfaLapsRow {
+    <#
+    .SYNOPSIS
+        Pure: one Windows LAPS finding row. Every row of the section has the same columns, NotRun
+        included, so a consumer never has to test whether the column exists.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$NotRun = ''
+    )
+    $row = New-Finding -Scope $Scope -Area 'Laps' -Item $Item -Status $Status -Detail $Detail
+    $row | Add-Member -NotePropertyName 'NotRun' -NotePropertyValue $NotRun
+    return $row
+}
+
+function ConvertTo-AdfaFileTimeUtc {
+    <#
+    .SYNOPSIS
+        Pure: a directory time value (a FILETIME count of 100-nanosecond intervals since 1601, as
+        a number or as text, or a date) as a UTC date, or $null when it is not a time.
+    .DESCRIPTION
+        lastLogonTimestamp and the two LAPS expiry attributes are 64-bit integers. Nothing here
+        depends on the culture or the PowerShell edition of the host: the text form is parsed
+        with the invariant culture, and a value outside what .NET can hold as a date - the
+        directory's "never", 0x7FFFFFFFFFFFFFFF, included - is $null and not an exception.
+        Zero is a time (the start of 1601), not an absent value; a caller that treats zero as
+        "none" says so itself.
+    .OUTPUTS
+        [datetime] in UTC, or $null
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime() }
+    $ticks = [int64]0
+    $integerTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64])
+    if ($integerTypes -contains $Value.GetType()) {
+        try { $ticks = [int64]$Value } catch { return $null }
+    }
+    else {
+        $text = ([string]$Value).Trim()
+        if (-not [int64]::TryParse($text, [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$ticks)) { return $null }
+    }
+    if ($ticks -lt 0) { return $null }
+    try { return [datetime]::FromFileTimeUtc($ticks) } catch { return $null }
+}
+
+function Get-AdfaDirectoryReadErrorClass {
+    <#
+    .SYNOPSIS
+        Pure: Unreachable, AccessDenied, TimedOut or Error, for a directory read that threw.
+    .DESCRIPTION
+        A directory read through the ActiveDirectory module has no port probe in front of it, so
+        the results a row must keep apart are told from the exception: its TYPE first, because
+        the message is in the UI language of the host, and its text second.
+
+        TimedOut is its own class, not Unreachable: a timeout or a "server too busy" answer can
+        come from a server that accepted the query and then took too long - the one unpaged
+        computer query over a large domain is the likely case - so it is not evidence that no
+        server answered. It is decided from the exception type only.
+
+        NOT PUBLISHED: Microsoft Learn does not list the exceptions these cmdlets throw. The type
+        names below are the module's and .NET's own, and none of them has been produced by a
+        real directory in a test of this tool (PORT-PLAN C17). Anything not recognised is Error,
+        and the row quotes it as reported rather than interpreting it.
+    .OUTPUTS
+        [string] Unreachable | AccessDenied | TimedOut | Error
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Message,
+        [AllowNull()][AllowEmptyString()][string]$TypeName
+    )
+    if (-not [string]::IsNullOrWhiteSpace($TypeName)) {
+        if ($TypeName -match '(?i)UnauthorizedAccessException|AuthenticationException|SecurityAccessDeniedException') { return 'AccessDenied' }
+        if ($TypeName -match '(?i)ServerTooBusyException|TimeoutException') { return 'TimedOut' }
+        if ($TypeName -match '(?i)ADServerDownException|EndpointNotFoundException') { return 'Unreachable' }
+    }
+    if ([string]::IsNullOrWhiteSpace($Message)) { return 'Error' }
+    if ((Get-AdfaRemoteReadErrorClass -Message $Message -ErrorCode '') -eq 'AccessDenied') { return 'AccessDenied' }
+    if ($Message -match '(?i)insufficient access rights|rejected the client credentials') { return 'AccessDenied' }
+    if ($Message -match '(?i)unable to contact the server|server is not operational|server is unavailable') { return 'Unreachable' }
+    return 'Error'
+}
+
+function Get-AdfaLapsReadFailureLead {
+    <#
+    .SYNOPSIS
+        Pure: the opening of a Not Assessed row for a directory read that failed, by class.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Message,
+        [AllowNull()][AllowEmptyString()][string]$TypeName,
+        [Parameter(Mandatory)][string]$What
+    )
+    $reported = '(no error text was returned)'
+    if (-not [string]::IsNullOrWhiteSpace($Message)) { $reported = $Message.Trim() }
+    # The exception type is shown as well: the class below is decided from it first, on type
+    # names no real directory has produced in a test of this tool, so the row carries what it
+    # was decided from.
+    if (-not [string]::IsNullOrWhiteSpace($TypeName)) { $reported = ("{0} (exception type: {1})" -f $reported, $TypeName.Trim()) }
+    $class = Get-AdfaDirectoryReadErrorClass -Message $Message -TypeName $TypeName
+    if ($class -eq 'Unreachable') {
+        return ("Unreachable: no directory server answered for {0}, so nothing was read. Reported by the directory query - {1}" -f $What, $reported)
+    }
+    if ($class -eq 'AccessDenied') {
+        return ("Access denied: the account running the assessment was refused when reading {0}, so nothing was read. Reported by the directory query - {1}" -f $What, $reported)
+    }
+    if ($class -eq 'TimedOut') {
+        return ("Timed out: the directory query for {0} did not complete, so nothing was read. A server may have answered and then been too slow or too busy - a large domain makes this query long - so this is not evidence that no server answered. Reported by the directory query - {1}" -f $What, $reported)
+    }
+    return ("Read failed: {0} could not be read. If the text below is a refusal in another language, the rights of the account are what is missing. Reported by the directory query - {1}" -f $What, $reported)
+}
+
+function Get-AdfaLapsRefusedProperty {
+    <#
+    .SYNOPSIS
+        Pure: the names in a property list that this section must never ask the directory for.
+    .DESCRIPTION
+        The guard behind the hard rule of PORT-PLAN C4: no password and no encrypted password is
+        ever read. Refused are a name on the never-read list (compared without regard to case),
+        a blank, a wildcard - which would ask for every attribute, the secret ones included - and
+        any name that looks like a password attribute ("password" or "pwd" in it) unless it ends
+        in ExpirationTime, which is how the two non-secret expiry attributes are named. With an
+        empty never-read list there is nothing to check against, so everything is refused.
+    .OUTPUTS
+        [string[]] The refused names; empty when the list is safe to send.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$PropertyNames = @(),
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$NeverRead = @()
+    )
+    $refused = New-Object System.Collections.ArrayList
+    $never = @($NeverRead | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ([string]$_).Trim() })
+    foreach ($given in @($PropertyNames)) {
+        $name = ([string]$given).Trim()
+        if ($name -eq '') { [void]$refused.Add('(blank)'); continue }
+        if ($never.Count -eq 0) { [void]$refused.Add($name); continue }
+        if ($name -match '[*?]') { [void]$refused.Add($name); continue }
+        if (@($never | Where-Object { $_ -eq $name }).Count -gt 0) { [void]$refused.Add($name); continue }
+        if ($name -match '(?i)password|pwd' -and $name -notmatch '(?i)ExpirationTime$') { [void]$refused.Add($name) }
+    }
+    return @($refused.ToArray())
+}
+
+function Get-AdfaLapsSchemaRaw {
+    <#
+    .SYNOPSIS
+        One of the two places C4 touches the directory: which of the named attributes the forest
+        schema defines.
+    .DESCRIPTION
+        Two read-only calls: the root DSE, for the DN of the schema partition, and one search of
+        that partition for attributeSchema objects by lDAPDisplayName, asking for lDAPDisplayName
+        and nothing else. It reads attribute DEFINITIONS. No computer object is touched and no
+        attribute value of one is read, so naming a confidential attribute here discloses
+        nothing: the filter compares the name of a definition.
+
+        Never throws. A failure comes back as Ok = $false with the error text and the exception
+        type. A name that is not an attribute name is refused before any call, so nothing can be
+        injected into the filter.
+    .OUTPUTS
+        [pscustomobject] Ok, Error, ErrorType, SchemaNamingContext, Names (the lDAPDisplayName
+        of each definition returned).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [hashtable]$AdParams = @{},
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$AttributeNames = @()
+    )
+    $out = [pscustomobject]@{ Ok = $false; Error = ''; ErrorType = ''; SchemaNamingContext = ''; Names = @() }
+    $asked = @($AttributeNames)
+    $bad = @($asked | Where-Object { [string]$_ -notmatch '^[A-Za-z][A-Za-z0-9-]*$' })
+    if ($asked.Count -eq 0 -or $bad.Count -gt 0) {
+        $out.Error = ("Refused before any query: the list of schema attributes to look for is empty or holds a value that is not an attribute name ({0})." -f (@($bad | ForEach-Object { "'{0}'" -f [string]$_ }) -join ', '))
+        return $out
+    }
+    try {
+        $rootArgs = @{} + $AdParams
+        $rootArgs.ErrorAction = 'Stop'
+        $root = Get-ADRootDSE @rootArgs
+        $schemaNc = ''
+        if ($null -ne $root) {
+            $ncProp = $root.PSObject.Properties['schemaNamingContext']
+            if ($null -ne $ncProp -and $null -ne $ncProp.Value) { $schemaNc = ([string]$ncProp.Value).Trim() }
+        }
+        if ($schemaNc -eq '') { throw 'The root DSE returned no schemaNamingContext, so the schema partition could not be located.' }
+        $out.SchemaNamingContext = $schemaNc
+        $p = @{} + $AdParams
+        $p.SearchBase = $schemaNc
+        $p.LDAPFilter = ('(|' + ((@($asked | ForEach-Object { '(lDAPDisplayName={0})' -f [string]$_ })) -join '') + ')')
+        $p.Properties = @('lDAPDisplayName')
+        $p.ErrorAction = 'Stop'
+        $names = New-Object System.Collections.ArrayList
+        foreach ($o in @(Get-ADObject @p)) {
+            if ($null -eq $o) { continue }
+            $nameProp = $o.PSObject.Properties['lDAPDisplayName']
+            if ($null -ne $nameProp -and $null -ne $nameProp.Value -and -not [string]::IsNullOrWhiteSpace([string]$nameProp.Value)) { [void]$names.Add(([string]$nameProp.Value).Trim()) }
+        }
+        $out.Names = $names.ToArray()
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function Get-AdfaLapsSchemaState {
+    <#
+    .SYNOPSIS
+        Pure: what a schema read says about the LAPS attributes.
+    .DESCRIPTION
+        Three results are kept apart, because they are three different facts: the query failed
+        (NotRead); the query answered but without the control attribute every schema defines, so
+        the absence of anything else from that answer proves nothing (ControlMissing); and the
+        query answered with the control attribute, so an attribute that is not in the answer is
+        not in the schema (Complete, Partial, LegacyOnly or Absent).
+
+        Complete is all six attributes Update-LapsADSchema adds. The attribute that arrives with
+        the Windows Server 2025 forest schema is reported and never required.
+    .OUTPUTS
+        [pscustomobject] Read, State, Error, ErrorType, ControlSeen, Present, Missing,
+        HasWindowsExpiry, HasLegacyExpiry, WindowsSetPresent, WindowsSetMissing, LegacyPresent,
+        VersionAttribute, HasVersionAttribute, SchemaNamingContext.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$Raw,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $state = [pscustomobject]@{
+        Read = $false; State = 'NotRead'; Error = ''; ErrorType = ''; ControlSeen = $false
+        Present = @(); Missing = @(); HasWindowsExpiry = $false; HasLegacyExpiry = $false
+        WindowsSetPresent = @(); WindowsSetMissing = @(); LegacyPresent = @()
+        VersionAttribute = ''; HasVersionAttribute = $false; SchemaNamingContext = ''
+    }
+    if ($null -eq $Raw) { $state.Error = 'The schema read returned no result.'; return $state }
+    if (-not $Raw.Ok) {
+        $state.Error = [string]$Raw.Error
+        $state.ErrorType = [string]$Raw.ErrorType
+        return $state
+    }
+    $state.SchemaNamingContext = [string]$Raw.SchemaNamingContext
+    $returned = @($Raw.Names | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Trim() })
+    $control = [string]$Config['SchemaControl']
+    $state.ControlSeen = (@($returned | Where-Object { $_ -eq $control }).Count -gt 0)
+    if (-not $state.ControlSeen) { $state.State = 'ControlMissing'; return $state }
+    $state.Read = $true
+    $present = @(); $missing = @(); $windowsPresent = @(); $windowsMissing = @(); $legacyPresent = @()
+    foreach ($attribute in @($Config['SchemaAttributes'])) {
+        $name = [string]$attribute['Name']
+        $set = [string]$attribute['Set']
+        $found = (@($returned | Where-Object { $_ -eq $name }).Count -gt 0)
+        if ($found) { $present += $name } else { $missing += $name }
+        if ($set -eq 'WindowsLaps') { if ($found) { $windowsPresent += $name } else { $windowsMissing += $name } }
+        elseif ($set -eq 'LegacyLaps') { if ($found) { $legacyPresent += $name } }
+        elseif ($set -eq 'WindowsServer2025') { $state.VersionAttribute = $name; $state.HasVersionAttribute = [bool]$found }
+    }
+    $state.Present = @($present); $state.Missing = @($missing)
+    $state.WindowsSetPresent = @($windowsPresent); $state.WindowsSetMissing = @($windowsMissing); $state.LegacyPresent = @($legacyPresent)
+    $state.HasWindowsExpiry = ($present -contains [string]$Config['WindowsExpiry'])
+    $state.HasLegacyExpiry = ($present -contains [string]$Config['LegacyExpiry'])
+    if ($windowsMissing.Count -eq 0 -and $windowsPresent.Count -gt 0) { $state.State = 'Complete' }
+    elseif ($windowsPresent.Count -gt 0) { $state.State = 'Partial' }
+    elseif ($legacyPresent.Count -gt 0) { $state.State = 'LegacyOnly' }
+    else { $state.State = 'Absent' }
+    return $state
+}
+
+function Get-AdfaLapsSchemaFinding {
+    <#
+    .SYNOPSIS
+        Pure: the one forest row saying which LAPS attributes the schema carries.
+    .DESCRIPTION
+        Pass for the complete Windows LAPS set, Warning for a partial one, Not Assessed where the
+        schema was not read. A schema with no Windows LAPS attribute at all is Info: that is a
+        fact about the forest, and what it means for each domain and each DC is graded in their
+        own rows, so that one cause is not counted as a finding twice here.
+    .OUTPUTS
+        [pscustomobject] One finding row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$SchemaState,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [AllowEmptyString()][string]$ForestName = ''
+    )
+    $item = 'Windows LAPS schema'
+    $notRun = 'Not read: any attribute value of any computer. This row reads attribute definitions in the schema partition only.'
+    $source = ("Attribute names: {0} (read {1})." -f [string]$Config['SourceUrl'], [string]$Config['ReadDate'])
+    $control = [string]$Config['SchemaControl']
+    if ($SchemaState.State -eq 'NotRead') {
+        $lead = Get-AdfaLapsReadFailureLead -Message ([string]$SchemaState.Error) -TypeName ([string]$SchemaState.ErrorType) -What 'the forest schema'
+        return (New-AdfaLapsRow -Scope $ForestName -Item $item -Status $script:Status.NotAssessed -NotRun $notRun `
+                -Detail ("{0} Whether the schema carries the LAPS attributes is therefore not known; it is not reported as absent." -f $lead))
+    }
+    if ($SchemaState.State -eq 'ControlMissing') {
+        return (New-AdfaLapsRow -Scope $ForestName -Item $item -Status $script:Status.NotAssessed -NotRun $notRun `
+                -Detail ("Not assessed: the schema query answered without the control attribute {0}, which every schema defines and which was asked for in the same query. An answer that lacks it is incomplete, so the absence of the LAPS attributes from it proves nothing." -f $control))
+    }
+    $where = ("Read as attribute definitions in the schema partition ({0}), by name; no attribute value of any computer was read. The control attribute {1} came back in the same answer, so an attribute that is not listed as present is not in the schema." -f [string]$SchemaState.SchemaNamingContext, $control)
+    $versionText = ''
+    if (-not [string]::IsNullOrWhiteSpace([string]$SchemaState.VersionAttribute)) {
+        $versionWord = 'absent'
+        if ($SchemaState.HasVersionAttribute) { $versionWord = 'present' }
+        $versionText = (" {0}: {1} - it arrives with the Windows Server 2025 forest schema and is not added by Update-LapsADSchema, so its absence is normal below that schema." -f [string]$SchemaState.VersionAttribute, $versionWord)
+    }
+    $legacyText = ' Legacy Microsoft LAPS attributes: absent.'
+    if (@($SchemaState.LegacyPresent).Count -gt 0) { $legacyText = (" Legacy Microsoft LAPS attributes: present ({0})." -f (@($SchemaState.LegacyPresent) -join ', ')) }
+    $entra = 'Microsoft states that a forest whose devices back their passwords up to Microsoft Entra ID only does not need the schema extension, and this read cannot see that.'
+    if ($SchemaState.State -eq 'Complete') {
+        return (New-AdfaLapsRow -Scope $ForestName -Item $item -Status $script:Status.Pass -NotRun $notRun `
+                -Detail ("The forest schema carries the six attributes Update-LapsADSchema adds: {0}.{1}{2} {3} {4}" -f (@($SchemaState.WindowsSetPresent) -join ', '), $versionText, $legacyText, $where, $source))
+    }
+    if ($SchemaState.State -eq 'Partial') {
+        return (New-AdfaLapsRow -Scope $ForestName -Item $item -Status $script:Status.Warning -NotRun $notRun `
+                -Detail ("The forest schema carries {0} of the six attributes Update-LapsADSchema adds - present: {1}; missing: {2}. Microsoft documents that cmdlet as adding all of them in one operation for the entire forest.{3}{4} {5} {6}" -f `
+                        @($SchemaState.WindowsSetPresent).Count, (@($SchemaState.WindowsSetPresent) -join ', '), (@($SchemaState.WindowsSetMissing) -join ', '), $versionText, $legacyText, $where, $source))
+    }
+    $consequence = 'What that means for the computers of each domain and for each domain controller is graded in the LAPS coverage and DSRM password backup rows.'
+    if ($SchemaState.State -eq 'LegacyOnly') {
+        return (New-AdfaLapsRow -Scope $ForestName -Item $item -Status $script:Status.Info -NotRun $notRun `
+                -Detail ("The forest schema carries the legacy Microsoft LAPS attributes ({0}) and none of the Windows LAPS attributes, so a computer can store a legacy Microsoft LAPS password in this directory and no computer or domain controller can store a Windows LAPS one. {1} {2}{3} {4} {5}" -f `
+                        (@($SchemaState.LegacyPresent) -join ', '), $consequence, $entra, $versionText, $where, $source))
+    }
+    return (New-AdfaLapsRow -Scope $ForestName -Item $item -Status $script:Status.Info -NotRun $notRun `
+            -Detail ("The forest schema carries neither the Windows LAPS attributes nor the legacy Microsoft LAPS attributes, so no computer and no domain controller of this forest can store a LAPS password in this directory. {0} {1}{2} {3} {4}" -f `
+                    $consequence, $entra, $versionText, $where, $source))
+}
+
+function Get-AdfaLapsPropertyList {
+    <#
+    .SYNOPSIS
+        Pure: the attributes to ask of every computer object - the fixed non-secret list, plus
+        only those of the two expiry attributes that the schema holds.
+    .DESCRIPTION
+        An attribute the schema lacks is not asked for: the cmdlet throws on a name the schema
+        does not define. The finished list goes through the never-read guard, and a list that
+        holds a refused name is a terminating error - a defect in the config, never a request.
+    .OUTPUTS
+        [string[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)]$SchemaState,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $names = @($Config['ComputerProperties'] | ForEach-Object { [string]$_ })
+    if ($SchemaState.HasWindowsExpiry) { $names += [string]$Config['WindowsExpiry'] }
+    if ($SchemaState.HasLegacyExpiry) { $names += [string]$Config['LegacyExpiry'] }
+    $refused = @(Get-AdfaLapsRefusedProperty -PropertyNames $names -NeverRead @($Config['NeverRead']))
+    if ($refused.Count -gt 0) {
+        throw ("The Windows LAPS property list holds a name that is never read: {0}. Nothing was asked of the directory. This is a defect in the tool's config table, not in the directory." -f ($refused -join ', '))
+    }
+    return @($names)
+}
+
+function ConvertTo-AdfaLapsComputerRecord {
+    <#
+    .SYNOPSIS
+        Pure: one computer object as the small record the verdict functions read.
+    .DESCRIPTION
+        Only the named attributes are copied, each through PSObject.Properties, so an attribute
+        the object does not carry is $null and never an error under StrictMode. The two expiry
+        attributes are copied only when their name is given - that is, only when they were asked
+        for. The times stay raw (the 64-bit integers the directory stores).
+    .OUTPUTS
+        [pscustomobject] Name, OperatingSystem, OperatingSystemVersion, UserAccountControl,
+        LastLogonTimestamp, ObjectClasses, WindowsExpiry, LegacyExpiry.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Computer,
+        [AllowEmptyString()][string]$WindowsExpiryName = '',
+        [AllowEmptyString()][string]$LegacyExpiryName = ''
+    )
+    $name = ''
+    foreach ($candidate in @('dNSHostName', 'Name', 'DistinguishedName')) {
+        $value = Get-AdfaConfigValue -Entry $Computer -Name $candidate
+        if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) { $name = ([string]$value).Trim(); break }
+    }
+    if ($name -eq '') { $name = '(unnamed)' }
+    $uac = $null
+    $uacRaw = Get-AdfaConfigValue -Entry $Computer -Name 'userAccountControl'
+    if ($null -ne $uacRaw) {
+        $parsed = [int64]0
+        if ([int64]::TryParse(([string]$uacRaw).Trim(), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) { $uac = $parsed }
+    }
+    $classes = @(@(Get-AdfaConfigValue -Entry $Computer -Name 'objectClass') | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+    $windowsExpiry = $null
+    if ($WindowsExpiryName -ne '') { $windowsExpiry = Get-AdfaConfigValue -Entry $Computer -Name $WindowsExpiryName }
+    $legacyExpiry = $null
+    if ($LegacyExpiryName -ne '') { $legacyExpiry = Get-AdfaConfigValue -Entry $Computer -Name $LegacyExpiryName }
+    return [pscustomobject]@{
+        Name                   = $name
+        OperatingSystem        = [string](Get-AdfaConfigValue -Entry $Computer -Name 'operatingSystem')
+        OperatingSystemVersion = [string](Get-AdfaConfigValue -Entry $Computer -Name 'operatingSystemVersion')
+        UserAccountControl     = $uac
+        LastLogonTimestamp     = Get-AdfaConfigValue -Entry $Computer -Name 'lastLogonTimestamp'
+        ObjectClasses          = @($classes)
+        WindowsExpiry          = $windowsExpiry
+        LegacyExpiry           = $legacyExpiry
+    }
+}
+
+function Get-AdfaLapsDirectoryRaw {
+    <#
+    .SYNOPSIS
+        The other place C4 touches the directory: one domain's functional level and its
+        computer objects, with a guarded list of non-secret attributes.
+    .DESCRIPTION
+        Three read-only calls: Get-ADDomain -Identity <domain> for the DN of the domain head,
+        Get-ADObject for msDS-Behavior-Version on it, and one Get-ADComputer for every computer
+        object of the domain. The last two carry -Server set to the domain, so that a child
+        domain is asked of its own domain controller. Get-ADDomain does NOT: it takes the
+        caller's AD parameters unchanged - -Server and -Credential where the run has them, the
+        default domain controller otherwise - as the script's older Get-ADDomain calls do. If
+        that call fails for a child domain, the level is not read and every eligible DC of the
+        domain is Not Assessed, never graded. The two halves are independent: a failed level
+        read leaves the computers, and a failed computer read leaves the level.
+
+        THE PROPERTY LIST IS CHECKED HERE AS WELL as where it is built. A list that holds a name
+        on the never-read list, a wildcard or a blank, or that is empty, is refused before any
+        call: Refused = $true, and nothing is asked of the directory.
+
+        The computer query relies on the paging the ActiveDirectory module does by itself; this
+        script sets no page size and no result limit anywhere, and none is set here. Each object
+        is reduced to a small record as it arrives, so the full objects are not kept.
+
+        Never throws.
+    .OUTPUTS
+        [pscustomobject] Ok (the computer query succeeded), Refused, Error, ErrorType,
+        DomainLevel (raw string, '' when not read), DomainLevelError, Computers (records),
+        PropertyNames.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{},
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$PropertyNames = @(),
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$NeverRead = @(),
+        [AllowEmptyString()][string]$WindowsExpiryName = '',
+        [AllowEmptyString()][string]$LegacyExpiryName = ''
+    )
+    $out = [pscustomobject]@{
+        Ok = $false; Refused = $false; Error = ''; ErrorType = ''; DomainLevel = ''; DomainLevelError = ''
+        Computers = @(); PropertyNames = @($PropertyNames)
+    }
+    $refused = @(Get-AdfaLapsRefusedProperty -PropertyNames $PropertyNames -NeverRead $NeverRead)
+    if (@($PropertyNames).Count -eq 0 -or $refused.Count -gt 0) {
+        $out.Refused = $true
+        $out.Error = ("the property list is empty or holds a name that is never read ({0}), so nothing was asked of the directory. This is a defect in the tool, not in the directory." -f ($refused -join ', '))
+        return $out
+    }
+
+    # The domain functional level, from the domain head.
+    try {
+        $domainArgs = @{} + $AdParams
+        $domainArgs.Identity = $DomainName
+        $domainDn = [string](Get-ADDomain @domainArgs).DistinguishedName
+        if ([string]::IsNullOrWhiteSpace($domainDn)) { throw 'Get-ADDomain returned no DistinguishedName, so the domain head could not be located.' }
+        $levelArgs = @{} + $AdParams
+        $levelArgs.Server = $DomainName
+        $levelArgs.Identity = $domainDn
+        $levelArgs.Properties = @('msDS-Behavior-Version')
+        $levelArgs.ErrorAction = 'Stop'
+        $head = Get-ADObject @levelArgs
+        $levelProp = $null
+        if ($null -ne $head) { $levelProp = $head.PSObject.Properties['msDS-Behavior-Version'] }
+        if ($null -eq $levelProp -or $null -eq $levelProp.Value -or [string]::IsNullOrWhiteSpace([string]$levelProp.Value)) {
+            $out.DomainLevelError = ("msDS-Behavior-Version was not returned for {0}. An unset attribute and one that could not be read look the same from here, so no level is assumed." -f $domainDn)
+        }
+        else { $out.DomainLevel = ([string]$levelProp.Value).Trim() }
+    }
+    catch { $out.DomainLevelError = ("Reading msDS-Behavior-Version from the head of {0} failed: {1}" -f $DomainName, [string]$_.Exception.Message) }
+
+    # The computer objects of the domain.
+    try {
+        $computerArgs = @{} + $AdParams
+        $computerArgs.Server = $DomainName
+        $computerArgs.LDAPFilter = '(objectClass=computer)'
+        $computerArgs.Properties = @($PropertyNames)
+        $computerArgs.ErrorAction = 'Stop'
+        $records = New-Object System.Collections.ArrayList
+        Get-ADComputer @computerArgs | ForEach-Object {
+            if ($null -ne $_) { [void]$records.Add((ConvertTo-AdfaLapsComputerRecord -Computer $_ -WindowsExpiryName $WindowsExpiryName -LegacyExpiryName $LegacyExpiryName)) }
+        }
+        $out.Computers = $records.ToArray()
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function Test-AdfaLapsCapableBuild {
+    <#
+    .SYNOPSIS
+        Pure: whether an OS build is one Microsoft lists as able to run Windows LAPS.
+    .OUTPUTS
+        [bool]
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [AllowNull()]$Build,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    if ($null -eq $Build) { return $false }
+    $number = [int]$Build
+    foreach ($range in @($Config['CapableBuilds'])) {
+        $min = Get-AdfaConfigValue -Entry $range -Name 'MinBuild'
+        $max = Get-AdfaConfigValue -Entry $range -Name 'MaxBuild'
+        if ($null -ne $min -and $number -lt [int]$min) { continue }
+        if ($null -ne $max -and $number -gt [int]$max) { continue }
+        return $true
+    }
+    return $false
+}
+
+function Get-AdfaLapsComputerClass {
+    <#
+    .SYNOPSIS
+        Pure: which class a computer object falls in - InPopulation, or the one reason it is not
+        graded.
+    .DESCRIPTION
+        DECLARED POPULATION of the coverage row: an enabled computer account that is not a
+        domain controller and not a managed service account, whose operatingSystem begins with
+        "Windows", whose OS build is one that can run Windows LAPS, and that logged on within the
+        stale threshold. Everything else gets a named class and its own count, so that nothing
+        that cannot run Windows LAPS is ever called a computer without it:
+
+          ServiceAccount         a managed service account (a subclass of computer)
+          AccountControlNotRead  userAccountControl was not returned, so neither "disabled" nor
+                                 "domain controller" can be ruled out
+          DomainController       SERVER_TRUST_ACCOUNT or PARTIAL_SECRETS_ACCOUNT; graded by the
+                                 DSRM rows instead, disabled or not
+          Disabled               ACCOUNTDISABLE
+          NoOperatingSystem      no operatingSystem value: also how cluster name objects and other
+                                 virtual computer objects are left out (a tool heuristic)
+          NonWindows             operatingSystem does not begin with "Windows"
+          BuildNotRead           Windows, but operatingSystemVersion carries no build number
+          NotCapable             a Windows build Microsoft does not list for Windows LAPS
+          NoLogonRecorded        no lastLogonTimestamp, or zero
+          Stale                  lastLogonTimestamp older than the cutoff
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]$Computer,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][datetime]$StaleCutoffUtc
+    )
+    $excluded = @($Config['ExcludedClasses'])
+    foreach ($class in @($Computer.ObjectClasses)) {
+        if (@($excluded | Where-Object { $_ -eq [string]$class }).Count -gt 0) { return 'ServiceAccount' }
+    }
+    if ($null -eq $Computer.UserAccountControl) { return 'AccountControlNotRead' }
+    $flags = [int64]$Computer.UserAccountControl
+    $dcFlags = ([int64]$Config['ServerTrustFlag']) -bor ([int64]$Config['PartialSecretsFlag'])
+    if (($flags -band $dcFlags) -ne 0) { return 'DomainController' }
+    if (($flags -band [int64]$Config['AccountDisableFlag']) -ne 0) { return 'Disabled' }
+    $os = ([string]$Computer.OperatingSystem).Trim()
+    if ($os -eq '') { return 'NoOperatingSystem' }
+    if ($os -notlike 'Windows*') { return 'NonWindows' }
+    $build = Get-AdfaOsBuild -OperatingSystemVersion ([string]$Computer.OperatingSystemVersion)
+    if ($null -eq $build) { return 'BuildNotRead' }
+    if (-not (Test-AdfaLapsCapableBuild -Build $build -Config $Config)) { return 'NotCapable' }
+    $logon = ConvertTo-AdfaFileTimeUtc -Value $Computer.LastLogonTimestamp
+    if ($null -eq $logon -or $logon.Year -le 1601) { return 'NoLogonRecorded' }
+    if ($logon -lt $StaleCutoffUtc.ToUniversalTime()) { return 'Stale' }
+    return 'InPopulation'
+}
+
+function Get-AdfaLapsCoverageVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the status of one domain's coverage row, from counts.
+    .DESCRIPTION
+        In this order:
+          NoObjects        the query returned nothing at all - an incomplete read: Not Assessed
+          EmptyPopulation  nothing to grade: Info
+          SchemaAbsent     the schema has neither expiry attribute, so every in-population
+                           computer is without - a measured absence, judged by the thresholds
+          NoProofOfRead    the schema has the attribute and NO object in the domain returned a
+                           value: not deployed, not readable and backed up elsewhere all look
+                           the same, so Not Assessed - never Warning, never Pass
+          AllVisible       Pass
+          AboveFail / AboveWarn / WithinTolerance, by the share without a visible expiry time.
+          Unclassified     a result that would be Pass or Info while some objects could not be
+                           placed in or out of the population (userAccountControl not returned,
+                           or a Windows build that could not be read): those objects are not
+                           measured, so the row cannot pass or say there is nothing to grade -
+                           Not Assessed. A Warning or a Fail stands: what was measured among the
+                           others is a finding whatever the unmeasured ones turn out to be.
+        "Above" is strict: a share equal to a threshold is not above it. Both thresholds are
+        tool defaults or an override, never Microsoft values.
+    .OUTPUTS
+        [pscustomobject] Status, State, Percent.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][int]$TotalReturned,
+        [Parameter(Mandatory)][int]$InPopulation,
+        [Parameter(Mandatory)][int]$NoneVisible,
+        [Parameter(Mandatory)][bool]$ProofOfRead,
+        [Parameter(Mandatory)][bool]$SchemaHasExpiry,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [int]$Unclassified = 0
+    )
+    if ($TotalReturned -le 0) { return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'NoObjects'; Percent = $null } }
+    if ($InPopulation -le 0) {
+        if ($Unclassified -gt 0) { return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'Unclassified'; Percent = $null } }
+        return [pscustomobject]@{ Status = $script:Status.Info; State = 'EmptyPopulation'; Percent = $null }
+    }
+    $without = $NoneVisible
+    if (-not $SchemaHasExpiry) { $without = $InPopulation }
+    elseif (-not $ProofOfRead) { return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'NoProofOfRead'; Percent = $null } }
+    $percent = ([double]$without * 100.0) / [double]$InPopulation
+    $status = $script:Status.Pass
+    $state = 'WithinTolerance'
+    if ($without -le 0) { $state = 'AllVisible' }
+    elseif ($percent -gt [double]$Config['FailAbovePercent']) { $status = $script:Status.Fail; $state = 'AboveFail' }
+    elseif ($percent -gt [double]$Config['WarnAbovePercent']) { $status = $script:Status.Warning; $state = 'AboveWarn' }
+    if (-not $SchemaHasExpiry) { $state = 'SchemaAbsent' }
+    if ($Unclassified -gt 0 -and $status -eq $script:Status.Pass) { return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'Unclassified'; Percent = $percent } }
+    return [pscustomobject]@{ Status = $status; State = $state; Percent = $percent }
+}
+
+function Get-AdfaLapsDsrmVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the status of one domain controller's DSRM password backup row.
+    .DESCRIPTION
+        Eligibility first, as Microsoft draws it: a DC below Windows Server 2019 (build 17763),
+        or a domain below functional level 2016 (7), cannot use the feature and is Info, not
+        applicable. A level or a build that was not read is Not Assessed.
+
+        Then the evidence, which is the Windows LAPS expiry time on the DC's own computer
+        object and nothing else:
+          SchemaAbsent      the schema has no such attribute: a measured absence, Warning
+          Current           a time that is not more than the grace period past: Pass
+          Expired           a time further past than that: Warning
+          ExpiryNotATime    a value that is not a time: Not Assessed
+          NoProofOfRead     nothing on this DC and nothing on any object of the domain: not set
+                            cannot be told from not readable, Not Assessed
+          RodcNotPublished  nothing on a read-only DC, where Microsoft does not say whether the
+                            feature is supported: Not Assessed
+          NoneVisible       nothing on this DC while another object of the domain returned a
+                            value: Warning
+        Warning is the AdAssessment26 catalogue's rule for a DC without it (ADA-LAPS-001).
+        Microsoft documents the feature as off by default, not as a requirement.
+    .OUTPUTS
+        [pscustomobject] Status, State.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$Build,
+        [AllowNull()][AllowEmptyString()][string]$DomainLevel,
+        [Parameter(Mandatory)][bool]$ExpiryPresent,
+        [AllowNull()]$ExpiryUtc,
+        [Parameter(Mandatory)][datetime]$Now,
+        [Parameter(Mandatory)][bool]$ProofOfRead,
+        [Parameter(Mandatory)][bool]$SchemaRead,
+        [Parameter(Mandatory)][bool]$HasWindowsExpiry,
+        [Parameter(Mandatory)][bool]$IsReadOnly,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $verdict = { param($Status, $State) [pscustomobject]@{ Status = $Status; State = $State } }
+    if ($null -ne $Build -and [int]$Build -lt [int]$Config['MinDsrmDcBuild']) { return (& $verdict $script:Status.Info 'NotApplicableBuild') }
+    $level = 0
+    $levelIsNumber = [int]::TryParse(([string]$DomainLevel).Trim(), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$level)
+    if (-not $levelIsNumber) { return (& $verdict $script:Status.NotAssessed 'LevelNotRead') }
+    if (@($Config['KnownDomainLevels'] | Where-Object { [int]$_ -eq $level }).Count -eq 0) { return (& $verdict $script:Status.NotAssessed 'LevelUnknown') }
+    if ($level -lt [int]$Config['MinDomainLevel']) { return (& $verdict $script:Status.Info 'NotApplicableLevel') }
+    if ($null -eq $Build) { return (& $verdict $script:Status.NotAssessed 'BuildNotRead') }
+    if (-not $SchemaRead) { return (& $verdict $script:Status.NotAssessed 'SchemaNotRead') }
+    if (-not $HasWindowsExpiry) { return (& $verdict $script:Status.Warning 'SchemaAbsent') }
+    if ($ExpiryPresent) {
+        if ($null -eq $ExpiryUtc) { return (& $verdict $script:Status.NotAssessed 'ExpiryNotATime') }
+        # The grace period is taken off "now", never added to the expiry time: an expiry time
+        # within the grace period of the last date .NET can hold (an administrator who set it to
+        # the end of time to stop rotation) would otherwise throw and end the section. The two
+        # comparisons are the same: now > expiry + grace exactly when now - grace > expiry.
+        $earliestCurrent = $Now.ToUniversalTime().AddDays(-1 * [double]$Config['ExpiredGraceDays'])
+        if ($earliestCurrent -gt ([datetime]$ExpiryUtc).ToUniversalTime()) { return (& $verdict $script:Status.Warning 'Expired') }
+        return (& $verdict $script:Status.Pass 'Current')
+    }
+    if (-not $ProofOfRead) { return (& $verdict $script:Status.NotAssessed 'NoProofOfRead') }
+    if ($IsReadOnly) { return (& $verdict $script:Status.NotAssessed 'RodcNotPublished') }
+    return (& $verdict $script:Status.Warning 'NoneVisible')
+}
+
+function Get-AdfaLapsDsrmDetail {
+    <#
+    .SYNOPSIS
+        Pure: the Detail of one DSRM password backup row, for the state the verdict returned.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$State,
+        [AllowNull()]$Build,
+        [AllowNull()][AllowEmptyString()][string]$BuildRaw,
+        [AllowNull()][AllowEmptyString()][string]$DomainLevel,
+        [AllowNull()][AllowEmptyString()][string]$DomainLevelError,
+        [AllowNull()]$ExpiryUtc,
+        [AllowNull()][AllowEmptyString()][string]$ExpiryRaw,
+        [Parameter(Mandatory)][bool]$IsReadOnly,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $attribute = [string]$Config['WindowsExpiry']
+    $grace = [int]$Config['ExpiredGraceDays']
+    $minBuild = [int]$Config['MinDsrmDcBuild']
+    $minLevel = [int]$Config['MinDomainLevel']
+    $basis = ("Basis: {0} on the computer object of the DC, the one non-secret attribute Windows LAPS writes there. Microsoft does not state in prose that DSRM password backup writes it - its Get-LapsADPassword example shows an expiration time for a DC whose password source is the DSRM one - so reading it as evidence of DSRM password backup is an inference, not a documented contract." -f $attribute)
+    $rule = 'That a DC without it is a Warning is the rule of the AdAssessment26 catalogue (ADA-LAPS-001), a tool default and not a Microsoft value: Microsoft documents DSRM password backup as a feature that is off by default, not as a requirement.'
+    $sameLook = 'An attribute this account has no right to read looks exactly like one that is not set.'
+    $when = ''
+    if ($null -ne $ExpiryUtc) { $when = ("{0} UTC" -f ([datetime]$ExpiryUtc).ToUniversalTime().ToString('yyyy-MM-dd HH:mm', [System.Globalization.CultureInfo]::InvariantCulture)) }
+    $rodc = ''
+    if ($IsReadOnly) { $rodc = ' This is a read-only domain controller, and Microsoft does not state, on the pages read, whether DSRM password backup is supported on one.' }
+    switch ($State) {
+        'NotApplicableBuild' {
+            return ("Not applicable: the OS build of this DC is {0}, below {1} (Windows Server 2019). Microsoft states that Windows Server 2016 and earlier domain controllers do not support Windows LAPS, so they cannot use DSRM account management. Nothing is graded." -f $Build, $minBuild)
+        }
+        'NotApplicableLevel' {
+            return ("Not applicable: the domain functional level is msDS-Behavior-Version {0}, below {1} (Windows Server 2016). Microsoft states that with a domain functional level earlier than 2016 domain controllers cannot be configured to manage their DSRM account. Nothing is graded." -f $DomainLevel, $minLevel)
+        }
+        'LevelNotRead' {
+            $why = 'no value was returned'
+            if (-not [string]::IsNullOrWhiteSpace($DomainLevelError)) { $why = $DomainLevelError.Trim() }
+            elseif (-not [string]::IsNullOrWhiteSpace($DomainLevel)) { $why = ("the value returned, '{0}', is not a number" -f $DomainLevel) }
+            return ("Not assessed: the domain functional level was not read ({0}), and DSRM password backup needs level {1} (Windows Server 2016) or later, so it is not known whether this DC can use it. Nothing is concluded from the attribute." -f $why, $minLevel)
+        }
+        'LevelUnknown' {
+            return ("Not assessed: the domain head holds msDS-Behavior-Version {0}, which is not one of the values this tool knows ({1} - the values Microsoft publishes for the forest functional level, applied here to the domain because the page for the domain level was not read), so it is not interpreted and it is not known whether this DC can use DSRM password backup." -f $DomainLevel, (@($Config['KnownDomainLevels']) -join ', '))
+        }
+        'BuildNotRead' {
+            return ("Not assessed: operatingSystemVersion on the computer object of this DC is '{0}', which carries no build number, and DSRM password backup needs build {1} (Windows Server 2019) or later, so it is not known whether this DC can use it." -f $BuildRaw, $minBuild)
+        }
+        'SchemaNotRead' {
+            return 'Not assessed: the forest schema could not be read (see the Windows LAPS schema row), so it is not known whether the attribute this row relies on exists.'
+        }
+        'SchemaAbsent' {
+            return ("The forest schema does not carry {0} (see the Windows LAPS schema row), so Windows LAPS cannot back the DSRM password of this DC up to this directory. The DC is otherwise eligible: OS build {1}, domain functional level {2}. {3}" -f $attribute, $Build, $DomainLevel, $rule)
+        }
+        'Current' {
+            return ("A Windows LAPS expiry time is visible on the computer object of this DC: {0}, which is not more than {1} day(s) past (grace period: {2}). A DC that was promoted from a member server Windows LAPS managed can carry a value left from before the promotion until it expires.{3} {4}" -f $when, $grace, [string]$Config['ThresholdSource'], $rodc, $basis)
+        }
+        'Expired' {
+            return ("The Windows LAPS expiry time on the computer object of this DC is {0}, more than {1} day(s) in the past (grace period: {2}). Either the password it belongs to is no longer being rotated, or the value was left from before this server became a DC.{3} {4} {5}" -f $when, $grace, [string]$Config['ThresholdSource'], $rodc, $basis, $rule)
+        }
+        'ExpiryNotATime' {
+            return ("Not assessed: {0} on the computer object of this DC holds '{1}', which is not a time, so it is neither current nor expired. {2}" -f $attribute, $ExpiryRaw, $basis)
+        }
+        'NoProofOfRead' {
+            return ("Not assessed: no Windows LAPS expiry time is visible to this account on the computer object of this DC, and no computer object of this domain returned one either, so not set cannot be told from not readable. {0}{1} {2}" -f $sameLook, $rodc, $basis)
+        }
+        'RodcNotPublished' {
+            return ("Not assessed: no Windows LAPS expiry time is visible to this account on the computer object of this read-only domain controller. Microsoft does not state, on the pages read, whether DSRM password backup is supported on a read-only domain controller, so nothing is concluded from the absence. {0} {1}" -f $sameLook, $basis)
+        }
+        default {
+            return ("No Windows LAPS expiry time is visible to this account on the computer object of this DC, while at least one other computer object of this domain did return one. {0} Permissions can differ between organizational units, so this is not proof that the DSRM password is unmanaged. The DC is eligible: OS build {1}, domain functional level {2}. {3} {4}" -f $sameLook, $Build, $DomainLevel, $basis, $rule)
+        }
+    }
+}
+
+function Get-AdfaLapsThresholdText {
+    <#
+    .SYNOPSIS
+        Pure: the two coverage thresholds in words, with where they come from.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][hashtable]$Config)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $warn = ([double]$Config['WarnAbovePercent']).ToString('0.##', $inv)
+    $fail = [double]$Config['FailAbovePercent']
+    $failText = ("Fail above {0} %" -f $fail.ToString('0.##', $inv))
+    if ($fail -ge 100) { $failText = 'Fail above 100 %, which no share can exceed, so this row never fails unless a config file lowers it' }
+    return ("Judged against: Warning above {0} % of the computers in population with no LAPS expiry time visible, {1} ({2})." -f $warn, $failText, [string]$Config['ThresholdSource'])
+}
+
+function Get-AdfaLapsDomainFinding {
+    <#
+    .SYNOPSIS
+        Pure: one domain's raw directory read to its finding rows.
+    .DESCRIPTION
+        DECLARED POPULATION: the one domain named. It always gets exactly one
+        "LAPS coverage: <domain>" row, and at least one DSRM row - "DSRM password backup: <dc>"
+        for each domain controller computer object the read returned, or one
+        "DSRM password backup - <domain>" Not Assessed row saying why there is none. That
+        Not Assessed row is also written beside the DC rows when an object returned no
+        userAccountControl, since it may be a domain controller the rows do not cover.
+
+        Nothing is graded when the schema was not read, whatever the computer read returned:
+        without the schema it is not known which attribute could have been asked for.
+
+        A computer is counted as having LAPS when either expiry attribute came back with a
+        value, and is otherwise "no LAPS expiry time visible to this account" - never
+        "unmanaged": a value this account has no right to read, and a password backed up to
+        Microsoft Entra ID, look the same as no value. The names listed are capped at
+        SampleLimit, and the row says when the list was cut.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [AllowNull()]$Raw,
+        [Parameter(Mandatory)]$SchemaState,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [int]$StaleDays = 90,
+        [Parameter(Mandatory)][datetime]$Now
+    )
+    $coverageItem = ("LAPS coverage: {0}" -f $DomainName)
+    $dsrmGapItem = ("DSRM password backup - {0}" -f $DomainName)
+    $coverageNotRun = 'Not read: any LAPS password or encrypted password attribute, which this section never requests; Microsoft Entra ID, where a device can back its password up in place of this directory; and the LAPS policy on any computer. The expiry time is the only evidence used.'
+    $dsrmNotRun = 'Not read: the Windows LAPS policy in the registry of the DC (BackupDirectory, ADBackupDSRMPassword, ADPasswordEncryptionEnabled) - PORT-PLAN C4a; and the confidential attribute that holds the encrypted DSRM password, which this section never requests and does not test for presence - PORT-PLAN C4d.'
+    $rows = @()
+
+    # 1. Without the schema nothing is graded.
+    if (-not $SchemaState.Read) {
+        $cause = 'Not assessed: the forest schema could not be read (see the Windows LAPS schema row), so it is not known which LAPS attributes exist'
+        $rows += New-AdfaLapsRow -Scope $DomainName -Item $coverageItem -Status $script:Status.NotAssessed -NotRun $coverageNotRun `
+            -Detail ("{0}, and no computer account of this domain was graded." -f $cause)
+        $rows += New-AdfaLapsRow -Scope $DomainName -Item $dsrmGapItem -Status $script:Status.NotAssessed -NotRun $dsrmNotRun `
+            -Detail ("{0}, and no domain controller of this domain was graded." -f $cause)
+        return @($rows)
+    }
+
+    # 2. The read itself failed, or was refused before it was sent.
+    $what = ("the computer objects of {0}" -f $DomainName)
+    $failure = ''
+    if ($null -eq $Raw) { $failure = ("Read failed: {0} could not be read. The directory read returned no result." -f $what) }
+    elseif ($Raw.Refused) { $failure = ("Refused: {0}" -f [string]$Raw.Error) }
+    elseif (-not $Raw.Ok) { $failure = Get-AdfaLapsReadFailureLead -Message ([string]$Raw.Error) -TypeName ([string]$Raw.ErrorType) -What $what }
+    if ($failure -ne '') {
+        $rows += New-AdfaLapsRow -Scope $DomainName -Item $coverageItem -Status $script:Status.NotAssessed -NotRun $coverageNotRun `
+            -Detail ("{0} No computer account of this domain was graded; this is not a clean result." -f $failure)
+        $rows += New-AdfaLapsRow -Scope $DomainName -Item $dsrmGapItem -Status $script:Status.NotAssessed -NotRun $dsrmNotRun `
+            -Detail ("{0} No domain controller of this domain was graded; this is not a clean result." -f $failure)
+        return @($rows)
+    }
+
+    # 3. Classify what came back.
+    $nowUtc = $Now.ToUniversalTime()
+    $cutoff = $nowUtc.AddDays(-1 * $StaleDays)
+    $computers = @($Raw.Computers | Where-Object { $null -ne $_ })
+    $counts = [ordered]@{
+        DomainController = 0; ServiceAccount = 0; Disabled = 0; NoOperatingSystem = 0; NonWindows = 0; BuildNotRead = 0
+        NotCapable = 0; NoLogonRecorded = 0; Stale = 0; AccountControlNotRead = 0; InPopulation = 0
+    }
+    $domainControllers = New-Object System.Collections.ArrayList
+    $withWindows = 0; $legacyOnly = 0; $notCapableWithLegacy = 0
+    $anyExpirySeen = $false; $windowsExpirySeen = $false
+    $noneVisibleNames = New-Object System.Collections.Generic.List[string]
+    # Objects that could not be placed in or out of the population: not measured, so never
+    # counted as measured-out. AccountControlNotRead could also be a domain controller.
+    $unclassifiedNames = New-Object System.Collections.Generic.List[string]
+    $noAccountControlNames = New-Object System.Collections.Generic.List[string]
+    # A capped, name-ordered list, the cap being SampleLimit.
+    $nameList = {
+        param($Names, [string]$Label)
+        $limit = [int]$Config['SampleLimit']
+        $sorted = @($Names.ToArray())
+        [array]::Sort($sorted, [System.StringComparer]::OrdinalIgnoreCase)
+        if ($limit -le 0) { return (" {0}: names are not listed (SampleLimit is 0)." -f $Label) }
+        if ($sorted.Count -gt $limit) { return (" {0} (showing {1} of {2}, in name order): {3}." -f $Label, $limit, $sorted.Count, (@($sorted | Select-Object -First $limit) -join ', ')) }
+        return (" {0}: {1}." -f $Label, ($sorted -join ', '))
+    }
+    foreach ($computer in $computers) {
+        $hasWindows = ($null -ne $computer.WindowsExpiry -and -not [string]::IsNullOrWhiteSpace([string]$computer.WindowsExpiry))
+        $hasLegacy = ($null -ne $computer.LegacyExpiry -and -not [string]::IsNullOrWhiteSpace([string]$computer.LegacyExpiry))
+        if ($hasWindows) { $windowsExpirySeen = $true }
+        if ($hasWindows -or $hasLegacy) { $anyExpirySeen = $true }
+        $class = Get-AdfaLapsComputerClass -Computer $computer -Config $Config -StaleCutoffUtc $cutoff
+        $counts[$class] = [int]$counts[$class] + 1
+        if ($class -eq 'DomainController') { [void]$domainControllers.Add($computer) }
+        elseif ($class -eq 'AccountControlNotRead' -or $class -eq 'BuildNotRead') {
+            $unclassifiedNames.Add([string]$computer.Name)
+            if ($class -eq 'AccountControlNotRead') { $noAccountControlNames.Add([string]$computer.Name) }
+        }
+        elseif ($class -eq 'NotCapable') { if ($hasLegacy) { $notCapableWithLegacy++ } }
+        elseif ($class -eq 'InPopulation') {
+            if ($hasWindows) { $withWindows++ }
+            elseif ($hasLegacy) { $legacyOnly++ }
+            else { $noneVisibleNames.Add([string]$computer.Name) }
+        }
+    }
+    $inPopulation = [int]$counts['InPopulation']
+    $noneVisible = $noneVisibleNames.Count
+    $outOfPopulation = $computers.Count - $inPopulation
+    $schemaHasExpiry = ($SchemaState.HasWindowsExpiry -or $SchemaState.HasLegacyExpiry)
+    $unclassified = $unclassifiedNames.Count
+
+    # 4. The coverage row.
+    $verdict = Get-AdfaLapsCoverageVerdict -TotalReturned $computers.Count -InPopulation $inPopulation -NoneVisible $noneVisible `
+        -ProofOfRead $anyExpirySeen -SchemaHasExpiry $schemaHasExpiry -Config $Config -Unclassified $unclassified
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $percentText = ''
+    if ($null -ne $verdict.Percent) { $percentText = ([double]$verdict.Percent).ToString('0.##', $inv) }
+    $windowsName = [string]$Config['WindowsExpiry']
+    $legacyName = [string]$Config['LegacyExpiry']
+    $shareText = ("{0} of {1} computer account(s) in population ({2} %) have no LAPS expiry time visible to this account" -f $noneVisible, $inPopulation, $percentText)
+    $lead = ''
+    switch ([string]$verdict.State) {
+        'NoObjects' { $lead = 'Not assessed: the computer query for this domain returned no object at all. Every domain holds at least the computer objects of its domain controllers, so an empty answer is an incomplete read, not an empty domain.' }
+        'EmptyPopulation' { $lead = 'No computer account of this domain is in the population this row grades, so there is nothing to grade.' }
+        'SchemaAbsent' { $lead = ("The forest schema carries neither {0} nor {1} (see the Windows LAPS schema row), so none of the {2} computer account(s) in population can have a LAPS password stored in this directory." -f $windowsName, $legacyName, $inPopulation) }
+        'NoProofOfRead' { $lead = ("Not assessed: no LAPS expiry time is visible to this account on any of the {0} computer object(s) read in this domain, although the forest schema carries the attribute. LAPS not being deployed, this account having no right to read the attribute, and every device backing its password up to Microsoft Entra ID all look the same from here, so no computer is called unmanaged." -f $computers.Count) }
+        'AllVisible' { $lead = ("Every one of the {0} computer account(s) in population has a LAPS expiry time visible to this account." -f $inPopulation) }
+        'WithinTolerance' { $lead = ("{0}, which is not above the Warning threshold." -f $shareText) }
+        'AboveFail' { $lead = ("{0}, which is above the Fail threshold of {1} %." -f $shareText, ([double]$Config['FailAbovePercent']).ToString('0.##', $inv)) }
+        'Unclassified' {
+            $lead = ("Not assessed: {0} computer object(s) of this domain could not be placed in or out of the population - account control flags not returned {1}, Windows with an OS build that could not be read {2} - so they are not measured, and the row is not graded Pass or 'nothing to grade' while they are not. Of the {3} computer account(s) that could be placed in population, {4} have no LAPS expiry time visible to this account." -f `
+                    $unclassified, [int]$counts['AccountControlNotRead'], [int]$counts['BuildNotRead'], $inPopulation, $noneVisible)
+        }
+        default { $lead = ("{0}." -f $shareText) }
+    }
+    # A Warning or a Fail stands with unmeasured objects beside it, and says over what it was counted.
+    if ($unclassified -gt 0 -and [string]$verdict.State -ne 'Unclassified' -and [string]$verdict.State -ne 'NoProofOfRead' -and [string]$verdict.State -ne 'NoObjects') {
+        $lead = ("{0} The share is over the computers that could be classified: {1} more computer object(s) could not be placed in or out of the population, and are not measured." -f $lead, $unclassified)
+    }
+    $detail = $lead
+    if ([string]$verdict.State -ne 'NoObjects') {
+        $rule = ("Population rule: enabled computer accounts that are not domain controllers and not managed service accounts, whose operatingSystem begins with 'Windows', whose OS build can run Windows LAPS (17763, or 19041 and later - the release, not the patch level: the directory does not show whether the April 11, 2023 update is installed), and whose lastLogonTimestamp is within {0} day(s) (-StaleDays)." -f $StaleDays)
+        $read = ("Read {0} computer object(s)." -f $computers.Count)
+        $inText = ("In population {0}: Windows LAPS expiry time visible {1}; legacy Microsoft LAPS expiry time only {2}; no LAPS expiry time visible to this account {3}." -f $inPopulation, $withWindows, $legacyOnly, $noneVisible)
+        $outText = ("Out of population {0}: domain controllers {1} (see the DSRM password backup rows); managed service accounts {2}; disabled {3}; no operatingSystem recorded {4}; operatingSystem not Windows {5}; Windows with an OS build that could not be read {6}; Windows release that cannot run Windows LAPS {7} (of them {8} with a legacy Microsoft LAPS expiry time visible); no logon recorded {9}; stale {10}; account control flags not returned {11}." -f `
+                $outOfPopulation, [int]$counts['DomainController'], [int]$counts['ServiceAccount'], [int]$counts['Disabled'], [int]$counts['NoOperatingSystem'], [int]$counts['NonWindows'],
+            [int]$counts['BuildNotRead'], [int]$counts['NotCapable'], $notCapableWithLegacy, [int]$counts['NoLogonRecorded'], [int]$counts['Stale'], [int]$counts['AccountControlNotRead'])
+        $heuristic = 'A computer object with no operatingSystem value is how cluster and other virtual computer objects are left out; that is a tool heuristic, no Microsoft-documented marker for them was found.'
+        $caveat = ''
+        if ($schemaHasExpiry) {
+            $caveat = ' For a single computer, not set and not readable look the same: an expiry time this account has no right to read is not returned, and permissions can differ between organizational units. A device that backs its password up to Microsoft Entra ID has no expiry time in this directory either.'
+        }
+        else { $caveat = ' A device that backs its password up to Microsoft Entra ID needs no attribute in this directory, and this read cannot see that.' }
+        $sample = ''
+        if ($noneVisible -gt 0 -and $schemaHasExpiry -and [string]$verdict.State -ne 'NoProofOfRead') {
+            $sample = & $nameList $noneVisibleNames 'No LAPS expiry time visible'
+        }
+        if ($unclassified -gt 0) { $sample += & $nameList $unclassifiedNames 'Could not be classified' }
+        $detail = ("{0}{1} {2} {3} {4} {5} {6}{7} {8}" -f $lead, $sample, $read, $inText, $outText, $rule, $heuristic, $caveat, (Get-AdfaLapsThresholdText -Config $Config))
+    }
+    $rows += New-AdfaLapsRow -Scope $DomainName -Item $coverageItem -Status ([string]$verdict.Status) -Detail $detail -NotRun $coverageNotRun
+
+    # 5. One DSRM row per domain controller computer object - every one of them, in name order.
+    # An object whose userAccountControl was not returned may be a domain controller: it gets no
+    # DSRM row of its own, and the domain gets one Not Assessed row that names it.
+    $noAccountControlText = ''
+    if ($noAccountControlNames.Count -gt 0) {
+        $noAccountControlText = ("{0} computer object(s) of this domain returned no userAccountControl, so it is not known whether any of them is a domain controller, and none of them has a DSRM row.{1}" -f `
+                $noAccountControlNames.Count, (& $nameList $noAccountControlNames 'Without account control flags'))
+    }
+    if ($domainControllers.Count -eq 0) {
+        $why = 'The computer query for this domain returned no domain controller computer object (none carries the SERVER_TRUST_ACCOUNT or PARTIAL_SECRETS_ACCOUNT flag). Every domain has at least one domain controller, so the answer is incomplete and nothing is concluded from it.'
+        if ($noAccountControlText -ne '') { $why = ("{0} {1}" -f $why, $noAccountControlText) }
+        $rows += New-AdfaLapsRow -Scope $DomainName -Item $dsrmGapItem -Status $script:Status.NotAssessed -Detail ("Not assessed: {0}" -f $why) -NotRun $dsrmNotRun
+        return @($rows)
+    }
+    $partialSecrets = [int64]$Config['PartialSecretsFlag']
+    foreach ($dc in @($domainControllers.ToArray() | Sort-Object -Property Name)) {
+        $buildRaw = [string]$dc.OperatingSystemVersion
+        $build = Get-AdfaOsBuild -OperatingSystemVersion $buildRaw
+        $expiryPresent = ($null -ne $dc.WindowsExpiry -and -not [string]::IsNullOrWhiteSpace([string]$dc.WindowsExpiry))
+        $expiryUtc = $null
+        if ($expiryPresent) { $expiryUtc = ConvertTo-AdfaFileTimeUtc -Value $dc.WindowsExpiry }
+        $isReadOnly = ((([int64]$dc.UserAccountControl) -band $partialSecrets) -ne 0)
+        $dcVerdict = Get-AdfaLapsDsrmVerdict -Build $build -DomainLevel ([string]$Raw.DomainLevel) -ExpiryPresent $expiryPresent -ExpiryUtc $expiryUtc -Now $nowUtc `
+            -ProofOfRead $windowsExpirySeen -SchemaRead ([bool]$SchemaState.Read) -HasWindowsExpiry ([bool]$SchemaState.HasWindowsExpiry) -IsReadOnly $isReadOnly -Config $Config
+        $dcDetail = Get-AdfaLapsDsrmDetail -State ([string]$dcVerdict.State) -Build $build -BuildRaw $buildRaw -DomainLevel ([string]$Raw.DomainLevel) `
+            -DomainLevelError ([string]$Raw.DomainLevelError) -ExpiryUtc $expiryUtc -ExpiryRaw ([string]$dc.WindowsExpiry) -IsReadOnly $isReadOnly -Config $Config
+        $rows += New-AdfaLapsRow -Scope $DomainName -Item ("DSRM password backup: {0}" -f [string]$dc.Name) -Status ([string]$dcVerdict.Status) -Detail $dcDetail -NotRun $dsrmNotRun
+    }
+    if ($noAccountControlText -ne '') {
+        $rows += New-AdfaLapsRow -Scope $DomainName -Item $dsrmGapItem -Status $script:Status.NotAssessed -NotRun $dsrmNotRun `
+            -Detail ("Not assessed: {0} The DSRM rows of this domain cover the {1} domain controller computer object(s) that were recognised, and may not cover every domain controller." -f $noAccountControlText, $domainControllers.Count)
+    }
+    return @($rows)
+}
+
+function Get-AdfaLaps {
+    <#
+    .SYNOPSIS
+        Windows LAPS: whether the forest schema carries the LAPS attributes, whether a DSRM
+        password backup is visible for each domain controller, and how many enabled Windows
+        computers of each scoped domain have no LAPS expiry time visible.
+    .DESCRIPTION
+        DIRECTORY READS ONLY, through two seams: Get-AdfaLapsSchemaRaw once per run, and
+        Get-AdfaLapsDirectoryRaw once per scoped domain. No domain controller is connected to
+        over CIM or the registry, no cmdlet of the LAPS module is called, and nothing is written.
+
+        THIS SECTION NEVER READS A PASSWORD. The attributes that hold a LAPS password, an encrypted
+        password, a password history or the password version are never in a property list and
+        never in a filter on a computer object. Presence is judged only from the two expiry time
+        attributes, which Microsoft documents as the scheduled expiration time and which are not
+        confidential. A value this account has no right to read is not returned and looks like
+        a value that is not set, so no row calls a computer unmanaged with certainty.
+
+        Needs domain read access only. Microsoft publishes, in general, that authenticated
+        users can read every attribute that is not confidential, and that the Windows LAPS
+        expiry attribute is not confidential; it publishes no LAPS-specific statement of who
+        can read the expiry attributes, and permissions can be changed per organizational unit.
+        Where nothing at all is visible in a domain the rows are Not Assessed.
+
+        A domain whose rows could not be built - an exception the grading did not expect - gets
+        its two rows as Not Assessed with the error, and the other domains are still graded: no
+        value in one domain ends the section or the run.
+
+        DECLARED POPULATION: the domains named in -Domains. Each gets one "LAPS coverage:
+        <domain>" row and at least one DSRM row, whatever happened to its read. The forest gets
+        one "Windows LAPS schema" row. With the schema unread no domain is queried: without it
+        the tool does not know which expiry attribute it may ask for.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$Domains = @(),
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config,
+        [int]$StaleDays = 90,
+        [Parameter(Mandatory)][datetime]$Now,
+        [AllowEmptyString()][string]$ForestName = ''
+    )
+    $rows = @()
+    $schemaNames = @(@([string]$Config['SchemaControl']) + @($Config['SchemaAttributes'] | ForEach-Object { [string]$_['Name'] }))
+    $schemaRaw = Get-AdfaLapsSchemaRaw -AdParams $AdParams -AttributeNames $schemaNames
+    $schemaState = Get-AdfaLapsSchemaState -Raw $schemaRaw -Config $Config
+    $rows += Get-AdfaLapsSchemaFinding -SchemaState $schemaState -Config $Config -ForestName $ForestName
+
+    $scoped = @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ([string]$_).Trim() })
+    if ($scoped.Count -eq 0) {
+        $rows += New-AdfaLapsRow -Item 'LAPS coverage' -Status $script:Status.NotAssessed `
+            -Detail 'No domain was scoped, so no computer account and no domain controller was read. This is not a clean result.'
+        return @($rows)
+    }
+    $propertyNames = @()
+    $propertyError = ''
+    $windowsName = ''
+    $legacyName = ''
+    if ($schemaState.Read) {
+        # A list the guard refuses is a defect in the config table. It must not reach the
+        # directory, and it must not end the run either: every domain then says why it was not read.
+        try { $propertyNames = @(Get-AdfaLapsPropertyList -SchemaState $schemaState -Config $Config) }
+        catch { $propertyError = [string]$_.Exception.Message }
+        if ($schemaState.HasWindowsExpiry) { $windowsName = [string]$Config['WindowsExpiry'] }
+        if ($schemaState.HasLegacyExpiry) { $legacyName = [string]$Config['LegacyExpiry'] }
+    }
+    foreach ($domain in $scoped) {
+        $raw = $null
+        if ($propertyError -ne '') {
+            $raw = [pscustomobject]@{ Ok = $false; Refused = $true; Error = $propertyError; ErrorType = ''; DomainLevel = ''; DomainLevelError = ''; Computers = @(); PropertyNames = @() }
+        }
+        elseif ($schemaState.Read) {
+            $raw = Get-AdfaLapsDirectoryRaw -DomainName $domain -AdParams $AdParams -PropertyNames $propertyNames -NeverRead @($Config['NeverRead']) `
+                -WindowsExpiryName $windowsName -LegacyExpiryName $legacyName
+        }
+        try {
+            $rows += @(Get-AdfaLapsDomainFinding -DomainName $domain -Raw $raw -SchemaState $schemaState -Config $Config -StaleDays $StaleDays -Now $Now)
+        }
+        catch {
+            # A defect in the grading, not in the directory. Fail closed for this domain only.
+            $why = ("Not assessed: grading the computer objects of {0} failed inside this tool, so no row of this domain is graded; this is a defect in the tool, not a result. Error: {1}" -f $domain, [string]$_.Exception.Message)
+            $rows += New-AdfaLapsRow -Scope $domain -Item ("LAPS coverage: {0}" -f $domain) -Status $script:Status.NotAssessed -Detail $why
+            $rows += New-AdfaLapsRow -Scope $domain -Item ("DSRM password backup - {0}" -f $domain) -Status $script:Status.NotAssessed -Detail $why
+        }
+    }
+    return @($rows)
+}
+
+function Merge-AdfaLapsConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in Windows LAPS table, with validation. The
+        Laps validator for -ConfigOverridePath.
+    .DESCRIPTION
+        What a file can change: WarnAbovePercent, FailAbovePercent, SampleLimit and
+        ExpiredGraceDays - the four values that are this tool's own defaults:
+
+            { "Laps": { "WarnAbovePercent": 5, "FailAbovePercent": 50 } }
+
+        What it cannot: any attribute name, the list asked of every computer, the never-read
+        list, the eligibility values Microsoft publishes and the sources. A file that could name
+        an attribute could put a password attribute into a property list, so every such key is
+        refused as unknown.
+
+        Anything this tool could not use is refused with the reason: an override that is not one
+        object, an empty object, an unknown key, a null, a value that is not a JSON number, a
+        percentage outside 0 to 100, a Warning threshold of 100 (no share can exceed it, so no
+        domain would ever be reported), a sample limit or a grace period that is not a whole
+        number in its range. The MERGED table is then checked as a whole, so a file that names
+        only FailAbovePercent is still refused when that puts Fail below the built-in Warning
+        threshold.
+
+        Provenance follows the values key by key: ThresholdSource is rewritten to name the
+        override's source for exactly the keys it supplied, and goes on calling the rest tool
+        defaults.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) {
+        throw ("Windows LAPS config override must be a single object with named keys (for example {{ ""WarnAbovePercent"": 5 }}), not a {0}." -f $Override.GetType().Name)
+    }
+    if ($table.Count -eq 0) {
+        throw 'Windows LAPS config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    $percentKeys = @('WarnAbovePercent', 'FailAbovePercent')
+    $known = @('WarnAbovePercent', 'FailAbovePercent', 'SampleLimit', 'ExpiredGraceDays')
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $supplied = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        # A misspelt key would otherwise be accepted, ignored, and leave the operator believing
+        # their value was applied. An attribute name or NeverRead arrives here too, and is refused.
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("Windows LAPS config override names an unknown key '{0}'. Known keys: {1}. Attribute names and the never-read list cannot be set from a file." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        # Reachable only from an object built in memory with keys that differ by case; a key
+        # written twice in a FILE is found in the text by Import-AdfaConfigOverride.
+        if ($supplied -contains $name) { throw ("Windows LAPS config override names '{0}' more than once." -f $name) }
+        $value = $table[$k]
+        if ($null -eq $value) {
+            throw ("Windows LAPS config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name)
+        }
+        # A JSON number only. "5" in quotes is refused rather than parsed: how a string becomes a
+        # number depends on the culture of the host, and a threshold must not.
+        if ($value -is [array] -or $numericTypes -notcontains $value.GetType()) {
+            throw ("Windows LAPS config override sets '{0}' to a {1}. It must be a JSON number, written without quotes." -f $name, $value.GetType().Name)
+        }
+        $number = [double]$value
+        if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) {
+            throw ("Windows LAPS config override sets '{0}' to a value that is not a finite number." -f $name)
+        }
+        $shown = $number.ToString('0.####', $inv)
+        if ($percentKeys -contains $name) {
+            if ($number -lt 0 -or $number -gt 100) {
+                throw ("Windows LAPS config override sets '{0}' to {1}. A share of computers must be in the range 0 to 100." -f $name, $shown)
+            }
+            $merged[$name] = $number
+        }
+        elseif ($name -eq 'SampleLimit') {
+            if ($number -ne [math]::Floor($number) -or $number -lt 0 -or $number -gt 1000) {
+                throw ("Windows LAPS config override sets 'SampleLimit' to {0}. It must be a whole number from 0 to 1000; 0 lists no computer name." -f $shown)
+            }
+            $merged[$name] = [int]$number
+        }
+        else {
+            if ($number -ne [math]::Floor($number) -or $number -lt 0 -or $number -gt 365) {
+                throw ("Windows LAPS config override sets 'ExpiredGraceDays' to {0}. It must be a whole number of days from 0 to 365." -f $shown)
+            }
+            $merged[$name] = [int]$number
+        }
+        $supplied += $name
+    }
+
+    # The table as a whole, built-in values included.
+    $warn = [double]$merged['WarnAbovePercent']
+    $fail = [double]$merged['FailAbovePercent']
+    if ($warn -ge 100) {
+        throw ("Windows LAPS config: WarnAbovePercent is {0}. No share can be above 100 %, so no domain would ever be reported, whatever was found." -f $warn.ToString('0.####', $inv))
+    }
+    if ($fail -lt $warn) {
+        throw ("Windows LAPS config: FailAbovePercent ({0}) is below WarnAbovePercent ({1}) once the override is applied. A domain would fail at a share at which it does not yet warn; set both." -f $fail.ToString('0.####', $inv), $warn.ToString('0.####', $inv))
+    }
+
+    $fromOverride = @($known | Where-Object { $supplied -contains $_ })
+    if ($fromOverride.Count -gt 0) {
+        $from = 'an override whose source was not recorded'
+        if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+        $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+        $builtIn = @($known | Where-Object { $supplied -notcontains $_ })
+        if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
+        $merged['ThresholdSource'] = $text
+    }
+    return $merged
+}
+
+# ---------------------------------------------------------------------------
 # -ConfigOverridePath: one JSON file, one top-level key per section (PORT-PLAN C2)
 # ---------------------------------------------------------------------------
 # The sections whose built-in table that file can replace. A top-level key of the file is one of
@@ -6472,6 +7867,7 @@ function Merge-AdfaDcHardeningConfig {
 $script:ConfigOverrideSections = [ordered]@{
     DcDisk      = @{ ConfigKey = 'DcDisk'; Section = 'DcDisk'; Merge = 'Merge-AdfaDcDiskConfig' }
     DcHardening = @{ ConfigKey = 'DcHardening'; Section = 'DcHardening'; Merge = 'Merge-AdfaDcHardeningConfig' }
+    Laps        = @{ ConfigKey = 'Laps'; Section = 'Laps'; Merge = 'Merge-AdfaLapsConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -10453,6 +11849,35 @@ $script:RecommendationMap = @(
        Text  = 'Turn off the SMBv1 server on this DC: Set-SmbServerConfiguration -EnableSMB1Protocol $false, and remove the feature (Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol, which restarts the computer, or Server Manager > Remove Roles and Features > "SMB 1.0/CIFS File Sharing Support"). Find the clients that still use it first: Set-SmbServerConfiguration -AuditSmb1Access $true, then event 3000 in the Microsoft-Windows-SMBServer\Audit log names each one. Microsoft warns to be careful when disabling SMBv1 on domain controllers, because legacy systems that need SYSVOL may not support SMBv2 or SMBv3.' }
     @{ Section = '(?i)^dc hardening'; Match = '.'
        Text  = '' }
+    # --- Section-scoped: Windows LAPS (PORT-PLAN C4). One entry per row family that can be a
+    #     Warning or a Fail, each anchored on the Item the tool itself writes - "Windows LAPS
+    #     schema", "LAPS coverage: <domain>", "DSRM password backup: <dc>" - so nothing after it
+    #     (a domain or host name, the names of computers, an override file path cited as the
+    #     threshold source) takes part in choosing the advice. The last entry answers every other
+    #     row of the section with no advice at all. Without it the unscoped entries below would
+    #     answer these rows by accident: 'backup' (DSRM password backup, BackupDirectory),
+    #     'scavenging|aging' ("managing" holds "aging"), 'stale|inactive' (the population rule),
+    #     'password policy|lockout', 'replication', 'global catalog'. Tests pin each family.
+    #     The steps are Microsoft's own:
+    #       schema, permissions, policy  - https://learn.microsoft.com/windows-server/identity/laps/laps-scenarios-windows-server-active-directory
+    #       encryption ("We highly recommend that you enable password encryption")
+    #                                    - https://learn.microsoft.com/windows-server/identity/laps/laps-concepts-overview
+    #       DSRM setting, policy values  - https://learn.microsoft.com/windows-server/identity/laps/laps-management-policy-settings
+    #       legacy migration ("We strongly recommend that you begin planning now to migrate your
+    #       Windows LAPS-capable systems from legacy Microsoft LAPS", support statement section),
+    #       and Entra ID as the other store
+    #                                    - https://learn.microsoft.com/windows-server/identity/laps/laps-overview
+    #     Read: 2026-11-15 (all); laps-overview re-read 2026-11-16 for the migration sentence.
+    #     Microsoft documents DSRM password backup as off by default and
+    #     publishes no sentence that every DC should have it, and the DSRM text says so.
+    @{ Section = '(?i)^windows laps'; Match = '(?i)^Windows LAPS :: Windows LAPS schema :: '
+       Text  = 'Complete the Windows LAPS schema. Microsoft documents Update-LapsADSchema as a one-time operation for the entire forest that adds all of the Windows LAPS attributes and puts them on the computer class, so a forest that holds only some of them points at an extension that did not finish or has not replicated. Check that the schema partition has replicated to every domain controller, then run Update-LapsADSchema again from a Windows Server 2019 or later domain controller updated with Windows LAPS, or from another server that has the Windows LAPS PowerShell module. It extends the schema, so treat it as a schema change under your own change process.' }
+    @{ Section = '(?i)^windows laps'; Match = '(?i)^Windows LAPS :: LAPS coverage: '
+       Text  = 'Bring the computers this finding counts under Windows LAPS, or establish why they show no expiry time here. Microsoft''s steps for backing passwords up to Active Directory are: extend the schema once for the forest with Update-LapsADSchema; grant the computers permission to update their own password on their organizational unit with Set-LapsADComputerSelfPermission; and apply a Windows LAPS policy (Group Policy, or Intune for hybrid-joined devices) with BackupDirectory set to 2, Active Directory. Microsoft highly recommends enabling password encryption, which needs domain functional level 2016, and strongly recommends moving computers still on legacy Microsoft LAPS to Windows LAPS. Before treating any computer as unmanaged, rule out the two things this directory read cannot see: a device that backs its password up to Microsoft Entra ID writes nothing here, and an expiry time this account has no right to read looks the same as none. The thresholds this finding was judged against are this tool''s defaults or your own override, not Microsoft values.' }
+    @{ Section = '(?i)^windows laps'; Match = '(?i)^Windows LAPS :: DSRM password backup: '
+       Text  = 'If the DSRM password of this domain controller is to be managed by Windows LAPS, Microsoft''s requirements are: the domain at functional level 2016 or later; the DC on Windows Server 2019 or later; the Windows LAPS schema in the forest (Update-LapsADSchema); and a Windows LAPS Group Policy applied to the domain controllers with BackupDirectory = 2 (Active Directory), password encryption left enabled (ADPasswordEncryptionEnabled, on by default) and ADBackupDSRMPassword = 1. Microsoft documents that setting as ignored unless encryption is enabled, and it cannot be delivered through the Windows LAPS CSP. Microsoft describes DSRM password backup as a feature that is off by default, not as a requirement: that a DC without it is reported is this tool''s rule. Where an expiry time is shown but is long past, look in the Windows LAPS event log of the DC for why the password is no longer rotated. This report read the directory only, so confirm what is configured on the DC before changing anything.' }
+    @{ Section = '(?i)^windows laps'; Match = '.'
+       Text  = '' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
     # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
@@ -11350,6 +12775,26 @@ function Invoke-Main {
         $sectionData['DC Disk Space'] = @(Get-AdfaDcDiskSpace -DomainControllers $dcDiskTargets -Config $dcDiskConfig -Credential $Credential `
                 -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
                 -InventoryFailures $dcDiskFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
+    }
+    if (Test-SectionSelected 'Laps' $Sections) {
+        Write-Stage 'Windows LAPS (schema, DSRM password backup per DC, computers with no LAPS expiry time visible; directory reads only)'
+        # The table the file supplied where it supplied one, otherwise the built-in table. The
+        # file was validated before any section ran.
+        $lapsConfig = $script:Config.Laps
+        if ($configOverrides.ContainsKey('Laps')) { $lapsConfig = $configOverrides['Laps'] }
+        # Directory reads only, per scoped domain: this section takes no DC list and connects to
+        # no DC. With the forest unreadable there is no schema to ask and no domain to scope, and
+        # the section says so in one row instead of querying whatever the default server is.
+        if ($forestError) {
+            $sectionData['Windows LAPS'] = @(New-AdfaLapsRow -Item 'Windows LAPS' -Status $script:Status.NotAssessed `
+                    -Detail ("The forest could not be read ({0}), so neither the schema nor any computer account was read. This is not a clean result." -f $forestError))
+        }
+        else {
+            # The stale threshold is the one the StaleObjects section uses (-StaleDays); there is
+            # no second one.
+            $sectionData['Windows LAPS'] = @(Get-AdfaLaps -Domains $targetDomains -AdParams $adParams -Config $lapsConfig `
+                    -StaleDays $script:Config.StaleDays -Now (Get-Date) -ForestName ([string]$forest.Name))
+        }
     }
     if (Test-SectionSelected 'Backup' $Sections) {
         Write-Stage 'Directory backup status (per DC)'

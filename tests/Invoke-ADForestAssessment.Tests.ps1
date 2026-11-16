@@ -5279,8 +5279,8 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcHardening' -and $n.Extent.Text -match '-DomainControllers \$dcNames' }, $true)).Count | Should -Be 0
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the two sections the file can carry.
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening'
+            # Declared population: the three sections the file can carry (Laps since v1.21.0, PORT-PLAN C4).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -5340,9 +5340,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             @($readme | Where-Object { $_ -match '^\| \*\*DC disk space\*\* \|' }).Count | Should -Be 1   # non-vacuity
             (($readme -join ' ') -replace '\s+', ' ') | Should -Match 'not what a client and (the|a) DC negotiate'
         }
-        It 'carries the same version in the script and the manifest: 1.20.0' {
-            [string]$script:Config.Version | Should -Be '1.20.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.20.0'
+        It 'carries the same version in the script and the manifest (the number itself is pinned by the newest plan row, C4)' {
+            [string]$script:Config.Version | Should -Match '^\d+\.\d+\.\d+$'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be ([string]$script:Config.Version)
         }
     }
 
@@ -7247,6 +7247,1641 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             foreach ($f in @($findings | Where-Object { @('Pass', 'Info', 'Not Assessed') -contains $_.Status })) { $f.Recommendation | Should -Be '' -Because $f.Item }
             @($findings | Where-Object { $_.Status -eq 'Not Assessed' }).Count | Should -Be 1
             @($findings | Where-Object { $_.Recommendation -ne '' }).Count | Should -Be 2
+        }
+    }
+}
+Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS expiry time (C4)' {
+    BeforeAll {
+        $script:Lc = $script:Config.Laps
+        # A fixed "now", in UTC, so no verdict depends on the clock of the host running the tests.
+        $script:C4Now = [datetime]::SpecifyKind(([datetime]'2026-11-15T12:00:00'), [System.DateTimeKind]::Utc)
+        # Held in variables: PSAvoidUsingComputerNameHardcoded flags a literal -ComputerName.
+        $script:C4Dc1 = 'dc1.contoso.com'
+        $script:C4Dc2 = 'dc2.contoso.com'
+        $script:C4Rodc = 'rodc1.contoso.com'
+        $script:C4Win = 'msLAPS-PasswordExpirationTime'
+        $script:C4Legacy = 'ms-Mcs-AdmPwdExpirationTime'
+        # Declared population: the six attributes Update-LapsADSchema adds.
+        $script:C4Six = @('msLAPS-PasswordExpirationTime', 'msLAPS-Password', 'msLAPS-EncryptedPassword', 'msLAPS-EncryptedPasswordHistory',
+            'msLAPS-EncryptedDSRMPassword', 'msLAPS-EncryptedDSRMPasswordHistory')
+        # Declared population: the seven attributes this tool must never request.
+        $script:C4Secret = @('msLAPS-Password', 'msLAPS-EncryptedPassword', 'msLAPS-EncryptedPasswordHistory', 'msLAPS-EncryptedDSRMPassword',
+            'msLAPS-EncryptedDSRMPasswordHistory', 'msLAPS-CurrentPasswordVersion', 'ms-Mcs-AdmPwd')
+        $script:C4Control = 'operatingSystemVersion'
+        $script:C4FullSchema = @(@($script:C4Control) + $script:C4Six)
+        # userAccountControl in the shape the directory stores it: a workstation, a disabled
+        # workstation, a writable DC (SERVER_TRUST_ACCOUNT + TRUSTED_FOR_DELEGATION) and an RODC
+        # (PARTIAL_SECRETS_ACCOUNT + TRUSTED_TO_AUTH_FOR_DELEGATION + WORKSTATION_TRUST_ACCOUNT).
+        $script:C4Uac = @{ Workstation = 4096; Disabled = 4098; Dc = 532480; DisabledDc = 532482; Rodc = 83890176 }
+        # Declared populations, pinned so that a new -Properties argument or assignment anywhere in
+        # the script is looked at by whoever adds it, and so that the scans below cannot pass on
+        # an empty set.
+        $script:C4PropertiesArgumentCount = 23
+        $script:C4PropertiesAssignmentCount = 6
+        $script:C4SectionFunctionCount = 20
+
+        function New-C4Schema {
+            param([string[]]$Names = $script:C4FullSchema, [bool]$Ok = $true, [string]$Err = '', [string]$Type = '')
+            [pscustomobject]@{ Ok = $Ok; Error = $Err; ErrorType = $Type; SchemaNamingContext = 'CN=Schema,CN=Configuration,DC=contoso,DC=com'; Names = @($Names) }
+        }
+        function Get-C4State {
+            param([string[]]$Names = $script:C4FullSchema)
+            Get-AdfaLapsSchemaState -Raw (New-C4Schema -Names $Names) -Config $script:Lc
+        }
+        # One computer, in the shape the directory seam hands on: raw FILETIME numbers, never dates.
+        function New-C4Record {
+            param([string]$Name, [string]$Os = 'Windows 11 Enterprise', [string]$OsVersion = '10.0 (22631)', $Uac = 4096,
+                $LogonDaysAgo = 1, $WinExpiryDays = $null, $LegacyExpiryDays = $null, [string[]]$Classes = @('computer'))
+            $logon = $null
+            if ($null -ne $LogonDaysAgo) { $logon = $script:C4Now.AddDays(-1 * [double]$LogonDaysAgo).ToFileTimeUtc() }
+            $win = $null
+            if ($null -ne $WinExpiryDays) { $win = $script:C4Now.AddDays([double]$WinExpiryDays).ToFileTimeUtc() }
+            $legacy = $null
+            if ($null -ne $LegacyExpiryDays) { $legacy = $script:C4Now.AddDays([double]$LegacyExpiryDays).ToFileTimeUtc() }
+            [pscustomobject]@{ Name = $Name; OperatingSystem = $Os; OperatingSystemVersion = $OsVersion; UserAccountControl = $Uac
+                LastLogonTimestamp = $logon; ObjectClasses = @($Classes); WindowsExpiry = $win; LegacyExpiry = $legacy }
+        }
+        function New-C4Dc {
+            param([string]$Name, $WinExpiryDays = $null, [string]$OsVersion = '10.0 (17763)', [string]$Os = 'Windows Server 2019 Standard', $Uac = 532480)
+            New-C4Record -Name $Name -Os $Os -OsVersion $OsVersion -Uac $Uac -WinExpiryDays $WinExpiryDays
+        }
+        function New-C4Raw {
+            param($Computers = @(), [string]$Level = '7', [bool]$Ok = $true, [string]$Err = '', [string]$Type = '', [string]$LevelError = '', [bool]$Refused = $false)
+            [pscustomobject]@{ Ok = $Ok; Refused = $Refused; Error = $Err; ErrorType = $Type; DomainLevel = $Level; DomainLevelError = $LevelError
+                Computers = @($Computers); PropertyNames = @() }
+        }
+        function Get-C4Row {
+            param($Rows, [string]$Item)
+            $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
+        function Get-C4Rows {
+            param($Computers = @(), [string[]]$SchemaNames = $script:C4FullSchema, $Config = $script:Lc, [string]$Domain = 'contoso.com', [string]$Level = '7', [int]$StaleDays = 90)
+            @(Get-AdfaLapsDomainFinding -DomainName $Domain -Raw (New-C4Raw -Computers $Computers -Level $Level) -SchemaState (Get-C4State -Names $SchemaNames) `
+                    -Config $Config -StaleDays $StaleDays -Now $script:C4Now)
+        }
+        function Get-C4Coverage {
+            param([int]$InPopulation, [int]$NoneVisible, [int]$Total = -1, [bool]$Proof = $true, [bool]$HasExpiry = $true, $Config = $script:Lc)
+            if ($Total -lt 0) { $Total = $InPopulation }
+            Get-AdfaLapsCoverageVerdict -TotalReturned $Total -InPopulation $InPopulation -NoneVisible $NoneVisible -ProofOfRead $Proof -SchemaHasExpiry $HasExpiry -Config $Config
+        }
+        function Get-C4Dsrm {
+            param($Build = 17763, [string]$Level = '7', $ExpiryDays = $null, [bool]$ExpiryPresent = $false, [bool]$Proof = $true, [bool]$SchemaRead = $true,
+                [bool]$HasWindowsExpiry = $true, [bool]$ReadOnly = $false, $Config = $script:Lc)
+            $expiry = $null
+            if ($null -ne $ExpiryDays) { $expiry = $script:C4Now.AddDays([double]$ExpiryDays); $ExpiryPresent = $true }
+            Get-AdfaLapsDsrmVerdict -Build $Build -DomainLevel $Level -ExpiryPresent $ExpiryPresent -ExpiryUtc $expiry -Now $script:C4Now -ProofOfRead $Proof `
+                -SchemaRead $SchemaRead -HasWindowsExpiry $HasWindowsExpiry -IsReadOnly $ReadOnly -Config $Config
+        }
+        # A mixed domain. Declared population: 12 computer objects - 2 DCs, 4 in population
+        # (2 with a Windows LAPS expiry time, 1 legacy only, 1 with none visible) and one each of
+        # the six other out-of-population classes.
+        function New-C4MixedDomain {
+            @(
+                (New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 20)
+                (New-C4Dc -Name $script:C4Dc2)
+                (New-C4Record -Name 'srv1.contoso.com' -Os 'Windows Server 2022 Standard' -OsVersion '10.0 (20348)' -WinExpiryDays 12)
+                (New-C4Record -Name 'ws1.contoso.com' -WinExpiryDays 3)
+                (New-C4Record -Name 'ws2.contoso.com' -Os 'Windows 10 Enterprise' -OsVersion '10.0 (19045)' -LegacyExpiryDays 9)
+                (New-C4Record -Name 'ws3.contoso.com')
+                (New-C4Record -Name 'ws-disabled.contoso.com' -Uac $script:C4Uac.Disabled)
+                (New-C4Record -Name 'linux1.contoso.com' -Os 'Ubuntu' -OsVersion '22.04')
+                (New-C4Record -Name 'cluster1.contoso.com' -Os '' -OsVersion '')
+                (New-C4Record -Name 'old1.contoso.com' -Os 'Windows Server 2012 R2 Standard' -OsVersion '6.3 (9600)' -LegacyExpiryDays 5)
+                (New-C4Record -Name 'ws-stale.contoso.com' -LogonDaysAgo 200)
+                (New-C4Record -Name 'gmsa1$' -Os '' -OsVersion '' -Classes @('msDS-GroupManagedServiceAccount'))
+            )
+        }
+        $script:C4Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C4Main = @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C4Function {
+            param([string]$Name)
+            return @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true))
+        }
+        function Get-C4Parameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C4Guard {
+            param($Node)
+            $g = $Node.Parent
+            while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+            return $g.Clauses[0].Item1.Extent.Text
+        }
+        function Get-C4Branch {
+            return @($script:C4Main[0].FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $n.Clauses[0].Item1.Extent.Text -match "^Test-SectionSelected 'Laps' \`$Sections$" }, $true))
+        }
+        # A secret attribute name as a whole name: 'msLAPS-Password' must not be found inside
+        # 'msLAPS-PasswordExpirationTime', nor 'ms-Mcs-AdmPwd' inside 'ms-Mcs-AdmPwdExpirationTime'.
+        function Get-C4SecretPattern {
+            return ('(?i)(?<![A-Za-z0-9-])(' + ((@($script:C4Secret) | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')(?![A-Za-z0-9-])')
+        }
+        # The functions of the section. Declared population: checked by name where it matters.
+        $script:C4SectionFunctions = @($script:C4Ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $n.Name -match '^(Get|New|ConvertTo|Merge|Test)-AdfaLaps|^Get-AdfaDirectoryReadErrorClass$|^ConvertTo-AdfaFileTimeUtc$' }, $true))
+    }
+
+    Context 'Section wiring' {
+        It 'is a value of the -Sections ValidateSet and part of the default All run' {
+            $param = @($script:C4Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $param.Count | Should -Be 1
+            $set = @($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+            $values = @($set[0].PositionalArguments | ForEach-Object { $_.Value })
+            $values | Should -Contain 'Laps'
+            $values | Should -Contain 'DcDisk'   # non-vacuity: the list really was read
+            @($values | Where-Object { $_ -match '(?i)laps|dsrm' }).Count | Should -Be 1
+            Test-SectionSelected 'Laps' @('All') | Should -BeTrue
+            Test-SectionSelected 'Laps' @('DcDisk') | Should -BeFalse
+        }
+        It 'has one branch in Invoke-Main that calls the collector with the scoped domains, the AD parameters, the config and the stale threshold the script already has' {
+            $script:C4Main.Count | Should -Be 1
+            $branches = @(Get-C4Branch)
+            # Declared population: the one branch for this section.
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $calls = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaLaps' }, $true))
+            $calls.Count | Should -Be 1
+            $expected = [ordered]@{
+                Domains    = '$targetDomains'
+                AdParams   = '$adParams'
+                Config     = '$lapsConfig'
+                StaleDays  = '$script:Config.StaleDays'
+                Now        = '(Get-Date)'
+                ForestName = '([string]$forest.Name)'
+            }
+            # Declared population: the six parameters the collector is called with.
+            @($expected.Keys).Count | Should -Be 6
+            foreach ($p in @($expected.Keys)) {
+                $given = Get-C4Parameter -Call $calls[0] -Name $p
+                $given | Should -Not -BeNullOrEmpty -Because "the collector must be given -$p"
+                $given.Extent.Text | Should -Be $expected[$p] -Because "-$p must carry that value"
+            }
+            # Two assignments to the section: the forest-unreadable row, and the collector's rows.
+            $assign = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['Windows LAPS']" }, $true))
+            $assign.Count | Should -Be 2
+            Get-C4Guard $assign[0] | Should -Be '$forestError'
+            $assign[0].Right.Extent.Text | Should -Match 'Not ?Assessed'
+            $assign[0].Right.Extent.Text | Should -Not -Match 'Get-AdfaLaps '
+            # The override reaches the collector: the built-in table, then the file's.
+            $configAssigns = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$lapsConfig' }, $true))
+            $configAssigns.Count | Should -Be 2
+            $configAssigns[0].Right.Extent.Text | Should -Be '$script:Config.Laps'
+            $configAssigns[1].Right.Extent.Text | Should -Be "`$configOverrides['Laps']"
+            Get-C4Guard $configAssigns[1] | Should -Be "`$configOverrides.ContainsKey('Laps')"
+            # Nowhere else in the script is the collector called.
+            @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaLaps' }, $true)).Count | Should -Be 1
+        }
+        It 'is registered for -ConfigOverridePath with its own validator' {
+            # Declared population: the three sections the file can carry.
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps'
+            $entry = $script:ConfigOverrideSections['Laps']
+            [string]$entry['ConfigKey'] | Should -Be 'Laps'
+            [string]$entry['Section'] | Should -Be 'Laps'
+            [string]$entry['Merge'] | Should -Be 'Merge-AdfaLapsConfig'
+            Get-Command -Name 'Merge-AdfaLapsConfig' -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+            $script:Config.ContainsKey('Laps') | Should -BeTrue
+        }
+        It 'reads the directory through its two seams only, with four named AD cmdlets and nothing that writes or returns a password' {
+            $collector = @(Get-C4Function -Name 'Get-AdfaLaps')
+            $collector.Count | Should -Be 1
+            $inside = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            @($inside | Where-Object { $_ -eq 'Get-AdfaLapsSchemaRaw' }).Count | Should -Be 1
+            @($inside | Where-Object { $_ -eq 'Get-AdfaLapsDirectoryRaw' }).Count | Should -Be 1
+            foreach ($banned in @('Get-ADComputer', 'Get-ADObject', 'Get-ADUser', 'Get-ADDomain', 'Get-ADRootDSE', 'Test-TcpPort', 'New-CimSession', 'Invoke-CimMethod', 'Get-CimInstance')) {
+                $inside | Should -Not -Contain $banned -Because "the collector must not call $banned itself"
+            }
+            # Non-vacuity: the functions of the section really were found.
+            $script:C4SectionFunctions.Count | Should -Be $script:C4SectionFunctionCount
+            $adCalls = @()
+            foreach ($f in $script:C4SectionFunctions) {
+                $names = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+                # Nothing from the LAPS module (Get-LapsADPassword returns the password), nothing
+                # that writes to the directory, no CIM and no registry.
+                @($names | Where-Object { $_ -match '(?i)-Laps[A-Z]' -and $_ -notmatch '(?i)-AdfaLaps' }).Count | Should -Be 0 -Because "$($f.Name) must not call a LAPS module cmdlet"
+                @($names | Where-Object { $_ -match '(?i)^(Set|New|Remove|Add|Clear|Move|Rename|Enable|Disable|Reset|Update|Invoke|Unlock)-(AD(?!fa)|Cim|Laps|Item)' }).Count | Should -Be 0 -Because "$($f.Name) must not call a state-changing cmdlet"
+                @($names | Where-Object { $_ -match '(?i)^(Get-CimInstance|New-CimSession|Invoke-Command|Invoke-Expression)$' }).Count | Should -Be 0 -Because "$($f.Name) reads the directory only"
+                $adCalls += @($names | Where-Object { $_ -match '(?i)^Get-AD(?!fa)' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
+            }
+            # Declared population: the four directory reads of the section, each in its seam.
+            (@($adCalls | Sort-Object) -join ',') | Should -Be 'Get-AdfaLapsDirectoryRaw:Get-ADComputer,Get-AdfaLapsDirectoryRaw:Get-ADDomain,Get-AdfaLapsDirectoryRaw:Get-ADObject,Get-AdfaLapsSchemaRaw:Get-ADObject,Get-AdfaLapsSchemaRaw:Get-ADRootDSE'
+        }
+        It 'documents the section and its override key in the help' {
+            $help = $script:C4Ast.GetHelpContent()
+            $help | Should -Not -BeNullOrEmpty
+            [string]$help.Parameters['SECTIONS'] | Should -Match 'Laps'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'Laps'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnAbovePercent'
+            [string]$help.Description | Should -Match 'Windows LAPS'
+            ([string]$help.Description -replace '\s+', ' ') | Should -Match 'never (reads|requests) a password'
+        }
+        It 'has one row in the README Coverage table, and the README says what the row cannot see' {
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' })
+            $row.Count | Should -Be 1
+            $row[0] | Should -Match '-Sections Laps'
+            $row[0] | Should -Match 'no LAPS expiry time visible'
+            @($readme | Where-Object { $_ -match '^\| \*\*DC disk space\*\* \|' }).Count | Should -Be 1   # non-vacuity
+            $text = (($readme -join ' ') -replace '\s+', ' ')
+            $text | Should -Match 'never reads a password'
+            $text | Should -Match 'Microsoft Entra ID'
+        }
+        It 'carries the same version in the script and the manifest: 1.21.0' {
+            [string]$script:Config.Version | Should -Be '1.21.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.21.0'
+        }
+    }
+
+    Context 'No password or encrypted password attribute is ever requested (hard rule)' {
+        It 'declares the seven attributes that are never read, and marks each of them secret in the schema list' {
+            # Declared population: the seven confidential attributes.
+            @($script:Lc['NeverRead']).Count | Should -Be 7
+            (@($script:Lc['NeverRead'] | Sort-Object) -join ',') | Should -Be (@($script:C4Secret | Sort-Object) -join ',')
+            $attrs = @($script:Lc['SchemaAttributes'])
+            # Declared population: six from Update-LapsADSchema, one from the 2025 schema, two legacy.
+            $attrs.Count | Should -Be 9
+            (@($attrs | Where-Object { $_['Secret'] } | ForEach-Object { [string]$_['Name'] } | Sort-Object) -join ',') | Should -Be (@($script:C4Secret | Sort-Object) -join ',')
+            (@($attrs | Where-Object { -not $_['Secret'] } | ForEach-Object { [string]$_['Name'] }) -join ',') | Should -Be ("{0},{1}" -f $script:C4Win, $script:C4Legacy)
+            [string]$script:Lc['WindowsExpiry'] | Should -Be $script:C4Win
+            [string]$script:Lc['LegacyExpiry'] | Should -Be $script:C4Legacy
+            # The fixed list asked of every computer holds none of them, and no wildcard.
+            (@($script:Lc['ComputerProperties']) -join ',') | Should -Be 'operatingSystem,operatingSystemVersion,userAccountControl,lastLogonTimestamp,dNSHostName,objectClass'
+            @(Get-AdfaLapsRefusedProperty -PropertyNames @($script:Lc['ComputerProperties']) -NeverRead @($script:Lc['NeverRead'])).Count | Should -Be 0
+        }
+        It 'documents what the directory seam does about -Server: not on Get-ADDomain, on the two reads after it' {
+            $fn = @(Get-C4Function -Name 'Get-AdfaLapsDirectoryRaw')
+            $fn.Count | Should -Be 1
+            $help = ([string]$fn[0].GetHelpContent().Description -replace '\s+', ' ')
+            $help | Should -Not -Match 'each with -Server set to the domain'
+            $help | Should -Match 'Get-ADDomain does NOT'
+            # The code agrees: Server is assigned in the seam exactly twice.
+            $serverAssign = @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -match '\.Server$' }, $true) | ForEach-Object { $_.Left.Extent.Text })
+            ($serverAssign -join ',') | Should -Be '$levelArgs.Server,$computerArgs.Server'
+        }
+        It 'has no secret attribute name in any -Properties argument, or in any value assigned to a Properties key, anywhere in the script' {
+            $pattern = Get-C4SecretPattern
+            $commands = @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+            $arguments = @()
+            foreach ($c in $commands) {
+                $a = Get-C4Parameter -Call $c -Name 'Properties'
+                if ($null -ne $a) { $arguments += $a }
+            }
+            # Declared population: every literal -Properties argument in the script.
+            $arguments.Count | Should -Be $script:C4PropertiesArgumentCount
+            foreach ($a in $arguments) {
+                $a.Extent.Text | Should -Not -Match $pattern -Because "line $($a.Extent.StartLineNumber) must not request a secret attribute"
+            }
+            # Splat style: $p.Properties = ... and $p['Properties'] = ...
+            $assigned = @($script:C4Ast.FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and (
+                            ($n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Left.Member.Extent.Text -eq 'Properties') -or
+                            ($n.Left -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Left.Index.Extent.Text -match '^[''"]Properties[''"]$')) }, $true))
+            # Declared population: every assignment to a Properties key in the script.
+            $assigned.Count | Should -Be $script:C4PropertiesAssignmentCount
+            foreach ($a in $assigned) {
+                $a.Right.Extent.Text | Should -Not -Match $pattern -Because "line $($a.Extent.StartLineNumber) must not request a secret attribute"
+            }
+            # The section's own two: a fixed non-secret name for the schema, and the guarded list.
+            $own = @($assigned | Where-Object {
+                    $o = $_.Parent
+                    while ($null -ne $o -and $o -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $o = $o.Parent }
+                    $null -ne $o -and $o.Name -match '^Get-AdfaLaps(Schema|Directory)Raw$' })
+            $ownTexts = @($own | ForEach-Object { [string]$_.Right.Extent.Text })
+            # Declared population: the schema read, the domain level read and the computer read.
+            $ownTexts.Count | Should -Be 3
+            foreach ($want in @("@('lDAPDisplayName')", "@('msDS-Behavior-Version')", '@($PropertyNames)')) { $ownTexts | Should -Contain $want }
+            # And no function of the section asks for every attribute.
+            foreach ($f in $script:C4SectionFunctions) {
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -eq 'Properties' }, $true)).Count | Should -Be 0 -Because "$($f.Name) passes its property list by splat, through the guard"
+            }
+        }
+        It 'names a secret attribute nowhere in the script outside the Laps config table' {
+            $pattern = Get-C4SecretPattern
+            $configAssign = @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:Config' }, $true))
+            $configAssign.Count | Should -Be 1
+            $table = @($configAssign[0].Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $false))[0]
+            $lapsPair = @($table.KeyValuePairs | Where-Object { $_.Item1.Extent.Text -eq 'Laps' })
+            $lapsPair.Count | Should -Be 1
+            $from = $lapsPair[0].Item2.Extent.StartOffset
+            $to = $lapsPair[0].Item2.Extent.EndOffset
+            $strings = @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
+            $hits = @($strings | Where-Object { $_.Extent.Text -match $pattern })
+            # Declared population: each of the seven names twice - once in SchemaAttributes, once in NeverRead.
+            $hits.Count | Should -Be 14
+            foreach ($h in $hits) {
+                ($h.Extent.StartOffset -ge $from -and $h.Extent.EndOffset -le $to) | Should -BeTrue -Because "line $($h.Extent.StartLineNumber) names a secret attribute outside the Laps config table"
+            }
+        }
+        It 'refuses every secret name, a wildcard and a blank, whatever the case, and lets the two expiry attributes through' {
+            foreach ($name in $script:C4Secret) {
+                (@(Get-AdfaLapsRefusedProperty -PropertyNames @('operatingSystem', $name) -NeverRead $script:C4Secret) -join ',') | Should -Be $name -Because $name
+                @(Get-AdfaLapsRefusedProperty -PropertyNames @($name.ToUpperInvariant()) -NeverRead $script:C4Secret).Count | Should -Be 1 -Because "$name in upper case"
+            }
+            @(Get-AdfaLapsRefusedProperty -PropertyNames @('*') -NeverRead $script:C4Secret).Count | Should -Be 1
+            @(Get-AdfaLapsRefusedProperty -PropertyNames @('msLAPS-*') -NeverRead $script:C4Secret).Count | Should -Be 1
+            @(Get-AdfaLapsRefusedProperty -PropertyNames @('operatingSystem', ' ') -NeverRead $script:C4Secret).Count | Should -Be 1
+            # A password-like name that is on no list is refused by its shape.
+            @(Get-AdfaLapsRefusedProperty -PropertyNames @('unicodePwd', 'userPassword') -NeverRead $script:C4Secret).Count | Should -Be 2
+            # The two expiry attributes carry "Password" and "Pwd" in their names and are not secret.
+            @(Get-AdfaLapsRefusedProperty -PropertyNames @($script:C4Win, $script:C4Legacy, 'operatingSystem', 'userAccountControl') -NeverRead $script:C4Secret).Count | Should -Be 0
+            # With no never-read list there is nothing to check against, so everything is refused.
+            @(Get-AdfaLapsRefusedProperty -PropertyNames @('operatingSystem') -NeverRead @()).Count | Should -Be 1
+            # The list decides by itself: a listed name is refused whatever it looks like.
+            (@(Get-AdfaLapsRefusedProperty -PropertyNames @('description', 'operatingSystem') -NeverRead @('description')) -join ',') | Should -Be 'description'
+        }
+        It 'builds the property list from the fixed names plus only the expiry attributes the schema holds' {
+            $all = @(@($script:C4FullSchema) + @('msLAPS-CurrentPasswordVersion', $script:C4Legacy, 'ms-Mcs-AdmPwd'))
+            $full = @(Get-AdfaLapsPropertyList -SchemaState (Get-C4State -Names $all) -Config $script:Lc)
+            ($full -join ',') | Should -Be ("operatingSystem,operatingSystemVersion,userAccountControl,lastLogonTimestamp,dNSHostName,objectClass,{0},{1}" -f $script:C4Win, $script:C4Legacy)
+            @($full | Where-Object { $script:C4Secret -contains $_ }).Count | Should -Be 0
+            # An attribute the schema lacks is not asked for: the cmdlet would throw on it.
+            (@(Get-AdfaLapsPropertyList -SchemaState (Get-C4State) -Config $script:Lc) -join ',') | Should -Not -Match 'ms-Mcs'
+            (@(Get-AdfaLapsPropertyList -SchemaState (Get-C4State -Names @($script:C4Control)) -Config $script:Lc) -join ',') | Should -Be 'operatingSystem,operatingSystemVersion,userAccountControl,lastLogonTimestamp,dNSHostName,objectClass'
+        }
+        It 'throws, and asks nothing, if a config ever pointed an expiry name or the fixed list at a secret attribute or a wildcard' {
+            foreach ($name in $script:C4Secret) {
+                $bad = @{} + $script:Lc
+                $bad['WindowsExpiry'] = $name
+                # The schema state is built with the same config, so it reports the name as present.
+                $state = Get-AdfaLapsSchemaState -Raw (New-C4Schema -Names @(@($script:C4FullSchema) + @('msLAPS-CurrentPasswordVersion', 'ms-Mcs-AdmPwd'))) -Config $bad
+                { Get-AdfaLapsPropertyList -SchemaState $state -Config $bad } | Should -Throw -ExpectedMessage "*never read*$name*" -Because $name
+            }
+            $wild = @{} + $script:Lc
+            $wild['ComputerProperties'] = @('*')
+            { Get-AdfaLapsPropertyList -SchemaState (Get-C4State) -Config $wild } | Should -Throw -ExpectedMessage '*never read*'
+        }
+        It 'refuses in the seam too, before any directory call, for each of the seven names and for a wildcard' {
+            $script:C4SeamCalls = 0
+            function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a) $script:C4SeamCalls++; [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com' } }
+            function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a) $script:C4SeamCalls++; [pscustomobject]@{ 'msDS-Behavior-Version' = 7 } }
+            function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a) $script:C4SeamCalls++; @() }
+            foreach ($name in @($script:C4Secret + @('*'))) {
+                $r = Get-AdfaLapsDirectoryRaw -DomainName 'contoso.com' -PropertyNames @('operatingSystem', $name) -NeverRead $script:C4Secret
+                $r.Ok | Should -BeFalse -Because $name
+                $r.Refused | Should -BeTrue -Because $name
+                [string]$r.Error | Should -Match 'never read' -Because $name
+            }
+            $script:C4SeamCalls | Should -Be 0
+            # An empty list is refused as well: with nothing asked for there is nothing to grade.
+            (Get-AdfaLapsDirectoryRaw -DomainName 'contoso.com' -PropertyNames @() -NeverRead $script:C4Secret).Refused | Should -BeTrue
+            $script:C4SeamCalls | Should -Be 0
+            # Non-vacuity: a clean list does reach the directory.
+            (Get-AdfaLapsDirectoryRaw -DomainName 'contoso.com' -PropertyNames @('operatingSystem') -NeverRead $script:C4Secret).Refused | Should -BeFalse
+            $script:C4SeamCalls | Should -Be 3
+        }
+    }
+
+    Context 'The Identity export no longer writes a LAPS password to the CSV (mitigation; the full fix is PORT-PLAN C4b)' {
+        BeforeEach {
+            # Get-ADComputer -Filter * -Properties * as a privileged account sees it: every
+            # attribute, the secret ones included. The values are fixed strings, not passwords.
+            function Get-ADComputer {
+                param($Filter, [string[]]$Properties, [string]$Server, [pscredential]$Credential)
+                $ws = [pscustomobject]@{ Name = 'WS1'; DNSHostName = 'ws1.contoso.com'; OperatingSystem = 'Windows 11 Enterprise'; PasswordLastSet = $script:C4Now; pwdLastSet = 1 }
+                $ws | Add-Member -NotePropertyName 'msLAPS-PasswordExpirationTime' -NotePropertyValue 134000000000000000
+                $ws | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue 'STUB-CLEAR-TEXT-JSON'
+                $ws | Add-Member -NotePropertyName 'msLAPS-EncryptedPassword' -NotePropertyValue 'STUB-BLOB'
+                $ws | Add-Member -NotePropertyName 'msLAPS-EncryptedPasswordHistory' -NotePropertyValue @('STUB-BLOB-1', 'STUB-BLOB-2')
+                $ws | Add-Member -NotePropertyName 'msLAPS-CurrentPasswordVersion' -NotePropertyValue 'STUB-GUID'
+                $ws | Add-Member -NotePropertyName 'ms-Mcs-AdmPwd' -NotePropertyValue 'STUB-LEGACY-CLEAR-TEXT'
+                $ws | Add-Member -NotePropertyName 'ms-Mcs-AdmPwdExpirationTime' -NotePropertyValue 134000000000000001
+                $dc = [pscustomobject]@{ Name = 'DC1'; DNSHostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Standard' }
+                $dc | Add-Member -NotePropertyName 'msLAPS-EncryptedDSRMPassword' -NotePropertyValue 'STUB-DSRM-BLOB'
+                $dc | Add-Member -NotePropertyName 'msLAPS-EncryptedDSRMPasswordHistory' -NotePropertyValue @('STUB-DSRM-1')
+                @($ws, $dc)
+            }
+        }
+        It 'leaves each of the seven secret attributes out of the export, and keeps everything else' {
+            $rows = @(Get-AdfaComputerInventory -DomainName 'contoso.com')
+            # Declared population: the two computers the stub returns.
+            $rows.Count | Should -Be 2
+            $columns = @($rows[0].PSObject.Properties | ForEach-Object { $_.Name })
+            foreach ($name in $script:C4Secret) { $columns | Should -Not -Contain $name -Because "$name must not be exported" }
+            # Nothing of what the secret attributes held is anywhere in the rows.
+            (($rows | ConvertTo-Csv -NoTypeInformation) -join "`n") | Should -Not -Match 'STUB-'
+            # The two expiry attributes are not secret and stay, and so do the ordinary
+            # password-related attributes of a computer account.
+            foreach ($kept in @($script:C4Win, $script:C4Legacy, 'PasswordLastSet', 'pwdLastSet', 'Name', 'OperatingSystem')) { $columns | Should -Contain $kept }
+            [string]$rows[0].($script:C4Win) | Should -Be '134000000000000000'
+        }
+        It 'leaves a secret attribute out whatever case the answer spells its name in' {
+            function Get-ADComputer {
+                param($Filter, [string[]]$Properties, [string]$Server, [pscredential]$Credential)
+                $ws = [pscustomobject]@{ Name = 'WS2'; OperatingSystem = 'Windows 11 Enterprise' }
+                # Declared population: each of the seven names, in upper or lower case.
+                foreach ($name in $script:C4Secret) {
+                    $odd = $name.ToUpperInvariant()
+                    if ($name -match 'Encrypted') { $odd = $name.ToLowerInvariant() }
+                    $ws | Add-Member -NotePropertyName $odd -NotePropertyValue ("STUB-ODD-CASE-{0}" -f $odd)
+                }
+                $ws
+            }
+            $rows = @(Get-AdfaComputerInventory -DomainName 'contoso.com')
+            $rows.Count | Should -Be 1
+            $columns = @($rows[0].PSObject.Properties | ForEach-Object { $_.Name })
+            @($columns | Where-Object { $script:C4Secret -contains $_ }).Count | Should -Be 0
+            (($rows | ConvertTo-Csv -NoTypeInformation) -join "`n") | Should -Not -Match 'STUB-ODD-CASE-'
+            # Non-vacuity: the stub did carry them, and the ordinary columns came through.
+            @(Get-AdfaComputerInventory -DomainName 'contoso.com' -NeverExport @())[0].PSObject.Properties.Name | Should -Contain 'MS-MCS-ADMPWD'
+            $columns | Should -Contain 'OperatingSystem'
+        }
+        It 'takes the list of what is never exported from the Laps config table' {
+            $fn = @(Get-C4Function -Name 'Get-AdfaComputerInventory')
+            $fn.Count | Should -Be 1
+            $p = @($fn[0].Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'NeverExport' })
+            $p.Count | Should -Be 1
+            $p[0].DefaultValue.Extent.Text | Should -Be "@(`$script:Config.Laps['NeverRead'])"
+            # Non-vacuity: with nothing excluded the secret columns do come through, so the
+            # exclusion above is what removed them.
+            $all = @(Get-AdfaComputerInventory -DomainName 'contoso.com' -NeverExport @())
+            @($all[0].PSObject.Properties | ForEach-Object { $_.Name }) | Should -Contain 'ms-Mcs-AdmPwd'
+        }
+    }
+
+    Context 'Config table' {
+        It 'holds the thresholds as tool defaults, the vendor values with their source and read date, and the capable builds' {
+            [double]$script:Lc['WarnAbovePercent'] | Should -Be 0
+            [double]$script:Lc['FailAbovePercent'] | Should -Be 100
+            [int]$script:Lc['SampleLimit'] | Should -Be 25
+            [int]$script:Lc['ExpiredGraceDays'] | Should -Be 7
+            [string]$script:Lc['ThresholdSource'] | Should -Be 'tool default, not a Microsoft value'
+            [int]$script:Lc['MinDomainLevel'] | Should -Be 7
+            [int]$script:Lc['MinDsrmDcBuild'] | Should -Be 17763
+            (@($script:Lc['KnownDomainLevels']) -join ',') | Should -Be '0,1,2,3,4,5,6,7,10'
+            [string]$script:Lc['SourceUrl'] | Should -Match '^https://learn\.microsoft\.com/'
+            [string]$script:Lc['ReadDate'] | Should -Be '2026-11-15'
+            [string]$script:Lc['SchemaControl'] | Should -Be 'operatingSystemVersion'
+            (@($script:Lc['ExcludedClasses']) -join ',') | Should -Be 'msDS-GroupManagedServiceAccount,msDS-ManagedServiceAccount'
+            # Declared population: the two build ranges Microsoft's LAPS CSP page lists.
+            @($script:Lc['CapableBuilds']).Count | Should -Be 2
+            (@($script:Lc['CapableBuilds'] | ForEach-Object { "{0}-{1}" -f $_['MinBuild'], $_['MaxBuild'] }) -join ',') | Should -Be '17763-17763,19041-'
+            # The six attributes of the Windows LAPS set, in the order Microsoft lists them.
+            (@($script:Lc['SchemaAttributes'] | Where-Object { [string]$_['Set'] -eq 'WindowsLaps' } | ForEach-Object { [string]$_['Name'] }) -join ',') | Should -Be ($script:C4Six -join ',')
+            (@($script:Lc['SchemaAttributes'] | Where-Object { [string]$_['Set'] -eq 'WindowsServer2025' } | ForEach-Object { [string]$_['Name'] }) -join ',') | Should -Be 'msLAPS-CurrentPasswordVersion'
+            (@($script:Lc['SchemaAttributes'] | Where-Object { [string]$_['Set'] -eq 'LegacyLaps' } | ForEach-Object { [string]$_['Name'] }) -join ',') | Should -Be 'ms-Mcs-AdmPwdExpirationTime,ms-Mcs-AdmPwd'
+        }
+    }
+
+    Context 'ConvertTo-AdfaFileTimeUtc (pure; the same answer on Windows PowerShell 5.1)' {
+        It 'reads a FILETIME number, the same number as text, and a date, as one UTC instant' {
+            $when = [datetime]::SpecifyKind(([datetime]'2026-12-01T08:30:00'), [System.DateTimeKind]::Utc)
+            $ticks = $when.ToFileTimeUtc()
+            $fromNumber = ConvertTo-AdfaFileTimeUtc -Value $ticks
+            $fromNumber | Should -BeOfType ([datetime])
+            $fromNumber.ToString('o') | Should -Be $when.ToString('o')
+            $fromNumber.Kind | Should -Be ([System.DateTimeKind]::Utc)
+            (ConvertTo-AdfaFileTimeUtc -Value ([string]$ticks)).ToString('o') | Should -Be $when.ToString('o')
+            (ConvertTo-AdfaFileTimeUtc -Value $when).ToString('o') | Should -Be $when.ToString('o')
+            (ConvertTo-AdfaFileTimeUtc -Value ([uint64]$ticks)).ToString('o') | Should -Be $when.ToString('o')
+        }
+        It 'returns nothing for a value that is not a time, and never throws' {
+            ConvertTo-AdfaFileTimeUtc -Value $null | Should -BeNullOrEmpty
+            ConvertTo-AdfaFileTimeUtc -Value '' | Should -BeNullOrEmpty
+            ConvertTo-AdfaFileTimeUtc -Value 'not a number' | Should -BeNullOrEmpty
+            ConvertTo-AdfaFileTimeUtc -Value ([int64]-1) | Should -BeNullOrEmpty
+            # The "never" value of the directory, and anything else past the last date .NET holds.
+            ConvertTo-AdfaFileTimeUtc -Value ([int64]::MaxValue) | Should -BeNullOrEmpty
+            ConvertTo-AdfaFileTimeUtc -Value ([uint64]::MaxValue) | Should -BeNullOrEmpty
+            ConvertTo-AdfaFileTimeUtc -Value '12.5' | Should -BeNullOrEmpty
+        }
+        It 'reads zero as the start of the FILETIME epoch, which is a time long past and not an absent value' {
+            (ConvertTo-AdfaFileTimeUtc -Value ([int64]0)).Year | Should -Be 1601
+        }
+    }
+
+    Context 'Get-AdfaDirectoryReadErrorClass (pure)' {
+        It 'tells unreachable from access denied from a timeout from any other failure, by exception type first and by text second' {
+            # Each pattern of the classifier has a case of its own, so removing any one of them fails here.
+            $cases = @(
+                @{ Type = 'Microsoft.ActiveDirectory.Management.ADServerDownException'; Message = 'x'; Want = 'Unreachable' }
+                @{ Type = 'System.ServiceModel.EndpointNotFoundException'; Message = 'x'; Want = 'Unreachable' }
+                @{ Type = 'System.Exception'; Message = 'Unable to contact the server.'; Want = 'Unreachable' }
+                @{ Type = 'System.Exception'; Message = 'The server is not operational'; Want = 'Unreachable' }
+                @{ Type = 'System.Exception'; Message = 'The server is unavailable'; Want = 'Unreachable' }
+                @{ Type = 'System.UnauthorizedAccessException'; Message = 'x'; Want = 'AccessDenied' }
+                @{ Type = 'System.Security.Authentication.AuthenticationException'; Message = 'x'; Want = 'AccessDenied' }
+                @{ Type = 'System.ServiceModel.Security.SecurityAccessDeniedException'; Message = 'x'; Want = 'AccessDenied' }
+                @{ Type = 'System.Exception'; Message = 'Access is denied'; Want = 'AccessDenied' }
+                @{ Type = 'Microsoft.ActiveDirectory.Management.ADException'; Message = 'Insufficient access rights to perform the operation'; Want = 'AccessDenied' }
+                @{ Type = 'System.Exception'; Message = 'The server has rejected the client credentials.'; Want = 'AccessDenied' }
+                @{ Type = 'System.TimeoutException'; Message = 'x'; Want = 'TimedOut' }
+                @{ Type = 'System.ServiceModel.ServerTooBusyException'; Message = 'x'; Want = 'TimedOut' }
+                @{ Type = 'Microsoft.ActiveDirectory.Management.ADException'; Message = 'A referral was returned from the server'; Want = 'Error' }
+                @{ Type = ''; Message = ''; Want = 'Error' }
+            )
+            # Declared population: fifteen cases - five unreachable, six refused, two timed out, two neither.
+            $cases.Count | Should -Be 15
+            (@($cases | ForEach-Object { [string]$_.Want } | Sort-Object -Unique) -join ',') | Should -Be 'AccessDenied,Error,TimedOut,Unreachable'
+            foreach ($c in $cases) {
+                Get-AdfaDirectoryReadErrorClass -TypeName $c.Type -Message $c.Message | Should -Be $c.Want -Because ("{0} / {1}" -f $c.Type, $c.Message)
+            }
+            # A refusal is not reported as unreachable even when the text mentions the server.
+            Get-AdfaDirectoryReadErrorClass -TypeName 'System.UnauthorizedAccessException' -Message 'Unable to contact the server' | Should -Be 'AccessDenied'
+            # A timeout is a timeout whatever its text says, and a timeout in words alone is not
+            # claimed as anything: the type decides.
+            Get-AdfaDirectoryReadErrorClass -TypeName 'System.TimeoutException' -Message 'Unable to contact the server' | Should -Be 'TimedOut'
+            Get-AdfaDirectoryReadErrorClass -TypeName '' -Message 'The operation returned because the timeout limit was exceeded.' | Should -Be 'Error'
+        }
+        It 'never says that no server answered for a query that timed out' {
+            $what = 'the computer objects of contoso.com'
+            foreach ($type in @('System.TimeoutException', 'System.ServiceModel.ServerTooBusyException')) {
+                $lead = Get-AdfaLapsReadFailureLead -Message 'Tempo limite excedido' -TypeName $type -What $what
+                $lead | Should -Match '^Timed out: ' -Because $type
+                $lead | Should -Not -Match 'no directory server answered' -Because $type
+                $lead | Should -Match 'not evidence that no server answered' -Because $type
+                $lead | Should -Match ([regex]::Escape("(exception type: $type)")) -Because $type
+            }
+            # Non-vacuity: the unreachable lead does say it.
+            Get-AdfaLapsReadFailureLead -Message 'x' -TypeName 'Microsoft.ActiveDirectory.Management.ADServerDownException' -What $what | Should -Match '^Unreachable: no directory server answered'
+        }
+    }
+
+    Context 'Schema: Get-AdfaLapsSchemaState and Get-AdfaLapsSchemaFinding (pure)' {
+        It 'passes when the six Update-LapsADSchema attributes are present, and says the 2025 attribute is absent normally' {
+            $state = Get-C4State
+            $state.State | Should -Be 'Complete'
+            $state.Read | Should -BeTrue
+            $state.HasWindowsExpiry | Should -BeTrue
+            $state.HasLegacyExpiry | Should -BeFalse
+            $row = Get-AdfaLapsSchemaFinding -SchemaState $state -Config $script:Lc -ForestName 'contoso.com'
+            $row.Item | Should -Be 'Windows LAPS schema'
+            $row.Status | Should -Be 'Pass'
+            $row.Scope | Should -Be 'contoso.com'
+            $row.Area | Should -Be 'Laps'
+            $row.Detail | Should -Match 'six attributes'
+            $row.Detail | Should -Match 'msLAPS-CurrentPasswordVersion: absent'
+            $row.Detail | Should -Match 'Windows Server 2025 forest schema'
+            $row.Detail | Should -Match 'no attribute value of any computer was read'
+            $row.Detail | Should -Match 'https://learn\.microsoft\.com/.*read 2026-11-15'
+            $row.PSObject.Properties['NotRun'] | Should -Not -BeNullOrEmpty
+        }
+        It 'reports the 2025 attribute and the legacy attributes when they are there' {
+            $state = Get-C4State -Names @(@($script:C4FullSchema) + @('msLAPS-CurrentPasswordVersion', $script:C4Legacy, 'ms-Mcs-AdmPwd'))
+            $state.State | Should -Be 'Complete'
+            $state.HasLegacyExpiry | Should -BeTrue
+            $row = Get-AdfaLapsSchemaFinding -SchemaState $state -Config $script:Lc
+            $row.Status | Should -Be 'Pass'
+            $row.Detail | Should -Match 'msLAPS-CurrentPasswordVersion: present'
+            $row.Detail | Should -Match 'Legacy Microsoft LAPS attributes: present'
+        }
+        It 'keeps three results apart: attributes absent, attributes present, and a query that failed' {
+            $absent = Get-AdfaLapsSchemaFinding -SchemaState (Get-C4State -Names @($script:C4Control)) -Config $script:Lc
+            $present = Get-AdfaLapsSchemaFinding -SchemaState (Get-C4State) -Config $script:Lc
+            $failed = Get-AdfaLapsSchemaFinding -SchemaState (Get-AdfaLapsSchemaState -Raw (New-C4Schema -Ok $false -Err 'boom' -Names @()) -Config $script:Lc) -Config $script:Lc
+            (@($absent.Status, $present.Status, $failed.Status) -join ',') | Should -Be 'Info,Pass,Not Assessed'
+            (Get-C4State -Names @($script:C4Control)).State | Should -Be 'Absent'
+            $absent.Detail | Should -Match 'neither the Windows LAPS attributes nor the legacy Microsoft LAPS attributes'
+            $absent.Detail | Should -Match 'Microsoft Entra ID'
+            $failed.Detail | Should -Match '^Read failed: '
+            $failed.Detail | Should -Match 'boom'
+        }
+        It 'reports a forest that holds only the legacy attributes as Info, and leaves the grading to the domain and DC rows' {
+            $state = Get-C4State -Names @($script:C4Control, $script:C4Legacy, 'ms-Mcs-AdmPwd')
+            $state.State | Should -Be 'LegacyOnly'
+            $state.HasWindowsExpiry | Should -BeFalse
+            $state.HasLegacyExpiry | Should -BeTrue
+            $row = Get-AdfaLapsSchemaFinding -SchemaState $state -Config $script:Lc
+            $row.Status | Should -Be 'Info'
+            $row.Detail | Should -Match 'legacy Microsoft LAPS attributes'
+            $row.Detail | Should -Match 'none of the Windows LAPS attributes'
+        }
+        It 'warns on a partial Windows LAPS set and names what is missing' {
+            $names = @($script:C4FullSchema | Where-Object { $_ -notmatch 'DSRM' })
+            $state = Get-C4State -Names $names
+            $state.State | Should -Be 'Partial'
+            (@($state.WindowsSetMissing) -join ',') | Should -Be 'msLAPS-EncryptedDSRMPassword,msLAPS-EncryptedDSRMPasswordHistory'
+            $row = Get-AdfaLapsSchemaFinding -SchemaState $state -Config $script:Lc
+            $row.Status | Should -Be 'Warning'
+            $row.Detail | Should -Match '4 of the six'
+            $row.Detail | Should -Match 'missing: msLAPS-EncryptedDSRMPassword, msLAPS-EncryptedDSRMPasswordHistory'
+            # One attribute short of complete is still partial (off by one).
+            (Get-C4State -Names @($script:C4FullSchema | Select-Object -First 6)).State | Should -Be 'Partial'
+        }
+        It 'never reads a missing control attribute as an absent schema: it is Not Assessed' {
+            foreach ($names in @(@(), $script:C4Six)) {
+                $state = Get-C4State -Names $names
+                $state.State | Should -Be 'ControlMissing'
+                $state.Read | Should -BeFalse
+                $row = Get-AdfaLapsSchemaFinding -SchemaState $state -Config $script:Lc
+                $row.Status | Should -Be 'Not Assessed'
+                $row.Detail | Should -Match 'control attribute operatingSystemVersion'
+                $row.Detail | Should -Match 'proves nothing'
+            }
+        }
+        It 'names the cause of a failed schema read: unreachable, access denied, or the error as reported' {
+            $cases = @(
+                @{ Type = 'Microsoft.ActiveDirectory.Management.ADServerDownException'; Err = 'Unable to contact the server.'; Lead = '^Unreachable: ' }
+                @{ Type = 'System.UnauthorizedAccessException'; Err = 'Access is denied'; Lead = '^Access denied: ' }
+                @{ Type = 'System.InvalidOperationException'; Err = 'something else'; Lead = '^Read failed: ' }
+            )
+            $cases.Count | Should -Be 3
+            foreach ($c in $cases) {
+                $state = Get-AdfaLapsSchemaState -Raw (New-C4Schema -Ok $false -Err $c.Err -Type $c.Type -Names @()) -Config $script:Lc
+                $state.State | Should -Be 'NotRead'
+                $row = Get-AdfaLapsSchemaFinding -SchemaState $state -Config $script:Lc
+                $row.Status | Should -Be 'Not Assessed' -Because $c.Type
+                $row.Detail | Should -Match $c.Lead -Because $c.Type
+                $row.Detail | Should -Match ([regex]::Escape($c.Err)) -Because $c.Type
+                # The row shows the exception type its wording was decided from.
+                $row.Detail | Should -Match ([regex]::Escape("(exception type: {0})" -f $c.Type)) -Because $c.Type
+            }
+            (Get-AdfaLapsSchemaState -Raw $null -Config $script:Lc).State | Should -Be 'NotRead'
+            # With no type there is nothing to show, and nothing is invented.
+            (Get-AdfaLapsSchemaFinding -SchemaState (Get-AdfaLapsSchemaState -Raw (New-C4Schema -Ok $false -Err 'boom' -Names @()) -Config $script:Lc) -Config $script:Lc).Detail | Should -Not -Match 'exception type'
+        }
+    }
+
+    Context 'Get-AdfaLapsSchemaRaw (the schema seam)' {
+        BeforeEach {
+            $script:C4SchemaCalls = @()
+            function Get-ADRootDSE {
+                param([string]$Server, [pscredential]$Credential, $ErrorAction)
+                $script:C4SchemaCalls += ("rootdse|{0}" -f $Server)
+                [pscustomobject]@{ schemaNamingContext = 'CN=Schema,CN=Configuration,DC=contoso,DC=com'; configurationNamingContext = 'CN=Configuration,DC=contoso,DC=com' }
+            }
+            # Get-ADObject in the shape the cmdlet returns for attributeSchema objects: one object
+            # per attribute found, carrying the property that was asked for.
+            function Get-ADObject {
+                param([string]$SearchBase, [string]$LDAPFilter, [string[]]$Properties, [string]$Server, [pscredential]$Credential, $ErrorAction)
+                $script:C4SchemaCalls += ("object|{0}|{1}|{2}|{3}" -f $Server, $SearchBase, ($Properties -join ','), $LDAPFilter)
+                foreach ($n in @('operatingSystemVersion', 'msLAPS-PasswordExpirationTime', 'msLAPS-Password')) {
+                    if ($LDAPFilter -match ("\(lDAPDisplayName={0}\)" -f [regex]::Escape($n))) {
+                        [pscustomobject]@{ DistinguishedName = ("CN={0},{1}" -f $n, $SearchBase); ObjectClass = 'attributeSchema'; lDAPDisplayName = $n }
+                    }
+                }
+            }
+        }
+        It 'asks the schema partition for attribute definitions by name, requesting lDAPDisplayName only' {
+            $names = @(@($script:C4Control) + @($script:Lc['SchemaAttributes'] | ForEach-Object { [string]$_['Name'] }))
+            # Declared population: the control attribute and the nine LAPS attributes.
+            $names.Count | Should -Be 10
+            $r = Get-AdfaLapsSchemaRaw -AdParams @{ Server = 'dc9.contoso.com' } -AttributeNames $names
+            $r.Ok | Should -BeTrue
+            (@($r.Names) -join ',') | Should -Be 'operatingSystemVersion,msLAPS-PasswordExpirationTime,msLAPS-Password'
+            $r.SchemaNamingContext | Should -Be 'CN=Schema,CN=Configuration,DC=contoso,DC=com'
+            @($script:C4SchemaCalls).Count | Should -Be 2
+            $script:C4SchemaCalls[0] | Should -Be 'rootdse|dc9.contoso.com'
+            $call = $script:C4SchemaCalls[1] -split '\|', 5
+            $call[1] | Should -Be 'dc9.contoso.com'
+            $call[2] | Should -Be 'CN=Schema,CN=Configuration,DC=contoso,DC=com'
+            $call[3] | Should -Be 'lDAPDisplayName'
+            foreach ($n in $names) { $call[4] | Should -Match ("\(lDAPDisplayName={0}\)" -f [regex]::Escape($n)) -Because $n }
+            $call[4] | Should -Match '^\(\|\(lDAPDisplayName='
+        }
+        It 'never throws: a failed query comes back with its text and its exception type' {
+            function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a) throw (New-Object System.UnauthorizedAccessException 'Access is denied') }
+            $r = Get-AdfaLapsSchemaRaw -AttributeNames @('operatingSystemVersion')
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Match 'Access is denied'
+            $r.ErrorType | Should -Be 'System.UnauthorizedAccessException'
+            @($r.Names).Count | Should -Be 0
+        }
+        It 'refuses a name that is not an attribute name, so nothing can be injected into the filter' {
+            foreach ($bad in @('a)(objectClass=*', 'x*', '', 'two words')) {
+                $r = Get-AdfaLapsSchemaRaw -AttributeNames @('operatingSystemVersion', $bad)
+                $r.Ok | Should -BeFalse -Because "'$bad'"
+                $r.Error | Should -Match 'not an attribute name' -Because "'$bad'"
+            }
+            @($script:C4SchemaCalls).Count | Should -Be 0
+            (Get-AdfaLapsSchemaRaw -AttributeNames @()).Ok | Should -BeFalse
+        }
+        It 'reports a root DSE that names no schema partition, instead of searching somewhere else' {
+            function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ configurationNamingContext = 'CN=Configuration,DC=contoso,DC=com' } }
+            $r = Get-AdfaLapsSchemaRaw -AttributeNames @('operatingSystemVersion')
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Match 'schemaNamingContext'
+            @($script:C4SchemaCalls | Where-Object { $_ -like 'object|*' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaLapsComputerClass (pure: who is in the population)' {
+        BeforeAll {
+            $script:C4Cutoff = $script:C4Now.AddDays(-90)
+            function Get-C4Class { param($Record) Get-AdfaLapsComputerClass -Computer $Record -Config $script:Lc -StaleCutoffUtc $script:C4Cutoff }
+        }
+        It 'puts each kind of computer object in its own named class' {
+            $cases = [ordered]@{
+                InPopulation          = (New-C4Record -Name 'ws1')
+                ServiceAccount        = (New-C4Record -Name 'gmsa1$' -Classes @('msDS-GroupManagedServiceAccount'))
+                DomainController      = (New-C4Dc -Name $script:C4Dc1)
+                AccountControlNotRead = (New-C4Record -Name 'ws2' -Uac $null)
+                Disabled              = (New-C4Record -Name 'ws3' -Uac $script:C4Uac.Disabled)
+                NoOperatingSystem     = (New-C4Record -Name 'cluster1' -Os '' -OsVersion '')
+                NonWindows            = (New-C4Record -Name 'linux1' -Os 'Red Hat Enterprise Linux' -OsVersion '9.3')
+                BuildNotRead          = (New-C4Record -Name 'ws4' -OsVersion '')
+                NotCapable            = (New-C4Record -Name 'old1' -Os 'Windows Server 2016 Standard' -OsVersion '10.0 (14393)')
+                NoLogonRecorded       = (New-C4Record -Name 'ws5' -LogonDaysAgo $null)
+                Stale                 = (New-C4Record -Name 'ws6' -LogonDaysAgo 91)
+            }
+            # Declared population: the eleven classes.
+            @($cases.Keys).Count | Should -Be 11
+            foreach ($want in @($cases.Keys)) { Get-C4Class $cases[$want] | Should -Be $want }
+        }
+        It 'never grades a domain controller, a managed service account or a disabled account as a member computer, whatever else is true of it' {
+            Get-C4Class (New-C4Dc -Name $script:C4Rodc -Uac $script:C4Uac.Rodc) | Should -Be 'DomainController'
+            Get-C4Class (New-C4Dc -Name $script:C4Dc2 -Uac $script:C4Uac.DisabledDc) | Should -Be 'DomainController'
+            Get-C4Class (New-C4Record -Name 'smsa1$' -Classes @('top', 'computer', 'msDS-ManagedServiceAccount')) | Should -Be 'ServiceAccount'
+            Get-C4Class (New-C4Record -Name 'gmsa2$' -Classes @('msDS-GroupManagedServiceAccount') -Uac $script:C4Uac.Disabled) | Should -Be 'ServiceAccount'
+            Get-C4Class (New-C4Record -Name 'linux2' -Os 'Ubuntu' -Uac $script:C4Uac.Disabled) | Should -Be 'Disabled'
+        }
+        It 'counts as capable exactly the builds Microsoft lists: 17763, and 19041 and later' {
+            $builds = [ordered]@{ '9600' = 'NotCapable'; '14393' = 'NotCapable'; '17762' = 'NotCapable'; '17763' = 'InPopulation'; '17764' = 'NotCapable'; '18363' = 'NotCapable'
+                '19040' = 'NotCapable'; '19041' = 'InPopulation'; '19045' = 'InPopulation'; '20348' = 'InPopulation'; '22631' = 'InPopulation'; '26100' = 'InPopulation' }
+            # Declared population: twelve builds, both edges of each range among them.
+            @($builds.Keys).Count | Should -Be 12
+            foreach ($b in @($builds.Keys)) {
+                Get-C4Class (New-C4Record -Name 'x' -OsVersion ("10.0 ({0})" -f $b)) | Should -Be $builds[$b] -Because "build $b"
+            }
+        }
+        It 'uses the stale threshold it is given: an account at the cutoff is in, one tick older is out' {
+            $atCutoff = New-C4Record -Name 'edge'
+            $atCutoff.LastLogonTimestamp = $script:C4Cutoff.ToFileTimeUtc()
+            Get-C4Class $atCutoff | Should -Be 'InPopulation'
+            $atCutoff.LastLogonTimestamp = $script:C4Cutoff.ToFileTimeUtc() - 1
+            Get-C4Class $atCutoff | Should -Be 'Stale'
+            # A zero lastLogonTimestamp is no logon, not a logon in 1601.
+            $atCutoff.LastLogonTimestamp = [int64]0
+            Get-C4Class $atCutoff | Should -Be 'NoLogonRecorded'
+            # A shorter threshold moves the same computer out.
+            Get-AdfaLapsComputerClass -Computer (New-C4Record -Name 'ws' -LogonDaysAgo 40) -Config $script:Lc -StaleCutoffUtc $script:C4Now.AddDays(-30) | Should -Be 'Stale'
+            Get-AdfaLapsComputerClass -Computer (New-C4Record -Name 'ws' -LogonDaysAgo 40) -Config $script:Lc -StaleCutoffUtc $script:C4Now.AddDays(-90) | Should -Be 'InPopulation'
+        }
+    }
+
+    Context 'Get-AdfaLapsCoverageVerdict (pure)' {
+        It 'returns each state for its inputs' {
+            $cases = @(
+                @{ Name = 'no object returned';        V = (Get-C4Coverage -InPopulation 0 -NoneVisible 0 -Total 0);                    Status = 'Not Assessed'; State = 'NoObjects' }
+                @{ Name = 'nothing in population';     V = (Get-C4Coverage -InPopulation 0 -NoneVisible 0 -Total 5);                    Status = 'Info';         State = 'EmptyPopulation' }
+                @{ Name = 'schema has no expiry';      V = (Get-C4Coverage -InPopulation 4 -NoneVisible 4 -HasExpiry $false -Proof $false); Status = 'Warning';  State = 'SchemaAbsent' }
+                @{ Name = 'no proof of read';          V = (Get-C4Coverage -InPopulation 4 -NoneVisible 4 -Proof $false);               Status = 'Not Assessed'; State = 'NoProofOfRead' }
+                @{ Name = 'all visible';               V = (Get-C4Coverage -InPopulation 4 -NoneVisible 0);                             Status = 'Pass';         State = 'AllVisible' }
+                @{ Name = 'one without';               V = (Get-C4Coverage -InPopulation 4 -NoneVisible 1);                             Status = 'Warning';      State = 'AboveWarn' }
+                @{ Name = 'all without, proof exists'; V = (Get-C4Coverage -InPopulation 4 -NoneVisible 4 -Total 6);                    Status = 'Warning';      State = 'AboveWarn' }
+            )
+            # Declared population: seven cases, one per state the built-in thresholds can produce, AboveWarn twice.
+            $cases.Count | Should -Be 7
+            foreach ($c in $cases) {
+                [string]$c.V.Status | Should -Be $c.Status -Because $c.Name
+                [string]$c.V.State | Should -Be $c.State -Because $c.Name
+            }
+            # By default nothing can exceed 100 %, so the row never fails without an override.
+            @($cases | Where-Object { [string]$_.V.Status -eq 'Fail' }).Count | Should -Be 0
+            [double](Get-C4Coverage -InPopulation 4 -NoneVisible 1).Percent | Should -Be 25
+        }
+        It 'never passes a domain in which nothing was readable' {
+            (Get-C4Coverage -InPopulation 50 -NoneVisible 50 -Proof $false).Status | Should -Be 'Not Assessed'
+            (Get-C4Coverage -InPopulation 0 -NoneVisible 0 -Total 0 -Proof $false).Status | Should -Be 'Not Assessed'
+            # With the attribute in the schema, absence without proof of read is never a Warning either.
+            (Get-C4Coverage -InPopulation 50 -NoneVisible 50 -Proof $false).State | Should -Be 'NoProofOfRead'
+        }
+        It 'turns a Pass or an Info into Not Assessed while objects could not be classified, and leaves a Warning or a Fail standing' {
+            $v = { param($In, $None, $Unc, $Cfg = $script:Lc) Get-AdfaLapsCoverageVerdict -TotalReturned ($In + $Unc + 1) -InPopulation $In -NoneVisible $None -ProofOfRead $true -SchemaHasExpiry $true -Config $Cfg -Unclassified $Unc }
+            $cases = @(
+                @{ Name = 'all visible, one unclassified';     V = (& $v 4 0 1); Status = 'Not Assessed'; State = 'Unclassified' }
+                @{ Name = 'nothing in population, unclassified'; V = (& $v 0 0 2); Status = 'Not Assessed'; State = 'Unclassified' }
+                @{ Name = 'one without, one unclassified';    V = (& $v 4 1 1); Status = 'Warning';      State = 'AboveWarn' }
+                @{ Name = 'all visible, none unclassified';   V = (& $v 4 0 0); Status = 'Pass';         State = 'AllVisible' }
+                @{ Name = 'nothing in population, none';      V = (& $v 0 0 0); Status = 'Info';         State = 'EmptyPopulation' }
+            )
+            # Declared population: five cases, the two that change and three that must not.
+            $cases.Count | Should -Be 5
+            foreach ($c in $cases) {
+                [string]$c.V.Status | Should -Be $c.Status -Because $c.Name
+                [string]$c.V.State | Should -Be $c.State -Because $c.Name
+            }
+            # Within tolerance under an override is a Pass too, and becomes Not Assessed the same way.
+            $cfg = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ WarnAbovePercent = 10; FailAbovePercent = 50 }
+            [string](& $v 10 1 1 $cfg).Status | Should -Be 'Not Assessed'
+            [string](& $v 10 6 1 $cfg).Status | Should -Be 'Fail'
+        }
+        It 'says in words that the row cannot fail by default, and only when Fail is at 100' {
+            Get-AdfaLapsThresholdText -Config $script:Lc | Should -Match 'Fail above 100 %, which no share can exceed, so this row never fails unless a config file lowers it'
+            Get-AdfaLapsThresholdText -Config $script:Lc | Should -Match 'Warning above 0 %'
+            $lower = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ FailAbovePercent = 99.5 }
+            $text = Get-AdfaLapsThresholdText -Config $lower
+            $text | Should -Match 'Fail above 99\.5 % \('
+            $text | Should -Not -Match 'never fails'
+        }
+        It 'applies overridden thresholds strictly: equal to a threshold is not above it' {
+            $cfg = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ WarnAbovePercent = 10; FailAbovePercent = 50 }
+            (Get-C4Coverage -InPopulation 10 -NoneVisible 1 -Config $cfg).State | Should -Be 'WithinTolerance'
+            (Get-C4Coverage -InPopulation 10 -NoneVisible 1 -Config $cfg).Status | Should -Be 'Pass'
+            (Get-C4Coverage -InPopulation 10 -NoneVisible 2 -Config $cfg).Status | Should -Be 'Warning'
+            (Get-C4Coverage -InPopulation 10 -NoneVisible 5 -Config $cfg).Status | Should -Be 'Warning'
+            (Get-C4Coverage -InPopulation 10 -NoneVisible 6 -Config $cfg).Status | Should -Be 'Fail'
+            (Get-C4Coverage -InPopulation 10 -NoneVisible 6 -Config $cfg).State | Should -Be 'AboveFail'
+            # A schema without the attribute is 100 % without, and is judged by the same thresholds.
+            (Get-C4Coverage -InPopulation 10 -NoneVisible 10 -HasExpiry $false -Proof $false -Config $cfg).Status | Should -Be 'Fail'
+            (Get-C4Coverage -InPopulation 10 -NoneVisible 10 -HasExpiry $false -Proof $false -Config $cfg).State | Should -Be 'SchemaAbsent'
+        }
+    }
+
+    Context 'Get-AdfaLapsDsrmVerdict (pure)' {
+        It 'returns each state for its inputs' {
+            $cases = @(
+                @{ Name = 'current expiry';              V = (Get-C4Dsrm -ExpiryDays 20);                          Status = 'Pass';         State = 'Current' }
+                @{ Name = 'expired past the grace';      V = (Get-C4Dsrm -ExpiryDays -30);                         Status = 'Warning';      State = 'Expired' }
+                @{ Name = 'none visible, proof exists';  V = (Get-C4Dsrm);                                         Status = 'Warning';      State = 'NoneVisible' }
+                @{ Name = 'none visible, no proof';      V = (Get-C4Dsrm -Proof $false);                           Status = 'Not Assessed'; State = 'NoProofOfRead' }
+                @{ Name = 'schema lacks the attribute';  V = (Get-C4Dsrm -HasWindowsExpiry $false -Proof $false);  Status = 'Warning';      State = 'SchemaAbsent' }
+                @{ Name = 'schema not read';             V = (Get-C4Dsrm -SchemaRead $false);                      Status = 'Not Assessed'; State = 'SchemaNotRead' }
+                @{ Name = 'domain level below 2016';     V = (Get-C4Dsrm -Level '6' -ExpiryDays 20);               Status = 'Info';         State = 'NotApplicableLevel' }
+                @{ Name = 'DC below Windows Server 2019'; V = (Get-C4Dsrm -Build 14393);                           Status = 'Info';         State = 'NotApplicableBuild' }
+                @{ Name = 'domain level not read';       V = (Get-C4Dsrm -Level '' -ExpiryDays 20);                Status = 'Not Assessed'; State = 'LevelNotRead' }
+                @{ Name = 'domain level not published';  V = (Get-C4Dsrm -Level '8');                              Status = 'Not Assessed'; State = 'LevelUnknown' }
+                @{ Name = 'build not read';              V = (Get-C4Dsrm -Build $null -ExpiryDays 20);             Status = 'Not Assessed'; State = 'BuildNotRead' }
+                @{ Name = 'expiry value is not a time';  V = (Get-C4Dsrm -ExpiryPresent $true);                    Status = 'Not Assessed'; State = 'ExpiryNotATime' }
+                @{ Name = 'RODC with nothing visible';   V = (Get-C4Dsrm -ReadOnly $true);                         Status = 'Not Assessed'; State = 'RodcNotPublished' }
+                @{ Name = 'RODC with a current expiry';  V = (Get-C4Dsrm -ReadOnly $true -ExpiryDays 5);           Status = 'Pass';         State = 'Current' }
+            )
+            # Declared population: fourteen cases covering the thirteen states.
+            $cases.Count | Should -Be 14
+            @($cases | ForEach-Object { [string]$_.State } | Select-Object -Unique).Count | Should -Be 13
+            foreach ($c in $cases) {
+                [string]$c.V.Status | Should -Be $c.Status -Because $c.Name
+                [string]$c.V.State | Should -Be $c.State -Because $c.Name
+            }
+        }
+        It 'draws the eligibility lines where Microsoft draws them: build 17763 and domain level 7' {
+            (Get-C4Dsrm -Build 17762).State | Should -Be 'NotApplicableBuild'
+            (Get-C4Dsrm -Build 17763).State | Should -Be 'NoneVisible'
+            (Get-C4Dsrm -Build 26100 -Level '10').State | Should -Be 'NoneVisible'
+            (Get-C4Dsrm -Level '6').State | Should -Be 'NotApplicableLevel'
+            (Get-C4Dsrm -Level '7').State | Should -Be 'NoneVisible'
+            (Get-C4Dsrm -Level '0').State | Should -Be 'NotApplicableLevel'
+            # An old DC is not applicable whatever the domain level turns out to be.
+            (Get-C4Dsrm -Build 14393 -Level '').State | Should -Be 'NotApplicableBuild'
+            # A level that is not a number is not read as level 0.
+            (Get-C4Dsrm -Level 'Windows2016Domain').State | Should -Be 'LevelNotRead'
+        }
+        It 'allows exactly the grace period after the expiry time, and not a moment more' {
+            $grace = [int]$script:Lc['ExpiredGraceDays']
+            $atEdge = Get-AdfaLapsDsrmVerdict -Build 17763 -DomainLevel '7' -ExpiryPresent $true -ExpiryUtc $script:C4Now.AddDays(-1 * $grace) -Now $script:C4Now `
+                -ProofOfRead $true -SchemaRead $true -HasWindowsExpiry $true -IsReadOnly $false -Config $script:Lc
+            $atEdge.State | Should -Be 'Current'
+            $past = Get-AdfaLapsDsrmVerdict -Build 17763 -DomainLevel '7' -ExpiryPresent $true -ExpiryUtc $script:C4Now.AddDays(-1 * $grace).AddSeconds(-1) -Now $script:C4Now `
+                -ProofOfRead $true -SchemaRead $true -HasWindowsExpiry $true -IsReadOnly $false -Config $script:Lc
+            $past.State | Should -Be 'Expired'
+            # The grace period is the config's: with none, a time one second past is expired.
+            $none = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ ExpiredGraceDays = 0 }
+            (Get-AdfaLapsDsrmVerdict -Build 17763 -DomainLevel '7' -ExpiryPresent $true -ExpiryUtc $script:C4Now.AddSeconds(-1) -Now $script:C4Now `
+                -ProofOfRead $true -SchemaRead $true -HasWindowsExpiry $true -IsReadOnly $false -Config $none).State | Should -Be 'Expired'
+        }
+        It 'never passes a DC on which nothing was visible' {
+            foreach ($v in @((Get-C4Dsrm), (Get-C4Dsrm -Proof $false), (Get-C4Dsrm -ReadOnly $true), (Get-C4Dsrm -SchemaRead $false), (Get-C4Dsrm -HasWindowsExpiry $false))) {
+                [string]$v.Status | Should -Not -Be 'Pass'
+            }
+        }
+        It 'does not throw on an expiry time at the end of the calendar, whatever the grace period: it is a time not past, so Current' {
+            # [datetime]::MaxValue as FILETIME is what an administrator gets by setting the expiry
+            # time to "never" to stop rotation. Before the fix, expiry + grace overflowed and threw.
+            $endOfTime = [datetime]::SpecifyKind([datetime]::MaxValue, [System.DateTimeKind]::Utc)
+            $maxFileTime = $endOfTime.ToFileTimeUtc()
+            [string]$maxFileTime | Should -Be '2650467743999999999'
+            $grace365 = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ ExpiredGraceDays = 365 }
+            # Declared population: four expiry times within a year of the end, under two grace periods.
+            $expiries = @($endOfTime, $endOfTime.AddDays(-3), $endOfTime.AddDays(-7), $endOfTime.AddDays(-364))
+            $expiries.Count | Should -Be 4
+            foreach ($cfg in @($script:Lc, $grace365)) {
+                foreach ($e in $expiries) {
+                    $v = Get-AdfaLapsDsrmVerdict -Build 20348 -DomainLevel '7' -ExpiryPresent $true -ExpiryUtc $e -Now $script:C4Now `
+                        -ProofOfRead $true -SchemaRead $true -HasWindowsExpiry $true -IsReadOnly $false -Config $cfg
+                    [string]$v.State | Should -Be 'Current' -Because ("expiry {0:o}, grace {1}" -f $e, $cfg['ExpiredGraceDays'])
+                }
+            }
+            # The same through the rows, from the raw directory value as text, for two DCs.
+            $rows = @(Get-AdfaLapsDomainFinding -DomainName 'contoso.com' -Raw (New-C4Raw -Computers @(
+                        ([pscustomobject]@{ Name = $script:C4Dc1; OperatingSystem = 'Windows Server 2022 Standard'; OperatingSystemVersion = '10.0 (20348)'; UserAccountControl = $script:C4Uac.Dc
+                            LastLogonTimestamp = $script:C4Now.AddDays(-1).ToFileTimeUtc(); ObjectClasses = @('computer'); WindowsExpiry = [string]$maxFileTime; LegacyExpiry = $null })
+                        (New-C4Dc -Name $script:C4Dc2 -OsVersion '10.0 (20348)' -WinExpiryDays 10))) `
+                    -SchemaState (Get-C4State) -Config $script:Lc -StaleDays 90 -Now $script:C4Now)
+            $dc1 = Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc1)
+            $dc1.Status | Should -Be 'Pass'
+            $dc1.Detail | Should -Match '9999-12-31 23:59 UTC'
+            (Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc2)).Status | Should -Be 'Pass'
+            # Non-vacuity: a time just past the grace period is still Expired.
+            (Get-C4Dsrm -ExpiryDays -8).State | Should -Be 'Expired'
+        }
+    }
+
+    Context 'Get-AdfaLapsDomainFinding (pure: one domain''s raw read to rows)' {
+        It 'gives a mixed domain one coverage row with every count, and one DSRM row per domain controller' {
+            $rows = Get-C4Rows -Computers (New-C4MixedDomain)
+            # Declared population: one coverage row and one row for each of the two DCs.
+            $rows.Count | Should -Be 3
+            $cov = Get-C4Row $rows 'LAPS coverage: contoso.com'
+            $cov | Should -Not -BeNullOrEmpty
+            $cov.Status | Should -Be 'Warning'
+            $cov.Scope | Should -Be 'contoso.com'
+            $cov.Area | Should -Be 'Laps'
+            $cov.Detail | Should -Match '^1 of 4 computer account\(s\) in population \(25 %\) have no LAPS expiry time visible to this account'
+            $cov.Detail | Should -Match 'Read 12 computer object\(s\)'
+            $cov.Detail | Should -Match 'In population 4: Windows LAPS expiry time visible 2; legacy Microsoft LAPS expiry time only 1; no LAPS expiry time visible to this account 1\.'
+            $cov.Detail | Should -Match 'Out of population 8: domain controllers 2 \(see the DSRM password backup rows\); managed service accounts 1; disabled 1; no operatingSystem recorded 1; operatingSystem not Windows 1; Windows with an OS build that could not be read 0; Windows release that cannot run Windows LAPS 1 \(of them 1 with a legacy Microsoft LAPS expiry time visible\); no logon recorded 0; stale 1; account control flags not returned 0\.'
+            $cov.Detail | Should -Match 'No LAPS expiry time visible: ws3\.contoso\.com\.'
+            $cov.Detail | Should -Not -Match 'showing'
+            # Nothing out of population is named as missing LAPS.
+            $cov.Detail | Should -Not -Match 'visible: .*(linux1|cluster1|ws-disabled|ws-stale|old1|gmsa1)'
+            $cov.Detail | Should -Match 'tool default, not a Microsoft value'
+            $cov.Detail | Should -Match 'Population rule: '
+            $cov.Detail | Should -Match '-StaleDays'
+            $cov.Detail | Should -Match 'not the patch level'
+            $cov.Detail | Should -Match 'Microsoft Entra ID'
+            $cov.Detail | Should -Match 'not set and not readable look the same'
+            $dc1 = Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc1)
+            $dc2 = Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc2)
+            $dc1.Status | Should -Be 'Pass'
+            $dc2.Status | Should -Be 'Warning'
+            $dc1.Scope | Should -Be 'contoso.com'
+            $dc2.Scope | Should -Be 'contoso.com'
+            $dc1.Detail | Should -Match '2026-12-05 12:00 UTC'
+            $dc2.Detail | Should -Match '^No Windows LAPS expiry time is visible to this account on the computer object of this DC'
+            foreach ($r in @($dc1, $dc2)) {
+                $r.Detail | Should -Match 'inference'
+                [string]$r.NotRun | Should -Match 'PORT-PLAN C4a'
+                [string]$r.NotRun | Should -Match 'registry'
+            }
+            # Every row of the section carries the NotRun column.
+            @($rows | Where-Object { $null -eq $_.PSObject.Properties['NotRun'] }).Count | Should -Be 0
+            [string]$cov.NotRun | Should -Match 'never requests'
+        }
+        It 'handles every domain controller, not only the first: four DCs, four different results' {
+            $computers = @(
+                (New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 10)
+                (New-C4Dc -Name $script:C4Dc2 -WinExpiryDays -60)
+                (New-C4Dc -Name 'dc3.contoso.com' -Os 'Windows Server 2016 Standard' -OsVersion '10.0 (14393)')
+                (New-C4Dc -Name $script:C4Rodc -Uac $script:C4Uac.Rodc -Os 'Windows Server 2022 Standard' -OsVersion '10.0 (20348)')
+            )
+            $rows = Get-C4Rows -Computers $computers
+            $dsrm = @($rows | Where-Object { $_.Item -like 'DSRM password backup: *' })
+            # Declared population: the four domain controllers.
+            $dsrm.Count | Should -Be 4
+            (Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc1)).Status | Should -Be 'Pass'
+            $expired = Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc2)
+            $expired.Status | Should -Be 'Warning'
+            $expired.Detail | Should -Match 'more than 7 day\(s\) in the past'
+            $old = Get-C4Row $rows 'DSRM password backup: dc3.contoso.com'
+            $old.Status | Should -Be 'Info'
+            $old.Detail | Should -Match '^Not applicable: the OS build of this DC is 14393'
+            $rodc = Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Rodc)
+            $rodc.Status | Should -Be 'Not Assessed'
+            $rodc.Detail | Should -Match 'read-only domain controller'
+            # With only DCs in the domain the coverage row has nothing to grade, and says so.
+            (Get-C4Row $rows 'LAPS coverage: contoso.com').Status | Should -Be 'Info'
+            (Get-C4Row $rows 'LAPS coverage: contoso.com').Detail | Should -Match '^No computer account of this domain is in the population'
+        }
+        It 'writes the DSRM rows in name order, whatever order the directory answered in' {
+            # Declared population: three DCs, supplied in reverse name order.
+            $computers = @(
+                (New-C4Dc -Name 'dc3.contoso.com' -WinExpiryDays 5)
+                (New-C4Dc -Name $script:C4Dc2 -WinExpiryDays 5)
+                (New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 5)
+            )
+            $items = @(Get-C4Rows -Computers $computers | Where-Object { $_.Item -like 'DSRM password backup: *' } | ForEach-Object { [string]$_.Item })
+            $items.Count | Should -Be 3
+            ($items -join '|') | Should -Be ("DSRM password backup: {0}|DSRM password backup: {1}|DSRM password backup: dc3.contoso.com" -f $script:C4Dc1, $script:C4Dc2)
+        }
+        It 'counts a computer with both expiry times once, as Windows LAPS, and a legacy-only computer as legacy' {
+            # The normal state during a move from legacy Microsoft LAPS: both attributes carry a value.
+            $computers = @(
+                (New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 5)
+                (New-C4Record -Name 'ws-both.contoso.com' -WinExpiryDays 5 -LegacyExpiryDays 5)
+                (New-C4Record -Name 'ws-legacy.contoso.com' -LegacyExpiryDays 5)
+            )
+            $cov = Get-C4Row (Get-C4Rows -Computers $computers -SchemaNames @(@($script:C4FullSchema) + @($script:C4Legacy))) 'LAPS coverage: contoso.com'
+            $cov.Status | Should -Be 'Pass'
+            $cov.Detail | Should -Match 'In population 2: Windows LAPS expiry time visible 1; legacy Microsoft LAPS expiry time only 1; no LAPS expiry time visible to this account 0\.'
+        }
+        It 'counts a release that cannot run Windows LAPS with a legacy expiry time apart from one without' {
+            $computers = @(
+                (New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 5)
+                (New-C4Record -Name 'ws1.contoso.com' -WinExpiryDays 5)
+                (New-C4Record -Name 'old1.contoso.com' -Os 'Windows Server 2012 R2 Standard' -OsVersion '6.3 (9600)' -LegacyExpiryDays 5)
+                (New-C4Record -Name 'old2.contoso.com' -Os 'Windows Server 2016 Standard' -OsVersion '10.0 (14393)')
+            )
+            $cov = Get-C4Row (Get-C4Rows -Computers $computers -SchemaNames @(@($script:C4FullSchema) + @($script:C4Legacy))) 'LAPS coverage: contoso.com'
+            # Declared population: two releases that cannot run Windows LAPS, one with a legacy value.
+            $cov.Detail | Should -Match 'Windows release that cannot run Windows LAPS 2 \(of them 1 with a legacy Microsoft LAPS expiry time visible\)'
+        }
+        It 'never passes, and never says there is nothing to grade, while computer objects could not be classified' {
+            $noUac = New-C4Record -Name 'ws-nouac.contoso.com' -Uac $null
+            $noBuild = New-C4Record -Name 'ws-nobuild.contoso.com' -OsVersion ''
+            # (a) One DC with a current expiry and two objects whose userAccountControl was not returned.
+            $a = Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 5), $noUac, (New-C4Record -Name 'ws-nouac2.contoso.com' -Uac $null))
+            $covA = Get-C4Row $a 'LAPS coverage: contoso.com'
+            $covA.Status | Should -Be 'Not Assessed'
+            $covA.Detail | Should -Match '^Not assessed: 2 computer object\(s\) of this domain could not be placed in or out of the population - account control flags not returned 2, Windows with an OS build that could not be read 0'
+            $covA.Detail | Should -Match 'Could not be classified: ws-nouac\.contoso\.com, ws-nouac2\.contoso\.com\.'
+            # (b) One workstation with an expiry time and five with no readable build: not a Pass.
+            $b = @((New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 5), (New-C4Record -Name 'ws1.contoso.com' -WinExpiryDays 5))
+            foreach ($i in 1..5) { $b += New-C4Record -Name ("ws-nb{0}.contoso.com" -f $i) -OsVersion '' }
+            $covB = Get-C4Row (Get-C4Rows -Computers $b) 'LAPS coverage: contoso.com'
+            $covB.Status | Should -Be 'Not Assessed'
+            $covB.Detail | Should -Match 'Windows with an OS build that could not be read 5'
+            $covB.Detail | Should -Match 'Of the 1 computer account\(s\) that could be placed in population, 0 have no LAPS expiry time visible'
+            # A Warning stands beside an unclassified object, and says over what it was counted.
+            $covW = Get-C4Row (Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 5), (New-C4Record -Name 'ws1.contoso.com'), (New-C4Record -Name 'ws2.contoso.com' -WinExpiryDays 5), $noBuild)) 'LAPS coverage: contoso.com'
+            $covW.Status | Should -Be 'Warning'
+            $covW.Detail | Should -Match 'The share is over the computers that could be classified: 1 more computer object\(s\) could not be placed'
+            # Non-vacuity: without the unclassified object the same domain passes.
+            (Get-C4Row (Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 5), (New-C4Record -Name 'ws1.contoso.com' -WinExpiryDays 5))) 'LAPS coverage: contoso.com').Status | Should -Be 'Pass'
+        }
+        It 'says so on the DSRM side when an object without account control flags could be a domain controller' {
+            # (c) DC01 recognised, DC02 with no userAccountControl returned.
+            $rows = Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 5), (New-C4Dc -Name $script:C4Dc2 -Uac $null))
+            (Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc1)).Status | Should -Be 'Pass'
+            Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc2) | Should -BeNullOrEmpty
+            $gap = Get-C4Row $rows 'DSRM password backup - contoso.com'
+            $gap | Should -Not -BeNullOrEmpty
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Detail | Should -Match ("Without account control flags: {0}\." -f [regex]::Escape($script:C4Dc2))
+            $gap.Detail | Should -Match 'cover the 1 domain controller computer object\(s\) that were recognised'
+            # Declared population: one coverage row, one recognised DC row, one gap row.
+            $rows.Count | Should -Be 3
+            # With no DC recognised at all, the one gap row says both things.
+            $none = Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc2 -Uac $null))
+            @($none | Where-Object { $_.Item -eq 'DSRM password backup - contoso.com' }).Count | Should -Be 1
+            (Get-C4Row $none 'DSRM password backup - contoso.com').Detail | Should -Match 'returned no domain controller computer object.*returned no userAccountControl'
+        }
+        It 'passes a domain in which every in-population computer has an expiry time visible, legacy included' {
+            $rows = Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc1 -WinExpiryDays 10), (New-C4Record -Name 'ws1' -WinExpiryDays 2), (New-C4Record -Name 'ws2' -LegacyExpiryDays 2)) `
+                -SchemaNames @(@($script:C4FullSchema) + @($script:C4Legacy))
+            $cov = Get-C4Row $rows 'LAPS coverage: contoso.com'
+            $cov.Status | Should -Be 'Pass'
+            $cov.Detail | Should -Match '^Every one of the 2 computer account\(s\) in population has a LAPS expiry time visible to this account'
+            $cov.Detail | Should -Match 'legacy Microsoft LAPS expiry time only 1'
+        }
+        It 'is Not Assessed, never Warning and never Pass, when the schema has the attribute and no object returned one' {
+            $rows = Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc1), (New-C4Record -Name 'ws1'), (New-C4Record -Name 'ws2'))
+            $cov = Get-C4Row $rows 'LAPS coverage: contoso.com'
+            $cov.Status | Should -Be 'Not Assessed'
+            $cov.Detail | Should -Match '^Not assessed: no LAPS expiry time is visible to this account on any of the 3 computer object\(s\)'
+            $cov.Detail | Should -Match 'no right to read'
+            $cov.Detail | Should -Match 'so no computer is called unmanaged'
+            # And it does not then list them as without LAPS: no name of the domain is in the row.
+            $cov.Detail | Should -Not -CMatch 'No LAPS expiry time visible[:( ]'
+            $cov.Detail | Should -Not -Match '\bws[12]\b'
+            $dc = Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc1)
+            $dc.Status | Should -Be 'Not Assessed'
+            $dc.Detail | Should -Match 'cannot be told from'
+            @($rows | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'Warning' }).Count | Should -Be 0
+        }
+        It 'warns, with the schema named as the cause, when the forest schema holds neither expiry attribute' {
+            $rows = Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc1), (New-C4Record -Name 'ws1'), (New-C4Record -Name 'ws2')) -SchemaNames @($script:C4Control)
+            $cov = Get-C4Row $rows 'LAPS coverage: contoso.com'
+            $cov.Status | Should -Be 'Warning'
+            $cov.Detail | Should -Match '^The forest schema carries neither msLAPS-PasswordExpirationTime nor ms-Mcs-AdmPwdExpirationTime'
+            $cov.Detail | Should -Match 'none of the 2 computer account\(s\) in population can have a LAPS password stored in this directory'
+            $dc = Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc1)
+            $dc.Status | Should -Be 'Warning'
+            $dc.Detail | Should -Match '^The forest schema does not carry msLAPS-PasswordExpirationTime'
+        }
+        It 'grades a legacy-only schema on the legacy attribute, and the DC rows on the missing Windows LAPS schema' {
+            $rows = Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc1), (New-C4Record -Name 'ws1' -LegacyExpiryDays 3), (New-C4Record -Name 'ws2')) `
+                -SchemaNames @($script:C4Control, $script:C4Legacy, 'ms-Mcs-AdmPwd')
+            $cov = Get-C4Row $rows 'LAPS coverage: contoso.com'
+            $cov.Status | Should -Be 'Warning'
+            $cov.Detail | Should -Match '^1 of 2 computer account\(s\) in population \(50 %\)'
+            (Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc1)).Detail | Should -Match '^The forest schema does not carry msLAPS-PasswordExpirationTime'
+        }
+        It 'takes proof of read for a DC row from the Windows LAPS attribute only: a legacy value elsewhere proves nothing about it' {
+            $rows = Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc1), (New-C4Record -Name 'ws1' -LegacyExpiryDays 3), (New-C4Record -Name 'ws2')) `
+                -SchemaNames @(@($script:C4FullSchema) + @($script:C4Legacy))
+            # For the coverage row the legacy value IS proof that the account can read an expiry time.
+            (Get-C4Row $rows 'LAPS coverage: contoso.com').Status | Should -Be 'Warning'
+            $dc = Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc1)
+            $dc.Status | Should -Be 'Not Assessed'
+            $dc.Detail | Should -Match 'no computer object of this domain returned one either'
+        }
+        It 'caps the sample at the configured limit and says when it truncated' {
+            $many = @(New-C4Record -Name 'ws-ok' -WinExpiryDays 5)
+            foreach ($i in 1..30) { $many += New-C4Record -Name ("ws{0:d2}.contoso.com" -f $i) }
+            $cov = Get-C4Row (Get-C4Rows -Computers $many) 'LAPS coverage: contoso.com'
+            $cov.Status | Should -Be 'Warning'
+            $cov.Detail | Should -Match 'No LAPS expiry time visible \(showing 25 of 30, in name order\): ws01\.contoso\.com, '
+            $cov.Detail | Should -Match 'ws25\.contoso\.com\.'
+            $cov.Detail | Should -Not -Match 'ws26\.contoso\.com'
+            # At the limit exactly, nothing is truncated (off by one).
+            $exact = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ SampleLimit = 30 }
+            $covExact = Get-C4Row (Get-C4Rows -Computers $many -Config $exact) 'LAPS coverage: contoso.com'
+            $covExact.Detail | Should -Not -Match 'showing'
+            $covExact.Detail | Should -Match 'ws30\.contoso\.com\.'
+            $under = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ SampleLimit = 29 }
+            (Get-C4Row (Get-C4Rows -Computers $many -Config $under) 'LAPS coverage: contoso.com').Detail | Should -Match 'showing 29 of 30'
+            # A limit of 0 lists no name at all, and says so.
+            $noNames = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ SampleLimit = 0 }
+            $covNone = Get-C4Row (Get-C4Rows -Computers $many -Config $noNames) 'LAPS coverage: contoso.com'
+            $covNone.Detail | Should -Not -Match 'ws01'
+            $covNone.Detail | Should -Match 'names are not listed \(SampleLimit is 0\)'
+        }
+        It 'takes the stale threshold from the caller, and names it in the population rule' {
+            $computers = @((New-C4Record -Name 'ws1' -WinExpiryDays 5), (New-C4Record -Name 'ws-quiet' -LogonDaysAgo 40))
+            (Get-C4Row (Get-C4Rows -Computers $computers -StaleDays 90) 'LAPS coverage: contoso.com').Detail | Should -Match 'In population 2: '
+            $short = Get-C4Row (Get-C4Rows -Computers $computers -StaleDays 30) 'LAPS coverage: contoso.com'
+            $short.Detail | Should -Match 'In population 1: '
+            $short.Detail | Should -Match 'stale 1;'
+            $short.Detail | Should -Match 'within 30 day\(s\) \(-StaleDays\)'
+            $short.Status | Should -Be 'Pass'
+        }
+        It 'reports a failed read as Not Assessed with its cause, on the coverage row and on the DSRM row of the domain' {
+            $cases = @(
+                @{ Raw = (New-C4Raw -Ok $false -Err 'Unable to contact the server.' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException'); Lead = '^Unreachable: ' }
+                @{ Raw = (New-C4Raw -Ok $false -Err 'Access is denied' -Type 'System.UnauthorizedAccessException'); Lead = '^Access denied: ' }
+                @{ Raw = (New-C4Raw -Ok $false -Err 'A referral was returned from the server' -Type 'Microsoft.ActiveDirectory.Management.ADException'); Lead = '^Read failed: ' }
+                @{ Raw = (New-C4Raw -Ok $false -Err 'Tempo limite excedido' -Type 'System.TimeoutException'); Lead = '^Timed out: ' }
+                @{ Raw = (New-C4Raw -Ok $false -Refused $true -Err 'refused: never read'); Lead = '^Refused: ' }
+                @{ Raw = $null; Lead = '^Read failed: ' }
+            )
+            # Declared population: unreachable, access denied, another failure, a timeout, a refused list, no result.
+            $cases.Count | Should -Be 6
+            foreach ($c in $cases) {
+                $rows = @(Get-AdfaLapsDomainFinding -DomainName 'contoso.com' -Raw $c.Raw -SchemaState (Get-C4State) -Config $script:Lc -StaleDays 90 -Now $script:C4Now)
+                $rows.Count | Should -Be 2 -Because $c.Lead
+                (@($rows | ForEach-Object { [string]$_.Item }) -join '|') | Should -Be 'LAPS coverage: contoso.com|DSRM password backup - contoso.com'
+                foreach ($r in $rows) {
+                    $r.Status | Should -Be 'Not Assessed' -Because $c.Lead
+                    $r.Detail | Should -Match $c.Lead
+                    $r.Scope | Should -Be 'contoso.com'
+                }
+            }
+            # The four classes produce four different leads: access denied is not reported as
+            # unreachable, and neither is a timeout.
+            $leads = @($cases | Select-Object -First 4 | ForEach-Object {
+                    ([string]@(Get-AdfaLapsDomainFinding -DomainName 'contoso.com' -Raw $_.Raw -SchemaState (Get-C4State) -Config $script:Lc -StaleDays 90 -Now $script:C4Now)[0].Detail -split ':')[0] })
+            ($leads -join ',') | Should -Be 'Unreachable,Access denied,Read failed,Timed out'
+        }
+        It 'asks nothing of the rows when the schema was not read: both are Not Assessed and point at the schema row' {
+            $notRead = Get-AdfaLapsSchemaState -Raw (New-C4Schema -Ok $false -Err 'boom' -Names @()) -Config $script:Lc
+            $rows = @(Get-AdfaLapsDomainFinding -DomainName 'contoso.com' -Raw $null -SchemaState $notRead -Config $script:Lc -StaleDays 90 -Now $script:C4Now)
+            $rows.Count | Should -Be 2
+            foreach ($r in $rows) {
+                $r.Status | Should -Be 'Not Assessed'
+                $r.Detail | Should -Match 'the forest schema could not be read'
+                $r.Detail | Should -Match 'Windows LAPS schema row'
+            }
+            # Even a successful computer read is not graded without the schema.
+            $withData = @(Get-AdfaLapsDomainFinding -DomainName 'contoso.com' -Raw (New-C4Raw -Computers (New-C4MixedDomain)) -SchemaState $notRead -Config $script:Lc -StaleDays 90 -Now $script:C4Now)
+            @($withData | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+        }
+        It 'keeps the coverage verdict when only the domain level could not be read, and leaves the DSRM rows of eligible DCs Not Assessed' {
+            $raw = New-C4Raw -Computers (New-C4MixedDomain) -Level '' -LevelError 'msDS-Behavior-Version was not returned'
+            $rows = @(Get-AdfaLapsDomainFinding -DomainName 'contoso.com' -Raw $raw -SchemaState (Get-C4State -Names @(@($script:C4FullSchema) + @($script:C4Legacy))) -Config $script:Lc -StaleDays 90 -Now $script:C4Now)
+            (Get-C4Row $rows 'LAPS coverage: contoso.com').Status | Should -Be 'Warning'
+            $dc1 = Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc1)
+            $dc1.Status | Should -Be 'Not Assessed'
+            $dc1.Detail | Should -Match 'domain functional level was not read'
+            $dc1.Detail | Should -Match 'msDS-Behavior-Version was not returned'
+        }
+        It 'says so when the answer holds no domain controller object, or no object at all' {
+            $noDc = Get-C4Rows -Computers @((New-C4Record -Name 'ws1' -WinExpiryDays 5))
+            $gap = Get-C4Row $noDc 'DSRM password backup - contoso.com'
+            $gap.Status | Should -Be 'Not Assessed'
+            $gap.Detail | Should -Match 'no domain controller computer object'
+            $empty = Get-C4Rows -Computers @()
+            (Get-C4Row $empty 'LAPS coverage: contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C4Row $empty 'LAPS coverage: contoso.com').Detail | Should -Match 'returned no object at all'
+            (Get-C4Row $empty 'DSRM password backup - contoso.com').Status | Should -Be 'Not Assessed'
+        }
+        It 'labels an overridden threshold with its source, and fails only when the override says so' {
+            $cfg = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ FailAbovePercent = 20 } -OverrideSource 'C:\cfg\laps.json'
+            $cov = Get-C4Row (Get-C4Rows -Computers (New-C4MixedDomain) -Config $cfg -SchemaNames @(@($script:C4FullSchema) + @($script:C4Legacy))) 'LAPS coverage: contoso.com'
+            $cov.Status | Should -Be 'Fail'
+            $cov.Detail | Should -Match ([regex]::Escape('C:\cfg\laps.json'))
+            $cov.Detail | Should -Match 'for FailAbovePercent'
+            $cov.Detail | Should -Match 'tool default, not a Microsoft value, for WarnAbovePercent'
+            $cov.Detail | Should -Match 'above the Fail threshold of 20 %'
+        }
+    }
+
+    Context 'Get-AdfaLapsDirectoryRaw (the directory seam)' {
+        BeforeEach {
+            $script:C4DirCalls = @()
+            function Get-ADDomain {
+                param([string]$Identity, [string]$Server, [pscredential]$Credential)
+                $script:C4DirCalls += ("domain|{0}|{1}" -f $Identity, $Server)
+                [pscustomobject]@{ DNSRoot = $Identity; DistinguishedName = ('DC=' + (($Identity -split '\.') -join ',DC=')) }
+            }
+            function Get-ADObject {
+                param([string]$Identity, [string[]]$Properties, [string]$Server, [pscredential]$Credential, $ErrorAction)
+                $script:C4DirCalls += ("object|{0}|{1}|{2}" -f $Identity, $Server, ($Properties -join ','))
+                [pscustomobject]@{ DistinguishedName = $Identity; 'msDS-Behavior-Version' = 7 }
+            }
+            # Get-ADComputer in the shape the cmdlet returns: default properties always, a
+            # requested attribute only where the object has a value, raw FILETIME as Int64.
+            function Get-ADComputer {
+                param([string]$LDAPFilter, [string[]]$Properties, [string]$Server, [pscredential]$Credential, $ErrorAction)
+                $user = '(none)'
+                if ($null -ne $Credential) { $user = [string]$Credential.UserName }
+                $script:C4DirCalls += ("computer|{0}|{1}|{2}|{3}" -f $Server, $LDAPFilter, ($Properties -join ','), $user)
+                $dc = [pscustomobject]@{ DistinguishedName = ("CN=DC1,OU=Domain Controllers,DC=contoso,DC=com"); DNSHostName = ("dc1.{0}" -f $Server); Name = 'DC1'; ObjectClass = 'computer'; Enabled = $true
+                    operatingSystem = 'Windows Server 2019 Standard'; operatingSystemVersion = '10.0 (17763)'; userAccountControl = 532480
+                    lastLogonTimestamp = $script:C4Now.AddDays(-2).ToFileTimeUtc() }
+                $dc | Add-Member -NotePropertyName 'msLAPS-PasswordExpirationTime' -NotePropertyValue ($script:C4Now.AddDays(15).ToFileTimeUtc())
+                $bare = [pscustomobject]@{ DistinguishedName = 'CN=CLUSTER1,CN=Computers,DC=contoso,DC=com'; Name = 'CLUSTER1'; ObjectClass = 'computer'; Enabled = $true; userAccountControl = 4096 }
+                $gmsa = [pscustomobject]@{ DistinguishedName = 'CN=gmsa1,CN=Managed Service Accounts,DC=contoso,DC=com'; Name = 'gmsa1'; ObjectClass = 'msDS-GroupManagedServiceAccount'; Enabled = $true; userAccountControl = 4096 }
+                @($dc, $bare, $gmsa)
+            }
+        }
+        It 'reads the domain level from the domain head and the computers of that domain: Get-ADDomain with the caller''s AD parameters, the two reads after it with -Server for the domain' {
+            $props = @('operatingSystem', 'operatingSystemVersion', 'userAccountControl', 'lastLogonTimestamp', 'dNSHostName', 'objectClass', $script:C4Win)
+            $r = Get-AdfaLapsDirectoryRaw -DomainName 'north.contoso.com' -AdParams @{ Server = 'dc9.contoso.com' } -PropertyNames $props -NeverRead $script:C4Secret `
+                -WindowsExpiryName $script:C4Win -LegacyExpiryName ''
+            $r.Ok | Should -BeTrue
+            $r.Refused | Should -BeFalse
+            $r.DomainLevel | Should -Be '7'
+            $r.DomainLevelError | Should -BeNullOrEmpty
+            # Declared population: the three directory calls of one domain.
+            @($script:C4DirCalls).Count | Should -Be 3
+            $script:C4DirCalls[0] | Should -Be 'domain|north.contoso.com|dc9.contoso.com'
+            $script:C4DirCalls[1] | Should -Be 'object|DC=north,DC=contoso,DC=com|north.contoso.com|msDS-Behavior-Version'
+            $script:C4DirCalls[2] | Should -Be ("computer|north.contoso.com|(objectClass=computer)|{0}|(none)" -f ($props -join ','))
+            # Three computer objects, as records.
+            @($r.Computers).Count | Should -Be 3
+            $dc = $r.Computers[0]
+            $dc.Name | Should -Be 'dc1.north.contoso.com'
+            $dc.OperatingSystemVersion | Should -Be '10.0 (17763)'
+            [int64]$dc.UserAccountControl | Should -Be 532480
+            (ConvertTo-AdfaFileTimeUtc -Value $dc.WindowsExpiry).ToString('yyyy-MM-dd') | Should -Be '2026-11-30'
+            $dc.LegacyExpiry | Should -BeNullOrEmpty
+            # An object with no DNS name, no operating system and no expiry time: nothing is invented.
+            $bare = $r.Computers[1]
+            $bare.Name | Should -Be 'CLUSTER1'
+            [string]$bare.OperatingSystem | Should -BeNullOrEmpty
+            $bare.WindowsExpiry | Should -BeNullOrEmpty
+            $bare.LastLogonTimestamp | Should -BeNullOrEmpty
+            (@($r.Computers[2].ObjectClasses) -join ',') | Should -Be 'msDS-GroupManagedServiceAccount'
+        }
+        It 'does not read an expiry attribute it was not told to ask for, even if the object carries one' {
+            $r = Get-AdfaLapsDirectoryRaw -DomainName 'contoso.com' -PropertyNames @('operatingSystem', 'userAccountControl') -NeverRead $script:C4Secret
+            $r.Ok | Should -BeTrue
+            $r.Computers[0].WindowsExpiry | Should -BeNullOrEmpty
+        }
+        It 'carries the credential, and leaves the caller''s parameter table unchanged' {
+            $secret = New-Object System.Security.SecureString
+            foreach ($ch in 'stub'.ToCharArray()) { $secret.AppendChar($ch) }
+            $cred = New-Object System.Management.Automation.PSCredential -ArgumentList 'CONTOSO\reader', $secret
+            $adParams = @{ Server = 'dc9.contoso.com'; Credential = $cred }
+            $r = Get-AdfaLapsDirectoryRaw -DomainName 'contoso.com' -AdParams $adParams -PropertyNames @('operatingSystem') -NeverRead $script:C4Secret
+            $r.Ok | Should -BeTrue
+            $script:C4DirCalls[2] | Should -Match '\|CONTOSO\\reader$'
+            $adParams.Server | Should -Be 'dc9.contoso.com'
+            @($adParams.Keys).Count | Should -Be 2
+        }
+        It 'never throws: a failed computer query comes back with its text and type, and the domain level it did read' {
+            function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a) throw (New-Object System.UnauthorizedAccessException 'Access is denied') }
+            $r = Get-AdfaLapsDirectoryRaw -DomainName 'contoso.com' -PropertyNames @('operatingSystem') -NeverRead $script:C4Secret
+            $r.Ok | Should -BeFalse
+            $r.Refused | Should -BeFalse
+            $r.Error | Should -Match 'Access is denied'
+            $r.ErrorType | Should -Be 'System.UnauthorizedAccessException'
+            $r.DomainLevel | Should -Be '7'
+            @($r.Computers).Count | Should -Be 0
+        }
+        It 'keeps the computers when only the domain level read failed, and does not read an attribute that was not returned as level 0' {
+            function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a) throw 'The server is not operational' }
+            $r = Get-AdfaLapsDirectoryRaw -DomainName 'contoso.com' -PropertyNames @('operatingSystem') -NeverRead $script:C4Secret
+            $r.Ok | Should -BeTrue
+            @($r.Computers).Count | Should -Be 3
+            $r.DomainLevel | Should -BeNullOrEmpty
+            $r.DomainLevelError | Should -Match 'not operational'
+            function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com' } }
+            $r2 = Get-AdfaLapsDirectoryRaw -DomainName 'contoso.com' -PropertyNames @('operatingSystem') -NeverRead $script:C4Secret
+            $r2.DomainLevel | Should -BeNullOrEmpty
+            $r2.DomainLevelError | Should -Match 'msDS-Behavior-Version was not returned'
+        }
+    }
+
+    Context 'Get-AdfaLaps (collector)' {
+        BeforeEach {
+            $script:C4Asked = @()
+            $script:C4SchemaAsked = @()
+            function Get-AdfaLapsSchemaRaw {
+                param([hashtable]$AdParams, [string[]]$AttributeNames)
+                $script:C4SchemaAsked += (@($AttributeNames) -join ',')
+                New-C4Schema -Names @(@($script:C4FullSchema) + @($script:C4Legacy))
+            }
+            # The directory seam, answering per domain: one healthy domain with two DCs, one
+            # unreachable, one that refuses, one whose schema-capable read shows nothing.
+            function Get-AdfaLapsDirectoryRaw {
+                param([string]$DomainName, [hashtable]$AdParams, [string[]]$PropertyNames, [string[]]$NeverRead, [string]$WindowsExpiryName, [string]$LegacyExpiryName)
+                $server = '(none)'
+                if ($null -ne $AdParams -and $AdParams.ContainsKey('Server')) { $server = [string]$AdParams['Server'] }
+                $script:C4Asked += [pscustomobject]@{ Domain = $DomainName; Server = $server; Properties = @($PropertyNames); NeverRead = @($NeverRead); Win = $WindowsExpiryName; Legacy = $LegacyExpiryName }
+                if ($DomainName -eq 'north.contoso.com') { return (New-C4Raw -Ok $false -Err 'Unable to contact the server.' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException') }
+                if ($DomainName -eq 'south.contoso.com') { return (New-C4Raw -Ok $false -Err 'Access is denied' -Type 'System.UnauthorizedAccessException') }
+                if ($DomainName -eq 'quiet.contoso.com') { return (New-C4Raw -Computers @((New-C4Dc -Name 'dc1.quiet.contoso.com'), (New-C4Record -Name 'ws1.quiet.contoso.com'))) }
+                return (New-C4Raw -Computers (New-C4MixedDomain))
+            }
+            $script:C4Domains = @('contoso.com', 'north.contoso.com', 'south.contoso.com', 'quiet.contoso.com')
+        }
+        It 'gives the forest one schema row and every scoped domain its own rows, asking each domain once' {
+            $rows = @(Get-AdfaLaps -Domains $script:C4Domains -AdParams @{ Server = 'dc9.contoso.com' } -Config $script:Lc -StaleDays 90 -Now $script:C4Now -ForestName 'contoso.com')
+            # Declared population: the four scoped domains, each asked once, by name, in order.
+            (@($script:C4Asked | ForEach-Object { $_.Domain }) -join ',') | Should -Be ($script:C4Domains -join ',')
+            @($script:C4SchemaAsked).Count | Should -Be 1
+            # 1 schema row + 3 (contoso: coverage and two DCs) + 2 + 2 + 2.
+            $rows.Count | Should -Be 10
+            $rows[0].Item | Should -Be 'Windows LAPS schema'
+            $rows[0].Status | Should -Be 'Pass'
+            $rows[0].Scope | Should -Be 'contoso.com'
+            foreach ($d in $script:C4Domains) {
+                @($rows | Where-Object { $_.Item -eq ("LAPS coverage: {0}" -f $d) -and $_.Scope -eq $d }).Count | Should -Be 1 -Because "$d was scoped"
+                @($rows | Where-Object { $_.Scope -eq $d -and $_.Item -like 'DSRM password backup*' }).Count | Should -BeGreaterThan 0 -Because "$d must have a DSRM row"
+            }
+            # Mixed result: one domain graded, one unreachable, one refused, one with nothing visible.
+            (Get-C4Row $rows 'LAPS coverage: contoso.com').Status | Should -Be 'Warning'
+            (Get-C4Row $rows 'LAPS coverage: north.contoso.com').Detail | Should -Match '^Unreachable: '
+            (Get-C4Row $rows 'LAPS coverage: south.contoso.com').Detail | Should -Match '^Access denied: '
+            (Get-C4Row $rows 'LAPS coverage: quiet.contoso.com').Detail | Should -Match '^Not assessed: no LAPS expiry time is visible'
+            @($rows | Where-Object { $_.Scope -ne 'contoso.com' -and $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            (Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc1)).Status | Should -Be 'Pass'
+            (Get-C4Row $rows ("DSRM password backup: {0}" -f $script:C4Dc2)).Status | Should -Be 'Warning'
+            @($rows | Where-Object { $null -eq $_.PSObject.Properties['NotRun'] }).Count | Should -Be 0
+        }
+        It 'hands each domain the guarded property list, the never-read list and the caller''s AD parameters' {
+            Get-AdfaLaps -Domains $script:C4Domains -AdParams @{ Server = 'dc9.contoso.com' } -Config $script:Lc -StaleDays 90 -Now $script:C4Now | Out-Null
+            @($script:C4Asked).Count | Should -Be 4
+            foreach ($call in $script:C4Asked) {
+                (@($call.Properties) -join ',') | Should -Be ("operatingSystem,operatingSystemVersion,userAccountControl,lastLogonTimestamp,dNSHostName,objectClass,{0},{1}" -f $script:C4Win, $script:C4Legacy)
+                @($call.Properties | Where-Object { $script:C4Secret -contains $_ }).Count | Should -Be 0
+                (@($call.NeverRead | Sort-Object) -join ',') | Should -Be (@($script:C4Secret | Sort-Object) -join ',')
+                $call.Server | Should -Be 'dc9.contoso.com'
+                $call.Win | Should -Be $script:C4Win
+                $call.Legacy | Should -Be $script:C4Legacy
+            }
+            # The schema is asked about the control attribute and the nine LAPS attributes.
+            @($script:C4SchemaAsked[0] -split ',').Count | Should -Be 10
+            $script:C4SchemaAsked[0] | Should -Match '^operatingSystemVersion,'
+        }
+        It 'queries no domain when the schema could not be read, and reports every row Not Assessed' {
+            function Get-AdfaLapsSchemaRaw { param([hashtable]$AdParams, [string[]]$AttributeNames) New-C4Schema -Ok $false -Err 'Unable to contact the server.' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException' -Names @() }
+            $rows = @(Get-AdfaLaps -Domains $script:C4Domains -Config $script:Lc -StaleDays 90 -Now $script:C4Now)
+            @($script:C4Asked).Count | Should -Be 0
+            # 1 schema row + 2 per domain.
+            $rows.Count | Should -Be 9
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            $rows[0].Detail | Should -Match '^Unreachable: '
+            foreach ($d in $script:C4Domains) { @($rows | Where-Object { $_.Scope -eq $d }).Count | Should -Be 2 -Because $d }
+        }
+        It 'does not ask for an expiry attribute the schema lacks' {
+            function Get-AdfaLapsSchemaRaw { param([hashtable]$AdParams, [string[]]$AttributeNames) New-C4Schema -Names @($script:C4Control) }
+            $rows = @(Get-AdfaLaps -Domains @('contoso.com') -Config $script:Lc -StaleDays 90 -Now $script:C4Now)
+            @($script:C4Asked).Count | Should -Be 1
+            (@($script:C4Asked[0].Properties) -join ',') | Should -Be 'operatingSystem,operatingSystemVersion,userAccountControl,lastLogonTimestamp,dNSHostName,objectClass'
+            $script:C4Asked[0].Win | Should -BeNullOrEmpty
+            $script:C4Asked[0].Legacy | Should -BeNullOrEmpty
+            $rows[0].Status | Should -Be 'Info'
+        }
+        It 'turns a property list the guard refuses into Refused rows for every domain, without a directory call and without ending the run' {
+            $bad = @{} + $script:Lc
+            $bad['WindowsExpiry'] = 'msLAPS-Password'
+            function Get-AdfaLapsSchemaRaw { param([hashtable]$AdParams, [string[]]$AttributeNames) New-C4Schema }
+            $rows = @(Get-AdfaLaps -Domains @('contoso.com', 'north.contoso.com') -Config $bad -StaleDays 90 -Now $script:C4Now)
+            @($script:C4Asked).Count | Should -Be 0
+            # 1 schema row + 2 per domain.
+            $rows.Count | Should -Be 5
+            foreach ($d in @('contoso.com', 'north.contoso.com')) {
+                $forDomain = @($rows | Where-Object { $_.Scope -eq $d })
+                $forDomain.Count | Should -Be 2 -Because $d
+                foreach ($r in $forDomain) {
+                    $r.Status | Should -Be 'Not Assessed'
+                    $r.Detail | Should -Match '^Refused: '
+                    $r.Detail | Should -Match 'never read'
+                }
+            }
+        }
+        It 'does not end the run when grading one domain throws: that domain is Not Assessed with the error, the others are graded' {
+            # A DC in north.contoso.com whose expiry time is the last date .NET holds - the input that
+            # threw out of the section before the fix - and, to prove the net itself, a grading
+            # failure forced in south.contoso.com.
+            function Get-AdfaLapsDirectoryRaw {
+                param([string]$DomainName, [hashtable]$AdParams, [string[]]$PropertyNames, [string[]]$NeverRead, [string]$WindowsExpiryName, [string]$LegacyExpiryName)
+                $script:C4Asked += [pscustomobject]@{ Domain = $DomainName }
+                if ($DomainName -eq 'north.contoso.com') {
+                    $endDc = [pscustomobject]@{ Name = 'dc1.north.contoso.com'; OperatingSystem = 'Windows Server 2022 Standard'; OperatingSystemVersion = '10.0 (20348)'
+                        UserAccountControl = $script:C4Uac.Dc; LastLogonTimestamp = $script:C4Now.AddDays(-1).ToFileTimeUtc(); ObjectClasses = @('computer')
+                        WindowsExpiry = [int64]2650467743999999999; LegacyExpiry = $null }
+                    return (New-C4Raw -Computers @($endDc, (New-C4Record -Name 'ws1.north.contoso.com' -WinExpiryDays 5)))
+                }
+                # A record the seam would never hand on: account control flags that are not a number.
+                if ($DomainName -eq 'south.contoso.com') { return (New-C4Raw -Computers @((New-C4Record -Name 'broken.south.contoso.com' -Uac 'not-a-number'))) }
+                return (New-C4Raw -Computers (New-C4MixedDomain))
+            }
+            $domains = @('contoso.com', 'north.contoso.com', 'south.contoso.com')
+            $rows = @(Get-AdfaLaps -Domains $domains -Config $script:Lc -StaleDays 90 -Now $script:C4Now)
+            # Declared population: the three scoped domains were each asked once.
+            (@($script:C4Asked | ForEach-Object { $_.Domain }) -join ',') | Should -Be ($domains -join ',')
+            (Get-C4Row $rows 'DSRM password backup: dc1.north.contoso.com').Status | Should -Be 'Pass'
+            (Get-C4Row $rows 'LAPS coverage: contoso.com').Status | Should -Be 'Warning'
+            $south = @($rows | Where-Object { $_.Scope -eq 'south.contoso.com' })
+            (@($south | ForEach-Object { [string]$_.Item }) -join '|') | Should -Be 'LAPS coverage: south.contoso.com|DSRM password backup - south.contoso.com'
+            foreach ($r in $south) {
+                $r.Status | Should -Be 'Not Assessed'
+                $r.Detail | Should -Match '^Not assessed: grading the computer objects of south\.contoso\.com failed inside this tool'
+                $r.Detail | Should -Match 'defect in the tool'
+            }
+        }
+        It 'says so, as Not Assessed, when no domain was scoped' {
+            foreach ($none in @($null, @(), @('', ' '))) {
+                $rows = @(Get-AdfaLaps -Domains $none -Config $script:Lc -StaleDays 90 -Now $script:C4Now)
+                $rows.Count | Should -Be 2
+                $rows[1].Item | Should -Be 'LAPS coverage'
+                $rows[1].Status | Should -Be 'Not Assessed'
+                $rows[1].Detail | Should -Match 'No domain was scoped'
+            }
+            @($script:C4Asked).Count | Should -Be 0
+        }
+        It 'passes the caller''s stale threshold to the rows' {
+            function Get-AdfaLapsDirectoryRaw {
+                param([string]$DomainName, [hashtable]$AdParams, [string[]]$PropertyNames, [string[]]$NeverRead, [string]$WindowsExpiryName, [string]$LegacyExpiryName)
+                New-C4Raw -Computers @((New-C4Record -Name 'ws1' -WinExpiryDays 5), (New-C4Record -Name 'ws-quiet' -LogonDaysAgo 40))
+            }
+            $long = @(Get-AdfaLaps -Domains @('contoso.com') -Config $script:Lc -StaleDays 90 -Now $script:C4Now)
+            $short = @(Get-AdfaLaps -Domains @('contoso.com') -Config $script:Lc -StaleDays 30 -Now $script:C4Now)
+            (Get-C4Row $long 'LAPS coverage: contoso.com').Detail | Should -Match 'In population 2: '
+            (Get-C4Row $short 'LAPS coverage: contoso.com').Detail | Should -Match 'In population 1: '
+        }
+    }
+
+    Context 'Merge-AdfaLapsConfig (the Laps validator)' {
+        It 'replaces only the keys the override names, and cites the source for exactly those' {
+            $m = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ WarnAbovePercent = 5; SampleLimit = 10 } -OverrideSource 'C:\cfg\laps.json'
+            [double]$m['WarnAbovePercent'] | Should -Be 5
+            [int]$m['SampleLimit'] | Should -Be 10
+            [double]$m['FailAbovePercent'] | Should -Be 100
+            [int]$m['ExpiredGraceDays'] | Should -Be 7
+            [string]$m['ThresholdSource'] | Should -Match ([regex]::Escape('C:\cfg\laps.json'))
+            [string]$m['ThresholdSource'] | Should -Match 'for WarnAbovePercent, SampleLimit; tool default, not a Microsoft value, for FailAbovePercent, ExpiredGraceDays'
+            # Nothing else moved, and the built-in table was not touched.
+            (@($m['NeverRead']) -join ',') | Should -Be (@($script:Lc['NeverRead']) -join ',')
+            [string]$m['WindowsExpiry'] | Should -Be $script:C4Win
+            [double]$script:Lc['WarnAbovePercent'] | Should -Be 0
+            [string]$script:Lc['ThresholdSource'] | Should -Be 'tool default, not a Microsoft value'
+        }
+        It 'accepts an object parsed from JSON, and returns the built-in table for no override' {
+            $m = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override ('{ "FailAbovePercent": 50, "ExpiredGraceDays": 0 }' | ConvertFrom-Json)
+            [double]$m['FailAbovePercent'] | Should -Be 50
+            [int]$m['ExpiredGraceDays'] | Should -Be 0
+            [string]$m['ThresholdSource'] | Should -Match 'an override whose source was not recorded for FailAbovePercent, ExpiredGraceDays'
+            $same = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override $null
+            [string]$same['ThresholdSource'] | Should -Be 'tool default, not a Microsoft value'
+            [double]$same['FailAbovePercent'] | Should -Be 100
+        }
+        It 'throws on each malformed shape' {
+            $cases = @(
+                @{ Name = 'an array';                    Override = @(1, 2);                                          Msg = '*single object*' }
+                @{ Name = 'a string';                    Override = 'abc';                                            Msg = '*single object*' }
+                @{ Name = 'a number';                    Override = 5;                                                Msg = '*single object*' }
+                @{ Name = 'an empty object';             Override = ('{}' | ConvertFrom-Json);                        Msg = '*empty object*' }
+                @{ Name = 'an unknown key';              Override = @{ Typo = 1 };                                    Msg = "*unknown key 'Typo'*" }
+                @{ Name = 'a null';                      Override = ('{ "SampleLimit": null }' | ConvertFrom-Json);   Msg = "*'SampleLimit' to null*" }
+                @{ Name = 'a number in quotes';          Override = @{ WarnAbovePercent = '5' };                      Msg = '*JSON number*' }
+                @{ Name = 'a boolean';                   Override = @{ SampleLimit = $true };                         Msg = '*JSON number*' }
+                @{ Name = 'an empty list';               Override = ('{ "SampleLimit": [] }' | ConvertFrom-Json);     Msg = '*JSON number*' }
+                @{ Name = 'a percentage above 100';      Override = @{ FailAbovePercent = 101 };                      Msg = '*range 0 to 100*' }
+                @{ Name = 'a negative percentage';       Override = @{ WarnAbovePercent = -1 };                       Msg = '*range 0 to 100*' }
+                @{ Name = 'a Warning threshold of 100';  Override = @{ WarnAbovePercent = 100 };                      Msg = '*would ever be reported*' }
+                @{ Name = 'Fail below Warning';          Override = @{ WarnAbovePercent = 30; FailAbovePercent = 20 }; Msg = '*FailAbovePercent (20) is below WarnAbovePercent (30)*' }
+                @{ Name = 'a fractional sample limit';   Override = @{ SampleLimit = 2.5 };                           Msg = '*whole number from 0 to 1000*' }
+                @{ Name = 'a negative sample limit';     Override = @{ SampleLimit = -1 };                            Msg = '*whole number from 0 to 1000*' }
+                @{ Name = 'a sample limit of thousands'; Override = @{ SampleLimit = 1001 };                          Msg = '*whole number from 0 to 1000*' }
+                @{ Name = 'a negative grace period';     Override = @{ ExpiredGraceDays = -1 };                       Msg = '*whole number of days from 0 to 365*' }
+                @{ Name = 'a fractional grace period';   Override = @{ ExpiredGraceDays = 1.5 };                      Msg = '*whole number of days from 0 to 365*' }
+                @{ Name = 'a grace period over a year';  Override = @{ ExpiredGraceDays = 366 };                      Msg = '*whole number of days from 0 to 365*' }
+            )
+            # Declared population: nineteen malformed overrides.
+            $cases.Count | Should -Be 19
+            foreach ($c in $cases) {
+                { Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override $c.Override } | Should -Throw -ExpectedMessage $c.Msg -Because $c.Name
+            }
+        }
+        It 'refuses a Fail threshold below the built-in or merged Warning threshold, and accepts the edges' {
+            # Against a base whose Warning threshold was already moved.
+            $base = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ WarnAbovePercent = 40 }
+            { Merge-AdfaLapsConfig -BaseConfig $base -Override @{ FailAbovePercent = 39 } } | Should -Throw -ExpectedMessage '*is below WarnAbovePercent*'
+            [double](Merge-AdfaLapsConfig -BaseConfig $base -Override @{ FailAbovePercent = 40 })['FailAbovePercent'] | Should -Be 40
+            # The edges of each range are usable.
+            $edges = Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ WarnAbovePercent = 99.5; FailAbovePercent = 100; SampleLimit = 1000; ExpiredGraceDays = 365 }
+            [double]$edges['WarnAbovePercent'] | Should -Be 99.5
+            [int]$edges['SampleLimit'] | Should -Be 1000
+            [int]$edges['ExpiredGraceDays'] | Should -Be 365
+            [int](Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ SampleLimit = 0 })['SampleLimit'] | Should -Be 0
+        }
+        It 'cannot be used to change which attributes are read: every such key is refused' {
+            $locked = @('NeverRead', 'WindowsExpiry', 'LegacyExpiry', 'SchemaAttributes', 'ComputerProperties', 'SchemaControl', 'ExcludedClasses', 'CapableBuilds',
+                'MinDomainLevel', 'MinDsrmDcBuild', 'KnownDomainLevels', 'SourceUrl', 'ReadDate', 'ThresholdSource')
+            # Declared population: every key of the built-in table except the four a file may set.
+            $allLocked = @($locked + @('AccountDisableFlag', 'ServerTrustFlag', 'PartialSecretsFlag'))
+            $allLocked.Count | Should -Be 17
+            $inTable = @($script:Lc.Keys | Where-Object { @('WarnAbovePercent', 'FailAbovePercent', 'SampleLimit', 'ExpiredGraceDays') -notcontains $_ })
+            $inTable.Count | Should -Be 17
+            foreach ($k in $inTable) { $allLocked | Should -Contain ([string]$k) }
+            foreach ($k in $allLocked) {
+                { Merge-AdfaLapsConfig -BaseConfig $script:Lc -Override @{ $k = @('ms-Mcs-AdmPwd') } } | Should -Throw -ExpectedMessage "*unknown key '$k'*" -Because $k
+            }
+        }
+        It 'goes through the generic override file: valid, and refused with the section and the file named' {
+            $ovr = Resolve-AdfaConfigOverride -Override ('{ "Laps": { "FailAbovePercent": 50 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
+            (@($ovr.Keys) -join ',') | Should -Be 'Laps'
+            [double]$ovr['Laps']['FailAbovePercent'] | Should -Be 50
+            [string]$ovr['Laps']['ThresholdSource'] | Should -Match ([regex]::Escape('C:\cfg\all.json'))
+            { Resolve-AdfaConfigOverride -Override ('{ "Laps": { "NeverRead": [] } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
+                Should -Throw -ExpectedMessage "*section 'Laps'*unknown key 'NeverRead'*"
+            { Resolve-AdfaConfigOverride -Override ('{ "Laps": null }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
+                Should -Throw -ExpectedMessage "*'Laps'*null*"
+            $f = Join-Path ([IO.Path]::GetTempPath()) ("adfa-c4-{0}.json" -f [guid]::NewGuid().ToString('N'))
+            try {
+                '{ "Laps": { "WarnAbovePercent": 10, "FailAbovePercent": 60 } }' | Out-File -LiteralPath $f -Encoding UTF8
+                $loaded = Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections
+                [double]$loaded['Laps']['WarnAbovePercent'] | Should -Be 10
+                [string]$loaded['Laps']['ThresholdSource'] | Should -Match ([regex]::Escape($f))
+                '{ "Laps": { "WarnAbovePercent": 100 } }' | Out-File -LiteralPath $f -Encoding UTF8
+                { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*section 'Laps'*would ever be reported*"
+                { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*$([IO.Path]::GetFileName($f))*"
+                '{ "Laps": { "SampleLimit": 5, "SampleLimit": 6 } }' | Out-File -LiteralPath $f -Encoding UTF8
+                { Import-AdfaConfigOverride -Path $f -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*'Laps.SampleLimit' more than once*"
+            }
+            finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'Recommendations' {
+        BeforeAll {
+            # What each family's advice must say, taken from the Microsoft page that supports it.
+            $script:C4Advice = [ordered]@{
+                'Windows LAPS schema'                  = 'Update-LapsADSchema.*one-time operation for the entire forest'
+                'LAPS coverage: contoso.com'           = 'Set-LapsADComputerSelfPermission.*BackupDirectory'
+                'DSRM password backup: dc1.contoso.com' = 'functional level 2016.*ADBackupDSRMPassword'
+            }
+            $script:C4Hostile = 'Threshold source: C:\Backup\replication\sysvol-dfsr\stale-delegation.json. managing aging scavenging time sync w32tm password policy lockout global catalog secure dynamic port 389 not reachable event 2042 on ldap signing smbv1 spooler tombstone lifetime enrol NOT a pass krbtgt'
+        }
+        It 'gives each row family its own advice, whatever the domain, the host name or an override file path contains' {
+            # Declared population: the three row families that can be a Warning or a Fail.
+            @($script:C4Advice.Keys).Count | Should -Be 3
+            $seen = @()
+            foreach ($item in @($script:C4Advice.Keys)) {
+                $rec = Get-AdfaRecommendation -Section 'Windows LAPS' -Item $item -Detail $script:C4Hostile
+                $rec | Should -Match $script:C4Advice[$item] -Because $item
+                $rec | Should -Not -Match 'repadmin|wbadmin|dfsrmig|w32tm /config|New-KrbtgtKeys|scavenging|Disable first, delete later' -Because $item
+                $seen += $rec
+            }
+            @($seen | Select-Object -Unique).Count | Should -Be 3
+            # A host or domain name full of trigger words changes nothing.
+            (Get-AdfaRecommendation -Section 'Windows LAPS' -Item 'DSRM password backup: backup-replication-dc.stale.contoso.com' -Detail $script:C4Hostile) | Should -Be $seen[2]
+            (Get-AdfaRecommendation -Section 'Windows LAPS' -Item 'LAPS coverage: sysvol.backup.contoso.com' -Detail $script:C4Hostile) | Should -Be $seen[1]
+        }
+        It 'gives a row of the section that has no advice of its own none at all, rather than an unrelated one' {
+            foreach ($item in @('DSRM password backup - contoso.com', 'LAPS coverage', 'Windows LAPS', 'Something new: dc1.contoso.com')) {
+                Get-AdfaRecommendation -Section 'Windows LAPS' -Item $item -Detail $script:C4Hostile | Should -Be '' -Because $item
+            }
+            # Non-vacuity: the same text outside the section does attract advice.
+            Get-AdfaRecommendation -Section 'Somewhere Else' -Item 'x' -Detail $script:C4Hostile | Should -Not -Be ''
+        }
+        It 'does not say anything Microsoft does not: the DSRM advice calls the status this tool''s rule, and the coverage advice names what the read cannot see' {
+            $dsrm = Get-AdfaRecommendation -Section 'Windows LAPS' -Item 'DSRM password backup: dc1.contoso.com' -Detail 'x'
+            $dsrm | Should -Match 'off by default'
+            $dsrm | Should -Match "this tool's rule"
+            $cov = Get-AdfaRecommendation -Section 'Windows LAPS' -Item 'LAPS coverage: contoso.com' -Detail 'x'
+            $cov | Should -Match 'Microsoft Entra ID'
+            $cov | Should -Match 'no right to read'
+            $cov | Should -Match 'not Microsoft values'
+            foreach ($text in @($dsrm, $cov, (Get-AdfaRecommendation -Section 'Windows LAPS' -Item 'Windows LAPS schema' -Detail 'x'))) {
+                $text | Should -Not -Match (Get-C4SecretPattern)
+                $text | Should -Not -Match 'Get-LapsADPassword'
+            }
+        }
+        It 'attaches advice to Warning and Fail rows only, and adds the not-read note after the advice was chosen' {
+            $rows = Get-C4Rows -Computers (New-C4MixedDomain)
+            $findings = @($rows | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'Windows LAPS' -Row $_ -StatusColumn 'Status' })
+            $findings.Count | Should -Be 3
+            $cov = @($findings | Where-Object { $_.Item -eq 'LAPS coverage: contoso.com' })[0]
+            $cov.Status | Should -Be 'Warning'
+            $cov.Recommendation | Should -Match 'Set-LapsADComputerSelfPermission'
+            $cov.Detail | Should -Match 'never requests'
+            $warnDc = @($findings | Where-Object { $_.Item -eq ("DSRM password backup: {0}" -f $script:C4Dc2) })[0]
+            $warnDc.Recommendation | Should -Match 'ADBackupDSRMPassword'
+            $warnDc.Detail | Should -Match 'PORT-PLAN C4a'
+            $passDc = @($findings | Where-Object { $_.Item -eq ("DSRM password backup: {0}" -f $script:C4Dc1) })[0]
+            $passDc.Status | Should -Be 'Pass'
+            $passDc.Recommendation | Should -Be ''
+            # Not Assessed and Info rows carry none either.
+            $quiet = @(Get-C4Rows -Computers @((New-C4Dc -Name $script:C4Dc1), (New-C4Record -Name 'ws1')) | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'Windows LAPS' -Row $_ -StatusColumn 'Status' })
+            @($quiet | Where-Object { $_.Status -eq 'Not Assessed' }).Count | Should -Be 2
+            @($quiet | Where-Object { $_.Recommendation -ne '' }).Count | Should -Be 0
+            $partial = Get-AdfaLapsSchemaFinding -SchemaState (Get-C4State -Names @($script:C4Control, $script:C4Win)) -Config $script:Lc
+            (ConvertTo-AdfaConsolidatedFinding -Section 'Windows LAPS' -Row $partial -StatusColumn 'Status').Recommendation | Should -Match 'Update-LapsADSchema'
         }
     }
 }
