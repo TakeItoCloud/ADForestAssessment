@@ -45,6 +45,7 @@ Extracted from
 | **DC disk space** | `-Sections DcDisk`. Free space on the volumes that hold the **NTDS database**, the **NTDS logs** and **SYSVOL**, per DC. The three paths are read from each DC's own registry and matched to a volume by the longest mount path, so a database under a mounted folder is judged on the right volume. One row per distinct volume, listing the roles it holds. `Fail` below 10 % free or below 2 GB free, `Warning` below 20 % or below 5 GB — **tool defaults, not Microsoft values**, labelled as such in every finding and overridable with `-ConfigOverridePath`. A path or a volume that could not be read is `Not Assessed` with its cause; unreachable, access denied, a registry value that is not set and any other read failure are different results. Covers the DCs of every scoped domain, with or without `DomainControllers` selected; a domain whose DCs could not be enumerated gets its own `Not Assessed` row. Needs local Administrators rights on each DC |
 | **Windows LAPS** | `-Sections Laps`. Directory reads only, with domain read access. **Schema**: whether the forest schema carries the six attributes `Update-LapsADSchema` adds, and the legacy Microsoft LAPS ones; absent, present and "the query failed" are three different results. **DSRM password backup**, one row per domain controller: `Pass` where a Windows LAPS expiry time that is not past is visible on the DC's computer object, `Info` (not applicable) for a DC below Windows Server 2019 or a domain below functional level 2016, `Warning` where nothing is visible although the account can read the attribute elsewhere in the domain. **LAPS coverage**, one row per scoped domain: how many enabled Windows computers that can run Windows LAPS have **no LAPS expiry time visible to this account** (Windows LAPS or legacy), with counts for every class left out of the population and a capped list of names. The section **never reads a password**: no password, encrypted password or password history attribute is ever requested. An attribute the account has no right to read looks exactly like one that is not set, and a device that backs its password up to Microsoft Entra ID has nothing here either, so no row calls a computer unmanaged with certainty; where nothing at all is visible in a domain the rows are `Not Assessed`. The thresholds are **tool defaults, not Microsoft values**, overridable with `-ConfigOverridePath`. The policy in each DC's registry is not read (PORT-PLAN C4a). Details under [Windows LAPS](#windows-laps) |
 | **DC certificates** | `-Sections DcCertificates`. Per DC, two instruments, each named in every row's `Evidence` column. **Directory** (always, domain read access): the certificates a CA published on the DC's computer object (`userCertificate`), one row per certificate, graded on expiry. No published value is `Info`, never "no certificate": Microsoft's *Domain Controller Authentication* and *Kerberos Authentication* templates do not publish to the directory, and a value the account cannot read looks the same as none. **LDAPS** (only with `-IncludeLdapsHandshake`): the certificate the DC presents on port 636, read with one TLS handshake that sends no LDAP request, no bind and no credential and needs no right on the DC; without the switch each DC's `LDAPS certificate` row is `Not Assessed` and says why. Expired is `Fail`, at most 30 days left is `Warning`, not yet valid is `Warning` (this tool's rule) — the windows are **tool defaults, not Microsoft values**, overridable with `-ConfigOverridePath`. Refused, timed out, unresolved, handshake timed out and handshake failed are separate `Not Assessed` results, none of them read as "no certificate"; a refusal is told apart from a time-out within the handshake's own 5000 ms connection bound, and the whole handshake is bounded too. A published value that is not a single certificate (a PFX, a PKCS7 blob) is refused unopened. Trust, name and EKUs are reported in their own columns, not graded. The DC's own certificate stores are not read (PORT-PLAN C5a). Details under [DC certificates](#dc-certificates) |
+| **RID pool** | `-Sections RidPool`. Directory reads only, with domain read access. Per scoped domain, two rows from `CN=RID Manager$,CN=System`: **RID pool allocation** - `msDS-RIDPoolAllocationEnabled` FALSE is a `Fail` (Microsoft: the RID master sets it at the RID ceiling and then issues no RID pool to any DC), TRUE is a `Pass`; an attribute that is not returned is `Not Assessed`, never a pass, because Microsoft documents that a read succeeds without the properties the caller may not read, so "not set" (the default) cannot be told from "not readable"; and an attribute the schema lacks is `Not Assessed` because Microsoft publishes no meaning for that; **Global RID space** - the two halves of `rIDAvailablePool` (RIDs issued, and the size of the space as read, never assumed), `Warning` from 10 % used and `Fail` from 90 % used, Microsoft's own points (event 16658 and the RID ceiling), overridable with `-ConfigOverridePath`; a size that is neither 1,073,741,823 nor 2,147,483,647 is `Not Assessed`. The 31-bit unlock is never claimed as read: `SidCompatibilityVersion` cannot be read with any tool, and the 31-bit size is matched by value. Per DC, as `Info`, the RID Set object `rIDSetReferences` names: current pool, next RID, what remains, and the prefetched next pool. A DC whose RID Set is absent (reference empty or dangling **and** a one-level search finds none - a known DC defect, KB 2618669), a refused read and an unreachable server are three different `Not Assessed` results. No dcdiag test is run. Details under [RID pool](#rid-pool) |
 | Resilience | Directory backup status (`repadmin /showbackup`), time sync (`w32tm`), DC count, duplicate SPNs |
 | **Recovery: DNS vs AD** | DC locator SRV records compared against the DCs the directory actually contains — **on every DC's DNS server separately**, with a divergence summary ("3 of 7 answering servers advertise a DC that no longer exists"); plus the PDC locator record per server |
 | **Recovery: DSA CNAMEs** | Per-DC `<DSA-GUID>._msdcs` alias verification (missing / wrong target, per DNS server) — the usual cause of RPC 1722 after metadata cleanup or restore — and orphaned NTDS Settings objects |
@@ -98,6 +99,13 @@ may see more; it never asks for a password attribute, whatever the rights.
 `DcCertificates` reads the directory with domain read access, and its opt-in LDAPS handshake
 needs no right on the DC at all - only that port 636 is reachable from the host running the
 assessment.
+
+`RidPool` reads the directory with domain read access. Microsoft's default security descriptors
+of the RID-Manager and RID-Set classes grant Authenticated Users read access. A changed ACL that
+refuses the whole read shows as `Access denied`. One that hides a single attribute cannot be seen:
+Microsoft documents that a read then succeeds without that attribute. That is why an allocation
+attribute or a `rIDAvailablePool` that is not returned, and a RID Set that is not found, are
+`Not Assessed` and never a pass; the tool does not evaluate the ACL (PORT-PLAN C6d).
 
 **Running `Identity` (part of `All`) with rights to read LAPS passwords.** The Identity export
 asks for every attribute of every computer (`Get-ADComputer -Properties *`), and the directory
@@ -765,10 +773,58 @@ certificate; it is kept out of the text the recommendation is chosen from.
 **Not read**: the DC's certificate stores (`LocalMachine\My` and the NTDS service store), which
 would inventory every certificate the DC holds - PORT-PLAN C5a; revocation.
 
+## RID pool
+
+`-Sections RidPool` (part of `All`) answers three questions: is RID pool allocation blocked in
+each domain, how much of each domain's global RID space has been issued, and what RID pool each
+domain controller holds now. **Run against stubs only** so far; the first run against a real
+forest is PORT-PLAN C17, and C6a lists what that run must confirm.
+
+| Row | Read from | Results |
+| --- | --- | --- |
+| `RID pool allocation: <domain>` | `msDS-RIDPoolAllocationEnabled` on `CN=RID Manager$,CN=System,<domain>` | FALSE `Fail`; TRUE `Pass`; `Not Assessed` when the attribute is not returned (Microsoft documents NOT SET as its default, but also that a read succeeds without the properties the caller may not read, so an unset value and an unreadable one look the same), where the schema does not define it, or could not be read, or the read failed |
+| `Global RID space: <domain>` | `rIDAvailablePool` on the same object: the lower half is the RIDs issued, the upper half the size of the space | `Warning` from 10 % used, `Fail` from 90 % used; `Not Assessed` for a size that is neither documented value, a size of 0, or more issued than the size |
+| `RID pool: <dc>` | `rIDSetReferences` on the DC's computer object, then the RID Set object: `rIDPreviousAllocationPool`, `rIDAllocationPool`, `rIDNextRID` | `Info` with the current pool, the next RID, what remains in the pool and the prefetched pool; `Not Assessed` otherwise, with one of the causes below |
+| `RID pool - <domain>` | | `Not Assessed`: a scoped domain whose DCs could not be enumerated |
+
+**The thresholds are Microsoft's.** Microsoft logs event 16658 at the first 10 % of the global
+RID space used and calls it "not expected"; at 90 % used the RID master stops issuing RID pools
+(event 16657) and sets `msDS-RIDPoolAllocationEnabled` to FALSE. Both points can be changed with
+`-ConfigOverridePath` (`WarnAtPercentUsed`, `FailAtPercentUsed`), and a finding then cites your
+file. The comparison is on integers: on the 30-bit space the Warning starts at 107,374,183 RIDs
+issued and the Fail at 966,367,641, one RID past the figures Microsoft gives, because the
+attribute holds where the next pool begins: the allocation of the pool that contains Microsoft's RID
+leaves the lower half one past it at least, so the row turns on that same allocation. The
+percentage shown is truncated to four decimals, never rounded up, so a row graded below a point
+never shows that point (107,374,182 RIDs issued shows 9.9999 %).
+
+**The size of the space is read, not assumed.** 1,073,741,823 is the default 30-bit space and
+2,147,483,647 the 31-bit space after the unlock. That the attribute holds the second value after
+the unlock is an inference from Microsoft's dcdiag example; the unlock itself is stored in
+`SidCompatibilityVersion`, which Microsoft says cannot be read with ADSIEdit, LDP or other tools,
+so the tool never claims to have read it.
+
+**Per DC, the causes are kept apart:** `RID Set object absent` (the reference is empty or does
+not resolve, and a one-level search under the computer object finds no RID Set either - a known
+DC defect that Microsoft names as a RID pool leak, except on a read-only DC, for which Microsoft
+publishes nothing), `Access denied`, `Unreachable`, `Timed out`, `Read failed`, `Not found` and
+`Ambiguous` (no computer object or several), `Multiple references`, `RID Set empty` and
+`Inconsistent` (the next RID outside the current pool). "Remaining in pool" is end - next + 1,
+this tool's derivation: Microsoft does not say whether the end of a pool is inclusive. The
+halves of the prefetched pool are read as Microsoft documents them for the current pool, which
+is an inference and is said in the row.
+
+**Not read**: `SidCompatibilityVersion`; the Directory-Services-SAM events 16653 to 16658; the
+RID Block Size registry value; and `dcdiag /test:RidManager`, which this section does not run
+because Microsoft does not say whether it requests a pool (the DC Diagnostics section runs it).
+Nothing is written: no attribute is set, and neither `msDS-RIDPoolAllocationEnabled` nor
+`SidCompatibilityVersion` is ever touched.
+
 ## One override file for section config: `-ConfigOverridePath`
 
 A JSON file whose top-level keys are section names. Each value is checked by that section's own
-rules. Four sections can be named so far, `DcDisk`, `DcHardening`, `Laps` and `DcCertificates`;
+rules. Five sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates` and
+`RidPool`;
 later checks add their own key.
 
 ```json
@@ -798,6 +854,10 @@ later checks add their own key.
     "FailWithinDays": 7,
     "HandshakeTimeoutMs": 5000,
     "ConnectTimeoutMs": 5000
+  },
+  "RidPool": {
+    "WarnAtPercentUsed": 10,
+    "FailAtPercentUsed": 90
   }
 }
 ```
@@ -846,6 +906,10 @@ later checks add their own key.
   certificate is always a `Fail`), `Fail` not above `Warning` once merged (equal is allowed), and
   `HandshakeTimeoutMs` and `ConnectTimeoutMs` from 100 to 60000. `LdapsPort` and the EKU names
   are refused.
+- For `RidPool` the two keys above are the only ones, each a whole JSON number from 1 to 99, and
+  `FailAtPercentUsed` must be above `WarnAtPercentUsed` once merged. The known sizes of the
+  global RID space, the location of `CN=RID Manager$` and every attribute name are refused, so a
+  file cannot make the tool read another attribute or grade against a size it did not read.
 - For `DcDisk`, `WsmanPort` and `RpcPort` change the port that is **probed** before a read. The
   CIM session itself is opened without a port, so it still goes to the default one: setting
   either key to anything but the default can make a reachable DC read as unreachable, and does

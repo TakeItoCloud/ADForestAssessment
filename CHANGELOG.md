@@ -10,6 +10,215 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-11-16 (RID pool: allocation enabled, global RID space issued, each DC's RID pool, tool v1.23.0)
+
+**PORT-PLAN C6.** New `-Sections RidPool` (report section `RID Pool`), included in the default
+`All` run. It addresses three rows of the gap analysis for which the tool had nothing:
+ADA-RID-001 (RID pool allocation disabled), ADA-RID-002 (global RID space consumption) and
+ADA-INV-004 (per-DC RID pool). The differences from the catalogue rules are listed below.
+
+**This has run only against stubs.** No part of it has been executed against a real directory:
+no `Get-ADDomain`, `Get-ADObject` or `Get-ADComputer` call in it has met a real domain
+controller. The first run against a real forest is PORT-PLAN C17, owned by the operator, and
+PORT-PLAN C6a lists what that run must confirm for this row.
+
+**What it reads, and nothing else.** Directory reads only, with domain read access:
+
+- **Per scoped domain** (`Get-AdfaRidManagerRaw`): `Get-ADDomain -Identity <domain>` for the
+  domain's DN and its RID master (`RIDMaster`, the same property the Domains and Fsmo sections
+  read, read again here so this section does not depend on either having run); then
+  `Get-ADObject` on `CN=RID Manager$,CN=System,<domain DN>` with `-Server` set to the domain,
+  twice: once for `rIDAvailablePool` and once for `msDS-RIDPoolAllocationEnabled`, so that a
+  schema without the second attribute cannot take the first away.
+- **Once per run**: the forest schema, through the same seam the Laps section uses
+  (`Get-AdfaLapsSchemaRaw`), asked whether it defines `msDS-RIDPoolAllocationEnabled`, with
+  `rIDAvailablePool` as the control - so "not set", "not in the schema" and "the schema could not
+  be read" are three different results.
+- **Per DC** (`Get-AdfaDcRidSetRaw`): the DC's computer object by `dNSHostName`, asked for
+  `rIDSetReferences` only; the RID Set object it names, asked for `rIDPreviousAllocationPool`,
+  `rIDAllocationPool`, `rIDNextRID` and `rIDUsedPool`; and, as a **second instrument** before the
+  word "absent" is ever used, a one-level search for `objectClass=rIDSet` under the computer
+  object, run when the reference is empty or does not resolve (but not after a refused,
+  unreachable or timed-out read, which says nothing about existence).
+
+Nothing is written. No `Set-*` cmdlet, no `-Replace`, no ADSI write path; neither
+`msDS-RIDPoolAllocationEnabled` nor `SidCompatibilityVersion` is ever touched (both are documented
+writes: the first removes the RID ceiling, the second irreversibly unlocks the 31st bit). No
+dcdiag test is run by this section: Microsoft does not say whether `/test:RidManager` requests a
+pool (the DC Diagnostics section runs it, unchanged). A test reads the parsed script and fails on
+any state-changing cmdlet, any write parameter, any ADSI `Put`/`SetInfo`/`CommitChanges`, any
+`DirectoryEntry`, and on any property list in the section other than the five named attributes.
+
+**What it reports.**
+
+| Row | Results |
+| --- | --- |
+| `RID pool allocation: <domain>` | FALSE `Fail`; TRUE `Pass`; `Not Assessed` when the attribute is not returned (Microsoft documents NOT SET as its default, but also that a read succeeds without the properties the caller may not read, so the two look the same), where the schema does not define it, the schema could not be read, the value is neither TRUE nor FALSE, or the read failed |
+| `Global RID space: <domain>` | `Pass` / `Warning` / `Fail` against the size of the space read from the upper half of `rIDAvailablePool`; `Not Assessed` for a size that is neither documented value, a size of 0, more issued than the size, a value not returned, or a value that is not an integer |
+| `RID pool: <dc>` | `Info` with the current pool, the next RID, the RIDs remaining in the pool and the prefetched pool; otherwise `Not Assessed`, worded `RID Set object absent`, `Access denied`, `Unreachable`, `Timed out`, `Read failed`, `Not found`, `Ambiguous`, `Multiple references`, `RID Set empty`, `Unreadable value` or `Inconsistent` |
+| `RID pool - <domain>`, `RID pools`, `RID pool (no domain scoped)`, `RID pool` | `Not Assessed` population rows: a domain whose DCs were not enumerated, no DC enumerated at all, no domain scoped, the forest unreadable |
+
+**The 64-bit values.** `rIDAvailablePool` and the two pools are Interval values, whose halves
+Microsoft documents as unsigned. `ConvertFrom-AdfaLargeInteger` splits a value with explicit
+32-bit arithmetic that gives the same answer on Windows PowerShell 5.1 and PowerShell 7 (the
+Int64 with the same bits; low = value AND 4294967295; high = (value shifted right 32) AND
+4294967295, so a negative Int64 - a high half of 0x80000000 or more - cannot carry its sign into
+the result). It accepts any integer type, a UInt64 above Int64.MaxValue, and invariant-culture
+text, and refuses everything else without throwing. Tested at 0, Microsoft's sample
+4611686014132422708 (low 2100, high 1073741823) and the sample plus 100,000, high 0x7FFFFFFF,
+Int64.MaxValue and MinValue, -1, high 0xFFFFFFFE, 2^32, UInt64.MaxValue, and their text forms.
+
+**Thresholds: Microsoft's own points.** `Warning` from 10 % of the global RID space issued:
+Microsoft's event 16658 fires at the first 10 % and Microsoft calls reaching it "not expected".
+`Fail` from 90 %: the hard-coded RID ceiling, at which the RID master writes event 16657, sets
+`msDS-RIDPoolAllocationEnabled` to FALSE and issues no further pool. The comparison is on
+integers (issued * 100 against size * percent), "at or past". On the 31-bit space the Warning
+point is 214,748,365, Microsoft's figure; on the 30-bit space it is 107,374,183 and the Fail
+points are 966,367,641 and 1,932,735,283, one RID past the figures Microsoft gives, because the
+low half is where the next pool begins. Both points are in a versioned table and can be changed
+under a new `RidPool` key of `-ConfigOverridePath` (`WarnAtPercentUsed`, `FailAtPercentUsed`,
+whole numbers from 1 to 99, Fail above Warning once merged); a finding then cites the file for the
+key it supplied. The known sizes, the location of `CN=RID Manager$` and every attribute and class
+name are refused.
+
+**The size of the space is read, never assumed.** 1,073,741,823 is graded as the default 30-bit
+space and 2,147,483,647 as the 31-bit space after the unlock. That the attribute holds the second
+value after the unlock is an **inference** from Microsoft's dcdiag example, and every row graded
+against it says so: Microsoft gives the unlocked size as 2,147,483,648 in one sentence and as
+2,147,483,647 (what dcdiag shows) in the next, and the unlock itself, `SidCompatibilityVersion`,
+"isn't readable using ADSIEdit, LDP, or other tools". Any other size is `Not Assessed` with the
+values quoted, never a percentage against a guessed size.
+
+**Per DC.** `rIDPreviousAllocationPool` is the current pool, start in the lower four bytes and
+end in the upper, as Microsoft documents. `rIDAllocationPool` is the prefetched next pool; its
+page does not restate the layout, so reading its halves the same way is an **inference**, said in
+the row. "Remaining in pool" is end - next + 1, **a tool derivation**: Microsoft does not say
+whether the end of a pool is inclusive. `rIDUsedPool` is read but not interpreted. No threshold
+is applied to a DC's pool: Microsoft publishes none. `rIDSetReferences` is multi-valued in the
+schema; more than one value is reported and none is chosen. A RID Set that is absent after both
+instruments is worded as the known DC defect Microsoft names ("a RID pool leak when missing
+rIDSetReferences attribute", KB 2618669) - except on a DC the inventory marks read-only, for
+which no Microsoft page read says whether a RID Set exists, and the row says that instead.
+
+**Population.** Domains: every scoped domain gets exactly its two rows. DCs: as DcCertificates,
+the DCs of every scoped domain, from the DC inventory where `DomainControllers` is also selected
+and otherwise from the section's own enumeration of each scoped domain
+(`Get-AdfaDcTargetsByDomain`), with a `RID pool - <domain>` row for a domain no DC row accounts
+for (`Get-AdfaDcPopulationGap`). An exception while one domain or one DC is handled makes its rows
+`Not Assessed` and never ends the section. With the forest unreadable the section is one
+`Not Assessed` row naming the cause.
+
+**Recommendations.** Two section-scoped entries, anchored on the Item prefixes the tool writes
+(`RID pool allocation: `, `Global RID space: `), and a catch-all that gives every other row of the
+section no advice, all placed before the unscoped entries: a RID pool row can contain "event
+16658", "restored", "dcdiag" or a file path, which the unscoped `event \d+ on`, `backup`,
+`dcdiag` and `aging` entries would otherwise answer. The text the tool cannot control - the RID
+master's name, the DNs, the raw values - is in columns the matcher never reads, and what was not
+read is in `NotRun`, added after the advice is chosen. Both texts come from Managing RID Issuance:
+the causes of RID consumption Microsoft lists, investigating before re-enabling, how the block is
+removed, and that the 31-bit unlock is irreversible.
+
+**Where this differs from the catalogue rules.**
+
+- ADA-RID-002 is Warning-only in the catalogue. This build adds a `Fail` at 90 % used, Microsoft's
+  hard-coded ceiling: after an administrator lifts the block, `msDS-RIDPoolAllocationEnabled`
+  returns to NOT SET and RID-001 is no longer a `Fail`, while the space stays above 90 % with no further
+  ceiling, so RID-002 is then the only row that says so. Recorded as a decision for the operator
+  (PORT-PLAN C6b).
+- ADA-RID-001 says "else Pass". This build gives `Pass` for TRUE only. An attribute that is not
+  returned is `Not Assessed`: NOT SET is Microsoft's documented default, but Microsoft also documents
+  that a read succeeds without the properties the caller may not read, so an unset value and a
+  FALSE one hidden by a changed ACL look the same (the gap analysis already asked for "attribute not
+  returned" to be `Not Assessed`). Not in the schema is `Not Assessed` too, because Microsoft
+  publishes no meaning for it. Telling "not set" from "not readable" needs the object's ACL to be
+  evaluated: PORT-PLAN C6d.
+- The reference lists read-only DCs as Excluded. This build does not exclude them: it reads what
+  is there and, where the inventory marks a DC read-only, does not call a missing RID Set a defect.
+
+**The guards were shown able to fail.** Nineteen single mutations of the new code, each run
+against the new `Describe` and the file then restored byte for byte (SHA-256 checked): FALSE read
+as allowed, an unconfirmed "not set" turned into `Pass`, an unreachable DC's failed read not
+reported, access denied worded as unreachable, the override's range check removed, the Invoke-Main
+branch never taken, the issued count off by one, the per-DC loop limited to the first DC, the high
+half shifted by 31, the sign not masked after the shift, the second instrument dropped, "remaining"
+off by one, the read-only flag ignored, the recommendation catch-all removed, the domain loop
+limited to the first domain, the Warning and the Fail comparison each turned from "at or past" into
+"past", a refused reference read followed by the search anyway, and an unknown size graded against
+the 30-bit size. Seventeen were caught at once. The two comparison mutants survived: the two
+documented sizes are odd and end in 3 and 7, so no whole count of RIDs is ever exactly 10 % or 90 %
+of them. A test was added that gives the pure verdict a size divisible by ten, and kills both.
+
+**Found by an independent review of the diff before commit, and fixed in it.**
+
+- **The percentage contradicted the grade at Microsoft's own boundary RIDs.** `PercentUsed` was
+  rounded to four decimals while the grade compared integers, so 107,374,182 of 1,073,741,823 was a
+  `Pass` that read "(10 % used). Below the Warning point of 10 % used", and 966,367,640 (Microsoft's
+  30-bit trigger RID) a `Warning` showing 90 %; the same on the 31-bit space. The figure is now
+  computed in decimal and **truncated** to four decimals, never rounded up: those rows show 9.9999
+  and 89.9999. As a consequence Microsoft's sample value (2,100 issued) now shows 0.0001 %, not
+  0.0002 %. A test at nine boundary points checks the figure, the text and that the figure agrees
+  with the grade.
+- **"Not set" was a `Pass`, and the README promised a changed ACL never shows as a pass.** Microsoft
+  documents ([Access Control and Read Operations](https://learn.microsoft.com/windows/win32/ad/access-control-and-read-operations),
+  read 2026-11-16) that "a search operation can succeed, but the search results don't include
+  objects or properties to which the caller doesn't have access", so a FALSE
+  `msDS-RIDPoolAllocationEnabled` hidden by an attribute-level deny arrived exactly like an unset
+  one and passed. Behaviour changed to the safe result: an allocation attribute that is not returned
+  is now `Not Assessed` (`Not returned: ...`), whatever the schema says, and the README says only
+  what the tool can see. Telling the two apart needs the object's ACL evaluated, which is new work:
+  PORT-PLAN C6d.
+- **Guards no test could fail.** `Get-AdfaRidSchemaState` had no test at all (turning "not in the
+  schema" into "in the schema", or removing the `rIDAvailablePool` control check, left every test
+  green); it now has seven pinned answers in Pester and five in the validation harness. Also
+  pinned now: the `rIDNextRID` width rule (a negative Int32 is decoded; a value with a non-zero
+  upper half is `Unreadable value`), the seam reading nothing more when `rIDSetReferences` holds two
+  values, a one-item collection holding FALSE or TRUE, the allocation row's `RawValue` column, and
+  "ends before it starts" told apart from "next RID outside the pool" by its own wording.
+- **A config comment misstated how the tool relates to Microsoft's trigger point** ("graded one pool
+  late"). The integer rule turns on the same allocation that includes Microsoft's RID; the comment
+  now says so.
+
+Ten mutations covering the findings (the eight a test could not catch, the rounding and the "not
+set" `Pass` brought back) were each run under Windows PowerShell
+5.1 against the C6 `Describe` and the validation harness, on a copy of the tree restored byte for
+byte (SHA-256 checked) after each; every one now fails at least one test.
+
+**Existing tests changed, because behaviour legitimately changed.** In this row's own tests, after
+the review: the allocation verdict for "not set, attribute in schema", the allocation row of the
+domain-rows test, the collector's contoso.com allocation row and the smoke harness's single-domain
+and RID-Set-absent checks now expect `Not Assessed` instead of `Pass`; the four `0.0002`
+assertions (three in Pester, one in the smoke harness) now expect `0.0001`; two per-DC leads
+("next RID outside pool", "end before start") were narrowed from `^Inconsistent: ` to their own
+wording. Before the review: the three Pester assertions and
+the validation-harness assertion that pin the `-ConfigOverridePath` section list now include
+`RidPool`. The C4 and C5 version tests now expect 1.23.0. The C4 count of assignments to a
+`Properties` key in the script went from 7 to 12: the five property lists of this section, each a
+named attribute from the config table. The smoke harness's count of declared unusable override
+files went from 12 to 14 (two `RidPool` files added). The smoke stubs gained, each selected only by
+what this section sends: a `Get-ADComputer` branch for `rIDSetReferences` on the DC lookup the
+DcCertificates stub already answered, and `Get-ADObject` branches for `CN=RID Manager$` (keyed by
+`-Server`, because the `Get-ADDomain` stub gives every domain the same DN), for the RID Set and for
+the one-level search; the two RID attribute names were added to the stub schema.
+
+**Sources, all read on Microsoft Learn 2026-11-16.**
+
+- [Managing RID Issuance](https://learn.microsoft.com/windows-server/identity/ad-ds/manage/managing-rid-issuance) - event 16658 at 10 % used and "not expected"; the RID ceiling at 90 % used, its trigger points, event 16657 and `msDS-RIDPoolAllocationEnabled` set to FALSE; TRUE to remove the block and the return to "its default NOT SET value"; the global space sizes and the unlock, `SidCompatibilityVersion` not readable, irreversible, and its DC caveats (KB 2642658); RID Block Size (500 by default, 15,000 at most); the RID pool leak with a missing `rIDSetReferences` (KB 2618669); the causes of RID consumption.
+- [Raise the value of available RID pools](https://learn.microsoft.com/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-raise-rid-pool) - `CN=RID Manager$,CN=System`, the halves of `rIDAvailablePool`, the sample value.
+- [Interval syntax](https://learn.microsoft.com/windows/win32/adschema/s-interval) - the halves are unsigned.
+- [RID-Previous-Allocation-Pool](https://learn.microsoft.com/windows/win32/adschema/a-ridpreviousallocationpool), [RID-Allocation-Pool](https://learn.microsoft.com/windows/win32/adschema/a-ridallocationpool), [RID-Next-RID](https://learn.microsoft.com/windows/win32/adschema/a-ridnextrid), [RID-Used-Pool](https://learn.microsoft.com/windows/win32/adschema/a-ridusedpool), [RID-Set-References](https://learn.microsoft.com/windows/win32/adschema/a-ridsetreferences) - the per-DC attributes, their layout where published, `rIDSetReferences` multi-valued.
+- [RID-Set class](https://learn.microsoft.com/windows/win32/adschema/c-ridset) and [RID-Manager class](https://learn.microsoft.com/windows/win32/adschema/c-ridmanager) - one RID Set per DC, its mandatory attributes, `rIDSet` as the class name, and the default security descriptors (Authenticated Users read).
+- [Access Control and Read Operations](https://learn.microsoft.com/windows/win32/ad/access-control-and-read-operations) - a read can succeed without the properties the caller may not read; why an attribute that is not returned is never a pass.
+- [ms-DS-RID-Pool-Allocation-Enabled](https://learn.microsoft.com/windows/win32/adschema/a-msds-ridpoolallocationenabled) - **not found** (the page could not be retrieved, 2026-11-16): the attribute's schema version and what its absence means are not published.
+
+**Not verified.** That the upper half of `rIDAvailablePool` holds 2,147,483,647 after the 31-bit
+unlock; the types the ActiveDirectory module returns for these attributes (the stubs return an
+Int64 for the Interval values, a Boolean for `msDS-RIDPoolAllocationEnabled`, an Int32 for
+`rIDNextRID`, and leave an unset attribute out of the answer); whether `rIDNextRID` and the pool
+end bound "remaining" as end - next + 1 on a real DC; whether a read-only DC has a RID Set; the
+exception the module throws for a reference that does not resolve (every error that is not a
+refusal, an unreachable server or a time-out is followed by the search); who can read these
+objects beyond the default security descriptors. All are PORT-PLAN C6a, with C17.
+
 ### Added — 2026-11-16 (DC certificates: the LDAPS certificate each DC presents, and those published for it, tool v1.22.0)
 
 **PORT-PLAN C5.** New `-Sections DcCertificates` (report section `DC Certificates`), included in

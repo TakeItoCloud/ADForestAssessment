@@ -201,9 +201,21 @@
     certificate the DC presents on port 636; without it that row is Not Assessed and says the
     handshake was not run.
 
+    RidPool reads the directory only and needs domain read access. For every scoped domain it
+    reads rIDAvailablePool and msDS-RIDPoolAllocationEnabled on CN=RID Manager$,CN=System and
+    gives two rows: whether RID pool allocation is blocked (FALSE is a Fail, TRUE a Pass, and an
+    attribute that is not returned Not Assessed, because an unset value and one this account
+    cannot read look the same) and how much of the
+    global RID space has been issued, against the size read from the attribute itself (Warning
+    from 10 % used, Fail from 90 % used: Microsoft's event 16658 milestone and RID ceiling). For
+    every domain controller of every scoped domain, as DcDisk does, it reads the RID Set object
+    that rIDSetReferences names and reports the current pool, the next RID and the prefetched
+    pool as Info. A missing RID Set, a refused read and an unreachable server are each their own
+    Not Assessed result. It runs no dcdiag test and never reads or writes SidCompatibilityVersion.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Four sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Five sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -238,6 +250,13 @@
     refused:
 
         { "DcCertificates": { "WarnWithinDays": 45, "FailWithinDays": 7 } }
+
+    And RidPool, whose keys are WarnAtPercentUsed and FailAtPercentUsed: the share of the global
+    RID space issued at which a domain is a Warning and a Fail, each a whole number from 1 to 99,
+    Fail above Warning. The built-in 10 and 90 are Microsoft's published points (event 16658 and
+    the RID ceiling). The ceilings and every attribute name are refused:
+
+        { "RidPool": { "WarnAtPercentUsed": 5 } }
 
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
@@ -377,7 +396,7 @@ param(
         'DnsDepth', 'Redundancy', 'ExchangeSchema', 'ExchangeSeReadiness',
         'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
         'DsEvents', 'RestoreIntegrity', 'MsdcsDelegation', 'TimeHierarchy', 'SiteGc',
-        'DcSystem', 'DcDisk', 'Laps', 'DcCertificates')]
+        'DcSystem', 'DcDisk', 'Laps', 'DcCertificates', 'RidPool')]
     [string[]]$Sections = @('All'),
 
     [switch]$IncludeDcdiag,
@@ -430,7 +449,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening", "Laps" and "DcCertificates" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates" and "RidPool" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -464,7 +483,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.22.0'
+    Version                 = '1.23.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1252,6 +1271,104 @@ $script:Config = @{
             '1.3.6.1.5.2.3.5'        = 'KDC Authentication'
             '1.3.6.1.4.1.311.20.2.2' = 'Smart Card Logon'
         }
+    }
+    # --- RID pool: allocation enabled, global RID space issued, per-DC pool (PORT-PLAN C6) ---
+    # Directory reads only: CN=RID Manager$,CN=System,<domain> of every scoped domain, and the RID
+    # Set object of every DC. Every URL below was read on 2026-11-16.
+    #
+    # The global RID space, per domain:
+    #   "Each domain has an object CN=RID Manager$,CN=System,DC=<domain_name>. This object has an
+    #    attribute named rIDAvailablePool." "The upper part defines the number of security
+    #    principals that can be allocated for each domain (0x3FFFFFFF or just over 1 billion). The
+    #    lower part is the number of RIDs that have been allocated in the domain." Sample value
+    #    4611686014132422708: low part 2100 "(beginning of the next RID pool to be allocated)",
+    #    upper part 1073741823 - used as a test vector.
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-raise-rid-pool
+    #   rIDAvailablePool, rIDPreviousAllocationPool, rIDAllocationPool and rIDUsedPool are Interval
+    #   values: "identical to the LargeInteger syntax, except the high and low values are unsigned
+    #   integers." https://learn.microsoft.com/windows/win32/adschema/s-interval
+    #
+    # The per-DC pool:
+    #   RID-Set (lDAPDisplayName rIDSet): "There is one of these per Domain Controller. It holds the
+    #   RID pools that were allocated by the DC." Its four RID attributes are mandatory.
+    #     https://learn.microsoft.com/windows/win32/adschema/c-ridset
+    #   rIDSetReferences: on class Computer, multi-valued (Is-Single-Valued False).
+    #     https://learn.microsoft.com/windows/win32/adschema/a-ridsetreferences
+    #   rIDPreviousAllocationPool: "the pool of relative identifiers (RIDs) that a domain controller
+    #   allocates from ... The start value is in the lower four bytes and the end value is in the
+    #   upper four bytes." https://learn.microsoft.com/windows/win32/adschema/a-ridpreviousallocationpool
+    #   rIDAllocationPool: "A pool that was prefetched for use by the RID manager when the
+    #   RID-Previous-Allocation-Pool has been used up." Its page does not restate the halves; they
+    #   are read as for the current pool, AN INFERENCE, said in every row that shows them.
+    #     https://learn.microsoft.com/windows/win32/adschema/a-ridallocationpool
+    #   rIDNextRID: "The next free Relative Identifier in the current pool."
+    #     https://learn.microsoft.com/windows/win32/adschema/a-ridnextrid
+    #   rIDUsedPool: "The RID Pools that have been used by a DC." Its halves are not described: read,
+    #   not interpreted. https://learn.microsoft.com/windows/win32/adschema/a-ridusedpool
+    #
+    # From Managing RID Issuance:
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/managing-rid-issuance
+    #   - Event 16658: the RID master "computes the ten (10) percent used mark in the global pool
+    #     and logs an event when reached"; first "when allocating the pool containing the
+    #     107,374,182nd RID" (30-bit), "starting at 214,748,365" (31-bit); "This event is not
+    #     expected". -> WarnAtPercentUsed 10, a Microsoft value.
+    #   - The RID ceiling: "hard-coded at ten percent remaining of the available RID space. That is,
+    #     the ceiling activates when the RID master allocates a pool that includes the RID
+    #     corresponding to ninety (90) percent of the global RID space", trigger points 966,367,640
+    #     (30-bit) and 1,932,735,282 (31-bit); the RID master writes event 16657 and "sets ...
+    #     msDS-RIDPoolAllocationEnabled ... to FALSE", which "prevents further RID block issuance to
+    #     all domain controllers". -> FailAtPercentUsed 90, a Microsoft value; and FALSE is a Fail.
+    #   - "On the next RID allocation performed by the RID master, the attribute will return to its
+    #     default NOT SET value." -> not set is not blocked. But an attribute this account is
+    #     denied read on is left out of the answer the same way, and the ACL is not evaluated, so
+    #     an allocation attribute that is not returned is Not Assessed, never Pass (PORT-PLAN C6d).
+    #   - The size of the space: "limited to 2^30 (or 1,073,741,823)" by default; after the unlock
+    #     "2,147,483,648" in one sentence and, as dcdiag shows it, "2,147,483,647" in another. The
+    #     upper part is read, never assumed; 2,147,483,647 is matched, and that the attribute holds
+    #     it after the unlock is AN INFERENCE (Learn shows only dcdiag output). SidCompatibilityVersion
+    #     "isn't readable using ADSIEdit, LDP, or other tools", so the unlock is never claimed as read.
+    #   - "Previous Windows Server operating systems had a RID pool leak when missing
+    #     rIDSetReferences attribute" (KB 2618669).
+    #   - Default security descriptors of RID-Manager and RID-Set grant Authenticated Users read
+    #     (A;;RPLCLORC;;;AU): https://learn.microsoft.com/windows/win32/adschema/c-ridmanager
+    #
+    # The comparison is on integers: Warning when issued * 100 >= size * 10, Fail when issued * 100
+    # >= size * 90. On the 31-bit space the Warning point is 214,748,365, Learn's figure; on the
+    # 30-bit space it is 107,374,183, one past the RID Learn names, and the Fail points are
+    # 966,367,641 and 1,932,735,283, one past Learn's trigger RIDs. The low part is where the NEXT
+    # pool begins (the last pool's end + 1), so the allocation of the pool that CONTAINS Learn's RID
+    # (re-read 2026-11-16: the ceiling "activates when the RID master allocates a pool that includes
+    # the RID corresponding to ninety (90) percent") leaves a low part of at least one past it, which
+    # is graded on that same allocation; a pool that ends below it is not, and Microsoft has not
+    # triggered either. The integer rule therefore lands on the same allocation as Microsoft's.
+    # PercentUsed, the figure shown, is TRUNCATED (never rounded) to four decimals, so a count graded
+    # below a point never shows that point (107,374,182 of 1,073,741,823 shows 9.9999, not 10).
+    #
+    # NOT PUBLISHED ON MICROSOFT LEARN, and said where a row relies on it: the schema page of
+    # msDS-RIDPoolAllocationEnabled (404 on 2026-11-16) and what its absence from an older schema
+    # means (Not Assessed); whether a read-only DC has a RID Set; whether the end of a pool is
+    # inclusive ("remaining" is end - next + 1, a tool derivation); the exception the module throws
+    # for an object that does not exist; whether dcdiag /test:RidManager requests a pool (not run).
+    #
+    # Replaceable from a file via -ConfigOverridePath, under the key "RidPool": WarnAtPercentUsed and
+    # FailAtPercentUsed. Nothing else - not the ceilings and not any attribute or object name.
+    RidPool                 = @{
+        SourceUrl              = 'https://learn.microsoft.com/windows-server/identity/ad-ds/manage/managing-rid-issuance and https://learn.microsoft.com/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-raise-rid-pool'
+        ReadDate               = '2026-11-16'
+        ThresholdSource        = 'Microsoft: event 16658 at the first 10 % of the global RID space used, and the hard-coded RID ceiling at 90 % used (event 16657), Managing RID Issuance'
+        WarnAtPercentUsed      = 10
+        FailAtPercentUsed      = 90
+        KnownCeilings          = @(
+            @{ Value = [int64]1073741823; Label = '30-bit (default)'; Note = '1,073,741,823, the default size Microsoft documents (2^30)' }
+            @{ Value = [int64]2147483647; Label = '31-bit (unlocked; inferred)'; Note = '2,147,483,647, the size dcdiag shows after the 31st bit is unlocked; that this attribute holds it after the unlock is inferred from Microsoft''s dcdiag example, and the unlock itself (SidCompatibilityVersion) cannot be read' }
+        )
+        RidManagerRdn          = 'CN=RID Manager$,CN=System'
+        AvailablePoolAttribute = 'rIDAvailablePool'
+        AllocationAttribute    = 'msDS-RIDPoolAllocationEnabled'
+        ReferenceAttribute     = 'rIDSetReferences'
+        RidSetClass            = 'rIDSet'
+        # In this order: the current pool, the prefetched next pool, the next RID, the used pools.
+        RidSetAttributes       = @('rIDPreviousAllocationPool', 'rIDAllocationPool', 'rIDNextRID', 'rIDUsedPool')
     }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
     DsEventsOfInterest      = @(
@@ -9042,6 +9159,1039 @@ function Merge-AdfaDcCertificatesConfig {
 }
 
 # ---------------------------------------------------------------------------
+# RID pool: whether RID pool allocation is enabled, how much of the global RID space has been
+# issued, and each DC's current and next RID pool (PORT-PLAN C6)
+# ---------------------------------------------------------------------------
+
+function New-AdfaRidPoolRow {
+    <#
+    .SYNOPSIS
+        Pure: one RID Pool row. Every row of the section has the same columns, so a consumer never
+        has to test whether a column exists.
+    .DESCRIPTION
+        The values read - the decoded halves of the large integers, the pool bounds, the next RID,
+        the RID master's name and the distinguished names - go in their own columns, never in
+        Detail: the consolidated findings choose a recommendation from Detail, and none of these
+        columns is read there. Numbers are written in the invariant culture, and a value that was
+        not measured is an empty string, never 0.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$NotRun = '',
+        [AllowEmptyString()][string]$Evidence = '',
+        [AllowEmptyString()][string]$RidMaster = '',
+        [AllowNull()]$Ceiling = $null,
+        [AllowEmptyString()][string]$CeilingSource = '',
+        [AllowNull()]$Issued = $null,
+        [AllowEmptyString()][string]$PercentUsed = '',
+        [AllowNull()]$PoolStart = $null,
+        [AllowNull()]$PoolEnd = $null,
+        [AllowNull()]$NextRid = $null,
+        [AllowNull()]$RemainingInPool = $null,
+        [AllowNull()]$NextPoolStart = $null,
+        [AllowNull()]$NextPoolEnd = $null,
+        [AllowEmptyString()][string]$ObjectDn = '',
+        [AllowEmptyString()][string]$RawValue = ''
+    )
+    $row = New-Finding -Scope $Scope -Area 'RidPool' -Item $Item -Status $Status -Detail $Detail
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $asText = { param($Number) if ($null -eq $Number) { return '' } return ([int64]$Number).ToString($inv) }
+    $row | Add-Member -NotePropertyName 'NotRun' -NotePropertyValue $NotRun
+    $row | Add-Member -NotePropertyName 'Evidence' -NotePropertyValue $Evidence
+    $row | Add-Member -NotePropertyName 'RidMaster' -NotePropertyValue $RidMaster
+    $row | Add-Member -NotePropertyName 'Ceiling' -NotePropertyValue (& $asText $Ceiling)
+    $row | Add-Member -NotePropertyName 'CeilingSource' -NotePropertyValue $CeilingSource
+    $row | Add-Member -NotePropertyName 'Issued' -NotePropertyValue (& $asText $Issued)
+    $row | Add-Member -NotePropertyName 'PercentUsed' -NotePropertyValue $PercentUsed
+    $row | Add-Member -NotePropertyName 'PoolStart' -NotePropertyValue (& $asText $PoolStart)
+    $row | Add-Member -NotePropertyName 'PoolEnd' -NotePropertyValue (& $asText $PoolEnd)
+    $row | Add-Member -NotePropertyName 'NextRid' -NotePropertyValue (& $asText $NextRid)
+    $row | Add-Member -NotePropertyName 'RemainingInPool' -NotePropertyValue (& $asText $RemainingInPool)
+    $row | Add-Member -NotePropertyName 'NextPoolStart' -NotePropertyValue (& $asText $NextPoolStart)
+    $row | Add-Member -NotePropertyName 'NextPoolEnd' -NotePropertyValue (& $asText $NextPoolEnd)
+    $row | Add-Member -NotePropertyName 'ObjectDn' -NotePropertyValue $ObjectDn
+    $row | Add-Member -NotePropertyName 'RawValue' -NotePropertyValue $RawValue
+    return $row
+}
+
+function ConvertFrom-AdfaLargeInteger {
+    <#
+    .SYNOPSIS
+        Pure: a 64-bit directory value (Interval or LargeInteger syntax) as its two unsigned 32-bit
+        halves, Low and High, each an [int64] from 0 to 4294967295.
+    .DESCRIPTION
+        rIDAvailablePool, rIDPreviousAllocationPool and rIDAllocationPool are Interval values:
+        "identical to the LargeInteger syntax, except the high and low values are unsigned
+        integers" (https://learn.microsoft.com/windows/win32/adschema/s-interval, read 2026-11-16).
+        The ActiveDirectory module hands a 64-bit value over as a signed Int64, so a high half of
+        0x80000000 or more arrives as a negative number.
+
+        The split is explicit 32-bit arithmetic that gives the same answer on Windows PowerShell
+        5.1 and PowerShell 7: the value is taken as the Int64 with the same 64 bits, the low half
+        is that value AND 4294967295, and the high half is the value shifted right by 32 and then
+        ANDed with 4294967295, so the sign that the arithmetic shift carries in is masked away.
+        No literal 0xFFFFFFFF is written: PowerShell types it as the Int32 -1.
+
+        Accepted: any integer type up to 64 bits, a UInt64 above Int64.MaxValue included (taken by
+        its bits), and text that is a whole number in the invariant culture, signed or unsigned.
+        Anything else - $null, a fraction, a date, a list, hexadecimal text - is Read = $false with
+        the reason, and never an exception.
+    .OUTPUTS
+        [pscustomobject] Read, Low, High, Raw (the value as text), Error.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Value)
+    $out = [pscustomobject]@{ Read = $false; Low = [int64]0; High = [int64]0; Raw = ''; Error = '' }
+    if ($null -eq $Value) { $out.Error = 'no value was given'; return $out }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $bits = [int64]0
+    $signedTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64])
+    if ($Value -is [uint64]) {
+        $bits = [BitConverter]::ToInt64([BitConverter]::GetBytes([uint64]$Value), 0)
+        $out.Raw = ([uint64]$Value).ToString($inv)
+    }
+    elseif ($signedTypes -contains $Value.GetType()) {
+        $bits = [int64]$Value
+        $out.Raw = $bits.ToString($inv)
+    }
+    elseif ($Value -is [string]) {
+        $text = $Value.Trim()
+        $out.Raw = $text
+        $signed = [int64]0
+        $unsigned = [uint64]0
+        if ([int64]::TryParse($text, [System.Globalization.NumberStyles]::AllowLeadingSign, $inv, [ref]$signed)) { $bits = $signed }
+        elseif ([uint64]::TryParse($text, [System.Globalization.NumberStyles]::None, $inv, [ref]$unsigned)) { $bits = [BitConverter]::ToInt64([BitConverter]::GetBytes($unsigned), 0) }
+        else { $out.Error = ("'{0}' is not a whole number that fits in 64 bits" -f $text); return $out }
+    }
+    else {
+        $out.Raw = [string]$Value
+        $out.Error = ("a value of type {0} is not a 64-bit integer" -f $Value.GetType().Name)
+        return $out
+    }
+    $mask = [int64]4294967295
+    $out.Low = [int64]($bits -band $mask)
+    $out.High = [int64](($bits -shr 32) -band $mask)
+    $out.Read = $true
+    return $out
+}
+
+function Get-AdfaRidSchemaState {
+    <#
+    .SYNOPSIS
+        Pure: whether the forest schema defines msDS-RIDPoolAllocationEnabled - Yes, No or Unknown.
+    .DESCRIPTION
+        Read from the answer of Get-AdfaLapsSchemaRaw, the same schema read the Laps section makes,
+        asked for two names: rIDAvailablePool, which every Active Directory schema defines (Learn
+        lists it from Windows 2000 Server) and so works as the control, and the allocation
+        attribute. A query that failed, or that answered without the control, is Unknown: the
+        absence of a name from such an answer proves nothing.
+    .OUTPUTS
+        [pscustomobject] InSchema (Yes | No | Unknown), Detail.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$Raw,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $control = [string]$Config['AvailablePoolAttribute']
+    $attribute = [string]$Config['AllocationAttribute']
+    $out = [pscustomobject]@{ InSchema = 'Unknown'; Detail = '' }
+    if ($null -eq $Raw) { $out.Detail = 'The forest schema was not read (the read returned nothing).'; return $out }
+    if (-not [bool]$Raw.Ok) {
+        $reported = ([string]$Raw.Error).Trim()
+        if ($reported -eq '') { $reported = '(no error text was returned)' }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Raw.ErrorType)) { $reported = ("{0} (exception type: {1})" -f $reported, ([string]$Raw.ErrorType).Trim()) }
+        $out.Detail = ("The forest schema could not be read, so whether it defines {0} is not known. Reported by the schema query - {1}" -f $attribute, $reported)
+        return $out
+    }
+    $names = @($Raw.Names | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Trim() })
+    if (@($names | Where-Object { $_ -eq $control }).Count -eq 0) {
+        $out.Detail = ("The schema query answered without {0}, which every Active Directory schema defines, so the absence of {1} from that answer proves nothing." -f $control, $attribute)
+        return $out
+    }
+    if (@($names | Where-Object { $_ -eq $attribute }).Count -gt 0) {
+        $out.InSchema = 'Yes'
+        $out.Detail = ("The forest schema defines {0}." -f $attribute)
+    }
+    else {
+        $out.InSchema = 'No'
+        $out.Detail = ("The forest schema does not define {0}; the same query returned {1}, so its answer was complete." -f $attribute, $control)
+    }
+    return $out
+}
+
+function Get-AdfaRidAllocationVerdict {
+    <#
+    .SYNOPSIS
+        Pure: whether RID pool allocation is blocked in a domain, from msDS-RIDPoolAllocationEnabled
+        on CN=RID Manager$ (catalogue ADA-RID-001).
+    .DESCRIPTION
+        From Managing RID Issuance (https://learn.microsoft.com/windows-server/identity/ad-ds/manage/managing-rid-issuance,
+        read 2026-11-16): at the RID ceiling the RID master "sets Active Directory attribute
+        msDS-RIDPoolAllocationEnabled ... to FALSE", which "prevents further RID block issuance to
+        all domain controllers"; an administrator sets it to TRUE to remove the block; and "On the
+        next RID allocation performed by the RID master, the attribute will return to its default
+        NOT SET value."
+
+            FALSE                                   Fail     Disabled
+            TRUE                                    Pass     Enabled
+            not set, the schema defines it          Not Assessed  NotSet - an attribute this account
+                                                    cannot read is left out the same way, and the
+                                                    ACL is not evaluated (PORT-PLAN C6d)
+            not set, the schema could not be read   Not Assessed  NotSetUnconfirmed
+            not in the schema                       Not Assessed  NotInSchema - Microsoft publishes
+                                                    no meaning for an older schema without it
+            any other value                         Not Assessed  Unrecognised
+            the attribute read failed               Not Assessed  ReadFailed
+            CN=RID Manager$ not read                Not Assessed  NotRead
+
+        A value that is present proves the schema defines the attribute, so TRUE and FALSE are
+        graded whatever the schema read returned.
+    .OUTPUTS
+        [pscustomobject] Status, State, Reason.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$Raw,
+        [ValidateSet('Yes', 'No', 'Unknown')][string]$InSchema = 'Unknown'
+    )
+    $name = 'msDS-RIDPoolAllocationEnabled'
+    $notInSchema = ("The forest schema does not define {0}. Microsoft documents the RID ceiling that sets it as new in Windows Server 2012 and does not publish what the attribute's absence means (no schema page for it was found on Microsoft Learn), so this is not graded." -f $name)
+    if ($null -eq $Raw -or -not [bool]$Raw.Ok) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'NotRead'; Reason = ("CN=RID Manager`$ was not read, so {0} was not read." -f $name) }
+    }
+    if (-not [bool]$Raw.AllocationRead) {
+        if ($InSchema -eq 'No') { return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'NotInSchema'; Reason = $notInSchema } }
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'ReadFailed'; Reason = ("{0} could not be read." -f $name) }
+    }
+    if ([bool]$Raw.AllocationReturned) {
+        $value = $Raw.AllocationValue
+        if ($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {
+            $items = @($value)
+            if ($items.Count -eq 1) { $value = $items[0] }
+        }
+        $flag = $null
+        if ($value -is [bool]) { $flag = [bool]$value }
+        elseif ($null -ne $value -and ($value -is [string])) {
+            $text = $value.Trim()
+            if ($text -eq 'TRUE') { $flag = $true }
+            elseif ($text -eq 'FALSE') { $flag = $false }
+        }
+        if ($null -eq $flag) {
+            return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'Unrecognised'; Reason = ("{0} holds a value that is neither TRUE nor FALSE ('{1}'), which Microsoft documents no meaning for, so it is not graded." -f $name, [string]$value) }
+        }
+        if (-not $flag) {
+            return [pscustomobject]@{ Status = $script:Status.Fail; State = 'Disabled'
+                Reason = ("{0} is FALSE on CN=RID Manager`$: RID pool allocation is blocked. Microsoft documents that the RID master sets it to FALSE when it allocates the pool that reaches 90 % of the global RID space, writes event 16657, and issues no further RID pool to any domain controller; domain controllers keep using the pools they already hold, and when those run out no account, group or computer can be created." -f $name) }
+        }
+        return [pscustomobject]@{ Status = $script:Status.Pass; State = 'Enabled'
+            Reason = ("{0} is TRUE: allocation is not blocked. Microsoft documents TRUE as the value an administrator sets to remove the block after the RID ceiling was reached, and that the attribute returns to its default NOT SET value at the next RID allocation, after which there is no further ceiling." -f $name) }
+    }
+    if ($InSchema -eq 'Yes') {
+        # Not a Pass. Microsoft, Access Control and Read Operations
+        # (https://learn.microsoft.com/windows/win32/ad/access-control-and-read-operations, read
+        # 2026-11-16): "a search operation can succeed, but the search results don't include objects
+        # or properties to which the caller doesn't have access". An unset attribute and one the
+        # account may not read therefore look the same, this tool does not evaluate the object's
+        # ACL, and a FALSE value hidden by a changed ACL would otherwise pass (PORT-PLAN C6d).
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'NotSet'
+            Reason = ("Not returned: {0} was not returned for CN=RID Manager`$, and the forest schema defines it. Microsoft documents NOT SET as the attribute's default value, and only FALSE blocks allocation; but Microsoft also documents that a read can succeed without the properties the caller has no access to, and this tool does not evaluate the object's access control, so 'not set' cannot be told from 'not readable' and this is not graded as a pass. The default security descriptor of the RID-Manager class grants Authenticated Users read access." -f $name) }
+    }
+    if ($InSchema -eq 'No') { return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'NotInSchema'; Reason = $notInSchema } }
+    return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'NotSetUnconfirmed'
+        Reason = ("{0} was not returned, and the forest schema could not be confirmed to define it, so 'not set' (the default, allocation not blocked) and 'not in the schema' cannot be told apart." -f $name) }
+}
+
+function Get-AdfaRidSpaceVerdict {
+    <#
+    .SYNOPSIS
+        Pure: how much of a domain's global RID space has been issued, from the two halves of
+        rIDAvailablePool (catalogue ADA-RID-002).
+    .DESCRIPTION
+        "The upper part defines the number of security principals that can be allocated for each
+        domain (0x3FFFFFFF or just over 1 billion). The lower part is the number of RIDs that have
+        been allocated in the domain." (Raise the value of available RID pools, read 2026-11-16.)
+
+        The ceiling is the upper part AS READ, never assumed. It is graded only when it is one of
+        the sizes in Config.KnownCeilings - 1,073,741,823 (the default 30-bit space) or
+        2,147,483,647 (the 31-bit space after the unlock, matched by value: that the attribute holds
+        it is an inference, see the config table) - and anything else, 0, or an issued count above
+        the ceiling, is Not Assessed with the values quoted and no percentage.
+
+        Integer comparison, no rounding: Fail when issued * 100 >= ceiling * FailAtPercentUsed,
+        Warning when issued * 100 >= ceiling * WarnAtPercentUsed, otherwise Pass. Both halves are
+        below 2^32, so the products fit an Int64. PercentUsed, the figure shown in the row and its
+        column, is truncated to four decimals (never rounded up), so it never shows a point the
+        row is graded below.
+    .OUTPUTS
+        [pscustomobject] Status, State, PercentUsed ('' when not computed), Ceiling, CeilingLabel,
+        Reason.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [int64]$Low,
+        [int64]$High,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $issuedText = $Low.ToString('N0', $inv)
+    $ceilingText = $High.ToString('N0', $inv)
+    $out = [pscustomobject]@{ Status = $script:Status.NotAssessed; State = ''; PercentUsed = ''; Ceiling = $High; CeilingLabel = ''; Reason = '' }
+    $knownList = (@($Config['KnownCeilings'] | ForEach-Object { ([int64]$_['Value']).ToString('N0', $inv) }) -join ' and ')
+    if ($High -le 0) {
+        $out.State = 'NoCeiling'
+        $out.Reason = ("No ceiling: the upper part of rIDAvailablePool, the size of the global RID space, is {0}, so no share of it can be computed. Lower part (RIDs issued): {1}." -f $ceilingText, $issuedText)
+        return $out
+    }
+    $known = @($Config['KnownCeilings'] | Where-Object { [int64]$_['Value'] -eq $High })
+    if ($known.Count -eq 0) {
+        $out.State = 'UnknownCeiling'
+        $out.Reason = ("Unknown ceiling: the upper part of rIDAvailablePool is {0}, which is neither of the sizes Microsoft documents for the global RID space ({1}), so no percentage is computed against a guessed ceiling. Lower part (RIDs issued): {2}." -f $ceilingText, $knownList, $issuedText)
+        return $out
+    }
+    if ($Low -gt $High) {
+        $out.State = 'Inconsistent'
+        $out.Reason = ("Inconsistent: the lower part of rIDAvailablePool ({0}, RIDs issued) is above its upper part ({1}, the size of the global RID space), so the value is not judged." -f $issuedText, $ceilingText)
+        return $out
+    }
+    $warn = [int64]$Config['WarnAtPercentUsed']
+    $fail = [int64]$Config['FailAtPercentUsed']
+    $out.CeilingLabel = [string]$known[0]['Label']
+    # Truncated, not rounded, from exact decimal arithmetic: a count graded below a whole-number
+    # point must never show that point (rounding 9.99999999 gives '10' on a row graded below 10).
+    $exactPercent = ([decimal]$Low * [decimal]100) / [decimal]$High
+    $out.PercentUsed = ([decimal]::Truncate($exactPercent * [decimal]10000) / [decimal]10000).ToString('0.####', $inv)
+    $scaled = $Low * 100
+    if ($scaled -ge ($High * $fail)) {
+        $out.Status = $script:Status.Fail
+        $out.State = 'PastFail'
+        $verdict = ("At or past the Fail point of {0} % used. Microsoft documents that the RID master stops issuing RID pools (event 16657) when it allocates the pool that reaches 90 % of the global RID space, and that once that block is lifted there is no further ceiling before the space runs out." -f $fail)
+    }
+    elseif ($scaled -ge ($High * $warn)) {
+        $out.Status = $script:Status.Warning
+        $out.State = 'PastWarning'
+        $verdict = ("At or past the Warning point of {0} % used. Microsoft logs event 16658 at the first 10 % of the global RID space used and calls reaching it not expected." -f $warn)
+    }
+    else {
+        $out.Status = $script:Status.Pass
+        $out.State = 'Below'
+        $verdict = ("Below the Warning point of {0} % used." -f $warn)
+    }
+    $out.Reason = ("{0} of {1} RIDs issued ({2} % used). {3} The size of the space is the upper part of rIDAvailablePool as read: {4}. Thresholds: Warning at {5} % used, Fail at {6} % used - {7}." -f `
+            $issuedText, $ceilingText, $out.PercentUsed, $verdict, [string]$known[0]['Note'], $warn, $fail, [string]$Config['ThresholdSource'])
+    return $out
+}
+
+function Get-AdfaRidManagerRaw {
+    <#
+    .SYNOPSIS
+        The domain half of C6: the RID master and the two attributes of CN=RID Manager$ of one
+        domain. Read-only directory reads. Never throws.
+    .DESCRIPTION
+        Three reads:
+          Get-ADDomain -Identity <domain>   DistinguishedName and RIDMaster. With the caller's AD
+                                            parameters unchanged, as the Laps section reads it.
+          Get-ADObject -Identity CN=RID Manager$,CN=System,<domain DN> -Properties rIDAvailablePool
+          Get-ADObject (the same object) -Properties msDS-RIDPoolAllocationEnabled
+        The two Get-ADObject calls carry -Server set to the domain. The allocation attribute is
+        read on its own, so that a schema without it - where the module refuses the property list
+        - leaves the global space read intact. Nothing here writes: no Set-ADObject, no -Replace,
+        and neither msDS-RIDPoolAllocationEnabled nor SidCompatibilityVersion is ever modified.
+        An attribute that is not set is not in the answer; that is reported as not returned.
+    .OUTPUTS
+        [pscustomobject] Ok (CN=RID Manager$ was read), Stage (Domain | RidManager where it
+        failed), Error, ErrorType, Server, DomainDn, RidMaster, ObjectDn, AvailablePoolReturned,
+        AvailablePool, AllocationRead, AllocationError, AllocationErrorType, AllocationReturned,
+        AllocationValue.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $out = [pscustomobject]@{
+        Ok = $false; Stage = ''; Error = ''; ErrorType = ''; Server = $DomainName; DomainDn = ''; RidMaster = ''; ObjectDn = ''
+        AvailablePoolReturned = $false; AvailablePool = $null
+        AllocationRead = $false; AllocationError = ''; AllocationErrorType = ''; AllocationReturned = $false; AllocationValue = $null
+    }
+    $poolName = [string]$Config['AvailablePoolAttribute']
+    $allocationName = [string]$Config['AllocationAttribute']
+    try {
+        $domainArgs = @{} + $AdParams
+        $domainArgs.Identity = $DomainName
+        $domainArgs.ErrorAction = 'Stop'
+        $domain = Get-ADDomain @domainArgs
+        if ($null -ne $domain) {
+            $dnProp = $domain.PSObject.Properties['DistinguishedName']
+            if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $out.DomainDn = ([string]$dnProp.Value).Trim() }
+            $masterProp = $domain.PSObject.Properties['RIDMaster']
+            if ($null -ne $masterProp -and $null -ne $masterProp.Value) { $out.RidMaster = ([string]$masterProp.Value).Trim() }
+        }
+        if ($out.DomainDn -eq '') { throw 'Get-ADDomain returned no DistinguishedName, so CN=RID Manager$ could not be located.' }
+    }
+    catch {
+        $out.Stage = 'Domain'
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+        return $out
+    }
+    $out.ObjectDn = ("{0},{1}" -f [string]$Config['RidManagerRdn'], $out.DomainDn)
+    try {
+        $poolArgs = @{} + $AdParams
+        $poolArgs.Server = $DomainName
+        $poolArgs.Identity = $out.ObjectDn
+        $poolArgs.Properties = @([string]$Config['AvailablePoolAttribute'])
+        $poolArgs.ErrorAction = 'Stop'
+        $manager = Get-ADObject @poolArgs
+        if ($null -eq $manager) { throw ("Get-ADObject returned nothing for {0}." -f $out.ObjectDn) }
+        $poolProp = $manager.PSObject.Properties[$poolName]
+        if ($null -ne $poolProp -and $null -ne $poolProp.Value) {
+            $out.AvailablePoolReturned = $true
+            $out.AvailablePool = $poolProp.Value
+        }
+        $out.Ok = $true
+    }
+    catch {
+        $out.Stage = 'RidManager'
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+        return $out
+    }
+    try {
+        $allocationArgs = @{} + $AdParams
+        $allocationArgs.Server = $DomainName
+        $allocationArgs.Identity = $out.ObjectDn
+        $allocationArgs.Properties = @([string]$Config['AllocationAttribute'])
+        $allocationArgs.ErrorAction = 'Stop'
+        $answer = Get-ADObject @allocationArgs
+        if ($null -eq $answer) { throw ("Get-ADObject returned nothing for {0}." -f $out.ObjectDn) }
+        $allocationProp = $answer.PSObject.Properties[$allocationName]
+        if ($null -ne $allocationProp -and $null -ne $allocationProp.Value) {
+            $out.AllocationReturned = $true
+            $out.AllocationValue = $allocationProp.Value
+        }
+        $out.AllocationRead = $true
+    }
+    catch {
+        $out.AllocationError = [string]$_.Exception.Message
+        $out.AllocationErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function Get-AdfaRidDomainFinding {
+    <#
+    .SYNOPSIS
+        Pure: the two rows of one domain - "RID pool allocation: <domain>" (ADA-RID-001) and
+        "Global RID space: <domain>" (ADA-RID-002) - from what Get-AdfaRidManagerRaw returned.
+    .DESCRIPTION
+        A failed read of the domain or of CN=RID Manager$ makes both rows Not Assessed, worded by
+        Get-AdfaLapsReadFailureLead (Unreachable / Access denied / Timed out / Read failed). After
+        that the two halves are independent: a failed allocation read leaves the space graded, and
+        a pool that was not returned or not an integer leaves the allocation graded. The RID
+        master's name, the object's DN and the raw values go in their own columns.
+    .OUTPUTS
+        [pscustomobject[]] Two rows: allocation, then global space.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [AllowNull()]$Raw,
+        [AllowNull()]$Schema,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $allocationItem = ("RID pool allocation: {0}" -f $Domain)
+    $spaceItem = ("Global RID space: {0}" -f $Domain)
+    $notRun = 'Not read: SidCompatibilityVersion, which holds whether the 31st bit of the global RID space is unlocked and which Microsoft says cannot be read with ADSIEdit, LDP or other tools; the Directory-Services-SAM events 16653 to 16658 in the System log of each domain controller; and dcdiag /test:RidManager, which this section does not run (the DC Diagnostics section does).'
+    $allocationEvidence = ("Directory: {0} on CN=RID Manager`$" -f [string]$Config['AllocationAttribute'])
+    $spaceEvidence = ("Directory: {0} on CN=RID Manager`$" -f [string]$Config['AvailablePoolAttribute'])
+    if ($null -eq $Raw) {
+        $defect = 'Not assessed: the directory read returned nothing. This is a defect in the tool, not a result.'
+        return @(
+            (New-AdfaRidPoolRow -Scope $Domain -Item $allocationItem -Status $script:Status.NotAssessed -Detail $defect -NotRun $notRun -Evidence 'none')
+            (New-AdfaRidPoolRow -Scope $Domain -Item $spaceItem -Status $script:Status.NotAssessed -Detail $defect -NotRun $notRun -Evidence 'none')
+        )
+    }
+    $ridMaster = [string]$Raw.RidMaster
+    $objectDn = [string]$Raw.ObjectDn
+    if (-not [bool]$Raw.Ok) {
+        $what = ("CN=RID Manager`$,CN=System of {0}" -f $Domain)
+        if ([string]$Raw.Stage -eq 'Domain') { $what = ("the domain object of {0} (Get-ADDomain), which locates CN=RID Manager`$," -f $Domain) }
+        $lead = Get-AdfaLapsReadFailureLead -Message ([string]$Raw.Error) -TypeName ([string]$Raw.ErrorType) -What $what
+        $detail = ("{0} This is not a clean result." -f $lead)
+        return @(
+            (New-AdfaRidPoolRow -Scope $Domain -Item $allocationItem -Status $script:Status.NotAssessed -Detail $detail -NotRun $notRun -Evidence 'none' -RidMaster $ridMaster -ObjectDn $objectDn)
+            (New-AdfaRidPoolRow -Scope $Domain -Item $spaceItem -Status $script:Status.NotAssessed -Detail $detail -NotRun $notRun -Evidence 'none' -RidMaster $ridMaster -ObjectDn $objectDn)
+        )
+    }
+
+    # Allocation (ADA-RID-001).
+    $inSchema = 'Unknown'
+    $schemaDetail = 'The forest schema was not read.'
+    if ($null -ne $Schema) {
+        $inSchema = [string]$Schema.InSchema
+        $schemaDetail = [string]$Schema.Detail
+    }
+    $allocation = Get-AdfaRidAllocationVerdict -Raw $Raw -InSchema $inSchema
+    $allocationDetail = [string]$allocation.Reason
+    if ([string]$allocation.State -eq 'ReadFailed') {
+        $lead = Get-AdfaLapsReadFailureLead -Message ([string]$Raw.AllocationError) -TypeName ([string]$Raw.AllocationErrorType) -What ("the {0} attribute of CN=RID Manager`$ of {1}" -f [string]$Config['AllocationAttribute'], $Domain)
+        $allocationDetail = ("{0} {1}" -f $lead, $schemaDetail)
+    }
+    elseif (@('NotSetUnconfirmed', 'NotInSchema') -contains [string]$allocation.State) {
+        $allocationDetail = ("{0} {1}" -f $allocationDetail, $schemaDetail)
+    }
+    $allocationRaw = ''
+    if ([bool]$Raw.AllocationReturned -and $null -ne $Raw.AllocationValue) { $allocationRaw = [string]$Raw.AllocationValue }
+    $rows = @(New-AdfaRidPoolRow -Scope $Domain -Item $allocationItem -Status ([string]$allocation.Status) -Detail $allocationDetail -NotRun $notRun `
+            -Evidence $allocationEvidence -RidMaster $ridMaster -ObjectDn $objectDn -RawValue $allocationRaw)
+
+    # Global space (ADA-RID-002).
+    if (-not [bool]$Raw.AvailablePoolReturned) {
+        $rows += New-AdfaRidPoolRow -Scope $Domain -Item $spaceItem -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $spaceEvidence -RidMaster $ridMaster -ObjectDn $objectDn `
+            -Detail ("Not returned: {0} was not returned for CN=RID Manager`$ of {1}. An unset attribute and one this account cannot read look the same from here, so the global RID space was not judged." -f [string]$Config['AvailablePoolAttribute'], $Domain)
+        return @($rows)
+    }
+    $decoded = ConvertFrom-AdfaLargeInteger -Value $Raw.AvailablePool
+    if (-not [bool]$decoded.Read) {
+        $rows += New-AdfaRidPoolRow -Scope $Domain -Item $spaceItem -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $spaceEvidence -RidMaster $ridMaster -ObjectDn $objectDn `
+            -RawValue ([string]$decoded.Raw) -Detail ("Unreadable value: {0} of {1} could not be read as a 64-bit integer ({2}), so the global RID space was not judged." -f [string]$Config['AvailablePoolAttribute'], $Domain, [string]$decoded.Error)
+        return @($rows)
+    }
+    $space = Get-AdfaRidSpaceVerdict -Low ([int64]$decoded.Low) -High ([int64]$decoded.High) -Config $Config
+    $rows += New-AdfaRidPoolRow -Scope $Domain -Item $spaceItem -Status ([string]$space.Status) -Detail ([string]$space.Reason) -NotRun $notRun -Evidence $spaceEvidence `
+        -RidMaster $ridMaster -Ceiling ([int64]$decoded.High) -CeilingSource ([string]$space.CeilingLabel) -Issued ([int64]$decoded.Low) -PercentUsed ([string]$space.PercentUsed) `
+        -ObjectDn $objectDn -RawValue ([string]$decoded.Raw)
+    return @($rows)
+}
+
+function ConvertTo-AdfaRidSetRecord {
+    <#
+    .SYNOPSIS
+        Pure: a RID Set object as a small record - its DN and the four RID attributes, each the raw
+        value or $null when it was not returned.
+    .OUTPUTS
+        [pscustomobject] Dn, FromSearch, PreviousAllocationPool, AllocationPool, NextRid, UsedPool,
+        Returned (the attribute names that came back with a value), or $null for no object.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$Object,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [bool]$FromSearch = $false
+    )
+    if ($null -eq $Object) { return $null }
+    $dn = ''
+    $dnProp = $Object.PSObject.Properties['DistinguishedName']
+    if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $dn = ([string]$dnProp.Value).Trim() }
+    # Config.RidSetAttributes is in this order: the current pool, the prefetched pool, the next
+    # RID, the used pools. The record's fields follow it.
+    $fields = @('PreviousAllocationPool', 'AllocationPool', 'NextRid', 'UsedPool')
+    $names = @($Config['RidSetAttributes'] | ForEach-Object { [string]$_ })
+    $record = [pscustomobject]@{ Dn = $dn; FromSearch = $FromSearch; PreviousAllocationPool = $null; AllocationPool = $null; NextRid = $null; UsedPool = $null; Returned = @() }
+    $returned = @()
+    for ($i = 0; $i -lt $fields.Count -and $i -lt $names.Count; $i++) {
+        $prop = $Object.PSObject.Properties[$names[$i]]
+        if ($null -eq $prop -or $null -eq $prop.Value) { continue }
+        $value = $prop.Value
+        if ($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {
+            $items = @($value)
+            if ($items.Count -eq 0) { continue }
+            if ($items.Count -eq 1) { $value = $items[0] }
+        }
+        $record.($fields[$i]) = $value
+        $returned += $names[$i]
+    }
+    $record.Returned = @($returned)
+    return $record
+}
+
+function Get-AdfaDcRidSetRaw {
+    <#
+    .SYNOPSIS
+        The per-DC half of C6: one domain controller's RID Set object, reached from its computer
+        object. Read-only directory reads. Never throws.
+    .DESCRIPTION
+        1. Get-ADComputer -LDAPFilter (&(objectClass=computer)(dNSHostName=<host>)) -Properties
+           rIDSetReferences, against -Server: the DC's domain where the caller knows it, otherwise
+           the DC itself. No object, or more than one, ends the read; the caller says which.
+        2. rIDSetReferences is multi-valued in the schema. More than one value ends the read: the
+           caller reports them all and picks none. One value is read with Get-ADObject -Identity
+           and the four RID attributes.
+        3. A SECOND INSTRUMENT before "absent" is ever said: a one-level search for objectClass
+           rIDSet under the computer object, run when rIDSetReferences has no value, or when the
+           reference could not be read with an error that is not a refusal, an unreachable server
+           or a time-out (the module's exception for an object that does not exist is not
+           published, so every other error is treated as "may not exist"). A refused or
+           unreachable read says nothing about existence, and the search is not run.
+    .OUTPUTS
+        [pscustomobject] Ok (the computer query succeeded), Stage, Error, ErrorType, Server,
+        ObjectCount, ComputerDn, References, ReferenceRead (NotTried | Ok | Failed),
+        ReferenceError, ReferenceErrorType, SearchRun, SearchOk, SearchError, SearchErrorType,
+        SearchCount, RidSet (ConvertTo-AdfaRidSetRecord, or $null).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$HostName,
+        [AllowEmptyString()][string]$Server = '',
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $target = $Server
+    if ([string]::IsNullOrWhiteSpace($target)) { $target = $HostName }
+    $out = [pscustomobject]@{
+        Ok = $false; Stage = ''; Error = ''; ErrorType = ''; Server = $target; ObjectCount = 0; ComputerDn = ''; References = @()
+        ReferenceRead = 'NotTried'; ReferenceError = ''; ReferenceErrorType = ''
+        SearchRun = $false; SearchOk = $false; SearchError = ''; SearchErrorType = ''; SearchCount = 0; RidSet = $null
+    }
+    $setProperties = @($Config['RidSetAttributes'] | ForEach-Object { [string]$_ })
+    $referenceName = [string]$Config['ReferenceAttribute']
+    $objects = @()
+    try {
+        $computerArgs = @{} + $AdParams
+        $computerArgs.Server = $target
+        $computerArgs.LDAPFilter = ('(&(objectClass=computer)(dNSHostName={0}))' -f (ConvertTo-AdfaLdapFilterValue -Value $HostName))
+        $computerArgs.Properties = @([string]$Config['ReferenceAttribute'])
+        $computerArgs.ErrorAction = 'Stop'
+        $objects = @(Get-ADComputer @computerArgs | Where-Object { $null -ne $_ })
+    }
+    catch {
+        $out.Stage = 'Computer'
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+        return $out
+    }
+    $out.Ok = $true
+    $out.ObjectCount = $objects.Count
+    if ($objects.Count -ne 1) { return $out }
+    $computer = $objects[0]
+    $dnProp = $computer.PSObject.Properties['DistinguishedName']
+    if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $out.ComputerDn = ([string]$dnProp.Value).Trim() }
+    $references = @()
+    $referenceProp = $computer.PSObject.Properties[$referenceName]
+    if ($null -ne $referenceProp -and $null -ne $referenceProp.Value) {
+        if ($referenceProp.Value -is [string]) { $references = @($referenceProp.Value) }
+        else { $references = @($referenceProp.Value | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim() }) }
+    }
+    $out.References = @($references)
+    if ($references.Count -gt 1) { return $out }
+
+    $searchNeeded = $true
+    if ($references.Count -eq 1) {
+        try {
+            $setArgs = @{} + $AdParams
+            $setArgs.Server = $target
+            $setArgs.Identity = [string]$references[0]
+            $setArgs.Properties = $setProperties
+            $setArgs.ErrorAction = 'Stop'
+            $set = Get-ADObject @setArgs
+            if ($null -eq $set) { throw ("Get-ADObject returned nothing for {0}." -f [string]$references[0]) }
+            $out.RidSet = ConvertTo-AdfaRidSetRecord -Object $set -Config $Config
+            $out.ReferenceRead = 'Ok'
+            $searchNeeded = $false
+        }
+        catch {
+            $out.ReferenceRead = 'Failed'
+            $out.ReferenceError = [string]$_.Exception.Message
+            $out.ReferenceErrorType = [string]$_.Exception.GetType().FullName
+            if ((Get-AdfaDirectoryReadErrorClass -Message $out.ReferenceError -TypeName $out.ReferenceErrorType) -ne 'Error') { $searchNeeded = $false }
+        }
+    }
+    if (-not $searchNeeded) { return $out }
+    $out.SearchRun = $true
+    if ($out.ComputerDn -eq '') {
+        $out.SearchError = 'The computer object came back without a DistinguishedName, so there was nothing to search under.'
+        return $out
+    }
+    try {
+        $searchArgs = @{} + $AdParams
+        $searchArgs.Server = $target
+        $searchArgs.SearchBase = $out.ComputerDn
+        $searchArgs.SearchScope = 'OneLevel'
+        $searchArgs.LDAPFilter = ('(objectClass={0})' -f [string]$Config['RidSetClass'])
+        $searchArgs.Properties = $setProperties
+        $searchArgs.ErrorAction = 'Stop'
+        $found = @(Get-ADObject @searchArgs | Where-Object { $null -ne $_ })
+        $out.SearchOk = $true
+        $out.SearchCount = $found.Count
+        if ($found.Count -eq 1) { $out.RidSet = ConvertTo-AdfaRidSetRecord -Object $found[0] -Config $Config -FromSearch $true }
+    }
+    catch {
+        $out.SearchError = [string]$_.Exception.Message
+        $out.SearchErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function Get-AdfaDcRidPoolFinding {
+    <#
+    .SYNOPSIS
+        Pure: the one "RID pool: <dc>" row of a domain controller (catalogue ADA-INV-004), from what
+        Get-AdfaDcRidSetRaw returned.
+    .DESCRIPTION
+        INVENTORY: Info when the current pool and the next RID were read and are consistent, with
+        the pool bounds, the next RID, the RIDs remaining in the pool and the prefetched pool in
+        their own columns. No threshold is applied, because Microsoft publishes none for a DC's own
+        pool. Everything else is Not Assessed, each with its own lead:
+          Unreachable / Access denied / Timed out / Read failed   a read that threw
+          Not found / Ambiguous                                   0 or more than 1 computer
+                                                                  objects, or RID Set objects
+          Multiple references                                    rIDSetReferences holds more than
+                                                                  one value; none is chosen
+          RID Set object absent                                   the reference is empty or does
+                                                                  not resolve AND the one-level
+                                                                  search found none - a known DC
+                                                                  defect (RID pool leak, KB 2618669)
+                                                                  except on a read-only DC, for
+                                                                  which Learn publishes nothing
+          RID Set empty / Unreadable value / Inconsistent         the values themselves
+        Microsoft documents the halves of rIDPreviousAllocationPool (start low, end high); that
+        rIDAllocationPool has the same layout is an inference, and "remaining" (end - next + 1) is
+        this tool's derivation. Both are said in the row.
+    .OUTPUTS
+        [pscustomobject] One row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainController,
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()]$Raw,
+        [bool]$IsReadOnly = $false,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("RID pool: {0}" -f $DomainController)
+    $notRun = 'Not read: the RID Block Size registry value of this DC and the Directory-Services-SAM events in its System log. rIDUsedPool is read but not interpreted: Microsoft does not describe its halves.'
+    $evidence = ("Directory: {0} and the RID Set object" -f [string]$Config['ReferenceAttribute'])
+    if ($null -eq $Raw) {
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence 'none' `
+                -Detail 'Not assessed: the directory read returned nothing. This is a defect in the tool, not a result.')
+    }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $server = [string]$Raw.Server
+    $from = ("Read from {0}." -f $server)
+    if ([string]::IsNullOrWhiteSpace($Scope)) { $from = ("Read from {0}, the DC itself, because this DC came from an enumeration that does not say which domain it belongs to." -f $server) }
+    if (-not [bool]$Raw.Ok) {
+        $lead = Get-AdfaLapsReadFailureLead -Message ([string]$Raw.Error) -TypeName ([string]$Raw.ErrorType) -What ("the computer object of {0}" -f $DomainController)
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -Detail ("{0} {1}" -f $lead, $from))
+    }
+    $count = [int]$Raw.ObjectCount
+    if ($count -eq 0) {
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Not found: no computer object with dNSHostName {0} was returned, so its RID Set was not read. {1}" -f $DomainController, $from))
+    }
+    if ($count -gt 1) {
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                -Detail ("Ambiguous: {0} computer objects carry dNSHostName {1}, and which of them is the DC cannot be told, so no RID Set was read. {2}" -f $count, $DomainController, $from))
+    }
+    $computerDn = [string]$Raw.ComputerDn
+    $references = @($Raw.References | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+    if ($references.Count -gt 1) {
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -ObjectDn ($references -join '; ') `
+                -Detail ("Multiple references: rIDSetReferences of {0} holds {1} values. Microsoft documents one RID Set per domain controller, so none of them was chosen and no pool is reported; the values are in the ObjectDn column. {2}" -f $DomainController, $references.Count, $from))
+    }
+    $referenceText = ("rIDSetReferences of {0} has no value visible to this account" -f $DomainController)
+    if ($references.Count -eq 1) {
+        $referenceText = ("rIDSetReferences of {0} names {1}" -f $DomainController, [string]$references[0])
+        if ([string]$Raw.ReferenceRead -eq 'Failed') {
+            $class = Get-AdfaDirectoryReadErrorClass -Message ([string]$Raw.ReferenceError) -TypeName ([string]$Raw.ReferenceErrorType)
+            if ($class -ne 'Error') {
+                $lead = Get-AdfaLapsReadFailureLead -Message ([string]$Raw.ReferenceError) -TypeName ([string]$Raw.ReferenceErrorType) -What ("the RID Set object {0} named by rIDSetReferences of {1}" -f [string]$references[0], $DomainController)
+                return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -ObjectDn ([string]$references[0]) -Detail ("{0} {1}" -f $lead, $from))
+            }
+            $referenceText = ("{0}, which could not be read - {1}" -f $referenceText, ([string]$Raw.ReferenceError).Trim())
+        }
+    }
+    if ([bool]$Raw.SearchRun -and -not [bool]$Raw.SearchOk) {
+        $lead = Get-AdfaLapsReadFailureLead -Message ([string]$Raw.SearchError) -TypeName ([string]$Raw.SearchErrorType) -What ("the one-level search for a RID Set object under the computer object of {0}" -f $DomainController)
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -ObjectDn $computerDn `
+                -Detail ("{0} That search was the second instrument, after {1}; with it unread, whether this DC has a RID Set is not concluded. {2}" -f $lead, $referenceText, $from))
+    }
+    $set = $Raw.RidSet
+    if ($null -eq $set) {
+        if (-not [bool]$Raw.SearchRun) {
+            return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence `
+                    -Detail ("Not assessed: no RID Set was read for {0}, for a reason this tool did not classify. This is a defect in the tool, not a result. {1}" -f $DomainController, $from))
+        }
+        if ([int]$Raw.SearchCount -gt 1) {
+            return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -ObjectDn $computerDn `
+                    -Detail ("Ambiguous: {0}, and a one-level search under its computer object found {1} RID Set objects. Microsoft documents one per domain controller, so none was chosen. {2}" -f $referenceText, [int]$Raw.SearchCount, $from))
+        }
+        $meaning = ' Microsoft documents one RID Set per domain controller, and names a missing rIDSetReferences as the cause of a known RID pool leak (fixed for Windows Server 2008 R2 by KB 2618669).'
+        if ($IsReadOnly) { $meaning = ' This DC is read-only. The Microsoft pages read for this check do not say whether a read-only domain controller has a RID Set, so this is not called a defect.' }
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -ObjectDn $computerDn `
+                -Detail ("RID Set object absent: {0}, and a one-level search under its computer object found no {1} object.{2} A RID Set this account cannot read would also look absent; the default security descriptor of the RID-Set class grants Authenticated Users read access. {3}" -f $referenceText, [string]$Config['RidSetClass'], $meaning, $from))
+    }
+
+    $setDn = [string]$set.Dn
+    $names = @($Config['RidSetAttributes'] | ForEach-Object { [string]$_ })
+    $missing = @()
+    if ($null -eq $set.PreviousAllocationPool) { $missing += $names[0] }
+    if ($null -eq $set.NextRid) { $missing += $names[2] }
+    if ($missing.Count -gt 0) {
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -ObjectDn $setDn `
+                -Detail ("RID Set empty: {0} not returned for {1}. Microsoft lists the four RID attributes as mandatory on the RID-Set class; an unset attribute and one this account cannot read look the same from here, so no pool is reported. {2}" -f ($missing -join ' and '), $setDn, $from))
+    }
+    $current = ConvertFrom-AdfaLargeInteger -Value $set.PreviousAllocationPool
+    $next = ConvertFrom-AdfaLargeInteger -Value $set.NextRid
+    # rIDNextRID is a 4-byte value: an Int32 above 0x7FFFFFFF arrives negative, and its low half
+    # is the RID. A wider value with a non-zero high half is not a 4-byte value.
+    $nextFits = ([bool]$next.Read -and ([int64]$next.High -eq 0 -or $set.NextRid -is [int32]))
+    if (-not [bool]$current.Read -or -not $nextFits) {
+        $why = [string]$current.Error
+        if ([bool]$current.Read) { $why = ("rIDNextRID '{0}' is not a 32-bit integer" -f [string]$next.Raw) }
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -ObjectDn $setDn -RawValue ([string]$current.Raw) `
+                -Detail ("Unreadable value: the RID Set {0} could not be read as numbers ({1}), so no pool is reported. {2}" -f $setDn, $why, $from))
+    }
+    $start = [int64]$current.Low
+    $end = [int64]$current.High
+    $nextRid = [int64]$next.Low
+    if ($start -eq 0 -and $end -eq 0) {
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -ObjectDn $setDn -RawValue ([string]$current.Raw) `
+                -Detail ("RID Set empty: rIDPreviousAllocationPool of {0} is 0, so it holds no current pool. {1}" -f $setDn, $from))
+    }
+    if ($end -lt $start) {
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -ObjectDn $setDn -RawValue ([string]$current.Raw) `
+                -Detail ("Inconsistent: the current pool in rIDPreviousAllocationPool of {0} ends ({1}) before it starts ({2}), read as Microsoft documents (start in the lower four bytes, end in the upper), so no pool is reported. {3}" -f $setDn, $end.ToString($inv), $start.ToString($inv), $from))
+    }
+    if ($nextRid -lt $start -or $nextRid -gt $end) {
+        return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -NotRun $notRun -Evidence $evidence -ObjectDn $setDn -RawValue ([string]$current.Raw) `
+                -Detail ("Inconsistent: rIDNextRID of {0} ({1}) is outside the current pool {2}-{3}. Microsoft describes it as the next free RID in the current pool, so what remains is not computed. {4}" -f $setDn, $nextRid.ToString($inv), $start.ToString($inv), $end.ToString($inv), $from))
+    }
+    $remaining = $end - $nextRid + 1
+    $size = $end - $start + 1
+    $nextPoolStart = $null
+    $nextPoolEnd = $null
+    $nextPoolText = 'rIDAllocationPool, the prefetched next pool, was not returned.'
+    if ($null -ne $set.AllocationPool) {
+        $prefetched = ConvertFrom-AdfaLargeInteger -Value $set.AllocationPool
+        if ([bool]$prefetched.Read) {
+            $nextPoolStart = [int64]$prefetched.Low
+            $nextPoolEnd = [int64]$prefetched.High
+            $nextPoolText = ("Next pool (rIDAllocationPool, prefetched): {0}-{1}; its halves are read as for the current pool, which is an inference - Microsoft states the layout for rIDPreviousAllocationPool only." -f $nextPoolStart.ToString($inv), $nextPoolEnd.ToString($inv))
+        }
+        else { $nextPoolText = ("rIDAllocationPool, the prefetched next pool, could not be read as a number ({0})." -f [string]$prefetched.Error) }
+    }
+    $foundNote = ''
+    if ([bool]$set.FromSearch) {
+        $foundNote = (" The RID Set was found by a one-level search under the computer object, not through rIDSetReferences: {0}." -f $referenceText)
+    }
+    $detail = ("Current pool (rIDPreviousAllocationPool): {0}-{1}, {2} RIDs. Next RID (rIDNextRID): {3}. Remaining in this pool: {4} - a tool derivation (end - next + 1); Microsoft does not state whether the end of a pool is inclusive. {5}{6} Inventory only: Microsoft publishes no threshold for a domain controller's own pool. {7}" -f `
+            $start.ToString($inv), $end.ToString($inv), $size.ToString($inv), $nextRid.ToString($inv), $remaining.ToString($inv), $nextPoolText, $foundNote, $from)
+    return (New-AdfaRidPoolRow -Scope $Scope -Item $item -Status $script:Status.Info -NotRun $notRun -Evidence $evidence -Detail $detail -ObjectDn $setDn -RawValue ([string]$current.Raw) `
+            -PoolStart $start -PoolEnd $end -NextRid $nextRid -RemainingInPool $remaining -NextPoolStart $nextPoolStart -NextPoolEnd $nextPoolEnd)
+}
+
+function Get-AdfaRidPool {
+    <#
+    .SYNOPSIS
+        RID pool health: per scoped domain whether RID pool allocation is enabled and how much of
+        the global RID space has been issued, and per domain controller its current and next RID
+        pool. Directory reads only.
+    .DESCRIPTION
+        Three seams, each read-only and none of which throws:
+          Get-AdfaLapsSchemaRaw    once, for whether the schema defines msDS-RIDPoolAllocationEnabled
+          Get-AdfaRidManagerRaw    once per scoped domain: Get-ADDomain and CN=RID Manager$
+          Get-AdfaDcRidSetRaw      once per DC: its computer object and its RID Set
+        No dcdiag test is run - Microsoft does not state whether /test:RidManager requests a pool
+        - and SidCompatibilityVersion is not read (Microsoft: it cannot be read with ADSIEdit, LDP
+        or other tools).
+
+        DECLARED POPULATIONS. Domains: the names in -ScopedDomains; each gets exactly two rows,
+        "RID pool allocation: <domain>" and "Global RID space: <domain>", or, with none scoped,
+        one "RID pool (no domain scoped)" row. DCs: each scoped domain ends up in the section as
+        the Scope of at least one "RID pool: <dc>" row or as its own "RID pool - <domain>" Not
+        Assessed row, and every DC target gets exactly one row. An exception while one domain or
+        one DC is handled makes its rows Not Assessed and never ends the section.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [hashtable]$AdParams = @{},
+        # Domains whose DC enumeration threw: objects with Domain and Error.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        # Why no DC could be enumerated at all, where the caller knows.
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        # The domains this run was scoped to: the declared population of the section.
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+    )
+    $rows = @()
+    $domains = New-Object System.Collections.ArrayList
+    foreach ($name in @($ScopedDomains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if (@($domains | Where-Object { $_ -eq $name.Trim() }).Count -eq 0) { [void]$domains.Add($name.Trim()) }
+    }
+    if ($domains.Count -eq 0) {
+        $rows += New-AdfaRidPoolRow -Item 'RID pool (no domain scoped)' -Status $script:Status.NotAssessed -Evidence 'none' `
+            -Detail 'No domain was scoped for this run, so no CN=RID Manager$ was read. This is not a clean result.'
+    }
+    else {
+        $schemaRaw = Get-AdfaLapsSchemaRaw -AdParams $AdParams -AttributeNames @([string]$Config['AvailablePoolAttribute'], [string]$Config['AllocationAttribute'])
+        $schema = Get-AdfaRidSchemaState -Raw $schemaRaw -Config $Config
+        foreach ($domain in $domains) {
+            try {
+                $raw = Get-AdfaRidManagerRaw -DomainName $domain -AdParams $AdParams -Config $Config
+                $rows += @(Get-AdfaRidDomainFinding -Domain $domain -Raw $raw -Schema $schema -Config $Config)
+            }
+            catch {
+                # A defect in this tool, not in the directory. Fail closed for this domain only.
+                $why = ("Not assessed: handling the RID Manager of {0} failed inside this tool, so nothing about this domain is graded; this is a defect in the tool, not a result. Error: {1}" -f $domain, [string]$_.Exception.Message)
+                $rows += New-AdfaRidPoolRow -Scope $domain -Item ("RID pool allocation: {0}" -f $domain) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why
+                $rows += New-AdfaRidPoolRow -Scope $domain -Item ("Global RID space: {0}" -f $domain) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why
+            }
+        }
+    }
+
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains @($domains))) {
+        $rows += New-AdfaRidPoolRow -Scope ([string]$gap.Domain) -Item ("RID pool - {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Evidence 'none' -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No RID Set of its domain controllers was read.')
+    }
+    if ($targets.Count -eq 0) {
+        $why = ''
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = (" Domain controller enumeration failed: {0}." -f $EnumerationError.Trim().TrimEnd('.')) }
+        $rows += New-AdfaRidPoolRow -Item 'RID pools' -Status $script:Status.NotAssessed -Evidence 'none' `
+            -Detail ("No domain controllers were enumerated, so no domain controller's RID pool was read.{0} This is not a clean result." -f $why)
+        return @($rows)
+    }
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        $readOnly = $false
+        if ($target -isnot [string]) {
+            $readOnlyProp = $target.PSObject.Properties['IsReadOnly']
+            if ($null -ne $readOnlyProp -and $readOnlyProp.Value -is [bool]) { $readOnly = [bool]$readOnlyProp.Value }
+        }
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-AdfaRidPoolRow -Scope $scope -Item 'RID pool: (unnamed)' -Status $script:Status.NotAssessed -Evidence 'none' `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to look up and no RID Set was read.'
+            continue
+        }
+        try {
+            $raw = Get-AdfaDcRidSetRaw -HostName $dc -Server $scope -AdParams $AdParams -Config $Config
+            $rows += Get-AdfaDcRidPoolFinding -DomainController $dc -Scope $scope -Raw $raw -IsReadOnly $readOnly -Config $Config
+        }
+        catch {
+            $rows += New-AdfaRidPoolRow -Scope $scope -Item ("RID pool: {0}" -f $dc) -Status $script:Status.NotAssessed -Evidence 'none' `
+                -Detail ("Not assessed: handling the RID Set of {0} failed inside this tool, so nothing about this DC is reported; this is a defect in the tool, not a result. Error: {1}" -f $dc, [string]$_.Exception.Message)
+        }
+    }
+    return @($rows)
+}
+
+function Merge-AdfaRidPoolConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in RID pool table, with validation. The RidPool
+        validator for -ConfigOverridePath.
+    .DESCRIPTION
+        What a file can change: WarnAtPercentUsed and FailAtPercentUsed, the shares of the global
+        RID space issued at which a domain is a Warning and a Fail:
+
+            { "RidPool": { "WarnAtPercentUsed": 10, "FailAtPercentUsed": 90 } }
+
+        What it cannot: the known ceilings, the location of CN=RID Manager$, the attribute and
+        class names, and the sources. Every such key is refused as unknown, so a file cannot make
+        the tool read another attribute or grade against a ceiling it did not read.
+
+        Refused with the reason: an override that is not one object, an empty object, an unknown
+        key, a null, a value that is not a JSON number, a number that is not a whole number from 1
+        to 99. The MERGED table is then checked as a whole: FailAtPercentUsed must be above
+        WarnAtPercentUsed, so a file that names only one of them is refused when that crosses the
+        built-in other.
+
+        Provenance follows the keys: ThresholdSource is rewritten to name the override's source for
+        exactly the keys it supplied.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) {
+        throw ("RID pool config override must be a single object with named keys (for example {{ ""WarnAtPercentUsed"": 10 }}), not a {0}." -f $Override.GetType().Name)
+    }
+    if ($table.Count -eq 0) {
+        throw 'RID pool config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    $known = @('WarnAtPercentUsed', 'FailAtPercentUsed')
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $supplied = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("RID pool config override names an unknown key '{0}'. Known keys: {1}. The ceilings, the location of CN=RID Manager`$, the attribute names and the sources cannot be set from a file." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        if ($supplied -contains $name) { throw ("RID pool config override names '{0}' more than once." -f $name) }
+        $value = $table[$k]
+        if ($null -eq $value) {
+            throw ("RID pool config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name)
+        }
+        # A JSON number only: how a quoted string becomes a number depends on the host's culture.
+        if ($value -is [array] -or $numericTypes -notcontains $value.GetType()) {
+            throw ("RID pool config override sets '{0}' to a {1}. It must be a JSON number, written without quotes." -f $name, $value.GetType().Name)
+        }
+        $number = [double]$value
+        if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) {
+            throw ("RID pool config override sets '{0}' to a value that is not a finite number." -f $name)
+        }
+        if ($number -ne [math]::Floor($number) -or $number -lt 1 -or $number -gt 99) {
+            throw ("RID pool config override sets '{0}' to {1}. It must be a whole number from 1 to 99 (percent of the global RID space issued)." -f $name, $number.ToString('0.####', $inv))
+        }
+        $merged[$name] = [int]$number
+        $supplied += $name
+    }
+
+    # The table as a whole, built-in values included.
+    $warn = [int]$merged['WarnAtPercentUsed']
+    $fail = [int]$merged['FailAtPercentUsed']
+    if ($fail -le $warn) {
+        throw ("RID pool config: FailAtPercentUsed ({0}) must be above WarnAtPercentUsed ({1}) once the override is applied; otherwise the Warning could never be reported. Set both." -f $fail, $warn)
+    }
+
+    $from = 'an override whose source was not recorded'
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+    $fromOverride = @($known | Where-Object { $supplied -contains $_ })
+    $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+    $builtIn = @($known | Where-Object { $supplied -notcontains $_ })
+    if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
+    $merged['ThresholdSource'] = $text
+    return $merged
+}
+
+# ---------------------------------------------------------------------------
 # -ConfigOverridePath: one JSON file, one top-level key per section (PORT-PLAN C2)
 # ---------------------------------------------------------------------------
 # The sections whose built-in table that file can replace. A top-level key of the file is one of
@@ -9063,6 +10213,7 @@ $script:ConfigOverrideSections = [ordered]@{
     DcHardening    = @{ ConfigKey = 'DcHardening'; Section = 'DcHardening'; Merge = 'Merge-AdfaDcHardeningConfig' }
     Laps           = @{ ConfigKey = 'Laps'; Section = 'Laps'; Merge = 'Merge-AdfaLapsConfig' }
     DcCertificates = @{ ConfigKey = 'DcCertificates'; Section = 'DcCertificates'; Merge = 'Merge-AdfaDcCertificatesConfig' }
+    RidPool        = @{ ConfigKey = 'RidPool'; Section = 'RidPool'; Merge = 'Merge-AdfaRidPoolConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -13106,6 +14257,22 @@ $script:RecommendationMap = @(
        Text  = 'This certificate is published on the domain controller''s computer object (userCertificate), which records what a CA published and not what the DC holds today: Microsoft documents publication to AD DS as a separate operation from issuance. It is not necessarily a domain controller certificate: Microsoft''s default templates published to AD DS include ''Directory E-mail Replication'' as well as ''Domain Controller'', so check its purposes (the Ekus column) and the template it was issued from first. Confirm on the DC whether it still holds and uses this certificate. If it is a domain controller certificate that the DC still uses, request a new valid domain controller certificate; Microsoft describes that as simpler than renewing an expired one, and a third-party CA does not renew it automatically. If the DC already has a newer certificate, this published copy is a record only. The expiry windows this finding was judged against are this tool''s defaults or your own override, not Microsoft values.' }
     @{ Section = '(?i)^dc certificates'; Match = '.'
        Text  = '' }
+    # --- Section-scoped: RID pool (PORT-PLAN C6). Ahead of the unscoped entries: a RID pool row
+    #     can say "event 16658", "restored", "dcdiag" or carry a file path, and the unscoped
+    #     "event \d+ on", "backup", "dcdiag" and "aging" entries would otherwise answer it. Each
+    #     family is anchored on the Item prefix this tool writes; the catch-all gives every other
+    #     row of the section (per-DC inventory, population rows) no advice rather than wrong advice.
+    #     Source of every statement: Managing RID Issuance (causes of RID consumption, the ceiling
+    #     and event 16657, removing the block, the 31-bit unlock and its caveats, event 16658 "not
+    #     expected", RID Block Size limit 15,000)
+    #       https://learn.microsoft.com/windows-server/identity/ad-ds/manage/managing-rid-issuance
+    #     Read: 2026-11-16.
+    @{ Section = '(?i)^rid pool'; Match = '(?i)^RID Pool :: RID pool allocation: '
+       Text  = 'RID pool allocation is blocked in this domain. Microsoft documents that the RID master sets msDS-RIDPoolAllocationEnabled to FALSE on CN=RID Manager$,CN=System when it allocates the pool that reaches 90 % of the global RID space (event 16657 on the RID master), and that no domain controller then receives a new RID pool, so creating users, groups and computers stops once the pools already issued run out. Before re-enabling allocation, find out why RIDs were consumed and stop it: Microsoft lists provisioning software or scripts that bulk-created objects, many unused groups, domain controllers demoted, restored or metadata-cleaned repeatedly, forest recoveries, frequent InvalidateRidPool operations and an incorrectly raised RID Block Size. Microsoft''s procedure to remove the block is to set the attribute to TRUE on the RID master (LDP, Modify, Replace); at the next allocation it returns to NOT SET, and there is no further ceiling. Unlocking the 31st bit of the global RID space (SidCompatibilityVersion) is irreversible except by a forest recovery, is meant only together with the ceiling, and leaves Windows Server 2003 and 2008 domain controllers, and 2008 R2 ones without KB 2642658, unable to issue RIDs. This tool changes neither.' }
+    @{ Section = '(?i)^rid pool'; Match = '(?i)^RID Pool :: Global RID space: '
+       Text  = 'Find out why so much of the global RID space has been issued. Microsoft calls reaching the first event 16658 milestone (10 % used) not expected, and says to investigate the user, computer and group creation processes in the domain immediately. Check the System log of the domain controllers for Directory-Services-SAM events 16658, 16656 and 16657, and look for the causes Microsoft lists: provisioning software or scripts that bulk-created objects, many unused groups, domain controllers demoted, restored or metadata-cleaned repeatedly, forest recoveries, frequent InvalidateRidPool operations and an incorrectly raised RID Block Size (from Windows Server 2012 a value above 15,000 is treated as 15,000). At 90 % used the RID master stops issuing RID pools until an administrator lifts the block, and after that there is no further ceiling before the space runs out, which only a domain migration or a forest recovery resolves. Unlocking the 31st bit (SidCompatibilityVersion) doubles the space but is irreversible except by a forest recovery and is meant only for a domain that has reached the ceiling. The thresholds this finding was judged against are Microsoft''s published points or your own override.' }
+    @{ Section = '(?i)^rid pool'; Match = '.'
+       Text  = '' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
     # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
@@ -14049,6 +15216,36 @@ function Invoke-Main {
         $sectionData['DC Certificates'] = @(Get-AdfaDcCertificates -DomainControllers $dcCertificatesTargets -Config $dcCertificatesConfig -AdParams $adParams `
                 -PortTimeoutMs $script:Config.RpcPortTimeoutMs -Now (Get-Date) -IncludeHandshake ([bool]$IncludeLdapsHandshake) `
                 -InventoryFailures $dcCertificatesFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
+    }
+    if (Test-SectionSelected 'RidPool' $Sections) {
+        Write-Stage 'RID pool (allocation and global RID space per domain, the RID pool of each DC; directory reads only)'
+        # The table the file supplied where it supplied one, otherwise the built-in table. The
+        # file was validated before any section ran.
+        $ridPoolConfig = $script:Config.RidPool
+        if ($configOverrides.ContainsKey('RidPool')) { $ridPoolConfig = $configOverrides['RidPool'] }
+        # With the forest unreadable there is no domain to scope, and the section says so in one
+        # row instead of asking whatever the default server is, as the Laps section does.
+        if ($forestError) {
+            $sectionData['RID Pool'] = @(New-AdfaRidPoolRow -Item 'RID pool' -Status $script:Status.NotAssessed -Evidence 'none' `
+                    -Detail ("The forest could not be read ({0}), so no domain was scoped and neither CN=RID Manager`$ nor any RID Set was read. This is not a clean result." -f $forestError))
+        }
+        else {
+            # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcCertificates
+            # takes them: the DC inventory where the DomainControllers section ran; otherwise the
+            # section's own enumeration of each scoped domain.
+            $ridPoolTargets = @($allDcInventory)
+            $ridPoolFailures = @($dcInventoryFailures)
+            if (-not $dcInventoryCollected) {
+                $ridPoolEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+                $ridPoolTargets = @($ridPoolEnumeration.Targets)
+                $ridPoolFailures = @($ridPoolEnumeration.Failures)
+            }
+            # Last resort, when no scoped domain gave a single DC: the host names the fallback
+            # enumeration found. They carry no domain, and the section says so for each domain.
+            if ($ridPoolTargets.Count -eq 0) { $ridPoolTargets = @($dcNames) }
+            $sectionData['RID Pool'] = @(Get-AdfaRidPool -DomainControllers $ridPoolTargets -Config $ridPoolConfig -AdParams $adParams `
+                    -InventoryFailures $ridPoolFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
+        }
     }
     if (Test-SectionSelected 'Backup' $Sections) {
         Write-Stage 'Directory backup status (per DC)'

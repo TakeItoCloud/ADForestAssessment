@@ -5279,9 +5279,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcHardening' -and $n.Extent.Text -match '-DomainControllers \$dcNames' }, $true)).Count | Should -Be 0
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the four sections the file can carry (Laps since v1.21.0, PORT-PLAN C4;
+            # Declared population: the five sections the file can carry (RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
             # DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -7280,7 +7280,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         $script:C4PropertiesArgumentCount = 23
         # 7 since v1.22.0: PORT-PLAN C5 added $computerArgs.Properties = @('userCertificate') in
         # Get-AdfaDcCertificateDirectoryRaw.
-        $script:C4PropertiesAssignmentCount = 7
+        # 12 since v1.23.0: PORT-PLAN C6 added five splatted property lists, two in Get-AdfaRidManagerRaw and
+        # three in Get-AdfaDcRidSetRaw, each a fixed attribute name from the RidPool config table.
+        $script:C4PropertiesAssignmentCount = 12
         $script:C4SectionFunctionCount = 20
 
         function New-C4Schema {
@@ -7447,8 +7449,8 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaLaps' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the four sections the file can carry (DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates'
+            # Declared population: the five sections the file can carry (DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7500,9 +7502,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.22.0 (bumped by PORT-PLAN C5)' {
-            [string]$script:Config.Version | Should -Be '1.22.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.22.0'
+        It 'carries the same version in the script and the manifest: 1.23.0 (bumped by PORT-PLAN C6)' {
+            [string]$script:Config.Version | Should -Be '1.23.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.23.0'
         }
     }
 
@@ -9090,8 +9092,8 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             Get-C5Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the four sections the file can carry (DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates'
+            # Declared population: the five sections the file can carry (DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool'
             $entry = $script:ConfigOverrideSections['DcCertificates']
             [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
             [string]$entry['Section'] | Should -Be 'DcCertificates'
@@ -9172,9 +9174,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.22.0' {
-            [string]$script:Config.Version | Should -Be '1.22.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.22.0'
+        It 'carries the same version in the script and the manifest: 1.23.0 (bumped by PORT-PLAN C6)' {
+            [string]$script:Config.Version | Should -Be '1.23.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.23.0'
         }
     }
 
@@ -9929,6 +9931,993 @@ try {
             $findings[2].Recommendation | Should -Be ''
             $findings[3].Status | Should -Be 'Warning'
             $findings[3].Recommendation | Should -Match 'userCertificate'
+        }
+    }
+}
+
+Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6)' {
+    BeforeAll {
+        $script:Rp = $script:Config.RidPool
+        # Held in variables: PSAvoidUsingComputerNameHardcoded flags a literal -ComputerName.
+        $script:C6Dc1 = 'dc1.contoso.com'
+        $script:C6Dc2 = 'dc2.contoso.com'
+        $script:C6Dc3 = 'dc1.fabrikam.com'
+        $script:C6Ceil30 = [int64]1073741823
+        $script:C6Ceil31 = [int64]2147483647
+        # An Interval value from its two 32-bit halves. Only for a high half up to 0x7FFFFFFF,
+        # where the Int64 is not negative; the decode tests build the others from bytes.
+        function New-C6Interval { param([int64]$Low, [int64]$High) return ([int64]$High * [int64]4294967296) + [int64]$Low }
+        function New-C6FromBytes { param([uint32]$Low, [uint32]$High)
+            $bytes = [byte[]](@([BitConverter]::GetBytes($Low)) + @([BitConverter]::GetBytes($High)))
+            return [BitConverter]::ToInt64($bytes, 0) }
+        # The shape Get-AdfaRidManagerRaw returns.
+        function New-C6ManagerRaw {
+            param([bool]$Ok = $true, [string]$Stage = '', [string]$Err = '', [string]$Type = '', $Pool = (New-C6Interval -Low 2100 -High 1073741823), [bool]$PoolReturned = $true,
+                [bool]$AllocRead = $true, [bool]$AllocReturned = $false, $AllocValue = $null, [string]$AllocErr = '', [string]$AllocType = '', [string]$Server = 'contoso.com')
+            [pscustomobject]@{ Ok = $Ok; Stage = $Stage; Error = $Err; ErrorType = $Type; Server = $Server; DomainDn = 'DC=contoso,DC=com'; RidMaster = 'dc1.contoso.com'
+                ObjectDn = 'CN=RID Manager$,CN=System,DC=contoso,DC=com'; AvailablePoolReturned = $PoolReturned; AvailablePool = $Pool
+                AllocationRead = $AllocRead; AllocationError = $AllocErr; AllocationErrorType = $AllocType; AllocationReturned = $AllocReturned; AllocationValue = $AllocValue }
+        }
+        function New-C6Schema { param([string]$InSchema = 'Yes') [pscustomobject]@{ InSchema = $InSchema; Detail = ("schema stub: {0}" -f $InSchema) } }
+        # The record ConvertTo-AdfaRidSetRecord returns.
+        function New-C6Set {
+            param($Prev = (New-C6Interval -Low 2100 -High 2599), $Next = 2150, $Alloc = (New-C6Interval -Low 3100 -High 3599), $Used = (New-C6Interval -Low 1100 -High 1599),
+                [string]$Dn = 'CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com', [bool]$FromSearch = $false)
+            $returned = @()
+            if ($null -ne $Prev) { $returned += 'rIDPreviousAllocationPool' }
+            if ($null -ne $Alloc) { $returned += 'rIDAllocationPool' }
+            if ($null -ne $Next) { $returned += 'rIDNextRID' }
+            if ($null -ne $Used) { $returned += 'rIDUsedPool' }
+            [pscustomobject]@{ Dn = $Dn; FromSearch = $FromSearch; PreviousAllocationPool = $Prev; AllocationPool = $Alloc; NextRid = $Next; UsedPool = $Used; Returned = @($returned) }
+        }
+        # The shape Get-AdfaDcRidSetRaw returns.
+        function New-C6SetRaw {
+            param([bool]$Ok = $true, [string]$Stage = '', [string]$Err = '', [string]$Type = '', [int]$Objects = 1, [string[]]$Refs = @('CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'),
+                [string]$RefRead = 'Ok', [string]$RefErr = '', [string]$RefType = '', [bool]$SearchRun = $false, [bool]$SearchOk = $true, [string]$SearchErr = '', [string]$SearchType = '',
+                [int]$SearchCount = 0, $Set = (New-C6Set), [string]$Server = 'contoso.com')
+            [pscustomobject]@{ Ok = $Ok; Stage = $Stage; Error = $Err; ErrorType = $Type; Server = $Server; ObjectCount = $Objects; ComputerDn = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'
+                References = @($Refs); ReferenceRead = $RefRead; ReferenceError = $RefErr; ReferenceErrorType = $RefType; SearchRun = $SearchRun; SearchOk = $SearchOk
+                SearchError = $SearchErr; SearchErrorType = $SearchType; SearchCount = $SearchCount; RidSet = $Set }
+        }
+        function Get-C6Dc { param($Raw, [bool]$ReadOnly = $false, [string]$Dc = $script:C6Dc1, [string]$Scope = 'contoso.com')
+            Get-AdfaDcRidPoolFinding -DomainController $Dc -Scope $Scope -Raw $Raw -IsReadOnly $ReadOnly -Config $script:Rp }
+        function Get-C6Domain { param($Raw, [string]$InSchema = 'Yes', $Config = $script:Rp)
+            @(Get-AdfaRidDomainFinding -Domain 'contoso.com' -Raw $Raw -Schema (New-C6Schema -InSchema $InSchema) -Config $Config) }
+        function Get-C6Alloc { param($Raw, [string]$InSchema = 'Yes') Get-AdfaRidAllocationVerdict -Raw $Raw -InSchema $InSchema }
+        function Get-C6Space { param([int64]$Low, [int64]$High = 1073741823, $Config = $script:Rp) Get-AdfaRidSpaceVerdict -Low $Low -High $High -Config $Config }
+        $script:C6Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C6Main = @($script:C6Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C6Function {
+            param([string]$Name)
+            return @($script:C6Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true))
+        }
+        function Get-C6Parameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C6Guard {
+            param($Node)
+            $g = $Node.Parent
+            while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+            return $g.Clauses[0].Item1.Extent.Text
+        }
+        function Get-C6Branch {
+            return @($script:C6Main[0].FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $n.Clauses[0].Item1.Extent.Text -match "^Test-SectionSelected 'RidPool' \`$Sections$" }, $true))
+        }
+        # The functions of the section. Declared population: these 12, each found by name below.
+        $script:C6SectionNames = @('New-AdfaRidPoolRow', 'ConvertFrom-AdfaLargeInteger', 'Get-AdfaRidSchemaState', 'Get-AdfaRidAllocationVerdict', 'Get-AdfaRidSpaceVerdict',
+            'Get-AdfaRidManagerRaw', 'Get-AdfaRidDomainFinding', 'ConvertTo-AdfaRidSetRecord', 'Get-AdfaDcRidSetRaw', 'Get-AdfaDcRidPoolFinding', 'Get-AdfaRidPool', 'Merge-AdfaRidPoolConfig')
+        $c6Names = @($script:C6SectionNames)
+        $script:C6SectionFunctions = @($script:C6Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $c6Names -contains $n.Name }.GetNewClosure(), $true))
+        $script:C6Hostile = 'Threshold source: C:\Backup\replication\sysvol-dfsr\stale-aging.json. event 16658 on dc1 dcdiag /test:RidManager restored from backup generation id change usn rollback pdc emulator global catalog port 389 not reachable does not resolve NOT a pass krbtgt time sync'
+    }
+
+    Context 'Section wiring' {
+        It 'is a value of the -Sections ValidateSet and part of the default All run' {
+            $param = @($script:C6Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $param.Count | Should -Be 1
+            $set = @($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+            $values = @($set[0].PositionalArguments | ForEach-Object { $_.Value })
+            $values | Should -Contain 'RidPool'
+            $values | Should -Contain 'DcCertificates'   # non-vacuity: the list really was read
+            @($values | Where-Object { $_ -match '(?i)rid' }).Count | Should -Be 1
+            Test-SectionSelected 'RidPool' @('All') | Should -BeTrue
+            Test-SectionSelected 'RidPool' @('Fsmo') | Should -BeFalse
+        }
+        It 'has one branch in Invoke-Main that calls the collector with the targets, the config and the scoped domains' {
+            $script:C6Main.Count | Should -Be 1
+            $branches = @(Get-C6Branch)
+            # Declared population: the one branch for this section.
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $calls = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaRidPool' }, $true))
+            $calls.Count | Should -Be 1
+            $expected = [ordered]@{
+                DomainControllers = '$ridPoolTargets'
+                Config            = '$ridPoolConfig'
+                AdParams          = '$adParams'
+                InventoryFailures = '$ridPoolFailures'
+                EnumerationError  = '$script:DcEnumerationError'
+                ScopedDomains     = '$targetDomains'
+            }
+            # Declared population: the six parameters the collector is called with.
+            @($expected.Keys).Count | Should -Be 6
+            foreach ($p in @($expected.Keys)) {
+                $given = Get-C6Parameter -Call $calls[0] -Name $p
+                $given | Should -Not -BeNullOrEmpty -Because "the collector must be given -$p"
+                $given.Extent.Text | Should -Be $expected[$p] -Because "-$p must carry that value"
+            }
+            $assign = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['RID Pool']" }, $true))
+            # Declared population: the forest-unreadable row and the collector's rows.
+            $assign.Count | Should -Be 2
+            Get-C6Guard $assign[0] | Should -Be '$forestError'
+            $assign[0].Right.Extent.Text | Should -Not -Match 'Get-AdfaRidPool '
+            $configAssigns = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$ridPoolConfig' }, $true))
+            $configAssigns.Count | Should -Be 2
+            $configAssigns[0].Right.Extent.Text | Should -Be '$script:Config.RidPool'
+            $configAssigns[1].Right.Extent.Text | Should -Be "`$configOverrides['RidPool']"
+            Get-C6Guard $configAssigns[1] | Should -Be "`$configOverrides.ContainsKey('RidPool')"
+            # Nowhere else in the script is the collector called.
+            @($script:C6Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaRidPool' }, $true)).Count | Should -Be 1
+        }
+        It 'takes its DCs per scoped domain: the DC inventory, then its own enumeration, and the unscoped fallback only last' {
+            $branches = @(Get-C6Branch)
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $targets = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$ridPoolTargets' }, $true))
+            # Declared population: the inventory, the section's own enumeration, the fallback - in that order.
+            $targets.Count | Should -Be 3
+            $targets[0].Right.Extent.Text | Should -Be '@($allDcInventory)'
+            $targets[1].Right.Extent.Text | Should -Be '@($ridPoolEnumeration.Targets)'
+            Get-C6Guard $targets[1] | Should -Be '-not $dcInventoryCollected'
+            $targets[2].Right.Extent.Text | Should -Be '@($dcNames)'
+            Get-C6Guard $targets[2] | Should -Be '$ridPoolTargets.Count -eq 0'
+            $failures = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$ridPoolFailures' }, $true))
+            $failures.Count | Should -Be 2
+            $failures[0].Right.Extent.Text | Should -Be '@($dcInventoryFailures)'
+            $failures[1].Right.Extent.Text | Should -Be '@($ridPoolEnumeration.Failures)'
+            $own = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcTargetsByDomain' }, $true))
+            $own.Count | Should -Be 1
+            (Get-C6Parameter -Call $own[0] -Name 'Domains').Extent.Text | Should -Be '$targetDomains'
+            Get-C6Guard $own[0] | Should -Be '-not $dcInventoryCollected'
+        }
+        It 'is registered for -ConfigOverridePath with its own validator' {
+            # Declared population: the five sections the file can carry (RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool'
+            $entry = $script:ConfigOverrideSections['RidPool']
+            [string]$entry['ConfigKey'] | Should -Be 'RidPool'
+            [string]$entry['Section'] | Should -Be 'RidPool'
+            [string]$entry['Merge'] | Should -Be 'Merge-AdfaRidPoolConfig'
+            Get-Command -Name 'Merge-AdfaRidPoolConfig' -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+            $script:Config.ContainsKey('RidPool') | Should -BeTrue
+        }
+        It 'reads through its seams only, with three named AD cmdlets, and calls nothing that writes' {
+            # Declared population: the section's functions, every one found.
+            $script:C6SectionFunctions.Count | Should -Be $script:C6SectionNames.Count
+            $collector = @(Get-C6Function -Name 'Get-AdfaRidPool')
+            $collector.Count | Should -Be 1
+            $inside = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            foreach ($seam in @('Get-AdfaLapsSchemaRaw', 'Get-AdfaRidManagerRaw', 'Get-AdfaDcRidSetRaw')) {
+                @($inside | Where-Object { $_ -eq $seam }).Count | Should -Be 1 -Because "the collector calls $seam once"
+            }
+            foreach ($banned in @('Get-ADComputer', 'Get-ADObject', 'Get-ADDomain', 'Get-ADRootDSE', 'Test-TcpPort', 'New-CimSession', 'Invoke-CimMethod', 'Get-CimInstance', 'Invoke-Command')) {
+                $inside | Should -Not -Contain $banned -Because "the collector must not call $banned itself"
+            }
+            $adCalls = @()
+            foreach ($f in $script:C6SectionFunctions) {
+                $names = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+                @($names | Where-Object { $_ -match '(?i)^(Set|New|Remove|Add|Clear|Move|Rename|Enable|Disable|Reset|Update|Invoke|Import|Export|Start|Stop|Restore|Sync)-(AD(?!fa)|Cim|Item|WmiObject)' }).Count | Should -Be 0 -Because "$($f.Name) must not call a state-changing cmdlet"
+                @($names | Where-Object { $_ -match '(?i)^(dcdiag|repadmin|ldp|ldifde|ntdsutil|dsmod)(\.exe)?$|^Invoke-Expression$|^Invoke-ExternalCommand$' }).Count | Should -Be 0 -Because "$($f.Name) must not run an external tool"
+                # No ADSI write path: no Put, SetInfo or CommitChanges, and no DirectoryEntry at all.
+                $members = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] }, $true) | ForEach-Object { [string]$_.Member.Extent.Text })
+                @($members | Where-Object { $_ -match '(?i)^(Put|PutEx|SetInfo|CommitChanges|InvokeSet|Invoke)$' }).Count | Should -Be 0 -Because "$($f.Name) must not write through ADSI"
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.TypeExpressionAst] -or $n -is [System.Management.Automation.Language.TypeConstraintAst] }, $true) | Where-Object { $_.Extent.Text -match '(?i)DirectoryEntry|DirectorySearcher' }).Count | Should -Be 0
+                # No parameter of a write: -Replace, -Add, -Remove, -Clear, -Instance.
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -match '(?i)^(Replace|Add|Remove|Clear|Instance)$' }, $true)).Count | Should -Be 0 -Because "$($f.Name) must not pass a write parameter"
+                $adCalls += @($names | Where-Object { $_ -match '(?i)^Get-AD(?!fa)' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
+            }
+            # Declared population: the six directory reads of the section, in its two seams.
+            ($adCalls -join ',') | Should -Be 'Get-AdfaRidManagerRaw:Get-ADDomain,Get-AdfaRidManagerRaw:Get-ADObject,Get-AdfaRidManagerRaw:Get-ADObject,Get-AdfaDcRidSetRaw:Get-ADComputer,Get-AdfaDcRidSetRaw:Get-ADObject,Get-AdfaDcRidSetRaw:Get-ADObject'
+        }
+        It 'asks for named attributes only, from the config table, and never for SidCompatibilityVersion' {
+            $assigned = @()
+            foreach ($f in $script:C6SectionFunctions) {
+                $assigned += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Left.Member.Extent.Text -eq 'Properties' }, $true) | ForEach-Object { [string]$_.Right.Extent.Text })
+            }
+            # Declared population: the five property lists of the section's directory reads.
+            $assigned.Count | Should -Be 5
+            ($assigned -join ' | ') | Should -Be "@([string]`$Config['AvailablePoolAttribute']) | @([string]`$Config['AllocationAttribute']) | @([string]`$Config['ReferenceAttribute']) | `$setProperties | `$setProperties"
+            foreach ($f in $script:C6SectionFunctions) {
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -eq 'Properties' }, $true)).Count | Should -Be 0 -Because "$($f.Name) passes its property list by splat"
+            }
+            # The attribute names are data, and none of them is the unlock attribute or a wildcard.
+            $names = @($script:Rp['AvailablePoolAttribute'], $script:Rp['AllocationAttribute'], $script:Rp['ReferenceAttribute']) + @($script:Rp['RidSetAttributes'])
+            $names.Count | Should -Be 7
+            ($names -join ',') | Should -Be 'rIDAvailablePool,msDS-RIDPoolAllocationEnabled,rIDSetReferences,rIDPreviousAllocationPool,rIDAllocationPool,rIDNextRID,rIDUsedPool'
+            @($names | Where-Object { $_ -match '(?i)SidCompatibilityVersion|\*' }).Count | Should -Be 0
+        }
+        It 'documents the section and its override keys in the help' {
+            $help = $script:C6Ast.GetHelpContent()
+            $help | Should -Not -BeNullOrEmpty
+            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'RidPool'
+            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'rIDAvailablePool'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'RidPool'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnAtPercentUsed'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Five sections can be named'
+        }
+        It 'has one row in the README Coverage table, and the README says what the row cannot see' {
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($readme | Where-Object { $_ -match '^\| \*\*RID pool\*\* \|' })
+            $row.Count | Should -Be 1
+            $row[0] | Should -Match '-Sections RidPool'
+            $row[0] | Should -Match 'rIDAvailablePool'
+            $row[0] | Should -Match 'SidCompatibilityVersion'
+            @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
+        }
+        It 'carries the same version in the script and the manifest: 1.23.0' {
+            [string]$script:Config.Version | Should -Be '1.23.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.23.0'
+        }
+    }
+
+    Context 'Config table' {
+        It 'holds Microsoft''s published warning points, the two ceilings, and the read date' {
+            [int]$script:Rp['WarnAtPercentUsed'] | Should -Be 10
+            [int]$script:Rp['FailAtPercentUsed'] | Should -Be 90
+            [string]$script:Rp['ThresholdSource'] | Should -Match '^Microsoft: '
+            [string]$script:Rp['ThresholdSource'] | Should -Match '16658'
+            [string]$script:Rp['ThresholdSource'] | Should -Match '16657'
+            [string]$script:Rp['ReadDate'] | Should -Be '2026-11-16'
+            [string]$script:Rp['SourceUrl'] | Should -Match 'managing-rid-issuance'
+            [string]$script:Rp['SourceUrl'] | Should -Match 'ad-forest-recovery-raise-rid-pool'
+            [string]$script:Rp['RidManagerRdn'] | Should -Be 'CN=RID Manager$,CN=System'
+            # Declared population: the default 30-bit space and the unlocked 31-bit space.
+            $ceilings = @($script:Rp['KnownCeilings'])
+            $ceilings.Count | Should -Be 2
+            [int64]$ceilings[0]['Value'] | Should -Be $script:C6Ceil30
+            [int64]$ceilings[1]['Value'] | Should -Be $script:C6Ceil31
+            [string]$ceilings[1]['Label'] | Should -Match 'inferred'
+        }
+    }
+
+    Context 'ConvertFrom-AdfaLargeInteger (pure; the same answer on Windows PowerShell 5.1)' {
+        It 'splits a value into its unsigned low and high halves at every edge' {
+            $cases = @(
+                @{ Name = 'zero'; Value = [int64]0; Low = 0; High = 0 }
+                @{ Name = 'Learn sample'; Value = [int64]4611686014132422708; Low = 2100; High = 1073741823 }
+                @{ Name = 'Learn sample plus 100,000'; Value = [int64]4611686014132522708; Low = 102100; High = 1073741823 }
+                @{ Name = 'high 0x7FFFFFFF'; Value = (New-C6Interval -Low 5 -High 2147483647); Low = 5; High = 2147483647 }
+                @{ Name = 'Int64 max'; Value = [int64]::MaxValue; Low = 4294967295; High = 2147483647 }
+                @{ Name = 'Int64 min (high 0x80000000)'; Value = [int64]::MinValue; Low = 0; High = 2147483648 }
+                @{ Name = 'minus one (both halves 0xFFFFFFFF)'; Value = [int64]-1; Low = 4294967295; High = 4294967295 }
+                @{ Name = 'high 0xFFFFFFFE, low 7'; Value = (New-C6FromBytes -Low 7 -High 4294967294); Low = 7; High = 4294967294 }
+                @{ Name = '2^32'; Value = [int64]4294967296; Low = 0; High = 1 }
+                @{ Name = 'Int32'; Value = [int32]2100; Low = 2100; High = 0 }
+                @{ Name = 'UInt64 above Int64 max'; Value = [uint64]9223372036854775808; Low = 0; High = 2147483648 }
+                @{ Name = 'UInt64 max'; Value = [uint64]::MaxValue; Low = 4294967295; High = 4294967295 }
+                @{ Name = 'text'; Value = ' 4611686014132422708 '; Low = 2100; High = 1073741823 }
+                @{ Name = 'negative text'; Value = '-1'; Low = 4294967295; High = 4294967295 }
+                @{ Name = 'text above Int64 max'; Value = '18446744073709551615'; Low = 4294967295; High = 4294967295 }
+            )
+            # Declared population: fifteen values.
+            $cases.Count | Should -Be 15
+            foreach ($c in $cases) {
+                $r = ConvertFrom-AdfaLargeInteger -Value $c['Value']
+                $r.Read | Should -BeTrue -Because $c['Name']
+                $r.Low | Should -Be ([int64]$c['Low']) -Because $c['Name']
+                $r.High | Should -Be ([int64]$c['High']) -Because $c['Name']
+                ($r.Low -is [int64]) | Should -BeTrue -Because $c['Name']
+                ($r.High -is [int64]) | Should -BeTrue -Because $c['Name']
+            }
+        }
+        It 'refuses what is not an integer, and never throws' {
+            $bad = @($null, '', 'abc', '1.5', [double]1.5, @(1, 2), (Get-Date), '0x10', '18446744073709551616')
+            # Declared population: nine values that are not a 64-bit integer.
+            $bad.Count | Should -Be 9
+            foreach ($b in $bad) {
+                $r = ConvertFrom-AdfaLargeInteger -Value $b
+                $r.Read | Should -BeFalse -Because ("[{0}]" -f [string]$b)
+                $r.Error | Should -Not -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'Get-AdfaRidAllocationVerdict (pure)' {
+        It 'fails FALSE, passes TRUE, and is Not Assessed for everything else - a value not returned included' {
+            # A one-item collection, as the module may deliver a single value (an
+            # ADPropertyValueCollection is not available on the CI runner; an ArrayList has its shape).
+            $oneFalse = New-Object System.Collections.ArrayList
+            [void]$oneFalse.Add($false)
+            $oneTrueText = New-Object System.Collections.ArrayList
+            [void]$oneTrueText.Add('TRUE')
+            $cases = [ordered]@{
+                'FALSE as a boolean'                  = @{ Raw = (New-C6ManagerRaw -AllocReturned $true -AllocValue $false); In = 'Yes'; Status = 'Fail'; State = 'Disabled' }
+                'FALSE as text'                       = @{ Raw = (New-C6ManagerRaw -AllocReturned $true -AllocValue 'FALSE'); In = 'Yes'; Status = 'Fail'; State = 'Disabled' }
+                'FALSE in a one-item collection'      = @{ Raw = (New-C6ManagerRaw -AllocReturned $true -AllocValue $oneFalse); In = 'Yes'; Status = 'Fail'; State = 'Disabled' }
+                'TRUE in a one-item collection'       = @{ Raw = (New-C6ManagerRaw -AllocReturned $true -AllocValue $oneTrueText); In = 'Yes'; Status = 'Pass'; State = 'Enabled' }
+                'TRUE as a boolean'                   = @{ Raw = (New-C6ManagerRaw -AllocReturned $true -AllocValue $true); In = 'Yes'; Status = 'Pass'; State = 'Enabled' }
+                'true as text'                        = @{ Raw = (New-C6ManagerRaw -AllocReturned $true -AllocValue 'true'); In = 'Unknown'; Status = 'Pass'; State = 'Enabled' }
+                # Since the review of C6: an unset value and one the account may not read look the
+                # same, so this is Not Assessed, not Pass (PORT-PLAN C6d).
+                'not set, attribute in schema'        = @{ Raw = (New-C6ManagerRaw); In = 'Yes'; Status = 'Not Assessed'; State = 'NotSet' }
+                'not set, schema not read'            = @{ Raw = (New-C6ManagerRaw); In = 'Unknown'; Status = 'Not Assessed'; State = 'NotSetUnconfirmed' }
+                'not set, attribute not in schema'    = @{ Raw = (New-C6ManagerRaw); In = 'No'; Status = 'Not Assessed'; State = 'NotInSchema' }
+                'read refused, not in schema'         = @{ Raw = (New-C6ManagerRaw -AllocRead $false -AllocErr 'One or more properties are invalid.' -AllocType 'System.ArgumentException'); In = 'No'; Status = 'Not Assessed'; State = 'NotInSchema' }
+                'read failed, in schema'              = @{ Raw = (New-C6ManagerRaw -AllocRead $false -AllocErr 'STUB' -AllocType ''); In = 'Yes'; Status = 'Not Assessed'; State = 'ReadFailed' }
+                'a value that is not a boolean'       = @{ Raw = (New-C6ManagerRaw -AllocReturned $true -AllocValue 'maybe'); In = 'Yes'; Status = 'Not Assessed'; State = 'Unrecognised' }
+                'the RID Manager object not read'     = @{ Raw = (New-C6ManagerRaw -Ok $false -Stage 'RidManager' -Err 'x'); In = 'Yes'; Status = 'Not Assessed'; State = 'NotRead' }
+                'no raw read at all'                  = @{ Raw = $null; In = 'Yes'; Status = 'Not Assessed'; State = 'NotRead' }
+            }
+            # Declared population: fourteen inputs.
+            @($cases.Keys).Count | Should -Be 14
+            foreach ($k in @($cases.Keys)) {
+                $v = Get-C6Alloc -Raw $cases[$k]['Raw'] -InSchema $cases[$k]['In']
+                $v.Status | Should -Be $cases[$k]['Status'] -Because $k
+                $v.State | Should -Be $cases[$k]['State'] -Because $k
+                $v.Reason | Should -Not -BeNullOrEmpty -Because $k
+            }
+        }
+        It 'says what each state rests on' {
+            (Get-C6Alloc -Raw (New-C6ManagerRaw)).Reason | Should -Match 'NOT SET'
+            (Get-C6Alloc -Raw (New-C6ManagerRaw -AllocReturned $true -AllocValue $false)).Reason | Should -Match '16657'
+            (Get-C6Alloc -Raw (New-C6ManagerRaw) -InSchema 'No').Reason | Should -Match 'does not publish'
+            (Get-C6Alloc -Raw (New-C6ManagerRaw) -InSchema 'Unknown').Reason | Should -Match 'cannot be told apart'
+            (Get-C6Alloc -Raw (New-C6ManagerRaw)).Reason | Should -Match "^Not returned: .*cannot be told from 'not readable'"
+        }
+        It 'never passes an allocation attribute that was not returned, whatever the schema says' {
+            # A FALSE value the account is denied read on arrives exactly like an unset one: the
+            # read succeeds and the property is missing. Declared population: the three schema answers.
+            $answers = @('Yes', 'No', 'Unknown')
+            $answers.Count | Should -Be 3
+            foreach ($a in $answers) {
+                (Get-C6Alloc -Raw (New-C6ManagerRaw -AllocRead $true -AllocReturned $false) -InSchema $a).Status | Should -Be 'Not Assessed' -Because $a
+            }
+        }
+    }
+
+    Context 'Get-AdfaRidSchemaState (pure): Yes, No or Unknown from the schema answer' {
+        It 'says No only when the answer carried the control attribute, and Unknown for every answer that proves nothing' {
+            $control = [string]$script:Rp['AvailablePoolAttribute']
+            $attr = [string]$script:Rp['AllocationAttribute']
+            $cases = [ordered]@{
+                'both names returned'                 = @{ Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Names = @($control, $attr) }; Want = 'Yes'; Detail = 'defines msDS-RIDPoolAllocationEnabled\.$' }
+                'control only (an older schema)'      = @{ Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Names = @($control) }; Want = 'No'; Detail = 'does not define .*answer was complete' }
+                'control only, padded'                = @{ Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Names = @(" $control ", $null) }; Want = 'No'; Detail = 'does not define' }
+                'an empty answer'                     = @{ Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Names = @() }; Want = 'Unknown'; Detail = 'proves nothing' }
+                'the attribute without the control'   = @{ Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Names = @($attr) }; Want = 'Unknown'; Detail = 'proves nothing' }
+                'the query failed'                    = @{ Raw = [pscustomobject]@{ Ok = $false; Error = 'STUB: refused'; ErrorType = 'System.UnauthorizedAccessException'; Names = @() }; Want = 'Unknown'; Detail = 'could not be read.*STUB: refused.*UnauthorizedAccessException' }
+                'nothing returned'                    = @{ Raw = $null; Want = 'Unknown'; Detail = 'was not read' }
+            }
+            # Declared population: seven schema answers.
+            @($cases.Keys).Count | Should -Be 7
+            foreach ($k in @($cases.Keys)) {
+                $s = Get-AdfaRidSchemaState -Raw $cases[$k]['Raw'] -Config $script:Rp
+                $s.InSchema | Should -Be $cases[$k]['Want'] -Because $k
+                $s.Detail | Should -Match $cases[$k]['Detail'] -Because $k
+            }
+        }
+        It 'carries an older schema through to a Not Assessed allocation row, never a pass' {
+            $state = Get-AdfaRidSchemaState -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Names = @([string]$script:Rp['AvailablePoolAttribute']) }) -Config $script:Rp
+            $v = Get-C6Alloc -Raw (New-C6ManagerRaw) -InSchema $state.InSchema
+            $v.Status | Should -Be 'Not Assessed'
+            $v.State | Should -Be 'NotInSchema'
+        }
+    }
+
+    Context 'Get-AdfaRidSpaceVerdict (pure)' {
+        It 'warns from 10 % used and fails from 90 % used, by integer comparison, on both published ceilings' {
+            $cases = @(
+                @{ Low = 2100; High = $script:C6Ceil30; Status = 'Pass' }
+                @{ Low = 0; High = $script:C6Ceil30; Status = 'Pass' }
+                @{ Low = 107374182; High = $script:C6Ceil30; Status = 'Pass' }
+                @{ Low = 107374183; High = $script:C6Ceil30; Status = 'Warning' }
+                @{ Low = 966367640; High = $script:C6Ceil30; Status = 'Warning' }
+                @{ Low = 966367641; High = $script:C6Ceil30; Status = 'Fail' }
+                @{ Low = 1073741823; High = $script:C6Ceil30; Status = 'Fail' }
+                @{ Low = 214748364; High = $script:C6Ceil31; Status = 'Pass' }
+                @{ Low = 214748365; High = $script:C6Ceil31; Status = 'Warning' }
+                @{ Low = 1932735282; High = $script:C6Ceil31; Status = 'Warning' }
+                @{ Low = 1932735283; High = $script:C6Ceil31; Status = 'Fail' }
+            )
+            # Declared population: eleven points on the two scales.
+            $cases.Count | Should -Be 11
+            foreach ($c in $cases) {
+                $v = Get-C6Space -Low $c['Low'] -High $c['High']
+                $v.Status | Should -Be $c['Status'] -Because ("{0} of {1}" -f $c['Low'], $c['High'])
+                [int64]$v.Ceiling | Should -Be ([int64]$c['High'])
+            }
+        }
+        It 'treats exactly the Warning and the Fail point as reached (at or past, not past)' {
+            # The two documented sizes are odd and end in 3 and 7, so no whole count of RIDs is ever
+            # exactly 10 % or 90 % of them, and "at or past" cannot be told from "past" on them. A
+            # size divisible by ten, given to the pure function in a copy of the table, pins the rule.
+            $cfg = @{}
+            foreach ($k in @($script:Rp.Keys)) { $cfg[$k] = $script:Rp[$k] }
+            $cfg['KnownCeilings'] = @(@{ Value = [int64]1000000; Label = 'test size'; Note = 'a size used by this test only' })
+            # Declared population: either side of both points.
+            $points = [ordered]@{ '99999' = 'Pass'; '100000' = 'Warning'; '899999' = 'Warning'; '900000' = 'Fail' }
+            foreach ($p in @($points.Keys)) {
+                (Get-AdfaRidSpaceVerdict -Low ([int64]$p) -High 1000000 -Config $cfg).Status | Should -Be $points[$p] -Because ("{0} of 1,000,000" -f $p)
+            }
+        }
+        It 'never shows a percentage at a point the row is graded below: the figure is truncated, not rounded' {
+            # Microsoft's own boundary RIDs: 107,374,182 (event 16658, 30-bit), 966,367,640 and
+            # 1,932,735,282 (the ceiling's trigger points), and 214,748,364/365 on the 31-bit space.
+            $cases = @(
+                @{ Low = 107374182; High = $script:C6Ceil30; Status = 'Pass'; Pct = '9.9999' }
+                @{ Low = 107374183; High = $script:C6Ceil30; Status = 'Warning'; Pct = '10' }
+                @{ Low = 966367640; High = $script:C6Ceil30; Status = 'Warning'; Pct = '89.9999' }
+                @{ Low = 966367641; High = $script:C6Ceil30; Status = 'Fail'; Pct = '90' }
+                @{ Low = 214748364; High = $script:C6Ceil31; Status = 'Pass'; Pct = '9.9999' }
+                @{ Low = 214748365; High = $script:C6Ceil31; Status = 'Warning'; Pct = '10' }
+                @{ Low = 1932735282; High = $script:C6Ceil31; Status = 'Warning'; Pct = '89.9999' }
+                @{ Low = 1932735283; High = $script:C6Ceil31; Status = 'Fail'; Pct = '90' }
+                @{ Low = 1073741823; High = $script:C6Ceil30; Status = 'Fail'; Pct = '100' }
+            )
+            # Declared population: nine points either side of Microsoft's published marks.
+            $cases.Count | Should -Be 9
+            $inv = [System.Globalization.CultureInfo]::InvariantCulture
+            foreach ($c in $cases) {
+                $because = ("{0} of {1}" -f $c['Low'], $c['High'])
+                $v = Get-C6Space -Low $c['Low'] -High $c['High']
+                $v.Status | Should -Be $c['Status'] -Because $because
+                $v.PercentUsed | Should -Be $c['Pct'] -Because $because
+                $v.Reason | Should -Match ("\({0} % used\)" -f [regex]::Escape($c['Pct'])) -Because $because
+                # The figure shown agrees with the grade: below the Warning point only on a Pass,
+                # at or past the Fail point only on a Fail.
+                $shown = [decimal]::Parse($v.PercentUsed, $inv)
+                ($shown -ge [decimal]$script:Rp['WarnAtPercentUsed']) | Should -Be ($c['Status'] -ne 'Pass') -Because $because
+                ($shown -ge [decimal]$script:Rp['FailAtPercentUsed']) | Should -Be ($c['Status'] -eq 'Fail') -Because $because
+            }
+        }
+        It 'names the ceiling it read and labels the 31-bit reading an inference' {
+            $v30 = Get-C6Space -Low 2100
+            $v30.CeilingLabel | Should -Match '30-bit'
+            $v30.PercentUsed | Should -Be '0.0001'
+            $v30.Reason | Should -Match 'upper part of rIDAvailablePool'
+            $v30.Reason | Should -Match '^2,100 of 1,073,741,823 RIDs issued \(0\.0001 % used\)'
+            $v31 = Get-C6Space -Low 2100 -High $script:C6Ceil31
+            $v31.CeilingLabel | Should -Match '31-bit'
+            $v31.Reason | Should -Match 'inferred'
+            $v31.Reason | Should -Match 'SidCompatibilityVersion'
+            (Get-C6Space -Low 107374183).Reason | Should -Match 'Microsoft: '
+        }
+        It 'is Not Assessed, quoting the values, for a ceiling it does not know, a ceiling of 0 or more issued than the ceiling' {
+            foreach ($c in @(@{ Low = 2100; High = 500000000 }, @{ Low = 0; High = 0 }, @{ Low = 1073741824; High = 1073741823 }, @{ Low = 5; High = 4294967295 })) {
+                $v = Get-C6Space -Low $c['Low'] -High $c['High']
+                $v.Status | Should -Be 'Not Assessed' -Because ("{0} of {1}" -f $c['Low'], $c['High'])
+                $v.Reason | Should -Match ([regex]::Escape(([int64]$c['High']).ToString('N0', [System.Globalization.CultureInfo]::InvariantCulture)))
+                $v.PercentUsed | Should -Be ''
+            }
+        }
+        It 'uses the merged thresholds and names the override file' {
+            $m = Merge-AdfaRidPoolConfig -BaseConfig $script:Rp -Override @{ WarnAtPercentUsed = 5 } -OverrideSource 'C:\cfg\rid.json'
+            $v = Get-C6Space -Low 60000000 -Config $m
+            $v.Status | Should -Be 'Warning'
+            $v.Reason | Should -Match 'C:\\cfg\\rid\.json'
+            (Get-C6Space -Low 60000000).Status | Should -Be 'Pass'
+        }
+    }
+
+    Context 'Domain rows (pure): Get-AdfaRidDomainFinding' {
+        It 'gives one allocation row and one global space row, with the raw values in their own columns' {
+            $rows = Get-C6Domain -Raw (New-C6ManagerRaw)
+            # Declared population: the two rows of a domain.
+            $rows.Count | Should -Be 2
+            $rows[0].Item | Should -Be 'RID pool allocation: contoso.com'
+            # Not returned: Not Assessed since the review of C6, with no raw value to show.
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '^Not returned: '
+            $rows[0].RawValue | Should -Be ''
+            $rows[1].Item | Should -Be 'Global RID space: contoso.com'
+            $rows[1].Status | Should -Be 'Pass'
+            foreach ($r in $rows) {
+                $r.Scope | Should -Be 'contoso.com'
+                $r.Area | Should -Be 'RidPool'
+                $r.RidMaster | Should -Be 'dc1.contoso.com'
+                $r.ObjectDn | Should -Be 'CN=RID Manager$,CN=System,DC=contoso,DC=com'
+                $r.NotRun | Should -Match 'SidCompatibilityVersion'
+                $r.NotRun | Should -Match 'dcdiag'
+            }
+            $rows[1].Issued | Should -Be '2100'
+            $rows[1].Ceiling | Should -Be '1073741823'
+            $rows[1].PercentUsed | Should -Be '0.0001'
+            $rows[1].RawValue | Should -Be '4611686014132422708'
+            $rows[1].Detail | Should -Not -Match '4611686014132422708'
+        }
+        It 'puts the allocation attribute''s raw value in the allocation row''s RawValue column' {
+            $false1 = Get-C6Domain -Raw (New-C6ManagerRaw -AllocReturned $true -AllocValue $false)
+            $false1[0].Status | Should -Be 'Fail'
+            $false1[0].RawValue | Should -Be 'False'
+            $text = Get-C6Domain -Raw (New-C6ManagerRaw -AllocReturned $true -AllocValue 'FALSE')
+            $text[0].RawValue | Should -Be 'FALSE'
+            $odd = Get-C6Domain -Raw (New-C6ManagerRaw -AllocReturned $true -AllocValue 'maybe')
+            $odd[0].Status | Should -Be 'Not Assessed'
+            $odd[0].RawValue | Should -Be 'maybe'
+        }
+        It 'reports an unreachable directory, a refused read and a failed domain read as such, in both rows' {
+            $cases = [ordered]@{
+                Unreachable  = @{ Raw = (New-C6ManagerRaw -Ok $false -Stage 'RidManager' -Err 'Unable to contact the server.' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException'); Lead = '^Unreachable: ' }
+                AccessDenied = @{ Raw = (New-C6ManagerRaw -Ok $false -Stage 'RidManager' -Err 'Acesso negado.' -Type 'System.UnauthorizedAccessException'); Lead = '^Access denied: ' }
+                DomainRead   = @{ Raw = (New-C6ManagerRaw -Ok $false -Stage 'Domain' -Err 'STUB: no such domain' -Type ''); Lead = '^Read failed: ' }
+            }
+            foreach ($k in @($cases.Keys)) {
+                $rows = Get-C6Domain -Raw $cases[$k]['Raw']
+                $rows.Count | Should -Be 2 -Because $k
+                foreach ($r in $rows) {
+                    $r.Status | Should -Be 'Not Assessed' -Because $k
+                    $r.Detail | Should -Match $cases[$k]['Lead'] -Because $k
+                }
+            }
+            (Get-C6Domain -Raw $cases['DomainRead']['Raw'])[0].Detail | Should -Match 'the domain object of contoso\.com'
+            (Get-C6Domain -Raw $cases['AccessDenied']['Raw'])[0].Detail | Should -Match 'CN=RID Manager\$'
+        }
+        It 'grades each half on its own: a failed allocation read leaves the space graded, and a missing pool leaves the allocation graded' {
+            $mixed = Get-C6Domain -Raw (New-C6ManagerRaw -Pool (New-C6Interval -Low 120000000 -High 1073741823) -AllocRead $false -AllocErr 'STUB: refused' -AllocType 'System.UnauthorizedAccessException')
+            $mixed[0].Status | Should -Be 'Not Assessed'
+            $mixed[0].Detail | Should -Match '^Access denied: '
+            $mixed[1].Status | Should -Be 'Warning'
+            $other = Get-C6Domain -Raw (New-C6ManagerRaw -Pool $null -PoolReturned $false -AllocReturned $true -AllocValue $false)
+            $other[0].Status | Should -Be 'Fail'
+            $other[1].Status | Should -Be 'Not Assessed'
+            $other[1].Detail | Should -Match '^Not returned: '
+            $garbled = Get-C6Domain -Raw (New-C6ManagerRaw -Pool 'not a number')
+            $garbled[1].Status | Should -Be 'Not Assessed'
+            $garbled[1].Detail | Should -Match '^Unreadable value: '
+        }
+    }
+
+    Context 'Per-DC row (pure): Get-AdfaDcRidPoolFinding' {
+        It 'reports the current pool, the next RID, what remains and the prefetched pool, as Info' {
+            $r = Get-C6Dc -Raw (New-C6SetRaw)
+            $r.Item | Should -Be 'RID pool: dc1.contoso.com'
+            $r.Status | Should -Be 'Info'
+            $r.PoolStart | Should -Be '2100'
+            $r.PoolEnd | Should -Be '2599'
+            $r.NextRid | Should -Be '2150'
+            $r.RemainingInPool | Should -Be '450'
+            $r.NextPoolStart | Should -Be '3100'
+            $r.NextPoolEnd | Should -Be '3599'
+            $r.ObjectDn | Should -Be 'CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'
+            $r.Detail | Should -Match 'tool derivation'
+            $r.Detail | Should -Match 'inference'
+            # The edges of "remaining": the next RID is the last of the pool, or the first.
+            (Get-C6Dc -Raw (New-C6SetRaw -Set (New-C6Set -Next 2599))).RemainingInPool | Should -Be '1'
+            (Get-C6Dc -Raw (New-C6SetRaw -Set (New-C6Set -Next 2100))).RemainingInPool | Should -Be '500'
+        }
+        It 'calls a DC with no RID Set "RID Set object absent" only when the reference and the search both show none' {
+            $absent = Get-C6Dc -Raw (New-C6SetRaw -Refs @() -RefRead 'NotTried' -SearchRun $true -SearchCount 0 -Set $null)
+            $absent.Status | Should -Be 'Not Assessed'
+            $absent.Detail | Should -Match '^RID Set object absent: '
+            $absent.Detail | Should -Match 'KB 2618669'
+            $dangling = Get-C6Dc -Raw (New-C6SetRaw -RefRead 'Failed' -RefErr 'STUB: no such object' -RefType 'Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException' -SearchRun $true -SearchCount 0 -Set $null)
+            $dangling.Detail | Should -Match '^RID Set object absent: '
+            $dangling.Detail | Should -Match 'STUB: no such object'
+            $rodc = Get-C6Dc -Raw (New-C6SetRaw -Refs @() -RefRead 'NotTried' -SearchRun $true -SearchCount 0 -Set $null) -ReadOnly $true
+            $rodc.Status | Should -Be 'Not Assessed'
+            $rodc.Detail | Should -Match 'read-only'
+            $rodc.Detail | Should -Not -Match 'KB 2618669'
+            # The search failed: absence is not concluded.
+            $noSearch = Get-C6Dc -Raw (New-C6SetRaw -Refs @() -RefRead 'NotTried' -SearchRun $true -SearchOk $false -SearchErr 'Unable to contact the server.' -SearchType 'Microsoft.ActiveDirectory.Management.ADServerDownException' -Set $null)
+            $noSearch.Detail | Should -Match '^Unreachable: '
+            $noSearch.Detail | Should -Not -Match 'object absent'
+        }
+        It 'keeps access denied, unreachable, not found, ambiguous and several references apart' {
+            $cases = [ordered]@{
+                'computer read refused'   = @{ Raw = (New-C6SetRaw -Ok $false -Stage 'Computer' -Err 'Insufficient access rights to perform the operation' -Type '' -Set $null); Lead = '^Access denied: ' }
+                'computer unreachable'    = @{ Raw = (New-C6SetRaw -Ok $false -Stage 'Computer' -Err 'x' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException' -Set $null); Lead = '^Unreachable: ' }
+                'computer timed out'      = @{ Raw = (New-C6SetRaw -Ok $false -Stage 'Computer' -Err 'x' -Type 'System.TimeoutException' -Set $null); Lead = '^Timed out: ' }
+                'reference read refused'  = @{ Raw = (New-C6SetRaw -RefRead 'Failed' -RefErr 'Access is denied' -RefType 'System.UnauthorizedAccessException' -Set $null); Lead = '^Access denied: ' }
+                'no computer object'      = @{ Raw = (New-C6SetRaw -Objects 0 -Refs @() -RefRead 'NotTried' -Set $null); Lead = '^Not found: ' }
+                'two computer objects'    = @{ Raw = (New-C6SetRaw -Objects 2 -Refs @() -RefRead 'NotTried' -Set $null); Lead = '^Ambiguous: ' }
+                'two references'          = @{ Raw = (New-C6SetRaw -Refs @('CN=RID Set,CN=DC1,DC=contoso,DC=com', 'CN=RID Set2,CN=DC1,DC=contoso,DC=com') -RefRead 'NotTried' -Set $null); Lead = '^Multiple references: ' }
+                'two RID Sets found'      = @{ Raw = (New-C6SetRaw -Refs @() -RefRead 'NotTried' -SearchRun $true -SearchCount 2 -Set $null); Lead = '^Ambiguous: ' }
+                'pool not returned'       = @{ Raw = (New-C6SetRaw -Set (New-C6Set -Prev $null)); Lead = '^RID Set empty: ' }
+                'next RID not returned'   = @{ Raw = (New-C6SetRaw -Set (New-C6Set -Next $null)); Lead = '^RID Set empty: ' }
+                'next RID outside pool'   = @{ Raw = (New-C6SetRaw -Set (New-C6Set -Next 2600)); Lead = '^Inconsistent: rIDNextRID of .* \(2600\) is outside the current pool 2100-2599\.' }
+                # Its own cause, told apart from "next RID outside the pool", which would also fire
+                # here if the end-before-start check were removed.
+                'end before start'        = @{ Raw = (New-C6SetRaw -Set (New-C6Set -Prev (New-C6Interval -Low 2599 -High 2100))); Lead = '^Inconsistent: the current pool in rIDPreviousAllocationPool of .* ends \(2100\) before it starts \(2599\)' }
+                'all-zero pool'           = @{ Raw = (New-C6SetRaw -Set (New-C6Set -Prev ([int64]0) -Next 0)); Lead = '^RID Set empty: ' }
+                'pool not an integer'     = @{ Raw = (New-C6SetRaw -Set (New-C6Set -Prev 'garbage')); Lead = '^Unreadable value: ' }
+                'no raw read'             = @{ Raw = $null; Lead = '^Not assessed: ' }
+            }
+            # Declared population: fifteen ways a DC's pool is not reported.
+            @($cases.Keys).Count | Should -Be 15
+            foreach ($k in @($cases.Keys)) {
+                $r = Get-C6Dc -Raw $cases[$k]['Raw']
+                $r.Status | Should -Be 'Not Assessed' -Because $k
+                $r.Detail | Should -Match $cases[$k]['Lead'] -Because $k
+                $r.PoolStart | Should -Be '' -Because $k
+            }
+        }
+        It 'reads rIDNextRID as a 4-byte value: a negative Int32 is decoded, and anything wider is Unreadable value' {
+            # rIDNextRID is 4 bytes (Learn a-ridnextrid), so a value of 0x80000000 or more arrives as
+            # a negative Int32 and is its low half: -5 is 4,294,967,291, outside any pool here.
+            $negative = Get-C6Dc -Raw (New-C6SetRaw -Set (New-C6Set -Next ([int32]-5)))
+            $negative.Status | Should -Be 'Not Assessed'
+            $negative.Detail | Should -Match '^Inconsistent: rIDNextRID of .* \(4294967291\) is outside the current pool'
+            # A value with a non-zero high half is not a 4-byte value: high 1, low 2100 would
+            # otherwise be read as RID 2100, inside the pool.
+            $wide = Get-C6Dc -Raw (New-C6SetRaw -Set (New-C6Set -Next ([int64]4294969396)))
+            $wide.Status | Should -Be 'Not Assessed'
+            $wide.Detail | Should -Match "^Unreadable value: .*rIDNextRID '4294969396' is not a 32-bit integer"
+            $wide.NextRid | Should -Be ''
+            # Non-vacuity: the same low half on its own is read and lies in the pool.
+            (Get-C6Dc -Raw (New-C6SetRaw -Set (New-C6Set -Next ([int64]2100)))).NextRid | Should -Be '2100'
+        }
+        It 'reads the pool from a RID Set found by search, and says the reference did not lead to it' {
+            $r = Get-C6Dc -Raw (New-C6SetRaw -Refs @() -RefRead 'NotTried' -SearchRun $true -SearchCount 1 -Set (New-C6Set -FromSearch $true))
+            $r.Status | Should -Be 'Info'
+            $r.Detail | Should -Match 'rIDSetReferences'
+            $r.Detail | Should -Match 'found by a one-level search'
+        }
+    }
+
+    Context 'Get-AdfaRidManagerRaw (the domain seam)' {
+        BeforeEach { $script:C6Asked = @() }
+        It 'reads the domain, then the two attributes of CN=RID Manager$ in two reads against the domain' {
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $ErrorAction)
+                $script:C6Asked += ("Get-ADDomain|{0}" -f $Identity)
+                [pscustomobject]@{ DistinguishedName = 'DC=fabrikam,DC=com'; RIDMaster = 'dc1.fabrikam.com' } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, $ErrorAction)
+                $script:C6Asked += ("Get-ADObject|{0}|{1}|{2}" -f $Server, $Identity, ($Properties -join ','))
+                $o = [pscustomobject]@{ DistinguishedName = $Identity }
+                if ($Properties -contains 'rIDAvailablePool') { $o | Add-Member -NotePropertyName 'rIDAvailablePool' -NotePropertyValue ([int64]4611686014132422708) }
+                if ($Properties -contains 'msDS-RIDPoolAllocationEnabled') { $o | Add-Member -NotePropertyName 'msDS-RIDPoolAllocationEnabled' -NotePropertyValue $false }
+                $o }
+            $raw = Get-AdfaRidManagerRaw -DomainName 'fabrikam.com' -Config $script:Rp
+            ($script:C6Asked -join ' ; ') | Should -Be 'Get-ADDomain|fabrikam.com ; Get-ADObject|fabrikam.com|CN=RID Manager$,CN=System,DC=fabrikam,DC=com|rIDAvailablePool ; Get-ADObject|fabrikam.com|CN=RID Manager$,CN=System,DC=fabrikam,DC=com|msDS-RIDPoolAllocationEnabled'
+            $raw.Ok | Should -BeTrue
+            $raw.RidMaster | Should -Be 'dc1.fabrikam.com'
+            $raw.AvailablePoolReturned | Should -BeTrue
+            [int64]$raw.AvailablePool | Should -Be ([int64]4611686014132422708)
+            $raw.AllocationRead | Should -BeTrue
+            $raw.AllocationReturned | Should -BeTrue
+            $raw.AllocationValue | Should -BeFalse
+        }
+        It 'keeps the pool when the allocation read throws, and never throws itself' {
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; RIDMaster = 'dc1.contoso.com' } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, $ErrorAction)
+                if ($Properties -contains 'msDS-RIDPoolAllocationEnabled') { throw [System.ArgumentException]'One or more properties are invalid.' }
+                [pscustomobject]@{ DistinguishedName = $Identity; rIDAvailablePool = [int64]4611686014132422708 } }
+            $raw = Get-AdfaRidManagerRaw -DomainName 'contoso.com' -Config $script:Rp
+            $raw.Ok | Should -BeTrue
+            $raw.AvailablePoolReturned | Should -BeTrue
+            $raw.AllocationRead | Should -BeFalse
+            $raw.AllocationErrorType | Should -Be 'System.ArgumentException'
+            # An unset attribute: the property is not in the answer.
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, $ErrorAction) [pscustomobject]@{ DistinguishedName = $Identity } }
+            $unset = Get-AdfaRidManagerRaw -DomainName 'contoso.com' -Config $script:Rp
+            $unset.AllocationRead | Should -BeTrue
+            $unset.AllocationReturned | Should -BeFalse
+            $unset.AvailablePoolReturned | Should -BeFalse
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $ErrorAction) throw 'STUB: domain not found' }
+            $failed = Get-AdfaRidManagerRaw -DomainName 'contoso.com' -Config $script:Rp
+            $failed.Ok | Should -BeFalse
+            $failed.Stage | Should -Be 'Domain'
+            $failed.Error | Should -Match 'STUB: domain not found'
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; RIDMaster = 'dc1.contoso.com' } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, $ErrorAction) throw [System.UnauthorizedAccessException]'Access is denied.' }
+            $denied = Get-AdfaRidManagerRaw -DomainName 'contoso.com' -Config $script:Rp
+            $denied.Ok | Should -BeFalse
+            $denied.Stage | Should -Be 'RidManager'
+            $denied.ErrorType | Should -Be 'System.UnauthorizedAccessException'
+        }
+    }
+
+    Context 'Get-AdfaDcRidSetRaw (the per-DC seam)' {
+        BeforeEach { $script:C6Asked = @() }
+        It 'finds the DC by its DNS host name in its domain, follows rIDSetReferences, and asks for the four RID Set attributes' {
+            function Get-ADComputer { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ErrorAction)
+                $script:C6Asked += ("Get-ADComputer|{0}|{1}|{2}" -f $Server, $LDAPFilter, ($Properties -join ','))
+                [pscustomobject]@{ DistinguishedName = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'; rIDSetReferences = @('CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com') } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$SearchBase, [string]$SearchScope, [string]$LDAPFilter, $ErrorAction)
+                $script:C6Asked += ("Get-ADObject|{0}|{1}|{2}" -f $Server, $Identity, ($Properties -join ','))
+                [pscustomobject]@{ DistinguishedName = $Identity; rIDPreviousAllocationPool = (New-C6Interval -Low 2100 -High 2599); rIDAllocationPool = (New-C6Interval -Low 3100 -High 3599); rIDNextRID = 2150; rIDUsedPool = [int64]0 } }
+            $raw = Get-AdfaDcRidSetRaw -HostName $script:C6Dc1 -Server 'contoso.com' -Config $script:Rp
+            ($script:C6Asked -join ' ; ') | Should -Be 'Get-ADComputer|contoso.com|(&(objectClass=computer)(dNSHostName=dc1.contoso.com))|rIDSetReferences ; Get-ADObject|contoso.com|CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com|rIDPreviousAllocationPool,rIDAllocationPool,rIDNextRID,rIDUsedPool'
+            $raw.Ok | Should -BeTrue
+            $raw.ReferenceRead | Should -Be 'Ok'
+            $raw.SearchRun | Should -BeFalse
+            $raw.RidSet.Dn | Should -Be 'CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'
+            [int64]$raw.RidSet.NextRid | Should -Be 2150
+            # Declared population: the four attributes the RID Set returned.
+            @($raw.RidSet.Returned).Count | Should -Be 4
+        }
+        It 'searches one level under the computer object when the reference is empty, or when it does not resolve' {
+            function Get-ADComputer { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$SearchBase, [string]$SearchScope, [string]$LDAPFilter, $ErrorAction)
+                $script:C6Asked += ("{0}|{1}|{2}|{3}" -f $Identity, $SearchBase, $SearchScope, $LDAPFilter) }
+            $raw = Get-AdfaDcRidSetRaw -HostName $script:C6Dc1 -Server 'contoso.com' -Config $script:Rp
+            ($script:C6Asked -join ' ; ') | Should -Be '|CN=DC1,OU=Domain Controllers,DC=contoso,DC=com|OneLevel|(objectClass=rIDSet)'
+            $raw.ReferenceRead | Should -Be 'NotTried'
+            $raw.SearchRun | Should -BeTrue
+            $raw.SearchOk | Should -BeTrue
+            $raw.SearchCount | Should -Be 0
+            $raw.RidSet | Should -BeNullOrEmpty
+            # A reference that does not resolve: the search runs.
+            $script:C6Asked = @()
+            function Get-ADComputer { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'; rIDSetReferences = 'CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$SearchBase, [string]$SearchScope, [string]$LDAPFilter, $ErrorAction)
+                $script:C6Asked += ("{0}|{1}" -f $Identity, $SearchScope)
+                if ($Identity) { throw 'STUB: Cannot find an object with identity' }
+                [pscustomobject]@{ DistinguishedName = 'CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'; rIDPreviousAllocationPool = (New-C6Interval -Low 2100 -High 2599); rIDNextRID = 2100 } }
+            $dangling = Get-AdfaDcRidSetRaw -HostName $script:C6Dc1 -Server 'contoso.com' -Config $script:Rp
+            ($script:C6Asked -join ' ; ') | Should -Be 'CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com| ; |OneLevel'
+            $dangling.ReferenceRead | Should -Be 'Failed'
+            $dangling.SearchCount | Should -Be 1
+            $dangling.RidSet.FromSearch | Should -BeTrue
+        }
+        It 'does not search when the reference read was refused, and never throws' {
+            function Get-ADComputer { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'CN=DC1,DC=contoso,DC=com'; rIDSetReferences = @('CN=RID Set,CN=DC1,DC=contoso,DC=com') } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$SearchBase, [string]$SearchScope, [string]$LDAPFilter, $ErrorAction)
+                $script:C6Asked += 'called'
+                throw [System.UnauthorizedAccessException]'Access is denied.' }
+            $raw = Get-AdfaDcRidSetRaw -HostName $script:C6Dc1 -Server 'contoso.com' -Config $script:Rp
+            @($script:C6Asked).Count | Should -Be 1
+            $raw.ReferenceRead | Should -Be 'Failed'
+            $raw.SearchRun | Should -BeFalse
+            function Get-ADComputer { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ErrorAction) throw 'STUB: refused' }
+            $failed = Get-AdfaDcRidSetRaw -HostName $script:C6Dc1 -Server '' -Config $script:Rp
+            $failed.Ok | Should -BeFalse
+            $failed.Stage | Should -Be 'Computer'
+            # With no domain, the DC itself is asked.
+            $failed.Server | Should -Be 'dc1.contoso.com'
+        }
+        It 'reads nothing more when rIDSetReferences holds two values: no RID Set read and no search' {
+            $twoRefs = @('CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com', 'CN=RID Set2,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com')
+            $script:C6TwoRefs = $twoRefs
+            function Get-ADComputer { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ErrorAction)
+                [pscustomobject]@{ DistinguishedName = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'; rIDSetReferences = @($script:C6TwoRefs) } }
+            # Would answer both the reference read and the one-level search with one RID Set.
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$SearchBase, [string]$SearchScope, [string]$LDAPFilter, $ErrorAction)
+                $script:C6Asked += ("{0}|{1}" -f $Identity, $SearchScope)
+                [pscustomobject]@{ DistinguishedName = 'CN=RID Set,CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'; rIDPreviousAllocationPool = (New-C6Interval -Low 2100 -High 2599); rIDNextRID = 2150 } }
+            $raw = Get-AdfaDcRidSetRaw -HostName $script:C6Dc1 -Server 'contoso.com' -Config $script:Rp
+            # Declared population: the two references, and no directory read after the computer object.
+            @($raw.References).Count | Should -Be 2
+            @($script:C6Asked).Count | Should -Be 0
+            $raw.ReferenceRead | Should -Be 'NotTried'
+            $raw.SearchRun | Should -BeFalse
+            $raw.RidSet | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'Collector: Get-AdfaRidPool' {
+        BeforeEach {
+            $script:C6Schemas = 0
+            $script:C6Domains = @()
+            $script:C6Lookups = @()
+            function Get-AdfaLapsSchemaRaw { param([hashtable]$AdParams, [string[]]$AttributeNames)
+                $script:C6Schemas++
+                [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; SchemaNamingContext = 'CN=Schema,CN=Configuration,DC=contoso,DC=com'; Names = @($AttributeNames) } }
+        }
+        It 'gives every scoped domain its two rows and every DC its row, with two DCs in two domains, reading the schema once' {
+            function Get-AdfaRidManagerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config)
+                $script:C6Domains += $DomainName
+                if ($DomainName -eq 'fabrikam.com') { return (New-C6ManagerRaw -Server $DomainName -Pool (New-C6Interval -Low 150000000 -High 1073741823) -AllocReturned $true -AllocValue $false) }
+                New-C6ManagerRaw -Server $DomainName }
+            function Get-AdfaDcRidSetRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams, [hashtable]$Config)
+                $script:C6Lookups += ("{0}@{1}" -f $HostName, $Server)
+                New-C6SetRaw -Server $Server }
+            $targets = @(
+                [pscustomobject]@{ HostName = $script:C6Dc1; Scope = 'contoso.com'; IsReadOnly = $false }
+                [pscustomobject]@{ HostName = $script:C6Dc3; Scope = 'fabrikam.com'; IsReadOnly = $false }
+            )
+            $rows = @(Get-AdfaRidPool -DomainControllers $targets -Config $script:Rp -ScopedDomains @('contoso.com', 'fabrikam.com'))
+            # Declared population: two domains with two rows each, two DCs with one row each.
+            $rows.Count | Should -Be 6
+            $script:C6Schemas | Should -Be 1
+            ($script:C6Domains -join ',') | Should -Be 'contoso.com,fabrikam.com'
+            ($script:C6Lookups -join ',') | Should -Be 'dc1.contoso.com@contoso.com,dc1.fabrikam.com@fabrikam.com'
+            foreach ($d in @('contoso.com', 'fabrikam.com')) {
+                @($rows | Where-Object { $_.Scope -eq $d -and $_.Item -eq ("RID pool allocation: {0}" -f $d) }).Count | Should -Be 1 -Because $d
+                @($rows | Where-Object { $_.Scope -eq $d -and $_.Item -eq ("Global RID space: {0}" -f $d) }).Count | Should -Be 1 -Because $d
+            }
+            foreach ($t in $targets) {
+                @($rows | Where-Object { $_.Scope -eq $t.Scope -and $_.Item -eq ("RID pool: {0}" -f $t.HostName) -and $_.Status -eq 'Info' }).Count | Should -Be 1 -Because $t.HostName
+            }
+            (@($rows | Where-Object { $_.Item -eq 'RID pool allocation: fabrikam.com' }))[0].Status | Should -Be 'Fail'
+            (@($rows | Where-Object { $_.Item -eq 'Global RID space: fabrikam.com' }))[0].Status | Should -Be 'Warning'
+            # contoso.com's allocation attribute is not returned: Not Assessed, never Pass (PORT-PLAN C6d).
+            (@($rows | Where-Object { $_.Item -eq 'RID pool allocation: contoso.com' }))[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'gives each scoped domain without a DC its own row, and says why when no DC was enumerated at all' {
+            function Get-AdfaRidManagerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config) New-C6ManagerRaw -Server $DomainName }
+            function Get-AdfaDcRidSetRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams, [hashtable]$Config) $script:C6Lookups += $HostName }
+            $rows = @(Get-AdfaRidPool -DomainControllers @() -Config $script:Rp -EnumerationError 'ADWS unreachable' `
+                    -InventoryFailures @([pscustomobject]@{ Domain = 'fabrikam.com'; Error = 'STUB: denied' }) -ScopedDomains @('contoso.com', 'fabrikam.com'))
+            # Declared population: four domain rows, two population rows, and the no-target row.
+            $rows.Count | Should -Be 7
+            @($rows | Where-Object { $_.Item -eq 'RID pool - contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Status -eq 'Not Assessed' }).Count | Should -Be 1
+            @($rows | Where-Object { $_.Item -eq 'RID pool - fabrikam.com' -and $_.Detail -match 'STUB: denied' }).Count | Should -Be 1
+            @($rows | Where-Object { $_.Item -eq 'RID pools' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'ADWS unreachable' }).Count | Should -Be 1
+            @($script:C6Lookups).Count | Should -Be 0
+        }
+        It 'says so in one row when no domain was scoped, and reads nothing' {
+            function Get-AdfaRidManagerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config) $script:C6Domains += $DomainName }
+            $rows = @(Get-AdfaRidPool -DomainControllers @() -Config $script:Rp -ScopedDomains @())
+            @($rows | Where-Object { $_.Item -eq 'RID pool (no domain scoped)' -and $_.Status -eq 'Not Assessed' }).Count | Should -Be 1
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            $script:C6Schemas | Should -Be 0
+            @($script:C6Domains).Count | Should -Be 0
+        }
+        It 'keeps an unreachable DC, an access-denied DC and a DC with no RID Set apart from a DC that was read, in one mixed run' {
+            function Get-AdfaRidManagerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config)
+                if ($DomainName -eq 'fabrikam.com') { return (New-C6ManagerRaw -Ok $false -Stage 'RidManager' -Err 'Unable to contact the server.' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException') }
+                New-C6ManagerRaw }
+            function Get-AdfaDcRidSetRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams, [hashtable]$Config)
+                switch ($HostName) {
+                    'dc2.contoso.com' { return (New-C6SetRaw -Ok $false -Stage 'Computer' -Err 'Access is denied.' -Type 'System.UnauthorizedAccessException' -Set $null) }
+                    'dc1.fabrikam.com' { return (New-C6SetRaw -Ok $false -Stage 'Computer' -Err 'x' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException' -Set $null) }
+                    'dc3.contoso.com' { return (New-C6SetRaw -Refs @() -RefRead 'NotTried' -SearchRun $true -SearchCount 0 -Set $null) }
+                }
+                New-C6SetRaw }
+            $dc4 = 'dc3.contoso.com'
+            $targets = @(
+                [pscustomobject]@{ HostName = $script:C6Dc1; Scope = 'contoso.com' }
+                [pscustomobject]@{ HostName = $script:C6Dc2; Scope = 'contoso.com' }
+                [pscustomobject]@{ HostName = $dc4; Scope = 'contoso.com' }
+                [pscustomobject]@{ HostName = $script:C6Dc3; Scope = 'fabrikam.com' }
+            )
+            $rows = @(Get-AdfaRidPool -DomainControllers $targets -Config $script:Rp -ScopedDomains @('contoso.com', 'fabrikam.com'))
+            # Declared population: four domain rows and four DC rows.
+            $rows.Count | Should -Be 8
+            (@($rows | Where-Object { $_.Item -eq 'RID pool: dc1.contoso.com' }))[0].Status | Should -Be 'Info'
+            (@($rows | Where-Object { $_.Item -eq 'RID pool: dc2.contoso.com' }))[0].Detail | Should -Match '^Access denied: '
+            (@($rows | Where-Object { $_.Item -eq 'RID pool: dc1.fabrikam.com' }))[0].Detail | Should -Match '^Unreachable: '
+            (@($rows | Where-Object { $_.Item -eq 'RID pool: dc3.contoso.com' }))[0].Detail | Should -Match '^RID Set object absent: '
+            @($rows | Where-Object { $_.Scope -eq 'fabrikam.com' -and $_.Item -like '*: fabrikam.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Unreachable: ' }).Count | Should -Be 2
+            @($rows | Where-Object { $_.Item -like 'RID pool: *' -and $_.Status -ne 'Info' -and $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+        }
+        It 'tells a read-only DC from the inventory apart when its RID Set is absent' {
+            function Get-AdfaRidManagerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config) New-C6ManagerRaw }
+            function Get-AdfaDcRidSetRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams, [hashtable]$Config) New-C6SetRaw -Refs @() -RefRead 'NotTried' -SearchRun $true -SearchCount 0 -Set $null }
+            $rodcName = 'rodc1.contoso.com'
+            $rows = @(Get-AdfaRidPool -DomainControllers @([pscustomobject]@{ HostName = $rodcName; Scope = 'contoso.com'; IsReadOnly = $true }, [pscustomobject]@{ HostName = $script:C6Dc1; Scope = 'contoso.com'; IsReadOnly = $false }) -Config $script:Rp -ScopedDomains @('contoso.com'))
+            (@($rows | Where-Object { $_.Item -eq 'RID pool: rodc1.contoso.com' }))[0].Detail | Should -Match 'read-only'
+            (@($rows | Where-Object { $_.Item -eq 'RID pool: dc1.contoso.com' }))[0].Detail | Should -Match 'KB 2618669'
+        }
+        It 'reports a DC with no host name, a DC whose handling throws and a domain whose handling throws as Not Assessed without stopping the others' {
+            function Get-AdfaRidManagerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config)
+                if ($DomainName -eq 'fabrikam.com') { throw 'STUB: domain defect' }
+                New-C6ManagerRaw }
+            function Get-AdfaDcRidSetRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams, [hashtable]$Config)
+                if ($HostName -eq 'dc1.contoso.com') { throw 'STUB: defect' }
+                New-C6SetRaw }
+            $targets = @([pscustomobject]@{ HostName = ''; Scope = 'contoso.com' }, $script:C6Dc1, $script:C6Dc2)
+            $rows = @(Get-AdfaRidPool -DomainControllers $targets -Config $script:Rp -ScopedDomains @('contoso.com', 'fabrikam.com'))
+            # Declared population: four domain rows, the gap row of fabrikam.com (no DC carries it), three DC rows.
+            $rows.Count | Should -Be 8
+            @($rows | Where-Object { $_.Item -eq 'RID pool: (unnamed)' -and $_.Status -eq 'Not Assessed' }).Count | Should -Be 1
+            @($rows | Where-Object { $_.Item -eq 'RID pool: dc1.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'STUB: defect' }).Count | Should -Be 1
+            @($rows | Where-Object { $_.Item -eq 'RID pool: dc2.contoso.com' -and $_.Status -eq 'Info' }).Count | Should -Be 1
+            @($rows | Where-Object { $_.Scope -eq 'fabrikam.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'STUB: domain defect' }).Count | Should -Be 2
+            @($rows | Where-Object { $_.Item -eq 'Global RID space: contoso.com' -and $_.Status -eq 'Pass' }).Count | Should -Be 1
+        }
+        It 'grades nothing on a schema that could not be read where it matters, and gives every row the same columns' {
+            function Get-AdfaLapsSchemaRaw { param([hashtable]$AdParams, [string[]]$AttributeNames) [pscustomobject]@{ Ok = $false; Error = 'STUB: schema refused'; ErrorType = ''; SchemaNamingContext = ''; Names = @() } }
+            function Get-AdfaRidManagerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config) New-C6ManagerRaw }
+            function Get-AdfaDcRidSetRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams, [hashtable]$Config) New-C6SetRaw }
+            $rows = @(Get-AdfaRidPool -DomainControllers @([pscustomobject]@{ HostName = $script:C6Dc1; Scope = 'contoso.com' }) -Config $script:Rp -ScopedDomains @('contoso.com', 'fabrikam.com'))
+            # Declared population: two domains with two rows each, the DC row, and the gap row of fabrikam.com.
+            $rows.Count | Should -Be 6
+            # An unset allocation attribute on a schema that was not read cannot be told from one the schema lacks.
+            @($rows | Where-Object { $_.Item -like 'RID pool allocation: *' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'STUB: schema refused' }).Count | Should -Be 2
+            $first = (@($rows[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ',')
+            $first | Should -Be 'Scope,Area,Item,Status,Detail,NotRun,Evidence,RidMaster,Ceiling,CeilingSource,Issued,PercentUsed,PoolStart,PoolEnd,NextRid,RemainingInPool,NextPoolStart,NextPoolEnd,ObjectDn,RawValue'
+            foreach ($r in $rows) { (@($r.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') | Should -Be $first }
+        }
+    }
+
+    Context 'Merge-AdfaRidPoolConfig (the RidPool validator)' {
+        It 'merges the two thresholds and cites the file for exactly the keys it supplied' {
+            $m = Merge-AdfaRidPoolConfig -BaseConfig $script:Rp -Override ([pscustomobject]@{ WarnAtPercentUsed = 5; FailAtPercentUsed = 80 }) -OverrideSource 'C:\cfg\over.json'
+            $m['WarnAtPercentUsed'] | Should -Be 5
+            $m['FailAtPercentUsed'] | Should -Be 80
+            $m['ThresholdSource'] | Should -Match '^C:\\cfg\\over\.json \(loaded \d{4}-\d{2}-\d{2}\) for WarnAtPercentUsed, FailAtPercentUsed$'
+            $one = Merge-AdfaRidPoolConfig -BaseConfig $script:Rp -Override @{ FailAtPercentUsed = 89 } -OverrideSource 'C:\cfg\over.json'
+            $one['ThresholdSource'] | Should -Match 'for FailAtPercentUsed; Microsoft: .*, for WarnAtPercentUsed$'
+            # Both ends of the range.
+            (Merge-AdfaRidPoolConfig -BaseConfig $script:Rp -Override @{ WarnAtPercentUsed = 1 })['WarnAtPercentUsed'] | Should -Be 1
+            (Merge-AdfaRidPoolConfig -BaseConfig $script:Rp -Override @{ FailAtPercentUsed = 99 })['FailAtPercentUsed'] | Should -Be 99
+            # The built-in table is not changed by a merge.
+            [int]$script:Rp['WarnAtPercentUsed'] | Should -Be 10
+            [string]$script:Rp['ThresholdSource'] | Should -Match '^Microsoft: '
+            # The merged threshold reaches the verdict.
+            (Get-C6Space -Low 60000000 -Config $m).Status | Should -Be 'Warning'
+            (Get-C6Space -Low 900000000 -Config $m).Status | Should -Be 'Fail'
+        }
+        It 'refuses every shape it could not use' {
+            $bad = [ordered]@{
+                'not an object'          = @{ Value = @(1, 2); Expect = 'single object' }
+                'an empty object'        = @{ Value = @{}; Expect = 'empty object' }
+                'the ceilings'           = @{ Value = @{ KnownCeilings = @() }; Expect = "unknown key 'KnownCeilings'" }
+                'an attribute name'      = @{ Value = @{ AllocationAttribute = 'x' }; Expect = "unknown key 'AllocationAttribute'" }
+                'the RID Manager RDN'    = @{ Value = @{ RidManagerRdn = 'CN=x' }; Expect = "unknown key 'RidManagerRdn'" }
+                'a null'                 = @{ Value = @{ WarnAtPercentUsed = $null }; Expect = 'to null' }
+                'a quoted number'        = @{ Value = @{ WarnAtPercentUsed = '10' }; Expect = 'JSON number' }
+                'a fraction'             = @{ Value = @{ WarnAtPercentUsed = 10.5 }; Expect = 'whole number from 1 to 99' }
+                'zero'                   = @{ Value = @{ WarnAtPercentUsed = 0 }; Expect = 'whole number from 1 to 99' }
+                'one hundred'            = @{ Value = @{ FailAtPercentUsed = 100 }; Expect = 'whole number from 1 to 99' }
+                'Fail equal to Warning'  = @{ Value = @{ WarnAtPercentUsed = 50; FailAtPercentUsed = 50 }; Expect = 'must be above WarnAtPercentUsed' }
+                'Warning above built-in Fail' = @{ Value = @{ WarnAtPercentUsed = 95 }; Expect = 'must be above WarnAtPercentUsed' }
+            }
+            # Declared population: twelve shapes.
+            @($bad.Keys).Count | Should -Be 12
+            foreach ($name in @($bad.Keys)) {
+                { Merge-AdfaRidPoolConfig -BaseConfig $script:Rp -Override $bad[$name]['Value'] } | Should -Throw -ExpectedMessage ("*{0}*" -f $bad[$name]['Expect']) -Because $name
+            }
+        }
+        It 'is reached through the generic loader, which refuses a key written twice' {
+            $merged = Resolve-AdfaConfigOverride -Override ([pscustomobject]@{ RidPool = [pscustomobject]@{ WarnAtPercentUsed = 20 } }) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'x.json'
+            $merged['RidPool']['WarnAtPercentUsed'] | Should -Be 20
+            { Resolve-AdfaConfigOverride -Override ([pscustomobject]@{ RidPool = [pscustomobject]@{ RidSetAttributes = @('*') } }) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
+                Should -Throw -ExpectedMessage "*section 'RidPool'*unknown key 'RidSetAttributes'*"
+            $path = Join-Path ([IO.Path]::GetTempPath()) ("adfa_c6_" + [guid]::NewGuid().ToString('N') + '.json')
+            try {
+                '{ "RidPool": { "WarnAtPercentUsed": 10, "WarnAtPercentUsed": 20 } }' | Out-File -LiteralPath $path -Encoding UTF8
+                { Import-AdfaConfigOverride -Path $path -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*'RidPool.WarnAtPercentUsed' more than once*"
+            }
+            finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'Recommendations' {
+        It 'gives the allocation and the global space rows their own advice, whatever the text holds' {
+            $alloc = Get-AdfaRecommendation -Section 'RID Pool' -Item 'RID pool allocation: contoso.com' -Detail $script:C6Hostile
+            $space = Get-AdfaRecommendation -Section 'RID Pool' -Item 'Global RID space: contoso.com' -Detail $script:C6Hostile
+            $alloc | Should -Match 'msDS-RIDPoolAllocationEnabled'
+            $alloc | Should -Match 'before'
+            $space | Should -Match '16658'
+            $space | Should -Match 'creation'
+            $alloc | Should -Not -Be $space
+            foreach ($rec in @($alloc, $space)) {
+                $rec | Should -Match 'irreversible'
+                $rec | Should -Not -Match 'repadmin|wbadmin|dfsrmig|w32tm /config|New-KrbtgtKeys|scavenging|ipconfig'
+            }
+            (Get-AdfaRecommendation -Section 'RID Pool' -Item 'Global RID space: backup-replication.stale.contoso.com' -Detail $script:C6Hostile) | Should -Be $space
+        }
+        It 'gives every other row of the section no advice, rather than an unrelated one' {
+            foreach ($item in @('RID pool: dc1.contoso.com', 'RID pool - contoso.com', 'RID pools', 'RID pool', 'RID pool (no domain scoped)', 'Something new: dc1.contoso.com')) {
+                Get-AdfaRecommendation -Section 'RID Pool' -Item $item -Detail $script:C6Hostile | Should -Be '' -Because $item
+            }
+            # Non-vacuity: the same text outside the section does attract advice.
+            Get-AdfaRecommendation -Section 'Somewhere Else' -Item 'x' -Detail $script:C6Hostile | Should -Not -Be ''
+        }
+        It 'places its entries before every unscoped entry of the map' {
+            $map = @($script:RecommendationMap)
+            $mine = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Section -eq '(?i)^rid pool') { $i } })
+            # Declared population: two families and the catch-all.
+            $mine.Count | Should -Be 3
+            $firstUnscoped = @(for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $i } })[0]
+            foreach ($i in $mine) { $i | Should -BeLessThan $firstUnscoped }
+            [string]$map[$mine[2]].Match | Should -Be '.'
+            [string]$map[$mine[2]].Text | Should -Be ''
+        }
+        It 'attaches advice to Warning and Fail rows only, chosen without the NotRun note' {
+            $rows = @(Get-C6Domain -Raw (New-C6ManagerRaw -Pool (New-C6Interval -Low 120000000 -High 1073741823) -AllocReturned $true -AllocValue $false)) + @(Get-C6Domain -Raw (New-C6ManagerRaw)) + @(Get-C6Dc -Raw (New-C6SetRaw))
+            $findings = @($rows | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'RID Pool' -Row $_ -StatusColumn 'Status' })
+            $findings.Count | Should -Be 5
+            $findings[0].Status | Should -Be 'Fail'
+            $findings[0].Recommendation | Should -Match 'msDS-RIDPoolAllocationEnabled'
+            $findings[1].Status | Should -Be 'Warning'
+            $findings[1].Recommendation | Should -Match '16658'
+            $findings[1].Detail | Should -Match 'SidCompatibilityVersion'
+            $findings[2].Recommendation | Should -Be ''
+            $findings[3].Recommendation | Should -Be ''
+            $findings[4].Recommendation | Should -Be ''
         }
     }
 }

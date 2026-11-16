@@ -2100,7 +2100,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the four sections the file can carry (DcCertificates since v1.22.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the five sections the file can carry (RidPool since v1.23.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -2431,6 +2431,85 @@ Assert-Equal ($certNow.AddDays(-10).ToString('yyyy-MM-dd HH:mm:ss', $certInv)) (
 $certDirText = [string]$certLone[0].Detail
 Assert-True ($certDirText -match "Directory E-mail Replication" -and $certEmpty[0].Detail -notmatch '(?i)only for .Domain Controller') 'Directory rows: a published value is not said to be a DC certificate, and the Info row does not claim only one template is published'
 
+Write-Host "== RID pool (C6): pure logic ==" -ForegroundColor Cyan
+$ridCfg = $script:Config.RidPool
+function New-RidInterval { param([int64]$Low, [int64]$High) return ([int64]$High * [int64]4294967296) + [int64]$Low }
+# The large-integer split, at its edges, on whichever edition runs this harness.
+$ridVectors = [ordered]@{
+    'Learn sample 4611686014132422708' = @{ Value = [int64]4611686014132422708; Expect = '2100/1073741823' }
+    'zero'                             = @{ Value = [int64]0; Expect = '0/0' }
+    'high 0x7FFFFFFF'                  = @{ Value = (New-RidInterval -Low 9 -High 2147483647); Expect = '9/2147483647' }
+    'Int64 min (high 0x80000000)'      = @{ Value = [int64]::MinValue; Expect = '0/2147483648' }
+    'minus one'                        = @{ Value = [int64]-1; Expect = '4294967295/4294967295' }
+    'UInt64 max'                       = @{ Value = [uint64]::MaxValue; Expect = '4294967295/4294967295' }
+    'text'                             = @{ Value = '4611686014132522708'; Expect = '102100/1073741823' }
+}
+$ridGot = @(foreach ($k in @($ridVectors.Keys)) { $d = ConvertFrom-AdfaLargeInteger -Value $ridVectors[$k]['Value']; ("{0}/{1}" -f $d.Low, $d.High) })
+Assert-Equal (@($ridVectors.Values | ForEach-Object { $_['Expect'] }) -join ',') ($ridGot -join ',') 'RID pool: a 64-bit value splits into its unsigned halves, Learn''s sample and the sign edges included (declared population: seven values)'
+Assert-True (-not (ConvertFrom-AdfaLargeInteger -Value '1.5').Read -and -not (ConvertFrom-AdfaLargeInteger -Value $null).Read -and -not (ConvertFrom-AdfaLargeInteger -Value ([double]2)).Read) 'RID pool: a fraction, a null or a double is not read as a large integer'
+# The global space verdict at its boundaries, on both documented sizes.
+$ridScale = [ordered]@{ '107374182/1073741823' = 'Pass'; '107374183/1073741823' = 'Warning'; '966367640/1073741823' = 'Warning'; '966367641/1073741823' = 'Fail'
+    '214748364/2147483647' = 'Pass'; '214748365/2147483647' = 'Warning'; '1932735283/2147483647' = 'Fail'; '2100/500000000' = 'Not Assessed'; '10/5' = 'Not Assessed'; '0/0' = 'Not Assessed' }
+$ridScaleGot = @(foreach ($k in @($ridScale.Keys)) { $p = $k -split '/'; [string](Get-AdfaRidSpaceVerdict -Low ([int64]$p[0]) -High ([int64]$p[1]) -Config $ridCfg).Status })
+Assert-Equal (@($ridScale.Values) -join ',') ($ridScaleGot -join ',') 'RID pool: Warning from 10 % used and Fail from 90 % used by integer comparison; an unknown size, more issued than the size, or a size of 0 is Not Assessed (declared population: ten points)'
+# The allocation verdict.
+function New-RidManagerRaw { param([bool]$Read = $true, [bool]$Returned = $false, $Value = $null)
+    [pscustomobject]@{ Ok = $true; AllocationRead = $Read; AllocationReturned = $Returned; AllocationValue = $Value } }
+$ridAllocCases = [ordered]@{
+    'FALSE'                     = @{ Raw = (New-RidManagerRaw -Returned $true -Value $false); In = 'Yes'; Expect = 'Fail' }
+    'TRUE'                      = @{ Raw = (New-RidManagerRaw -Returned $true -Value $true); In = 'Unknown'; Expect = 'Pass' }
+    'not set, in schema'        = @{ Raw = (New-RidManagerRaw); In = 'Yes'; Expect = 'Not Assessed' }
+    'not set, schema unknown'   = @{ Raw = (New-RidManagerRaw); In = 'Unknown'; Expect = 'Not Assessed' }
+    'not in schema'             = @{ Raw = (New-RidManagerRaw -Read $false); In = 'No'; Expect = 'Not Assessed' }
+    'FALSE, one-item list'      = @{ Raw = (New-RidManagerRaw -Returned $true -Value ([System.Collections.ArrayList]@($false))); In = 'Yes'; Expect = 'Fail' }
+}
+$ridAllocGot = @(foreach ($k in @($ridAllocCases.Keys)) { [string](Get-AdfaRidAllocationVerdict -Raw $ridAllocCases[$k]['Raw'] -InSchema $ridAllocCases[$k]['In']).Status })
+Assert-Equal (@($ridAllocCases.Values | ForEach-Object { $_['Expect'] }) -join ',') ($ridAllocGot -join ',') 'RID pool: FALSE fails (also in a one-item collection), TRUE passes, and a value not returned is Not Assessed whatever the schema says - an unset value and an unreadable one look the same (declared population: six inputs)'
+# The figure shown never reaches a point the row is graded below: truncated, not rounded.
+$ridPct = [ordered]@{ '107374182/1073741823' = 'Pass 9.9999'; '107374183/1073741823' = 'Warning 10'; '966367640/1073741823' = 'Warning 89.9999'; '966367641/1073741823' = 'Fail 90'
+    '214748364/2147483647' = 'Pass 9.9999'; '1932735282/2147483647' = 'Warning 89.9999'; '1932735283/2147483647' = 'Fail 90' }
+$ridPctGot = @(foreach ($k in @($ridPct.Keys)) { $p = $k -split '/'; $v = Get-AdfaRidSpaceVerdict -Low ([int64]$p[0]) -High ([int64]$p[1]) -Config $ridCfg; ("{0} {1}" -f $v.Status, $v.PercentUsed) })
+Assert-Equal (@($ridPct.Values) -join ',') ($ridPctGot -join ',') 'RID pool: PercentUsed at Microsoft''s boundary RIDs agrees with the grade - 9.9999 on a Pass, 89.9999 on a Warning (declared population: seven points)'
+# The schema seam: No only with the control attribute in the answer.
+$ridCtl = [string]$ridCfg['AvailablePoolAttribute']
+$ridAtt = [string]$ridCfg['AllocationAttribute']
+$ridSchemaCases = [ordered]@{
+    'both'          = @{ Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Names = @($ridCtl, $ridAtt) }; Expect = 'Yes' }
+    'control only'  = @{ Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Names = @($ridCtl) }; Expect = 'No' }
+    'empty answer'  = @{ Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Names = @() }; Expect = 'Unknown' }
+    'no control'    = @{ Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Names = @($ridAtt) }; Expect = 'Unknown' }
+    'query failed'  = @{ Raw = [pscustomobject]@{ Ok = $false; Error = 'x'; ErrorType = ''; Names = @() }; Expect = 'Unknown' }
+}
+$ridSchemaGot = @(foreach ($k in @($ridSchemaCases.Keys)) { [string](Get-AdfaRidSchemaState -Raw $ridSchemaCases[$k]['Raw'] -Config $ridCfg).InSchema })
+Assert-Equal (@($ridSchemaCases.Values | ForEach-Object { $_['Expect'] }) -join ',') ($ridSchemaGot -join ',') 'RID pool schema: "not in the schema" only when the same answer carried rIDAvailablePool; an empty or partial answer proves nothing (declared population: five answers)'
+# The per-DC row: the three causes that must not be confused.
+function New-RidSetRaw { param([bool]$Ok = $true, [string]$Err = '', [string]$Type = '', [string[]]$Refs = @(), [bool]$SearchRun = $true, [int]$SearchCount = 0, $Set = $null)
+    [pscustomobject]@{ Ok = $Ok; Stage = ''; Error = $Err; ErrorType = $Type; Server = 'contoso.com'; ObjectCount = 1; ComputerDn = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'; References = @($Refs)
+        ReferenceRead = 'NotTried'; ReferenceError = ''; ReferenceErrorType = ''; SearchRun = $SearchRun; SearchOk = $true; SearchError = ''; SearchErrorType = ''; SearchCount = $SearchCount; RidSet = $Set } }
+$ridDcName = 'dc1.contoso.com'
+$ridAbsent = Get-AdfaDcRidPoolFinding -DomainController $ridDcName -Scope 'contoso.com' -Raw (New-RidSetRaw) -Config $ridCfg
+$ridDenied = Get-AdfaDcRidPoolFinding -DomainController $ridDcName -Scope 'contoso.com' -Raw (New-RidSetRaw -Ok $false -Err 'Access is denied.' -Type 'System.UnauthorizedAccessException') -Config $ridCfg
+$ridDown = Get-AdfaDcRidPoolFinding -DomainController $ridDcName -Scope 'contoso.com' -Raw (New-RidSetRaw -Ok $false -Err 'x' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException') -Config $ridCfg
+Assert-True ($ridAbsent.Detail -match '^RID Set object absent: ' -and $ridDenied.Detail -match '^Access denied: ' -and $ridDown.Detail -match '^Unreachable: ' -and @($ridAbsent, $ridDenied, $ridDown | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) 'RID pool: RID Set absent, access denied and unreachable are three different Not Assessed results'
+$ridSet = [pscustomobject]@{ Dn = 'CN=RID Set,CN=DC1,DC=contoso,DC=com'; FromSearch = $false; PreviousAllocationPool = (New-RidInterval -Low 2100 -High 2599); AllocationPool = (New-RidInterval -Low 3100 -High 3599); NextRid = 2150; UsedPool = $null; Returned = @() }
+$ridInfo = Get-AdfaDcRidPoolFinding -DomainController $ridDcName -Scope 'contoso.com' -Raw (New-RidSetRaw -Refs @('CN=RID Set,CN=DC1,DC=contoso,DC=com') -SearchRun $false -Set $ridSet) -Config $ridCfg
+Assert-True ($ridInfo.Status -eq 'Info' -and $ridInfo.PoolStart -eq '2100' -and $ridInfo.PoolEnd -eq '2599' -and $ridInfo.RemainingInPool -eq '450' -and $ridInfo.NextPoolEnd -eq '3599') 'RID pool: a DC''s pool is Info, with start, end, remaining (end - next + 1) and the prefetched pool in their columns'
+# rIDNextRID is 4 bytes: a negative Int32 is decoded (and here falls outside the pool), a wider value is unreadable.
+$ridSetWith = { param($Prev, $Next) [pscustomobject]@{ Dn = 'CN=RID Set,CN=DC1,DC=contoso,DC=com'; FromSearch = $false; PreviousAllocationPool = $Prev; AllocationPool = $null; NextRid = $Next; UsedPool = $null; Returned = @() } }
+$ridDcWith = { param($Set) Get-AdfaDcRidPoolFinding -DomainController $ridDcName -Scope 'contoso.com' -Raw (New-RidSetRaw -Refs @('CN=RID Set,CN=DC1,DC=contoso,DC=com') -SearchRun $false -Set $Set) -Config $ridCfg }
+$ridNeg = & $ridDcWith (& $ridSetWith (New-RidInterval -Low 2100 -High 2599) ([int32]-5))
+$ridWide = & $ridDcWith (& $ridSetWith (New-RidInterval -Low 2100 -High 2599) ([int64]4294969396))
+$ridBack = & $ridDcWith (& $ridSetWith (New-RidInterval -Low 2599 -High 2100) 2150)
+Assert-True ($ridNeg.Detail -match '^Inconsistent: rIDNextRID of .* \(4294967291\) is outside' -and $ridWide.Detail -match '^Unreadable value: .*not a 32-bit integer' -and $ridBack.Detail -match 'ends \(2100\) before it starts \(2599\)' -and @($ridNeg, $ridWide, $ridBack | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) 'RID pool: a negative Int32 rIDNextRID is decoded, a wider one is Unreadable value, and a pool that ends before it starts is its own Inconsistent cause'
+# The validator and the advice.
+Assert-Throws { Merge-AdfaRidPoolConfig -BaseConfig $ridCfg -Override @{ KnownCeilings = @() } } "unknown key 'KnownCeilings'" 'RID pool override: the ceilings cannot be set from a file'
+Assert-Throws { Merge-AdfaRidPoolConfig -BaseConfig $ridCfg -Override @{ WarnAtPercentUsed = 95 } } 'must be above WarnAtPercentUsed' 'RID pool override: a Warning point above the built-in Fail point is refused'
+Assert-Throws { Merge-AdfaRidPoolConfig -BaseConfig $ridCfg -Override @{ FailAtPercentUsed = 100 } } 'whole number from 1 to 99' 'RID pool override: a point of 100 % is refused'
+Assert-Equal 5 ([int](Merge-AdfaRidPoolConfig -BaseConfig $ridCfg -Override @{ WarnAtPercentUsed = 5 })['WarnAtPercentUsed']) 'RID pool override: a valid point is merged'
+$ridHostile = 'event 16658 on dc1 restored from backup dcdiag /test:RidManager aging replication C:\Backup\stale.json'
+$ridRecSpace = Get-AdfaRecommendation -Section 'RID Pool' -Item 'Global RID space: contoso.com' -Detail $ridHostile
+$ridRecDc = Get-AdfaRecommendation -Section 'RID Pool' -Item 'RID pool: dc1.contoso.com' -Detail $ridHostile
+Assert-True ($ridRecSpace -match '16658' -and $ridRecSpace -notmatch 'wbadmin|scavenging|repadmin' -and $ridRecDc -eq '') 'RID pool advice: the global space row gets its own advice and a per-DC row none, whatever the text holds'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
