@@ -1414,7 +1414,12 @@ function Invoke-ExternalCommand {
     return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile
         StdOut = "Directory Server Diagnosis`nPerforming initial setup:`nLdap search capability attribute search failed on server DC1, return value = 81" }
 }
-$gridRows = @(Get-AdfaDcDiagnostic -DomainControllers @('dc1.contoso.com') -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)
+# Since v1.28.0 (PORT-PLAN C11) the section also returns its once-per-domain, -forest and -site rows;
+# the grid rows are the ones with a DomainController column, and the per-DC invocations are the ones
+# that are not Topology, CheckSDRefDom, CrossRefValidation or Intersite.
+function Get-ValGrid { param($Rows) @($Rows | Where-Object { $null -ne $_.PSObject.Properties['DomainController'] }) }
+Clear-AdfaDcPortCache
+$gridRows = @(Get-ValGrid @(Get-AdfaDcDiagnostic -DomainControllers @('dc1.contoso.com') -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0))
 Assert-Equal 1 (@($gridRows).Count) 'dcdiag grid: one row per DC'
 
 # H20: the DNS and Intersite tests change state (a DNS test record is registered and deleted; a
@@ -1426,21 +1431,30 @@ function Invoke-ExternalCommand {
     $name = ([regex]::Match($Arguments, '/test:(\S+)')).Groups[1].Value
     [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile; StdOut = ("......................... DC1 passed test {0}" -f $name) }
 }
-$h20Default = @(Get-AdfaDcDiagnostic -DomainControllers @('dc1.contoso.com') -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)[0]
-Assert-Equal 16 (@($script:h20Args).Count) 'H20: a default run invokes dcdiag for 16 tests, not 18'
-Assert-Equal 0 (@($script:h20Args | Where-Object { $_ -match '/test:(DNS|Intersite)\b' }).Count) 'H20: a default run never invokes the DNS or Intersite test'
+Clear-AdfaDcPortCache
+$h20Rows = @(Get-AdfaDcDiagnostic -DomainControllers @('dc1.contoso.com') -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)
+$h20Default = @(Get-ValGrid $h20Rows)[0]
+$h20PerDc = @($script:h20Args | Where-Object { $_ -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation|Intersite)\b' })
+Assert-Equal 19 (@($h20PerDc).Count) 'H20/C11: a default run invokes dcdiag for 19 per-DC tests, not 21'
+Assert-Equal 0 (@($script:h20Args | Where-Object { $_ -match '/test:(DNS|Intersite|SystemLog)\b' }).Count) 'H20/C11: a default run never invokes the DNS, SystemLog or Intersite test'
 Assert-Equal 'Not Assessed' ([string]$h20Default.DCDIAG_DNS) 'H20: the DNS cell is Not Assessed by default'
-Assert-Equal 'Not Assessed' ([string]$h20Default.DCDIAG_Intersite) 'H20: the Intersite cell is Not Assessed by default'
+Assert-Equal 'Not Assessed' ([string]$h20Default.DCDIAG_SystemLog) 'C11: the SystemLog cell is Not Assessed by default'
+$h20Inter = @($h20Rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and $_.Item -eq 'dcdiag Intersite: not run' })
+Assert-True (@($h20Inter).Count -eq 1 -and [string]$h20Inter[0].Status -eq 'Not Assessed' -and [string]$h20Inter[0].NotRun -match 'IncludeDcdiagActiveTests') 'C11: Intersite is not run by default, and one row says so with the switch'
 Assert-True ([string]$h20Default.NotRun -match 'IncludeDcdiagActiveTests') 'H20: the row names the switch that runs them, in its NotRun column'
 Assert-Equal '' ([string]$h20Default.Failures) 'H20: nothing failed, so the Failures column - which the advice is chosen from - is empty'
 $h20Finding = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row ([pscustomobject]@{ DomainController = 'dc1.contoso.com'; Status = 'Fail'; Failures = 'SysVolCheck: no diagnostic lines captured'; NotRun = [string]$h20Default.NotRun }) -StatusColumn 'Status'
 $h20Clean = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail 'SysVolCheck: no diagnostic lines captured'
 Assert-Equal $h20Clean ([string]$h20Finding.Recommendation) 'H20: the not-run note does not choose the advice for a failing row'
 Assert-True ([string]$h20Finding.Detail -match 'IncludeDcdiagActiveTests') 'H20: the note still reaches the consolidated finding detail'
-Assert-Equal 'Pass' ([string]$h20Default.Status) 'H20: a DC whose 16 attempted tests passed is Pass, not Warning'
+Assert-Equal 'Pass' ([string]$h20Default.Status) 'H20: a DC whose 19 attempted tests passed is Pass, not Warning'
 $script:h20Args = @()
-$h20Active = @(Get-AdfaDcDiagnostic -DomainControllers @('dc1.contoso.com') -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 -IncludeActiveTests)[0]
-Assert-Equal 18 (@($script:h20Args).Count) 'H20: with the opt-in all 18 tests are invoked'
+Clear-AdfaDcPortCache
+$h20ActiveTarget = [pscustomobject]@{ HostName = 'dc1.contoso.com'; Scope = 'contoso.com'; Site = 'Default-First-Site-Name'; IsReadOnly = $false }
+$h20ActiveRows = @(Get-AdfaDcDiagnostic -DomainControllers @($h20ActiveTarget) -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 -IncludeActiveTests)
+$h20Active = @(Get-ValGrid $h20ActiveRows)[0]
+Assert-Equal 21 (@($script:h20Args | Where-Object { $_ -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation|Intersite)\b' }).Count) 'H20/C11: with the opt-in all 21 per-DC tests are invoked'
+Assert-Equal 1 (@($script:h20Args | Where-Object { $_ -match '^/test:Intersite /s:dc1\.contoso\.com /a$' }).Count) 'C11: with the opt-in Intersite runs once for the DC''s site, with /a'
 Assert-Equal 'Pass' ([string]$h20Active.DCDIAG_DNS) 'H20: with the opt-in the DNS cell is read'
 # Restore the stub the assertions below were written against.
 function Invoke-ExternalCommand {
@@ -1500,9 +1514,12 @@ Assert-Equal 18 (@($argRows | Where-Object { $_ -match '/s:dc1\.contoso\.com' })
 Assert-Equal 2 (@($argRows | Where-Object { $_ -notmatch ("^/test:\S+ /s:dc1\.contoso\.com$") }).Count) 'dcdiag args: exactly two tests deviate from the plain form'
 
 # The grid itself must actually contain the DNS test - a builder that handles 'DNS' is worth
-# nothing if nothing ever asks for it. Read from the source, so the list cannot drift.
+# nothing if nothing ever asks for it. Since v1.28.0 (PORT-PLAN C11) the list is the PerDcTests of
+# the DcDiag config table, which the collector reads.
+$gridNames = @($script:Config.DcDiag['PerDcTests'] | ForEach-Object { [string]$_['Test'] })
+Assert-True ($gridNames -contains 'DNS') 'dcdiag grid: the DNS test is in the list the collector iterates'
 $gridSrc = Get-Content -LiteralPath $target -Raw
-Assert-True ($gridSrc -match "'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS'") 'dcdiag grid: the DNS test is in the array the collector iterates'
+Assert-True ($gridSrc -match "Get-AdfaConfigValue -Entry \`$Config -Name 'PerDcTests'") 'dcdiag grid: the collector reads PerDcTests from its config table'
 
 Write-Host ""
 Write-Host "== 23. Event lookback parameter, and measured clock offset ==" -ForegroundColor Cyan
@@ -2106,7 +2123,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the nine sections the file can carry (Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the ten sections the file can carry (DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -2828,6 +2845,84 @@ Assert-Throws { Merge-AdfaPrivilegedConfig -BaseConfig $pv -Override @{ Enterpri
 $pvHostile = 'replication backup stale sysvol krbtgt pdc emulator delegation dcsync enrol C:\Backup\stale.json'
 $pvRecs = @(foreach ($pair in @(@('Privileged Accounts', 'Schema Admins members: contoso.com'), @('Privileged Hygiene', 'adminCount orphans: contoso.com'), @('Kerberos Exposure', 'Resource-based delegation: contoso.com'), @('Privileged Accounts', 'Privileged group: Backup Operators: contoso.com'))) { Get-AdfaRecommendation -Section $pair[0] -Item $pair[1] -Detail $pvHostile })
 Assert-True ($pvRecs[0] -match 'temporarily' -and $pvRecs[1] -match 'inheritance' -and $pvRecs[2] -match 'PrincipalsAllowedToDelegateToAccount' -and $pvRecs[3] -eq '' -and @($pvRecs | Where-Object { $_ -match 'wbadmin|repadmin|New-KrbtgtKeys|replace with resource-based' }).Count -eq 0) 'Privileged advice: each family gets its own advice and no unscoped entry reaches the three sections (declared population: four items)'
+
+Write-Host ""
+Write-Host "== C11. dcdiag per DC, per partition and per scope (pure logic) ==" -ForegroundColor Cyan
+# The dcdiag command reference (read 2026-11-16) prints per-DC verdicts under "Testing server:",
+# partition verdicts under "Running partition tests on :" and wraps a verdict line before the test
+# name. Each verdict is graded for the block it is in, never for an unrelated DC.
+$dd = $script:Config.DcDiag
+$ddOut = "Doing initial required tests`r`n   Testing server: Default-First-Site-Name\DC1`r`n      Starting test: Connectivity`r`n         ......................... DC1 passed test Connectivity`r`n" +
+"   Running partition tests on : Schema`r`n      Starting test: CrossRefValidation`r`n         ......................... Schema passed test CrossRefValidation`r`n" +
+"   Running partition tests on : Configuration`r`n      Starting test: CrossRefValidation`r`n         ......................... Configuration failed test `r`n         CrossRefValidation"
+$ddParsed = ConvertFrom-AdfaDcdiagOutput -StdOut $ddOut -Config $dd
+$ddParts = @($ddParsed.Parts | Where-Object { $_.Test -eq 'CrossRefValidation' })
+Assert-Equal 2 (@($ddParts).Count) 'C11 parser: one part per partition block (declared population: two partitions), the wrapped verdict included'
+Assert-Equal 'Partition:Schema:Pass|Partition:Configuration:Fail' ((@($ddParts | ForEach-Object { "{0}:{1}:{2}" -f $_.ScopeKind, $_.ScopeName, $_.Verdict })) -join '|') 'C11 parser: each verdict is attributed to its partition'
+Assert-Equal 'Fail' ([string](Resolve-AdfaDcdiagVerdict -Parsed $ddParsed -TestName 'CrossRefValidation' -Mode 'Scope' -HostName 'dc1.contoso.com').Status) 'C11 verdict: in scope mode one failed partition fails the test'
+Assert-Equal 'Not Assessed' ([string](Resolve-AdfaDcdiagVerdict -Parsed $ddParsed -TestName 'CrossRefValidation' -Mode 'Dc' -HostName 'dc1.contoso.com').Status) 'C11 verdict: a partition result is never counted as a DC''s, for a test without partition parts'
+Assert-Equal 'Fail' ([string](Resolve-AdfaDcdiagVerdict -Parsed $ddParsed -TestName 'CrossRefValidation' -Mode 'Dc' -HostName 'dc1.contoso.com' -PartitionParts $true).Status) 'C11 verdict: with partition parts a failed partition fails the DC'
+$ddMixed = ConvertFrom-AdfaDcdiagOutput -StdOut "......................... DC1 passed test Replications`n......................... DC1 failed test Replications" -Config $dd
+Assert-Equal 'Fail' ([string](Resolve-AdfaDcdiagVerdict -Parsed $ddMixed -TestName 'Replications' -HostName 'dc1.contoso.com').Status) 'C11 verdict: passed and failed for the same DC is Fail, never Pass (the R2 false pass)'
+Assert-Equal 'Fail' (Get-AdfaDcdiagTestOutcome -TestName 'Replications' -StdOut "......................... DC1 passed test Replications`n......................... DC1 failed test Replications") 'C11: the old classifier reads failed before passed too'
+$ddOther = ConvertFrom-AdfaDcdiagOutput -StdOut '......................... DC2 failed test Services' -Config $dd
+Assert-Equal 'Not Assessed|Fail' (((Resolve-AdfaDcdiagVerdict -Parsed $ddOther -TestName 'Services' -HostName 'dc1.contoso.com').Status, (Resolve-AdfaDcdiagVerdict -Parsed $ddOther -TestName 'Services' -HostName 'dc2.contoso.com').Status) -join '|') 'C11 verdict: another DC''s failure is not counted for this DC, and is for that DC'
+Assert-True ((Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE-WS2' -HostName 'maplewaffle-ws22.contoso.com') -and -not (Test-AdfaDcdiagSubject -Subject 'DC1' -HostName 'dc10.contoso.com')) 'C11 subject: the 15-character NetBIOS form matches a longer host name; a prefix does not'
+$ddUnreach = Resolve-AdfaDcdiagVerdict -Parsed (ConvertFrom-AdfaDcdiagOutput -StdOut "Directory Server Diagnosis`nLdap search capability attribute search failed on server DC1, return value = 81" -Config $dd) -TestName 'Advertising' -HostName 'dc1.contoso.com'
+$ddDenied = Resolve-AdfaDcdiagVerdict -Parsed (ConvertFrom-AdfaDcdiagOutput -StdOut "Directory Server Diagnosis`n[DC1] LDAP bind failed with error 5, Access is denied." -Config $dd) -TestName 'Advertising' -HostName 'dc1.contoso.com'
+Assert-True ($ddUnreach.Status -eq 'Not Assessed' -and $ddUnreach.Detail -match 'could not reach' -and $ddUnreach.Detail -match 'provisional' -and $ddUnreach.Detail -notmatch '(?i)access denied') 'C11 verdict: an unreachable server is Not Assessed with a provisional cause, not access denied'
+Assert-True ($ddDenied.Status -eq 'Not Assessed' -and $ddDenied.Detail -match 'access denied' -and $ddDenied.Detail -notmatch 'could not reach') 'C11 verdict: access denied is its own cause, not unreachable'
+$ddEvent = ConvertFrom-AdfaDcdiagOutput -StdOut "The event log System on server dc1.contoso.com could not be queried, error 0x6ba`n......................... DC1 failed test SystemLog" -Config $dd
+Assert-Equal 'Not Assessed' ([string](Resolve-AdfaDcdiagVerdict -Parsed $ddEvent -TestName 'SystemLog' -HostName 'dc1.contoso.com' -EventLog $true).Status) 'C11 verdict: an event log that could not be queried is Not Assessed, not Fail (KB 2512643)'
+$ddLocal = Resolve-AdfaDcdiagVerdict -Parsed (ConvertFrom-AdfaDcdiagOutput -StdOut 'Diagnostico do Servidor de Diretorio' -Config $dd) -TestName 'Advertising' -HostName 'dc1.contoso.com'
+Assert-True ($ddLocal.Status -eq 'Not Assessed' -and $ddLocal.Detail -match 'not recognised' -and $ddLocal.Detail -match 'localised') 'C11 verdict: unrecognised output is Not Assessed and says it may be localised'
+# The target of a once-per-domain, -forest or -site test: usable and writable, never a read-only DC.
+$ddStates = @(
+    [pscustomobject]@{ HostName = 'rodc1.contoso.com'; IsReadOnly = $true; Usable = $true; Connectivity = 'Pass' }
+    [pscustomobject]@{ HostName = 'dc2.contoso.com'; IsReadOnly = $false; Usable = $false; Connectivity = 'Fail' }
+    [pscustomobject]@{ HostName = 'dc3.contoso.com'; IsReadOnly = $null; Usable = $true; Connectivity = 'Pass' }
+    [pscustomobject]@{ HostName = 'dc4.contoso.com'; IsReadOnly = $false; Usable = $true; Connectivity = 'Pass' }
+)
+Assert-Equal 'dc4.contoso.com' ([string](Select-AdfaDcdiagTarget -States $ddStates).HostName) 'C11 target: a usable DC known to be writable is chosen first'
+Assert-Equal 'dc3.contoso.com' ([string](Select-AdfaDcdiagTarget -States @($ddStates[0], $ddStates[1], $ddStates[2])).HostName) 'C11 target: then one whose writability is not known'
+Assert-True ($null -eq (Select-AdfaDcdiagTarget -States @($ddStates[0], $ddStates[1]))) 'C11 target: a read-only DC and a DC whose Connectivity failed are never chosen'
+# The validator: the time-out and retries only, never a test list.
+Assert-Equal 180 ([int](Merge-AdfaDcDiagConfig -BaseConfig $dd -Override @{ TestTimeoutSeconds = 180 } -OverrideSource 'C:\cfg\o.json')['TestTimeoutSeconds']) 'DcDiag override: the time-out is accepted'
+Assert-Throws { Merge-AdfaDcDiagConfig -BaseConfig $dd -Override @{ PerDcTests = @('CutoffServers') } } "unknown key 'PerDcTests'" 'DcDiag override: a test list can never be set from a file'
+Assert-Throws { Merge-AdfaDcDiagConfig -BaseConfig $dd -Override @{ TestTimeoutSeconds = 601 } } 'whole number from 5 to 600' 'DcDiag override: the time-out is bounded'
+Assert-Throws { Merge-AdfaDcDiagConfig -BaseConfig $dd -Override @{ Retries = '2' } } 'JSON number' 'DcDiag override: a quoted number is refused'
+Assert-Equal 'DNS,Intersite,SystemLog' ((@($script:Config.DcdiagActiveTests) | ForEach-Object { [string]$_.Test }) -join ',') 'C11: SystemLog is held back with DNS and Intersite (Learn: "reading and writing entries")'
+# The advice: the scoped families get their own; the grid rows keep the unscoped entries.
+$ddHostile = 'replication sysvol dfsr backup global catalog delegation C:\Backup\stale.json'
+$ddRecs = @(foreach ($item in @('dcdiag Topology: contoso.com', 'dcdiag CheckSDRefDom: Schema', 'dcdiag CrossRefValidation: forest contoso.com', 'dcdiag Intersite: HQ', 'dcdiag coverage: contoso.com')) { Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $item -Detail $ddHostile })
+Assert-True ($ddRecs[0] -match 'topology generation' -and $ddRecs[1] -match 'msDS-SDReferenceDomain' -and $ddRecs[2] -match 'nETBIOSName' -and $ddRecs[3] -match 'Intersite Topology Generator' -and $ddRecs[4] -eq '' -and @($ddRecs | Where-Object { $_ -match 'dfsrmig|wbadmin|repadmin /replsummary' }).Count -eq 0) 'C11 advice: each scoped family gets its own advice, whatever the Detail says (declared population: five items)'
+Assert-True ((Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail 'SysVolCheck: x') -match 'dfsrmig') 'C11 advice: a grid row keeps the unscoped advice it had'
+# Found by the independent review of the C11 diff, before commit.
+$ddLong = 'maplewaffle-ws22.corp.contoso.com'
+Assert-True (-not (Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE' -HostName $ddLong) -and -not (Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE-WS' -HostName $ddLong) -and (Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE-WS2' -HostName $ddLong)) 'C11 subject: an 11- or 14-character prefix of a long label is not its NetBIOS form; the 15-character form is'
+$ddDnsOut = "   Testing server: Default-First-Site-Name\DC1`r`n      Starting test: DNS`r`n         ......................... DC1 passed test DNS`r`n   Running enterprise tests on : contoso.com`r`n      Starting test: DNS`r`n         ......................... contoso.com failed test DNS"
+$ddDns = ConvertFrom-AdfaDcdiagOutput -StdOut $ddDnsOut -Config $dd
+Assert-Equal 'Fail' ([string](Resolve-AdfaDcdiagVerdict -Parsed $ddDns -TestName 'DNS' -HostName 'dc1.contoso.com' -EnterpriseParts $true -StdOut $ddDnsOut).Status) 'C11 verdict: a failed enterprise DNS summary fails the DC''s DNS cell, although the server block passed'
+Assert-Equal 'FsmoCheck,DNS' ((@($dd['PerDcTests']) | Where-Object { $_['EnterpriseParts'] } | ForEach-Object { [string]$_['Test'] }) -join ',') 'C11 config: FsmoCheck and DNS are the per-DC tests whose enterprise verdict counts for the DC asked'
+$ddFsmo = ConvertFrom-AdfaDcdiagOutput -StdOut "   Running enterprise tests on : contoso.com`r`n      Starting test: FsmoCheck`r`n         ......................... contoso.com passed test `r`n         FsmoCheck" -Config $dd
+Assert-Equal 'Pass' ([string](Resolve-AdfaDcdiagVerdict -Parsed $ddFsmo -TestName 'FsmoCheck' -HostName 'dc1.contoso.com' -EnterpriseParts $true).Status) 'C11 verdict: FsmoCheck passed in the enterprise block reads Pass for the DC asked'
+$ddNlOut = "   Testing server: Default-First-Site-Name\DC1`r`n      Starting test: NetLogons`r`n         Unable to connect to the NETLOGON share! (\\DC1\netlogon)`r`n         Access is denied.`r`n         ......................... DC1 failed test NetLogons"
+$ddNl = Resolve-AdfaDcdiagVerdict -Parsed (ConvertFrom-AdfaDcdiagOutput -StdOut $ddNlOut -Config $dd) -TestName 'Netlogons' -HostName 'dc1.contoso.com' -StdOut $ddNlOut
+Assert-True ($ddNl.Status -eq 'Fail' -and $ddNl.Detail -match 'KB 3073945' -and $ddNl.Detail -notmatch '(?i)replication') 'C11 verdict: the Access is denied note on a failed verdict is there, and does not say replication'
+$ddAdvice = [string]@($script:RecommendationMap | Where-Object { -not $_.ContainsKey('Section') -and [string]$_.Match -eq '(?i)dcdiag|advertising|netlogons|sysvolcheck|fsmocheck|kccevent' })[0].Text
+Assert-Equal $ddAdvice (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $ddNl.Detail) 'C11 advice: a failed NetLogons with Access is denied gets the dcdiag advice, not the replication advice'
+$ddKcc = Resolve-AdfaDcdiagVerdict -Parsed (ConvertFrom-AdfaDcdiagOutput -StdOut "Diagnostic du serveur d'annuaire`r`nDC1 a reussi le test KccEvent" -Config $dd) -TestName 'KccEvent' -HostName 'dc1.contoso.com' -StdOut "Diagnostic du serveur d'annuaire`r`nDC1 a reussi le test KccEvent"
+Assert-Equal $ddAdvice (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $ddKcc.Detail) 'C11 advice: an unrecognised cell gets the dcdiag advice, not the event-log coverage advice'
+$ddBanner = Resolve-AdfaDcdiagVerdict -Parsed (ConvertFrom-AdfaDcdiagOutput -StdOut "Directory Server Diagnosis`r`nPerforming initial setup:" -Config $dd) -TestName 'Advertising' -HostName 'dc1.contoso.com' -StdOut "Directory Server Diagnosis`r`nPerforming initial setup:"
+Assert-True ($ddBanner.Status -eq 'Not Assessed' -and $ddBanner.Detail -match 'neither' -and $ddBanner.Detail -notmatch 'localised') 'C11 verdict: English banner-only output is "no verdict line", not "possibly localised"'
+$ddBare = ConvertFrom-AdfaDcdiagOutput -StdOut "   Testing server: Default-First-Site-Name\DC2`r`n      Starting test: Advertising`r`n         ......................... passed test Advertising" -Config $dd
+Assert-Equal 'Not Assessed|Pass' (((Resolve-AdfaDcdiagVerdict -Parsed $ddBare -TestName 'Advertising' -HostName 'dc1.contoso.com').Status, (Resolve-AdfaDcdiagVerdict -Parsed $ddBare -TestName 'Advertising' -HostName 'dc2.contoso.com').Status) -join '|') 'C11 verdict: a bare verdict in DC2''s server block is DC2''s, not dc1''s'
+$ddNaStates = @(
+    [pscustomobject]@{ HostName = 'rodc8.contoso.com'; IsReadOnly = $true; Usable = $true; Connectivity = 'Not Assessed' }
+    [pscustomobject]@{ HostName = 'dc6.contoso.com'; IsReadOnly = $null; Usable = $true; Connectivity = 'Not Assessed' }
+    [pscustomobject]@{ HostName = 'dc7.contoso.com'; IsReadOnly = $false; Usable = $true; Connectivity = 'Not Assessed' }
+)
+Assert-Equal 'dc7.contoso.com|dc6.contoso.com' (([string](Select-AdfaDcdiagTarget -States $ddNaStates).HostName, [string](Select-AdfaDcdiagTarget -States @($ddNaStates[0], $ddNaStates[1])).HostName) -join '|') 'C11 target: with no Connectivity passed, a usable DC whose Connectivity was not assessed is tried, writable first'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue

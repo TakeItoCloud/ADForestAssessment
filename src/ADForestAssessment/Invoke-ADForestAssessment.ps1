@@ -23,7 +23,10 @@
         - FOREST & DOMAIN TRUSTS with verified TWO-WAY trust health
           (secure-channel verification per direction via nltest/netdom, plus SID filtering,
           selective authentication, TGT delegation and encryption posture)
-        - Parsed DC diagnostics (dcdiag key tests + core service state) as PASS/FAIL
+        - Parsed DC diagnostics (dcdiag key tests + core service state) as PASS/FAIL per DC,
+          with Topology per domain, CheckSDRefDom and CrossRefValidation per partition of the
+          forest, and Intersite per site (opt-in); a partition's or the enterprise's result is
+          never counted as a DC's
         - DNS health (zones, scavenging, forwarders, zone transfer)         [DnsServer optional]
         - SYSVOL / DFSR replication migration state                          [DFSR optional]
         - GPO inventory (linked / unlinked)                                  [GroupPolicy optional]
@@ -153,8 +156,10 @@
                                    /sc_verify removes and rebuilds a secure channel that is
                                    not working.
       -IncludeDcdiagActiveTests    dcdiag /test:DNS /DnsAll, whose dynamic update test
-                                   registers and then deletes a DNS test record; and
-                                   /test:Intersite /a, which triggers a replication.
+                                   registers and then deletes a DNS test record;
+                                   /test:SystemLog, which Microsoft describes as "reading and
+                                   writing entries"; and /test:Intersite /a, which triggers a
+                                   replication (run once per site that holds a DC).
       -IncludeDcdiag               raw 'dcdiag /c /v'; /c runs all tests except DCPromo and
                                    RegisterInDNS, so it includes CutoffServers (triggers
                                    replication) and the DNS test above, independently of
@@ -166,10 +171,16 @@
                                    trace, and Schannel logs errors by default, so a DC that
                                    cannot complete it may log a Schannel error event.
 
-    That is a list of what is KNOWN. The other commands a default run invokes (the remaining
-    dcdiag tests, repadmin, w32tm, nltest /sc_query and /dsgetdc, dfsrmig, nslookup, and remote
-    reads over WinRM, CIM, the remote registry, the DNS cmdlets and the event log) are used as
-    queries, but have not each been audited for a documented side effect. PORT-PLAN H20a.
+    That is a list of what is KNOWN. The dcdiag tests a default run invokes were each checked
+    against Microsoft's description of them in the dcdiag reference (PORT-PLAN C11, 2026-11-16):
+    none is described as writing or replicating, Topology is documented as analysing "without
+    actually replicating changes", and RidManager is described as checks only (it is accessible,
+    holds the proper information, can be contacted, has valid RID pool values) - Learn does not
+    say in so many words that it never requests a pool. FsmoCheck is not in that reference at all
+    (PORT-PLAN C11c). The other commands a default run invokes (repadmin, w32tm, nltest /sc_query
+    and /dsgetdc, dfsrmig, nslookup, and remote reads over WinRM, CIM, the remote registry, the
+    DNS cmdlets and the event log) are used as queries, but have not each been audited for a
+    documented side effect. PORT-PLAN H20a.
 
     Two sections make CIM METHOD calls, and they are the only ones in the script. Both read
     the registry of each DC through the WMI registry provider, StdRegProv, which exposes no
@@ -329,9 +340,23 @@
     the domain's Administrator (RID 500), and the delegation search must return every DC registered
     for the domain; otherwise the rows built on them are Not Assessed.
 
+    DcDiagnostics runs dcdiag from the host running the assessment, one test per invocation
+    ("dcdiag /test:<test> /s:<server>"; administrative rights on the DC and an elevated session,
+    as Microsoft requires), and reads its en-US output. Each verdict is attributed to the block it
+    is printed in - a DC, a partition or the enterprise - and never counted against an unrelated
+    DC. Per DC, a grid row of 21 tests carrying the DC's domain (19 run by default; Connectivity
+    first, and when it fails nothing more is started on that DC). Per scoped domain, one "dcdiag
+    Topology" row and one "dcdiag coverage" row. Per forest, CheckSDRefDom and CrossRefValidation
+    once each, with one row per partition and a roll-up. Per site that holds a DC, Intersite with
+    -IncludeDcdiagActiveTests. LocatorCheck is never run: it is not in Microsoft's table of dcdiag
+    tests. Unreachable, access denied, output not recognised (possibly localised) and an event log
+    that could not be queried are each their own Not Assessed cause, never Pass. Like DcDisk it
+    covers the DCs of every scoped domain; the site and read-only flag of each DC come from the DC
+    inventory, so name DomainControllers with it for the per-site rows.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Nine sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Ten sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -415,6 +440,15 @@
 
         { "Privileged": { "SchemaAdminsStatus": "Fail", "EnterpriseAdminsExemptRootAdministrator": true } }
 
+    And DcDiag, used by the DcDiagnostics section, whose keys are TestTimeoutSeconds (the time-out
+    of one dcdiag invocation, a whole number from 5 to 600; it takes precedence over
+    -ExternalToolTimeoutSeconds for dcdiag) and Retries (attempts per invocation, 1 to 10). Both
+    are tool defaults, not Microsoft values: Microsoft publishes no dcdiag time-out. The test
+    lists, the opt-in list, the output markers and the evidence patterns are refused, so a file
+    can never add a dcdiag test:
+
+        { "DcDiag": { "TestTimeoutSeconds": 180 } }
+
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
     stops, before anything is collected, on a missing or malformed file, a file that is not one
@@ -441,13 +475,15 @@
     independent: this one controls the raw capture, that one the parsed grid.
 
 .PARAMETER IncludeDcdiagActiveTests
-    Also run the two dcdiag grid tests that Microsoft documents as changing state:
+    Also run the three dcdiag tests whose Microsoft description is not read-only:
     /test:DNS /DnsAll, whose dynamic update test performs "registration of a test record
-    (_dcdiag_test_record)" that "is deleted automatically after the test"; and
-    /test:Intersite /a, which works by "reporting back any replication failures after
-    triggering a replication". NOT read-only. Without this switch the DNS and Intersite cells
-    of the DC Diagnostics grid read Not Assessed, each DC's row says why, and the row's status
-    is taken from the other 16 tests.
+    (_dcdiag_test_record)" that "is deleted automatically after the test"; /test:SystemLog, which
+    "Validates the System Event Log's health by reading and writing entries" (Microsoft does not
+    say what is written); and /test:Intersite /a, which works by "reporting back any replication
+    failures after triggering a replication", run once per site that holds a DC rather than once
+    per DC. NOT read-only. Without this switch the DNS and SystemLog cells of the DC Diagnostics
+    grid read Not Assessed, each DC's row says why, the row's status is taken from the other 19
+    tests, and one "dcdiag Intersite: not run" row says Intersite was not run.
 
 .PARAMETER IncludeLdapsHandshake
     In the DcCertificates section, also read the certificate each DC presents on LDAPS, port
@@ -510,7 +546,9 @@
     TCP connect timeout for reachability probes (RPC/135, ADWS/9389). Default: 1200.
 
 .PARAMETER ExternalToolTimeoutSeconds
-    Timeout for each external tool invocation (dcdiag/repadmin/nltest/netdom). Default: 90.
+    Timeout for each external tool invocation (dcdiag/repadmin/nltest/netdom). Default: 90, a
+    tool default, not a Microsoft value. For dcdiag, the TestTimeoutSeconds key of the DcDiag
+    section of -ConfigOverridePath takes precedence when the file sets it.
 
 .PARAMETER Retries
     Max attempts for external tools before marking FAIL. Default: 2.
@@ -574,9 +612,11 @@ param(
     [switch]$IncludeSecureChannelVerify,
 
     # Also run the dcdiag tests that Microsoft documents as changing state: /test:DNS /DnsAll,
-    # whose dynamic update test registers and then deletes a DNS test record, and
-    # /test:Intersite /a, which triggers a replication. Opt-in because they are not read-only.
-    # Without it those two grid cells read Not Assessed and the row says why.
+    # whose dynamic update test registers and then deletes a DNS test record; /test:SystemLog,
+    # which Microsoft describes as reading and writing System log entries; and /test:Intersite /a,
+    # which triggers a replication and runs once per site. Opt-in because they are not read-only.
+    # Without it the DNS and SystemLog grid cells read Not Assessed, the row says why, and one
+    # "dcdiag Intersite: not run" row says the same.
     [switch]$IncludeDcdiagActiveTests,
 
     # Read the certificate each DC presents on LDAPS (port 636) with a TLS handshake that sends
@@ -606,7 +646,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl" and "Privileged" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl", "Privileged" and "DcDiag" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -640,7 +680,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.27.0'
+    Version                 = '1.28.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -809,7 +849,178 @@ $script:Config = @{
            Quote    = 'Reporting back any replication failures after triggering a replication.'
            Source   = 'https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag'
            ReadDate = '2026-11-13' }
+        # PORT-PLAN C11. Learn's description says "writing". It does not say what is written, and the
+        # wording may be a documentation error; until Microsoft says the test only reads, it is
+        # treated as changing state, by the H20 rule. Operator to confirm (PORT-PLAN C11a).
+        @{ Test     = 'SystemLog'
+           Effect   = 'Microsoft describes it as reading and writing System log entries'
+           Quote    = 'Validates the System Event Log''s health by reading and writing entries from the past 60 minutes for any errors and warnings.'
+           Source   = 'https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag'
+           ReadDate = '2026-11-16' }
     )
+    # --- dcdiag: which tests run, at which scope, and how their output is read (PORT-PLAN C11) --
+    # Every test named below is in the "DCDiag known tests" table of the dcdiag command reference,
+    # except FsmoCheck, which is flagged (InLearnTable = $false) and kept only because the grid had
+    # it before this row (PORT-PLAN C11c):
+    #   https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag
+    #   Read: 2026-11-16.
+    # Learn publishes no table of the scope each test runs at. The scope here follows the blocks of
+    # Learn's own sample output: per-DC tests under "Testing server: <site>\<DC>", CheckSDRefDom and
+    # CrossRefValidation under "Running partition tests on : <NC>", Intersite under "Running
+    # enterprise tests on : <forest>". Topology's block is not in the sample; it is run once per
+    # domain and every verdict it prints is counted. The parser attributes each verdict to the block
+    # it is printed in, whatever this table says, so a partition or enterprise result never becomes
+    # the failure of a DC it is not about: a partition verdict counts for the DC asked only for a
+    # test with PartitionParts, an enterprise verdict only for a test with EnterpriseParts.
+    #
+    # The test lists cannot be set from a file: the "DcDiag" key of -ConfigOverridePath accepts only
+    # TestTimeoutSeconds and Retries, so a file can never add a test that changes state. Tests that
+    # Microsoft documents as changing state are in DcdiagActiveTests above and run only with
+    # -IncludeDcdiagActiveTests. /fix, /c, /e, /u, /p, /skip and the MachineAccount repair options
+    # are never passed.
+    DcDiag                  = @{
+        Version            = '1.28.0'
+        SourceUrl          = 'https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag'
+        ReadDate           = '2026-11-16'
+        ThresholdSource    = 'tool default, not a Microsoft value'
+        # Microsoft publishes no dcdiag run time or time-out ("Domain controllers and DNS servers that
+        # are offline will increase run times due to long time-out periods for RPC and other
+        # protocols"). $null takes -ExternalToolTimeoutSeconds (90 s unless set) and -Retries (2):
+        # tool defaults, not Microsoft values. A file can set either, 5-600 s and 1-10 attempts.
+        TestTimeoutSeconds = $null
+        Retries            = $null
+        TimeoutSource      = 'tool default, not a Microsoft value (-ExternalToolTimeoutSeconds)'
+        # Per DC, in the reference order (AdAssessment26 SPEC, per-DC order). Connectivity first:
+        # "The connectivity test can't be skipped", so it runs in every invocation anyway, and when it
+        # fails on a DC no further test is started there. PartitionParts: a verdict this test prints
+        # in a partition block is about THIS server's replicas, so it counts for the DC that was
+        # asked. EnterpriseParts: the test is one of dcdiag's enterprise tests, whose verdict is
+        # printed under "Running enterprise tests on : <forest>" with the forest as its subject
+        # (Learn's sample prints LocatorCheck and Intersite there), so in a "/s:<this DC>"
+        # invocation without /e that verdict is the enterprise test run from THIS DC and counts for
+        # it. Without the flag an enterprise verdict counted for no DC, which left FsmoCheck Not
+        # Assessed on every DC and read a failed DNS summary as Pass (independent review, C11).
+        # EventLog: the test reads a remote event log, and a log that "could not be queried"
+        # is an instrument failure (KB 2512643), not a finding.
+        PerDcTests         = @(
+            @{ Test = 'Connectivity'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Verifies that the DSA and DNS are registered and reachable using LDAP and RPC.' }
+            @{ Test = 'Replications'; InLearnTable = $true; PartitionParts = $true; EnterpriseParts = $false; EventLog = $false
+               Learn = 'This test checks all AD replication connection objects for all naming contexts on specified DC(s)' }
+            @{ Test = 'Advertising'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Checks whether each domain controller advertises itself in the roles that it should be capable of performing.' }
+            @{ Test = 'Services'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'This test validates that various AD-dependent services are running, accessible, and set to specific start types.' }
+            # Learn spells it NetLogons; dcdiag test names are matched without regard to case, and the
+            # grid column keeps the spelling it has had since v1.0.
+            @{ Test = 'Netlogons'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Validates that the user running DCDiag can connect to and read the SYSVOL and NETLOGON shares without any security errors.' }
+            @{ Test = 'SysVolCheck'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'This test reads the DCs Netlogon SysVolReady registry key to validate that SYSVOL is ready.' }
+            @{ Test = 'DFSREvent'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $true
+               Learn = 'checking the DFSR event log warning and error entries from the past 24 hours. This test uses RPC and EventLog Remoting Protocol.' }
+            @{ Test = 'FrsEvent'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $true
+               Learn = 'Checks to see if there are errors in the File Replication Service (FRS) event log from the past 24 hours' }
+            @{ Test = 'KccEvent'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $true
+               Learn = 'This test queries the KCC on the DC for errors and warnings generated in the Directory Services event log during the last 15 minutes.' }
+            # PORT-PLAN C6e. Learn describes RidManager as checks only, over LDAP and RPC; it does not
+            # say in so many words that the test never requests a RID pool. Kept in the default list
+            # on that description, read 2026-11-16.
+            @{ Test = 'RidManager'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Checks whether the relative identifier (RID) master is accessible and if: It contains the proper information. Can be located and contacted through a DsBind. Has valid RID pool values. ... This test uses LDAP and RPC.'
+               Source = 'https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag'
+               ReadDate = '2026-11-16' }
+            @{ Test = 'KnowsOfRoleHolders'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'This test returns the DCs knowledge of the five Flexible Single Master Operation (FSMO) roles' }
+            @{ Test = 'MachineAccount'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Checks whether the machine account has properly registered and that the services are advertised using LDAP and RPC over SMB' }
+            @{ Test = 'ObjectsReplicated'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Checks that the Machine Account and Directory System Agent (DSA) objects have replicated.' }
+            @{ Test = 'NCSecDesc'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Checks permissions on all the naming contexts (such as Schema, Configuration, etc.) on the source DC ... This test uses LDAP.' }
+            @{ Test = 'VerifyReferences'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Checks that certain system references are intact for the FRS and replication infrastructure.' }
+            @{ Test = 'VerifyReplicas'; InLearnTable = $true; PartitionParts = $true; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Checks that all application directory partitions are fully instantiated on all replica servers. It verifies that the specified server hosts the application partitions specified by its crossref attributes' }
+            # NOT in Learn's table: Learn mentions it only in a legacy Windows 2000 upgrade article.
+            # Kept because the grid had it; PORT-PLAN C11c decides whether it stays. EnterpriseParts:
+            # Microsoft publishes no FsmoCheck output; field captures print its verdict in the
+            # enterprise block, like LocatorCheck and Intersite in Learn's sample, and a verdict in
+            # the server block is counted too. To be confirmed against a real capture (C11b, C17).
+            @{ Test = 'FsmoCheck'; InLearnTable = $false; PartitionParts = $false; EnterpriseParts = $true; EventLog = $false
+               Learn = '' }
+            @{ Test = 'CheckSecurityError'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Test is not run by default. Performs various security checks for errors related to the security components of the DC' }
+            @{ Test = 'VerifyEnterpriseReferences'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $false
+               Learn = 'Checks that specified system references are intact for the FRS and replication infrastructure across all objects in the enterprise on each domain controller.' }
+            # Opt-in (DcdiagActiveTests): Learn says "reading and writing entries".
+            @{ Test = 'SystemLog'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $false; EventLog = $true
+               Learn = 'Validates the System Event Log''s health by reading and writing entries from the past 60 minutes for any errors and warnings.' }
+            # Opt-in (DcdiagActiveTests): the dynamic update test registers a test record.
+            # EnterpriseParts: Learn calls it "enterprise-wide DNS health checks"; its summary
+            # verdict is counted with the server-block one, and "failed" wins.
+            @{ Test = 'DNS'; InLearnTable = $true; PartitionParts = $false; EnterpriseParts = $true; EventLog = $false
+               Learn = 'Tests enterprise-wide DNS health checks using DNS, RPC, and WMI protocols. Not ran by default and must be explicitly requested.' }
+        )
+        # Once per scoped domain, against a writable DC of that domain.
+        DomainTests        = @(
+            @{ Test = 'Topology'; InLearnTable = $true
+               Learn = 'uses ... DsReplicaSyncAll with the flag DS_REPSYNCALL_DO_NOT_SYNC, meaning that it analyzes and validates replication topology without actually replicating changes.' }
+        )
+        # Once per forest: both read the crossRef objects in CN=Partitions,CN=Configuration, which every
+        # DC holds, so any DC can answer; one of the forest root domain is asked first.
+        ForestTests        = @(
+            @{ Test = 'CheckSDRefDom'; InLearnTable = $true
+               Learn = 'validates cross reference objects located in cn=partitions,cn=configuration,dc=<forest root domain> contain the correct domain names in their msDS-SDReferenceDomain attributes.' }
+            @{ Test = 'CrossRefValidation'; InLearnTable = $true
+               Learn = 'This test looks at the nCName, dnsRoot, nETBIOSName, and systemFlags attributes' }
+        )
+        # Once per site that holds a DC, with /a, only with -IncludeDcdiagActiveTests (it triggers a
+        # replication; DcdiagActiveTests above).
+        SiteTests          = @(
+            @{ Test = 'Intersite'; InLearnTable = $true
+               Learn = 'The /a or /e parameter must be used as not providing a site would allow the test to run but skips actual testing.' }
+        )
+        # Never run, and why.
+        NotAdded           = @(
+            # Report: the catalogue has a row for it (DCDIAG-009), so the section says it was not run.
+            @{ Test = 'LocatorCheck'; Report = $true
+               Why = 'not in the known-tests table ("DCDiag known tests") of the Microsoft Learn dcdiag reference; it appears only in that page''s sample output, with no description' }
+            @{ Test = 'CutoffServers'; Why = 'Microsoft documents that it uses DsReplicaSyncAll, "which triggers replication on the DCs"' }
+            @{ Test = 'DcPromo'; Why = 'a promotion pre-check that runs locally only and needs promotion arguments' }
+            @{ Test = 'RegisterInDNS'; Why = 'a registration pre-check that runs locally only and needs /DnsDomain' }
+            @{ Test = 'OutboundSecureChannels'; Why = 'needs /testdomain; the Trusts and DcSecureChannel sections test secure channels' }
+        )
+        # The en-US lines the parser reads, from the dcdiag reference's sample output (Learn publishes
+        # en-US output only). A verdict may wrap, so "\s+" spans the line break before the test name.
+        OutputMarkers      = @{
+            ServerBlock     = '(?im)^[ \t]*Testing server:[ \t]*(?:[^\\\r\n]*\\)?(?<name>[^\s\\]+)'
+            PartitionBlock  = '(?im)^[ \t]*Running partition tests on[ \t]*:[ \t]*(?<name>\S+)'
+            EnterpriseBlock = '(?im)^[ \t]*Running enterprise tests on[ \t]*:[ \t]*(?<name>\S+)'
+            Verdict         = '(?i)(?:(?<subject>\S+)[ \t]+)?(?<verdict>passed|failed)\s+test\s+(?<test>[A-Za-z0-9]+)\b'
+            Recognised      = @('(?im)^[ \t]*Directory Server Diagnosis', '(?im)^[ \t]*Performing initial setup', '(?im)^[ \t]*Doing (initial required|primary) tests', '(?im)^[ \t]*Starting test:')
+        }
+        # A remote event log that could not be read. The sample lines are Microsoft's (KB 2512643),
+        # which calls them expected errors caused by firewall rules.
+        EventLogUnreadablePatterns = @(
+            @{ Pattern = '(?i)\bcould not be queried\b'; Provisional = $false
+               Source = 'https://learn.microsoft.com/troubleshoot/windows-server/identity/dcdiag-commands-running-errors'; ReadDate = '2026-11-16' }
+        )
+        # PROVISIONAL: Microsoft publishes no dcdiag text for a server it cannot reach (a Learn search
+        # on 2026-11-16 found none). Used only to explain a test that printed NO verdict; never to
+        # overrule one. To be confirmed against a real capture (PORT-PLAN C11b, with C17).
+        UnreachablePatterns = @(
+            @{ Pattern = '(?i)Ldap search capability attribute search failed'; Provisional = $true }
+            @{ Pattern = '(?i)\bcould not be contacted\b'; Provisional = $true }
+        )
+        # ERROR_ACCESS_DENIED's system message is "Access is denied." Used only to explain a test that
+        # printed NO verdict: a replication error 5 under a failed Replications verdict is a finding
+        # about the DC (KB 3073945), not about the account running this tool.
+        AccessDeniedPatterns = @(
+            @{ Pattern = '(?i)\bAccess is denied\b'; Provisional = $false
+               Source = 'https://learn.microsoft.com/windows/win32/debug/system-error-codes--0-499-'; ReadDate = '2026-11-16' }
+        )
+    }
     # --- DC system: OS lifecycle, and patch-level inventory (PORT-PLAN C1) ------------------
     # Volatile vendor facts, replaceable from a file via -DcSystemConfigPath.
     #
@@ -1490,7 +1701,9 @@ $script:Config = @{
     # msDS-RIDPoolAllocationEnabled (404 on 2026-11-16) and what its absence from an older schema
     # means (Not Assessed); whether a read-only DC has a RID Set; whether the end of a pool is
     # inclusive ("remaining" is end - next + 1, a tool derivation); the exception the module throws
-    # for an object that does not exist; whether dcdiag /test:RidManager requests a pool (not run).
+    # for an object that does not exist. dcdiag /test:RidManager is not run by this section; the
+    # DC Diagnostics section runs it, on Learn's description of it as checks only (PORT-PLAN C6e,
+    # closed by C11 on 2026-11-16).
     #
     # Replaceable from a file via -ConfigOverridePath, under the key "RidPool": WarnAtPercentUsed and
     # FailAtPercentUsed. Nothing else - not the ceilings and not any attribute or object name.
@@ -3444,8 +3657,12 @@ function Get-AdfaDcdiagTestOutcome {
     # The verdict is read before Success is consulted on purpose: dcdiag returns a non-zero exit
     # code for a FAILED test, and treating that as "the tool did not run" would discard a real
     # measurement. Only output with no verdict at all falls through to the Success check.
-    if ($text -match ("(?i)passed test\s+{0}\b" -f $escaped)) { return 'Pass' }
+    # 'failed' is read BEFORE 'passed' (PORT-PLAN C11, the reference's R2 false pass): output that
+    # holds both - one partition passed, another failed - is a Fail, never a Pass. The collector
+    # itself grades through ConvertFrom-AdfaDcdiagOutput and Resolve-AdfaDcdiagVerdict, which
+    # also attribute each verdict to its DC, partition or enterprise block.
     if ($text -match ("(?i)failed test\s+{0}\b" -f $escaped)) { return 'Fail' }
+    if ($text -match ("(?i)passed test\s+{0}\b" -f $escaped)) { return 'Pass' }
     if (-not $Success) { return 'ToolFailed' }
     return 'Unparsed'
 }
@@ -3481,20 +3698,7 @@ function Get-AdfaDcdiagUnassessedCause {
         [AllowNull()]$ExitCode = $null,
         [int]$ExcerptChars = 200
     )
-    $lines = @(("$StdOut") -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-    $excerpt = ''
-    if ($lines.Count -gt 0) {
-        $escapedName = [regex]::Escape($TestName)
-        $interesting = @($lines | Where-Object {
-                $_ -match $escapedName -or $_ -match '(?i)\btest\b|error|warning|fail|cannot|could not|denied|unable'
-            } | Select-Object -Last 4)
-        # No line looked diagnostic, so take the END of the output rather than the start: the
-        # beginning is dcdiag's banner, the summary is at the bottom.
-        if (@($interesting).Count -eq 0) { $interesting = @($lines | Select-Object -Last 4) }
-        $joined = @($interesting) -join ' / '
-        if ($joined.Length -gt $ExcerptChars) { $joined = $joined.Substring(0, $ExcerptChars) + '...' }
-        $excerpt = $joined
-    }
+    $excerpt = Get-AdfaDcdiagOutputExcerpt -TestName $TestName -StdOut $StdOut -ExcerptChars $ExcerptChars
     $codeText = '(none)'
     if ($null -ne $ExitCode) { $codeText = [string]$ExitCode }
 
@@ -3510,51 +3714,575 @@ function Get-AdfaDcdiagUnassessedCause {
     return ("{0}: NOT ASSESSED - dcdiag ran (exit code {1}) but its output contained neither 'passed test {0}' nor 'failed test {0}', so no verdict could be read. This is usually a test that did not execute on this DC, or a non-English Windows whose verdict line this build does not match. Output: {2}" -f $TestName, $codeText, $excerpt)
 }
 
+function Get-AdfaDcdiagOutputExcerpt {
+    <#
+    .SYNOPSIS
+        Pure: a short excerpt of dcdiag output, for the cause of a cell that could not be assessed.
+    .DESCRIPTION
+        The lines that name the test or carry a verdict or error word, the last four of them;
+        failing that the last four lines, because dcdiag prints its banner at the top and its
+        summary at the bottom. Bounded to -ExcerptChars, with "..." when cut.
+    .OUTPUTS
+        [string] '' when there is no output.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$TestName,
+        [AllowNull()][string]$StdOut = '',
+        [int]$ExcerptChars = 200
+    )
+    $lines = @(("$StdOut") -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($lines.Count -eq 0) { return '' }
+    $escapedName = [regex]::Escape($TestName)
+    $interesting = @($lines | Where-Object {
+            $_ -match $escapedName -or $_ -match '(?i)\btest\b|error|warning|fail|cannot|could not|denied|unable'
+        } | Select-Object -Last 4)
+    # No line looked diagnostic, so take the END of the output rather than the start: the
+    # beginning is dcdiag's banner, the summary is at the bottom.
+    if (@($interesting).Count -eq 0) { $interesting = @($lines | Select-Object -Last 4) }
+    $joined = @($interesting) -join ' / '
+    if ($joined.Length -gt $ExcerptChars) { $joined = $joined.Substring(0, $ExcerptChars) + '...' }
+    return $joined
+}
+
+function Test-AdfaDcdiagSubject {
+    <#
+    .SYNOPSIS
+        Pure: whether the subject of a dcdiag verdict line ("<subject> passed test X") names this
+        domain controller.
+    .DESCRIPTION
+        dcdiag names a DC by its short name in a verdict line. In the dcdiag reference's sample the
+        home server is "MapleWaffle-WS22" and its verdicts are written for "MAPLEWAFFLE-WS2": the
+        NetBIOS name, which is at most 15 characters ("Maximum name length: 15 characters", Naming
+        conventions in Active Directory, KB 909264). So a subject matches the full host name, its
+        first label, or - only when that label is longer than 15 characters and the subject is
+        exactly 15 - the label's first 15 characters. Compared without regard to case. An empty
+        subject matches nothing; the caller decides what a bare verdict line means.
+          https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag
+          https://learn.microsoft.com/troubleshoot/windows-server/active-directory/naming-conventions-for-computer-domain-site-ou
+          Read: 2026-11-16 (both).
+    .OUTPUTS
+        [bool]
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Subject = '',
+        [AllowNull()][AllowEmptyString()][string]$HostName = ''
+    )
+    $s = ("$Subject").Trim().TrimStart('.').ToLowerInvariant()
+    $h = ("$HostName").Trim().ToLowerInvariant()
+    if ($s -eq '' -or $h -eq '') { return $false }
+    if ($s -eq $h) { return $true }
+    $short = $h.Split('.')[0]
+    if ($s -eq $short) { return $true }
+    if ($s.Length -eq 15 -and $short.Length -gt 15 -and $short.StartsWith($s, [System.StringComparison]::Ordinal)) { return $true }
+    return $false
+}
+
+function ConvertFrom-AdfaDcdiagOutput {
+    <#
+    .SYNOPSIS
+        Pure parser for the output of one dcdiag invocation: every verdict line, attributed to the
+        block it is printed in, and the lines that say why a verdict may be missing.
+    .DESCRIPTION
+        The block headers and the verdict line are the en-US text of the dcdiag reference's sample
+        output (OutputMarkers in the DcDiag config table): "Testing server: <site>\<DC>" opens a
+        Server block, "Running partition tests on : <NC>" a Partition block and "Running enterprise
+        tests on : <name>" an Enterprise block. A verdict is "<subject> passed|failed test <Test>";
+        the match spans the line break Learn's own sample shows between "passed test" and the test
+        name. A verdict before any header is in block None.
+
+        Every verdict found is returned, for every test, so the caller can tell "this DC's
+        verdict", "another DC's verdict", "a partition's verdict" and "no verdict" apart. Nothing
+        here grades anything.
+
+        Recognised is true when the output holds any line this build reads: a block header, a
+        verdict, or one of dcdiag's banner lines. Output that is not empty and holds none of them
+        is the shape a localised (non-English) dcdiag would produce.
+
+        Evidence: the lines matching the UnreachablePatterns (provisional), AccessDeniedPatterns and
+        EventLogUnreadablePatterns of the config table, at most three of each.
+    .OUTPUTS
+        [pscustomobject] Empty, Recognised, Parts (Test, Verdict Pass|Fail, Subject, ScopeKind
+        Server|Partition|Enterprise|None, ScopeName, Line), UnreachableEvidence,
+        AccessDeniedEvidence, EventLogUnreadableEvidence.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$StdOut = '',
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $text = "$StdOut"
+    $markers = Get-AdfaConfigValue -Entry $Config -Name 'OutputMarkers'
+    $blocks = New-Object System.Collections.ArrayList
+    foreach ($kind in @('Server', 'Partition', 'Enterprise')) {
+        $pattern = [string](Get-AdfaConfigValue -Entry $markers -Name ("{0}Block" -f $kind))
+        if ($pattern -eq '') { continue }
+        foreach ($m in [regex]::Matches($text, $pattern)) {
+            [void]$blocks.Add([pscustomobject]@{ Index = [int]$m.Index; Kind = $kind; Name = [string]$m.Groups['name'].Value })
+        }
+    }
+    $ordered = @($blocks | Sort-Object -Property Index)
+    $parts = New-Object System.Collections.ArrayList
+    $verdictPattern = [string](Get-AdfaConfigValue -Entry $markers -Name 'Verdict')
+    if ($verdictPattern -ne '') {
+        foreach ($m in [regex]::Matches($text, $verdictPattern)) {
+            $kind = 'None'
+            $name = ''
+            foreach ($b in $ordered) {
+                if ($b.Index -lt $m.Index) { $kind = $b.Kind; $name = $b.Name }
+                else { break }
+            }
+            $verdict = 'Pass'
+            if ([string]$m.Groups['verdict'].Value -match '(?i)^failed$') { $verdict = 'Fail' }
+            [void]$parts.Add([pscustomobject]@{
+                    Test      = [string]$m.Groups['test'].Value
+                    Verdict   = $verdict
+                    Subject   = ([string]$m.Groups['subject'].Value).Trim().TrimStart('.')
+                    ScopeKind = $kind
+                    ScopeName = $name
+                    Line      = (([string]$m.Value) -replace '\s+', ' ').Trim()
+                })
+        }
+    }
+    $recognised = ($blocks.Count -gt 0 -or $parts.Count -gt 0)
+    if (-not $recognised) {
+        foreach ($p in @(Get-AdfaConfigValue -Entry $markers -Name 'Recognised')) {
+            if (-not [string]::IsNullOrEmpty([string]$p) -and $text -match [string]$p) { $recognised = $true; break }
+        }
+    }
+    $lines = @($text -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $evidence = @{}
+    foreach ($key in @('UnreachablePatterns', 'AccessDeniedPatterns', 'EventLogUnreadablePatterns')) {
+        $found = New-Object System.Collections.ArrayList
+        foreach ($entry in @(Get-AdfaConfigValue -Entry $Config -Name $key)) {
+            $pattern = [string](Get-AdfaConfigValue -Entry $entry -Name 'Pattern')
+            if ($pattern -eq '') { continue }
+            foreach ($line in $lines) {
+                if ($line -match $pattern -and -not $found.Contains($line)) { [void]$found.Add($line) }
+            }
+        }
+        $evidence[$key] = @($found | Select-Object -First 3)
+    }
+    return [pscustomobject]@{
+        Empty                      = [string]::IsNullOrWhiteSpace($text)
+        Recognised                 = [bool]$recognised
+        Parts                      = $parts.ToArray()
+        UnreachableEvidence        = @($evidence['UnreachablePatterns'])
+        AccessDeniedEvidence       = @($evidence['AccessDeniedPatterns'])
+        EventLogUnreadableEvidence = @($evidence['EventLogUnreadablePatterns'])
+    }
+}
+
+function Resolve-AdfaDcdiagVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict for one dcdiag test from its parsed output: Pass, Fail or Not Assessed, and
+        the text that says why.
+    .DESCRIPTION
+        Which verdicts count. Mode Dc (a per-DC grid cell): the DC's own verdicts - a Server or
+        None block whose subject names -HostName (Test-AdfaDcdiagSubject), or a bare verdict with
+        no subject, which in a "/s:<this DC>" invocation can only be about this DC - and, for a
+        test with -PartitionParts, the verdicts in partition blocks, which are about the replicas
+        of the server that was asked; for a test with -EnterpriseParts (one of dcdiag's enterprise
+        tests, such as DNS and FsmoCheck), the verdicts in the enterprise block, which in a
+        "/s:<this DC>" invocation without /e is the enterprise test run from this DC. Other
+        enterprise verdicts, other DCs' verdicts and other tests' partition verdicts never count
+        for a DC: they are listed as "not counted". Mode Scope (a
+        once-per-domain, -forest or -site test): every verdict for the test counts, wherever it is
+        printed.
+
+        The roll-up: any counted part failed -> Fail; otherwise any passed -> Pass; otherwise Not
+        Assessed. "failed" always wins, whatever order the lines are in. A missing verdict is never
+        a Pass.
+
+        Two documented exceptions. An event-log test (-EventLog) that failed while its output says
+        the log "could not be queried" is Not Assessed: Microsoft calls that an expected error of
+        the DC's firewall rules (KB 2512643), and the log was not read. A failed verdict whose
+        output also says "Access is denied" stays a Fail, with a note: Microsoft documents
+        error 5 "Access is denied" between DCs, with causes on the DCs themselves (KB 3073945,
+        https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-5,
+        read 2026-11-16), so the words
+        alone do not show that the runner lacked rights. The note is worded without the words
+        the unscoped recommendation entries match on (no "replication", "not a pass", ...), so it
+        cannot choose the advice for the grid row: the recommendation map matches on the whole
+        finding text, first match wins, and a grid row has no section-scoped entry.
+
+        With no counted verdict, the cause is chosen in this order: access denied; the server could
+        not be reached (provisional patterns); the invocation's own Connectivity test failed; a
+        verdict was printed only for something other than this DC; dcdiag did not complete; no
+        output; output not recognised (possibly localised); otherwise no verdict line.
+    .OUTPUTS
+        [pscustomobject] Status, Detail ('' for a plain Pass), Parts (counted), Ignored.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Parsed,
+        [Parameter(Mandatory)][string]$TestName,
+        [ValidateSet('Dc', 'Scope')][string]$Mode = 'Dc',
+        [AllowNull()][AllowEmptyString()][string]$HostName = '',
+        [bool]$PartitionParts = $false,
+        [bool]$EnterpriseParts = $false,
+        [bool]$EventLog = $false,
+        [bool]$Success = $true,
+        [AllowNull()]$ExitCode = $null,
+        [AllowNull()][AllowEmptyString()][string]$ErrorText = '',
+        [AllowNull()][AllowEmptyString()][string]$StdOut = ''
+    )
+    $relevant = New-Object System.Collections.ArrayList
+    $ignored = New-Object System.Collections.ArrayList
+    $connectivityFailed = $false
+    foreach ($part in @($Parsed.Parts)) {
+        if ($null -eq $part) { continue }
+        $counts = $false
+        if ($Mode -eq 'Scope') { $counts = $true }
+        elseif ([string]$part.ScopeKind -eq 'Partition') { $counts = $PartitionParts }
+        elseif ([string]$part.ScopeKind -eq 'Enterprise') { $counts = $EnterpriseParts }
+        else {
+            $subject = [string]$part.Subject
+            if ($subject -eq '' -and [string]$part.ScopeKind -eq 'Server') { $subject = [string]$part.ScopeName }
+            if ($subject -eq '') { $counts = $true }
+            else { $counts = Test-AdfaDcdiagSubject -Subject $subject -HostName $HostName }
+        }
+        if ([string]$part.Test -ne $TestName) {
+            if ($counts -and [string]$part.Test -eq 'Connectivity' -and [string]$part.Verdict -eq 'Fail') { $connectivityFailed = $true }
+            continue
+        }
+        if ($counts) { [void]$relevant.Add($part) } else { [void]$ignored.Add($part) }
+    }
+    $failed = @($relevant | Where-Object { [string]$_.Verdict -eq 'Fail' })
+    $passed = @($relevant | Where-Object { [string]$_.Verdict -eq 'Pass' })
+    $out = [pscustomobject]@{ Status = $script:Status.NotAssessed; Detail = ''; Parts = $relevant.ToArray(); Ignored = $ignored.ToArray() }
+    $quote = {
+        param([string]$Line)
+        $q = $Line.Trim()
+        if ($q.Length -gt 200) { $q = $q.Substring(0, 200) + '...' }
+        $q
+    }
+
+    if ($failed.Count -gt 0) {
+        $eventLines = @($Parsed.EventLogUnreadableEvidence)
+        if ($EventLog -and $eventLines.Count -gt 0) {
+            $out.Detail = ("{0}: NOT ASSESSED - dcdiag reported the test failed, but the event log it reads could not be queried ('{1}'). Microsoft documents this as an expected error when the domain controller's firewall does not allow remote event log access, and names the inbound rules Remote Event Log Management (NP-In), (RPC) and (RPC-EPMAP) (KB 2512643). The log itself was not read, so nothing is known about its entries." -f $TestName, (& $quote $eventLines[0]))
+            return $out
+        }
+        $out.Status = $script:Status.Fail
+        $errLines = @(("$StdOut") -split "`r?`n" |
+            Where-Object { $_ -match 'error|warning|failed|could not|cannot|unable' -and $_ -notmatch 'passed test' } |
+            ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -First 3)
+        $what = 'no diagnostic lines captured'
+        if ($errLines.Count -gt 0) { $what = $errLines -join ' / ' }
+        $where = @($failed | Where-Object { [string]$_.ScopeKind -eq 'Partition' } | ForEach-Object { [string]$_.ScopeName })
+        if ($Mode -eq 'Dc' -and $where.Count -gt 0) { $what = ("failed for partition(s) {0}: {1}" -f ($where -join ', '), $what) }
+        $enterprise = @($failed | Where-Object { [string]$_.ScopeKind -eq 'Enterprise' } | ForEach-Object { [string]$_.ScopeName } | Select-Object -Unique)
+        if ($Mode -eq 'Dc' -and $enterprise.Count -gt 0) {
+            $what = ("failed in the enterprise tests on {0}, which dcdiag ran from this domain controller (a fault of the forest shows on every domain controller asked): {1}" -f ($enterprise -join ', '), $what)
+        }
+        $out.Detail = ("{0}: {1}" -f $TestName, $what)
+        if (@($Parsed.AccessDeniedEvidence).Count -gt 0) {
+            # Worded so that no unscoped recommendation entry matches it (see .DESCRIPTION).
+            $out.Detail = ("{0}. The output also says 'Access is denied' (error 5): Microsoft documents that error between domain controllers with causes on the domain controllers themselves, such as an invalid secure channel (KB 3073945), and it can also be the rights of the account running dcdiag; the failure is reported as dcdiag printed it." -f $out.Detail.TrimEnd('.'))
+        }
+        return $out
+    }
+    if ($passed.Count -gt 0) {
+        $out.Status = $script:Status.Pass
+        return $out
+    }
+
+    $denied = @($Parsed.AccessDeniedEvidence)
+    $unreachable = @($Parsed.UnreachableEvidence)
+    if ($denied.Count -gt 0) {
+        $out.Detail = ("{0}: NOT ASSESSED - access denied: dcdiag printed no verdict for this test, and its output says '{1}'. Microsoft documents that dcdiag must be run with administrative rights from an elevated prompt; the account running this tool may not hold them on this server. Nothing is known about this test here." -f $TestName, (& $quote $denied[0]))
+    }
+    elseif ($unreachable.Count -gt 0) {
+        $out.Detail = ("{0}: NOT ASSESSED - dcdiag printed no verdict for this test, and its output says it could not reach the server: '{1}'. That line is matched by a provisional pattern, not a string Microsoft publishes. Nothing is known about this test here." -f $TestName, (& $quote $unreachable[0]))
+    }
+    elseif ($connectivityFailed -and $TestName -ne 'Connectivity') {
+        $out.Detail = ("{0}: NOT ASSESSED - dcdiag's initial Connectivity test failed in this invocation and no verdict for {0} was printed. dcdiag runs Connectivity first in every invocation (Microsoft: it can't be skipped)." -f $TestName)
+    }
+    elseif ($ignored.Count -gt 0) {
+        $named = @($ignored | ForEach-Object {
+                $label = [string]$_.Subject
+                if ([string]$_.ScopeKind -eq 'Partition' -or [string]$_.ScopeKind -eq 'Enterprise') { $label = ("{0} {1}" -f ([string]$_.ScopeKind).ToLowerInvariant(), [string]$_.ScopeName) }
+                elseif ($label -eq '') { $label = [string]$_.ScopeName }
+                $label
+            } | Select-Object -Unique)
+        $out.Detail = ("{0}: NOT ASSESSED - dcdiag printed a verdict for {0} only for {1}, which is not this domain controller, so it is not counted here." -f $TestName, ($named -join ', '))
+    }
+    elseif (-not $Success) {
+        $out.Detail = Get-AdfaDcdiagUnassessedCause -TestName $TestName -Outcome 'ToolFailed' -StdOut $StdOut -ErrorText $ErrorText -ExitCode $ExitCode
+    }
+    elseif ([bool]$Parsed.Empty) {
+        $out.Detail = Get-AdfaDcdiagUnassessedCause -TestName $TestName -Outcome 'Unparsed' -StdOut $StdOut -ErrorText $ErrorText -ExitCode $ExitCode
+    }
+    elseif (-not [bool]$Parsed.Recognised) {
+        $out.Detail = ("{0}: NOT ASSESSED - the dcdiag output was not recognised (possibly a localised, non-English Windows): it holds no line in a form this build reads ('Testing server:', 'Starting test:', 'passed test', 'failed test'), so no verdict was read and the cell is not graded. Output: {1}" -f $TestName, (Get-AdfaDcdiagOutputExcerpt -TestName $TestName -StdOut $StdOut))
+    }
+    else {
+        $out.Detail = Get-AdfaDcdiagUnassessedCause -TestName $TestName -Outcome 'Unparsed' -StdOut $StdOut -ErrorText $ErrorText -ExitCode $ExitCode
+    }
+    return $out
+}
+
+function Invoke-AdfaDcdiagTest {
+    <#
+    .SYNOPSIS
+        The one place that runs dcdiag for the parsed section: one test against one server, with
+        the argument from Get-AdfaDcdiagArgument. Never throws.
+    .OUTPUTS
+        [pscustomobject] StdOut, Success, ExitCode, Error.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$TestName,
+        [Parameter(Mandatory)][string]$DomainController,
+        [int]$TimeoutSeconds = 90,
+        [int]$Retries = 2,
+        [int]$RetryDelaySeconds = 2
+    )
+    $out = [pscustomobject]@{ StdOut = ''; Success = $true; ExitCode = $null; Error = '' }
+    try {
+        $r = Invoke-ExternalCommand -FilePath 'dcdiag.exe' -Arguments (Get-AdfaDcdiagArgument -TestName $TestName -DomainController $DomainController) `
+            -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
+        # StrictMode-safe reads: Invoke-ExternalCommand's contract is fixed, but a stub or a future
+        # change must not be able to abort the run on a missing property.
+        if ($null -ne $r) {
+            $sp = $r.PSObject.Properties['StdOut']
+            if ($null -ne $sp -and $null -ne $sp.Value) { $out.StdOut = [string]$sp.Value }
+            $okp = $r.PSObject.Properties['Success']
+            if ($null -ne $okp -and $null -ne $okp.Value) { $out.Success = [bool]$okp.Value }
+            $ep = $r.PSObject.Properties['ExitCode']
+            if ($null -ne $ep -and $null -ne $ep.Value) { $out.ExitCode = $ep.Value }
+            $erp = $r.PSObject.Properties['Error']
+            if ($null -ne $erp -and $null -ne $erp.Value) { $out.Error = [string]$erp.Value }
+        }
+        else {
+            $out.Success = $false
+            $out.Error = 'the command returned nothing'
+        }
+    }
+    catch {
+        $out.Success = $false
+        $out.Error = [string]$_.Exception.Message
+    }
+    return $out
+}
+
+function New-AdfaDcDiagRow {
+    <#
+    .SYNOPSIS
+        Pure: one row of a dcdiag test that runs once per domain, forest or site, or a population
+        row of the section. Every such row has the same columns. (The per-DC grid rows keep their
+        own shape: DomainController, Scope, Status, Ping, one DCDIAG_<test> column per test,
+        Failures, NotRun.)
+    .OUTPUTS
+        [pscustomobject] Scope, Area, Item, Status, Detail, Evidence, Target, NotRun.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][ValidateSet('Pass', 'Warning', 'Fail', 'Not Assessed', 'Info')][string]$Status,
+        [AllowNull()][AllowEmptyString()][string]$Detail = '',
+        [AllowNull()][AllowEmptyString()][string]$Evidence = '',
+        [AllowNull()][AllowEmptyString()][string]$Target = '',
+        [AllowNull()][AllowEmptyString()][string]$NotRun = ''
+    )
+    return [pscustomobject]@{
+        Scope    = [string]$Scope
+        Area     = 'DcDiagnostics'
+        Item     = $Item
+        Status   = $Status
+        Detail   = [string]$Detail
+        Evidence = [string]$Evidence
+        Target   = [string]$Target
+        NotRun   = [string]$NotRun
+    }
+}
+
+function Select-AdfaDcdiagTarget {
+    <#
+    .SYNOPSIS
+        Pure: the domain controller a once-per-domain, -forest or -site dcdiag test is run against.
+    .DESCRIPTION
+        Only a DC that is usable - reachable on RPC/135, dcdiag present, and its own Connectivity
+        test not failed - and not known to be read-only. In order: Connectivity passed and known
+        writable; Connectivity passed and writability unknown (no DC inventory in this run); then
+        the same two with Connectivity not assessed. Read-only DCs are never chosen: the reference
+        runs these tests against a writable DC, and Learn does not say what they report on a
+        read-only one. $null when none qualifies.
+    .OUTPUTS
+        [pscustomobject] the chosen state, or $null.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][AllowEmptyCollection()]$States = @())
+    $usable = @(@($States) | Where-Object { $null -ne $_ -and [bool]$_.Usable })
+    $pass = $script:Status.Pass
+    $ranked = @(
+        @($usable | Where-Object { [string]$_.Connectivity -eq $pass -and $_.IsReadOnly -is [bool] -and -not $_.IsReadOnly })
+        @($usable | Where-Object { [string]$_.Connectivity -eq $pass -and $null -eq $_.IsReadOnly })
+        @($usable | Where-Object { [string]$_.Connectivity -ne $pass -and $_.IsReadOnly -is [bool] -and -not $_.IsReadOnly })
+        @($usable | Where-Object { [string]$_.Connectivity -ne $pass -and $null -eq $_.IsReadOnly })
+    )
+    if ($ranked.Count -eq 0) { return $null }
+    return $ranked[0]
+}
+
+function Invoke-AdfaDcdiagScopedTest {
+    <#
+    .SYNOPSIS
+        Runs one once-per-domain, -forest or -site dcdiag test against the chosen DC and grades it
+        in Scope mode. Never throws.
+    .OUTPUTS
+        [pscustomobject] Run (Invoke-AdfaDcdiagTest), Verdict (Resolve-AdfaDcdiagVerdict).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$TestName,
+        [Parameter(Mandatory)][string]$DomainController,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [int]$TimeoutSeconds = 90,
+        [int]$Retries = 2,
+        [int]$RetryDelaySeconds = 2
+    )
+    $run = Invoke-AdfaDcdiagTest -TestName $TestName -DomainController $DomainController -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
+    $parsed = ConvertFrom-AdfaDcdiagOutput -StdOut $run.StdOut -Config $Config
+    $verdict = Resolve-AdfaDcdiagVerdict -Parsed $parsed -TestName $TestName -Mode 'Scope' -HostName $DomainController -Success ([bool]$run.Success) `
+        -ExitCode $run.ExitCode -ErrorText ([string]$run.Error) -StdOut ([string]$run.StdOut)
+    return [pscustomobject]@{ Run = $run; Verdict = $verdict }
+}
+
+function Get-AdfaDcdiagScopedDetail {
+    <#
+    .SYNOPSIS
+        Pure: the Detail of a once-per-domain, -forest or -site dcdiag row, from its verdict.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$TestName,
+        [Parameter(Mandatory)][string]$DomainController,
+        [Parameter(Mandatory)]$Verdict,
+        [AllowNull()]$IsReadOnly = $null
+    )
+    $parts = @($Verdict.Parts)
+    $names = @($parts | ForEach-Object {
+            $label = [string]$_.ScopeName
+            if ([string]$_.ScopeKind -notmatch '^(Partition|Enterprise)$' -or $label -eq '') { $label = [string]$_.Subject }
+            if ($label -eq '') { $label = '(no subject)' }
+            $label
+        })
+    $failedNames = @($parts | Where-Object { [string]$_.Verdict -eq 'Fail' } | ForEach-Object {
+            $label = [string]$_.ScopeName
+            if ([string]$_.ScopeKind -notmatch '^(Partition|Enterprise)$' -or $label -eq '') { $label = [string]$_.Subject }
+            if ($label -eq '') { $label = '(no subject)' }
+            $label
+        })
+    $writable = ''
+    if ($null -eq $IsReadOnly) { $writable = (" Whether {0} is writable is not known: the DC inventory was not collected in this run." -f $DomainController) }
+    if ([string]$Verdict.Status -eq $script:Status.Pass) {
+        return ("dcdiag /test:{0} /s:{1} reported passed for {2} part(s): {3}.{4}" -f $TestName, $DomainController, $parts.Count, ($names -join ', '), $writable)
+    }
+    if ([string]$Verdict.Status -eq $script:Status.Fail) {
+        return ("dcdiag /test:{0} /s:{1} reported failed for {2} of {3} part(s): {4}. {5}{6}" -f $TestName, $DomainController, $failedNames.Count, $parts.Count, ($failedNames -join ', '), [string]$Verdict.Detail, $writable)
+    }
+    return ("Run against {0}. {1}{2}" -f $DomainController, [string]$Verdict.Detail, $writable)
+}
+
 function Get-AdfaDcDiagnostic {
     <#
     .SYNOPSIS
-        Parses core dcdiag tests and service state per DC into PASS/FAIL columns.
+        dcdiag, parsed: a grid of per-DC tests, Topology once per scoped domain, CheckSDRefDom and
+        CrossRefValidation once per forest with one row per partition, Intersite once per site
+        (opt-in), and a coverage row per scoped domain.
+    .DESCRIPTION
+        Runs "dcdiag /test:<name> /s:<server>" through Invoke-AdfaDcdiagTest, one test per
+        invocation, and grades each from its output (ConvertFrom-AdfaDcdiagOutput,
+        Resolve-AdfaDcdiagVerdict). The tests, their scope and the parser's anchors are the DcDiag
+        config table; the tests Microsoft documents as changing state ($script:Config.
+        DcdiagActiveTests: DNS, Intersite, SystemLog) run only with -IncludeActiveTests.
+
+        Per DC (one grid row each, carrying its domain as Scope): probed on RPC/135 through the
+        per-run cache (Test-AdfaDcPort); closed -> every cell Not Assessed and nothing run; dcdiag
+        absent -> every cell Not Assessed. Connectivity runs first; when it fails, no further
+        test is started on that DC and every remaining cell is Not Assessed; the row's NotRun
+        column names them and Connectivity (not Failures, which the recommendation is chosen from).
+        A cell is Pass, Fail or Not Assessed with its cause in Failures. The row is Fail when a
+        cell failed, Not Assessed when no attempted cell could be read, Warning when some could
+        not, Pass otherwise; a held-back cell is explained in NotRun and does not lower the row.
+
+        Per scoped domain: Topology against a usable writable DC of the domain
+        (Select-AdfaDcdiagTarget). Per forest: CheckSDRefDom and CrossRefValidation once each,
+        against a DC of the forest root domain if one is usable, else any; one row per part dcdiag
+        printed (a partition) and a roll-up row. Per site that holds a DC, with
+        -IncludeActiveTests: Intersite /a; a DC whose site is not known gets a "site unknown" row.
+        LocatorCheck is never run (not in Learn's known-tests table) and has a row saying so.
+
+        DECLARED POPULATIONS. DCs: every target gets exactly one grid row. Domains: every name in
+        -ScopedDomains gets one "dcdiag Topology: <domain>" row and one "dcdiag coverage: <domain>"
+        row - Info with the counts of its DCs' grid rows, or Not Assessed when no DC row accounts
+        for the domain (Get-AdfaDcPopulationGap). Forest: one roll-up row per forest test. Sites:
+        one row per site holding a DC, with the opt-in; one "not run" row without it.
     .OUTPUTS
-        [pscustomobject[]]
+        [pscustomobject[]] Grid rows and scoped rows (New-AdfaDcDiagRow).
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        # AllowEmptyCollection: when DC enumeration fails the caller passes an empty list, and a
-        # Mandatory [string[]] refuses to bind it - which aborted the whole run with a parameter
-        # binding error instead of reporting the section as unassessed. The recovery sections
-        # added in v1.4.0 already allowed an empty list; these older ones did not.
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers,
-        # Also run the tests listed in $script:Config.DcdiagActiveTests, which Microsoft
-        # documents as changing state on the DC or in DNS. Off unless asked for.
+        # Inventory rows (HostName, Scope, Site, IsReadOnly), (Scope, HostName) rows from
+        # Get-AdfaDcTargetsByDomain, or plain host names, which carry no domain or site.
+        # AllowEmptyCollection: when DC enumeration fails the caller passes an empty list, and the
+        # section reports itself unassessed rather than failing to bind.
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$DomainControllers,
+        # Also run the tests listed in $script:Config.DcdiagActiveTests, which Microsoft documents
+        # as changing state on the DC or in DNS. Off unless asked for.
         [switch]$IncludeActiveTests,
         [int]$TimeoutSeconds = 90,
         [int]$Retries = 2,
         [int]$RetryDelaySeconds = 2,
-        [int]$RpcPortTimeoutMs = 1200
+        [int]$RpcPortTimeoutMs = 1200,
+        # The DcDiag table: the built-in one, or the one -ConfigOverridePath supplied.
+        [AllowNull()][hashtable]$Config = $null,
+        # Domains whose DC enumeration threw: objects with Domain and Error.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        # Why no DC could be enumerated at all, where the caller knows.
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        # The domains this run was scoped to: the declared population of the domain rows.
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        # The forest root domain's DNS name: whose DCs the forest tests are asked first.
+        [AllowNull()][AllowEmptyString()][string]$ForestRoot = ''
     )
-    if (@($DomainControllers).Count -eq 0) {
-        return @(New-Finding -Area 'DcDiagnostics' -Item 'dcdiag grid' -Status $script:Status.NotAssessed `
-                -Detail 'No domain controllers were enumerated, so no dcdiag test could be run. This is not a clean result.')
-    }
-    # Full post-restore grid. The nine beyond the original six matter specifically after
-    # a restore: MachineAccount (DC computer object/SPNs), ObjectsReplicated (DSA objects
-    # converged), RidManager (RID pool reachable), KccEvent (topology errors), Intersite,
-    # VerifyReferences/CrossRefValidation (FSMO + partition cross-refs intact),
-    # KnowsOfRoleHolders, DFSREvent (SYSVOL replication errors).
-    # CheckSecurityError and VerifyEnterpriseReferences are the two post-restore tests: the first
-    # surfaces the Kerberos/secure-channel faults that follow a machine-account or krbtgt reset,
-    # the second checks the FRS/DFSR and FSMO references a restored DC's objects must still hold.
-    $tests = 'Netlogons', 'Services', 'Replications', 'FsmoCheck', 'Advertising', 'SysVolCheck',
-        'MachineAccount', 'ObjectsReplicated', 'RidManager', 'KccEvent', 'VerifyReferences',
-        'CrossRefValidation', 'KnowsOfRoleHolders', 'Intersite', 'DFSREvent',
-        'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS'
+    if ($null -eq $Config) { $Config = $script:Config.DcDiag }
+    $na = $script:Status.NotAssessed
+    $timeout = $TimeoutSeconds
+    $configuredTimeout = Get-AdfaConfigValue -Entry $Config -Name 'TestTimeoutSeconds'
+    if ($null -ne $configuredTimeout) { $timeout = [int]$configuredTimeout }
+    $tries = $Retries
+    $configuredRetries = Get-AdfaConfigValue -Entry $Config -Name 'Retries'
+    if ($null -ne $configuredRetries) { $tries = [int]$configuredRetries }
+    $timeoutSource = [string](Get-AdfaConfigValue -Entry $Config -Name 'TimeoutSource')
+    if ($timeoutSource -eq '') { $timeoutSource = 'tool default, not a Microsoft value' }
+    $perDc = @(@(Get-AdfaConfigValue -Entry $Config -Name 'PerDcTests') | Where-Object { $null -ne $_ })
+    $testNames = @($perDc | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Test') })
+
     # Tests held back unless asked for, and the sentence that explains each held-back cell.
+    $active = @($script:Config.DcdiagActiveTests)
     $heldBack = @()
     $heldBackWhy = @()
     if (-not $IncludeActiveTests) {
-        foreach ($entry in @($script:Config.DcdiagActiveTests)) {
-            if ($tests -contains [string]$entry.Test) {
+        foreach ($entry in $active) {
+            if ($testNames -contains [string]$entry.Test) {
                 $heldBack += [string]$entry.Test
                 $heldBackWhy += ("{0} ({1})" -f [string]$entry.Test, [string]$entry.Effect)
             }
@@ -3565,95 +4293,251 @@ function Get-AdfaDcDiagnostic {
         $heldBackNote = ("Not run by default, so not assessed: {0}. Microsoft documents these dcdiag tests as changing state. -IncludeDcdiagActiveTests runs them." -f ($heldBackWhy -join '; '))
     }
     $haveDcdiag = Test-CommandAvailable -Name 'dcdiag.exe'
-    $rows = foreach ($dc in $DomainControllers) {
-        $row = [ordered]@{ DomainController = $dc; Status = $null; Ping = $null }
-        foreach ($t in $tests) { $row["DCDIAG_$t"] = $null }
+    $rows = New-Object System.Collections.ArrayList
+    $states = New-Object System.Collections.ArrayList
+    $targets = @(@($DomainControllers) | Where-Object { $null -ne $_ })
+    if ($targets.Count -eq 0) {
+        $why = ''
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = (" Domain controller enumeration failed: {0}." -f $EnumerationError.Trim().TrimEnd('.')) }
+        [void]$rows.Add((New-AdfaDcDiagRow -Item 'dcdiag grid' -Status $na `
+                    -Detail ("No domain controllers were enumerated, so no dcdiag test could be run.{0} This is not a clean result." -f $why)))
+    }
+
+    # ---- Per DC: the grid ----
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        $site = ''
+        $readOnly = $null
+        if ($target -isnot [string]) {
+            $siteProp = $target.PSObject.Properties['Site']
+            if ($null -ne $siteProp -and $null -ne $siteProp.Value) { $site = ([string]$siteProp.Value).Trim() }
+            $readOnlyProp = $target.PSObject.Properties['IsReadOnly']
+            if ($null -ne $readOnlyProp -and $readOnlyProp.Value -is [bool]) { $readOnly = [bool]$readOnlyProp.Value }
+        }
+        $state = [pscustomobject]@{ HostName = $dc; Scope = $scope; Site = $site; IsReadOnly = $readOnly; Usable = $false; Connectivity = $na; Status = $na }
+        [void]$states.Add($state)
+        $row = [ordered]@{ DomainController = $dc; Scope = $scope; Status = $null; Ping = $null }
+        foreach ($t in $testNames) { $row["DCDIAG_$t"] = $na }
         $row.Failures = ''
         # Why the held-back cells of THIS row read Not Assessed. Its own column, not Failures:
         # nothing failed, and Failures is the text the recommendation is chosen from. Filled in
         # only for a DC that dcdiag was actually run against; an unreachable DC has its own cause.
         $row.NotRun = ''
 
-        $reachable = Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $row.DomainController = '(unnamed)'
+            $row.Ping = $na
+            $row.Status = $na
+            $row.Failures = 'The inventory holds a domain controller with no host name, so dcdiag could not be run against it.'
+            [void]$rows.Add([pscustomobject]$row)
+            continue
+        }
+        $reachable = Test-AdfaDcPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
         $row.Ping = $(if ($reachable) { $script:Status.Pass } else { $script:Status.Fail })
-
         if (-not $reachable) {
-            foreach ($t in $tests) { $row["DCDIAG_$t"] = $script:Status.NotAssessed }
             $row.Status = $script:Status.Fail
             $row.Failures = 'DC not reachable (RPC/135) - no dcdiag tests run.'
-            [pscustomobject]$row; continue
+            $state.Status = $row.Status
+            [void]$rows.Add([pscustomobject]$row)
+            continue
         }
         if (-not $haveDcdiag) {
-            foreach ($t in $tests) { $row["DCDIAG_$t"] = $script:Status.NotAssessed }
-            $row.Status = $script:Status.NotAssessed
+            $row.Status = $na
             $row.Failures = 'dcdiag.exe not available on this host.'
-            [pscustomobject]$row; continue
+            [void]$rows.Add([pscustomobject]$row)
+            continue
         }
 
         $failDetails = New-Object System.Collections.Generic.List[string]
-        foreach ($t in $tests) {
-            if ($heldBack -contains $t) {
-                # Decided, not attempted: dcdiag is not invoked for this test at all.
-                $row["DCDIAG_$t"] = $script:Status.NotAssessed
-                continue
+        $skipped = New-Object System.Collections.Generic.List[string]
+        $gated = $false
+        foreach ($entry in $perDc) {
+            $t = [string](Get-AdfaConfigValue -Entry $entry -Name 'Test')
+            # Decided, not attempted: dcdiag is not invoked for a held-back test at all.
+            if ($heldBack -contains $t) { continue }
+            if ($gated) { $skipped.Add($t); continue }
+            $run = Invoke-AdfaDcdiagTest -TestName $t -DomainController $dc -TimeoutSeconds $timeout -Retries $tries -RetryDelaySeconds $RetryDelaySeconds
+            $parsed = ConvertFrom-AdfaDcdiagOutput -StdOut $run.StdOut -Config $Config
+            $verdict = Resolve-AdfaDcdiagVerdict -Parsed $parsed -TestName $t -Mode 'Dc' -HostName $dc `
+                -PartitionParts ([bool](Get-AdfaConfigValue -Entry $entry -Name 'PartitionParts')) -EnterpriseParts ([bool](Get-AdfaConfigValue -Entry $entry -Name 'EnterpriseParts')) -EventLog ([bool](Get-AdfaConfigValue -Entry $entry -Name 'EventLog')) `
+                -Success ([bool]$run.Success) -ExitCode $run.ExitCode -ErrorText ([string]$run.Error) -StdOut ([string]$run.StdOut)
+            $row["DCDIAG_$t"] = [string]$verdict.Status
+            $detail = [string]$verdict.Detail
+            if ([string]$verdict.Status -eq $na -and -not [bool]$run.Success -and [string]$run.Error -match '(?i)time.?out') {
+                $detail = ("{0} The time-out for one dcdiag invocation was {1} s ({2})." -f $detail, $timeout, $timeoutSource)
             }
-            $r = Invoke-ExternalCommand -FilePath 'dcdiag.exe' -Arguments (Get-AdfaDcdiagArgument -TestName $t -DomainController $dc) `
-                -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
-            # StrictMode-safe reads: Invoke-ExternalCommand's contract is fixed, but a stub or a
-            # future change must not be able to abort the run on a missing property.
-            $stdOut = ''
-            $sp = $r.PSObject.Properties['StdOut']
-            if ($null -ne $sp -and $null -ne $sp.Value) { $stdOut = [string]$sp.Value }
-            $ok = $true
-            $okp = $r.PSObject.Properties['Success']
-            if ($null -ne $okp -and $null -ne $okp.Value) { $ok = [bool]$okp.Value }
-            $exit = $null
-            $ep = $r.PSObject.Properties['ExitCode']
-            if ($null -ne $ep -and $null -ne $ep.Value) { $exit = $ep.Value }
-            $errText = ''
-            $erp = $r.PSObject.Properties['Error']
-            if ($null -ne $erp -and $null -ne $erp.Value) { $errText = [string]$erp.Value }
-
-            # Held in a variable rather than switched on inline: inside the switch body $_ is
-            # rebound by any Where-Object/ForEach-Object in a branch, and the default branch
-            # needs the outcome itself.
-            $outcome = Get-AdfaDcdiagTestOutcome -TestName $t -Success $ok -StdOut $stdOut
-            switch ($outcome) {
-                'Pass' { $row["DCDIAG_$t"] = $script:Status.Pass }
-                'Fail' {
-                    $row["DCDIAG_$t"] = $script:Status.Fail
-                    # Capture the exact error/warning lines dcdiag emitted for this failing test.
-                    $errLines = @($stdOut -split "`r?`n" |
-                        Where-Object { $_ -match 'error|warning|failed|could not|cannot|unable' -and $_ -notmatch 'passed test' } |
-                        ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -First 3)
-                    $detail = if ($errLines.Count -gt 0) { $errLines -join ' / ' } else { 'no diagnostic lines captured' }
-                    $failDetails.Add(("{0}: {1}" -f $t, $detail))
-                }
-                default {
-                    # 'Unparsed' or 'ToolFailed'. Both are Not Assessed, and BOTH now carry the
-                    # reason into Failures - which is the column the consolidated findings read,
-                    # so the cause reaches the HTML, the CSV and the log rather than being
-                    # dropped on the floor as it was before v1.12.0.
-                    $row["DCDIAG_$t"] = $script:Status.NotAssessed
-                    $failDetails.Add((Get-AdfaDcdiagUnassessedCause -TestName $t -Outcome $outcome `
-                                -StdOut $stdOut -ErrorText $errText -ExitCode $exit))
+            if ($t -eq 'Connectivity') {
+                $state.Connectivity = [string]$verdict.Status
+                if ([string]$verdict.Status -eq $script:Status.Fail) {
+                    $gated = $true
+                    $detail = ("{0} (dcdiag's connectivity checks include an ICMP ping, and Microsoft documents that blocking ICMP prevents DCDiag from functioning as intended, so a DC that drops ping can fail this test.)" -f $detail)
                 }
             }
+            if (-not [string]::IsNullOrWhiteSpace($detail)) { $failDetails.Add($detail) }
         }
+        # The tests not started after a failed Connectivity go in NotRun, not Failures: they did not
+        # fail, and their names ("Replications", "SysVolCheck", ...) would otherwise choose the
+        # replication or SYSVOL advice for a DC whose fault is Connectivity (independent review).
+        $notRunNotes = New-Object System.Collections.Generic.List[string]
+        if ($skipped.Count -gt 0) {
+            $notRunNotes.Add(("Not run after Connectivity failed: {0}. dcdiag runs its Connectivity test first in every invocation and Microsoft documents that it can't be skipped, so no further dcdiag test was started on this DC; nothing is known about these tests here." -f ($skipped -join ', ')))
+        }
+        if ($heldBackNote -ne '') { $notRunNotes.Add($heldBackNote) }
 
         # The row's status is taken from the tests that were ATTEMPTED. A held-back test is a
         # decision, not a failed measurement: counting it would make every DC a Warning in every
         # default run and bury the DCs with a test that really could not be read. Its cell still
         # reads Not Assessed, and the row's NotRun column carries the reason.
-        $cells = @(foreach ($t in $tests) { if ($heldBack -notcontains $t) { $row["DCDIAG_$t"] } })
+        $cells = @(foreach ($t in $testNames) { if ($heldBack -notcontains $t) { $row["DCDIAG_$t"] } })
         if ($cells -contains $script:Status.Fail) { $row.Status = $script:Status.Fail }
-        elseif ($cells -contains $script:Status.NotAssessed) { $row.Status = $script:Status.Warning }
+        elseif (@($cells | Where-Object { $_ -ne $na }).Count -eq 0) { $row.Status = $na }
+        elseif ($cells -contains $na) { $row.Status = $script:Status.Warning }
         else { $row.Status = $script:Status.Pass }
-        $row.NotRun = $heldBackNote
+        $row.NotRun = $notRunNotes -join ' | '
         $row.Failures = $failDetails -join ' | '
-        [pscustomobject]$row
+        $state.Status = $row.Status
+        $state.Usable = ($state.Connectivity -ne $script:Status.Fail)
+        [void]$rows.Add([pscustomobject]$row)
     }
-    return @($rows)
+    $allStates = @($states.ToArray())
+
+    # ---- Per scoped domain: Topology ----
+    $domains = New-Object System.Collections.ArrayList
+    foreach ($name in @(@($ScopedDomains) + @($allStates | ForEach-Object { [string]$_.Scope }))) {
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        if (@($domains | Where-Object { $_ -eq $name.Trim() }).Count -eq 0) { [void]$domains.Add($name.Trim()) }
+    }
+    $noDcdiag = 'dcdiag.exe is not available on this host, so this test was not run. This is not a clean result.'
+    foreach ($test in @(@(Get-AdfaConfigValue -Entry $Config -Name 'DomainTests') | Where-Object { $null -ne $_ })) {
+        $t = [string](Get-AdfaConfigValue -Entry $test -Name 'Test')
+        if ($domains.Count -eq 0) {
+            [void]$rows.Add((New-AdfaDcDiagRow -Item ("dcdiag {0}: (no domain known)" -f $t) -Status $na `
+                        -Detail ("No scoped domain was given to this section and no domain controller carries its domain, so dcdiag /test:{0}, which runs once per domain, was not run. This is not a clean result." -f $t)))
+            continue
+        }
+        foreach ($domain in $domains) {
+            $item = ("dcdiag {0}: {1}" -f $t, $domain)
+            if (-not $haveDcdiag) { [void]$rows.Add((New-AdfaDcDiagRow -Scope $domain -Item $item -Status $na -Detail $noDcdiag)); continue }
+            $inDomain = @($allStates | Where-Object { [string]$_.Scope -eq $domain })
+            $pick = Select-AdfaDcdiagTarget -States $inDomain
+            if ($null -eq $pick) {
+                $cause = ("No domain controller of this domain is in this section's list, so dcdiag /test:{0}, which runs once per domain, was not run. This is not a clean result." -f $t)
+                if ($inDomain.Count -gt 0) {
+                    $cause = ("None of the {0} domain controller(s) of this domain in this section could run it: each was unreachable on RPC/135, failed dcdiag's Connectivity test, or is read-only. dcdiag /test:{1} was not run, which is not a clean result." -f $inDomain.Count, $t)
+                }
+                [void]$rows.Add((New-AdfaDcDiagRow -Scope $domain -Item $item -Status $na -Detail $cause))
+                continue
+            }
+            $res = Invoke-AdfaDcdiagScopedTest -TestName $t -DomainController ([string]$pick.HostName) -Config $Config -TimeoutSeconds $timeout -Retries $tries -RetryDelaySeconds $RetryDelaySeconds
+            [void]$rows.Add((New-AdfaDcDiagRow -Scope $domain -Item $item -Status ([string]$res.Verdict.Status) -Target ([string]$pick.HostName) `
+                        -Detail (Get-AdfaDcdiagScopedDetail -TestName $t -DomainController ([string]$pick.HostName) -Verdict $res.Verdict -IsReadOnly $pick.IsReadOnly) `
+                        -Evidence (@($res.Verdict.Parts | ForEach-Object { [string]$_.Line }) -join ' / ')))
+        }
+    }
+
+    # ---- Per forest: CheckSDRefDom, CrossRefValidation, one row per part and a roll-up ----
+    $forestScope = ([string]$ForestRoot).Trim()
+    $forestLabel = $forestScope
+    if ($forestLabel -eq '') { $forestLabel = '(root not read)' }
+    $forestPick = Select-AdfaDcdiagTarget -States @($allStates | Where-Object { $forestLabel -ne '(root not read)' -and [string]$_.Scope -eq $forestLabel })
+    if ($null -eq $forestPick) { $forestPick = Select-AdfaDcdiagTarget -States $allStates }
+    foreach ($test in @(@(Get-AdfaConfigValue -Entry $Config -Name 'ForestTests') | Where-Object { $null -ne $_ })) {
+        $t = [string](Get-AdfaConfigValue -Entry $test -Name 'Test')
+        $rollItem = ("dcdiag {0}: forest {1}" -f $t, $forestLabel)
+        if (-not $haveDcdiag) { [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $rollItem -Status $na -Detail $noDcdiag)); continue }
+        if ($null -eq $forestPick) {
+            [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $rollItem -Status $na `
+                        -Detail ("No domain controller in this section could run it: each was unreachable on RPC/135, failed dcdiag's Connectivity test, or is read-only, or none was enumerated. dcdiag /test:{0}, which runs once per forest, was not run. This is not a clean result." -f $t)))
+            continue
+        }
+        $host1 = [string]$forestPick.HostName
+        $res = Invoke-AdfaDcdiagScopedTest -TestName $t -DomainController $host1 -Config $Config -TimeoutSeconds $timeout -Retries $tries -RetryDelaySeconds $RetryDelaySeconds
+        foreach ($part in @($res.Verdict.Parts)) {
+            $kind = [string]$part.ScopeKind
+            $label = [string]$part.ScopeName
+            if ($kind -notmatch '^(Partition|Enterprise)$' -or $label -eq '') { $label = [string]$part.Subject }
+            if ($label -eq '') { $label = '(no subject)' }
+            $kindWord = 'output'
+            if ($kind -eq 'Partition') { $kindWord = 'partition' }
+            elseif ($kind -eq 'Enterprise') { $kindWord = 'enterprise' }
+            elseif ($kind -eq 'Server') { $kindWord = 'server' }
+            $word = 'passed'
+            if ([string]$part.Verdict -eq 'Fail') { $word = 'failed' }
+            $partStatus = $script:Status.Pass
+            if ([string]$part.Verdict -eq 'Fail') { $partStatus = $script:Status.Fail }
+            [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: {1}" -f $t, $label) -Status $partStatus -Target $host1 -Evidence ([string]$part.Line) `
+                        -Detail ("dcdiag /test:{0} /s:{1} reported {2} for the {3} {4}." -f $t, $host1, $word, $kindWord, $label)))
+        }
+        [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $rollItem -Status ([string]$res.Verdict.Status) -Target $host1 `
+                    -Detail (Get-AdfaDcdiagScopedDetail -TestName $t -DomainController $host1 -Verdict $res.Verdict -IsReadOnly $forestPick.IsReadOnly) `
+                    -Evidence (@($res.Verdict.Parts | ForEach-Object { [string]$_.Line }) -join ' / ')))
+    }
+
+    # ---- Per site: Intersite, opt-in ----
+    foreach ($test in @(@(Get-AdfaConfigValue -Entry $Config -Name 'SiteTests') | Where-Object { $null -ne $_ })) {
+        $t = [string](Get-AdfaConfigValue -Entry $test -Name 'Test')
+        $activeEntry = @($active | Where-Object { [string]$_.Test -eq $t })
+        if (-not $IncludeActiveTests -and $activeEntry.Count -gt 0) {
+            [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: not run" -f $t) -Status $na `
+                        -NotRun ("Not run by default, so not assessed: {0} ({1}). Microsoft documents this dcdiag test as changing state. -IncludeDcdiagActiveTests runs it, once per site that holds a domain controller, with /a." -f $t, [string]$activeEntry[0].Effect)))
+            continue
+        }
+        if (-not $haveDcdiag) { [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: not run" -f $t) -Status $na -Detail $noDcdiag)); continue }
+        $named = @($allStates | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.HostName) })
+        $unknown = @($named | Where-Object { [string]$_.Site -eq '' })
+        if ($unknown.Count -gt 0) {
+            [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: site unknown" -f $t) -Status $na `
+                        -Detail ("The site of {0} domain controller(s) is not known ({1}): the DC inventory was not collected in this run, or gave no site. {2} runs once per site, so their sites were not tested unless another domain controller of the same site was. Name DomainControllers with DcDiagnostics." -f $unknown.Count, (@($unknown | ForEach-Object { [string]$_.HostName }) -join ', '), $t)))
+        }
+        $sites = @($named | Where-Object { [string]$_.Site -ne '' } | ForEach-Object { [string]$_.Site } | Sort-Object -Unique)
+        if ($sites.Count -eq 0 -and $unknown.Count -eq 0) {
+            [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: no site" -f $t) -Status $na `
+                        -Detail ("No domain controller was enumerated, so no site was tested with dcdiag /test:{0}. This is not a clean result." -f $t)))
+        }
+        foreach ($siteName in $sites) {
+            $item = ("dcdiag {0}: {1}" -f $t, $siteName)
+            $inSite = @($named | Where-Object { [string]$_.Site -eq $siteName })
+            $pick = Select-AdfaDcdiagTarget -States $inSite
+            if ($null -eq $pick) {
+                [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $item -Status $na `
+                            -Detail ("This site holds {0} domain controller(s) in this section, and none could run dcdiag: each was unreachable on RPC/135, failed dcdiag's Connectivity test, or is read-only. dcdiag /test:{1} was not run for this site, which is not a clean result." -f $inSite.Count, $t)))
+                continue
+            }
+            $res = Invoke-AdfaDcdiagScopedTest -TestName $t -DomainController ([string]$pick.HostName) -Config $Config -TimeoutSeconds $timeout -Retries $tries -RetryDelaySeconds $RetryDelaySeconds
+            [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $item -Status ([string]$res.Verdict.Status) -Target ([string]$pick.HostName) `
+                        -Detail (Get-AdfaDcdiagScopedDetail -TestName $t -DomainController ([string]$pick.HostName) -Verdict $res.Verdict -IsReadOnly $pick.IsReadOnly) `
+                        -Evidence (@($res.Verdict.Parts | ForEach-Object { [string]$_.Line }) -join ' / ')))
+        }
+    }
+
+    # ---- Tests that are never run, for which the catalogue has a row ----
+    foreach ($entry in @(@(Get-AdfaConfigValue -Entry $Config -Name 'NotAdded') | Where-Object { $null -ne $_ -and [bool](Get-AdfaConfigValue -Entry $_ -Name 'Report') })) {
+        $t = [string](Get-AdfaConfigValue -Entry $entry -Name 'Test')
+        [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: not run" -f $t) -Status $na `
+                    -NotRun ("Not run: {0} is {1}. This tool runs only dcdiag tests Microsoft documents. Not run is not a clean result." -f $t, [string](Get-AdfaConfigValue -Entry $entry -Name 'Why'))))
+    }
+
+    # ---- Per scoped domain: coverage ----
+    $population = New-Object System.Collections.ArrayList
+    foreach ($name in @($ScopedDomains)) {
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        if (@($population | Where-Object { $_ -eq $name.Trim() }).Count -eq 0) { [void]$population.Add($name.Trim()) }
+    }
+    $gaps = @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains @($population))
+    foreach ($gap in $gaps) {
+        [void]$rows.Add((New-AdfaDcDiagRow -Scope ([string]$gap.Domain) -Item ("dcdiag coverage: {0}" -f [string]$gap.Domain) -Status $na `
+                    -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No dcdiag test was run against its domain controllers.')))
+    }
+    foreach ($domain in $population) {
+        if (@($gaps | Where-Object { [string]$_.Domain -eq $domain }).Count -gt 0) { continue }
+        $inDomain = @($allStates | Where-Object { [string]$_.Scope -eq $domain })
+        $count = { param([string]$Status) @($inDomain | Where-Object { [string]$_.Status -eq $Status }).Count }
+        [void]$rows.Add((New-AdfaDcDiagRow -Scope $domain -Item ("dcdiag coverage: {0}" -f $domain) -Status $script:Status.Info `
+                    -Detail ("{0} domain controller(s) of this domain have a grid row: {1} Pass, {2} Warning, {3} Fail, {4} Not Assessed." -f $inDomain.Count, (& $count $script:Status.Pass), (& $count $script:Status.Warning), (& $count $script:Status.Fail), (& $count $na))))
+    }
+    return @($rows.ToArray())
 }
 
 # ===========================================================================
@@ -15124,8 +16008,8 @@ function Get-AdfaRidPool {
           Get-AdfaLapsSchemaRaw    once, for whether the schema defines msDS-RIDPoolAllocationEnabled
           Get-AdfaRidManagerRaw    once per scoped domain: Get-ADDomain and CN=RID Manager$
           Get-AdfaDcRidSetRaw      once per DC: its computer object and its RID Set
-        No dcdiag test is run - Microsoft does not state whether /test:RidManager requests a pool
-        - and SidCompatibilityVersion is not read (Microsoft: it cannot be read with ADSIEdit, LDP
+        No dcdiag test is run here - the DC Diagnostics section runs /test:RidManager, which
+        Microsoft describes as checks only (PORT-PLAN C6e) - and SidCompatibilityVersion is not read (Microsoft: it cannot be read with ADSIEdit, LDP
         or other tools).
 
         DECLARED POPULATIONS. Domains: the names in -ScopedDomains; each gets exactly two rows,
@@ -15303,6 +16187,99 @@ function Merge-AdfaRidPoolConfig {
     $builtIn = @($known | Where-Object { $supplied -notcontains $_ })
     if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
     $merged['ThresholdSource'] = $text
+    return $merged
+}
+
+function Merge-AdfaDcDiagConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in dcdiag table, with validation. The DcDiag
+        validator for -ConfigOverridePath.
+    .DESCRIPTION
+        What a file can change: TestTimeoutSeconds, the time-out of one dcdiag invocation (a whole
+        number from 5 to 600, the range of -ExternalToolTimeoutSeconds), and Retries, the attempts
+        per invocation (1 to 10, the range of -Retries). Microsoft publishes neither: both are tool
+        defaults.
+
+            { "DcDiag": { "TestTimeoutSeconds": 180 } }
+
+        What it cannot: the test lists (per DC, per domain, per forest, per site, not added), the
+        opt-in list, the output markers and the evidence patterns. Every such key is refused as
+        unknown, so a file can never make the tool run a dcdiag test that changes state, or read a
+        verdict from a line Microsoft does not print.
+
+        Refused with the reason: an override that is not one object, an empty object, an unknown
+        key, a null, a value that is not a JSON number, a number outside its range or not whole.
+
+        Provenance follows the keys: ThresholdSource is rewritten to name the override's source for
+        exactly the keys it supplied; TimeoutSource, which a timed-out cell quotes, says the value
+        came from the -ConfigOverridePath file without naming the path.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) {
+        throw ("dcdiag config override must be a single object with named keys (for example {{ ""TestTimeoutSeconds"": 180 }}), not a {0}." -f $Override.GetType().Name)
+    }
+    if ($table.Count -eq 0) {
+        throw 'dcdiag config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    $ranges = [ordered]@{
+        TestTimeoutSeconds = @(5, 600, 'seconds for one dcdiag invocation')
+        Retries            = @(1, 10, 'attempts per dcdiag invocation')
+    }
+    $known = @($ranges.Keys)
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $supplied = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("dcdiag config override names an unknown key '{0}'. Known keys: {1}. The test lists, the opt-in list, the output markers and the evidence patterns cannot be set from a file." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        if ($supplied -contains $name) { throw ("dcdiag config override names '{0}' more than once." -f $name) }
+        $value = $table[$k]
+        if ($null -eq $value) {
+            throw ("dcdiag config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name)
+        }
+        # A JSON number only: how a quoted string becomes a number depends on the host's culture.
+        if ($value -is [array] -or $numericTypes -notcontains $value.GetType()) {
+            throw ("dcdiag config override sets '{0}' to a {1}. It must be a JSON number, written without quotes." -f $name, $value.GetType().Name)
+        }
+        $number = [double]$value
+        if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) {
+            throw ("dcdiag config override sets '{0}' to a value that is not a finite number." -f $name)
+        }
+        $low = [int]$ranges[$name][0]
+        $high = [int]$ranges[$name][1]
+        if ($number -ne [math]::Floor($number) -or $number -lt $low -or $number -gt $high) {
+            throw ("dcdiag config override sets '{0}' to {1}. It must be a whole number from {2} to {3} ({4})." -f $name, $number.ToString('0.####', $inv), $low, $high, [string]$ranges[$name][2])
+        }
+        $merged[$name] = [int]$number
+        $supplied += $name
+    }
+
+    $from = 'an override whose source was not recorded'
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+    $fromOverride = @($known | Where-Object { $supplied -contains $_ })
+    $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+    $builtIn = @($known | Where-Object { $supplied -notcontains $_ })
+    if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
+    $merged['ThresholdSource'] = $text
+    if ($supplied -contains 'TestTimeoutSeconds') { $merged['TimeoutSource'] = 'set in the -ConfigOverridePath file; not a Microsoft value' }
     return $merged
 }
 
@@ -16389,6 +17366,8 @@ $script:ConfigOverrideSections = [ordered]@{
     # One table for three sections (PORT-PLAN C10): Section names the first, AlsoUsedBy the other two, so
     # the "validated but not used" log is right whichever of them a run selects.
     Privileged     = @{ ConfigKey = 'Privileged'; Section = 'PrivilegedAccounts'; AlsoUsedBy = @('PrivilegedHygiene', 'Kerberos'); Merge = 'Merge-AdfaPrivilegedConfig' }
+    # PORT-PLAN C11: the time-out and retries of one dcdiag invocation only; no test list.
+    DcDiag         = @{ ConfigKey = 'DcDiag'; Section = 'DcDiagnostics'; Merge = 'Merge-AdfaDcDiagConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -20448,6 +21427,26 @@ $script:RecommendationMap = @(
        Text  = 'Find out why so much of the global RID space has been issued. Microsoft calls reaching the first event 16658 milestone (10 % used) not expected, and says to investigate the user, computer and group creation processes in the domain immediately. Check the System log of the domain controllers for Directory-Services-SAM events 16658, 16656 and 16657, and look for the causes Microsoft lists: provisioning software or scripts that bulk-created objects, many unused groups, domain controllers demoted, restored or metadata-cleaned repeatedly, forest recoveries, frequent InvalidateRidPool operations and an incorrectly raised RID Block Size (from Windows Server 2012 a value above 15,000 is treated as 15,000). At 90 % used the RID master stops issuing RID pools until an administrator lifts the block, and after that there is no further ceiling before the space runs out, which only a domain migration or a forest recovery resolves. Unlocking the 31st bit (SidCompatibilityVersion) doubles the space but is irreversible except by a forest recovery and is meant only for a domain that has reached the ceiling. The thresholds this finding was judged against are Microsoft''s published points or your own override.' }
     @{ Section = '(?i)^rid pool'; Match = '.'
        Text  = '' }
+    # --- Section-scoped: the once-per-domain, -forest and -site rows of DC Diagnostics (PORT-PLAN
+    #     C11). Anchored on the Item prefixes this tool writes ("dcdiag <Test>: "), NOT on the
+    #     section: the per-DC grid rows (Item = the DC's host name) keep reaching the unscoped
+    #     'sysvol|dfsr', 'replication' and 'dcdiag' entries below, as tests pin. A partition or site
+    #     name, a DC name or the word "replication" in a Detail cannot pull these rows to other
+    #     advice. The prefix catch-all gives the coverage, not-run and site-unknown rows no advice.
+    #     Each text restates what Microsoft documents the test checks, and names dcdiag's own /v
+    #     (verbose) switch from the same page:
+    #       https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag
+    #     Read: 2026-11-16.
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag Topology: (?!\(no domain known\) :: )'
+       Text  = 'dcdiag Topology reported that the replication topology of this domain is not fully connected. Microsoft documents that this test checks whether automatic intra-site and inter-site topology generation is disabled, and looks for disconnected topologies (missing connection objects) upstream and downstream of each reference DC, without replicating anything; it does not check that partners are available or that a schedule is open, which the Replications test covers. Run "dcdiag /test:Topology /s:<dc> /v" to see the DCs it names, then check the connection objects and the site and site-link configuration in Active Directory Sites and Services, and whether automatic topology generation has been turned off for a site. This tool changes nothing.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag CheckSDRefDom: '
+       Text  = 'dcdiag CheckSDRefDom reported an application directory partition whose security descriptor reference domain is not right. Microsoft documents that this test validates the cross-reference objects in CN=Partitions,CN=Configuration of the forest root domain and checks that their msDS-SDReferenceDomain attribute holds the correct domain name. Run "dcdiag /test:CheckSDRefDom /s:<dc> /v" to see which partition, then read msDS-SDReferenceDomain on that partition''s crossRef object. This tool changes nothing.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag CrossRefValidation: '
+       Text  = 'dcdiag CrossRefValidation reported a cross-reference that is not valid. Microsoft documents that this test reads the nCName, dnsRoot, nETBIOSName and systemFlags attributes of the crossRef objects in CN=Partitions,CN=Configuration to find names that are invalid or null, names altered by CNF or 0ADEL (a name conflict or a deleted object), wrong systemFlags, and empty (orphaned) replica sets. Run "dcdiag /test:CrossRefValidation /s:<dc> /v" to see which partition, then read those four attributes on its crossRef object. This tool changes nothing.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag Intersite: (?!(not run|site unknown|no site) :: )'
+       Text  = 'dcdiag Intersite reported a failure that would prevent or hold up intersite replication for this site. Microsoft documents that this test locates and connects to the Intersite Topology Generator and the bridgehead servers, reports replication failures, and validates that the DCs in sites with inbound connections to this site are available. Run dcdiag''s Intersite test by hand against the DC named in this row, with /a and /v, to see the servers it names, and check their availability and the site links between the sites. Microsoft documents that this test triggers a replication; this tool ran it only because -IncludeDcdiagActiveTests was given.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag (Topology|CheckSDRefDom|CrossRefValidation|Intersite|LocatorCheck|coverage|grid)\b'
+       Text  = '' }
     # --- Section-scoped: SID history rows of Security Posture (PORT-PLAN C7). Anchored on the Item
     #     prefix this tool writes ("SID history...: <domain>"), NOT on the section: the section's
     #     older rows (krbtgt password age, AD Recycle Bin, Machine account quota, ...) rely on the
@@ -21093,7 +22092,7 @@ function Invoke-Main {
         Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiag is set: the raw capture runs dcdiag /c on each DC. Microsoft documents /c as running all tests except DCPromo and RegisterInDNS; by that description it includes CutoffServers, which triggers replication, and the DNS test, whose dynamic update test registers and deletes a test record. This run is not read-only.'
     }
     if ($IncludeDcdiagActiveTests) {
-        Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiagActiveTests is set: the dcdiag DNS test will register and delete a DNS test record on each DC, and the dcdiag Intersite test will trigger a replication. This run is not read-only.'
+        Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiagActiveTests is set: the dcdiag DNS test will register and delete a DNS test record on each DC, the dcdiag SystemLog test, which Microsoft describes as reading and writing System log entries, will run on each DC, and the dcdiag Intersite test will trigger a replication, once per site that holds a DC. This run is not read-only.'
     }
     if ($IncludeLdapsHandshake) {
         Write-Log -Level WARN -Section 'DcCertificates' -Message 'IncludeLdapsHandshake is set: a TLS handshake is made to port 636 of each DC to read the certificate it presents. Nothing is written to the DC, but Microsoft does not state that a handshake leaves no trace: a DC that cannot complete it may log a Schannel error event in its System log.'
@@ -21313,8 +22312,25 @@ function Invoke-Main {
     }
 
     if (Test-SectionSelected 'DcDiagnostics' $Sections) {
-        Write-Stage 'DC diagnostics (parsed)'
-        $sectionData['DC Diagnostics'] = Get-AdfaDcDiagnostic -DomainControllers $dcNames -IncludeActiveTests:$IncludeDcdiagActiveTests @ext -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        Write-Stage 'DC diagnostics (parsed: per DC, per domain, per forest, per site)'
+        # The table the file supplied where it supplied one, otherwise the built-in table. The file
+        # was validated before any section ran. It can set the time-out and retries only.
+        $dcDiagConfig = $script:Config.DcDiag
+        if ($configOverrides.ContainsKey('DcDiag')) { $dcDiagConfig = $configOverrides['DcDiag'] }
+        # The DCs of EVERY scoped domain, each carrying its domain (and, from the inventory, its site
+        # and whether it is read-only), exactly as RidPool takes them: the DC inventory where the
+        # DomainControllers section ran; otherwise the section's own enumeration of each scoped
+        # domain; last resort, the fallback host names, which carry no domain.
+        $dcDiagTargets = @($allDcInventory)
+        $dcDiagFailures = @($dcInventoryFailures)
+        if (-not $dcInventoryCollected) {
+            $dcDiagEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+            $dcDiagTargets = @($dcDiagEnumeration.Targets)
+            $dcDiagFailures = @($dcDiagEnumeration.Failures)
+        }
+        if ($dcDiagTargets.Count -eq 0) { $dcDiagTargets = @($dcNames) }
+        $sectionData['DC Diagnostics'] = @(Get-AdfaDcDiagnostic -DomainControllers $dcDiagTargets -IncludeActiveTests:$IncludeDcdiagActiveTests @ext -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                -Config $dcDiagConfig -InventoryFailures $dcDiagFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains -ForestRoot $rootDomain)
     }
     if (Test-SectionSelected 'Dns' $Sections) {
         Write-Stage 'DNS health'

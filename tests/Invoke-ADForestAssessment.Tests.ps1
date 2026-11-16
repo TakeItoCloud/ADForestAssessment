@@ -2065,10 +2065,19 @@ Describe 'dcdiag arguments (Intersite false Pass, DNS test)' {
         @($argList | Where-Object { $_ -match '/s:dc1\.contoso\.com' }).Count | Should -Be 18
         @($argList | Where-Object { $_ -notmatch '^/test:\S+ /s:dc1\.contoso\.com$' }).Count | Should -Be 2
     }
-    It 'has the DNS test in the array the collector actually iterates' {
-        # A builder that handles 'DNS' is worth nothing if nothing asks for it.
-        (Get-Content -LiteralPath $script:Target -Raw) |
-            Should -Match "'CheckSecurityError', 'VerifyEnterpriseReferences', 'DNS'"
+    It 'has the DNS test in the list the collector actually iterates' {
+        # A builder that handles 'DNS' is worth nothing if nothing asks for it. Since v1.28.0
+        # (PORT-PLAN C11) the list is the PerDcTests of the DcDiag config table, not a literal in
+        # the collector, so the test reads the table and proves the collector reads that key.
+        $names = @($script:Config.DcDiag['PerDcTests'] | ForEach-Object { [string]$_['Test'] })
+        $names | Should -Contain 'DNS'
+        $names | Should -Contain 'CheckSecurityError'
+        $names | Should -Contain 'VerifyEnterpriseReferences'
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $collector = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AdfaDcDiagnostic' }, $true))
+        $collector.Count | Should -Be 1
+        $reads = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaConfigValue' -and $n.Extent.Text -match "-Name 'PerDcTests'" }, $true))
+        $reads.Count | Should -Be 1
     }
 }
 
@@ -2263,6 +2272,14 @@ Describe 'dcdiag tests that change state are not run by default (H20)' {
     # replication". Until H20 both ran on every DC in every default run.
     BeforeAll {
         $script:H20Dc = 'dc1.contoso.com'
+        # PORT-PLAN C11: the DC is handed over as an inventory row, so it carries the site that
+        # Intersite - which since v1.28.0 runs once per site - needs. The collector also returns rows
+        # for its once-per-domain, -forest and -site tests; the grid rows are the ones with a
+        # DomainController column, and the per-DC invocations are the ones that are not
+        # Topology, CheckSDRefDom, CrossRefValidation or Intersite.
+        $script:H20Target = [pscustomobject]@{ HostName = $script:H20Dc; Scope = 'contoso.com'; Site = 'Default-First-Site-Name'; IsReadOnly = $false }
+        function Get-H20Grid { param($Rows) @($Rows | Where-Object { $null -ne $_.PSObject.Properties['DomainController'] }) }
+        function Get-H20PerDcArgs { @($script:H20Args | Where-Object { $_ -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation|Intersite)\b' }) }
         function Invoke-H20Grid {
             param([switch]$Active)
             $script:H20Args = @()
@@ -2273,17 +2290,22 @@ Describe 'dcdiag tests that change state are not run by default (H20)' {
                 $name = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
                 [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = ("......................... DC1 passed test {0}" -f $name) }
             }
-            return @(Get-AdfaDcDiagnostic -DomainControllers @($script:H20Dc) -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 -IncludeActiveTests:$Active)
+            return @(Get-AdfaDcDiagnostic -DomainControllers @($script:H20Target) -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 -IncludeActiveTests:$Active)
         }
     }
+    # The port probe is cached for the run (Test-AdfaDcPort, since v1.28.0 in this section too), so
+    # each test starts from an empty cache, as each run does.
+    BeforeEach { Clear-AdfaDcPortCache }
 
     Context 'Config' {
-        It 'names the two tests, each with the vendor statement that puts it there' {
+        It 'names the three tests, each with the vendor statement that puts it there' {
             $active = @($script:Config.DcdiagActiveTests)
-            # Declared population: the two tests Microsoft documents as changing state.
-            $active.Count | Should -Be 2
+            # Declared population: the three tests Microsoft's text describes as changing state
+            # (SystemLog since v1.28.0, PORT-PLAN C11: "reading and writing entries").
+            $active.Count | Should -Be 3
             @($active | ForEach-Object { [string]$_.Test }) | Should -Contain 'DNS'
             @($active | ForEach-Object { [string]$_.Test }) | Should -Contain 'Intersite'
+            @($active | ForEach-Object { [string]$_.Test }) | Should -Contain 'SystemLog'
             foreach ($a in $active) {
                 [string]$a.Effect | Should -Not -BeNullOrEmpty
                 [string]$a.Source | Should -Match '^https://learn\.microsoft\.com/'
@@ -2293,12 +2315,12 @@ Describe 'dcdiag tests that change state are not run by default (H20)' {
     }
 
     Context 'Default run' {
-        It 'never invokes dcdiag for DNS or Intersite, and still invokes it for the other 16 tests' {
+        It 'never invokes dcdiag for DNS, SystemLog or Intersite, and still invokes it for the other 19 per-DC tests' {
             $rows = @(Invoke-H20Grid)
-            @($script:H20Args | Where-Object { $_ -match '/test:(DNS|Intersite)\b' }).Count | Should -Be 0
+            @($script:H20Args | Where-Object { $_ -match '/test:(DNS|Intersite|SystemLog)\b' }).Count | Should -Be 0
             @($script:H20Args | Where-Object { $_ -match '/DnsAll|\s/a(\s|$)' }).Count | Should -Be 0
-            @($script:H20Args).Count | Should -Be 16
-            @($rows).Count | Should -Be 1
+            @(Get-H20PerDcArgs).Count | Should -Be 19
+            @(Get-H20Grid $rows).Count | Should -Be 1
         }
         It 'holds the tests back when the switch is simply not given, not only when it is given as false' {
             # Every other call in this Describe binds the switch explicitly. A function that
@@ -2312,12 +2334,12 @@ Describe 'dcdiag tests that change state are not run by default (H20)' {
                 [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = ("DC1 passed test {0}" -f $name) }
             }
             Get-AdfaDcDiagnostic -DomainControllers @($script:H20Dc) -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 | Out-Null
-            @($script:H20Args).Count | Should -Be 16
-            @($script:H20Args | Where-Object { $_ -match '/test:(DNS|Intersite)\b' }).Count | Should -Be 0
+            @(Get-H20PerDcArgs).Count | Should -Be 19
+            @($script:H20Args | Where-Object { $_ -match '/test:(DNS|Intersite|SystemLog)\b' }).Count | Should -Be 0
         }
         It 'holds them back on EVERY DC, and gives every DC its own note' {
-            # Declared population: 3 DCs, 16 tests each. A defect that held the tests back only
-            # for the first DC passed every single-DC test.
+            # Declared population: 3 DCs, 19 per-DC tests each (16 before v1.28.0). A defect that
+            # held the tests back only for the first DC passed every single-DC test.
             $script:H20Args = @()
             Mock Test-CommandAvailable { $true }
             Mock Test-TcpPort { $true }
@@ -2327,32 +2349,32 @@ Describe 'dcdiag tests that change state are not run by default (H20)' {
                 [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = ("passed test {0}" -f $name) }
             }
             $names = @('dc1.contoso.com', 'dc2.contoso.com', 'dc3.contoso.com')
-            $rows = @(Get-AdfaDcDiagnostic -DomainControllers $names -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0)
+            $rows = @(Get-H20Grid @(Get-AdfaDcDiagnostic -DomainControllers $names -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0))
             @($rows).Count | Should -Be 3
-            @($script:H20Args).Count | Should -Be 48
-            @($script:H20Args | Where-Object { $_ -match '/test:(DNS|Intersite)\b' }).Count | Should -Be 0
+            @(Get-H20PerDcArgs).Count | Should -Be 57
+            @($script:H20Args | Where-Object { $_ -match '/test:(DNS|Intersite|SystemLog)\b' }).Count | Should -Be 0
             foreach ($row in $rows) {
                 [string]$row.DCDIAG_DNS | Should -Be 'Not Assessed'
-                [string]$row.DCDIAG_Intersite | Should -Be 'Not Assessed'
+                [string]$row.DCDIAG_SystemLog | Should -Be 'Not Assessed'
                 [string]$row.NotRun | Should -Match 'IncludeDcdiagActiveTests' -Because "$($row.DomainController) must carry its own reason"
                 [string]$row.Status | Should -Be 'Pass'
             }
         }
         It 'reports the two cells Not Assessed, with the reason and the switch in the row' {
-            $row = @(Invoke-H20Grid)[0]
+            $row = @(Get-H20Grid @(Invoke-H20Grid))[0]
             [string]$row.DCDIAG_DNS | Should -Be 'Not Assessed'
-            [string]$row.DCDIAG_Intersite | Should -Be 'Not Assessed'
+            [string]$row.DCDIAG_SystemLog | Should -Be 'Not Assessed'
             [string]$row.NotRun | Should -Match 'DNS'
-            [string]$row.NotRun | Should -Match 'Intersite'
+            [string]$row.NotRun | Should -Match 'SystemLog'
             [string]$row.NotRun | Should -Match 'IncludeDcdiagActiveTests'
             [string]$row.NotRun | Should -Match '(?i)not run'
             # Nothing failed, so the column the advice is chosen from stays empty.
             [string]$row.Failures | Should -BeNullOrEmpty
         }
-        It 'does not turn a DC whose 16 attempted tests all passed into a Warning' {
+        It 'does not turn a DC whose 19 attempted tests all passed into a Warning' {
             # The two cells are a decision, not a failed measurement. A Warning on every DC in
             # every default run would bury the DCs that have a real unassessed test.
-            $row = @(Invoke-H20Grid)[0]
+            $row = @(Get-H20Grid @(Invoke-H20Grid))[0]
             [string]$row.Status | Should -Be 'Pass'
             [string]$row.DCDIAG_Advertising | Should -Be 'Pass'
         }
@@ -2437,13 +2459,18 @@ Describe 'dcdiag tests that change state are not run by default (H20)' {
     }
 
     Context 'With the opt-in' {
-        It 'runs all 18 tests, with /DnsAll and /a' {
-            $row = @(Invoke-H20Grid -Active)[0]
-            @($script:H20Args).Count | Should -Be 18
+        It 'runs all 21 per-DC tests with /DnsAll, and Intersite once for the DC''s site with /a' {
+            $rows = @(Invoke-H20Grid -Active)
+            $row = @(Get-H20Grid $rows)[0]
+            @(Get-H20PerDcArgs).Count | Should -Be 21
             @($script:H20Args | Where-Object { $_ -match '/test:DNS /DnsAll' }).Count | Should -Be 1
+            @($script:H20Args | Where-Object { $_ -match '/test:SystemLog ' }).Count | Should -Be 1
             @($script:H20Args | Where-Object { $_ -match '/test:Intersite .* /a$' }).Count | Should -Be 1
             [string]$row.DCDIAG_DNS | Should -Be 'Pass'
-            [string]$row.DCDIAG_Intersite | Should -Be 'Pass'
+            [string]$row.DCDIAG_SystemLog | Should -Be 'Pass'
+            $site = @($rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and $_.Item -eq 'dcdiag Intersite: Default-First-Site-Name' })
+            $site.Count | Should -Be 1
+            [string]$site[0].Status | Should -Be 'Pass'
             [string]$row.NotRun | Should -BeNullOrEmpty
         }
     }
@@ -5284,9 +5311,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcHardening' -and $n.Extent.Text -match '-DomainControllers \$dcNames' }, $true)).Count | Should -Be 0
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
+            # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
             # DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -7465,8 +7492,8 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaLaps' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
+            # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7518,9 +7545,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
-            [string]$script:Config.Version | Should -Be '1.27.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
+        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
+            [string]$script:Config.Version | Should -Be '1.28.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
         }
     }
 
@@ -9108,8 +9135,8 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             Get-C5Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
+            # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
             $entry = $script:ConfigOverrideSections['DcCertificates']
             [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
             [string]$entry['Section'] | Should -Be 'DcCertificates'
@@ -9190,9 +9217,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
-            [string]$script:Config.Version | Should -Be '1.27.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
+        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
+            [string]$script:Config.Version | Should -Be '1.28.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
         }
     }
 
@@ -10108,8 +10135,8 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             Get-C6Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
+            # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
             $entry = $script:ConfigOverrideSections['RidPool']
             [string]$entry['ConfigKey'] | Should -Be 'RidPool'
             [string]$entry['Section'] | Should -Be 'RidPool'
@@ -10169,7 +10196,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'rIDAvailablePool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'RidPool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnAtPercentUsed'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Nine sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
         }
         It 'has one row in the README Coverage table, and the README says what the row cannot see' {
             $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
@@ -10180,9 +10207,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
-            [string]$script:Config.Version | Should -Be '1.27.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
+        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
+            [string]$script:Config.Version | Should -Be '1.28.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
         }
     }
 
@@ -11063,8 +11090,8 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($script:C7Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaSidHistory' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath under SidHistory, used by SecurityPosture, with its own validator' {
-            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
+            # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
             $entry = $script:ConfigOverrideSections['SidHistory']
             [string]$entry['ConfigKey'] | Should -Be 'SidHistory'
             [string]$entry['Section'] | Should -Be 'SecurityPosture'
@@ -11106,7 +11133,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             $help = $script:C7Ast.GetHelpContent()
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'SID history'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'sIDHistory'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Nine sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'SidHistory'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'PresentStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'NameListCap'
@@ -11119,9 +11146,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
-            [string]$script:Config.Version | Should -Be '1.27.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
+        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
+            [string]$script:Config.Version | Should -Be '1.28.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
         }
     }
 
@@ -12001,8 +12028,8 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($script:C8Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaGpoVersion' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath under Gpo, used by the Gpo section, with its own validator' {
-            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
+            # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
             $entry = $script:ConfigOverrideSections['Gpo']
             [string]$entry['ConfigKey'] | Should -Be 'Gpo'
             [string]$entry['Section'] | Should -Be 'Gpo'
@@ -12097,7 +12124,7 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'PDC emulator'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Nine sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Gpo"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'MismatchStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'OrphanFolderStatus'
@@ -12110,9 +12137,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
-            [string]$script:Config.Version | Should -Be '1.27.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
+        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
+            [string]$script:Config.Version | Should -Be '1.28.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
         }
     }
 
@@ -13276,8 +13303,8 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($script:C9Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDangerousAcl' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath under Acl, used by the Acl section, with its own validator' {
-            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
+            # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
             $entry = $script:ConfigOverrideSections['Acl']
             [string]$entry['ConfigKey'] | Should -Be 'Acl'
             [string]$entry['Section'] | Should -Be 'Acl'
@@ -13336,7 +13363,7 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'matched by SID'
             ([string]$help.Description -replace '\s+', ' ') | Should -Not -Match 'Dangerous ACLs: non-default principals holding DCSync rights on the domain head'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'nTSecurityDescriptor'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Nine sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Acl"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'FlaggedStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'AdditionalAllowed'
@@ -13350,9 +13377,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
-            [string]$script:Config.Version | Should -Be '1.27.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
+        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
+            [string]$script:Config.Version | Should -Be '1.28.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
         }
     }
 
@@ -14491,8 +14518,8 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             }
         }
         It 'is registered for -ConfigOverridePath under Privileged, used by PrivilegedAccounts and also by PrivilegedHygiene and Kerberos, with its own validator' {
-            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
+            # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
             $entry = $script:ConfigOverrideSections['Privileged']
             [string]$entry['ConfigKey'] | Should -Be 'Privileged'
             [string]$entry['Section'] | Should -Be 'PrivilegedAccounts'
@@ -14553,7 +14580,7 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'protocol transition'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'primaryGroupID'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'serverReference'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Nine sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Privileged"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'EnterpriseAdminsExemptRootAdministrator'
         }
@@ -14568,9 +14595,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
-            [string]$script:Config.Version | Should -Be '1.27.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
+        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
+            [string]$script:Config.Version | Should -Be '1.28.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
         }
     }
 
@@ -15510,6 +15537,942 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($findings | Where-Object { $_.Status -eq 'Warning' }).Count | Should -BeGreaterThan 5   # non-vacuity
             $orphan = @($findings | Where-Object { $_.Item -eq 'adminCount orphans: contoso.com' })[0]
             $orphan.Detail | Should -Match 'formerly protected'
+        }
+    }
+}
+
+Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckSDRefDom, CrossRefValidation, Intersite (C11)' {
+    # PORT-PLAN C11. The dcdiag command reference (read 2026-11-16) prints per-DC results under
+    # "Testing server: <site>\<DC>", partition results under "Running partition tests on : <NC>" and
+    # enterprise results under "Running enterprise tests on : <forest>", and wraps a verdict line so
+    # that the test name can fall on the next line. Each verdict is attributed to the block it is in:
+    # a partition or enterprise result never becomes a DC's failure, and a DC's own result is graded
+    # for that DC only.
+    BeforeAll {
+        $script:C11Url = 'https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag'
+        # The 28 tests in Learn's "DCDiag known tests" table (read 2026-11-16).
+        $script:C11LearnTests = @('Advertising', 'CheckSDRefDom', 'CheckSecurityError', 'Connectivity', 'CrossRefValidation', 'CutoffServers',
+            'DcPromo', 'DFSREvent', 'DNS', 'FrsEvent', 'Intersite', 'KccEvent', 'KnowsOfRoleHolders', 'MachineAccount', 'NCSecDesc', 'NetLogons',
+            'ObjectsReplicated', 'OutboundSecureChannels', 'RegisterInDNS', 'Replications', 'RidManager', 'Services', 'SysVolCheck', 'SystemLog',
+            'Topology', 'VerifyEnterpriseReferences', 'VerifyReferences', 'VerifyReplicas')
+        $script:C11PerDc = @('Connectivity', 'Replications', 'Advertising', 'Services', 'Netlogons', 'SysVolCheck', 'DFSREvent', 'FrsEvent',
+            'KccEvent', 'RidManager', 'KnowsOfRoleHolders', 'MachineAccount', 'ObjectsReplicated', 'NCSecDesc', 'VerifyReferences',
+            'VerifyReplicas', 'FsmoCheck', 'CheckSecurityError', 'VerifyEnterpriseReferences', 'SystemLog', 'DNS')
+        $script:C11Partitions = @('ForestDnsZones', 'DomainDnsZones', 'Schema', 'Configuration', 'contoso')
+        $script:C11Dc1 = 'dc1.contoso.com'
+        $script:C11Dc2 = 'dc2.contoso.com'
+        $script:C11Dc3 = 'dc3.north.contoso.com'
+        $script:C11Ro = 'rodc4.north.contoso.com'
+        $script:C11Cfg = $script:Config.DcDiag
+
+        function New-C11Target { param([string]$HostName, [string]$Scope, [string]$Site = 'HQ', [AllowNull()]$IsReadOnly = $false)
+            [pscustomobject]@{ HostName = $HostName; Scope = $Scope; Site = $Site; IsReadOnly = $IsReadOnly; Name = ($HostName.Split('.')[0].ToUpperInvariant()) } }
+        function Get-C11Short { param([string]$HostName) $HostName.Split('.')[0].ToUpperInvariant() }
+        # The shape the dcdiag command reference prints: a banner, the initial Connectivity block for
+        # the server, then the test's own block. -Wrap splits the verdict as Learn's sample does.
+        function New-C11DcOutput {
+            param([string]$Dc, [string]$Test, [string]$Verdict = 'passed', [string[]]$Lines = @(), [string]$ConnVerdict = 'passed', [switch]$Wrap, [string]$Subject = '')
+            if ($Subject -eq '') { $Subject = $Dc }
+            if ($Test -eq 'Connectivity') { $ConnVerdict = $Verdict }
+            $b = New-Object System.Collections.Generic.List[string]
+            foreach ($l in @('Directory Server Diagnosis', '', 'Performing initial setup:', ("   Home Server = {0}" -f $Dc), '   * Identified AD Forest.', '   Done gathering initial info.', '', 'Doing initial required tests', '',
+                    ("   Testing server: Default-First-Site-Name\{0}" -f $Dc), '      Starting test: Connectivity')) { $b.Add($l) }
+            if ($Test -eq 'Connectivity') { foreach ($l in $Lines) { $b.Add(("         {0}" -f $l)) } }
+            $b.Add(("         ......................... {0} {1} test Connectivity" -f $Dc, $ConnVerdict))
+            if ($Test -ne 'Connectivity') {
+                foreach ($l in @('', 'Doing primary tests', '', ("   Testing server: Default-First-Site-Name\{0}" -f $Dc), ("      Starting test: {0}" -f $Test))) { $b.Add($l) }
+                foreach ($l in $Lines) { $b.Add(("         {0}" -f $l)) }
+                if ($Wrap) { $b.Add(("         ......................... {0} {1} test " -f $Subject, $Verdict)); $b.Add(("         {0}" -f $Test)) }
+                else { $b.Add(("         ......................... {0} {1} test {2}" -f $Subject, $Verdict, $Test)) }
+            }
+            return ($b -join "`r`n")
+        }
+        # Partition blocks, one per naming context, as in Learn's sample (Configuration wrapped).
+        function New-C11PartitionOutput {
+            param([string]$Dc, [string]$Test, [string[]]$Failed = @(), [string[]]$Partitions = $script:C11Partitions)
+            $b = New-Object System.Collections.Generic.List[string]
+            $b.Add((New-C11DcOutput -Dc $Dc -Test 'Connectivity'))
+            $b.Add(''); $b.Add('Doing primary tests')
+            foreach ($p in $Partitions) {
+                $v = 'passed'
+                if ($Failed -contains $p) { $v = 'failed' }
+                $b.Add(''); $b.Add(("   Running partition tests on : {0}" -f $p)); $b.Add(("      Starting test: {0}" -f $Test))
+                if ($v -eq 'failed') { $b.Add(("         The cross-reference for {0} is not valid." -f $p)) }
+                if ($p -eq 'Configuration') { $b.Add(("         ......................... {0} {1} test " -f $p, $v)); $b.Add(("         {0}" -f $Test)) }
+                else { $b.Add(("         ......................... {0} {1} test {2}" -f $p, $v, $Test)) }
+            }
+            return ($b -join "`r`n")
+        }
+        function New-C11EnterpriseOutput {
+            param([string]$Dc, [string]$Test, [string]$Name = 'contoso.com', [string]$Verdict = 'passed')
+            $b = New-Object System.Collections.Generic.List[string]
+            $b.Add((New-C11DcOutput -Dc $Dc -Test 'Connectivity'))
+            foreach ($l in @('', ("   Running enterprise tests on : {0}" -f $Name), ("      Starting test: {0}" -f $Test), ("         ......................... {0} {1} test " -f $Name, $Verdict), ("         {0}" -f $Test))) { $b.Add($l) }
+            return ($b -join "`r`n")
+        }
+        # DNS: the server block's verdict says the DNS tests ran on the server; the summary verdict of
+        # these "enterprise-wide DNS health checks" (Learn) is printed under the enterprise block.
+        function New-C11DnsOutput {
+            param([string]$Dc, [string]$ServerVerdict = 'passed', [string]$EnterpriseVerdict = 'passed', [string]$Name = 'contoso.com')
+            $b = New-Object System.Collections.Generic.List[string]
+            $b.Add((New-C11DcOutput -Dc $Dc -Test 'DNS' -Verdict $ServerVerdict -Lines @('DNS Tests are running and not hung. Please wait a few minutes...')))
+            foreach ($l in @('', ("   Running enterprise tests on : {0}" -f $Name), '      Starting test: DNS', '         Test results for domain controllers:', ("            DC: {0}" -f $Dc))) { $b.Add($l) }
+            if ($EnterpriseVerdict -eq 'failed') { $b.Add('               Error: no delegated name server for _msdcs could be reached') }
+            $b.Add(("         ......................... {0} {1} test DNS" -f $Name, $EnterpriseVerdict))
+            return ($b -join "`r`n")
+        }
+        function New-C11Result { param([string]$StdOut, [bool]$Success = $true, $ExitCode = 0, $ErrorText = $null)
+            [pscustomobject]@{ Success = $Success; ExitCode = $ExitCode; Attempt = 1; Error = $ErrorText; StdOut = $StdOut; OutFile = $null } }
+        # The default answer: every test passes, each in the block it is printed in. FsmoCheck, like
+        # Intersite and LocatorCheck in Learn's sample, answers in the enterprise block (field
+        # captures; Microsoft publishes no FsmoCheck output), DNS in both.
+        function Get-C11DefaultAnswer { param([string]$Server, [string]$Test)
+            $short = Get-C11Short $Server
+            if (@('CheckSDRefDom', 'CrossRefValidation') -contains $Test) { return (New-C11Result (New-C11PartitionOutput -Dc $short -Test $Test)) }
+            if (@('Intersite', 'FsmoCheck') -contains $Test) { return (New-C11Result (New-C11EnterpriseOutput -Dc $short -Test $Test)) }
+            if ($Test -eq 'DNS') { return (New-C11Result (New-C11DnsOutput -Dc $short)) }
+            return (New-C11Result (New-C11DcOutput -Dc $short -Test $Test))
+        }
+        # The unscoped advice a grid row should reach: the dcdiag entry of the recommendation map.
+        $script:C11DcdiagAdvice = [string]@($script:RecommendationMap | Where-Object { -not $_.ContainsKey('Section') -and [string]$_.Match -eq '(?i)dcdiag|advertising|netlogons|sysvolcheck|fsmocheck|kccevent' })[0].Text
+        $script:C11ReplAdvice = [string]@($script:RecommendationMap | Where-Object { -not $_.ContainsKey('Section') -and [string]$_.Match -eq '(?i)replication' })[0].Text
+        $script:C11Fab = 'dc9.fabrikam.com'
+        # Every collector call in this Describe goes through this: the dcdiag stub answers from
+        # $script:C11Answer (server, test) and records every argument string it was given.
+        function Invoke-C11Collector {
+            param([object[]]$Targets, [switch]$Active, [string[]]$Scoped = @('contoso.com', 'north.contoso.com'), [string]$Root = 'contoso.com',
+                [hashtable]$Config = $script:Config.DcDiag, $InventoryFailures = @(), [string[]]$Down = @(), [bool]$HaveDcdiag = $true)
+            $script:C11Calls = @()
+            $script:C11Down = @($Down)
+            $script:C11Have = $HaveDcdiag
+            Clear-AdfaDcPortCache
+            Mock Test-CommandAvailable { [bool]$script:C11Have }
+            Mock Test-TcpPort { $script:C11Down -notcontains [string]$ComputerName }
+            Mock Invoke-ExternalCommand {
+                $script:C11Calls += [pscustomobject]@{ Arguments = [string]$Arguments; Timeout = $TimeoutSeconds; Retries = $Retries }
+                $t = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
+                $s = ([regex]::Match([string]$Arguments, '/s:(\S+)')).Groups[1].Value
+                & $script:C11Answer $s $t
+            }
+            return @(Get-AdfaDcDiagnostic -DomainControllers $Targets -IncludeActiveTests:$Active -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 `
+                    -Config $Config -InventoryFailures $InventoryFailures -ScopedDomains $Scoped -ForestRoot $Root)
+        }
+        # The comma keeps a one-row answer an array, so .Count works under StrictMode on Windows PowerShell 5.1.
+        function Get-C11Grid { param($Rows) return , @($Rows | Where-Object { $null -ne $_.PSObject.Properties['DomainController'] }) }
+        function Get-C11Row { param($Rows, [string]$Item) return , @($Rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -eq $Item }) }
+        function Get-C11CallsFor { param([string]$Server, [string]$Test = '')
+            @($script:C11Calls | Where-Object { $_.Arguments -match ('/s:{0}(\s|$)' -f [regex]::Escape($Server)) -and ($Test -eq '' -or $_.Arguments -match ('/test:{0}(\s|$)' -f [regex]::Escape($Test))) }) }
+        $script:C11ThreeDcs = @((New-C11Target $script:C11Dc1 'contoso.com' 'HQ'), (New-C11Target $script:C11Dc2 'contoso.com' 'Branch'), (New-C11Target $script:C11Dc3 'north.contoso.com' 'HQ'))
+    }
+    BeforeEach {
+        $script:C11Answer = { param($Server, $Test) Get-C11DefaultAnswer -Server $Server -Test $Test }
+    }
+
+    Context 'Config table (Learn, read 2026-11-16)' {
+        It 'lists the per-DC tests in the reference order, Connectivity first, each one in Learn''s table except the flagged FsmoCheck' {
+            $names = @($script:C11Cfg['PerDcTests'] | ForEach-Object { [string]$_['Test'] })
+            # Declared population: the 21 per-DC grid tests.
+            ($names -join ',') | Should -Be ($script:C11PerDc -join ',')
+            foreach ($entry in @($script:C11Cfg['PerDcTests'])) {
+                $t = [string]$entry['Test']
+                if ($t -eq 'FsmoCheck') {
+                    $entry['InLearnTable'] | Should -BeFalse
+                    continue
+                }
+                $entry['InLearnTable'] | Should -BeTrue -Because $t
+                @($script:C11LearnTests | Where-Object { $_ -eq $t }).Count | Should -Be 1 -Because "$t must be in Learn's table"
+            }
+            [string]$script:C11Cfg['Version'] | Should -Be '1.28.0'
+            [string]$script:C11Cfg['SourceUrl'] | Should -Be $script:C11Url
+            [string]$script:C11Cfg['ReadDate'] | Should -Be '2026-11-16'
+            [string]$script:C11Cfg['ThresholdSource'] | Should -Be 'tool default, not a Microsoft value'
+        }
+        It 'runs Topology per domain, CheckSDRefDom and CrossRefValidation per forest and Intersite per site, and never LocatorCheck' {
+            (@($script:C11Cfg['DomainTests'] | ForEach-Object { [string]$_['Test'] }) -join ',') | Should -Be 'Topology'
+            (@($script:C11Cfg['ForestTests'] | ForEach-Object { [string]$_['Test'] }) -join ',') | Should -Be 'CheckSDRefDom,CrossRefValidation'
+            (@($script:C11Cfg['SiteTests'] | ForEach-Object { [string]$_['Test'] }) -join ',') | Should -Be 'Intersite'
+            $notAdded = @($script:C11Cfg['NotAdded'] | ForEach-Object { [string]$_['Test'] })
+            $notAdded | Should -Contain 'LocatorCheck'
+            $notAdded | Should -Contain 'CutoffServers'
+            $everyRun = @($script:C11Cfg['PerDcTests']) + @($script:C11Cfg['DomainTests']) + @($script:C11Cfg['ForestTests']) + @($script:C11Cfg['SiteTests'])
+            # Declared population: 21 per DC, 1 per domain, 2 per forest, 1 per site.
+            @($everyRun).Count | Should -Be 25
+            foreach ($banned in @('LocatorCheck', 'CutoffServers', 'DcPromo', 'RegisterInDNS', 'OutboundSecureChannels')) {
+                @($everyRun | Where-Object { [string]$_['Test'] -eq $banned }).Count | Should -Be 0 -Because "$banned is not run"
+            }
+            'LocatorCheck' | Should -Not -BeIn $script:C11LearnTests   # the reason it is not run
+        }
+        It 'holds back SystemLog with DNS and Intersite, because Learn says it reads AND WRITES entries' {
+            $active = @($script:Config.DcdiagActiveTests)
+            # Declared population: the three tests Microsoft's text describes as changing state.
+            (@($active | ForEach-Object { [string]$_.Test }) -join ',') | Should -Be 'DNS,Intersite,SystemLog'
+            $sl = @($active | Where-Object { $_.Test -eq 'SystemLog' })[0]
+            [string]$sl.Quote | Should -Match 'reading and writing entries'
+            [string]$sl.Source | Should -Be $script:C11Url
+            [string]$sl.ReadDate | Should -Be '2026-11-16'
+        }
+        It 'keeps RidManager in the default list on Learn''s description of what it checks (C6e)' {
+            $rid = @($script:C11Cfg['PerDcTests'] | Where-Object { [string]$_['Test'] -eq 'RidManager' })
+            $rid.Count | Should -Be 1
+            [string]$rid[0]['Learn'] | Should -Match 'Checks whether the relative identifier \(RID\) master is accessible'
+            [string]$rid[0]['Source'] | Should -Be $script:C11Url
+            [string]$rid[0]['ReadDate'] | Should -Be '2026-11-16'
+            @($script:Config.DcdiagActiveTests | Where-Object { $_.Test -eq 'RidManager' }).Count | Should -Be 0
+        }
+        It 'marks the unreachable-DC patterns provisional, and sources the event-log and access-denied ones' {
+            $un = @($script:C11Cfg['UnreachablePatterns'])
+            $un.Count | Should -Be 2
+            foreach ($p in $un) { $p['Provisional'] | Should -BeTrue }
+            $ev = @($script:C11Cfg['EventLogUnreadablePatterns'])
+            $ev.Count | Should -Be 1
+            [string]$ev[0]['Source'] | Should -Match '^https://learn\.microsoft\.com/troubleshoot/windows-server/identity/dcdiag-commands-running-errors'
+            $ad = @($script:C11Cfg['AccessDeniedPatterns'])
+            $ad.Count | Should -Be 1
+            [string]$ad[0]['Source'] | Should -Match 'system-error-codes--0-499-'
+            # Which per-DC tests read an event log, and which may have partition parts for their DC.
+            (@($script:C11Cfg['PerDcTests'] | Where-Object { $_['EventLog'] } | ForEach-Object { [string]$_['Test'] }) -join ',') | Should -Be 'DFSREvent,FrsEvent,KccEvent,SystemLog'
+            (@($script:C11Cfg['PerDcTests'] | Where-Object { $_['PartitionParts'] } | ForEach-Object { [string]$_['Test'] }) -join ',') | Should -Be 'Replications,VerifyReplicas'
+            # And which are enterprise tests whose verdict, in a /s:<dc> invocation, is the DC's own.
+            (@($script:C11Cfg['PerDcTests'] | Where-Object { $_['EnterpriseParts'] } | ForEach-Object { [string]$_['Test'] }) -join ',') | Should -Be 'FsmoCheck,DNS'
+            # Declared population: every one of the 21 per-DC entries states the flag.
+            @($script:C11Cfg['PerDcTests'] | Where-Object { -not $_.ContainsKey('EnterpriseParts') }).Count | Should -Be 0
+        }
+        It 'never builds a repair, comprehensive, credential or enterprise switch for any configured test' {
+            $all = @($script:C11Cfg['PerDcTests']) + @($script:C11Cfg['DomainTests']) + @($script:C11Cfg['ForestTests']) + @($script:C11Cfg['SiteTests'])
+            $built = @($all | ForEach-Object { Get-AdfaDcdiagArgument -TestName ([string]$_['Test']) -DomainController $script:C11Dc1 })
+            $built.Count | Should -Be 25
+            @($built | Where-Object { $_ -match '(?i)/(fix|c|e|u:|p:|RecreateMachineAccount|FixMachineAccount|ReplSource|skip)(\s|:|$)' }).Count | Should -Be 0
+            @($built | Where-Object { $_ -notmatch ('/s:{0}(\s|$)' -f [regex]::Escape($script:C11Dc1)) }).Count | Should -Be 0
+            # Exactly one test takes /a (Intersite, which skips its testing without it) and one /DnsAll.
+            @($built | Where-Object { $_ -match '\s/a$' }).Count | Should -Be 1
+            @($built | Where-Object { $_ -match '/DnsAll' }).Count | Should -Be 1
+        }
+    }
+
+    Context 'Parser: ConvertFrom-AdfaDcdiagOutput' {
+        It 'attributes each verdict to its block, and reads a verdict whose test name wrapped onto the next line' {
+            $out = (New-C11PartitionOutput -Dc 'DC1' -Test 'CrossRefValidation' -Failed @('Schema'))
+            $p = ConvertFrom-AdfaDcdiagOutput -StdOut $out -Config $script:C11Cfg
+            $p.Recognised | Should -BeTrue
+            $parts = @($p.Parts | Where-Object { $_.Test -eq 'CrossRefValidation' })
+            # Declared population: one part per partition block, the wrapped Configuration included.
+            $parts.Count | Should -Be 5
+            (@($parts | ForEach-Object { $_.ScopeName }) -join ',') | Should -Be ($script:C11Partitions -join ',')
+            @($parts | Where-Object { $_.ScopeKind -ne 'Partition' }).Count | Should -Be 0
+            @($parts | Where-Object { $_.ScopeName -eq 'Configuration' })[0].Verdict | Should -Be 'Pass'
+            @($parts | Where-Object { $_.ScopeName -eq 'Schema' })[0].Verdict | Should -Be 'Fail'
+            $conn = @($p.Parts | Where-Object { $_.Test -eq 'Connectivity' })
+            $conn.Count | Should -Be 1
+            $conn[0].ScopeKind | Should -Be 'Server'
+            $conn[0].ScopeName | Should -Be 'DC1'
+            $conn[0].Subject | Should -Be 'DC1'
+        }
+        It 'puts an enterprise result in its enterprise block' {
+            $p = ConvertFrom-AdfaDcdiagOutput -StdOut (New-C11EnterpriseOutput -Dc 'DC1' -Test 'Intersite' -Verdict 'failed') -Config $script:C11Cfg
+            $e = @($p.Parts | Where-Object { $_.Test -eq 'Intersite' })
+            $e.Count | Should -Be 1
+            $e[0].ScopeKind | Should -Be 'Enterprise'
+            $e[0].ScopeName | Should -Be 'contoso.com'
+            $e[0].Verdict | Should -Be 'Fail'
+        }
+        It 'reads a bare verdict outside any block as scope None, and strips the dots from a subject written against them' {
+            $p = ConvertFrom-AdfaDcdiagOutput -StdOut "passed test Advertising`n.........................DC2 failed test Services" -Config $script:C11Cfg
+            @($p.Parts).Count | Should -Be 2
+            $p.Parts[0].ScopeKind | Should -Be 'None'
+            $p.Parts[0].Subject | Should -Be ''
+            $p.Parts[1].Subject | Should -Be 'DC2'
+            $p.Parts[1].Verdict | Should -Be 'Fail'
+        }
+        It 'does not let a longer test name satisfy a shorter one' {
+            $p = ConvertFrom-AdfaDcdiagOutput -StdOut '......................... DC1 passed test NetlogonsExtra' -Config $script:C11Cfg
+            @($p.Parts | Where-Object { $_.Test -eq 'Netlogons' }).Count | Should -Be 0
+        }
+        It 'recognises nothing in empty or localised output, and reads no part from it' {
+            $empty = ConvertFrom-AdfaDcdiagOutput -StdOut '' -Config $script:C11Cfg
+            $empty.Empty | Should -BeTrue
+            $empty.Recognised | Should -BeFalse
+            $loc = ConvertFrom-AdfaDcdiagOutput -StdOut "Diagnostico do Servidor de Diretorio`nA testar o servidor: Default-First-Site-Name\DC1`n......................... DC1 passou no teste Advertising" -Config $script:C11Cfg
+            $loc.Empty | Should -BeFalse
+            $loc.Recognised | Should -BeFalse
+            @($loc.Parts).Count | Should -Be 0
+        }
+        It 'keeps the unreachable, access-denied and event-log evidence apart' {
+            $u = ConvertFrom-AdfaDcdiagOutput -StdOut "Directory Server Diagnosis`nLdap search capability attribute search failed on server DC1, return value = 81" -Config $script:C11Cfg
+            @($u.UnreachableEvidence).Count | Should -Be 1
+            @($u.AccessDeniedEvidence).Count | Should -Be 0
+            $a = ConvertFrom-AdfaDcdiagOutput -StdOut "Directory Server Diagnosis`n[DC1] LDAP bind failed with error 5, Access is denied." -Config $script:C11Cfg
+            @($a.AccessDeniedEvidence).Count | Should -Be 1
+            @($a.UnreachableEvidence).Count | Should -Be 0
+            $e = ConvertFrom-AdfaDcdiagOutput -StdOut "Starting test: SystemLog`nThe event log System on server dc1.contoso.com could not be queried, error 0x6ba ""The RPC server is unavailable.""`n......................... DC1 failed test SystemLog" -Config $script:C11Cfg
+            @($e.EventLogUnreadableEvidence).Count | Should -Be 1
+            @($e.UnreachableEvidence).Count | Should -Be 0
+        }
+    }
+
+    Context 'Verdict: Resolve-AdfaDcdiagVerdict (pure)' {
+        BeforeAll {
+            function Resolve-C11 { param([string]$Out, [string]$Test, [string]$HostName = $script:C11Dc1, [bool]$PartitionParts = $false, [bool]$EventLog = $false, [string]$Mode = 'Dc', [bool]$Success = $true, [bool]$EnterpriseParts = $false)
+                $p = ConvertFrom-AdfaDcdiagOutput -StdOut $Out -Config $script:C11Cfg
+                Resolve-AdfaDcdiagVerdict -Parsed $p -TestName $Test -Mode $Mode -HostName $HostName -PartitionParts $PartitionParts -EnterpriseParts $EnterpriseParts -EventLog $EventLog -Success $Success -ExitCode 0 -ErrorText '' -StdOut $Out }
+        }
+        It 'grades the DC''s own passed and failed verdicts, a wrapped one included' {
+            (Resolve-C11 (New-C11DcOutput -Dc 'DC1' -Test 'Advertising') 'Advertising').Status | Should -Be 'Pass'
+            (Resolve-C11 (New-C11DcOutput -Dc 'DC1' -Test 'Advertising' -Wrap) 'Advertising').Status | Should -Be 'Pass'
+            $f = Resolve-C11 (New-C11DcOutput -Dc 'DC1' -Test 'Advertising' -Verdict 'failed' -Lines @('Warning: DC1 is not advertising as a time server.')) 'Advertising'
+            $f.Status | Should -Be 'Fail'
+            $f.Detail | Should -Match '^Advertising: '
+            $f.Detail | Should -Match 'not advertising as a time server'
+        }
+        It 'reads Fail when a DC has both a failed and a passed verdict for the test, in either order (the R2 false pass)' {
+            $a = "......................... DC1 passed test Replications`n......................... DC1 failed test Replications"
+            $b = "......................... DC1 failed test Replications`n......................... DC1 passed test Replications"
+            (Resolve-C11 $a 'Replications').Status | Should -Be 'Fail'
+            (Resolve-C11 $b 'Replications').Status | Should -Be 'Fail'
+            Get-AdfaDcdiagTestOutcome -TestName 'Replications' -StdOut $a | Should -Be 'Fail'
+            Get-AdfaDcdiagTestOutcome -TestName 'Replications' -StdOut $b | Should -Be 'Fail'
+        }
+        It 'never counts another DC''s verdict for this DC, and grades it for that DC' {
+            $out = New-C11DcOutput -Dc 'DC2' -Test 'Services' -Verdict 'failed'
+            $for1 = Resolve-C11 $out 'Services' $script:C11Dc1
+            $for1.Status | Should -Be 'Not Assessed'
+            $for1.Detail | Should -Match 'not counted'
+            (Resolve-C11 $out 'Services' $script:C11Dc2).Status | Should -Be 'Fail'
+        }
+        It 'matches a host name longer than 15 characters to its NetBIOS form, and only that' {
+            $long = 'maplewaffle-ws22.contoso.com'
+            (Resolve-C11 (New-C11DcOutput -Dc 'MAPLEWAFFLE-WS2' -Test 'Advertising') 'Advertising' $long).Status | Should -Be 'Pass'
+            Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE-WS2' -HostName $long | Should -BeTrue
+            Test-AdfaDcdiagSubject -Subject 'DC1' -HostName 'dc10.contoso.com' | Should -BeFalse
+            Test-AdfaDcdiagSubject -Subject 'dc1' -HostName $script:C11Dc1 | Should -BeTrue
+            Test-AdfaDcdiagSubject -Subject 'dc1.contoso.com' -HostName $script:C11Dc1 | Should -BeTrue
+            Test-AdfaDcdiagSubject -Subject '' -HostName $script:C11Dc1 | Should -BeFalse
+        }
+        It 'never matches a shorter prefix of a long host name, only its exact 15-character NetBIOS form' {
+            $long = 'maplewaffle-ws22.corp.contoso.com'
+            Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE-WS2' -HostName $long | Should -BeTrue
+            # 11 and 14 characters: prefixes of the label, but not its NetBIOS form.
+            Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE' -HostName $long | Should -BeFalse
+            Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE-WS' -HostName $long | Should -BeFalse
+            (Resolve-C11 (New-C11DcOutput -Dc 'MAPLEWAFFLE' -Test 'Advertising' -Verdict 'failed') 'Advertising' $long).Status | Should -Be 'Not Assessed'
+        }
+        It 'counts an enterprise verdict for a test with enterprise parts, and failed wins over the server block''s passed (DNS)' {
+            $dnsFail = New-C11DnsOutput -Dc 'DC1' -EnterpriseVerdict 'failed'
+            $r = Resolve-C11 $dnsFail 'DNS' -EnterpriseParts $true
+            $r.Status | Should -Be 'Fail'
+            $r.Detail | Should -Match 'failed in the enterprise tests on contoso\.com, which dcdiag ran from this domain controller'
+            (Resolve-C11 (New-C11DnsOutput -Dc 'DC1') 'DNS' -EnterpriseParts $true).Status | Should -Be 'Pass'
+            # Without the flag the enterprise summary is not counted: the server block alone would
+            # read Pass, which is why DNS carries the flag.
+            (Resolve-C11 $dnsFail 'DNS').Status | Should -Be 'Pass'
+            (@($script:C11Cfg['PerDcTests'] | Where-Object { [string]$_['Test'] -eq 'DNS' })[0])['EnterpriseParts'] | Should -BeTrue
+        }
+        It 'grades FsmoCheck from its enterprise block for the DC asked: Pass when it passed, Fail when it failed' {
+            (Resolve-C11 (New-C11EnterpriseOutput -Dc 'DC1' -Test 'FsmoCheck') 'FsmoCheck' -EnterpriseParts $true).Status | Should -Be 'Pass'
+            $f = Resolve-C11 (New-C11EnterpriseOutput -Dc 'DC1' -Test 'FsmoCheck' -Verdict 'failed') 'FsmoCheck' -EnterpriseParts $true
+            $f.Status | Should -Be 'Fail'
+            $f.Detail | Should -Match 'enterprise tests on contoso\.com'
+        }
+        It 'does not count a bare verdict printed inside another DC''s server block for this DC' {
+            $out = "Doing primary tests`r`n   Testing server: Default-First-Site-Name\DC2`r`n      Starting test: Advertising`r`n         ......................... passed test Advertising"
+            $r = Resolve-C11 $out 'Advertising' $script:C11Dc1
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'only for DC2'
+            (Resolve-C11 $out 'Advertising' $script:C11Dc2).Status | Should -Be 'Pass'
+        }
+        It 'does not name a Connectivity failure that dcdiag printed for another DC as this DC''s cause' {
+            $r = Resolve-C11 (New-C11DcOutput -Dc 'DC2' -Test 'Connectivity' -Verdict 'failed') 'Advertising' $script:C11Dc1
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Not -Match 'Connectivity test failed'
+            (Resolve-C11 (New-C11DcOutput -Dc 'DC2' -Test 'Connectivity' -Verdict 'failed') 'Advertising' $script:C11Dc2).Detail | Should -Match 'Connectivity test failed'
+        }
+        It 'names the partition a DC''s failed Replications verdict was printed for' {
+            $r = Resolve-C11 (New-C11PartitionOutput -Dc 'DC1' -Test 'Replications' -Failed @('Configuration')) 'Replications' -PartitionParts $true
+            $r.Status | Should -Be 'Fail'
+            $r.Detail | Should -Match '^Replications: failed for partition\(s\) Configuration: '
+        }
+        It 'reads English banner-only output as no verdict line, not as possibly localised' {
+            $r = Resolve-C11 "Directory Server Diagnosis`r`n`r`nPerforming initial setup:`r`n   Trying to find home server...`r`n   Home Server = DC1" 'Advertising'
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match "neither 'passed test Advertising' nor 'failed test Advertising'"
+            $r.Detail | Should -Not -Match 'localised'
+        }
+        It 'never counts a partition or enterprise result against a DC test that does not have partition parts' {
+            $r = Resolve-C11 (New-C11PartitionOutput -Dc 'DC1' -Test 'NCSecDesc' -Failed @('Schema')) 'NCSecDesc'
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'not counted'
+            $e = Resolve-C11 (New-C11EnterpriseOutput -Dc 'DC1' -Test 'KnowsOfRoleHolders' -Verdict 'failed') 'KnowsOfRoleHolders'
+            $e.Status | Should -Be 'Not Assessed'
+        }
+        It 'counts partition parts for Replications and VerifyReplicas, and any failed part fails the DC' {
+            $out = New-C11PartitionOutput -Dc 'DC1' -Test 'VerifyReplicas' -Failed @('DomainDnsZones')
+            (Resolve-C11 $out 'VerifyReplicas' -PartitionParts $true).Status | Should -Be 'Fail'
+            (Resolve-C11 (New-C11PartitionOutput -Dc 'DC1' -Test 'VerifyReplicas') 'VerifyReplicas' -PartitionParts $true).Status | Should -Be 'Pass'
+        }
+        It 'turns a failed event-log test whose log could not be queried into Not Assessed, and only an event-log test' {
+            $lines = @('The event log System on server dc1.contoso.com could not be queried, error 0x6ba "The RPC server is unavailable."')
+            $ev = Resolve-C11 (New-C11DcOutput -Dc 'DC1' -Test 'SystemLog' -Verdict 'failed' -Lines $lines) 'SystemLog' -EventLog $true
+            $ev.Status | Should -Be 'Not Assessed'
+            $ev.Detail | Should -Match 'could not be queried'
+            $ev.Detail | Should -Match 'Remote Event Log Management'
+            (Resolve-C11 (New-C11DcOutput -Dc 'DC1' -Test 'Replications' -Verdict 'failed' -Lines $lines) 'Replications').Status | Should -Be 'Fail'
+        }
+        It 'tells an unreachable DC from access denied when no verdict was printed' {
+            $u = Resolve-C11 "Directory Server Diagnosis`nPerforming initial setup:`nLdap search capability attribute search failed on server DC1, return value = 81" 'Advertising'
+            $u.Status | Should -Be 'Not Assessed'
+            $u.Detail | Should -Match 'could not reach'
+            $u.Detail | Should -Match 'provisional'
+            $u.Detail | Should -Match 'return value = 81'
+            $u.Detail | Should -Not -Match '(?i)access denied'
+            $d = Resolve-C11 "Directory Server Diagnosis`n[DC1] An net use or LsaPolicy operation failed with error 5, Access is denied." 'NetLogons'
+            $d.Status | Should -Be 'Not Assessed'
+            $d.Detail | Should -Match 'access denied'
+            $d.Detail | Should -Not -Match 'could not reach'
+        }
+        It 'keeps a failed verdict that also says Access is denied as Fail, and notes the possible cause' {
+            $r = Resolve-C11 (New-C11DcOutput -Dc 'DC1' -Test 'Replications' -Verdict 'failed' -Lines @('The replication generated an error (5): Access is denied.')) 'Replications'
+            $r.Status | Should -Be 'Fail'
+            $r.Detail | Should -Match 'Access is denied'
+            # The note itself, from a fixture whose "Access is denied." line is not one of the
+            # diagnostic lines copied into the Detail (it holds no error/failed/could not word).
+            $n = Resolve-C11 (New-C11DcOutput -Dc 'DC1' -Test 'NetLogons' -Verdict 'failed' -Lines @('Unable to connect to the NETLOGON share! (\\DC1\netlogon)', 'Access is denied.')) 'Netlogons'
+            $n.Status | Should -Be 'Fail'
+            $n.Detail | Should -Match 'KB 3073945'
+            $n.Detail | Should -Match 'the rights of the account running dcdiag'
+            # Worded so that it cannot choose the replication advice for a share-access failure.
+            $n.Detail | Should -Not -Match '(?i)replication'
+        }
+        It 'never reads Pass from output it did not recognise, from no output, or from a tool that did not run' {
+            $loc = Resolve-C11 "Diagnostico do Servidor de Diretorio`n......................... DC1 passou no teste Advertising" 'Advertising'
+            $loc.Status | Should -Be 'Not Assessed'
+            $loc.Detail | Should -Match 'not recognised'
+            $loc.Detail | Should -Match 'localised'
+            $none = Resolve-C11 '' 'Advertising'
+            $none.Status | Should -Be 'Not Assessed'
+            $none.Detail | Should -Match 'NO output'
+            $tool = Resolve-C11 '' 'Advertising' -Success $false
+            $tool.Status | Should -Be 'Not Assessed'
+            $tool.Detail | Should -Match 'did not complete'
+            $missing = Resolve-C11 (New-C11DcOutput -Dc 'DC1' -Test 'Connectivity') 'Advertising'
+            $missing.Status | Should -Be 'Not Assessed'
+            $missing.Detail | Should -Match 'Advertising: NOT ASSESSED'
+        }
+        It 'names the initial Connectivity failure when it is why a test printed no verdict' {
+            $out = (New-C11DcOutput -Dc 'DC1' -Test 'Connectivity' -Verdict 'failed') + "`r`n   Skipping all tests, because server DC1 is not responding to directory service requests."
+            $r = Resolve-C11 $out 'Advertising'
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'Connectivity'
+        }
+        It 'in scope mode counts every part, and fails on one failed part' {
+            (Resolve-C11 (New-C11PartitionOutput -Dc 'DC1' -Test 'CheckSDRefDom' -Failed @('contoso')) 'CheckSDRefDom' -Mode 'Scope').Status | Should -Be 'Fail'
+            $ok = Resolve-C11 (New-C11PartitionOutput -Dc 'DC1' -Test 'CheckSDRefDom') 'CheckSDRefDom' -Mode 'Scope'
+            $ok.Status | Should -Be 'Pass'
+            @($ok.Parts).Count | Should -Be 5
+            (Resolve-C11 (New-C11DcOutput -Dc 'DC1' -Test 'Connectivity') 'CheckSDRefDom' -Mode 'Scope').Status | Should -Be 'Not Assessed'
+        }
+        It 'falls back to a usable DC whose Connectivity was not assessed, writable first, when none passed it' {
+            $na1 = [pscustomobject]@{ HostName = 'dc6.contoso.com'; IsReadOnly = $null; Usable = $true; Connectivity = 'Not Assessed' }
+            $na2 = [pscustomobject]@{ HostName = 'dc7.contoso.com'; IsReadOnly = $false; Usable = $true; Connectivity = 'Not Assessed' }
+            $ro = [pscustomobject]@{ HostName = 'rodc8.contoso.com'; IsReadOnly = $true; Usable = $true; Connectivity = 'Not Assessed' }
+            [string](Select-AdfaDcdiagTarget -States @($ro, $na1, $na2)).HostName | Should -Be 'dc7.contoso.com'
+            [string](Select-AdfaDcdiagTarget -States @($ro, $na1)).HostName | Should -Be 'dc6.contoso.com'
+            $null -eq (Select-AdfaDcdiagTarget -States @($ro)) | Should -BeTrue
+        }
+    }
+
+    Context 'Collector: the per-DC grid' {
+        It 'gives every DC of every domain a grid row with its domain, 19 attempted tests and Connectivity first' {
+            $rows = Invoke-C11Collector -Targets $script:C11ThreeDcs
+            $grid = Get-C11Grid $rows
+            # Declared population: the three targets.
+            $grid.Count | Should -Be 3
+            foreach ($t in $script:C11ThreeDcs) {
+                $row = @($grid | Where-Object { $_.DomainController -eq $t.HostName })
+                $row.Count | Should -Be 1 -Because $t.HostName
+                [string]$row[0].Scope | Should -Be $t.Scope
+                [string]$row[0].Status | Should -Be 'Pass' -Because $t.HostName
+                $calls = @(Get-C11CallsFor -Server $t.HostName | Where-Object { $_.Arguments -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation)\b' })
+                $calls.Count | Should -Be 19 -Because "$($t.HostName) runs 19 tests by default"
+                $calls[0].Arguments | Should -Match '^/test:Connectivity '
+                foreach ($name in $script:C11PerDc) {
+                    $expect = 'Pass'
+                    if (@('SystemLog', 'DNS') -contains $name) { $expect = 'Not Assessed' }
+                    [string]$row[0].("DCDIAG_$name") | Should -Be $expect -Because "$($t.HostName) $name"
+                }
+                [string]$row[0].NotRun | Should -Match 'SystemLog'
+                [string]$row[0].NotRun | Should -Match 'reading and writing'
+                [string]$row[0].NotRun | Should -Not -Match 'Intersite'
+            }
+            $cells = @($grid[0].PSObject.Properties | Where-Object { $_.Name -like 'DCDIAG_*' } | ForEach-Object { $_.Name -replace '^DCDIAG_', '' })
+            ($cells -join ',') | Should -Be ($script:C11PerDc -join ',')
+            @($script:C11Calls | Where-Object { $_.Arguments -match '/test:(SystemLog|DNS|Intersite|LocatorCheck)\b' }).Count | Should -Be 0
+        }
+        It 'stops at a failed Connectivity on that DC only, keeps it as Fail with the ICMP caveat, and runs nothing more there' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Server -eq $script:C11Dc2 -and $Test -eq 'Connectivity') { return (New-C11Result (New-C11DcOutput -Dc 'DC2' -Test 'Connectivity' -Verdict 'failed' -Lines @('Ldap search capability attribute search failed on server DC2, return value = 81')) -Success $false -ExitCode 1) }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $grid = Get-C11Grid (Invoke-C11Collector -Targets $script:C11ThreeDcs)
+            $two = @($grid | Where-Object { $_.DomainController -eq $script:C11Dc2 })[0]
+            [string]$two.DCDIAG_Connectivity | Should -Be 'Fail'
+            [string]$two.Status | Should -Be 'Fail'
+            @(Get-C11CallsFor -Server $script:C11Dc2).Count | Should -Be 1
+            foreach ($name in @($script:C11PerDc | Where-Object { $_ -ne 'Connectivity' })) { [string]$two.("DCDIAG_$name") | Should -Be 'Not Assessed' -Because $name }
+            [string]$two.Failures | Should -Match 'ICMP'
+            # The tests not started are named in NotRun, never in Failures, the text the
+            # recommendation is chosen from: their names would choose the replication advice.
+            [string]$two.NotRun | Should -Match 'Not run after Connectivity failed: Replications'
+            [string]$two.Failures | Should -Not -Match 'Not run after|Replications|SysVolCheck'
+            $finding = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $two -StatusColumn 'Status'
+            [string]$finding.Recommendation | Should -Be $script:C11DcdiagAdvice
+            [string]$finding.Detail | Should -Match 'Not run after Connectivity failed'
+            foreach ($other in @($script:C11Dc1, $script:C11Dc3)) {
+                [string]@($grid | Where-Object { $_.DomainController -eq $other })[0].Status | Should -Be 'Pass' -Because $other
+                @(Get-C11CallsFor -Server $other | Where-Object { $_.Arguments -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation)\b' }).Count | Should -Be 19 -Because $other
+            }
+        }
+        It 'gives a DC closed on RPC/135 Not Assessed cells and runs nothing against it, while the others run' {
+            $rows = Invoke-C11Collector -Targets $script:C11ThreeDcs -Down @($script:C11Dc3)
+            $grid = Get-C11Grid $rows
+            $three = @($grid | Where-Object { $_.DomainController -eq $script:C11Dc3 })[0]
+            [string]$three.Ping | Should -Be 'Fail'
+            [string]$three.Failures | Should -Match 'not reachable \(RPC/135\)'
+            @(Get-C11CallsFor -Server $script:C11Dc3).Count | Should -Be 0
+            foreach ($name in $script:C11PerDc) { [string]$three.("DCDIAG_$name") | Should -Be 'Not Assessed' -Because $name }
+            @($grid | Where-Object { $_.DomainController -ne $script:C11Dc3 -and $_.Ping -eq 'Pass' -and $_.Status -eq 'Pass' }).Count | Should -Be 2
+            # The domain whose only DC is unreachable has no Topology verdict.
+            $topo = Get-C11Row $rows 'dcdiag Topology: north.contoso.com'
+            $topo.Count | Should -Be 1
+            [string]$topo[0].Status | Should -Be 'Not Assessed'
+            @(Get-C11CallsFor -Server $script:C11Dc3 -Test 'Topology').Count | Should -Be 0
+        }
+        It 'reports access denied as its own cause, the DC row Not Assessed, never Fail and never unreachable' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Server -eq $script:C11Dc2) { return (New-C11Result ("Directory Server Diagnosis`r`nPerforming initial setup:`r`n[DC2] LDAP bind failed with error 5,`r`nAccess is denied.") -Success $false -ExitCode 1) }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $grid = Get-C11Grid (Invoke-C11Collector -Targets $script:C11ThreeDcs)
+            $two = @($grid | Where-Object { $_.DomainController -eq $script:C11Dc2 })[0]
+            [string]$two.Status | Should -Be 'Not Assessed'
+            [string]$two.Ping | Should -Be 'Pass'
+            [string]$two.Failures | Should -Match 'access denied'
+            [string]$two.Failures | Should -Not -Match 'could not reach|not reachable'
+            @($script:C11PerDc | Where-Object { [string]$two.("DCDIAG_$_") -ne 'Not Assessed' }).Count | Should -Be 0
+            [string]@($grid | Where-Object { $_.DomainController -eq $script:C11Dc1 })[0].Status | Should -Be 'Pass'
+        }
+        It 'grades a mixed result per DC: one DC''s failed partition fails that DC''s Replications only' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Server -eq $script:C11Dc1 -and $Test -eq 'Replications') { return (New-C11Result (New-C11PartitionOutput -Dc 'DC1' -Test 'Replications' -Failed @('Configuration')) -Success $false -ExitCode 1) }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $grid = Get-C11Grid (Invoke-C11Collector -Targets $script:C11ThreeDcs)
+            $one = @($grid | Where-Object { $_.DomainController -eq $script:C11Dc1 })[0]
+            [string]$one.DCDIAG_Replications | Should -Be 'Fail'
+            [string]$one.Status | Should -Be 'Fail'
+            [string]$one.Failures | Should -Match '^Replications: failed for partition\(s\) Configuration: '
+            @($grid | Where-Object { $_.DomainController -ne $script:C11Dc1 -and $_.DCDIAG_Replications -eq 'Pass' }).Count | Should -Be 2
+        }
+        It 'grades FsmoCheck from its enterprise block on every DC (declared population: three DCs), and fails only the DC whose run failed' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Server -eq $script:C11Dc3 -and $Test -eq 'FsmoCheck') { return (New-C11Result (New-C11EnterpriseOutput -Dc 'DC3' -Test 'FsmoCheck' -Verdict 'failed') -Success $false -ExitCode 1) }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $grid = Get-C11Grid (Invoke-C11Collector -Targets $script:C11ThreeDcs)
+            $grid.Count | Should -Be 3
+            foreach ($dc in @($script:C11Dc1, $script:C11Dc2)) {
+                $row = @($grid | Where-Object { $_.DomainController -eq $dc })[0]
+                [string]$row.DCDIAG_FsmoCheck | Should -Be 'Pass' -Because $dc
+                [string]$row.Status | Should -Be 'Pass' -Because $dc
+            }
+            $three = @($grid | Where-Object { $_.DomainController -eq $script:C11Dc3 })[0]
+            [string]$three.DCDIAG_FsmoCheck | Should -Be 'Fail'
+            [string]$three.Status | Should -Be 'Fail'
+            [string]$three.Failures | Should -Match '^FsmoCheck: failed in the enterprise tests on contoso\.com'
+        }
+        It 'with the opt-in fails the DNS cell when the enterprise DNS summary failed, although the server block passed' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Server -eq $script:C11Dc2 -and $Test -eq 'DNS') { return (New-C11Result (New-C11DnsOutput -Dc 'DC2' -EnterpriseVerdict 'failed') -Success $false -ExitCode 1) }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $grid = Get-C11Grid (Invoke-C11Collector -Targets $script:C11ThreeDcs -Active)
+            [string]@($grid | Where-Object { $_.DomainController -eq $script:C11Dc2 })[0].DCDIAG_DNS | Should -Be 'Fail'
+            [string]@($grid | Where-Object { $_.DomainController -eq $script:C11Dc2 })[0].Status | Should -Be 'Fail'
+            foreach ($dc in @($script:C11Dc1, $script:C11Dc3)) { [string]@($grid | Where-Object { $_.DomainController -eq $dc })[0].DCDIAG_DNS | Should -Be 'Pass' -Because $dc }
+        }
+        It 'gives a failed share-access test that says Access is denied the dcdiag advice, not the replication advice' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Server -eq $script:C11Dc1 -and $Test -eq 'Netlogons') { return (New-C11Result (New-C11DcOutput -Dc 'DC1' -Test 'NetLogons' -Verdict 'failed' -Lines @('Unable to connect to the NETLOGON share! (\\DC1\netlogon)', '[DC1] An net use or LsaPolicy operation failed with error 5, Access is denied.')) -Success $false -ExitCode 1) }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $grid = Get-C11Grid (Invoke-C11Collector -Targets $script:C11ThreeDcs)
+            $one = @($grid | Where-Object { $_.DomainController -eq $script:C11Dc1 })[0]
+            [string]$one.DCDIAG_Netlogons | Should -Be 'Fail'
+            [string]$one.Failures | Should -Match 'KB 3073945'
+            $finding = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $one -StatusColumn 'Status'
+            [string]$finding.Recommendation | Should -Be $script:C11DcdiagAdvice
+            [string]$finding.Recommendation | Should -Not -Be $script:C11ReplAdvice
+        }
+        It 'gives a row with one unrecognised (possibly localised) cell the dcdiag advice, not the event-log coverage advice' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Test -eq 'KccEvent') { return (New-C11Result ("Diagnostic du serveur d'annuaire`r`n......................... {0} a reussi le test KccEvent" -f (Get-C11Short $Server))) }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $grid = Get-C11Grid (Invoke-C11Collector -Targets $script:C11ThreeDcs)
+            # Declared population: the three DCs, each with its KccEvent cell unrecognised.
+            $grid.Count | Should -Be 3
+            foreach ($row in $grid) {
+                [string]$row.DCDIAG_KccEvent | Should -Be 'Not Assessed' -Because $row.DomainController
+                [string]$row.Status | Should -Be 'Warning' -Because $row.DomainController
+                $finding = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $row -StatusColumn 'Status'
+                [string]$finding.Recommendation | Should -Be $script:C11DcdiagAdvice -Because $row.DomainController
+            }
+        }
+        It 'reports localised output as not recognised on every cell, and the row Not Assessed, never Pass' {
+            $script:C11Answer = { param($Server, $Test) New-C11Result ("Diagnostico do Servidor de Diretorio`r`n......................... DC1 passou no teste {0}" -f $Test) }
+            $rows = Invoke-C11Collector -Targets @($script:C11ThreeDcs[0])
+            $one = (Get-C11Grid $rows)[0]
+            [string]$one.Status | Should -Be 'Not Assessed'
+            [string]$one.Failures | Should -Match 'not recognised'
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'reports no DC at all as Not Assessed rows, runs nothing, and names each scoped domain' {
+            $rows = Invoke-C11Collector -Targets @() -InventoryFailures @([pscustomobject]@{ Domain = 'north.contoso.com'; Error = 'STUB: ADWS unreachable' })
+            @($script:C11Calls).Count | Should -Be 0
+            (Get-C11Row $rows 'dcdiag grid').Count | Should -Be 1
+            foreach ($d in @('contoso.com', 'north.contoso.com')) {
+                $cov = Get-C11Row $rows ("dcdiag coverage: {0}" -f $d)
+                $cov.Count | Should -Be 1 -Because $d
+                [string]$cov[0].Status | Should -Be 'Not Assessed'
+                (Get-C11Row $rows ("dcdiag Topology: {0}" -f $d))[0].Status | Should -Be 'Not Assessed'
+            }
+            [string](Get-C11Row $rows 'dcdiag coverage: north.contoso.com')[0].Detail | Should -Match 'ADWS unreachable'
+            @($rows | Where-Object { $_.Status -match '^(Pass|Fail|Warning)$' }).Count | Should -Be 0
+        }
+        It 'reports dcdiag.exe missing as Not Assessed everywhere' {
+            $rows = Invoke-C11Collector -Targets $script:C11ThreeDcs -HaveDcdiag $false
+            @($script:C11Calls).Count | Should -Be 0
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' -and $_.Status -ne 'Info' }).Count | Should -Be 0
+            @((Get-C11Grid $rows) | Where-Object { $_.Failures -match 'dcdiag\.exe not available' }).Count | Should -Be 3
+        }
+        It 'uses the timeout and retries the config table supplies, and otherwise the parameters' {
+            Invoke-C11Collector -Targets @($script:C11ThreeDcs[0]) | Out-Null
+            @($script:C11Calls | Where-Object { $_.Timeout -ne 5 -or $_.Retries -ne 1 }).Count | Should -Be 0
+            $cfg = Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ('{ "TestTimeoutSeconds": 240, "Retries": 3 }' | ConvertFrom-Json) -OverrideSource 'C:\cfg\dcdiag.json'
+            Invoke-C11Collector -Targets @($script:C11ThreeDcs[0]) -Config $cfg | Out-Null
+            @($script:C11Calls).Count | Should -BeGreaterThan 0
+            @($script:C11Calls | Where-Object { $_.Timeout -ne 240 -or $_.Retries -ne 3 }).Count | Should -Be 0
+        }
+        It 'names the time-out and where it came from in a timed-out cell, without the file path' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Test -eq 'Replications') { return (New-C11Result '' -Success $false -ExitCode $null -ErrorText 'Timeout after 240s') }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $cfg = Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ('{ "TestTimeoutSeconds": 240 }' | ConvertFrom-Json) -OverrideSource 'C:\Backup\replication\dcdiag.json'
+            $one = (Get-C11Grid (Invoke-C11Collector -Targets @($script:C11ThreeDcs[0]) -Config $cfg))[0]
+            [string]$one.DCDIAG_Replications | Should -Be 'Not Assessed'
+            [string]$one.Failures | Should -Match 'did not complete'
+            [string]$one.Failures | Should -Match '240 s'
+            [string]$one.Failures | Should -Match 'ConfigOverridePath'
+            [string]$one.Failures | Should -Not -Match 'Backup'
+        }
+    }
+
+    Context 'Collector: domain, forest and site tests' {
+        It 'runs Topology once per scoped domain, against a writable DC of that domain' {
+            $targets = @((New-C11Target $script:C11Ro 'north.contoso.com' 'HQ' $true)) + $script:C11ThreeDcs
+            $rows = Invoke-C11Collector -Targets $targets
+            $topoCalls = @($script:C11Calls | Where-Object { $_.Arguments -match '^/test:Topology ' })
+            # Declared population: the two scoped domains.
+            $topoCalls.Count | Should -Be 2
+            @(Get-C11CallsFor -Server $script:C11Ro -Test 'Topology').Count | Should -Be 0
+            @(Get-C11CallsFor -Server $script:C11Dc3 -Test 'Topology').Count | Should -Be 1
+            @(Get-C11CallsFor -Server $script:C11Dc1 -Test 'Topology').Count | Should -Be 1
+            foreach ($d in @('contoso.com', 'north.contoso.com')) {
+                $r = Get-C11Row $rows ("dcdiag Topology: {0}" -f $d)
+                $r.Count | Should -Be 1 -Because $d
+                [string]$r[0].Status | Should -Be 'Pass'
+                [string]$r[0].Scope | Should -Be $d
+            }
+        }
+        Context 'a domain that is not scoped, whose only DC failed Connectivity' {
+            BeforeEach {
+                $script:C11Answer = { param($Server, $Test)
+                    if ($Server -eq $script:C11Fab -and $Test -eq 'Connectivity') { return (New-C11Result (New-C11DcOutput -Dc 'DC9' -Test 'Connectivity' -Verdict 'failed') -Success $false -ExitCode 1) }
+                    Get-C11DefaultAnswer -Server $Server -Test $Test }
+                $targets = @($script:C11ThreeDcs[0], $script:C11ThreeDcs[1], (New-C11Target $script:C11Fab 'fabrikam.com' 'HQ'))
+                $script:C11FabRows = Invoke-C11Collector -Targets $targets -Scoped @('contoso.com')
+            }
+            It 'still runs Topology for the domain known from a DC''s Scope (declared population: contoso.com and fabrikam.com)' {
+                $topo = @($script:C11FabRows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like 'dcdiag Topology: *' })
+                (@($topo | ForEach-Object { [string]$_.Item } | Sort-Object) -join ',') | Should -Be 'dcdiag Topology: contoso.com,dcdiag Topology: fabrikam.com'
+                [string](Get-C11Row $script:C11FabRows 'dcdiag Topology: contoso.com')[0].Status | Should -Be 'Pass'
+            }
+            It 'never chooses the DC whose Connectivity failed, and reports the domain''s Topology Not Assessed' {
+                @(Get-C11CallsFor -Server $script:C11Fab -Test 'Topology').Count | Should -Be 0
+                @(Get-C11CallsFor -Server $script:C11Fab).Count | Should -Be 1   # Connectivity only
+                $r = Get-C11Row $script:C11FabRows 'dcdiag Topology: fabrikam.com'
+                $r.Count | Should -Be 1
+                [string]$r[0].Status | Should -Be 'Not Assessed'
+                [string]$r[0].Detail | Should -Match 'None of the 1 domain controller\(s\) of this domain'
+            }
+        }
+        It 'fails a domain''s Topology row on a failed verdict and leaves the other domain and the grid alone' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Test -eq 'Topology' -and $Server -eq $script:C11Dc3) { return (New-C11Result (New-C11DcOutput -Dc 'DC3' -Test 'Topology' -Verdict 'failed' -Lines @('Automatic intra-site topology generation is disabled.')) -Success $false -ExitCode 1) }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $rows = Invoke-C11Collector -Targets $script:C11ThreeDcs
+            [string](Get-C11Row $rows 'dcdiag Topology: north.contoso.com')[0].Status | Should -Be 'Fail'
+            [string](Get-C11Row $rows 'dcdiag Topology: contoso.com')[0].Status | Should -Be 'Pass'
+            @((Get-C11Grid $rows) | Where-Object { $_.Status -ne 'Pass' }).Count | Should -Be 0
+        }
+        It 'runs CheckSDRefDom and CrossRefValidation once each, against the forest root, one row per partition and a roll-up' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Test -eq 'CrossRefValidation') { return (New-C11Result (New-C11PartitionOutput -Dc (Get-C11Short $Server) -Test $Test -Failed @('Configuration')) -Success $false -ExitCode 1) }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $rows = Invoke-C11Collector -Targets @($script:C11ThreeDcs[2], $script:C11ThreeDcs[0], $script:C11ThreeDcs[1])
+            foreach ($t in @('CheckSDRefDom', 'CrossRefValidation')) {
+                $calls = @($script:C11Calls | Where-Object { $_.Arguments -match ('^/test:{0} ' -f $t) })
+                $calls.Count | Should -Be 1 -Because "$t runs once per forest"
+                $calls[0].Arguments | Should -Match ('/s:{0}$' -f [regex]::Escape($script:C11Dc1))
+                foreach ($p in $script:C11Partitions) { (Get-C11Row $rows ("dcdiag {0}: {1}" -f $t, $p)).Count | Should -Be 1 -Because "$t $p" }
+            }
+            [string](Get-C11Row $rows 'dcdiag CrossRefValidation: Configuration')[0].Status | Should -Be 'Fail'
+            @($script:C11Partitions | Where-Object { $_ -ne 'Configuration' } | Where-Object { [string](Get-C11Row $rows ("dcdiag CrossRefValidation: {0}" -f $_))[0].Status -ne 'Pass' }).Count | Should -Be 0
+            [string](Get-C11Row $rows 'dcdiag CrossRefValidation: forest contoso.com')[0].Status | Should -Be 'Fail'
+            [string](Get-C11Row $rows 'dcdiag CheckSDRefDom: forest contoso.com')[0].Status | Should -Be 'Pass'
+            # A partition's failure is not a DC's failure.
+            @((Get-C11Grid $rows) | Where-Object { $_.Status -ne 'Pass' }).Count | Should -Be 0
+        }
+        It 'reports the forest tests Not Assessed when no DC could run them' {
+            $rows = Invoke-C11Collector -Targets $script:C11ThreeDcs -Down @($script:C11Dc1, $script:C11Dc2, $script:C11Dc3)
+            foreach ($t in @('CheckSDRefDom', 'CrossRefValidation')) {
+                $r = Get-C11Row $rows ("dcdiag {0}: forest contoso.com" -f $t)
+                $r.Count | Should -Be 1
+                [string]$r[0].Status | Should -Be 'Not Assessed'
+            }
+            @($script:C11Calls).Count | Should -Be 0
+        }
+        It 'does not run Intersite by default, and says so in one Not Assessed row with the switch in NotRun' {
+            $rows = Invoke-C11Collector -Targets $script:C11ThreeDcs
+            @($script:C11Calls | Where-Object { $_.Arguments -match '/test:Intersite' }).Count | Should -Be 0
+            $r = Get-C11Row $rows 'dcdiag Intersite: not run'
+            $r.Count | Should -Be 1
+            [string]$r[0].Status | Should -Be 'Not Assessed'
+            [string]$r[0].NotRun | Should -Match 'IncludeDcdiagActiveTests'
+            [string]$r[0].NotRun | Should -Match 'triggers a replication'
+            [string]$r[0].Detail | Should -BeNullOrEmpty
+        }
+        It 'with the opt-in runs Intersite once per site with /a, and SystemLog and DNS on every DC' {
+            $rows = Invoke-C11Collector -Targets $script:C11ThreeDcs -Active
+            $inter = @($script:C11Calls | Where-Object { $_.Arguments -match '^/test:Intersite ' })
+            # Declared population: the two sites that hold a DC (HQ: dc1 and dc3; Branch: dc2).
+            $inter.Count | Should -Be 2
+            @($inter | Where-Object { $_.Arguments -notmatch '\s/a$' }).Count | Should -Be 0
+            foreach ($site in @('HQ', 'Branch')) {
+                $r = Get-C11Row $rows ("dcdiag Intersite: {0}" -f $site)
+                $r.Count | Should -Be 1 -Because $site
+                [string]$r[0].Status | Should -Be 'Pass'
+            }
+            foreach ($t in $script:C11ThreeDcs) {
+                @(Get-C11CallsFor -Server $t.HostName | Where-Object { $_.Arguments -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation|Intersite)\b' }).Count | Should -Be 21 -Because $t.HostName
+            }
+            (Get-C11Row $rows 'dcdiag Intersite: not run').Count | Should -Be 0
+        }
+        It 'with the opt-in reports a DC with no known site, and a site whose DCs are all unreachable, as Not Assessed' {
+            $targets = @($script:C11ThreeDcs) + @((New-C11Target 'dc5.contoso.com' 'contoso.com' ''))
+            $rows = Invoke-C11Collector -Targets $targets -Active -Down @($script:C11Dc2)
+            [string](Get-C11Row $rows 'dcdiag Intersite: Branch')[0].Status | Should -Be 'Not Assessed'
+            [string](Get-C11Row $rows 'dcdiag Intersite: site unknown')[0].Status | Should -Be 'Not Assessed'
+            [string](Get-C11Row $rows 'dcdiag Intersite: site unknown')[0].Detail | Should -Match 'dc5\.contoso\.com'
+            [string](Get-C11Row $rows 'dcdiag Intersite: HQ')[0].Status | Should -Be 'Pass'
+        }
+        It 'never runs LocatorCheck and says why in one Not Assessed row' {
+            $rows = Invoke-C11Collector -Targets $script:C11ThreeDcs -Active
+            @($script:C11Calls | Where-Object { $_.Arguments -match 'LocatorCheck' }).Count | Should -Be 0
+            $r = Get-C11Row $rows 'dcdiag LocatorCheck: not run'
+            $r.Count | Should -Be 1
+            [string]$r[0].Status | Should -Be 'Not Assessed'
+            [string]$r[0].NotRun | Should -Match 'known-tests table'
+        }
+        It 'gives every scoped domain a coverage row that counts its DCs, and a Not Assessed one to a domain with none' {
+            $rows = Invoke-C11Collector -Targets $script:C11ThreeDcs -Scoped @('contoso.com', 'north.contoso.com', 'south.contoso.com')
+            $c = Get-C11Row $rows 'dcdiag coverage: contoso.com'
+            $c.Count | Should -Be 1
+            [string]$c[0].Status | Should -Be 'Info'
+            [string]$c[0].Detail | Should -Match '^2 domain controller\(s\)'
+            [string](Get-C11Row $rows 'dcdiag coverage: north.contoso.com')[0].Detail | Should -Match '^1 domain controller\(s\)'
+            [string](Get-C11Row $rows 'dcdiag coverage: south.contoso.com')[0].Status | Should -Be 'Not Assessed'
+            [string](Get-C11Row $rows 'dcdiag Topology: south.contoso.com')[0].Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'Config override: the DcDiag key' {
+        It 'is registered with its own validator' {
+            $entry = $script:ConfigOverrideSections['DcDiag']
+            [string]$entry['ConfigKey'] | Should -Be 'DcDiag'
+            [string]$entry['Section'] | Should -Be 'DcDiagnostics'
+            [string]$entry['Merge'] | Should -Be 'Merge-AdfaDcDiagConfig'
+            Get-Command -Name 'Merge-AdfaDcDiagConfig' -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        }
+        It 'accepts the two numbers, and rewrites the provenance for the keys it supplied only' {
+            $m = Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ('{ "TestTimeoutSeconds": 180 }' | ConvertFrom-Json) -OverrideSource 'C:\cfg\dcdiag.json'
+            [int]$m['TestTimeoutSeconds'] | Should -Be 180
+            $null -eq $m['Retries'] | Should -BeTrue
+            [string]$m['ThresholdSource'] | Should -Match 'C:\\cfg\\dcdiag\.json'
+            [string]$m['ThresholdSource'] | Should -Match 'for TestTimeoutSeconds'
+            [string]$m['ThresholdSource'] | Should -Match 'tool default, not a Microsoft value, for Retries'
+            # The built-in table is not changed by a merge.
+            $null -eq $script:Config.DcDiag['TestTimeoutSeconds'] | Should -BeTrue
+            (@($m['PerDcTests'] | ForEach-Object { [string]$_['Test'] }) -join ',') | Should -Be ($script:C11PerDc -join ',')
+        }
+        It 'refuses <Name>' -ForEach @(
+            @{ Name = 'an array'; Json = '[ { "Retries": 2 } ]'; Expect = 'single object' }
+            @{ Name = 'an empty object'; Json = '{}'; Expect = 'empty object' }
+            @{ Name = 'a test list'; Json = '{ "PerDcTests": [ "CutoffServers" ] }'; Expect = "unknown key 'PerDcTests'" }
+            @{ Name = 'the opt-in list'; Json = '{ "ActiveTests": [] }'; Expect = "unknown key 'ActiveTests'" }
+            @{ Name = 'a pattern'; Json = '{ "UnreachablePatterns": [] }'; Expect = "unknown key 'UnreachablePatterns'" }
+            @{ Name = 'a null'; Json = '{ "Retries": null }'; Expect = 'null' }
+            @{ Name = 'a quoted number'; Json = '{ "TestTimeoutSeconds": "120" }'; Expect = 'JSON number' }
+            @{ Name = 'a fraction'; Json = '{ "TestTimeoutSeconds": 90.5 }'; Expect = 'whole number from 5 to 600' }
+            @{ Name = 'a timeout below 5'; Json = '{ "TestTimeoutSeconds": 4 }'; Expect = 'whole number from 5 to 600' }
+            @{ Name = 'a timeout above 600'; Json = '{ "TestTimeoutSeconds": 601 }'; Expect = 'whole number from 5 to 600' }
+            @{ Name = 'retries of 0'; Json = '{ "Retries": 0 }'; Expect = 'whole number from 1 to 10' }
+            @{ Name = 'retries of 11'; Json = '{ "Retries": 11 }'; Expect = 'whole number from 1 to 10' }
+            @{ Name = 'a boolean'; Json = '{ "Retries": true }'; Expect = 'JSON number' }
+        ) {
+            # An array is built in memory: PowerShell 7 unrolls a one-object JSON array on the pipeline
+            # and 5.1 does not (Import-AdfaConfigOverride refuses it from the text on both).
+            if ($Name -eq 'an array') { $obj = @([pscustomobject]@{ Retries = 2 }) }
+            else { $obj = $Json | ConvertFrom-Json }
+            { Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override $obj -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage ("*{0}*" -f $Expect)
+        }
+        It 'is reached through the generic override and named in its refusals' {
+            $r = Resolve-AdfaConfigOverride -Override ('{ "DcDiag": { "Retries": 4 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
+            [int]$r['DcDiag']['Retries'] | Should -Be 4
+            { Resolve-AdfaConfigOverride -Override ('{ "DcDiag": { "Retries": "x" } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*section 'DcDiag'*"
+        }
+        It 'refuses a key written twice in the file' {
+            $path = Join-Path ([IO.Path]::GetTempPath()) ("adfa_c11_{0}.json" -f [guid]::NewGuid().ToString('N'))
+            try {
+                Set-Content -LiteralPath $path -Value '{ "DcDiag": { "Retries": 2, "Retries": 3 } }' -Encoding UTF8
+                { Import-AdfaConfigOverride -Path $path -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage '*more than once*'
+            }
+            finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'Recommendations' {
+        BeforeAll {
+            $script:C11Hostile = 'C:\Backup\replication\sysvol-dfsr\stale.json event 1311 on dc1 global catalog delegation time sync port 389 not reachable does not resolve NOT a pass krbtgt pdc emulator dcdiag'
+        }
+        It 'gives each failing scoped family its own advice, whatever its Detail says' {
+            $cases = @(
+                @{ Item = 'dcdiag Topology: contoso.com'; Expect = 'automatic intra-site and inter-site topology generation' }
+                @{ Item = 'dcdiag CheckSDRefDom: forest contoso.com'; Expect = 'msDS-SDReferenceDomain' }
+                @{ Item = 'dcdiag CheckSDRefDom: DomainDnsZones'; Expect = 'msDS-SDReferenceDomain' }
+                @{ Item = 'dcdiag CrossRefValidation: Configuration'; Expect = 'nETBIOSName' }
+                @{ Item = 'dcdiag Intersite: HQ'; Expect = 'Intersite Topology Generator' }
+            )
+            $cases.Count | Should -Be 5
+            foreach ($c in $cases) {
+                $rec = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $c.Item -Detail $script:C11Hostile
+                $rec | Should -Match ([regex]::Escape($c.Expect)) -Because $c.Item
+                $rec | Should -Not -Match 'repadmin /replsummary|dfsrmig|wbadmin|New-KrbtgtKeys|w32tm' -Because $c.Item
+            }
+        }
+        It 'gives coverage, LocatorCheck and not-run rows no advice' {
+            foreach ($item in @('dcdiag coverage: contoso.com', 'dcdiag LocatorCheck: not run', 'dcdiag Intersite: not run', 'dcdiag Intersite: site unknown')) {
+                Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $item -Detail $script:C11Hostile | Should -Be '' -Because $item
+            }
+        }
+        It 'leaves the grid rows on the unscoped advice they had' {
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:C11Dc1 -Detail 'SysVolCheck: no diagnostic lines captured') | Should -Match 'dfsrmig'
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:C11Dc1 -Detail 'Advertising: no diagnostic lines captured') | Should -Match 'raw\\dcdiag_'
+        }
+        It 'sits ahead of the first unscoped entry' {
+            $map = @($script:RecommendationMap)
+            $firstUnscoped = -1
+            for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $firstUnscoped = $i; break } }
+            $ours = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Section -eq '(?i)^dc diagnostics') { $i } })
+            # Declared population: four families and the catch-all.
+            $ours.Count | Should -Be 5
+            @($ours | Where-Object { $_ -gt $firstUnscoped }).Count | Should -Be 0
+            $firstUnscoped | Should -BeGreaterThan 0
+        }
+        It 'attaches advice only to Fail and Warning rows of a collected section' {
+            $script:C11Answer = { param($Server, $Test)
+                if ($Test -eq 'CheckSDRefDom') { return (New-C11Result (New-C11PartitionOutput -Dc (Get-C11Short $Server) -Test $Test -Failed @('Schema')) -Success $false -ExitCode 1) }
+                Get-C11DefaultAnswer -Server $Server -Test $Test }
+            $rows = Invoke-C11Collector -Targets $script:C11ThreeDcs
+            $findings = @($rows | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $_ -StatusColumn 'Status' })
+            $findings.Count | Should -Be $rows.Count
+            @($findings | Where-Object { $_.Status -match '^(Pass|Info|Not Assessed)$' -and $_.Recommendation }).Count | Should -Be 0
+            $fails = @($findings | Where-Object { $_.Status -eq 'Fail' })
+            $fails.Count | Should -Be 2   # the Schema part and the roll-up
+            @($fails | Where-Object { $_.Recommendation -notmatch 'msDS-SDReferenceDomain' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Wiring' {
+        BeforeAll {
+            $script:C11Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+            $script:C11Main = @($script:C11Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))[0]
+            $script:C11Branch = @($script:C11Main.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match "Test-SectionSelected 'DcDiagnostics'" }, $true))
+            function Get-C11Function { param([string]$Name) @($script:C11Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true)) }
+        }
+        It 'has one Invoke-Main branch that passes the scoped targets, the config, the population and the forest root' {
+            $script:C11Branch.Count | Should -Be 1
+            $calls = @($script:C11Branch[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcDiagnostic' }, $true))
+            $calls.Count | Should -Be 1
+            $named = @{}
+            foreach ($e in @($calls[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] })) {
+                $arg = ''
+                if ($null -ne $e.Argument) { $arg = $e.Argument.Extent.Text }
+                else {
+                    $i = [array]::IndexOf(@($calls[0].CommandElements), $e)
+                    $arg = $calls[0].CommandElements[$i + 1].Extent.Text
+                }
+                $named[$e.ParameterName] = $arg
+            }
+            $named['DomainControllers'] | Should -Be '$dcDiagTargets'
+            $named['Config'] | Should -Be '$dcDiagConfig'
+            $named['InventoryFailures'] | Should -Be '$dcDiagFailures'
+            $named['ScopedDomains'] | Should -Be '$targetDomains'
+            $named['ForestRoot'] | Should -Be '$rootDomain'
+            $named['EnumerationError'] | Should -Be '$script:DcEnumerationError'
+            $named['IncludeActiveTests'] | Should -Be '$IncludeDcdiagActiveTests'
+            $assign = @($script:C11Branch[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcDiagTargets' }, $true))
+            (@($assign | ForEach-Object { $_.Right.Extent.Text }) -join ' | ') | Should -Be '@($allDcInventory) | @($dcDiagEnumeration.Targets) | @($dcNames)'
+            $cfg = @($script:C11Branch[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dcDiagConfig' }, $true))
+            (@($cfg | ForEach-Object { $_.Right.Extent.Text }) -join ' | ') | Should -Be "`$script:Config.DcDiag | `$configOverrides['DcDiag']"
+            # The override is taken exactly when the file supplied the DcDiag section.
+            $guard = $cfg[1].Parent
+            while ($null -ne $guard -and $guard -isnot [System.Management.Automation.Language.IfStatementAst]) { $guard = $guard.Parent }
+            $guard | Should -Not -BeNullOrEmpty
+            $guard.Clauses[0].Item1.Extent.Text | Should -Be "`$configOverrides.ContainsKey('DcDiag')"
+        }
+        It 'probes through the per-run cache, and runs dcdiag only with an argument from the builder' {
+            $collector = @(Get-C11Function 'Get-AdfaDcDiagnostic')
+            $collector.Count | Should -Be 1
+            $names = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            $names | Should -Contain 'Test-AdfaDcPort'
+            $names | Should -Not -Contain 'Test-TcpPort'
+            $runs = @()
+            foreach ($f in @('Get-AdfaDcDiagnostic', 'Invoke-AdfaDcdiagTest')) {
+                $runs += @((Get-C11Function $f)[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-ExternalCommand' }, $true))
+            }
+            # Declared population: the one dcdiag invocation, in the seam the collector calls.
+            $runs.Count | Should -Be 1
+            $args0 = @($runs[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq 'Arguments' })
+            $args0.Count | Should -Be 1
+            $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
+            $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
+        }
+        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
+            [string]$script:Config.Version | Should -Be '1.28.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
+        }
+        It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
+            $help = $script:C11Ast.GetHelpContent()
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'TestTimeoutSeconds'
+            ([string]$help.Parameters['INCLUDEDCDIAGACTIVETESTS'] -replace '\s+', ' ') | Should -Match 'SystemLog'
+            ([string]$help.Parameters['INCLUDEDCDIAGACTIVETESTS'] -replace '\s+', ' ') | Should -Match 'once per site'
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($readme | Where-Object { $_ -match '^\| Diagnostics \|' })
+            $row.Count | Should -Be 1
+            foreach ($word in @('Topology', 'CheckSDRefDom', 'CrossRefValidation', 'LocatorCheck', 'SystemLog', 'per partition')) { $row[0] | Should -Match $word }
         }
     }
 }

@@ -28,7 +28,7 @@ Extracted from
 | Replication | Partner metadata, failures, queue; sites, subnets, site links, connection objects; `repadmin /showrepl * /csv` cross-check (catches links the AD cmdlets miss when a partner is unreachable) |
 | **Replication convergence** | `repadmin /replsummary` **parsed into findings** — the largest delta and fails/total per DSA, in both directions — plus **per-link convergence lag**: a link with **zero failures** whose last success is old is reported, because that is the silent stall where nothing errors since nothing is being attempted. An unreadable delta or last-success time is `Not Assessed`, never treated as recent |
 | **Trusts** | Forest and domain trusts with per-direction secure-channel verification — outbound from the local side, **inbound executed on a partner-domain DC over WinRM** (a direction that cannot be tested from the correct side is `Not Assessed`, never `Verified`) — plus SID filtering, selective authentication, TGT delegation, encryption posture |
-| Diagnostics | `dcdiag` parsed to PASS/FAIL per DC, an 18-test grid. **16 run by default**: Netlogons, Services, Replications, FsmoCheck, Advertising, SysVolCheck, MachineAccount, ObjectsReplicated, RidManager, KccEvent, VerifyReferences, CrossRefValidation, KnowsOfRoleHolders, DFSREvent, **CheckSecurityError** and **VerifyEnterpriseReferences** (the last two specifically post-restore). **2 run only with `-IncludeDcdiagActiveTests`**, because they change state: Intersite and DNS (see [What a run can change](#what-a-run-can-change)) |
+| Diagnostics | `-Sections DcDiagnostics`. `dcdiag` from the host running the assessment, one `/test:<name> /s:<server>` per invocation, its en-US output parsed and **each verdict attributed to the block dcdiag prints it in** - a DC, a partition or the enterprise - so a partition's result is graded per partition and never counted as an unrelated DC's failure (since v1.28.0). **Per DC**, a 21-test grid, each row carrying the DC's domain; **19 run by default**, Connectivity first (when it fails, nothing more is started on that DC, and the cell carries Microsoft's ICMP caveat): Connectivity, Replications, Advertising, Services, Netlogons, SysVolCheck, DFSREvent, FrsEvent, KccEvent, RidManager, KnowsOfRoleHolders, MachineAccount, ObjectsReplicated, NCSecDesc, VerifyReferences, VerifyReplicas, FsmoCheck (not in Microsoft's dcdiag reference; kept, PORT-PLAN C11c), **CheckSecurityError** and **VerifyEnterpriseReferences** (the last two specifically post-restore). **Per scoped domain**: Topology once, against a writable DC (Microsoft: it analyses "without actually replicating changes"), and a coverage row. **Per forest**: CheckSDRefDom and CrossRefValidation once each, one row **per partition** and a roll-up. **Only with `-IncludeDcdiagActiveTests`**, because Microsoft's text says they change state: DNS and SystemLog per DC, and Intersite **once per site** that holds a DC (see [What a run can change](#what-a-run-can-change)). **LocatorCheck is never run**: it is not in Microsoft's table of dcdiag tests (a row says so). Unreachable, access denied, an event log that "could not be queried" (KB 2512643), and output not recognised (possibly a localised Windows) are each their own `Not Assessed` cause, never `Pass`. Not seen: whether SYSVOL uses FRS or DFSR on each DC, so FrsEvent and DFSREvent are both graded from their own output (PORT-PLAN C11e) |
 | DNS | Zones, scavenging, forwarders, zone transfer, critical SRV records, secure dynamic updates |
 | **SYSVOL / DFSR** | DFSR migration state; **SYSVOL and NETLOGON share presence per DC** (SMB-unreachable is reported as unknown, never as a missing share); and the two attributes a D2/D4-equivalent rebuild edits by hand — `msDFSR-Enabled=FALSE` (replication switched off) and `msDFSR-options=1` (authoritative member), with **more than one authoritative member reported as a conflict**, which no single DC can reveal |
 | **SYSVOL backlog** | Opt-in (`-IncludeSysvolBacklog`): pending SYSVOL files **in both directions** between every DC and its domain's PDC emulator. `Get-DfsrBacklog` shows at most 100 records with the true total only in its verbose stream, so where that cannot be read the figure is reported as **"at least N"**, never as a total |
@@ -55,7 +55,7 @@ Extracted from
 | **Recovery: secure channels** | DC machine-account password age from the replicated `pwdLastSet` (collected centrally) and, per DC over WinRM where reachable, the secure channel's last recorded status from `nltest /sc_query` (read-only; the live `nltest /sc_verify` test only with `-IncludeSecureChannelVerify`) |
 | **Recovery: restore integrity** | `-Sections RestoreIntegrity`: the **`Dsa Not Writable` registry marker** per DC — the forensic evidence of a USN rollback that Microsoft names as the fallback when event 2095 *"may be overwritten before [it is] observed"*, so it is the one restore signal that does not depend on the event log surviving. Plus `invocationId` per DSA: a **shared value across two DCs is a cloned database** (`Fail`), and the per-DC values are emitted as a baseline so diffing `Assessment.json` between runs shows a DC that was restored in between |
 | **Recovery: DS events** | Per-DC Directory Service log scan for lingering objects (1988), tombstone-lifetime exceeded (2042), USN rollback (2095), unsupported restore (2103), source-GUID DNS failures (2087/2088), KCC failures (1311/1865/1925/1084) — **gated on log coverage**: the oldest retained record is compared against the lookback window, and a clean scan over a cleared, wrapped or unreadable log reports `Not Assessed` naming where coverage begins, never `Pass`. A count taken from a partial log is reported as a minimum |
-| **Recovery: dcdiag grid** | 18 columns per DC, 16 of them tested in a default run. `/test:DNS /DnsAll` (delegations, forwarders, dynamic update, record registration) and `Intersite` with the `/a` it needs to actually test anything are run only with `-IncludeDcdiagActiveTests`; without it those two cells read `Not Assessed` and the row's `NotRun` column says why. Every cell of a test that was attempted and could **not** be assessed carries its cause in the `Failures` column - the exit code, the error, and an excerpt of what dcdiag actually printed - so "Not Assessed" can never again mean "we are not telling you why". Note the verdict match is the literal English `passed test <name>`: on a non-English Windows the cells report `Not Assessed` with that named as the likely reason, rather than guessing |
+| **Recovery: dcdiag grid** | 21 columns per DC, 19 of them tested in a default run (since v1.28.0; 18 and 16 before). `/test:DNS /DnsAll` (delegations, forwarders, dynamic update, record registration) and `SystemLog` are run only with `-IncludeDcdiagActiveTests`; without it those two cells read `Not Assessed` and the row's `NotRun` column says why. `Intersite`, with the `/a` it needs to actually test anything, left the grid in v1.28.0 and runs once per site (see Diagnostics above). Every cell of a test that was attempted and could **not** be assessed carries its cause in the `Failures` column - the exit code, the error, and an excerpt of what dcdiag actually printed - so "Not Assessed" can never again mean "we are not telling you why". `FsmoCheck` and the opt-in `DNS`, which dcdiag prints under its "Running enterprise tests on" block, are graded from that block of the invocation against the DC, and a failed summary wins over the server block's "passed". When `Connectivity` fails, the tests not started on that DC are named in `NotRun`, not `Failures`. Note the verdict match is the literal English `passed test <name>`: on a non-English Windows the cells report `Not Assessed` with that named as the likely reason, rather than guessing |
 | **Recovery: `_msdcs` delegation** | `-Sections MsdcsDelegation`: whether `_msdcs.<forest>` is a **zone of its own** (an SOA query answered by the *parent* zone means it is only a subdomain, which will not serve the forest-wide locator records), whether the parent holds delegation **NS** records, whether each NS target has a resolvable **glue (A)** record, and whether each NS host is a DC this run inventoried — stale NS records are what a metadata cleanup leaves behind. All four measured **per DNS server**, because the zone is AD-integrated and with replication broken the answer differs between servers |
 | **Recovery: time hierarchy** | `-Sections TimeHierarchy`: every DC's **measured clock offset** via `w32tm /stripchart /rdtsc` (the one external-tool output Microsoft publishes a schema for) against the 300s Kerberos maximum, judged on the worst sample and stating that it measures divergence from the host running the assessment rather than absolute correctness; plus every DC's time source via `w32tm /query /computer:<dc> /source`. A DC sourcing time from its **virtualisation host** is a `Warning` — per KB 976924 two time sources can make a DC's clock jump, which *"can cause lingering objects to be left in caches, and may cause replication to stop"*. The **forest root PDC emulator** must not take time from the domain hierarchy it is the top of (W32Time logs event ID 12 for that), so its source and its configured client `Type` each get a row. Where Microsoft's own guidance on host time sync diverges for the PDC, the finding names **both** positions instead of picking one |
 | **Recovery: per-site GC coverage** | `-Sections SiteGc`: joins `Site`, `IsGlobalCatalog` and `IsReadOnly` — which the DC inventory already collects and nothing correlated. A site holding DCs but none that is **both writeable and a GC** is a `Warning` naming what is actually there, because Microsoft requires the AD site hosting an Exchange server to contain at least one writeable domain controller that is also a global catalog server, and an Exchange server cannot be deployed in a site containing only read-only directory servers |
@@ -823,8 +823,11 @@ halves of the prefetched pool are read as Microsoft documents them for the curre
 is an inference and is said in the row.
 
 **Not read**: `SidCompatibilityVersion`; the Directory-Services-SAM events 16653 to 16658; the
-RID Block Size registry value; and `dcdiag /test:RidManager`, which this section does not run
-because Microsoft does not say whether it requests a pool (the DC Diagnostics section runs it).
+RID Block Size registry value; and `dcdiag /test:RidManager`, which this section does not run (the
+DC Diagnostics section runs it, on Microsoft's description of it as checks only: the RID master
+"is accessible", "contains the proper information", "can be located and contacted" and "has valid
+RID pool values"; Learn does not say in so many words that it never requests a pool - PORT-PLAN
+C6e, closed 2026-11-16).
 Nothing is written: no attribute is set, and neither `msDS-RIDPoolAllocationEnabled` nor
 `SidCompatibilityVersion` is ever touched.
 
@@ -1119,9 +1122,12 @@ in Detail, so they cannot change the advice.
 ## One override file for section config: `-ConfigOverridePath`
 
 A JSON file whose top-level keys are section names. Each value is checked by that section's own
-rules. Nine sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates`,
-`RidPool`, `SidHistory` (used by `SecurityPosture`), `Gpo`, `Acl` and `Privileged` (used by
-`PrivilegedAccounts`, `PrivilegedHygiene` and `Kerberos`); later checks add their own key.
+rules. Ten sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates`,
+`RidPool`, `SidHistory` (used by `SecurityPosture`), `Gpo`, `Acl`, `Privileged` (used by
+`PrivilegedAccounts`, `PrivilegedHygiene` and `Kerberos`) and `DcDiag` (used by `DcDiagnostics`:
+`TestTimeoutSeconds`, 5-600, and `Retries`, 1-10, per dcdiag invocation; tool defaults, not
+Microsoft values; no test list can be set, so a file can never add a dcdiag test); later checks
+add their own key.
 
 ```json
 {
@@ -1179,6 +1185,10 @@ rules. Nine sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCe
     "EnterpriseAdminsExemptRootAdministrator": false,
     "NameListCap": 25,
     "MaxExpandedObjects": 5000
+  },
+  "DcDiag": {
+    "TestTimeoutSeconds": 180,
+    "Retries": 2
   }
 }
 ```
@@ -1266,7 +1276,8 @@ Known, with Microsoft's own wording (read on Learn 2026-11-13):
 | What | When | What Microsoft documents |
 | --- | --- | --- |
 | `dcdiag /test:DNS /DnsAll`, per DC | Only with `-IncludeDcdiagActiveTests` | The dynamic update test performs "registration of a test record (_dcdiag_test_record)... The test record is deleted automatically after the test." |
-| `dcdiag /test:Intersite /a`, per DC | Only with `-IncludeDcdiagActiveTests` | Works by "reporting back any replication failures after triggering a replication." |
+| `dcdiag /test:SystemLog`, per DC | Only with `-IncludeDcdiagActiveTests` (since v1.28.0) | "Validates the System Event Log's health by reading and writing entries from the past 60 minutes for any errors and warnings." Microsoft does not say what is written, and the wording may be a documentation error; until Microsoft says it only reads, it is treated as changing state (read 2026-11-16) |
+| `dcdiag /test:Intersite /a`, once per site that holds a DC (per DC before v1.28.0) | Only with `-IncludeDcdiagActiveTests` | Works by "reporting back any replication failures after triggering a replication." |
 | `nltest /sc_verify`; `netdom trust /Verify` as its fallback | Only with `-IncludeSecureChannelVerify` | `/sc_verify`: "If the secure channel does not work, this parameter removes the existing channel, and then builds a new one." |
 | `repadmin /removelingeringobjects ... /advisory_mode` | Only with `-IncludeLingeringObjectScan` | Advisory mode removes nothing; it writes events to the target DCs' Directory Service logs |
 | TLS handshake to port 636, per DC | Only with `-IncludeLdapsHandshake` | Nothing is written. Schannel event logging is on by default ("error messages are logged"), and no Microsoft page read states that a handshake leaves no trace, so a DC that cannot complete it may log a Schannel error event in its System log (read 2026-11-16) |
@@ -1285,11 +1296,18 @@ dynamic update, DNS delegation and record registration through `dcdiag`, or inte
 replication. The `Dns`, `DnsDepth`, `DnsAdConsistency` and `MsdcsDelegation` sections still
 read DNS without `dcdiag`.
 
+From v1.28.0 `SystemLog` joins them (Microsoft's text says it writes), and `Intersite` runs once
+per site rather than once per DC; without the switch one "dcdiag Intersite: not run" row says so.
+
 Everything a default run does invoke is used as a query: `nltest /sc_query` and `/dsgetdc`,
 `dfsrmig /getglobalstate`, `repadmin /replsummary`, `/showrepl * /csv` and `/showbackup`,
-`w32tm /query` and `/stripchart`, `nslookup`, the other 16 `dcdiag` tests, and remote reads
+`w32tm /query` and `/stripchart`, `nslookup`, the default `dcdiag` tests, and remote reads
 over WinRM, CIM, the remote registry, the DNS Server cmdlets and the event log. No side effect
-of those is documented by Microsoft that this project has found. They have not each been
+of those is documented by Microsoft that this project has found. The default `dcdiag` tests
+were each checked against Microsoft's description of them on 2026-11-16 (PORT-PLAN C11): none
+is described as writing or replicating - `Topology` is documented as analysing "without actually
+replicating changes", `RidManager` as checks only - except `FsmoCheck`, which is not in
+Microsoft's dcdiag reference at all (PORT-PLAN C11c). The other commands have not each been
 audited; that audit is PORT-PLAN H20a.
 
 Two of those remote reads are CIM method calls rather than instance queries: `DcDisk` reads
