@@ -44,6 +44,7 @@ Extracted from
 | **DC system** | `-Sections DcSystem`. **OS lifecycle**: each DC's operating system against Microsoft's extended support end date, from a versioned table. Past the date is a `Fail` whose text says whether an Extended Security Updates (ESU) programme is still running, has also ended, or was never published — and always that **ESU enrolment is not assessed**. An OS the table does not list, or one that could not be read, is `Not Assessed` with the raw values, never `Pass`. Reads only the directory, so it needs no rights on any DC. **Patch level**: per DC, OS build, uptime and the latest update install date over remote CIM. This half is **inventory** (`Info` or `Not Assessed`, never `Pass`): Microsoft publishes no maximum uptime or update age for a DC, so none is applied. Unreachable, access denied and other read failures are three different results |
 | **DC disk space** | `-Sections DcDisk`. Free space on the volumes that hold the **NTDS database**, the **NTDS logs** and **SYSVOL**, per DC. The three paths are read from each DC's own registry and matched to a volume by the longest mount path, so a database under a mounted folder is judged on the right volume. One row per distinct volume, listing the roles it holds. `Fail` below 10 % free or below 2 GB free, `Warning` below 20 % or below 5 GB — **tool defaults, not Microsoft values**, labelled as such in every finding and overridable with `-ConfigOverridePath`. A path or a volume that could not be read is `Not Assessed` with its cause; unreachable, access denied, a registry value that is not set and any other read failure are different results. Covers the DCs of every scoped domain, with or without `DomainControllers` selected; a domain whose DCs could not be enumerated gets its own `Not Assessed` row. Needs local Administrators rights on each DC |
 | **Windows LAPS** | `-Sections Laps`. Directory reads only, with domain read access. **Schema**: whether the forest schema carries the six attributes `Update-LapsADSchema` adds, and the legacy Microsoft LAPS ones; absent, present and "the query failed" are three different results. **DSRM password backup**, one row per domain controller: `Pass` where a Windows LAPS expiry time that is not past is visible on the DC's computer object, `Info` (not applicable) for a DC below Windows Server 2019 or a domain below functional level 2016, `Warning` where nothing is visible although the account can read the attribute elsewhere in the domain. **LAPS coverage**, one row per scoped domain: how many enabled Windows computers that can run Windows LAPS have **no LAPS expiry time visible to this account** (Windows LAPS or legacy), with counts for every class left out of the population and a capped list of names. The section **never reads a password**: no password, encrypted password or password history attribute is ever requested. An attribute the account has no right to read looks exactly like one that is not set, and a device that backs its password up to Microsoft Entra ID has nothing here either, so no row calls a computer unmanaged with certainty; where nothing at all is visible in a domain the rows are `Not Assessed`. The thresholds are **tool defaults, not Microsoft values**, overridable with `-ConfigOverridePath`. The policy in each DC's registry is not read (PORT-PLAN C4a). Details under [Windows LAPS](#windows-laps) |
+| **DC certificates** | `-Sections DcCertificates`. Per DC, two instruments, each named in every row's `Evidence` column. **Directory** (always, domain read access): the certificates a CA published on the DC's computer object (`userCertificate`), one row per certificate, graded on expiry. No published value is `Info`, never "no certificate": Microsoft's *Domain Controller Authentication* and *Kerberos Authentication* templates do not publish to the directory, and a value the account cannot read looks the same as none. **LDAPS** (only with `-IncludeLdapsHandshake`): the certificate the DC presents on port 636, read with one TLS handshake that sends no LDAP request, no bind and no credential and needs no right on the DC; without the switch each DC's `LDAPS certificate` row is `Not Assessed` and says why. Expired is `Fail`, at most 30 days left is `Warning`, not yet valid is `Warning` (this tool's rule) — the windows are **tool defaults, not Microsoft values**, overridable with `-ConfigOverridePath`. Refused, timed out, unresolved, handshake timed out and handshake failed are separate `Not Assessed` results, none of them read as "no certificate"; a refusal is told apart from a time-out within the handshake's own 5000 ms connection bound, and the whole handshake is bounded too. A published value that is not a single certificate (a PFX, a PKCS7 blob) is refused unopened. Trust, name and EKUs are reported in their own columns, not graded. The DC's own certificate stores are not read (PORT-PLAN C5a). Details under [DC certificates](#dc-certificates) |
 | Resilience | Directory backup status (`repadmin /showbackup`), time sync (`w32tm`), DC count, duplicate SPNs |
 | **Recovery: DNS vs AD** | DC locator SRV records compared against the DCs the directory actually contains — **on every DC's DNS server separately**, with a divergence summary ("3 of 7 answering servers advertise a DC that no longer exists"); plus the PDC locator record per server |
 | **Recovery: DSA CNAMEs** | Per-DC `<DSA-GUID>._msdcs` alias verification (missing / wrong target, per DNS server) — the usual cause of RPC 1722 after metadata cleanup or restore — and orphaned NTDS Settings objects |
@@ -93,6 +94,10 @@ attribute that is not confidential, and that the Windows LAPS expiry attribute i
 confidential; it publishes no LAPS-specific statement of who can read the expiry attributes,
 and permissions can be changed per organizational unit. Run with more rights and the section
 may see more; it never asks for a password attribute, whatever the rights.
+
+`DcCertificates` reads the directory with domain read access, and its opt-in LDAPS handshake
+needs no right on the DC at all - only that port 636 is reachable from the host running the
+assessment.
 
 **Running `Identity` (part of `All`) with rights to read LAPS passwords.** The Identity export
 asks for every attribute of every computer (`Get-ADComputer -Properties *`), and the directory
@@ -696,11 +701,75 @@ tested either - PORT-PLAN C4d.
 ActiveDirectory module does by itself, as every other query in this script does. Its time and
 memory on a very large domain have not been measured.
 
+## DC certificates
+
+`-Sections DcCertificates` (part of `All`) answers two questions per domain controller: which
+certificate does it hand its LDAPS clients, and which certificates has a CA published for it in
+the directory - and when does each expire. **Run against stubs only** so far; the first run
+against a real forest is PORT-PLAN C17.
+
+| Row | Instrument | Results |
+| --- | --- | --- |
+| `LDAPS certificate: <dc>` (exactly one per DC) | A TLS handshake to port 636, only with `-IncludeLdapsHandshake`, after the shared port probe answered | `Pass` / `Warning` / `Fail` on expiry; `Not Assessed` with its own cause for: not run (no switch), port did not answer the probe, refused, timed out, unresolved, handshake timed out, handshake failed, no certificate, unreadable certificate |
+| `Directory certificate: <dc> [<thumbprint>]` (one per published value) | `Get-ADComputer` with `userCertificate`, against the DC's domain | `Pass` / `Warning` / `Fail` on expiry; `Not Assessed` for a value that is not a certificate |
+| `Directory certificates: <dc>` | The same read, when it returns no value or fails | `Info` no value visible; `Not Assessed` unreachable, access denied, timed out, read failed, no object or more than one object with the DC's DNS host name |
+| `DC certificates - <domain>`, `DC certificates` | Population | `Not Assessed`: a scoped domain whose DCs were not enumerated, or no DC at all |
+
+**Why the handshake, and why it is opt-in.** Microsoft documents that AD DS takes its LDAPS
+certificate from the NTDS service store before the local computer store, and that a DC with
+several usable certificates may present any of them - so reading a certificate store cannot say
+which certificate clients are given; the handshake sees it whichever store holds it. TLS is
+negotiated before any LDAP traffic, and the tool sends nothing after the handshake: no LDAP
+request, no bind, no credential, and it needs no right on the DC. The validation callback
+records the certificate and returns *true*, so this tool neither trusts nor rejects it and does
+not abort the handshake. But Microsoft documents Schannel error logging as on by default and
+does not state that a handshake leaves no trace on the server: a DC that cannot complete it may
+log a Schannel error event in its System log. Like the other commands with a possible effect on
+a DC, it runs only when you ask for it. Building the certificate chain on the host running the
+assessment may also fetch issuer certificates from the addresses a certificate names.
+
+**What is graded.** Expiry only, in UTC against the time of the run: already expired (including
+expiring at that instant) is `Fail`; at most `WarnWithinDays` whole days left (30) is `Warning`;
+a Fail window `FailWithinDays` exists and is 0, off, by default; a certificate whose start date
+is still in the future is a `Warning` - **this tool's rule**, as Microsoft publishes none. The
+windows are **tool defaults, not Microsoft values**: Microsoft publishes no warning window for
+a DC certificate. Subject, issuer, subject alternative names, the EKUs (Server Authentication,
+Client Authentication, KDC Authentication and Smart Card Logon are named) and what the platform
+reported about the chain and the name (`SslPolicyErrors`, `ChainStatus`) are in their own
+columns and are not graded: they describe the trust of the host running the assessment.
+
+**No published certificate is not "no certificate".** Of Microsoft's default domain controller
+templates, *Domain Controller* (version 1) is published to the directory, while *Domain
+Controller Authentication* and *Kerberos Authentication* certificates are not, and publication
+is a separate operation from issuance. Who can read `userCertificate` by default is not
+published either. And a published certificate is not necessarily a DC certificate: Microsoft's
+table also lists *Directory E-mail Replication* (a computer template) as published, so check a
+published certificate's EKUs before acting on it.
+
+**A published value is opened only if it is one certificate.** Whoever can write
+`userCertificate` chooses its bytes, and the .NET constructor that reads them would also accept
+a PKCS12 (PFX) file and import its private key on the host running the assessment. A value that
+`X509Certificate2.GetCertContentType` does not call a single certificate is refused unopened and
+reported `Not Assessed` (`Read failed:`).
+
+**Every handshake is bounded.** Its TCP connection by `ConnectTimeoutMs` and the whole
+handshake by `HandshakeTimeoutMs` (5000 ms each, tool defaults): when the handshake bound runs
+out the connection is closed, so a DC - or anything answering on its port - that trickles bytes
+cannot hold the run. The connection bound is above the shared port probe's 1200 ms on purpose:
+Windows reported a refused loopback connection only after about 2 s in this tool's tests, and a
+shorter bound reports a refusal as a time-out.
+
+**A certificate's own text never chooses advice.** The subject is set by whoever requested the
+certificate; it is kept out of the text the recommendation is chosen from.
+
+**Not read**: the DC's certificate stores (`LocalMachine\My` and the NTDS service store), which
+would inventory every certificate the DC holds - PORT-PLAN C5a; revocation.
+
 ## One override file for section config: `-ConfigOverridePath`
 
 A JSON file whose top-level keys are section names. Each value is checked by that section's own
-rules. Three sections can be named so far, `DcDisk`, `DcHardening` and `Laps`; later checks add
-their own key.
+rules. Four sections can be named so far, `DcDisk`, `DcHardening`, `Laps` and `DcCertificates`;
+later checks add their own key.
 
 ```json
 {
@@ -723,6 +792,12 @@ their own key.
     "FailAbovePercent": 50,
     "SampleLimit": 25,
     "ExpiredGraceDays": 7
+  },
+  "DcCertificates": {
+    "WarnWithinDays": 45,
+    "FailWithinDays": 7,
+    "HandshakeTimeoutMs": 5000,
+    "ConnectTimeoutMs": 5000
   }
 }
 ```
@@ -766,6 +841,11 @@ their own key.
   set from the file**: `NeverRead`, `WindowsExpiry`, `ComputerProperties` and every other key
   of the built-in table are refused as unknown, so a file cannot make the tool request a
   password attribute.
+- For `DcCertificates` the four keys above are the only ones, each a whole JSON number:
+  `WarnWithinDays` and `FailWithinDays` from 0 to 3650 (0 switches that window off; an expired
+  certificate is always a `Fail`), `Fail` not above `Warning` once merged (equal is allowed), and
+  `HandshakeTimeoutMs` and `ConnectTimeoutMs` from 100 to 60000. `LdapsPort` and the EKU names
+  are refused.
 - For `DcDisk`, `WsmanPort` and `RpcPort` change the port that is **probed** before a read. The
   CIM session itself is opened without a port, so it still goes to the default one: setting
   either key to anything but the default can make a reachable DC read as unreachable, and does
@@ -786,6 +866,7 @@ Known, with Microsoft's own wording (read on Learn 2026-11-13):
 | `dcdiag /test:Intersite /a`, per DC | Only with `-IncludeDcdiagActiveTests` | Works by "reporting back any replication failures after triggering a replication." |
 | `nltest /sc_verify`; `netdom trust /Verify` as its fallback | Only with `-IncludeSecureChannelVerify` | `/sc_verify`: "If the secure channel does not work, this parameter removes the existing channel, and then builds a new one." |
 | `repadmin /removelingeringobjects ... /advisory_mode` | Only with `-IncludeLingeringObjectScan` | Advisory mode removes nothing; it writes events to the target DCs' Directory Service logs |
+| TLS handshake to port 636, per DC | Only with `-IncludeLdapsHandshake` | Nothing is written. Schannel event logging is on by default ("error messages are logged"), and no Microsoft page read states that a handshake leaves no trace, so a DC that cannot complete it may log a Schannel error event in its System log (read 2026-11-16) |
 | `dcdiag /c /v` raw capture | Only with `-IncludeDcdiag` | `/c`: "Comprehensive. Runs all tests except DCPromo and RegisterInDNS, including non-default tests." By that description it includes `CutoffServers`, which "triggers replication on the DCs", **and the DNS test in the first row** |
 
 The two `dcdiag` switches are independent. `-IncludeDcdiagActiveTests` controls the parsed

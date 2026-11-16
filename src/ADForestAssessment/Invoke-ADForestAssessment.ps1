@@ -74,6 +74,15 @@
           at all is visible in a domain the rows are Not Assessed. A device that backs its
           password up to Microsoft Entra ID is not visible to this read. The policy in each
           DC's registry is not read (PORT-PLAN C4a)
+        - DC certificates, per DC: the certificates a CA published on the DC's computer object
+          (userCertificate, a directory read with domain read access), and - only with
+          -IncludeLdapsHandshake - the certificate the DC presents on LDAPS port 636, read with
+          a TLS handshake that sends no LDAP request, no bind and no credential and needs no
+          right on the DC. Each is judged on expiry against windows that are tool defaults, not
+          Microsoft values; trust, name and EKUs are reported, not graded. No published value is
+          Info, never "no certificate": Microsoft's Domain Controller Authentication and
+          Kerberos Authentication templates do not publish to the directory. The DC's own
+          certificate stores are not read (PORT-PLAN C5a)
         - Directory backup status (repadmin /showbackup), time synchronization (w32tm)
         - DNS depth: critical SRV records, secure dynamic updates
         - Redundancy: DC count, GPO central store, duplicate SPNs
@@ -121,6 +130,10 @@
                                    -IncludeDcdiagActiveTests.
       -IncludeLingeringObjectScan  repadmin /removelingeringobjects in advisory mode, which
                                    removes nothing but writes events on the target DCs.
+      -IncludeLdapsHandshake       a TLS handshake to port 636 of each DC. It writes nothing,
+                                   but Microsoft does not state that a handshake leaves no
+                                   trace, and Schannel logs errors by default, so a DC that
+                                   cannot complete it may log a Schannel error event.
 
     That is a list of what is KNOWN. The other commands a default run invokes (the remaining
     dcdiag tests, repadmin, w32tm, nltest /sc_query and /dsgetdc, dfsrmig, nslookup, and remote
@@ -181,9 +194,16 @@
     Not Assessed rows naming the cause. It never requests a password attribute. The
     population the coverage row grades is stated in the row, and uses -StaleDays.
 
+    DcCertificates covers the DCs of every scoped domain, as DcDisk does. For each DC it reads
+    the userCertificate attribute of the DC's computer object (domain read access) and gives
+    one row per published certificate, graded on expiry, or one Info row when none is visible.
+    With -IncludeLdapsHandshake it also gives each DC one "LDAPS certificate" row for the
+    certificate the DC presents on port 636; without it that row is Not Assessed and says the
+    handshake was not run.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Three sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Four sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -209,6 +229,15 @@
 
     Laps refuses every other key. In particular no attribute name can be set from a file, so
     a file cannot make the tool request a password attribute.
+
+    And DcCertificates, whose keys are WarnWithinDays and FailWithinDays (a certificate with at
+    most that many whole days left is a Warning or a Fail; 0 switches a window off, and an
+    expired certificate is always a Fail), HandshakeTimeoutMs (the bound on the whole LDAPS
+    handshake) and ConnectTimeoutMs (the bound on its TCP connection), each 100 to 60000 ms.
+    All four are tool defaults, not Microsoft values. The LDAPS port and the EKU names are
+    refused:
+
+        { "DcCertificates": { "WarnWithinDays": 45, "FailWithinDays": 7 } }
 
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
@@ -243,6 +272,19 @@
     triggering a replication". NOT read-only. Without this switch the DNS and Intersite cells
     of the DC Diagnostics grid read Not Assessed, each DC's row says why, and the row's status
     is taken from the other 16 tests.
+
+.PARAMETER IncludeLdapsHandshake
+    In the DcCertificates section, also read the certificate each DC presents on LDAPS, port
+    636, with one TLS handshake per DC that sends no LDAP request, no bind and no credential,
+    and needs no right on the DC. The certificate is neither trusted nor rejected by this tool:
+    its expiry is graded, and what the platform of the host running the assessment said about
+    its chain and name is quoted. Opt-in because Microsoft documents Schannel error logging as
+    on by default and does not state that a handshake leaves no trace on the server: a DC that
+    cannot complete the handshake may log a Schannel error event in its System log. Building the
+    chain on the host running the assessment may also fetch issuer certificates from the
+    addresses a certificate names. Each handshake is bounded as a whole by HandshakeTimeoutMs
+    and its connection by ConnectTimeoutMs (DcCertificates config, 5000 ms each, tool
+    defaults). Without this switch each DC's LDAPS row reads Not Assessed.
 
 .PARAMETER IncludeRepadmin
     Also capture raw 'repadmin /replsummary' and per-DC '/showrepl /errorsonly' under raw\.
@@ -335,7 +377,7 @@ param(
         'DnsDepth', 'Redundancy', 'ExchangeSchema', 'ExchangeSeReadiness',
         'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
         'DsEvents', 'RestoreIntegrity', 'MsdcsDelegation', 'TimeHierarchy', 'SiteGc',
-        'DcSystem', 'DcDisk', 'Laps')]
+        'DcSystem', 'DcDisk', 'Laps', 'DcCertificates')]
     [string[]]$Sections = @('All'),
 
     [switch]$IncludeDcdiag,
@@ -361,6 +403,12 @@ param(
     # Without it those two grid cells read Not Assessed and the row says why.
     [switch]$IncludeDcdiagActiveTests,
 
+    # Read the certificate each DC presents on LDAPS (port 636) with a TLS handshake that sends
+    # nothing but the handshake. Opt-in because Microsoft does not state that a handshake leaves
+    # no trace on the server: a DC that cannot complete it may log a Schannel error event.
+    # Without it the DcCertificates section reads the directory only.
+    [switch]$IncludeLdapsHandshake,
+
     [string]$Server,
     [pscredential]$Credential,
 
@@ -382,7 +430,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening" and "Laps" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps" and "DcCertificates" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -416,7 +464,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.21.0'
+    Version                 = '1.22.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1109,6 +1157,101 @@ $script:Config = @{
             @{ MinBuild = 19041; MaxBuild = $null }
         )
         ExcludedClasses    = @('msDS-GroupManagedServiceAccount', 'msDS-ManagedServiceAccount')
+    }
+    # --- DC certificates: the certificate each DC presents on LDAPS, and those published for it (PORT-PLAN C5) ---
+    # Two instruments. The LDAPS handshake (opt-in, -IncludeLdapsHandshake) reads the certificate a
+    # DC actually hands its clients on port 636; the directory read (always) reads the certificates
+    # a CA published on the DC's computer object. The DC's certificate stores are NOT read
+    # (PORT-PLAN C5a). Every URL below was read on 2026-11-16.
+    #
+    # Why the handshake and not the store, and why it is opt-in:
+    #   "If there is a certificate in the NT Directory Services (NTDS) store, DC use the certificate
+    #    in the NTDS store instead." and "if a Windows Server 2008 or a later version domain
+    #    controller finds multiple certificates in its store, it will random chose one of these
+    #    certificates." "When connecting to ports 636 or 3269, SSL/TLS is negotiated before any LDAP
+    #    traffic is exchanged." (KB 321051)
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/enable-ldap-over-ssl-3rd-certification-authority
+    #   "Active Directory preferentially checks the NTDS store first." Requirements: Server
+    #   Authentication EKU 1.3.6.1.5.5.7.3.1; the DC's AD FQDN in the subject CN or a SAN DNS entry.
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/configure-ldap-signing-certificates
+    #   "The default value for Schannel event logging is 0x00000001 in Windows, which means that
+    #    error messages are logged." No Microsoft page read states that a TLS handshake changes
+    #    nothing on the server, so the handshake runs only when the operator asks for it.
+    #     https://learn.microsoft.com/troubleshoot/developer/webapps/iis/health-diagnostic-performance/enable-schannel-event-logging
+    #
+    # The directory read, and what an absent value means:
+    #   userCertificate (X509-Cert) is multi-valued, in the global catalog, and holds "the
+    #   DER-encoded X.509v3 certificates issued to the user".
+    #     https://learn.microsoft.com/windows/win32/adschema/a-usercertificate
+    #   Default templates published to AD DS: "Domain Controller" Yes (version 1); "Domain Controller
+    #   Authentication" No; "Kerberos Authentication" No. So no value is NOT evidence of no certificate.
+    #   The same table also lists "Directory E-mail Replication" (subject type Computer) as Yes
+    #   (version 2), and several user templates as Yes: a published value is therefore not
+    #   necessarily a domain controller certificate, and its EKUs are reported for that reason.
+    #     https://learn.microsoft.com/windows-server/identity/ad-cs/certificate-template-concepts
+    #   A userCertificate value is only ever read as a single DER certificate: the X509Certificate2
+    #   byte-array constructor also accepts a PKCS7 blob ("the signer certificate is used to create
+    #   the object") and a PKCS12 (PFX) blob, whose private key it imports. The content type is
+    #   checked first with X509Certificate2.GetCertContentType, and anything that is not "Cert" is
+    #   refused before any constructor runs.
+    #     https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509certificate2.-ctor
+    #     https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509certificate2.getcertcontenttype
+    #
+    # EKU names, each read on a Learn page:
+    #   1.3.6.1.5.5.7.3.1 Server Authentication and 1.3.6.1.5.5.7.3.2 Client Authentication -
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/requirements-domain-controller
+    #   1.3.6.1.5.2.3.5 KDC Authentication -
+    #     https://learn.microsoft.com/windows/security/identity-protection/hello-for-business/deploy/on-premises-cert-trust
+    #   1.3.6.1.4.1.311.20.2.2 Smart Card Logon -
+    #     https://learn.microsoft.com/troubleshoot/windows-server/certificates-and-public-key-infrastructure-pki/enabling-smart-card-logon-third-party-certification-authorities
+    # They are reported, never graded: Microsoft documents that the Domain Controller and Domain
+    # Controller Authentication templates do not carry KDC Authentication, and does not require
+    # Smart Card Logon on a DC certificate.
+    #
+    # NOT PUBLISHED ON MICROSOFT LEARN, and labelled so wherever a finding relies on it:
+    #   - Any warning window before expiry for a DC, LDAPS or KDC certificate. WarnWithinDays 30
+    #     is the operator-set window of the AdAssessment26 catalogue (ADA-CERT-001, S24: "Warning at
+    #     most 30 days left"); it leaves several weeks after the six-week renewal period of
+    #     Microsoft's autoenrollment example ("a certificate valid for one year ... If the
+    #     certificate has a renewal period of six weeks, it will be renewed during the 46th week"),
+    #     by which time a certificate that autoenrollment manages should have been renewed:
+    #       https://learn.microsoft.com/troubleshoot/windows-server/certificates-and-public-key-infrastructure-pki/approval-required-certificate-renewals-autoenrollment
+    #     FailWithinDays 0 means only an expired certificate
+    #     fails, which is the only Fail Microsoft's guidance supports ("The domain controller
+    #     certificate has expired" is a listed cause of failure). Both are TOOL DEFAULTS.
+    #   - A timeout for the handshake. HandshakeTimeoutMs 5000 is a tool default, and bounds the
+    #     WHOLE handshake: a deadline closes the connection when it runs out, so a peer that keeps
+    #     sending a byte at a time cannot hold the per-DC loop (the socket's own ReceiveTimeout
+    #     restarts on every read, so it alone bounds nothing).
+    #   - A timeout for the handshake's own TCP connection. ConnectTimeoutMs 5000 is a tool
+    #     default. It is above the shared port probe's bound on purpose: Windows reported a refused
+    #     loopback connection only after about 2 s (measured by this tool's tests on Windows
+    #     PowerShell 5.1 and PowerShell 7, 2026-11-16 - Microsoft documents no such figure), so a
+    #     bound of 1200 ms reported a refusal as a time-out.
+    #   - What a DC without a usable certificate does on port 636. A refused connection and a
+    #     failed handshake are each reported as observed, never as "no certificate".
+    #   - That a certificate not yet valid should be a Warning: this tool's rule.
+    #
+    # Replaceable from a file via -ConfigOverridePath, under the key "DcCertificates":
+    # WarnWithinDays, FailWithinDays, HandshakeTimeoutMs, ConnectTimeoutMs. Nothing else - not the
+    # port (another port, 3269 among them, would change what a row describes) and not the EKU names.
+    DcCertificates          = @{
+        SourceUrl          = 'https://learn.microsoft.com/troubleshoot/windows-server/active-directory/enable-ldap-over-ssl-3rd-certification-authority and https://learn.microsoft.com/windows-server/identity/ad-ds/configure-ldap-signing-certificates and https://learn.microsoft.com/windows-server/identity/ad-cs/certificate-template-concepts'
+        ReadDate           = '2026-11-16'
+        ThresholdSource    = 'tool default, not a Microsoft value'
+        # Tool defaults, all four.
+        WarnWithinDays     = 30
+        FailWithinDays     = 0
+        HandshakeTimeoutMs = 5000
+        ConnectTimeoutMs   = 5000
+        # Vendor value: LDAP over TLS.
+        LdapsPort          = 636
+        EkuNames           = @{
+            '1.3.6.1.5.5.7.3.1'      = 'Server Authentication'
+            '1.3.6.1.5.5.7.3.2'      = 'Client Authentication'
+            '1.3.6.1.5.2.3.5'        = 'KDC Authentication'
+            '1.3.6.1.4.1.311.20.2.2' = 'Smart Card Logon'
+        }
     }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
     DsEventsOfInterest      = @(
@@ -7847,6 +7990,1057 @@ function Merge-AdfaLapsConfig {
     return $merged
 }
 
+
+# ---------------------------------------------------------------------------
+# DC certificates: the certificate each DC presents on LDAPS, and those published for it in the
+# directory (PORT-PLAN C5)
+# ---------------------------------------------------------------------------
+
+function New-AdfaDcCertificateRow {
+    <#
+    .SYNOPSIS
+        Pure: one DC certificates row. Every row of the section has the same columns, so a
+        consumer never has to test whether a column exists.
+    .DESCRIPTION
+        The text of a certificate - subject, issuer, subject alternative names - is chosen by
+        whoever requested it, and the platform's chain status and policy errors are free text. All
+        of it goes in its own columns (CertSubject, CertIssuer, CertSan, Ekus, SslPolicyErrors,
+        ChainStatus), never in Detail: the consolidated findings choose a recommendation from
+        Detail, and none of these columns is read there.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$NotRun = '',
+        [AllowEmptyString()][string]$Evidence = '',
+        [AllowNull()]$Certificate = $null,
+        [AllowNull()]$DaysLeft = $null,
+        [AllowEmptyString()][string]$Ekus = '',
+        [AllowEmptyString()][string]$SslPolicyErrors = '',
+        [AllowEmptyString()][string]$ChainStatus = ''
+    )
+    $row = New-Finding -Scope $Scope -Area 'DcCertificates' -Item $Item -Status $Status -Detail $Detail
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $subject = ''
+    $issuer = ''
+    $san = ''
+    $thumbprint = ''
+    $notBefore = ''
+    $notAfter = ''
+    if ($null -ne $Certificate) {
+        $subject = [string](Get-AdfaConfigValue -Entry $Certificate -Name 'Subject')
+        $issuer = [string](Get-AdfaConfigValue -Entry $Certificate -Name 'Issuer')
+        $san = [string](Get-AdfaConfigValue -Entry $Certificate -Name 'San')
+        $thumbprint = [string](Get-AdfaConfigValue -Entry $Certificate -Name 'Thumbprint')
+        $nb = Get-AdfaConfigValue -Entry $Certificate -Name 'NotBeforeUtc'
+        if ($nb -is [datetime]) { $notBefore = $nb.ToString('yyyy-MM-dd HH:mm:ss', $inv) }
+        $na = Get-AdfaConfigValue -Entry $Certificate -Name 'NotAfterUtc'
+        if ($na -is [datetime]) { $notAfter = $na.ToString('yyyy-MM-dd HH:mm:ss', $inv) }
+    }
+    $days = ''
+    if ($null -ne $DaysLeft) { $days = ([int]$DaysLeft).ToString($inv) }
+    $row | Add-Member -NotePropertyName 'NotRun' -NotePropertyValue $NotRun
+    $row | Add-Member -NotePropertyName 'Evidence' -NotePropertyValue $Evidence
+    $row | Add-Member -NotePropertyName 'Thumbprint' -NotePropertyValue $thumbprint
+    $row | Add-Member -NotePropertyName 'NotBeforeUtc' -NotePropertyValue $notBefore
+    $row | Add-Member -NotePropertyName 'NotAfterUtc' -NotePropertyValue $notAfter
+    $row | Add-Member -NotePropertyName 'DaysLeft' -NotePropertyValue $days
+    $row | Add-Member -NotePropertyName 'CertSubject' -NotePropertyValue $subject
+    $row | Add-Member -NotePropertyName 'CertIssuer' -NotePropertyValue $issuer
+    $row | Add-Member -NotePropertyName 'CertSan' -NotePropertyValue $san
+    $row | Add-Member -NotePropertyName 'Ekus' -NotePropertyValue $Ekus
+    $row | Add-Member -NotePropertyName 'SslPolicyErrors' -NotePropertyValue $SslPolicyErrors
+    $row | Add-Member -NotePropertyName 'ChainStatus' -NotePropertyValue $ChainStatus
+    return $row
+}
+
+function ConvertTo-AdfaCertificateRecord {
+    <#
+    .SYNOPSIS
+        A certificate as plain values: subject, issuer, thumbprint, serial number, validity in
+        UTC, the EKU object identifiers and the subject alternative name as the platform formats
+        it. Never throws.
+    .DESCRIPTION
+        Takes an X509Certificate or X509Certificate2 (what a TLS handshake hands over) or the
+        DER bytes of one (what the directory holds in userCertificate). A copy is made in memory
+        where needed; nothing is added to, opened in or read from any certificate store,
+        PrivateKey and HasPrivateKey are never read, and nothing is exported.
+
+        Bytes are read ONLY when X509Certificate2.GetCertContentType says they are one
+        certificate ("Cert"). The byte-array constructor would also take a PKCS12 (PFX) blob and
+        import its private key into a key container - a key file written to the profile of the
+        account running the assessment - and a PKCS7 blob, of which it keeps only the signer
+        (X509Certificate2 constructors, read 2026-11-16). Whoever can write userCertificate
+        chooses those bytes, so any other content type is refused, with the type named, before
+        a constructor sees it. GetCertContentType only identifies the content.
+
+        NotBefore and NotAfter are documented by Microsoft as LOCAL time ("Gets the date in local
+        time after which a certificate is no longer valid", X509Certificate2.NotAfter and
+        .NotBefore, read 2026-11-16); both are converted to UTC here, once, and every comparison
+        downstream is in UTC.
+
+        HasEkuExtension tells a certificate with no EKU extension - which Microsoft documents as
+        usable for all purposes (about_Certificate_Provider, read 2026-11-16) - from one whose
+        extension lists purposes.
+    .OUTPUTS
+        [pscustomobject] Read, ReadError, Subject, Issuer, Thumbprint, SerialNumber, NotBeforeUtc,
+        NotAfterUtc, Ekus, HasEkuExtension, San.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Certificate)
+    $out = [pscustomobject]@{
+        Read = $false; ReadError = ''; Subject = ''; Issuer = ''; Thumbprint = ''; SerialNumber = ''
+        NotBeforeUtc = $null; NotAfterUtc = $null; Ekus = @(); HasEkuExtension = $false; San = ''
+    }
+    if ($null -eq $Certificate) { $out.ReadError = 'no certificate was handed over'; return $out }
+    $copy = $null
+    try {
+        $cert = $null
+        if ($Certificate -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) { $cert = $Certificate }
+        elseif ($Certificate -is [byte[]]) {
+            # The content type first: a PFX would have its private key imported by the constructor.
+            $contentType = [string][System.Security.Cryptography.X509Certificates.X509Certificate2]::GetCertContentType([byte[]]$Certificate)
+            if ($contentType -ne 'Cert') {
+                throw ("the value is a {0} blob, not a single DER certificate; it was not opened, so no key it may carry was imported" -f $contentType)
+            }
+            $copy = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList (, [byte[]]$Certificate)
+            $cert = $copy
+        }
+        elseif ($Certificate -is [System.Security.Cryptography.X509Certificates.X509Certificate]) {
+            $copy = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $Certificate
+            $cert = $copy
+        }
+        else { throw ("a {0} is not a certificate" -f $Certificate.GetType().FullName) }
+        $out.Subject = [string]$cert.Subject
+        $out.Issuer = [string]$cert.Issuer
+        $out.Thumbprint = ([string]$cert.Thumbprint).ToUpperInvariant()
+        $out.SerialNumber = ([string]$cert.SerialNumber).ToUpperInvariant()
+        $out.NotBeforeUtc = [datetime]::SpecifyKind($cert.NotBefore.ToUniversalTime(), [System.DateTimeKind]::Utc)
+        $out.NotAfterUtc = [datetime]::SpecifyKind($cert.NotAfter.ToUniversalTime(), [System.DateTimeKind]::Utc)
+        foreach ($extension in @($cert.Extensions)) {
+            $oid = [string]$extension.Oid.Value
+            if ($oid -eq '2.5.29.37') {
+                $out.HasEkuExtension = $true
+                $eku = $extension
+                if ($eku -isnot [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]) {
+                    $eku = New-Object System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension -ArgumentList $extension, $extension.Critical
+                }
+                $out.Ekus = @(foreach ($usage in $eku.EnhancedKeyUsages) { [string]$usage.Value })
+            }
+            elseif ($oid -eq '2.5.29.17') {
+                $out.San = ([string]$extension.Format($false)).Trim()
+            }
+        }
+        $out.Read = $true
+    }
+    catch {
+        $out.Read = $false
+        $out.ReadError = ("{0} ({1})" -f [string]$_.Exception.Message, $_.Exception.GetType().FullName)
+    }
+    finally {
+        if ($null -ne $copy) { $copy.Reset() }
+    }
+    return $out
+}
+
+function Get-AdfaCertificateExpiryVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the status of one certificate on its validity dates alone, against an injected
+        "now". Trust, name and purpose are not judged here.
+    .DESCRIPTION
+        Every date is converted to UTC before it is compared. In order:
+          - a date that is missing                         -> Not Assessed (Unreadable)
+          - NotAfter earlier than NotBefore                -> Not Assessed (Inconsistent)
+          - now before NotBefore                           -> Warning (NotYetValid). The status
+            is THIS TOOL'S RULE: Microsoft publishes none for a domain controller certificate
+            that is not yet valid; the reference catalogue has no rule for it either.
+          - now at or after NotAfter                       -> Fail (Expired). NotAfter equal to
+            now counts as expired: the certificate has no validity left.
+          - at most FailWithinDays whole days left         -> Fail (FailWindow), only when
+            FailWithinDays is above 0
+          - at most WarnWithinDays whole days left         -> Warning (ExpiringSoon), only when
+            WarnWithinDays is above 0
+          - otherwise                                      -> Pass (Valid)
+        DaysLeft is the number of whole days from now to NotAfter, rounded down, so a
+        certificate that expires in 30 days and 6 hours has 30 days left and is inside a 30-day
+        window ("Warning at most 30 days left", the AdAssessment26 rule ADA-CERT-001).
+    .OUTPUTS
+        [pscustomobject] Status, State, DaysLeft ([int] or $null), Reason.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$NotBeforeUtc,
+        [AllowNull()]$NotAfterUtc,
+        [Parameter(Mandatory)][datetime]$NowUtc,
+        [int]$WarnWithinDays = 30,
+        [int]$FailWithinDays = 0,
+        [AllowEmptyString()][string]$ThresholdSource = ''
+    )
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $now = $NowUtc.ToUniversalTime()
+    if ($NotBeforeUtc -isnot [datetime] -or $NotAfterUtc -isnot [datetime]) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'Unreadable'; DaysLeft = $null
+            Reason = 'the validity dates of the certificate could not be read, so its expiry was not judged' }
+    }
+    $from = ([datetime]$NotBeforeUtc).ToUniversalTime()
+    $to = ([datetime]$NotAfterUtc).ToUniversalTime()
+    $fromText = $from.ToString('yyyy-MM-dd HH:mm:ss', $inv)
+    $toText = $to.ToString('yyyy-MM-dd HH:mm:ss', $inv)
+    if ($to -lt $from) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; State = 'Inconsistent'; DaysLeft = $null
+            Reason = ("the certificate ends ({0} UTC) before it begins ({1} UTC), so its expiry was not judged" -f $toText, $fromText) }
+    }
+    $daysLeft = [int][math]::Floor(($to - $now).TotalDays)
+    $source = $ThresholdSource
+    if ([string]::IsNullOrWhiteSpace($source)) { $source = 'source not recorded' }
+    if ($now -lt $from) {
+        return [pscustomobject]@{ Status = $script:Status.Warning; State = 'NotYetValid'; DaysLeft = $daysLeft
+            Reason = ("not yet valid: it begins on {0} UTC, after the time of this run, so it cannot be used now. That this is a Warning is this tool's rule, not a Microsoft value" -f $fromText) }
+    }
+    if ($now -ge $to) {
+        $ago = [int][math]::Floor(($now - $to).TotalDays)
+        return [pscustomobject]@{ Status = $script:Status.Fail; State = 'Expired'; DaysLeft = $daysLeft
+            Reason = ("expired on {0} UTC, {1} whole day(s) before the time of this run" -f $toText, $ago) }
+    }
+    if ($FailWithinDays -gt 0 -and $daysLeft -le $FailWithinDays) {
+        return [pscustomobject]@{ Status = $script:Status.Fail; State = 'FailWindow'; DaysLeft = $daysLeft
+            Reason = ("{0} whole day(s) left, until {1} UTC: within the Fail window of {2} day(s) ({3})" -f $daysLeft, $toText, $FailWithinDays, $source) }
+    }
+    if ($WarnWithinDays -gt 0 -and $daysLeft -le $WarnWithinDays) {
+        return [pscustomobject]@{ Status = $script:Status.Warning; State = 'ExpiringSoon'; DaysLeft = $daysLeft
+            Reason = ("{0} whole day(s) left, until {1} UTC: within the Warning window of {2} day(s) ({3})" -f $daysLeft, $toText, $WarnWithinDays, $source) }
+    }
+    return [pscustomobject]@{ Status = $script:Status.Pass; State = 'Valid'; DaysLeft = $daysLeft
+        Reason = ("valid from {0} to {1} UTC, {2} whole day(s) left; the Warning window is {3} day(s) ({4})" -f $fromText, $toText, $daysLeft, $WarnWithinDays, $source) }
+}
+
+function Get-AdfaCertificateEkuText {
+    <#
+    .SYNOPSIS
+        Pure: the EKUs of a certificate as text, each object identifier with the name the config
+        table gives it. "no EKU extension" is said as such, never as a missing purpose.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][string[]]$Ekus = @(),
+        [bool]$HasEkuExtension = $false,
+        [AllowNull()]$EkuNames = @{}
+    )
+    if (-not $HasEkuExtension) { return 'no EKU extension (Microsoft documents a certificate with no EKU list as usable for all purposes)' }
+    $parts = @()
+    foreach ($oid in @($Ekus | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $name = ''
+        if ($null -ne $EkuNames) { $name = [string](Get-AdfaConfigValue -Entry $EkuNames -Name ([string]$oid)) }
+        if ($name -ne '') { $parts += ("{0} ({1})" -f $name, $oid) } else { $parts += [string]$oid }
+    }
+    if ($parts.Count -eq 0) { return 'an EKU extension that lists no purpose' }
+    return ($parts -join ', ')
+}
+
+function Get-AdfaSocketErrorClass {
+    <#
+    .SYNOPSIS
+        Pure: the class of a failed TCP connection, from the SocketError name the platform gave.
+    .DESCRIPTION
+        ConnectionRefused (10061, "The remote host is actively refusing a connection"), TimedOut
+        (10060), and the three name resolution failures HostNotFound (11001), TryAgain (11002) and
+        NoData (11004) are told apart; anything else is ConnectFailed, quoted as reported. The
+        values are .NET's SocketError enumeration, read on Microsoft Learn 2026-11-16:
+        https://learn.microsoft.com/dotnet/api/system.net.sockets.socketerror
+    .OUTPUTS
+        [string] ConnectRefused | ConnectTimedOut | Unresolved | ConnectFailed
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$SocketError)
+    switch -Regex ([string]$SocketError) {
+        '^ConnectionRefused$' { return 'ConnectRefused' }
+        '^TimedOut$' { return 'ConnectTimedOut' }
+        '^(HostNotFound|TryAgain|NoData)$' { return 'Unresolved' }
+    }
+    return 'ConnectFailed'
+}
+
+function Get-AdfaTlsHandshakeErrorClass {
+    <#
+    .SYNOPSIS
+        Pure: HandshakeTimedOut or HandshakeFailed, for a TLS handshake that threw, from the
+        exception types and SocketError names found along the exception chain.
+    .DESCRIPTION
+        A synchronous read that runs past TcpClient.ReceiveTimeout throws an IOException ("If the
+        time-out expires before Read successfully completes, TcpClient throws a IOException",
+        read 2026-11-16) whose inner SocketException carries TimedOut. Anything else that stops
+        the handshake - an AuthenticationException, a reset, a closed connection - is
+        HandshakeFailed, and the caller quotes it.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyCollection()][string[]]$SocketErrors = @())
+    if (@($SocketErrors | Where-Object { $_ -eq 'TimedOut' }).Count -gt 0) { return 'HandshakeTimedOut' }
+    return 'HandshakeFailed'
+}
+
+function Get-AdfaExceptionChainInfo {
+    <#
+    .SYNOPSIS
+        Pure: the type names, messages and SocketError names along an exception and its inner
+        exceptions, outermost first.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Exception)
+    $types = @()
+    $messages = @()
+    $socketErrors = @()
+    $e = $Exception
+    $depth = 0
+    while ($null -ne $e -and $depth -lt 8) {
+        $depth++
+        # PowerShell's own wrapper around a .NET method call adds nothing but "Exception calling
+        # <method>": the inner exception is what the platform reported.
+        if ($e -is [System.Management.Automation.MethodInvocationException] -and $null -ne $e.InnerException) {
+            $e = $e.InnerException
+            continue
+        }
+        $types += [string]$e.GetType().FullName
+        $messages += ([string]$e.Message).Trim()
+        if ($e -is [System.Net.Sockets.SocketException]) { $socketErrors += [string]$e.SocketErrorCode }
+        $e = $e.InnerException
+    }
+    return [pscustomobject]@{ Types = @($types); Messages = @($messages); SocketErrors = @($socketErrors) }
+}
+
+function Get-AdfaTlsProbeClass {
+    <#
+    .SYNOPSIS
+        Pure: the class of one handshake attempt, from what happened during it.
+    .DESCRIPTION
+        In order:
+          - no connection, and the connection attempt threw  -> the class of its SocketError
+            (Get-AdfaSocketErrorClass)
+          - no connection, and nothing threw                 -> ConnectTimedOut (the wait for the
+            connection ran out)
+          - a certificate reached the validation callback    -> Presented, EVEN IF the handshake
+            then threw or the deadline then closed the connection: the certificate was handed over
+          - the handshake threw after the deadline closed it -> HandshakeTimedOut
+          - the handshake threw                              -> Get-AdfaTlsHandshakeErrorClass
+          - the handshake ended with no certificate          -> NoCertificate
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [bool]$Connected = $false,
+        [bool]$ConnectThrew = $false,
+        [AllowNull()][AllowEmptyString()][string]$ConnectSocketError = '',
+        [bool]$CertificateSeen = $false,
+        [bool]$HandshakeThrew = $false,
+        [AllowNull()][AllowEmptyCollection()][string[]]$HandshakeSocketErrors = @(),
+        [bool]$DeadlineExpired = $false
+    )
+    if (-not $Connected) {
+        if ($ConnectThrew) { return (Get-AdfaSocketErrorClass -SocketError $ConnectSocketError) }
+        return 'ConnectTimedOut'
+    }
+    if ($CertificateSeen) { return 'Presented' }
+    if ($HandshakeThrew) {
+        if ($DeadlineExpired) { return 'HandshakeTimedOut' }
+        return (Get-AdfaTlsHandshakeErrorClass -SocketErrors @($HandshakeSocketErrors))
+    }
+    return 'NoCertificate'
+}
+
+function Get-AdfaDcTlsCertificateRaw {
+    <#
+    .SYNOPSIS
+        The certificate one DC presents on its LDAPS port, read with a TLS handshake that sends
+        nothing but the handshake. Never throws.
+    .DESCRIPTION
+        One TCP connection, bounded by -ConnectTimeoutMs (BeginConnect and a wait, the pattern
+        Test-TcpPort uses), then SslStream.AuthenticateAsClient(<DC host name>) - the overload
+        that "No client certificates are used in the authentication. The certificate revocation
+        list is not checked during authentication." (read 2026-11-16). It is called synchronously
+        so that the validation callback, a PowerShell script block, runs on the calling thread.
+
+        THE WHOLE HANDSHAKE IS BOUNDED by -HandshakeTimeoutMs. The synchronous handshake has no
+        timeout of its own, and the socket's ReceiveTimeout restarts on every read, so a peer
+        that sends one byte at a time inside it could hold this call for hours. A deadline is
+        therefore armed first: a second runspace of this process waits on an event for
+        -HandshakeTimeoutMs and, if the handshake has not ended by then, shuts the socket down
+        and closes it, which makes the blocked read return. It touches nothing but this
+        connection. If the deadline cannot be armed, no handshake is made (class Error). The
+        socket's ReceiveTimeout and SendTimeout are still set, as an inner bound on one read.
+
+        The validation callback copies the certificate, the platform's SslPolicyErrors and the
+        status of the chain the platform built, and RETURNS TRUE: this tool neither trusts nor
+        rejects the certificate. Returning false would make the client abort the handshake, and
+        Microsoft documents Schannel error logging as on by default; a completed handshake
+        avoids an abort sent by this client. The stream and the connection are then closed at
+        once: no byte of application data is written, so no LDAP request, no bind and no
+        credential is ever sent ("When connecting to ports 636 or 3269, SSL/TLS is negotiated
+        before any LDAP traffic is exchanged", KB 321051, read 2026-11-16).
+
+        WHAT THIS CANNOT RULE OUT, and why it runs only with -IncludeLdapsHandshake: Microsoft
+        does not state that a TLS handshake leaves no trace on the server. A DC that cannot
+        complete the handshake may log a Schannel error in its System log. And building the
+        chain on this host may fetch issuer certificates from the AIA locations a certificate
+        names - an outbound request from the host running the assessment, not to the DC - which
+        Microsoft documents as controllable only on .NET 5 and later.
+
+        The connection is bounded by -ConnectTimeoutMs. When that wait runs out the class is
+        ConnectTimedOut; a refusal is ConnectRefused only when it is reported within the bound
+        (Windows reported a refused loopback connection after about 2 s in this tool's tests).
+
+        Classes (Get-AdfaTlsProbeClass): Presented (a certificate was handed over),
+        ConnectRefused, ConnectTimedOut, Unresolved, ConnectFailed, HandshakeTimedOut,
+        HandshakeFailed, NoCertificate (the handshake ended and no certificate reached the
+        callback), Error (a defect in this tool, or a deadline that could not be armed).
+    .OUTPUTS
+        [pscustomobject] Ok, Class, Error, ErrorType, SocketError, Certificate (a record from
+        ConvertTo-AdfaCertificateRecord, or $null), SslPolicyErrors, ChainStatus, CallbackRan,
+        DeadlineExpired, ElapsedMs.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][int]$Port,
+        [int]$ConnectTimeoutMs = 5000,
+        [int]$HandshakeTimeoutMs = 5000
+    )
+    $out = [pscustomobject]@{
+        Ok = $false; Class = ''; Error = ''; ErrorType = ''; SocketError = ''; Certificate = $null
+        SslPolicyErrors = ''; ChainStatus = @(); CallbackRan = $false; DeadlineExpired = $false; ElapsedMs = 0
+    }
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $client = $null
+    $ssl = $null
+    $deadline = $null
+    $deadlineHandle = $null
+    $deadlineSignal = $null
+    # What the callback saw. A hashtable, so the script block below writes into this object and
+    # not into a variable of its own scope.
+    $seen = @{ Ran = $false; Certificate = $null; Errors = ''; Chain = @() }
+    # Written by the deadline's runspace, so synchronized.
+    $deadlineState = [hashtable]::Synchronized(@{ Fired = $false; CloseError = '' })
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $connected = $false
+        $connectThrew = $false
+        $connectSocketError = ''
+        $handshakeError = $null
+        $handshakeSocketErrors = @()
+        try {
+            $pending = $client.BeginConnect($ComputerName, $Port, $null, $null)
+            if ($pending.AsyncWaitHandle.WaitOne($ConnectTimeoutMs, $false)) {
+                $client.EndConnect($pending)
+                $connected = $true
+            }
+            else {
+                $out.Error = ("no TCP connection to port {0} within {1} ms" -f $Port, $ConnectTimeoutMs)
+            }
+        }
+        catch {
+            $connectThrew = $true
+            $chainInfo = Get-AdfaExceptionChainInfo -Exception $_.Exception
+            if (@($chainInfo.SocketErrors).Count -gt 0) { $connectSocketError = [string]@($chainInfo.SocketErrors)[0] }
+            $out.SocketError = $connectSocketError
+            $out.Error = (@($chainInfo.Messages) -join ' -> ')
+            $out.ErrorType = (@($chainInfo.Types) -join ' -> ')
+        }
+        if ($connected) {
+            $client.ReceiveTimeout = $HandshakeTimeoutMs
+            $client.SendTimeout = $HandshakeTimeoutMs
+            $callback = [System.Net.Security.RemoteCertificateValidationCallback] {
+                param($source, $certificate, $chain, $policyErrors)
+                $seen['Ran'] = $true
+                if ($null -ne $certificate) {
+                    # A copy, so the values outlive the stream that is closed below.
+                    $seen['Certificate'] = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $certificate
+                }
+                $seen['Errors'] = [string]$policyErrors
+                $statusLines = @()
+                if ($null -ne $chain) {
+                    foreach ($status in @($chain.ChainStatus)) {
+                        $statusLines += ("{0}: {1}" -f [string]$status.Status, ([string]$status.StatusInformation).Trim())
+                    }
+                }
+                $seen['Chain'] = @($statusLines)
+                # Neither trusted nor rejected by this tool: the handshake is allowed to finish
+                # so that no abort is sent, and nothing is written afterwards.
+                return $true
+            }
+            $ssl = New-Object System.Net.Security.SslStream -ArgumentList $client.GetStream(), $false, $callback
+            # The deadline, armed before the handshake starts. If it cannot be armed, the
+            # handshake is not made: an unbounded handshake is not run.
+            try {
+                $deadlineSignal = New-Object System.Threading.ManualResetEvent -ArgumentList $false
+                $deadline = [powershell]::Create()
+                # Runs in the deadline's own runspace: waits on the event, and only if the wait
+                # runs out shuts down and closes THIS connection. Nothing else is touched.
+                $deadlineScript = 'param($Client, $Signal, $TimeoutMs, $State)
+if (-not $Signal.WaitOne($TimeoutMs)) {
+    $State["Fired"] = $true
+    try { $Client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Both) } catch { $State["CloseError"] = [string]$_.Exception.Message }
+    try { $Client.Close() } catch { $State["CloseError"] = [string]$_.Exception.Message }
+}'
+                [void]$deadline.AddScript($deadlineScript)
+                [void]$deadline.AddArgument($client).AddArgument($deadlineSignal).AddArgument($HandshakeTimeoutMs).AddArgument($deadlineState)
+                $deadlineHandle = $deadline.BeginInvoke()
+            }
+            catch {
+                throw ("the handshake deadline could not be armed, so no handshake was made: {0}" -f [string]$_.Exception.Message)
+            }
+            try { $ssl.AuthenticateAsClient($ComputerName) }
+            catch { $handshakeError = $_.Exception }
+            finally {
+                [void]$deadlineSignal.Set()
+                try { [void]$deadline.EndInvoke($deadlineHandle) } catch { $deadlineState['CloseError'] = [string]$_.Exception.Message }
+                $deadlineHandle = $null
+            }
+            $out.DeadlineExpired = [bool]$deadlineState['Fired']
+            $out.CallbackRan = [bool]$seen['Ran']
+            $out.SslPolicyErrors = [string]$seen['Errors']
+            $out.ChainStatus = @($seen['Chain'])
+            if ($null -ne $handshakeError) {
+                $chainInfo = Get-AdfaExceptionChainInfo -Exception $handshakeError
+                $out.Error = (@($chainInfo.Messages) -join ' -> ')
+                $out.ErrorType = (@($chainInfo.Types) -join ' -> ')
+                $handshakeSocketErrors = @($chainInfo.SocketErrors)
+                if ($handshakeSocketErrors.Count -gt 0) { $out.SocketError = [string]$handshakeSocketErrors[0] }
+            }
+            if ($out.DeadlineExpired) {
+                $out.Error = ("the handshake did not end within {0} ms, so the connection was closed. {1}" -f $HandshakeTimeoutMs, $out.Error).Trim()
+            }
+        }
+        $out.Class = Get-AdfaTlsProbeClass -Connected $connected -ConnectThrew $connectThrew -ConnectSocketError $connectSocketError `
+            -CertificateSeen ($null -ne $seen['Certificate']) -HandshakeThrew ($null -ne $handshakeError) -HandshakeSocketErrors @($handshakeSocketErrors) `
+            -DeadlineExpired ([bool]$out.DeadlineExpired)
+        if ($out.Class -eq 'Presented') {
+            # The certificate was handed over, even if the handshake failed after it.
+            $out.Certificate = ConvertTo-AdfaCertificateRecord -Certificate $seen['Certificate']
+            $out.Ok = $true
+        }
+        elseif ($out.Class -eq 'NoCertificate') {
+            $out.Error = 'the handshake ended without a certificate reaching the validation callback'
+        }
+    }
+    catch {
+        $out.Ok = $false
+        $out.Class = 'Error'
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+    finally {
+        if ($null -ne $deadlineSignal) { try { [void]$deadlineSignal.Set() } catch { $out.Error = ("{0} (releasing the deadline: {1})" -f $out.Error, $_.Exception.Message).Trim() } }
+        if ($null -ne $deadline) {
+            try {
+                if ($null -ne $deadlineHandle) { [void]$deadline.EndInvoke($deadlineHandle) }
+                $deadline.Dispose()
+            }
+            catch { $out.Error = ("{0} (ending the deadline: {1})" -f $out.Error, $_.Exception.Message).Trim() }
+        }
+        if ($null -ne $deadlineSignal) { $deadlineSignal.Dispose() }
+        if ($null -ne $ssl) { try { $ssl.Dispose() } catch { $out.Error = ("{0} (closing the stream: {1})" -f $out.Error, $_.Exception.Message).Trim() } }
+        if ($null -ne $client) { try { $client.Close() } catch { $out.Error = ("{0} (closing the connection: {1})" -f $out.Error, $_.Exception.Message).Trim() } }
+        if ($seen['Certificate'] -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) { $seen['Certificate'].Reset() }
+        $watch.Stop()
+        $out.ElapsedMs = [int]$watch.ElapsedMilliseconds
+    }
+    return $out
+}
+
+function ConvertTo-AdfaLdapFilterValue {
+    <#
+    .SYNOPSIS
+        Pure: a value escaped for an LDAP search filter. "If any of the following special
+        characters must appear in the search filter as literals, they must be replaced by the
+        listed escape sequence": * \2a, ( \28, ) \29, \ \5c, NUL \00, / \2f.
+        https://learn.microsoft.com/windows/win32/adsi/search-filter-syntax (read 2026-11-16).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$Value)
+    if ($null -eq $Value) { return '' }
+    $builder = New-Object System.Text.StringBuilder
+    foreach ($ch in $Value.ToCharArray()) {
+        switch ([int]$ch) {
+            0x5C { [void]$builder.Append('\5c'); continue }
+            0x2A { [void]$builder.Append('\2a'); continue }
+            0x28 { [void]$builder.Append('\28'); continue }
+            0x29 { [void]$builder.Append('\29'); continue }
+            0x00 { [void]$builder.Append('\00'); continue }
+            0x2F { [void]$builder.Append('\2f'); continue }
+            default { [void]$builder.Append($ch) }
+        }
+    }
+    return $builder.ToString()
+}
+
+function Get-AdfaDcCertificateDirectoryRaw {
+    <#
+    .SYNOPSIS
+        The userCertificate values of one domain controller's computer object, found by its DNS
+        host name. One read-only directory query. Never throws.
+    .DESCRIPTION
+        Get-ADComputer with -LDAPFilter (&(objectClass=computer)(dNSHostName=<host>)) and
+        -Properties userCertificate, against -Server: the DC's domain where the caller knows it,
+        otherwise the DC itself. -Identity is not used because it does not accept a DNS host
+        name ("distinguished name, GUID, security identifier (SID) or Security Accounts Manager
+        (SAM) account name", Get-ADComputer, read 2026-11-16).
+
+        userCertificate is multi-valued; each value is "the DER-encoded X.509v3 certificates
+        issued to the user ... by Microsoft Certificate Service" (X509-Cert, read 2026-11-16). A
+        value that is not a byte array is kept as unreadable, never dropped.
+    .OUTPUTS
+        [pscustomobject] Ok, Error, ErrorType, Server, ObjectCount, AttributeReturned, Values
+        (byte[] each, or the raw value where it was not bytes).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$HostName,
+        [AllowEmptyString()][string]$Server = '',
+        [hashtable]$AdParams = @{}
+    )
+    $target = $Server
+    if ([string]::IsNullOrWhiteSpace($target)) { $target = $HostName }
+    $out = [pscustomobject]@{ Ok = $false; Error = ''; ErrorType = ''; Server = $target; ObjectCount = 0; AttributeReturned = $false; Values = @() }
+    try {
+        $computerArgs = @{} + $AdParams
+        $computerArgs.Server = $target
+        $computerArgs.LDAPFilter = ('(&(objectClass=computer)(dNSHostName={0}))' -f (ConvertTo-AdfaLdapFilterValue -Value $HostName))
+        $computerArgs.Properties = @('userCertificate')
+        $computerArgs.ErrorAction = 'Stop'
+        $objects = @(Get-ADComputer @computerArgs | Where-Object { $null -ne $_ })
+        $out.ObjectCount = $objects.Count
+        if ($objects.Count -eq 1) {
+            $values = New-Object System.Collections.ArrayList
+            $property = $objects[0].PSObject.Properties['userCertificate']
+            if ($null -ne $property) {
+                $out.AttributeReturned = $true
+                $value = $property.Value
+                if ($value -is [byte[]]) { [void]$values.Add($value) }
+                elseif ($null -ne $value) {
+                    foreach ($item in $value) { if ($null -ne $item) { [void]$values.Add($item) } }
+                }
+            }
+            $out.Values = $values.ToArray()
+        }
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function Get-AdfaDcLdapsFinding {
+    <#
+    .SYNOPSIS
+        Pure: the one "LDAPS certificate: <dc>" row of a domain controller, from what the
+        handshake seam returned (or from the fact that it was not run, or that the port did not
+        answer).
+    .DESCRIPTION
+        Only expiry is graded, with Get-AdfaCertificateExpiryVerdict. Every other outcome is Not
+        Assessed with its own cause, and none of them is read as "this DC has no certificate":
+        Microsoft does not document what a DC without a usable certificate does on port 636
+        (refuses the connection, or accepts it and fails the handshake), so the row says what
+        was observed and no more.
+
+        The subject, the issuer, the EKUs and the platform's SslPolicyErrors and ChainStatus are
+        evidence columns, not graded: they describe the trust of the host running the
+        assessment, which may not be a client of the domain at all.
+    .OUTPUTS
+        [pscustomobject] One row.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainController,
+        [AllowEmptyString()][string]$Scope = '',
+        [bool]$HandshakeRun = $false,
+        [bool]$PortAnswered = $false,
+        [AllowNull()]$Raw = $null,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][datetime]$NowUtc,
+        [int]$PortTimeoutMs = 1200
+    )
+    $item = ("LDAPS certificate: {0}" -f $DomainController)
+    $port = [int]$Config['LdapsPort']
+    $handshakeTimeout = [int]$Config['HandshakeTimeoutMs']
+    $connectTimeout = [int]$Config['ConnectTimeoutMs']
+    $notRun ='Not read: the certificate stores of the DC (the NTDS service store, which Microsoft documents AD DS checks first, and LocalMachine\My) - PORT-PLAN C5a; revocation; and whether the clients of this DC trust the chain and accept the name. What the platform of the host running the assessment reported about chain and name is quoted in SslPolicyErrors and ChainStatus and is not graded.'
+    if (-not $HandshakeRun) {
+        return (New-AdfaDcCertificateRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence 'none' -NotRun $notRun `
+                -Detail ("Not run: the LDAPS handshake is opt-in (-IncludeLdapsHandshake). Microsoft documents Schannel error logging as on by default and does not state that a TLS handshake leaves no trace on the server, so a handshake this DC cannot complete may write an error event to its System log. No connection was made to port {0}, so the certificate this DC presents is not known." -f $port))
+    }
+    if (-not $PortAnswered) {
+        return (New-AdfaDcCertificateRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence 'none' -NotRun $notRun `
+                -Detail ("Unreachable: port {0} did not accept a TCP connection within {1} ms on the shared port probe, so no handshake was attempted. That probe does not tell a refused connection from a filtered or slow one. Microsoft does not document what a DC without a usable certificate does on this port, so this is not read as the DC having no certificate." -f $port, $PortTimeoutMs))
+    }
+    if ($null -eq $Raw) {
+        return (New-AdfaDcCertificateRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence 'none' -NotRun $notRun `
+                -Detail 'Not assessed: the handshake returned nothing. This is a defect in the tool, not a result.')
+    }
+    $class = [string]$Raw.Class
+    $reported = ([string]$Raw.Error).Trim()
+    if ($reported -eq '') { $reported = '(no error text was returned)' }
+    $type = ([string]$Raw.ErrorType).Trim()
+    if ($type -ne '') { $reported = ("{0} (exception type: {1})" -f $reported, $type) }
+    $policy = [string]$Raw.SslPolicyErrors
+    $chain = (@($Raw.ChainStatus) -join ' | ')
+    $noConclusion = 'Microsoft does not document what a DC without a usable certificate does on this port, so this is not read as the DC having no certificate.'
+    switch ($class) {
+        'Presented' {
+            $record = $Raw.Certificate
+            if ($null -eq $record -or -not [bool](Get-AdfaConfigValue -Entry $record -Name 'Read')) {
+                $why = '(no record)'
+                if ($null -ne $record) { $why = [string](Get-AdfaConfigValue -Entry $record -Name 'ReadError') }
+                return (New-AdfaDcCertificateRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence 'LDAPS handshake' -NotRun $notRun `
+                        -SslPolicyErrors $policy -ChainStatus $chain `
+                        -Detail ("Read failed: the DC presented a certificate on port {0}, but it could not be read, so its expiry was not judged. Reported - {1}" -f $port, $why))
+            }
+            $verdict = Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $record.NotBeforeUtc -NotAfterUtc $record.NotAfterUtc -NowUtc $NowUtc `
+                -WarnWithinDays ([int]$Config['WarnWithinDays']) -FailWithinDays ([int]$Config['FailWithinDays']) -ThresholdSource ([string]$Config['ThresholdSource'])
+            $ekuText = Get-AdfaCertificateEkuText -Ekus @($record.Ekus) -HasEkuExtension ([bool]$record.HasEkuExtension) -EkuNames $Config['EkuNames']
+            $detail = ("Presented on LDAPS port {0}: {1}. Thumbprint {2}." -f $port, [string]$verdict.Reason, [string]$record.Thumbprint)
+            if ([string]$Raw.Error -ne '') {
+                $detail = ("{0} The handshake ended with an error after the certificate was received - {1}" -f $detail, $reported)
+            }
+            $detail = ("{0} Only expiry is graded. Microsoft documents that a domain controller with several usable certificates may present any of them, so a certificate it holds but did not present here is not seen by this read." -f $detail)
+            return (New-AdfaDcCertificateRow -Scope $Scope -Item $item -Status ([string]$verdict.Status) -Evidence 'LDAPS handshake' -NotRun $notRun `
+                    -Certificate $record -DaysLeft $verdict.DaysLeft -Ekus $ekuText -SslPolicyErrors $policy -ChainStatus $chain -Detail $detail)
+        }
+        'ConnectRefused' { $detail = ("Refused: the connection for the handshake to port {0} was actively refused, although the shared port probe had connected. Reported - {1}. {2}" -f $port, $reported, $noConclusion) }
+        'ConnectTimedOut' { $detail = ("Timed out: the connection for the handshake to port {0} was not made within {1} ms, although the shared port probe had connected. A refusal is told apart only when it is reported within that bound (Windows reported a refused loopback connection after about 2 s in this tool's tests, which is not a Microsoft value). Reported - {2}. {3}" -f $port, $connectTimeout, $reported, $noConclusion) }
+        'Unresolved' { $detail = ("Unresolved: the DC's host name did not resolve when the handshake connected, although the shared port probe had connected. Reported - {0}" -f $reported) }
+        'ConnectFailed' { $detail = ("Connection failed: the connection for the handshake to port {0} failed. Reported - {1}. {2}" -f $port, $reported, $noConclusion) }
+        'HandshakeTimedOut' { $detail = ("Handshake timed out: port {0} accepted the connection, but the TLS handshake did not complete within {1} ms, so the connection was closed, and no certificate was received. Reported - {2}. {3}" -f $port, $handshakeTimeout, $reported, $noConclusion) }
+        'HandshakeFailed' { $detail = ("Handshake failed: port {0} accepted the connection, but the TLS handshake did not complete and no certificate was received. A DC that has no usable certificate is one possible cause. Reported - {1}. {2}" -f $port, $reported, $noConclusion) }
+        'NoCertificate' { $detail = ("No certificate: the handshake on port {0} ended without a certificate being handed over. Reported - {1}. {2}" -f $port, $reported, $noConclusion) }
+        default { $detail = ("Not assessed: the handshake could not be made because of an error inside this tool ({0}); this is a defect in the tool, not a result. Reported - {1}" -f $class, $reported) }
+    }
+    return (New-AdfaDcCertificateRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence 'LDAPS handshake' -NotRun $notRun `
+            -SslPolicyErrors $policy -ChainStatus $chain -Detail $detail)
+}
+
+function Get-AdfaDcDirectoryCertificateFinding {
+    <#
+    .SYNOPSIS
+        The rows of one domain controller's userCertificate values: one "Directory certificate:
+        <dc> [<thumbprint>]" row per value, or one "Directory certificates: <dc>" row when the
+        read failed or returned no value.
+    .DESCRIPTION
+        DIRECTORY EVIDENCE: a value proves that a CA published that certificate for the DC's
+        computer object, not that the DC holds it or presents it. Its expiry is graded the same
+        way as the presented certificate's, and the row says what it is evidence of.
+
+        A published value is not necessarily a domain controller certificate: Microsoft's table
+        of default templates lists "Domain Controller" (version 1) and "Directory E-mail
+        Replication" (version 2) among the computer templates published to AD DS, so the EKUs
+        of every value are reported in the Ekus column.
+
+        No value is NEVER a finding against the DC, and is Info: of the DC templates, "Domain
+        Controller Authentication" and "Kerberos Authentication" are not published to AD DS by
+        default, and publication is a separate operation from issuance (certificate-template-
+        concepts, manage-certificate-templates, read 2026-11-16). A value this account has no
+        right to read also looks like none, and who can read the attribute by default is not
+        published.
+
+        A failed read is Not Assessed, worded by Get-AdfaLapsReadFailureLead (Unreachable /
+        Access denied / Timed out / Read failed). No object, or more than one, with the DC's DNS
+        host name is Not Assessed too.
+    .OUTPUTS
+        [pscustomobject[]] Rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainController,
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()]$Raw = $null,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][datetime]$NowUtc,
+        [AllowEmptyString()][string]$PresentedThumbprint = ''
+    )
+    $groupItem = ("Directory certificates: {0}" -f $DomainController)
+    $notRun = 'Directory evidence only: whether the DC still holds or presents a published certificate is not read here, and its certificate stores are not read - PORT-PLAN C5a.'
+    $what = ("the userCertificate attribute of {0}" -f $DomainController)
+    if ($null -eq $Raw) {
+        return @(New-AdfaDcCertificateRow -Scope $Scope -Item $groupItem -Status $script:Status.NotAssessed -Evidence 'Directory userCertificate' -NotRun $notRun `
+                -Detail 'Not assessed: the directory read returned nothing. This is a defect in the tool, not a result.')
+    }
+    $server = [string]$Raw.Server
+    $from = ("Read from {0}." -f $server)
+    if ([string]::IsNullOrWhiteSpace($Scope)) {
+        $from = ("Read from {0}, the DC itself, because this DC came from an enumeration that does not say which domain it belongs to." -f $server)
+    }
+    if (-not [bool]$Raw.Ok) {
+        $lead = Get-AdfaLapsReadFailureLead -Message ([string]$Raw.Error) -TypeName ([string]$Raw.ErrorType) -What $what
+        return @(New-AdfaDcCertificateRow -Scope $Scope -Item $groupItem -Status $script:Status.NotAssessed -Evidence 'Directory userCertificate' -NotRun $notRun `
+                -Detail ("{0} {1}" -f $lead, $from))
+    }
+    $count = [int]$Raw.ObjectCount
+    if ($count -eq 0) {
+        return @(New-AdfaDcCertificateRow -Scope $Scope -Item $groupItem -Status $script:Status.NotAssessed -Evidence 'Directory userCertificate' -NotRun $notRun `
+                -Detail ("Not found: no computer object with dNSHostName {0} was returned, so {1} was not read. {2}" -f $DomainController, $what, $from))
+    }
+    if ($count -gt 1) {
+        return @(New-AdfaDcCertificateRow -Scope $Scope -Item $groupItem -Status $script:Status.NotAssessed -Evidence 'Directory userCertificate' -NotRun $notRun `
+                -Detail ("Ambiguous: {0} computer objects carry dNSHostName {1}, and which of them is the DC cannot be told, so none was read. {2}" -f $count, $DomainController, $from))
+    }
+    # A lone byte array is ONE value. @() would turn it into one value per byte.
+    $values = @()
+    if ($Raw.Values -is [byte[]]) { $values = @(, [byte[]]$Raw.Values) }
+    elseif ($null -ne $Raw.Values) { $values = @($Raw.Values) }
+    if ($values.Count -eq 0) {
+        return @(New-AdfaDcCertificateRow -Scope $Scope -Item $groupItem -Status $script:Status.Info -Evidence 'Directory userCertificate' -NotRun $notRun `
+                -Detail ("No certificate is published for this DC in the directory: userCertificate has no value visible to this account. That is not evidence that the DC holds no certificate. Of Microsoft's default domain controller templates, 'Domain Controller' (version 1) is published to AD DS, while 'Domain Controller Authentication' and 'Kerberos Authentication' are not, and publication is a separate operation from issuance. A value this account has no right to read also looks like none. {0}" -f $from))
+    }
+    $rows = @()
+    $index = 0
+    foreach ($value in $values) {
+        $index++
+        $record = $null
+        if ($value -is [byte[]]) { $record = ConvertTo-AdfaCertificateRecord -Certificate ([byte[]]$value) }
+        if ($null -eq $record -or -not [bool]$record.Read) {
+            $why = 'the value is not a byte array'
+            if ($null -ne $record) { $why = [string]$record.ReadError }
+            $rows += New-AdfaDcCertificateRow -Scope $Scope -Item ("Directory certificate: {0} [value {1}]" -f $DomainController, $index) -Status $script:Status.NotAssessed `
+                -Evidence 'Directory userCertificate' -NotRun $notRun `
+                -Detail ("Read failed: value {0} of {1} of {2} could not be read as a certificate, so its expiry was not judged. Reported - {3}. {4}" -f $index, $values.Count, $what, $why, $from)
+            continue
+        }
+        $verdict = Get-AdfaCertificateExpiryVerdict -NotBeforeUtc $record.NotBeforeUtc -NotAfterUtc $record.NotAfterUtc -NowUtc $NowUtc `
+            -WarnWithinDays ([int]$Config['WarnWithinDays']) -FailWithinDays ([int]$Config['FailWithinDays']) -ThresholdSource ([string]$Config['ThresholdSource'])
+        $ekuText = Get-AdfaCertificateEkuText -Ekus @($record.Ekus) -HasEkuExtension ([bool]$record.HasEkuExtension) -EkuNames $Config['EkuNames']
+        $presentedNote = ''
+        if ($PresentedThumbprint -ne '') {
+            if ([string]$record.Thumbprint -eq $PresentedThumbprint.ToUpperInvariant()) { $presentedNote = ' It is the certificate this DC presented on LDAPS in this run.' }
+            else { $presentedNote = ' It is not the certificate this DC presented on LDAPS in this run.' }
+        }
+        $detail = ("Published in the directory: {0}. Thumbprint {1}. Directory evidence: a CA published this certificate for the DC's computer object, which does not show that the DC still holds or presents it, nor that it is a domain controller certificate (Microsoft's default 'Directory E-mail Replication' template is published to AD DS too; its purposes are in the Ekus column).{2} {3}" -f [string]$verdict.Reason, [string]$record.Thumbprint, $presentedNote, $from)
+        $rows += New-AdfaDcCertificateRow -Scope $Scope -Item ("Directory certificate: {0} [{1}]" -f $DomainController, [string]$record.Thumbprint) -Status ([string]$verdict.Status) `
+            -Evidence 'Directory userCertificate' -NotRun $notRun -Certificate $record -DaysLeft $verdict.DaysLeft -Ekus $ekuText -Detail $detail
+    }
+    return @($rows)
+}
+
+function Get-AdfaDcCertificates {
+    <#
+    .SYNOPSIS
+        Per domain controller: the certificate it presents on LDAPS (with -IncludeHandshake) and
+        the certificates published for it in the directory, each judged on expiry.
+    .DESCRIPTION
+        Two instruments, labelled in every row (Evidence column):
+          LDAPS handshake            Get-AdfaDcTlsCertificateRaw, only when -IncludeHandshake is
+                                     given, and only where port 636 answered the shared probe
+                                     (Test-AdfaDcPort, so a DC is probed once per port in the
+                                     run). What clients are handed. Needs no right on the DC.
+          Directory userCertificate  Get-AdfaDcCertificateDirectoryRaw, always. Domain read only.
+        The DC's certificate stores are NOT read (PORT-PLAN C5a): that needs remote execution on
+        the DC, and Microsoft documents that AD DS looks in the NTDS service store before
+        LocalMachine\My, so a read of My alone would not say which certificate is presented.
+
+        DECLARED POPULATION: the domains named in -ScopedDomains. Each ends up in the section as
+        the Scope of at least one DC row, or as its own "DC certificates - <domain>" Not Assessed
+        row. Every DC target gets exactly one "LDAPS certificate: <dc>" row, and at least one
+        directory row. An exception while one DC is handled makes that DC's rows Not Assessed
+        and never ends the section.
+
+        -Now is the clock every verdict is judged against, converted to UTC; tests inject it.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [hashtable]$AdParams = @{},
+        [int]$PortTimeoutMs = 1200,
+        [Parameter(Mandatory)][datetime]$Now,
+        [bool]$IncludeHandshake = $false,
+        # Domains whose DC enumeration threw: objects with Domain and Error.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        # Why no DC could be enumerated at all, where the caller knows.
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        # The domains this run was scoped to: the declared population of the section.
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+    )
+    $rows = @()
+    $nowUtc = $Now.ToUniversalTime()
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaDcCertificateRow -Scope ([string]$gap.Domain) -Item ("DC certificates - {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Evidence 'none' -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No certificate of its domain controllers was read.')
+    }
+    if ($targets.Count -eq 0) {
+        $why = ''
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = (" Domain controller enumeration failed: {0}." -f $EnumerationError.Trim().TrimEnd('.')) }
+        $rows += New-AdfaDcCertificateRow -Item 'DC certificates' -Status $script:Status.NotAssessed -Evidence 'none' `
+            -Detail ("No domain controllers were enumerated, so no certificate was read.{0} This is not a clean result." -f $why)
+        return @($rows)
+    }
+    $port = [int]$Config['LdapsPort']
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-AdfaDcCertificateRow -Scope $scope -Item 'LDAPS certificate: (unnamed)' -Status $script:Status.NotAssessed -Evidence 'none' `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to or look up and no certificate was read.'
+            continue
+        }
+        $dcRows = @()
+        try {
+            $answered = $false
+            $raw = $null
+            if ($IncludeHandshake) {
+                $answered = Test-AdfaDcPort -ComputerName $dc -Port $port -TimeoutMs $PortTimeoutMs
+                if ($answered) {
+                    $raw = Get-AdfaDcTlsCertificateRaw -ComputerName $dc -Port $port -ConnectTimeoutMs ([int]$Config['ConnectTimeoutMs']) -HandshakeTimeoutMs ([int]$Config['HandshakeTimeoutMs'])
+                }
+            }
+            $dcRows += Get-AdfaDcLdapsFinding -DomainController $dc -Scope $scope -HandshakeRun $IncludeHandshake -PortAnswered $answered -Raw $raw `
+                -Config $Config -NowUtc $nowUtc -PortTimeoutMs $PortTimeoutMs
+            $presented = ''
+            if ($null -ne $raw -and [bool]$raw.Ok -and $null -ne $raw.Certificate -and [bool]$raw.Certificate.Read) { $presented = [string]$raw.Certificate.Thumbprint }
+            $directoryRaw = Get-AdfaDcCertificateDirectoryRaw -HostName $dc -Server $scope -AdParams $AdParams
+            $dcRows += @(Get-AdfaDcDirectoryCertificateFinding -DomainController $dc -Scope $scope -Raw $directoryRaw -Config $Config -NowUtc $nowUtc -PresentedThumbprint $presented)
+        }
+        catch {
+            # A defect in this tool, not in the DC. Fail closed for this DC only.
+            $why = ("Not assessed: handling the certificates of {0} failed inside this tool, so nothing about this DC is graded; this is a defect in the tool, not a result. Error: {1}" -f $dc, [string]$_.Exception.Message)
+            $dcRows = @(
+                (New-AdfaDcCertificateRow -Scope $scope -Item ("LDAPS certificate: {0}" -f $dc) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why)
+                (New-AdfaDcCertificateRow -Scope $scope -Item ("Directory certificates: {0}" -f $dc) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why)
+            )
+        }
+        $rows += $dcRows
+    }
+    return @($rows)
+}
+
+function Merge-AdfaDcCertificatesConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in DC certificates table, with validation. The
+        DcCertificates validator for -ConfigOverridePath.
+    .DESCRIPTION
+        What a file can change: WarnWithinDays and FailWithinDays (the expiry windows, both tool
+        defaults), HandshakeTimeoutMs and ConnectTimeoutMs:
+
+            { "DcCertificates": { "WarnWithinDays": 45, "FailWithinDays": 7 } }
+
+        What it cannot: LdapsPort (636 is where AD DS serves LDAP over TLS; another port, 3269
+        for the global catalog among them, would change what the row describes), the EKU names
+        and the sources. Every such key is refused as unknown.
+
+        Anything this tool could not use is refused with the reason: an override that is not one
+        object, an empty object, an unknown key, a null, a value that is not a JSON number, a
+        number of days that is not a whole number from 0 to 3650, a timeout that is not a whole
+        number of milliseconds from 100 to 60000. The MERGED table is then checked as a whole: a
+        Fail window wider than the Warning window is refused, so a file that names only
+        FailWithinDays is refused when that puts it above the built-in Warning window.
+
+        Provenance follows the windows key by key: ThresholdSource is rewritten to name the
+        override's source for exactly the windows it supplied. A file that changes only the
+        timeouts leaves it untouched.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) {
+        throw ("DC certificates config override must be a single object with named keys (for example {{ ""WarnWithinDays"": 45 }}), not a {0}." -f $Override.GetType().Name)
+    }
+    if ($table.Count -eq 0) {
+        throw 'DC certificates config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    $windowKeys = @('WarnWithinDays', 'FailWithinDays')
+    $known = @('WarnWithinDays', 'FailWithinDays', 'HandshakeTimeoutMs', 'ConnectTimeoutMs')
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $supplied = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("DC certificates config override names an unknown key '{0}'. Known keys: {1}. The LDAPS port, the EKU names and the sources cannot be set from a file." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        # Reachable only from an object built in memory with keys that differ by case; a key
+        # written twice in a FILE is found in the text by Import-AdfaConfigOverride.
+        if ($supplied -contains $name) { throw ("DC certificates config override names '{0}' more than once." -f $name) }
+        $value = $table[$k]
+        if ($null -eq $value) {
+            throw ("DC certificates config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name)
+        }
+        # A JSON number only. "30" in quotes is refused rather than parsed: how a string becomes a
+        # number depends on the culture of the host, and a threshold must not.
+        if ($value -is [array] -or $numericTypes -notcontains $value.GetType()) {
+            throw ("DC certificates config override sets '{0}' to a {1}. It must be a JSON number, written without quotes." -f $name, $value.GetType().Name)
+        }
+        $number = [double]$value
+        if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) {
+            throw ("DC certificates config override sets '{0}' to a value that is not a finite number." -f $name)
+        }
+        $shown = $number.ToString('0.####', $inv)
+        if ($windowKeys -contains $name) {
+            if ($number -ne [math]::Floor($number) -or $number -lt 0 -or $number -gt 3650) {
+                throw ("DC certificates config override sets '{0}' to {1}. It must be a whole number of days from 0 to 3650; 0 switches the window off." -f $name, $shown)
+            }
+        }
+        else {
+            if ($number -ne [math]::Floor($number) -or $number -lt 100 -or $number -gt 60000) {
+                throw ("DC certificates config override sets '{0}' to {1}. It must be a whole number of milliseconds from 100 to 60000." -f $name, $shown)
+            }
+        }
+        $merged[$name] = [int]$number
+        $supplied += $name
+    }
+
+    # The table as a whole, built-in values included.
+    $warn = [int]$merged['WarnWithinDays']
+    $fail = [int]$merged['FailWithinDays']
+    if ($fail -gt $warn) {
+        throw ("DC certificates config: FailWithinDays ({0}) is above WarnWithinDays ({1}) once the override is applied. A certificate would fail at a number of days left at which it does not yet warn; set both." -f $fail, $warn)
+    }
+
+    $fromOverride = @($windowKeys | Where-Object { $supplied -contains $_ })
+    if ($fromOverride.Count -gt 0) {
+        $from = 'an override whose source was not recorded'
+        if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+        $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+        $builtIn = @($windowKeys | Where-Object { $supplied -notcontains $_ })
+        if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
+        $merged['ThresholdSource'] = $text
+    }
+    return $merged
+}
+
 # ---------------------------------------------------------------------------
 # -ConfigOverridePath: one JSON file, one top-level key per section (PORT-PLAN C2)
 # ---------------------------------------------------------------------------
@@ -7865,9 +9059,10 @@ function Merge-AdfaLapsConfig {
 # -DcSystemConfigPath, unchanged. A row that adds either must first decide what happens when
 # both sources name the same section.
 $script:ConfigOverrideSections = [ordered]@{
-    DcDisk      = @{ ConfigKey = 'DcDisk'; Section = 'DcDisk'; Merge = 'Merge-AdfaDcDiskConfig' }
-    DcHardening = @{ ConfigKey = 'DcHardening'; Section = 'DcHardening'; Merge = 'Merge-AdfaDcHardeningConfig' }
-    Laps        = @{ ConfigKey = 'Laps'; Section = 'Laps'; Merge = 'Merge-AdfaLapsConfig' }
+    DcDisk         = @{ ConfigKey = 'DcDisk'; Section = 'DcDisk'; Merge = 'Merge-AdfaDcDiskConfig' }
+    DcHardening    = @{ ConfigKey = 'DcHardening'; Section = 'DcHardening'; Merge = 'Merge-AdfaDcHardeningConfig' }
+    Laps           = @{ ConfigKey = 'Laps'; Section = 'Laps'; Merge = 'Merge-AdfaLapsConfig' }
+    DcCertificates = @{ ConfigKey = 'DcCertificates'; Section = 'DcCertificates'; Merge = 'Merge-AdfaDcCertificatesConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -11878,6 +13073,39 @@ $script:RecommendationMap = @(
        Text  = 'If the DSRM password of this domain controller is to be managed by Windows LAPS, Microsoft''s requirements are: the domain at functional level 2016 or later; the DC on Windows Server 2019 or later; the Windows LAPS schema in the forest (Update-LapsADSchema); and a Windows LAPS Group Policy applied to the domain controllers with BackupDirectory = 2 (Active Directory), password encryption left enabled (ADPasswordEncryptionEnabled, on by default) and ADBackupDSRMPassword = 1. Microsoft documents that setting as ignored unless encryption is enabled, and it cannot be delivered through the Windows LAPS CSP. Microsoft describes DSRM password backup as a feature that is off by default, not as a requirement: that a DC without it is reported is this tool''s rule. Where an expiry time is shown but is long past, look in the Windows LAPS event log of the DC for why the password is no longer rotated. This report read the directory only, so confirm what is configured on the DC before changing anything.' }
     @{ Section = '(?i)^windows laps'; Match = '.'
        Text  = '' }
+    # --- Section-scoped: DC certificates (PORT-PLAN C5). One entry per row family that can be a
+    #     Warning or a Fail, anchored on the Item the tool itself writes - "LDAPS certificate:
+    #     <dc>" and "Directory certificate: <dc> [<thumbprint>]" - and a last entry that answers
+    #     every other row of the section with no advice. A certificate's subject, issuer and
+    #     subject alternative names are chosen by whoever requested it, so none of them is in the
+    #     text matched here (they are in their own columns), and with the catch-all no free text
+    #     of this section can reach an unscoped entry further down ('replication', 'backup',
+    #     'certificate template|enrol', 'time sync|clock', 'port.*not reachable', 'does not
+    #     resolve', 'global catalog', 'NOT a pass' ...). Tests pin each family.
+    #     The steps are Microsoft's own:
+    #       request a new DC certificate rather than renew an expired one ("If your valid domain
+    #       controller certificate has expired, you may renew the domain controller certificate,
+    #       but this process is more complex and typically more difficult than if you request a
+    #       new domain controller certificate")
+    #         - https://learn.microsoft.com/troubleshoot/windows-server/certificates-and-public-key-infrastructure-pki/enabling-smart-card-logon-third-party-certification-authorities
+    #       requirements, the NTDS store first, the choice among several, restart or
+    #       renewServerCertificate
+    #         - https://learn.microsoft.com/windows-server/identity/ad-ds/configure-ldap-signing-certificates
+    #         - https://learn.microsoft.com/troubleshoot/windows-server/active-directory/enable-ldap-over-ssl-3rd-certification-authority
+    #       third-party CAs do not enrol or renew DC certificates automatically
+    #         - https://learn.microsoft.com/troubleshoot/windows-server/active-directory/requirements-domain-controller
+    #       publication to AD DS is a separate operation from issuance
+    #         - https://learn.microsoft.com/windows-server/identity/ad-cs/manage-certificate-templates
+    #       the default templates published to AD DS include "Directory E-mail Replication" as
+    #       well as "Domain Controller", so a published value may not be a DC certificate
+    #         - https://learn.microsoft.com/windows-server/identity/ad-cs/certificate-template-concepts
+    #     Read: 2026-11-16 (all).
+    @{ Section = '(?i)^dc certificates'; Match = '(?i)^DC Certificates :: LDAPS certificate: '
+       Text  = 'Give this domain controller a valid certificate for LDAPS before the one it presents expires, or now if it has expired. For an expired domain controller certificate Microsoft''s guidance is to request a new valid one; renewing it is possible but more complex. The certificate must carry the Server Authentication EKU (1.3.6.1.5.5.7.3.1), name the DC''s Active Directory FQDN in the subject CN or a DNS subject alternative name, have its private key on the DC, and come from a CA that the DC and its clients trust. AD DS looks for it in the NTDS service store first and then in the local computer Personal store, and a DC with several usable certificates may present any of them, so check what both stores hold. Microsoft documents that AD DS takes up a new certificate after a restart of the DC or through the renewServerCertificate rootDSE operation. A third-party CA does not enrol or renew domain controller certificates automatically. A certificate that is not yet valid cannot be used before its start date. The expiry windows this finding was judged against are this tool''s defaults or your own override, not Microsoft values.' }
+    @{ Section = '(?i)^dc certificates'; Match = '(?i)^DC Certificates :: Directory certificate: '
+       Text  = 'This certificate is published on the domain controller''s computer object (userCertificate), which records what a CA published and not what the DC holds today: Microsoft documents publication to AD DS as a separate operation from issuance. It is not necessarily a domain controller certificate: Microsoft''s default templates published to AD DS include ''Directory E-mail Replication'' as well as ''Domain Controller'', so check its purposes (the Ekus column) and the template it was issued from first. Confirm on the DC whether it still holds and uses this certificate. If it is a domain controller certificate that the DC still uses, request a new valid domain controller certificate; Microsoft describes that as simpler than renewing an expired one, and a third-party CA does not renew it automatically. If the DC already has a newer certificate, this published copy is a record only. The expiry windows this finding was judged against are this tool''s defaults or your own override, not Microsoft values.' }
+    @{ Section = '(?i)^dc certificates'; Match = '.'
+       Text  = '' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
     # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
@@ -12393,6 +13621,9 @@ function Invoke-Main {
     if ($IncludeDcdiagActiveTests) {
         Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiagActiveTests is set: the dcdiag DNS test will register and delete a DNS test record on each DC, and the dcdiag Intersite test will trigger a replication. This run is not read-only.'
     }
+    if ($IncludeLdapsHandshake) {
+        Write-Log -Level WARN -Section 'DcCertificates' -Message 'IncludeLdapsHandshake is set: a TLS handshake is made to port 636 of each DC to read the certificate it presents. Nothing is written to the DC, but Microsoft does not state that a handshake leaves no trace: a DC that cannot complete it may log a Schannel error event in its System log.'
+    }
     # -ConfigOverridePath is read and validated ONCE, here, before the directory is touched and
     # before any section runs: a file that cannot be used must stop the run before any work is
     # done, not after an hour of collection. It is validated in full even when the section it
@@ -12795,6 +14026,29 @@ function Invoke-Main {
             $sectionData['Windows LAPS'] = @(Get-AdfaLaps -Domains $targetDomains -AdParams $adParams -Config $lapsConfig `
                     -StaleDays $script:Config.StaleDays -Now (Get-Date) -ForestName ([string]$forest.Name))
         }
+    }
+    if (Test-SectionSelected 'DcCertificates' $Sections) {
+        Write-Stage 'DC certificates (certificates published in the directory per DC; the LDAPS certificate each DC presents with -IncludeLdapsHandshake)'
+        # The table the file supplied where it supplied one, otherwise the built-in table. The
+        # file was validated before any section ran.
+        $dcCertificatesConfig = $script:Config.DcCertificates
+        if ($configOverrides.ContainsKey('DcCertificates')) { $dcCertificatesConfig = $configOverrides['DcCertificates'] }
+        # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk and
+        # DcHardening take them (PORT-PLAN C2e): the DC inventory where the DomainControllers
+        # section ran; otherwise the section's own enumeration of each scoped domain.
+        $dcCertificatesTargets = @($allDcInventory)
+        $dcCertificatesFailures = @($dcInventoryFailures)
+        if (-not $dcInventoryCollected) {
+            $dcCertificatesEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+            $dcCertificatesTargets = @($dcCertificatesEnumeration.Targets)
+            $dcCertificatesFailures = @($dcCertificatesEnumeration.Failures)
+        }
+        # Last resort, when no scoped domain gave a single DC: the host names the fallback
+        # enumeration found. They carry no domain, and the section says so for each domain.
+        if ($dcCertificatesTargets.Count -eq 0) { $dcCertificatesTargets = @($dcNames) }
+        $sectionData['DC Certificates'] = @(Get-AdfaDcCertificates -DomainControllers $dcCertificatesTargets -Config $dcCertificatesConfig -AdParams $adParams `
+                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -Now (Get-Date) -IncludeHandshake ([bool]$IncludeLdapsHandshake) `
+                -InventoryFailures $dcCertificatesFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
     }
     if (Test-SectionSelected 'Backup' $Sections) {
         Write-Stage 'Directory backup status (per DC)'

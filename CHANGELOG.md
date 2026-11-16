@@ -10,6 +10,235 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-11-16 (DC certificates: the LDAPS certificate each DC presents, and those published for it, tool v1.22.0)
+
+**PORT-PLAN C5.** New `-Sections DcCertificates` (report section `DC Certificates`), included in
+the default `All` run, and a new opt-in switch `-IncludeLdapsHandshake`. It addresses two rows of
+the gap analysis, ADA-CERT-001 (DC certificate expiry) and ADA-INV-020 (DC certificate
+inventory), for which the tool had nothing. It covers ADA-INV-020 only partly; the differences
+from the catalogue rules are listed below.
+
+**This has run only against stubs.** No part of it has been executed against a real directory or
+a real domain controller: no `Get-ADComputer` call in it has met a real directory, and no
+handshake has been made to a real DC's port 636. The first run against a real forest is
+PORT-PLAN C17, owned by the operator. What was measured, on this workstation only (not a DC),
+is listed under "Measured" below.
+
+**The instrument, and why.** The reference rule (AdAssessment26 decision D12) reads the DC's
+`LocalMachine\My` store, "the store the DC presents from". Microsoft Learn says otherwise: AD DS
+"preferentially checks the NTDS store first", and "if a Windows Server 2008 or a later version
+domain controller finds multiple certificates in its store, it will random chose one". A store
+read therefore cannot say which certificate clients receive. This build uses two instruments,
+each named in every row's `Evidence` column:
+
+- **LDAPS handshake** (`Get-AdfaDcTlsCertificateRaw`), only with `-IncludeLdapsHandshake`. One
+  TCP connection to port 636 after the port answered the shared probe (`Test-AdfaDcPort`), then
+  `SslStream.AuthenticateAsClient(<DC host name>)` - the overload that uses no client certificate
+  and does not check revocation - called synchronously. The connection is bounded by
+  `ConnectTimeoutMs`, and the whole handshake by `HandshakeTimeoutMs`: the call has no timeout
+  of its own, and the socket's receive timeout restarts on every read, so a deadline (a second
+  runspace of this process that waits on an event) shuts down and closes the connection when
+  the bound runs out. If the deadline cannot be armed, no handshake is made. The
+  validation callback copies the certificate, the platform's `SslPolicyErrors` and the chain
+  status, and returns *true*: the tool neither trusts nor rejects the certificate, and does not
+  abort the handshake. The stream and the connection are closed at once; no application data is
+  written, so no LDAP request, no bind and no credential is sent ("SSL/TLS is negotiated before
+  any LDAP traffic is exchanged"). It needs no right on the DC.
+- **Directory** (`Get-AdfaDcCertificateDirectoryRaw`), always. One
+  `Get-ADComputer -LDAPFilter (&(objectClass=computer)(dNSHostName=<dc>)) -Properties
+  userCertificate` per DC, against the DC's own domain (or, for a DC from the unscoped fallback
+  enumeration, the DC itself, which the row says). `-Identity` does not take a DNS host name.
+  Labelled **directory evidence**: a value shows a CA published that certificate, not that the
+  DC holds or presents it, nor that it is a DC certificate. A value is opened only when
+  `X509Certificate2.GetCertContentType` says it is one certificate (`Cert`); a PKCS12 (PFX) or
+  PKCS7 value is `Not Assessed` (`Read failed:`) and never opened.
+- The certificate store over WinRM was **rejected** (PORT-PLAN C5a): the script has no
+  read-only remoting seam for it, it needs local Administrators, the Certificate provider can
+  also delete certificates and keys, and it would still miss the NTDS service store.
+
+**Why the handshake is opt-in.** No Microsoft page read states that a TLS handshake leaves no
+trace on the server, and Learn documents Schannel event logging as on by default ("error
+messages are logged") and a System-log Schannel event for a fatal alert received. A DC that
+cannot complete the handshake may therefore log an error event. That is the kind of side effect
+this tool puts behind a switch (`-IncludeLingeringObjectScan`, PORT-PLAN C4d), so the decision -
+taken by this build under the operator's standing authorization, and open to revision in
+PORT-PLAN C5b - is opt-in. Without the switch every DC's `LDAPS certificate` row is
+`Not Assessed`, starts `Not run:` and names the switch, and port 636 is not touched. The README's
+"What a run can change" table has a row for it, and a run with the switch says so in its log.
+
+**What it reports.**
+
+| Row | Status |
+| --- | --- |
+| `LDAPS certificate: <dc>` (exactly one per DC) | `Pass` / `Warning` / `Fail` on the presented certificate's expiry; `Not Assessed` for: not run, port 636 did not answer the probe, refused, connect timed out, unresolved, connection failed, handshake timed out, handshake failed, no certificate, certificate unreadable, a defect in the tool - each with its own wording, the error quoted |
+| `Directory certificate: <dc> [<thumbprint>]` (one per published value) | `Pass` / `Warning` / `Fail` on expiry, saying whether it is the presented certificate; `Not Assessed` for a value that is not a certificate (`[value N]`) |
+| `Directory certificates: <dc>` | `Info` no value visible; `Not Assessed` `Unreachable:` / `Access denied:` / `Timed out:` / `Read failed:`, no computer object with that DNS host name, or more than one |
+| `DC certificates - <domain>`, `DC certificates`, `LDAPS certificate: (unnamed)` | `Not Assessed`: a scoped domain whose DCs were not enumerated, no DC at all, a DC with no host name |
+
+None of the failed-handshake results is read as "the DC has no certificate": Learn does not
+document what a DC without a usable certificate does on 636. **No published value is `Info`,
+never "no certificate"**: of the DC templates in Learn's default template table, *Domain
+Controller* (version 1) is published to AD DS, while *Domain Controller Authentication* and
+*Kerberos Authentication* are not, and publication is a separate operation from issuance. A
+value the account cannot read also looks like none. The same table publishes *Directory E-mail
+Replication* (a computer template, version 2) and several user templates to AD DS, so a
+published value is not said to be a DC certificate: the row says so, and its EKUs are reported.
+
+**Grading: expiry only, in UTC, against an injected clock** (`Get-AdfaCertificateExpiryVerdict`,
+pure). Learn documents `X509Certificate2.NotBefore` and `.NotAfter` as local time; both are
+converted once. NotAfter at or before now is `Fail` (expired; the reference named the boundary
+without its side, and a certificate with no validity left is expired); at most `WarnWithinDays`
+whole days left is `Warning` (30, so exactly 30 days is a Warning, as the reference's "at most 30
+days" says); `FailWithinDays` exists and is 0, off; a start date in the future is `Warning`,
+**this tool's rule** (the reference has none); unreadable or reversed dates are `Not Assessed`.
+**The two windows are tool defaults, not Microsoft values**: Microsoft publishes no warning
+window for a DC certificate; 30 days is the catalogue's operator-set value (S24). Every graded
+row names its window and its source.
+
+**Not graded, reported in their own columns:** subject, issuer, subject alternative names, the
+EKUs (Server Authentication, Client Authentication, KDC Authentication and Smart Card Logon
+named), `SslPolicyErrors` and `ChainStatus` as the platform of the host running the assessment
+reported them. A certificate's subject is chosen by whoever requested it, so none of these
+columns is in the text the recommendation is chosen from; a test feeds a hostile subject and a
+hostile chain status through and checks the advice. Grading trust, name or EKU is PORT-PLAN C5b.
+
+**Population.** The DCs of every scoped domain, from the DC inventory where `DomainControllers`
+ran, otherwise the section's own enumeration (`Get-AdfaDcTargetsByDomain`), with a
+`Not Assessed` row for every scoped domain none of whose DCs is in the section
+(`Get-AdfaDcPopulationGap`). RODCs are included. An exception while one DC is handled makes that
+DC's two rows `Not Assessed` and never ends the section.
+
+**Config.** `$script:Config.DcCertificates` holds the windows, the two timeouts, the port (636)
+and the EKU names, with sources and read date. `-ConfigOverridePath` takes a new `DcCertificates`
+key with four settable values: `WarnWithinDays`, `FailWithinDays` (whole days, 0 to 3650),
+`HandshakeTimeoutMs` and `ConnectTimeoutMs` (100 to 60000; 5000 each by default, tool
+defaults). `LdapsPort` and `EkuNames` are refused as unknown. Also
+refused: a file that is not one object, an empty object, a null, a quoted number, a fraction, a
+Fail window above the Warning window once merged. Provenance is rewritten for the windows the
+file supplied only.
+
+**Recommendations.** Two section-scoped entries, anchored on the Item the tool writes
+(`LDAPS certificate: `, `Directory certificate: `), and a catch-all, all ahead of every unscoped
+entry, so that `certificate template|enrol` (the ESC1 advice), `port.*not reachable`,
+`does not resolve`, `time sync|clock`, `replication`, `backup` and `NOT a pass` cannot answer a
+certificate row. The advice is Microsoft's: request a new DC certificate rather than renew an
+expired one; the LDAPS requirements; the NTDS store first; restart or `renewServerCertificate`
+(named as Microsoft's documented step, never run by this tool); third-party CAs do not renew
+automatically; publication is separate from issuance.
+
+**Where this differs from the catalogue rules.**
+
+- ADA-CERT-001 grades every certificate in `LocalMachine\My`. This build grades the presented
+  certificate and the published ones; the store is PORT-PLAN C5a.
+- ADA-INV-020 inventories every certificate in that store. Covered **partly**.
+- The catalogue has no rule for a certificate not yet valid; this build reports it as a
+  `Warning`, its own rule.
+- The catalogue's DCOM case ("certificate store needs WinRM") does not arise: neither instrument
+  uses WinRM or DCOM.
+
+**Measured** on this workstation (Windows 11, not a DC), PowerShell 7.6.9 and Windows
+PowerShell 5.1, 2026-11-16, with the seam itself: against a public HTTPS endpoint (port 443,
+not a DC) the script-block callback ran on the calling thread and returned the certificate,
+its EKU and UTC dates on both editions; a loopback port with no listener came back
+`ConnectRefused` - **only with a connection bound above about 2 s**: Windows reported the
+refusal after 2.1 to 2.4 s, so at 1200 ms (the shared probe's bound, which the first draft used)
+it came back `ConnectTimedOut`; a `.invalid` name `Unresolved`; 192.0.2.1 `ConnectTimedOut`; a
+loopback listener that never answers `HandshakeTimedOut` within the bound; and one that answers
+with non-TLS bytes `HandshakeFailed`. Test certificates are made in memory with an ephemeral
+ECDSA key (an RSA key for the PFX test); nothing is written to a certificate store.
+
+**Found by an independent review of the diff before commit, and fixed in it.**
+
+- *A PFX in `userCertificate` had its private key imported on the assessment host.* The record
+  builder passed the bytes to the `X509Certificate2(byte[])` constructor, which also takes a
+  PKCS12 blob and imports its private key into a key container (the reviewer saw a key file
+  created and deleted under `%APPDATA%\Microsoft\Crypto\Keys`), and a PKCS7 blob, of which it
+  keeps the signer. Whoever can write the attribute chooses the bytes. The content type is now
+  checked first with `GetCertContentType`, which only identifies the content, and anything but
+  `Cert` is refused unopened. A test exports an in-memory PFX and PKCS7 and fails if either is
+  read; a `FileSystemWatcher` on `%APPDATA%\Microsoft\Crypto` recorded no event while the fixed
+  function was given the PFX, on either edition (that the watcher catches the key file with the
+  old code is the reviewer's measurement; it was not repeated here, so as to write no key to
+  this profile - a watcher on a scratch folder showed the event mechanism working).
+- *`HandshakeTimeoutMs` bounded each read, not the handshake.* A peer that sent one byte every
+  1.5 s held one call for 12 to 20 s against a 2.5 s bound, and could hold the per-DC loop for
+  hours. The whole handshake now has a deadline (above). A loopback peer that sends one byte
+  every 250 ms for 10 s is now cut off at the 1000 ms bound (1.1 to 1.3 s measured).
+- *A refused connection was reported as a time-out at the bound the collector used* (1200 ms,
+  the shared probe's), so the `Refused` row could not be produced on a Windows assessor and
+  this entry's "came back `ConnectRefused`" held only at a longer bound. The handshake's
+  connection now has its own `ConnectTimeoutMs`, 5000 ms (tool default), and the `Timed out`
+  row says a refusal is told apart only within that bound. The shared probe still cannot tell
+  a refused port from a filtered one (PORT-PLAN C5d).
+- *The directory text misquoted Learn's template table* ("publish to AD DS only for *Domain
+  Controller*"): *Directory E-mail Replication* is published too. Text, docstring, README, this
+  entry and the directory advice corrected; the advice now says to check the certificate's
+  purposes and template before treating it as a DC certificate.
+- *Tests that could not fail, now made to:* the UTC test used `ToLocalTime()` at an instant
+  where this host's offset is 0, so removing either UTC conversion survived - the tests now pick
+  an instant where the local offset is not zero, prove their inputs tell the two readings apart,
+  and are skipped (saying why) on a host that is UTC all year, such as the Linux CI runner;
+  "rounded down" is pinned with 30.75 days; the handshake seam itself is now run against
+  loopback listeners (refused, connect timed out on Windows, silent peer, trickling peer,
+  non-TLS peer), and its classification moved into a pure function (`Get-AdfaTlsProbeClass`)
+  whose test keeps a certificate received before an error; the timeout upper bound (60000), a
+  Fail window equal to the Warning window, the NUL escape and the `NotBeforeUtc` column are each
+  asserted; and the test titled "no other new parameter" now compares the whole parameter list
+  with v1.21.0's. Each reviewer mutation was re-applied to a copy and now fails the C5 tests.
+
+**The guards were shown able to fail.** Eighteen single mutations of the new code, each run
+against the new `Describe` and the file then restored byte for byte (SHA-256 checked): verdict
+direction, a `Not Assessed` turned into `Pass`, a DC whose port did not answer read as
+reachable, access denied worded as unreachable, the override's unknown-key refusal and its
+Fail-above-Warning check removed, the `ValidateSet` entry dropped, the Warning window off by one,
+the per-DC loop limited to the first DC, not-yet-valid turned into `Pass`, refused read as timed
+out, the Fail window ignored, no published value graded `Fail`, the callback returning *false*,
+the subject put into `Detail`, the recommendation catch-all removed, the handshake made without
+the switch, and a lone byte array split into bytes. Seventeen were caught at once; the last
+survived the Pester suite (only the validation harness had a case for it), and a test was added
+that kills it.
+
+**Existing tests changed, because behaviour legitimately changed.** The two assertions that pin
+the `-ConfigOverridePath` section list (C3 and C4 Describes, and the validation harness) now
+include `DcCertificates`. The C4 version test now expects 1.22.0. The C4 count of assignments to
+a `Properties` key in the script went from 6 to 7: `Get-AdfaDcCertificateDirectoryRaw` assigns
+`@('userCertificate')`. The smoke harness's count of declared unusable override files went from
+10 to 12 (two `DcCertificates` files added). Within this row's own new tests, after the review:
+the UTC test was replaced (it could not fail); the collector test now records the connection
+bound as well (`dc1.contoso.com:636:2500:5000`, from a config with `ConnectTimeoutMs` 2500),
+because the handshake's connection no longer takes `-PortTimeoutMs`; the override refusal table
+grew from 11 to 15 shapes and names the key in its expected message; the section's function
+population grew from 14 to 15 (`Get-AdfaTlsProbeClass`).
+
+**Sources, all read on Microsoft Learn 2026-11-16.**
+
+- [Enable LDAP over SSL with a third-party CA (KB 321051)](https://learn.microsoft.com/troubleshoot/windows-server/active-directory/enable-ldap-over-ssl-3rd-certification-authority) - NTDS store precedence, the random choice among several, TLS before LDAP traffic on 636 and 3269, `renewServerCertificate`, the Server Authentication OID.
+- [Configure LDAP signing certificates](https://learn.microsoft.com/windows-server/identity/ad-ds/configure-ldap-signing-certificates) - "checks the NTDS store first", FQDN in the CN or a SAN DNS entry.
+- [LDAP over SSL connection issues](https://learn.microsoft.com/troubleshoot/windows-server/active-directory/ldap-over-ssl-connection-issues) - Schannel picks the first valid certificate.
+- [Requirements for DC certificates from a third-party CA](https://learn.microsoft.com/troubleshoot/windows-server/active-directory/requirements-domain-controller) - Client and Server Authentication OIDs; no automatic enrolment or renewal.
+- [Windows Hello for Business on-premises certificate trust](https://learn.microsoft.com/windows/security/identity-protection/hello-for-business/deploy/on-premises-cert-trust) - KDC Authentication OID, and that the Domain Controller templates lack it.
+- [Smart card logon with third-party CAs](https://learn.microsoft.com/troubleshoot/windows-server/certificates-and-public-key-infrastructure-pki/enabling-smart-card-logon-third-party-certification-authorities) - Smart Card Logon OID; an expired DC certificate as a cause of failure, and request rather than renew.
+- [X509-Cert (userCertificate)](https://learn.microsoft.com/windows/win32/adschema/a-usercertificate), [Certificate template concepts](https://learn.microsoft.com/windows-server/identity/ad-cs/certificate-template-concepts), [Manage certificate templates](https://learn.microsoft.com/windows-server/identity/ad-cs/manage-certificate-templates) - the attribute, which templates publish to AD DS, publication separate from issuance.
+- [Get-ADComputer](https://learn.microsoft.com/powershell/module/activedirectory/get-adcomputer) - the forms `-Identity` accepts; [Search filter syntax](https://learn.microsoft.com/windows/win32/adsi/search-filter-syntax) - the escapes.
+- [SslStream.AuthenticateAsClient](https://learn.microsoft.com/dotnet/api/system.net.security.sslstream.authenticateasclient?view=netframework-4.8), [RemoteCertificateValidationCallback](https://learn.microsoft.com/dotnet/api/system.net.security.remotecertificatevalidationcallback), [SslPolicyErrors](https://learn.microsoft.com/dotnet/api/system.net.security.sslpolicyerrors), [X509ChainStatusFlags](https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509chainstatusflags), [X509Certificate2.NotAfter](https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509certificate2.notafter) and [.NotBefore](https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509certificate2.notbefore), [X509EnhancedKeyUsageExtension.EnhancedKeyUsages](https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509enhancedkeyusageextension.enhancedkeyusages), [SocketError](https://learn.microsoft.com/dotnet/api/system.net.sockets.socketerror?view=netframework-4.8), [TcpClient.ReceiveTimeout](https://learn.microsoft.com/dotnet/api/system.net.sockets.tcpclient.receivetimeout), [X509ChainPolicy.DisableCertificateDownloads](https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509chainpolicy.disablecertificatedownloads).
+- [Enable Schannel event logging](https://learn.microsoft.com/troubleshoot/developer/webapps/iis/health-diagnostic-performance/enable-schannel-event-logging) and [SSL/TLS problems after KB931125](https://learn.microsoft.com/troubleshoot/windows-server/windows-security/ssltls-communication-problems-after-install-kb931125) - logging on by default; event 36887.
+- [Certificate renewals and autoenrollment](https://learn.microsoft.com/troubleshoot/windows-server/certificates-and-public-key-infrastructure-pki/approval-required-certificate-renewals-autoenrollment) - the six-week renewal example the 30-day default sits after.
+- [about_Certificate_Provider](https://learn.microsoft.com/powershell/module/microsoft.powershell.security/about/about_certificate_provider?view=powershell-5.1) - the provider can delete; an empty EKU list means all purposes.
+- [X509Certificate2 constructors](https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509certificate2.-ctor) - the byte-array constructor takes DER, PEM or a PKCS7 signed file ("the signer certificate is used"), and the PKCS12 constructors import the private key into a key container; [X509Certificate2.GetCertContentType](https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509certificate2.getcertcontenttype) - "Indicates the type of certificate contained in a byte array", and throws for content it cannot identify.
+
+**Not verified.** Whether the handshake writes any event on a DC that has a usable certificate,
+and what a DC without one does on 636 and logs; whether building the chain fetches issuer
+certificates from AIA addresses on either edition; whether `SslStream.Dispose` sends a
+close_notify; who can read `userCertificate` by default; the shape the ActiveDirectory module
+returns for `userCertificate` (the stub returns a collection of byte arrays); the exception types
+a real refused or unreachable directory read throws. All are PORT-PLAN C5c, with C17. Also not
+verified (PORT-PLAN C5d): that the handshake deadline wakes the blocked read on Linux (measured
+on Windows only; the loopback seam tests also run on the Linux CI runner, where they are the
+first measurement), how long a remote host takes to report a refused connection, and telling a
+refused port from a filtered one at the shared probe. No "no
+state change" statement for a TLS handshake was found on Learn; the decision to make the
+handshake opt-in rests on that absence.
+
 ### Added — 2026-11-15 (Windows LAPS: schema, DSRM password backup, computers with no LAPS expiry time, tool v1.21.0)
 
 **PORT-PLAN C4.** New `-Sections Laps` (report section `Windows LAPS`), included in the default
