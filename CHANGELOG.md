@@ -10,6 +10,183 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed — 2026-11-16 (dcdiag per DC, per partition and per scope: Topology, CheckSDRefDom, CrossRefValidation, Intersite per site, SystemLog held back, tool v1.28.0)
+
+**PORT-PLAN C11, and C6e closed.** The existing `DcDiagnostics` section (report section `DC
+Diagnostics`, no new `-Sections` value) is rebuilt on a parser that attributes every dcdiag verdict
+to the block dcdiag prints it in. It addresses the AdAssessment26 catalogue rows DCDIAG-001, -008
+and -009, REPL-001, -004 and -006 to -010, and SYSVOL-002 and -003; the differences from the
+catalogue rules are listed below.
+
+**This has run only against stubs.** No dcdiag process has been started by it against a real
+domain controller: every verdict line it was tested on is a fixture written from the shapes on
+Microsoft Learn. The first run against a real forest is PORT-PLAN C17, owned by the operator, and
+PORT-PLAN C11b lists what that run must confirm for this row.
+
+**What it runs, and nothing else.** `dcdiag /test:<test> /s:<server>` from the host running the
+assessment, one test per invocation, through one seam (`Invoke-AdfaDcdiagTest`) whose argument
+comes only from `Get-AdfaDcdiagArgument`. No `/fix`, `/c`, `/e`, `/u`, `/p`, `/skip`,
+`/ReplSource`, `/RecreateMachineAccount` or `/FixMachineAccount`, and none of CutoffServers
+(Microsoft: it "triggers replication on the DCs"), DcPromo, RegisterInDNS or
+OutboundSecureChannels. A test asserts that no configured test builds any of those switches.
+
+| Scope | Tests | Rows |
+| --- | --- | --- |
+| Per DC (grid) | Connectivity (first), Replications, Advertising, Services, Netlogons, SysVolCheck, DFSREvent, FrsEvent, KccEvent, RidManager, KnowsOfRoleHolders, MachineAccount, ObjectsReplicated, NCSecDesc, VerifyReferences, VerifyReplicas, FsmoCheck, CheckSecurityError, VerifyEnterpriseReferences; **opt-in** SystemLog and DNS | One row per DC: `DomainController`, **`Scope`** (new), `Status`, `Ping`, one `DCDIAG_<test>` column per test (21), `Failures`, `NotRun` |
+| Per scoped domain | Topology, against a usable writable DC of the domain | `dcdiag Topology: <domain>`; `dcdiag coverage: <domain>` (Info with the counts of its DCs' grid rows, or Not Assessed when no DC row accounts for the domain) |
+| Per forest | CheckSDRefDom, CrossRefValidation, once each, against a DC of the forest root | `dcdiag <test>: <partition>` per part dcdiag printed, and `dcdiag <test>: forest <root>` |
+| Per site | **opt-in** Intersite with `/a`, once per site that holds a DC | `dcdiag Intersite: <site>`; without the switch one `dcdiag Intersite: not run` row; `site unknown` for DCs with no site |
+| Not run | LocatorCheck | `dcdiag LocatorCheck: not run` (Not Assessed, NotRun says why) |
+
+**The verdict rule.** A verdict is `<subject> passed|failed test <Test>`; the match spans the line
+break Learn's own sample shows between "passed test" and the test name. A grid cell counts the DC's
+own verdicts - a subject that is the DC's host name, its first label, or the 15-character NetBIOS
+form of a longer label (Learn's sample writes "MAPLEWAFFLE-WS2" for home server "MapleWaffle-WS22";
+NetBIOS names are at most 15 characters) - and, for Replications and VerifyReplicas only, the
+verdicts in partition blocks, which are about the asked server's replicas, and for FsmoCheck and
+the opt-in DNS only, the verdicts in the enterprise block, which in a `/s:<DC>` invocation without
+`/e` is the enterprise test run from that DC. Other enterprise verdicts,
+another DC's verdicts and other tests' partition verdicts are never counted for a DC; a cell with
+only those is `Not Assessed`, saying what was printed and that it was not counted. Any counted part
+failed -> `Fail`; otherwise any passed -> `Pass`; otherwise `Not Assessed`. "failed" is read before
+"passed" everywhere: `Get-AdfaDcdiagTestOutcome` read "passed" first, so output holding both read
+`Pass` (the reference's R2 false pass); it now reads `Fail`.
+
+**Not Assessed, each with its own cause, never Pass.** No verdict and "Access is denied" in the
+output (access denied); no verdict and a provisional unreachable pattern (could not reach the
+server); no verdict after the invocation's own Connectivity failed; a verdict only for something
+other than this DC; dcdiag did not complete (with the time-out and where it came from, never the
+override file's path); no output; output not recognised - no banner, block or verdict line in a
+form this build reads - "possibly a localised, non-English Windows". An event-log test (DFSREvent,
+FrsEvent, KccEvent, SystemLog) that failed while its log "could not be queried" is `Not Assessed`:
+Microsoft calls that an expected error of the DC's firewall rules (KB 2512643). A failed verdict
+that also says "Access is denied" stays `Fail`, with a note: Microsoft documents error 5 "Access is
+denied" between DCs with causes on the DCs themselves (KB 3073945). A DC closed on RPC/135 keeps its `Fail` row
+with every cell `Not Assessed`, as before. A grid row whose attempted cells were all unreadable is
+now `Not Assessed` (it was `Warning`).
+
+**Connectivity first.** Microsoft documents that the connectivity test "can't be skipped", so it
+runs in every invocation; it is now also its own cell (DCDIAG-001), run first. When it fails, no
+further test is started on that DC, every remaining cell is `Not Assessed` and the row's `NotRun`
+column names them and Connectivity, and the cell carries Microsoft's caveat that "Blocking ICMP prevents DCDiag from functioning as intended".
+
+**SystemLog is held back.** Learn describes it as validating the System log "by reading and writing
+entries". It does not say what is written, and the wording may be a documentation error, but by the
+H20 rule it joins DNS and Intersite in `DcdiagActiveTests` and runs only with
+`-IncludeDcdiagActiveTests` (PORT-PLAN C11a). **Intersite now runs once per site** that holds a DC
+(it used to run per DC), which triggers fewer replications when the switch is given.
+
+**C6e closed: RidManager stays in the default list.** Learn describes it as checks only - the RID
+master "is accessible", "contains the proper information", "can be located and contacted through a
+DsBind", "has valid RID pool values" - over LDAP and RPC, and describes no write and no pool
+request. It does not say in so many words that the test never requests a pool; the README says so.
+
+**Config.** A new `DcDiag` table, versioned 1.28.0 with its source and read date: the per-DC,
+per-domain, per-forest and per-site test lists (each test with Learn's description), the tests not
+run and why, the parser's anchors, and the evidence patterns - the unreachable ones marked
+`Provisional`, because Learn publishes no text for a DC dcdiag cannot reach. A new `DcDiag` key of
+`-ConfigOverridePath` accepts `TestTimeoutSeconds` (5-600) and `Retries` (1-10) only, both tool
+defaults; every other key is refused, so a file can never add a test. The section's targets are the
+DCs of every scoped domain (the inventory, else `Get-AdfaDcTargetsByDomain`), probed through the
+per-run cache (`Test-AdfaDcPort`).
+
+**Recommendations.** Four section-scoped entries, anchored on the Item prefixes this tool writes
+(`dcdiag Topology: `, `dcdiag CheckSDRefDom: `, `dcdiag CrossRefValidation: `, `dcdiag Intersite: `
+other than the not-run and site-unknown rows) and a prefix catch-all with no advice, placed ahead of
+the unscoped entries. Each restates what Microsoft documents the test checks and names dcdiag's `/v`
+switch. The grid rows (Item = host name) keep reaching the unscoped `sysvol|dfsr`, `replication` and
+`dcdiag` entries, as the H20 tests pin.
+
+**Where this differs from the catalogue rules.**
+
+- DCDIAG-008 SystemLog: "Parsed verdict" in the catalogue; not run by default here (C11a).
+- DCDIAG-009 LocatorCheck: not run at all (C11d).
+- SYSVOL-002 / -003: "Not Applicable where SYSVOL uses FRS / DFSR" is not built, because no per-DC
+  SYSVOL engine is collected (SYSVOL-004 is C14); both are graded from their own output (C11e).
+- REPL-010: "site without DC -> Not Applicable" is not built; sites are those that hold a DC (C11f).
+- REPL-004 NCSecDesc is per DC, as in the catalogue; REPL-001 and REPL-006 take partition parts.
+- The reference's 2-consecutive-time-outs circuit breaker and its 180 s per-test time-out are not
+  adopted; the time-out stays the tool's 90 s default, overridable (C11f).
+
+**The guards were shown able to fail.** Eighteen single mutations of the new code, each run against
+the new `Describe` and the H20 `Describe`, with the script restored byte for byte after each
+(SHA-256 checked); the table is in the C11 hand-off.
+
+**Existing tests changed, because behaviour legitimately changed.** H20: the opt-in list holds three
+tests (SystemLog added); the per-DC invocation counts are 19, 57 and 21 (were 16, 48 and 18), counted
+without the once-per-scope tests; the `DCDIAG_Intersite` assertions became `DCDIAG_SystemLog` and an
+Intersite site row; the helper hands the DC over as an inventory row with a site; each test starts
+with an empty port cache (`Clear-AdfaDcPortCache`), because the section now probes through it. The
+"DNS test in the array the collector iterates" test now reads the `PerDcTests` config list and
+proves, from the parsed script, that the collector reads it. The seven version tests now expect
+1.28.0; the eight section-list tests and the validation harness's expect `DcDiag` as the tenth
+section; five help tests expect "Ten sections can be named". In the validation harness the grid
+assertions count grid rows and per-DC invocations (19/21). The smoke harness now has dcdiag.exe
+"available" and a dcdiag stub, and its count of unusable override files went from 14 to 16.
+
+**Found by an independent review of the diff before commit, and fixed in it.**
+
+- **A false Pass for opt-in DNS, and FsmoCheck never Pass.** An enterprise-block verdict counted for
+  no DC. `dcdiag /test:DNS /DnsAll /s:<DC>` prints "DC passed test DNS" in the server block and its
+  summary of these "enterprise-wide DNS health checks" (Learn) under "Running enterprise tests on :
+  <forest>", so a failed summary read `Pass` (v1.27.0 read the same output as `Pass` too, by
+  matching "passed" first for this test). FsmoCheck, one of dcdiag's enterprise tests, prints only
+  there, so every DC's FsmoCheck cell read `Not Assessed` and every healthy DC's row `Warning`. A new
+  `EnterpriseParts` flag on the per-DC entries (FsmoCheck and DNS only) counts the enterprise verdict
+  of the invocation against that DC; "failed" wins, and the Fail detail names the enterprise block
+  and says that a fault of the forest shows on every DC asked. The FsmoCheck output shape is from
+  field captures, not Microsoft (Learn's sample prints LocatorCheck and Intersite in that block and
+  does not show FsmoCheck); C11b now asks a real capture to confirm it, and C11g(11) records the
+  decision. The test fixtures and the smoke stub now answer FsmoCheck in the enterprise block.
+- **Three notes this tool writes chose the wrong advice for a grid row** (whose advice comes from
+  the unscoped entries, matched on the whole text, first match wins): the "Access is denied" note on
+  a failed verdict said "replication" and gave a NetLogons share failure the `repadmin /replicate`
+  advice; the unrecognised-output cause said "not a pass" and gave the event-log coverage advice; the
+  "Not run after Connectivity failed: Replications, ..." list gave a Connectivity failure the
+  replication advice. The first two are reworded; the list moved to the row's `NotRun` column, which
+  is added after the advice is chosen. Tests assert the dcdiag advice for each. dcdiag's own quoted
+  lines can still choose other advice: new Planned row C11h.
+- **Guards no test could fail, now covered:** the 15-character NetBIOS rule against a shorter prefix;
+  a DC whose Connectivity failed never chosen for Topology; the fallback to a DC whose Connectivity
+  was not assessed; the KB 3073945 note itself (the old test matched words the fixture already
+  held); the partition named in a DC's failed Replications detail; English banner-only output read
+  as "no verdict line", not "possibly localised"; a bare verdict in another DC's server block, and
+  another DC's failed Connectivity, not counted for this DC; Topology run for a domain known only
+  from a DC's Scope. Each was shown to fail under the reviewer's mutation, with the script restored
+  byte for byte (SHA-256 checked).
+- **Existing test changed:** the Connectivity-failure test asserted the not-run list in `Failures`;
+  it now asserts it in `NotRun`, and that `Failures` does not name the tests not run.
+
+**Sources, all read on Microsoft Learn 2026-11-16.**
+
+- [dcdiag command reference](https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag) -
+  the known-tests table and each test's description (Connectivity, NCSecDesc, VerifyReplicas,
+  CheckSDRefDom, CrossRefValidation, Topology and DS_REPSYNCALL_DO_NOT_SYNC, Intersite and `/a`,
+  RidManager, SystemLog "reading and writing", DFSREvent, FrsEvent, KccEvent, CutoffServers
+  "triggers replication"), `/fix` and the MachineAccount repair options, "The connectivity test can't
+  be skipped", the ICMP note, administrative rights and an elevated prompt, and the sample output
+  (block headers, the wrapped verdict, LocatorCheck and Intersite under the enterprise block with
+  the forest as subject), DNS as "enterprise-wide DNS health checks", and that FsmoCheck is not in
+  the known-tests table (re-read for the review fixes).
+- [DCDIAG.EXE /E or /A or /C expected errors (KB 2512643)](https://learn.microsoft.com/troubleshoot/windows-server/identity/dcdiag-commands-running-errors) -
+  "could not be queried" and the "failed test" form for FrsEvent, DFSREvent, KccEvent and SystemLog,
+  and the Remote Event Log Management firewall rules.
+- [Replication error 5: Access is denied (KB 3073945)](https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-5) -
+  dcdiag's Replications test reporting error 5, and its causes on the DCs (an invalid secure
+  channel, time skew, user rights, SMB signing and others).
+- [System Error Codes (0-499)](https://learn.microsoft.com/windows/win32/debug/system-error-codes--0-499-) -
+  ERROR_ACCESS_DENIED, "Access is denied."
+- [Naming conventions in Active Directory (KB 909264)](https://learn.microsoft.com/troubleshoot/windows-server/active-directory/naming-conventions-for-computer-domain-site-ou) -
+  NetBIOS computer names are at most 15 characters.
+- Not published on Learn (searched 2026-11-16): the text dcdiag prints for a DC it cannot reach, and
+  for tests skipped after Connectivity failed; per-test scope; localised output; a dcdiag time-out.
+
+**Not verified.** Everything in PORT-PLAN C11b: the provisional unreachable patterns, the output
+shape of a single-test invocation for the partition tests, Topology and VerifyReplicas, the block
+FsmoCheck and the DNS summary print their verdicts in, the enterprise block's name, the failed-verdict form on current builds, exit codes, run times, and the
+rights the forest tests need. That a real dcdiag run is read the same way on Windows PowerShell 5.1
+and PowerShell 7 (the stubs are). That SystemLog writes anything.
+
 ### Changed — 2026-11-16 (Privileged groups and delegation: Schema and Enterprise Admins, privileged group counts, adminCount orphans, SPNs and delegation, read by SID, tool v1.27.0)
 
 **PORT-PLAN C10.** The existing `PrivilegedAccounts`, `PrivilegedHygiene` and `Kerberos` sections

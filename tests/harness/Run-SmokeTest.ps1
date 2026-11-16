@@ -738,7 +738,57 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ tombstoneLifetime=180; 'ms-DS-MachineAccountQuota'=0; rangeUpper=15334; whenChanged=$now
         'msDS-Behavior-Version'=7 } }
 # No verification tools on this host -> trust health should degrade to Not Assessed honestly.
-function Test-CommandAvailable { param([string]$Name) return $false }
+# C11: dcdiag.exe is the one exception, so the DC Diagnostics section is exercised end to end
+# through the dcdiag stub below; every other tool stays absent.
+function Test-CommandAvailable { param([string]$Name) return ($Name -eq 'dcdiag.exe') }
+# C11 (DcDiagnostics): dcdiag, answered in the shape the dcdiag command reference prints (Learn,
+# read 2026-11-16): a banner, the initial Connectivity block under "Testing server: <site>\<DC>",
+# then the test's own block. CheckSDRefDom and CrossRefValidation answer one verdict per partition
+# under "Running partition tests on : <NC>" (Configuration wrapped onto two lines, as in Learn's
+# sample); Intersite answers under "Running enterprise tests on : contoso.com". Every argument string
+# is recorded with its time-out. Any call that is not dcdiag is refused, so a section that started
+# another tool through this seam would fail here rather than appear to work.
+# $script:SmokeDcdiagMode: 'Pass' (every verdict passed); 'Localised' (output in a form this build
+# does not read); 'PartitionFail' (CrossRefValidation fails the Configuration partition only).
+$script:SmokeDcdiagMode = 'Pass'
+$script:SmokeDcdiagCalls = @()
+function New-StubDcdiagOutput { param([string]$Dc, [string]$Test, [string]$Mode)
+    if ($Mode -eq 'Localised') { return ("Diagnostico do Servidor de Diretorio`r`n......................... {0} passou no teste {1}" -f $Dc, $Test) }
+    $b = New-Object System.Collections.Generic.List[string]
+    foreach ($l in @('Directory Server Diagnosis', '', 'Performing initial setup:', ("   Home Server = {0}" -f $Dc), '', 'Doing initial required tests', '',
+            ("   Testing server: Default-First-Site-Name\{0}" -f $Dc), '      Starting test: Connectivity', ("         ......................... {0} passed test Connectivity" -f $Dc), '', 'Doing primary tests', '')) { $b.Add($l) }
+    if (@('CheckSDRefDom', 'CrossRefValidation') -contains $Test) {
+        foreach ($p in @('ForestDnsZones', 'DomainDnsZones', 'Schema', 'Configuration', 'contoso')) {
+            $v = 'passed'
+            if ($Mode -eq 'PartitionFail' -and $Test -eq 'CrossRefValidation' -and $p -eq 'Configuration') { $v = 'failed' }
+            $b.Add(("   Running partition tests on : {0}" -f $p)); $b.Add(("      Starting test: {0}" -f $Test))
+            if ($p -eq 'Configuration') { $b.Add(("         ......................... {0} {1} test " -f $p, $v)); $b.Add(("         {0}" -f $Test)) }
+            else { $b.Add(("         ......................... {0} {1} test {2}" -f $p, $v, $Test)) }
+        }
+    }
+    elseif (@('Intersite', 'FsmoCheck') -contains $Test) {
+        # FsmoCheck is one of dcdiag's enterprise tests: its verdict is printed under the
+        # enterprise block with the forest as subject (field captures; Learn's sample shows the
+        # same for LocatorCheck and Intersite), and it counts for the DC asked.
+        $b.Add('   Running enterprise tests on : contoso.com'); $b.Add(("      Starting test: {0}" -f $Test)); $b.Add('         ......................... contoso.com passed test '); $b.Add(("         {0}" -f $Test))
+    }
+    elseif ($Test -ne 'Connectivity') {
+        $b.Add(("   Testing server: Default-First-Site-Name\{0}" -f $Dc)); $b.Add(("      Starting test: {0}" -f $Test)); $b.Add(("         ......................... {0} passed test {1}" -f $Dc, $Test))
+    }
+    return ($b -join "`r`n")
+}
+function Invoke-ExternalCommand {
+    param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
+    if ($FilePath -ne 'dcdiag.exe') { throw ("STUB: only dcdiag.exe is answered by this harness, not {0}" -f $FilePath) }
+    $script:SmokeDcdiagCalls += [pscustomobject]@{ Arguments = $Arguments; Timeout = $TimeoutSeconds; Retries = $Retries }
+    $test = ([regex]::Match($Arguments, '/test:(\S+)')).Groups[1].Value
+    $server = ([regex]::Match($Arguments, '/s:(\S+)')).Groups[1].Value
+    $dc = $server.Split('.')[0].ToUpperInvariant()
+    $exit = 0
+    if ($script:SmokeDcdiagMode -eq 'PartitionFail' -and $test -eq 'CrossRefValidation') { $exit = 1 }
+    [pscustomobject]@{ Success = ($exit -eq 0); ExitCode = $exit; Attempt = 1; Error = $null; OutFile = $OutFile
+        StdOut = (New-StubDcdiagOutput -Dc $dc -Test $test -Mode $script:SmokeDcdiagMode) }
+}
 function Test-ModuleAvailable { param([string]$Name) return $false }
 function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
 # C5: the TLS handshake seam. Test-TcpPort above says every port answers, so without this stub a
@@ -816,6 +866,12 @@ if (Test-Path $dcCsv) {
     $dcRow = Import-Csv $dcCsv | Select-Object -First 1
     Check ($dcRow.PSObject.Properties.Name -contains 'Status') 'DC Diagnostics has overall Status column'
     Check ($dcRow.PSObject.Properties.Name -contains 'Failures') 'DC Diagnostics has Failures detail column'
+    # C11: the grid row keeps its columns, with one per per-DC test and the DC's domain.
+    $dcCsvRows = @(Import-Csv $dcCsv)
+    $dcCsvGrid = @($dcCsvRows | Where-Object { $_.DomainController -eq 'dc1.contoso.com' })
+    Check (@($dcCsvGrid).Count -eq 1 -and $dcCsvGrid[0].Scope -eq 'contoso.com' -and $dcCsvGrid[0].DCDIAG_Connectivity -eq 'Pass' -and $dcCsvGrid[0].DCDIAG_NCSecDesc -eq 'Pass' -and $dcCsvGrid[0].DCDIAG_SystemLog -eq 'Not Assessed') 'C11: the DC Diagnostics CSV has one grid row for the stub DC, with its domain, the new per-DC tests, and SystemLog held back'
+    Check (@($dcCsvRows[0].PSObject.Properties.Name | Where-Object { $_ -like 'DCDIAG_*' }).Count -eq 21) 'C11: the grid has one column per per-DC test (declared population: 21)'
+    Check (@($dcCsvGrid).Count -eq 1 -and $dcCsvGrid[0].DCDIAG_FsmoCheck -eq 'Pass' -and $dcCsvGrid[0].Status -eq 'Pass') 'C11 review: FsmoCheck, answered in the enterprise block, reads Pass for the DC asked, and the grid row stays Pass'
 }
 else { Check $false 'DC Diagnostics CSV exists' }
 
@@ -871,6 +927,28 @@ foreach ($sec in @('_msdcs Zone Delegation', 'Time Hierarchy')) {
     Check (@($rows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0) ("Section '{0}' reports no Pass when the query tools are absent" -f $sec)
     Check (@($rows | Where-Object { $_.Status -eq 'Not Assessed' }).Count -gt 0) ("Section '{0}' reports Not Assessed with a named cause" -f $sec)
 }
+# C11: DcDiagnostics is wired, runs dcdiag through the stub once per per-DC test, Topology once for
+# the stub domain and the two forest tests once each, and reports each scope in its own rows.
+$ddRows = @($smokeFindings | Where-Object { $_.Section -eq 'DC Diagnostics' })
+$ddCalls = @($script:SmokeDcdiagCalls)
+$ddPerDc = @($ddCalls | Where-Object { $_.Arguments -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation|Intersite)\b' })
+Check (@($ddPerDc).Count -eq 19 -and $ddPerDc[0].Arguments -eq '/test:Connectivity /s:dc1.contoso.com') ("DC Diagnostics: the stub DC is asked 19 per-DC tests, Connectivity first ({0})" -f @($ddPerDc).Count)
+Check (@($ddCalls | Where-Object { $_.Arguments -match '^/test:Topology /s:dc1\.contoso\.com$' }).Count -eq 1) 'DC Diagnostics: Topology runs once for the one scoped domain'
+Check (@($ddCalls | Where-Object { $_.Arguments -match '^/test:(CheckSDRefDom|CrossRefValidation) /s:dc1\.contoso\.com$' }).Count -eq 2) 'DC Diagnostics: CheckSDRefDom and CrossRefValidation run once each, for the forest'
+Check (@($ddCalls | Where-Object { $_.Arguments -match '(?i)/test:(DNS|SystemLog|Intersite|LocatorCheck|CutoffServers)\b|(\s|^)/(fix|c|e)(\s|$)' }).Count -eq 0) 'DC Diagnostics: a default run starts no test that changes state, no LocatorCheck and no /fix, /c or /e'
+Check (@($ddCalls | Where-Object { $_.Timeout -ne 90 -or $_.Retries -ne 2 }).Count -eq 0) 'DC Diagnostics: without an override each invocation gets -ExternalToolTimeoutSeconds and -Retries'
+$ddGrid = @($ddRows | Where-Object { $_.Item -eq 'dc1.contoso.com' })
+Check (@($ddGrid).Count -eq 1 -and $ddGrid[0].Status -eq 'Pass' -and $ddGrid[0].Scope -eq 'contoso.com' -and $ddGrid[0].Detail -match 'SystemLog') 'DC Diagnostics: the stub DC''s grid row passes, carries its domain, and says SystemLog was held back'
+Check (@($ddRows | Where-Object { $_.Item -eq 'dcdiag Topology: contoso.com' -and $_.Status -eq 'Pass' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'DC Diagnostics: one Topology row for the stub domain, Pass'
+foreach ($ddTest in @('CheckSDRefDom', 'CrossRefValidation')) {
+    $ddPart = @($ddRows | Where-Object { $_.Item -like ("dcdiag {0}: *" -f $ddTest) -and $_.Item -notlike '*: forest *' })
+    Check (@($ddPart).Count -eq 5 -and @($ddPart | Where-Object { $_.Status -ne 'Pass' }).Count -eq 0) ("DC Diagnostics: {0} has one Pass row per partition the stub printed (declared population: five, the wrapped Configuration included; got {1})" -f $ddTest, @($ddPart).Count)
+    Check (@($ddRows | Where-Object { $_.Item -eq ("dcdiag {0}: forest contoso.com" -f $ddTest) -and $_.Status -eq 'Pass' }).Count -eq 1) ("DC Diagnostics: {0} has a forest roll-up row, Pass" -f $ddTest)
+}
+Check (@($ddRows | Where-Object { $_.Item -eq 'dcdiag Intersite: not run' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'IncludeDcdiagActiveTests' }).Count -eq 1) 'DC Diagnostics: Intersite not run by default, one Not Assessed row naming the switch'
+Check (@($ddRows | Where-Object { $_.Item -eq 'dcdiag LocatorCheck: not run' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'DC Diagnostics: LocatorCheck is not run, and a row says so'
+Check (@($ddRows | Where-Object { $_.Item -eq 'dcdiag coverage: contoso.com' -and $_.Status -eq 'Info' -and $_.Detail -match '^1 domain controller\(s\) of this domain have a grid row: 1 Pass' }).Count -eq 1) 'DC Diagnostics: a coverage row counts the stub domain''s DC'
+Check (@($ddRows | Where-Object { $_.Recommendation }).Count -eq 0) 'DC Diagnostics: no row that is not a Warning or a Fail carries advice'
 # C1: the DcSystem section must be wired, must judge the stub DC's OS from the inventory, and
 # must report the patch-level inventory read through the CIM stubs - as Info, never as Pass.
 $dcsRows = @($smokeFindings | Where-Object { $_.Section -eq 'DC System' })
@@ -1134,7 +1212,11 @@ $script:AllDomains = $true
 $script:SmokeGptIniCalls = @()
 $script:SmokeAclCalls = @()
 $script:SmokePrivCalls = @()
+# C11: one CrossRefValidation partition fails in this pass, to show it stays a partition's result.
+$script:SmokeDcdiagCalls = @()
+$script:SmokeDcdiagMode = 'PartitionFail'
 $result2 = Invoke-Main
+$script:SmokeDcdiagMode = 'Pass'
 
 Check ($null -ne $result2) 'Multi-domain: Invoke-Main returned a summary object'
 Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scoped ({0})" -f @($result2.DomainsScoped).Count)
@@ -1147,6 +1229,23 @@ foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency
     $n = @($findings2 | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Multi-domain: section '{0}' reached the consolidated findings ({1} rows)" -f $sec, $n)
 }
+# C11: one grid row, one Topology row and one coverage row per scoped domain, each carrying its own
+# domain; the forest tests once for the forest; and the failed Configuration partition fails its
+# own row and the forest roll-up, never a DC's grid row.
+$dd2 = @($findings2 | Where-Object { $_.Section -eq 'DC Diagnostics' })
+Check (@($dd2).Count -gt 0) ("Multi-domain: section 'DC Diagnostics' reached the consolidated findings ({0} rows)" -f @($dd2).Count)
+foreach ($d in $multiDomains) {
+    Check (@($dd2 | Where-Object { $_.Item -eq 'dc1.contoso.com' -and $_.Scope -eq $d -and $_.Status -eq 'Pass' }).Count -eq 1) ("Multi-domain: DC Diagnostics has the grid row of {0}'s DC, scoped to it, and it passes" -f $d)
+    Check (@($dd2 | Where-Object { $_.Item -eq ("dcdiag Topology: {0}" -f $d) -and $_.Scope -eq $d -and $_.Status -eq 'Pass' }).Count -eq 1) ("Multi-domain: DC Diagnostics has one Topology row for {0}" -f $d)
+    Check (@($dd2 | Where-Object { $_.Item -eq ("dcdiag coverage: {0}" -f $d) -and $_.Status -eq 'Info' }).Count -eq 1) ("Multi-domain: DC Diagnostics has one coverage row for {0}" -f $d)
+}
+$dd2Calls = @($script:SmokeDcdiagCalls)
+Check (@($dd2Calls | Where-Object { $_.Arguments -match '^/test:Topology ' }).Count -eq 3) 'Multi-domain: DC Diagnostics runs Topology once per scoped domain (declared population: three)'
+Check (@($dd2Calls | Where-Object { $_.Arguments -match '^/test:(CheckSDRefDom|CrossRefValidation) ' }).Count -eq 2) 'Multi-domain: DC Diagnostics runs the two forest tests once each, not once per domain'
+Check (@($dd2Calls | Where-Object { $_.Arguments -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation|Intersite)\b' }).Count -eq 57) 'Multi-domain: DC Diagnostics asks 19 per-DC tests of each domain''s DC (declared population: three DCs)'
+Check (@($dd2 | Where-Object { $_.Item -eq 'dcdiag CrossRefValidation: Configuration' -and $_.Status -eq 'Fail' -and $_.Recommendation -match 'nETBIOSName' }).Count -eq 1) 'Multi-domain: the failed Configuration partition fails its own row, with the CrossRefValidation advice'
+Check (@($dd2 | Where-Object { $_.Item -eq 'dcdiag CrossRefValidation: forest contoso.com' -and $_.Status -eq 'Fail' }).Count -eq 1) 'Multi-domain: the forest roll-up fails on that one partition'
+Check (@($dd2 | Where-Object { $_.Item -like 'dcdiag CrossRefValidation: *' -and $_.Item -ne 'dcdiag CrossRefValidation: Configuration' -and $_.Item -ne 'dcdiag CrossRefValidation: forest contoso.com' -and $_.Status -ne 'Pass' }).Count -eq 0) 'Multi-domain: the other four partitions still pass'
 # C1: one lifecycle row per DC per domain, each carrying its own domain - not three copies of
 # the first domain, and not one row for the forest.
 $life2 = @($findings2 | Where-Object { $_.Section -eq 'DC System' -and $_.Item -like 'OS lifecycle:*' })
@@ -1632,6 +1731,25 @@ $ridD = @(@(Import-Csv $resultRD.FindingsFile) | Where-Object { $_.Section -eq '
 Check (@($ridD | Where-Object { $_.Item -eq 'RID pool: dc1.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Access denied: ' -and $_.Detail -notmatch 'absent' }).Count -eq 1) 'RID computer read refused: the DC row is Access denied, not absent and not unreachable'
 Remove-Item -Recurse -Force $outRD -ErrorAction SilentlyContinue
 
+# C11: the DcDiag key of the file sets the time-out and retries of each dcdiag invocation, and the
+# section takes them; a localised dcdiag is never read as a pass.
+'{ "DcDiag": { "TestTimeoutSeconds": 240, "Retries": 3 } }' | Out-File -LiteralPath $overrideFile -Encoding UTF8
+$script:ConfigOverridePath = $overrideFile
+$outDD = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outDD
+$script:Sections = @('DomainControllers', 'DcDiagnostics')
+$script:SmokeDcdiagCalls = @()
+$script:SmokeDcdiagMode = 'Localised'
+$resultDD = Invoke-Main
+$script:SmokeDcdiagMode = 'Pass'
+$ddO = @(@(Import-Csv $resultDD.FindingsFile) | Where-Object { $_.Section -eq 'DC Diagnostics' })
+Check (@($script:SmokeDcdiagCalls).Count -gt 0 -and @($script:SmokeDcdiagCalls | Where-Object { $_.Timeout -ne 240 -or $_.Retries -ne 3 }).Count -eq 0) ("Override: every dcdiag invocation got the file's time-out and retries ({0} calls)" -f @($script:SmokeDcdiagCalls).Count)
+Check (@($ddO | Where-Object { $_.Item -eq 'dc1.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'not recognised' }).Count -eq 1) 'DC Diagnostics: localised output leaves the grid row Not Assessed, saying the output was not recognised'
+Check (@($ddO | Where-Object { $_.Status -match '^(Pass|Fail|Warning)$' }).Count -eq 0) 'DC Diagnostics: with output it cannot read, no row is a Pass, a Fail or a Warning'
+Check ((Get-Content $resultDD.LogFile -Raw) -match 'Config override: section DcDiag taken from') 'Override: the log records that the DcDiag section was taken from the file'
+Remove-Item -Recurse -Force $outDD -ErrorAction SilentlyContinue
+$script:Sections = @('All')
+
 # A file that cannot be used: the run must stop, name the file, and collect nothing.
 $badFiles = @(
     @{ Name = 'an unknown section'; Text = '{ "DcDisks": { "WarnBelowPercent": 70 } }'; Expect = "unknown section 'DcDisks'" }
@@ -1658,6 +1776,10 @@ $badFiles = @(
     @{ Name = 'a RidPool ceiling list'; Text = '{ "RidPool": { "KnownCeilings": [] } }'; Expect = "unknown key 'KnownCeilings'" }
     # C6: a Warning point above the built-in Fail point, which would hide the Warning.
     @{ Name = 'a RidPool Warning point above the Fail point'; Text = '{ "RidPool": { "WarnAtPercentUsed": 95 } }'; Expect = 'must be above WarnAtPercentUsed' }
+    # C11: a file that tries to add a dcdiag test, which could be one that changes state.
+    @{ Name = 'a DcDiag test list'; Text = '{ "DcDiag": { "PerDcTests": [ { "Test": "CutoffServers" } ] } }'; Expect = "unknown key 'PerDcTests'" }
+    # C11: a dcdiag time-out outside the range -ExternalToolTimeoutSeconds allows.
+    @{ Name = 'a DcDiag time-out of 0'; Text = '{ "DcDiag": { "TestTimeoutSeconds": 0 } }'; Expect = 'whole number from 5 to 600' }
 )
 $script:Sections = @('All')
 foreach ($bad in $badFiles) {
@@ -1672,7 +1794,7 @@ foreach ($bad in $badFiles) {
     Check ($written.Count -eq 0) ("Override: with {0}, nothing was collected before the run stopped ({1} CSV files)" -f $bad.Name, $written.Count)
     Remove-Item -Recurse -Force $outB -ErrorAction SilentlyContinue
 }
-Check (@($badFiles).Count -eq 14) 'Override: non-vacuity - fourteen declared unusable files were tried'
+Check (@($badFiles).Count -eq 16) 'Override: non-vacuity - sixteen declared unusable files were tried'
 Remove-Item -LiteralPath $overrideFile -Force -ErrorAction SilentlyContinue
 # The parameter carries [ValidateNotNullOrEmpty()], and the attribute stays on the variable, so
 # it cannot simply be set back to empty: the variable is removed and re-created without it.
@@ -1716,6 +1838,7 @@ $script:SmokeAclFail = $true
 # are refused (an access-denied exception); Get-ADDomain still answers.
 $script:SmokePrivFail = $true
 
+$script:SmokeDcdiagCalls = @()
 $out3 =Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out3
 $script:AllDomains = $false
@@ -1797,6 +1920,13 @@ Check (@($rid3 | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Item -like '*
 Check (@($rid3 | Where-Object { $_.Item -eq 'RID pool - contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'could not be enumerated\. Cause: STUB: ADWS unreachable' -and $_.Detail -match 'No RID Set of its domain controllers was read' }).Count -eq 1) 'Failure mode: RID Pool gives the domain whose inventory failed its own population row, with the cause'
 Check (@($rid3 | Where-Object { $_.Item -eq 'RID pools' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode: RID Pool says no DC was enumerated, and why'
 Check (@($rid3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a RID Pool row that measured nothing carries no advice'
+# C11: with no DC enumerated, DC Diagnostics runs nothing and reports nothing but Not Assessed.
+$dd3 = @($findings3 | Where-Object { $_.Section -eq 'DC Diagnostics' })
+Check (@($dd3).Count -gt 0 -and @($dd3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC Diagnostics reports nothing but Not Assessed, and never Pass ({0} rows)" -f @($dd3).Count)
+Check (@($dd3 | Where-Object { $_.Item -eq 'dcdiag grid' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode: DC Diagnostics says no DC was enumerated, and why'
+Check (@($dd3 | Where-Object { $_.Item -eq 'dcdiag coverage: contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode: DC Diagnostics names the scoped domain whose DCs could not be enumerated'
+Check (@($dd3 | Where-Object { $_.Item -eq 'dcdiag Topology: contoso.com' }).Count -eq 1) 'Failure mode: the scoped domain still has its Topology row, Not Assessed'
+Check (@($script:SmokeDcdiagCalls).Count -eq 0) 'Failure mode: dcdiag was never invoked'
 # C7: the principal query refused. All four SID history rows of the domain are Not Assessed, say
 # "Access denied" with the cause, carry no count and no advice, and none passes.
 $sh3 = @($findings3 | Where-Object { $_.Section -eq 'Security Posture' -and $_.Item -like 'SID history*' })
