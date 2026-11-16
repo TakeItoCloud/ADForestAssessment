@@ -23,7 +23,7 @@ HTML) and extended to full-forest coverage.
 | Stale objects (inactive users/computers, PasswordNeverExpires) | ✔ | Hygiene |
 | **Full user & computer export — all populated attributes** (`Identity` section → `csv\AllUsers_<domain>.csv`, `csv\AllComputers_<domain>.csv`; HTML shows a summary) | ✔ | Inventory |
 | **PKI / AD CS** — enterprise CAs + ESC1-susceptible templates | ✔ | Security |
-| **Dangerous ACLs** — non-default principals with DCSync rights on the domain head | ✔ | Security |
+| **Dangerous ACLs** — principals outside a SID allowlist (matched by SID, never by name) holding replication (DCSync) or control rights on the domain head, or write/control rights or ownership on AdminSDHolder and every GPO (since v1.26.0) | ✔ | Security |
 | **Kerberos exposure** — Kerberoastable (SPN) users, AS-REP roastable, unconstrained delegation, RBCD | ✔ | Security |
 | **Privileged hygiene** — adminCount orphans, SPNs on privileged accounts, Protected Users | ✔ | Security |
 | **DC hardening** — Print Spooler, SMBv1, LDAP signing (remote CIM/registry) | ✔ | Security |

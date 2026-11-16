@@ -36,7 +36,8 @@
         - Password & lockout policy (default + fine-grained)
         - Privileged group membership and security posture
           (krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota,
-          AdminSDHolder, stale / never-expiring / RC4-DES accounts)
+          stale / never-expiring / RC4-DES accounts; the permissions of AdminSDHolder are in
+          the Dangerous ACLs section)
         - SID history, per scoped domain (rows of the security posture section): how many
           security principals carry sIDHistory, whether a historic SID belongs to the
           principal's own domain or is a privileged well-known SID, and which domains the
@@ -49,7 +50,12 @@
           export since v1.21.0. The export still ASKS the directory for every attribute
           (-Properties *), those included; replacing the wildcard is PORT-PLAN C4b
         - AD CS / PKI: enrolment CAs and ESC1-susceptible certificate templates
-        - Dangerous ACLs: non-default principals holding DCSync rights on the domain head
+        - Dangerous ACLs, per scoped domain: principals outside an allowlist, matched by SID and
+          never by name, that hold a replication (DCSync) right, WriteDacl, WriteOwner, write of
+          all properties or full control on the domain head, or a write or control right or
+          ownership on AdminSDHolder or on any GPO. Directory reads of nTSecurityDescriptor only;
+          the descriptor is read in memory and nothing is written. The allowlist is Microsoft's
+          published default holders plus labelled tool defaults, and is provisional
         - Kerberos exposure: Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation
         - Privileged hygiene: adminCount orphans, SPNs on privileged accounts, Protected Users
         - DC hardening, per DC: LDAP server signing and its Windows Server 2025 enforcement,
@@ -255,9 +261,32 @@
     row with the number of containers read, compared, mismatched and not compared; it passes only
     when every GPO was compared and none differs. The inventory rows are unchanged.
 
+    Acl reads the directory only and needs READ_CONTROL on each object it reads. Microsoft's default
+    descriptors give Authenticated Users that right on the domain head and on GPOs; the default DACL
+    of AdminSDHolder is not published. Which parts of the descriptor the ActiveDirectory module asks
+    for is not published either: if it asks for the SACL, which needs SeSecurityPrivilege, an
+    ordinary account may get "Not returned" on every object (PORT-PLAN C9a). For every scoped domain
+    it reads nTSecurityDescriptor - and nothing else - of the domain head, of
+    CN=AdminSDHolder,CN=System and of every groupPolicyContainer under CN=Policies,CN=System, and the
+    domain's DN and SID with Get-ADDomain, each read sent to that domain. The owner and the DACL are
+    read in memory; the SACL is not read. An object ACE scoped to the object's own class (or a class
+    above it) is graded as unscoped; one scoped to any other GUID grants only that node. Every principal is a SID and is matched by SID
+    only against an allowlist (Microsoft's published default holders, plus tool defaults labelled as
+    such), never by name: a group named like a default group is still flagged. Rows: "DCSync
+    rights" (a replication right, alone or through all extended rights or full control), "Domain
+    root control rights" (WriteDacl, WriteOwner, write of all properties, full control, or a
+    non-default owner), "AdminSDHolder rights", one "GPO rights" row per GPO, and a GPO summary. A
+    flagged principal is a Warning (a tool default; Fail by override) and every row says the
+    allowlist is provisional. Deny ACEs are honoured only when they name the same SID, come first and
+    cover every graded bit; inherit-only ACEs are skipped. A descriptor that was not returned, came
+    back without a DACL, or could not be read is Not Assessed with its cause, and unreachable, access
+    denied and timed out are told apart; a NULL DACL (present flag set, no ACL), which grants everyone
+    full access, is flagged as Everyone. A flagged principal is reported even when another ACE is of
+    a type the tool does not interpret. Group membership is not expanded.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Seven sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Eight sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -316,6 +345,19 @@
     refused:
 
         { "Gpo": { "MismatchStatus": "Fail" } }
+
+    And Acl, used by the Acl section, whose keys are FlaggedStatus (the grade of a row with a
+    principal outside the allowlist: Warning or Fail; Warning is a tool default) and
+    AdditionalAllowed, a list of SIDs to add to the allowlist, each with Sid (a SID in its text form -
+    a name is refused), Objects (DomainRoot, AdminSDHolder, Gpo), Rights (WriteDacl, WriteOwner,
+    WriteAllProperties, AllExtendedRights, DS-Replication-Get-Changes, DS-Replication-Get-Changes-All,
+    DS-Replication-Get-Changes-In-Filtered-Set) and Reason. Everyone, Anonymous Logon, Authenticated
+    Users, Users, Guests and RIDs 513, 514 and 515 of any domain can never be added. The built-in
+    allowlist, the masks, the GUIDs, the filter and the property list are refused:
+
+        { "Acl": { "AdditionalAllowed": [ { "Sid": "S-1-5-21-1-2-3-1105", "Objects": [ "DomainRoot" ],
+                   "Rights": [ "DS-Replication-Get-Changes", "DS-Replication-Get-Changes-All" ],
+                   "Reason": "Entra Connect AD DS connector account" } ] } }
 
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
@@ -508,7 +550,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory" and "Gpo" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo" and "Acl" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -542,7 +584,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.25.0'
+    Version                 = '1.26.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -566,16 +608,8 @@ $script:Config = @{
     # detail names it rather than these thresholds pretending to be it.
     ReplLagWarnHours        = 24
     ReplLagFailHours        = 168
-    # Well-known extended-right GUIDs used to detect DCSync grants.
-    DcSyncRightGuids        = @{
-        'DS-Replication-Get-Changes'            = '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
-        'DS-Replication-Get-Changes-All'        = '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'
-        'DS-Replication-Get-Changes-In-Filtered' = '89e95b76-444d-4c62-991a-0facbeda640c'
-    }
-    # Principals expected to legitimately hold replication rights (not flagged).
-    DcSyncAllowedPatterns   = @('Domain Admins', 'Enterprise Admins', 'Administrators',
-        'Domain Controllers', 'Enterprise Read-only Domain Controllers', 'Read-only Domain Controllers',
-        'SYSTEM', 'Enterprise Domain Controllers', 'BUILTIN\Administrators')
+    # The DCSync GUIDs and the name patterns that used to decide "default" here were retired by
+    # PORT-PLAN C9 (v1.26.0): the allowlist is now matched by SID, in the Acl table below.
     # userAccountControl bit flags.
     Uac                     = @{
         PASSWD_NOTREQD         = 0x0020
@@ -1685,6 +1719,232 @@ $script:Config = @{
             @{ Value = 2; Label = 'computer settings disabled' }
             @{ Value = 3; Label = 'all settings disabled' }
         )
+    }
+    # --- Dangerous rights in the directory (PORT-PLAN C9; section Acl, report section "Dangerous ACLs
+    #     (DCSync)"; AdAssessment26 catalogue ADA-ACL-001, -002 and -003) ---
+    # Instrument: per scoped domain, Get-ADObject -Identity <DN> -Server <domain> asking for
+    # nTSecurityDescriptor only, for the domain head and CN=AdminSDHolder,CN=System; and one one-level
+    # search of CN=Policies,CN=System for every groupPolicyContainer, asking for nTSecurityDescriptor
+    # only. The descriptor is turned into its self-relative binary form and read with
+    # System.Security.AccessControl.RawSecurityDescriptor in memory: the owner SID, whether a DACL is
+    # present at all, and every ACE of the DACL in its order. Nothing is written: no Set-Acl, no
+    # Set-ADObject, no Persist, no CommitChanges. Every URL below was read on 2026-11-16.
+    #
+    # Vendor facts:
+    #   The three replication control access rights and their rights GUIDs, each applying to
+    #   Domain-DNS, Configuration and DMD:
+    #     https://learn.microsoft.com/windows/win32/adschema/r-ds-replication-get-changes          1131f6aa-9c07-11d1-f79f-00c04fc2dcd2
+    #     https://learn.microsoft.com/windows/win32/adschema/r-ds-replication-get-changes-all      1131f6ad-9c07-11d1-f79f-00c04fc2dcd2
+    #     https://learn.microsoft.com/windows/win32/adschema/r-ds-replication-get-changes-in-filtered-set  89e95b76-444d-4c62-991a-0facbeda640c
+    #   The Domain-DNS class's default security descriptor (Windows Server 2012 schema, the last one
+    #   that page lists) grants, as ACEs of their own: Get-Changes to Enterprise Domain Controllers (ED)
+    #   and Administrators (BA); Get-Changes-All to Domain Controllers (DD) and BA; In-Filtered-Set to
+    #   ED and BA; and write-all-properties, all extended rights, WriteDacl and WriteOwner to Domain
+    #   Admins (DA), BA, SYSTEM (SY) and Enterprise Admins (EA) - "(A;;RPWPCRLCLOCCRCWDWOSW;;;DA)",
+    #   "(A;CI;RPWPCRLCLOCCRCWDWOSDSW;;;BA)", "(A;;RPWPCRLCLOCCDCRCWDWOSDDTSW;;;SY)",
+    #   "(A;CI;RPWPCRLCLOCCDCRCWDWOSDDTSW;;;EA)":
+    #     https://learn.microsoft.com/windows/win32/adschema/c-domaindns
+    #   Enterprise Read-only Domain Controllers of the forest root domain hold Replicating Directory
+    #   Changes on each NC head (added by adprep /rodcprep); a grant of Replicating Directory Changes
+    #   All to them is the misconfiguration Microsoft tells you to change back:
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8453
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/rodc-replicates-passwords-grant-incorrect-permissions
+    #   THE TWO LEARN SOURCES DISAGREE about Enterprise Domain Controllers (S-1-5-9): the RODC article
+    #   says "By default, the Enterprise Domain Controllers group that contains only writeable DCs has
+    #   the permission Replicating Directory Changes All on the domain partition"; the c-domaindns
+    #   default descriptor (2012 schema) does not grant it to ED. ED is allowed Get-Changes-All on the
+    #   domain head on the strength of the RODC article (a group of writable DCs only), in its own row
+    #   below, so that this disagreement stays visible; a real forest settles it (PORT-PLAN C9a).
+    #   AdminSDHolder is CN=AdminSDHolder,CN=System,<domain DN>; "By default, Enterprise Admins can make
+    #   changes to any domain's AdminSDHolder object, as can the domain's Domain Admins and
+    #   Administrators groups"; Domain Admins owns it; SDProp applies its ACL to the protected accounts
+    #   and groups:
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory
+    #   The groupPolicyContainer default descriptor grants DA, EA and CREATOR OWNER (CO)
+    #   "RPWPCCDCLCLOLORCWOWDSDDTSW" and SY "RPWPCCDCLCLORCWOWDSDDTSW" - write of all properties,
+    #   WriteDacl and WriteOwner, but NO control access (CR), so it is not full control - read to
+    #   Authenticated Users and Enterprise Domain Controllers, and Apply-Group-Policy (a specific
+    #   extended right) to Authenticated Users. Only those three rights are allowed to DA, EA, CO and SY
+    #   on a GPO as Microsoft's; all extended rights and the replication rights on a GPO are allowed to
+    #   the same four as a labelled TOOL DEFAULT (they are not in Learn's descriptor):
+    #     https://learn.microsoft.com/windows/win32/adschema/c-grouppolicycontainer
+    #   Class GUIDs (schemaIDGUID) and the chains: domainDNS 19195a5b-6da0-11d0-afd3-00c04fd930c9,
+    #   subclass of domain 19195a5a-6da0-11d0-afd3-00c04fd930c9, subclass of top
+    #   bf967ab7-0de6-11d0-a285-00aa003049e2; groupPolicyContainer f30e3bc2-9ff0-11d1-b603-0000f80367c1,
+    #   subclass of container bf967a8b-0de6-11d0-a285-00aa003049e2, subclass of top:
+    #     https://learn.microsoft.com/windows/win32/adschema/c-domaindns
+    #     https://learn.microsoft.com/windows/win32/adschema/c-domain
+    #     https://learn.microsoft.com/windows/win32/adschema/c-grouppolicycontainer
+    #     https://learn.microsoft.com/windows/win32/adschema/c-container
+    #     https://learn.microsoft.com/windows/win32/adschema/c-top
+    #   AdminSDHolder's class is not stated on Learn; Defender for Identity's posture page calls it the
+    #   "CN=AdminSDHolder container", so container and top are its chain here (tool assumption):
+    #     https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts
+    #   An object ACE whose GUID is the node of the object itself grants that right on every node below
+    #   it: OBJECT_TYPE_LIST "Level zero indicates the object itself"; MS-DTYP 2.5.3.2 removes an object
+    #   allow ACE's mask from the node with the ACE's GUID and "each node ns such that ns is a descendent
+    #   of n", and an object ACE whose GUID is not in the list grants nothing; "the rights granted or
+    #   denied at a higher level apply also to the lower levels":
+    #     https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-object_type_list
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-dtyp/4f1bbcbb-814a-4c70-a11e-2a5b8779a6f9
+    #     https://learn.microsoft.com/windows/win32/secauthz/aces-to-control-access-to-an-object-s-properties
+    #   WHICH class GUID Active Directory puts at level zero is in MS-ADTS, which could not be read on
+    #   Learn in this session. TOOL RULE: the GUID of the object's class and of every class above it in
+    #   the chain is read as the object itself, so a grant scoped to any of them is graded as unscoped;
+    #   this can over-report (if only the structural class is at level zero) and never under-reports.
+    #   An object ACE scoped to any other GUID grants only that node: WriteDacl, WriteOwner and full
+    #   control in it are never object-wide rights, and only a replication right's own GUID is graded.
+    #   The well-known SIDs and RIDs (S-1-5-9, S-1-5-18, S-1-5-32-544, S-1-3-0, -512, -516, -519, -498):
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-identifiers
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-groups
+    #   Access mask bits: ADS_RIGHT_WRITE_DAC 0x40000, ADS_RIGHT_WRITE_OWNER 0x80000,
+    #   ADS_RIGHT_DS_WRITE_PROP 0x20 ("If ObjectType does not contain a GUID, the ACE controls the right
+    #   to write all of the object properties"), ADS_RIGHT_DS_CONTROL_ACCESS 0x100 ("... the right to
+    #   perform all extended right operations"), ADS_RIGHT_GENERIC_ALL 0x10000000,
+    #   ADS_RIGHT_GENERIC_WRITE 0x40000000:
+    #     https://learn.microsoft.com/windows/win32/api/iads/ne-iads-ads_rights_enum
+    #   What the two generic bits mean for a directory object, as ActiveDirectoryRights values:
+    #   GenericAll 983551 (0xF01FF) and GenericWrite 131112 (ReadControl, WriteProperty, Self):
+    #     https://learn.microsoft.com/dotnet/api/system.directoryservices.activedirectoryrights
+    #   An inherit-only ACE "does not control access to the object to which it is attached":
+    #     https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-ace_header
+    #   InheritedObjectType alone does NOT stop an ACE taking effect on the container: "If this is not
+    #   done [INHERIT_ONLY], the ACE will also become effective on the container":
+    #     https://learn.microsoft.com/windows/win32/ad/setting-rights-to-specific-types-of-objects
+    #   "An object's owner implicitly has WRITE_DAC access to the object":
+    #     https://learn.microsoft.com/windows/win32/secauthz/owner-of-a-new-object
+    #   Owner and DACL need READ_CONTROL only; the SACL needs SE_SECURITY_NAME. Not sending the SD
+    #   flags control equals asking for owner, group, DACL and SACL:
+    #     https://learn.microsoft.com/windows/win32/ad/reading-an-objectampaposs-security-descriptor
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/3888c2b7-35b9-45b7-afeb-b772aa932dd0
+    #   "a search operation can succeed, but the search results don't include objects or properties
+    #   to which the caller doesn't have access" - why an absent nTSecurityDescriptor is not measured:
+    #     https://learn.microsoft.com/windows/win32/ad/access-control-and-read-operations
+    #   ControlFlags.DiscretionaryAclPresent (4) "Specifies that the DACL is not null"; AceFlags
+    #   InheritOnly 8 and Inherited 16; ObjectAceFlags ObjectAceTypePresent 1 and
+    #   InheritedObjectAceTypePresent 2; RawSecurityDescriptor(byte[], int):
+    #     https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.controlflags
+    #     https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.aceflags
+    #     https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.objectaceflags
+    #     https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.objectace
+    #     https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.rawsecuritydescriptor.-ctor
+    #   SecurityIdentifier.Translate throws IdentityNotMappedException when a SID cannot be translated
+    #   (names are resolved for display only, in a column the verdict never reads):
+    #     https://learn.microsoft.com/dotnet/api/system.security.principal.securityidentifier.translate
+    #
+    #   "A null DACL grants full access to any user that requests it" (and MS-DTYP above: "No DACL in
+    #   the security descriptor implies that there is no policy in place to govern access to the
+    #   object; any access check will succeed"):
+    #     https://learn.microsoft.com/windows/win32/secauthz/null-dacls-and-empty-dacls
+    #
+    # MEASURED IN THIS SESSION (2026-11-16, Windows PowerShell 5.1 and PowerShell 7.6, one Windows 11
+    # workstation, descriptors built from SDDL - not read from a directory): ActiveDirectorySecurity's
+    # GetAccessRules returns ONE synthetic "Everyone, full control" rule for a descriptor that carries
+    # no DACL. That is why the DACL is read from the binary form, where ControlFlags says whether it is
+    # present, and never through GetAccessRules. Also measured: SDDL "D:NO_ACCESS_CONTROL" (a NULL
+    # DACL) gives ControlFlags with DiscretionaryAclPresent SET and DiscretionaryAcl null, so a null
+    # DiscretionaryAcl is not the same as a clear present flag: the converter tells the two apart
+    # (DaclAbsent when the flag is clear, NullDacl when it is set and no ACL came with it).
+    #
+    # NOT PUBLISHED ON MICROSOFT LEARN, and labelled where a row relies on it:
+    #   - Which .NET type Get-ADObject returns for nTSecurityDescriptor, and which descriptor parts the
+    #     ActiveDirectory module asks for. An ActiveDirectorySecurity and a byte array are both read;
+    #     anything else is Not Assessed. Confirmed only by a first real run (PORT-PLAN C9a).
+    #   - The full default DACL of the domain head as it is on a running forest (Windows Server 2016
+    #     and later schema updates are not on the adschema pages), and of AdminSDHolder. SYSTEM on
+    #     AdminSDHolder and Administrators on a GPO are TOOL DEFAULTS (AdAssessment26 decision D14);
+    #     all extended rights and the replication rights on a GPO, for DA, EA, CO and SY, are a TOOL
+    #     DEFAULT of C9 (Learn's groupPolicyContainer descriptor grants them no CR).
+    #   - Any grade. FlaggedStatus Warning is a TOOL DEFAULT, the operator-approved catalogue rule
+    #     ("Warning when a non-allowlisted principal holds GenericAll, GenericWrite, WriteDacl,
+    #     WriteOwner or a replication right"); a file may set Fail. The allowlist is PROVISIONAL until
+    #     it is captured from a clean lab forest (catalogue P44/P45), and every row says so.
+    #   - Group membership is not expanded: a principal that holds a right through a group is reported
+    #     as the group's SID, and a deny ACE is honoured only when it names the same SID.
+    #
+    # Replaceable from a file via -ConfigOverridePath, under the key "Acl": FlaggedStatus (Warning or
+    # Fail) and AdditionalAllowed (SIDs a file adds to the allowlist, each for named objects and named
+    # rights, with a reason). Nothing else - not the masks, the GUIDs, the built-in allowlist, the
+    # filter or the property list.
+    Acl                     = @{
+        SourceUrl            = 'https://learn.microsoft.com/windows/win32/adschema/c-domaindns and https://learn.microsoft.com/windows/win32/adschema/c-grouppolicycontainer and https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8453'
+        ReadDate             = '2026-11-16'
+        ThresholdSource      = 'tool default (AdAssessment26 catalogue ADA-ACL-001..003, operator-approved 2026-09-24), not a Microsoft value'
+        AllowlistNote        = 'allowlist provisional: Microsoft''s published default holders plus labelled tool defaults (AdAssessment26 decision D14, and extended rights on GPOs), matched by SID only and never by name, until it is captured from a clean lab forest'
+        # Tool default.
+        FlaggedStatus        = 'Warning'
+        # What is asked, and of what. Fixed: a file cannot change them.
+        Properties           = @('nTSecurityDescriptor')
+        AdminSdHolderRdn     = 'CN=AdminSDHolder,CN=System'
+        PoliciesContainerRdn = 'CN=Policies,CN=System'
+        GpoFilter            = '(objectClass=groupPolicyContainer)'
+        # Access mask bits (ads_rights_enum, ActiveDirectoryRights; Learn, read 2026-11-16).
+        Masks                = @{
+            WriteDacl      = 0x40000
+            WriteOwner     = 0x80000
+            WriteProperty  = 0x20
+            ExtendedRight  = 0x100
+            GenericAllBit  = 0x10000000
+            GenericWriteBit = 0x40000000
+            # ActiveDirectoryRights.GenericAll and .GenericWrite: what the two generic bits stand for.
+            GenericAll     = 983551
+            GenericWrite   = 131112
+        }
+        ReplicationRights    = @(
+            @{ Name = 'DS-Replication-Get-Changes'; Guid = '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2' }
+            @{ Name = 'DS-Replication-Get-Changes-All'; Guid = '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2' }
+            @{ Name = 'DS-Replication-Get-Changes-In-Filtered-Set'; Guid = '89e95b76-444d-4c62-991a-0facbeda640c' }
+        )
+        # Every right this section grades, by the names rows and the allowlist use.
+        RightNames           = @('WriteDacl', 'WriteOwner', 'WriteAllProperties', 'AllExtendedRights', 'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All', 'DS-Replication-Get-Changes-In-Filtered-Set')
+        ObjectKinds          = @('DomainRoot', 'AdminSDHolder', 'Gpo')
+        # The class GUIDs read as "the object itself" for each kind: its class and every class above it
+        # (Learn adschema pages, read 2026-11-16; AdminSDHolder's class a tool assumption; the whole chain
+        # a TOOL RULE - see the comment above). An object ACE scoped to one of them is graded as unscoped.
+        ClassGuids           = @{
+            DomainRoot    = @('19195a5b-6da0-11d0-afd3-00c04fd930c9', '19195a5a-6da0-11d0-afd3-00c04fd930c9', 'bf967ab7-0de6-11d0-a285-00aa003049e2')
+            AdminSDHolder = @('bf967a8b-0de6-11d0-a285-00aa003049e2', 'bf967ab7-0de6-11d0-a285-00aa003049e2')
+            Gpo           = @('f30e3bc2-9ff0-11d1-b603-0000f80367c1', 'bf967a8b-0de6-11d0-a285-00aa003049e2', 'bf967ab7-0de6-11d0-a285-00aa003049e2')
+        }
+        # Which rights each row grades. The owner is graded as WriteDacl, which it holds implicitly.
+        Rows                 = @{
+            DCSync            = @{ Rights = @('AllExtendedRights', 'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All', 'DS-Replication-Get-Changes-In-Filtered-Set'); Owner = $false; CatalogueId = 'ADA-ACL-001'; Severity = 'High' }
+            DomainRootControl = @{ Rights = @('WriteDacl', 'WriteOwner', 'WriteAllProperties'); Owner = $true; CatalogueId = 'ADA-ACL-001'; Severity = 'High' }
+            AdminSDHolder     = @{ Rights = @('WriteDacl', 'WriteOwner', 'WriteAllProperties', 'AllExtendedRights', 'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All', 'DS-Replication-Get-Changes-In-Filtered-Set'); Owner = $true; CatalogueId = 'ADA-ACL-002'; Severity = 'High' }
+            Gpo               = @{ Rights = @('WriteDacl', 'WriteOwner', 'WriteAllProperties', 'AllExtendedRights', 'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All', 'DS-Replication-Get-Changes-In-Filtered-Set'); Owner = $true; CatalogueId = 'ADA-ACL-003'; Severity = 'Medium' }
+        }
+        # The allowlist, by SID only. Sid is a fixed SID; Rid with Scope Domain is <scoped domain SID>-RID,
+        # with Scope ForestRoot <forest root domain SID>-RID. Rights '*' is every right in RightNames.
+        # Name is for the reader of this table only: no decision reads it.
+        # On a GPO, Microsoft's default descriptor grants DA, EA, CO and SY write of all properties,
+        # WriteDacl and WriteOwner and no control access, so those are the Learn rows; all extended rights
+        # and the replication rights on a GPO are a separate, labelled tool default row for each.
+        Allowlist            = @(
+            @{ Sid = 'S-1-5-18'; Name = 'SYSTEM'; Objects = @('DomainRoot'); Rights = @('*'); Origin = 'Learn: c-domaindns' }
+            @{ Sid = 'S-1-5-18'; Name = 'SYSTEM'; Objects = @('Gpo'); Rights = @('WriteDacl', 'WriteOwner', 'WriteAllProperties'); Origin = 'Learn: c-grouppolicycontainer' }
+            @{ Sid = 'S-1-5-18'; Name = 'SYSTEM'; Objects = @('AdminSDHolder'); Rights = @('*'); Origin = 'tool default (D14), not a Microsoft value' }
+            @{ Sid = 'S-1-5-18'; Name = 'SYSTEM'; Objects = @('Gpo'); Rights = @('AllExtendedRights', 'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All', 'DS-Replication-Get-Changes-In-Filtered-Set'); Origin = 'tool default (C9), not a Microsoft value' }
+            @{ Sid = 'S-1-5-32-544'; Name = 'Administrators'; Objects = @('DomainRoot', 'AdminSDHolder'); Rights = @('*'); Origin = 'Learn: c-domaindns, AdminSDHolder appendix C' }
+            @{ Sid = 'S-1-5-32-544'; Name = 'Administrators'; Objects = @('Gpo'); Rights = @('*'); Origin = 'tool default (D14), not a Microsoft value' }
+            @{ Rid = 512; Scope = 'Domain'; Name = 'Domain Admins'; Objects = @('DomainRoot', 'AdminSDHolder'); Rights = @('*'); Origin = 'Learn: c-domaindns, AdminSDHolder appendix C' }
+            @{ Rid = 512; Scope = 'Domain'; Name = 'Domain Admins'; Objects = @('Gpo'); Rights = @('WriteDacl', 'WriteOwner', 'WriteAllProperties'); Origin = 'Learn: c-grouppolicycontainer' }
+            @{ Rid = 512; Scope = 'Domain'; Name = 'Domain Admins'; Objects = @('Gpo'); Rights = @('AllExtendedRights', 'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All', 'DS-Replication-Get-Changes-In-Filtered-Set'); Origin = 'tool default (C9), not a Microsoft value' }
+            @{ Rid = 519; Scope = 'ForestRoot'; Name = 'Enterprise Admins'; Objects = @('DomainRoot', 'AdminSDHolder'); Rights = @('*'); Origin = 'Learn: c-domaindns, AdminSDHolder appendix C' }
+            @{ Rid = 519; Scope = 'ForestRoot'; Name = 'Enterprise Admins'; Objects = @('Gpo'); Rights = @('WriteDacl', 'WriteOwner', 'WriteAllProperties'); Origin = 'Learn: c-grouppolicycontainer' }
+            @{ Rid = 519; Scope = 'ForestRoot'; Name = 'Enterprise Admins'; Objects = @('Gpo'); Rights = @('AllExtendedRights', 'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All', 'DS-Replication-Get-Changes-In-Filtered-Set'); Origin = 'tool default (C9), not a Microsoft value' }
+            @{ Sid = 'S-1-5-9'; Name = 'Enterprise Domain Controllers'; Objects = @('DomainRoot'); Rights = @('DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-In-Filtered-Set'); Origin = 'Learn: c-domaindns' }
+            @{ Sid = 'S-1-5-9'; Name = 'Enterprise Domain Controllers'; Objects = @('DomainRoot'); Rights = @('DS-Replication-Get-Changes-All'); Origin = 'Learn: rodc-replicates-passwords-grant-incorrect-permissions (c-domaindns does not grant it; the two pages disagree)' }
+            @{ Rid = 516; Scope = 'Domain'; Name = 'Domain Controllers'; Objects = @('DomainRoot'); Rights = @('DS-Replication-Get-Changes-All'); Origin = 'Learn: c-domaindns' }
+            @{ Rid = 498; Scope = 'ForestRoot'; Name = 'Enterprise Read-only Domain Controllers'; Objects = @('DomainRoot'); Rights = @('DS-Replication-Get-Changes'); Origin = 'Learn: replication-error-8453, rodc-replicates-passwords-grant-incorrect-permissions' }
+            @{ Sid = 'S-1-3-0'; Name = 'CREATOR OWNER'; Objects = @('Gpo'); Rights = @('WriteDacl', 'WriteOwner', 'WriteAllProperties'); Origin = 'Learn: c-grouppolicycontainer' }
+            @{ Sid = 'S-1-3-0'; Name = 'CREATOR OWNER'; Objects = @('Gpo'); Rights = @('AllExtendedRights', 'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All', 'DS-Replication-Get-Changes-In-Filtered-Set'); Origin = 'tool default (C9), not a Microsoft value' }
+        )
+        # Added by an override file only; empty in the built-in table.
+        AdditionalAllowed    = @()
+        # SIDs a file may never add: Everyone, Anonymous Logon, Authenticated Users, Users, Guests, and
+        # Domain Users, Domain Guests and Domain Computers of any domain (RIDs 513, 514, 515). Tool rule.
+        RefusedOverrideSids  = @('S-1-1-0', 'S-1-5-7', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-32-546')
+        RefusedOverrideRids  = @(513, 514, 515)
     }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
     DsEventsOfInterest      = @(
@@ -4679,25 +4939,6 @@ function Test-AdfaEsc1Template {
     return [pscustomobject]@{ Vulnerable = $vulnerable; Reason = $reason }
 }
 
-function Test-AdfaDcSyncAce {
-    <#
-    .SYNOPSIS
-        True if an ACE grants a DCSync extended right (Get-Changes / Get-Changes-All). Pure.
-    .OUTPUTS
-        [bool]
-    #>
-    [CmdletBinding()]
-    [OutputType([bool])]
-    param([Parameter(Mandatory)]$Ace)
-    if ($Ace.AccessControlType -ne 'Allow') { return $false }
-    $rights = "$($Ace.ActiveDirectoryRights)"
-    if ($rights -notmatch 'ExtendedRight|GenericAll') { return $false }
-    if ($rights -match 'GenericAll') { return $true }
-    $guid = "$($Ace.ObjectType)".ToLower()
-    foreach ($g in $script:Config.DcSyncRightGuids.Values) { if ($guid -eq $g.ToLower()) { return $true } }
-    return $false
-}
-
 function Find-AdfaDuplicateSpn {
     <#
     .SYNOPSIS
@@ -4769,42 +5010,1116 @@ function Get-AdfaPkiHealth {
     return @($rows)
 }
 
-function Get-AdfaDangerousAcl {
+# ---------------------------------------------------------------------------
+# Dangerous rights in the directory (PORT-PLAN C9): replication and control rights on the domain
+# head, write and control rights on AdminSDHolder and on every groupPolicyContainer, judged against
+# an allowlist matched by SID only. Section Acl, report section "Dangerous ACLs (DCSync)".
+# ---------------------------------------------------------------------------
+
+function New-AdfaAclRow {
     <#
     .SYNOPSIS
-        Detects non-default principals holding DCSync rights on the domain head.
+        Pure: one Dangerous ACLs row. Every row has the same columns, so a consumer never has to test
+        whether a column exists.
+    .DESCRIPTION
+        Detail names SIDs, never a display name. Names are in Principals, a column no verdict reads and
+        the consolidated findings never choose a recommendation from. A count that was not measured is
+        an empty string, never 0.
     .OUTPUTS
-        [pscustomobject[]]
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$NotRun = '',
+        [AllowEmptyString()][string]$Evidence = '',
+        [AllowEmptyString()][string]$CatalogueId = '',
+        [AllowEmptyString()][string]$Severity = '',
+        [AllowEmptyString()][string]$ObjectKind = '',
+        [AllowEmptyString()][string]$ObjectDn = '',
+        [AllowEmptyString()][string]$ReadFrom = '',
+        [AllowEmptyString()][string]$OwnerSid = '',
+        [AllowNull()]$AceCount = $null,
+        [AllowEmptyString()][string]$FlaggedSids = '',
+        [AllowEmptyString()][string]$RightsHeld = '',
+        [AllowEmptyString()][string]$Principals = '',
+        [AllowEmptyString()][string]$Undecided = '',
+        [AllowEmptyString()][string]$AllowlistNote = '',
+        [AllowNull()]$Population = $null,
+        [AllowNull()]$ReadCount = $null,
+        [AllowNull()]$FlaggedCount = $null,
+        [AllowNull()]$NotAssessedCount = $null
+    )
+    $row = New-Finding -Scope $Scope -Area 'ACL' -Item $Item -Status $Status -Detail $Detail
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $asText = { param($Number) if ($null -eq $Number) { return '' } return ([int64]$Number).ToString($inv) }
+    $row | Add-Member -NotePropertyName 'NotRun' -NotePropertyValue $NotRun
+    $row | Add-Member -NotePropertyName 'Evidence' -NotePropertyValue $Evidence
+    $row | Add-Member -NotePropertyName 'CatalogueId' -NotePropertyValue $CatalogueId
+    $row | Add-Member -NotePropertyName 'Severity' -NotePropertyValue $Severity
+    $row | Add-Member -NotePropertyName 'ObjectKind' -NotePropertyValue $ObjectKind
+    $row | Add-Member -NotePropertyName 'ObjectDn' -NotePropertyValue $ObjectDn
+    $row | Add-Member -NotePropertyName 'ReadFrom' -NotePropertyValue $ReadFrom
+    $row | Add-Member -NotePropertyName 'OwnerSid' -NotePropertyValue $OwnerSid
+    $row | Add-Member -NotePropertyName 'AceCount' -NotePropertyValue (& $asText $AceCount)
+    $row | Add-Member -NotePropertyName 'FlaggedSids' -NotePropertyValue $FlaggedSids
+    $row | Add-Member -NotePropertyName 'RightsHeld' -NotePropertyValue $RightsHeld
+    $row | Add-Member -NotePropertyName 'Principals' -NotePropertyValue $Principals
+    $row | Add-Member -NotePropertyName 'Undecided' -NotePropertyValue $Undecided
+    $row | Add-Member -NotePropertyName 'AllowlistNote' -NotePropertyValue $AllowlistNote
+    $row | Add-Member -NotePropertyName 'Population' -NotePropertyValue (& $asText $Population)
+    $row | Add-Member -NotePropertyName 'ReadCount' -NotePropertyValue (& $asText $ReadCount)
+    $row | Add-Member -NotePropertyName 'FlaggedCount' -NotePropertyValue (& $asText $FlaggedCount)
+    $row | Add-Member -NotePropertyName 'NotAssessedCount' -NotePropertyValue (& $asText $NotAssessedCount)
+    return $row
+}
+
+function ConvertTo-AdfaAclDescriptor {
+    <#
+    .SYNOPSIS
+        The Windows seam of C9: a security descriptor as the directory read handed it over, read in
+        memory into its owner SID, whether a DACL is present, and every ACE of the DACL in its order.
+        Never throws. Writes nothing.
+    .DESCRIPTION
+        Which .NET type Get-ADObject returns for nTSecurityDescriptor is not published on Learn, so two
+        are read: System.DirectoryServices.ActiveDirectorySecurity (its GetSecurityDescriptorBinaryForm)
+        and a byte array. Anything else is Unparseable, with its type named.
+
+        The binary form is read with System.Security.AccessControl.RawSecurityDescriptor. NOT with
+        GetAccessRules: measured in this session (2026-11-16, Windows PowerShell 5.1 and PowerShell 7),
+        GetAccessRules returns one synthetic "Everyone, full control" rule for a descriptor that has no
+        DACL, which would turn "no DACL was returned" into a finding about Everyone. Here a descriptor
+        whose ControlFlags lack DiscretionaryAclPresent (4) is DaclAbsent; one whose flag is set but
+        whose DiscretionaryAcl is null is NullDacl - a NULL DACL, which Learn documents as granting full
+        access to any user, measured 2026-11-16 to come from SDDL "D:NO_ACCESS_CONTROL" with the flag
+        set; and an EMPTY DACL is a DACL that was read and holds no ACE.
+
+        Each ACE becomes a record whose principal is its SID text. An ACE that is not a plain or an
+        object allow or deny ACE, or that carries callback data, is Kind Other: the verdict does not
+        guess what it grants and fails closed. The access mask is read as an unsigned 32-bit number, so
+        GENERIC_READ (0x80000000) is not a negative number.
+
+        Order: from a byte array it is the DACL's own. An ActiveDirectorySecurity holding a canonical
+        DACL hands it back regrouped - measured 2026-11-16 on 5.1 and 7, the explicit allow ACEs came
+        back reordered among themselves, explicit denies still first and inherited ACEs last - and one
+        holding a non-canonical DACL hands it back as it is. Neither changes which deny comes before
+        which allow, the one order Test-AdfaAclDenyCover relies on.
+    .OUTPUTS
+        [pscustomobject] Ok, Class (Read | NotReturned | DaclAbsent | NullDacl | Unparseable), Error, OwnerSid,
+        Aces (Index, Sid, Allow, Deny, Kind Common|Object|Other, Mask, InheritOnly, Inherited,
+        ObjectType, InheritedObjectType), AceCount.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Value)
+    $out = [pscustomobject]@{ Ok = $false; Class = 'Unparseable'; Error = ''; OwnerSid = ''; Aces = @(); AceCount = 0 }
+    if ($null -eq $Value) { $out.Class = 'NotReturned'; $out.Error = 'no value was given'; return $out }
+    try {
+        $bytes = $null
+        if ($Value -is [byte[]]) { $bytes = [byte[]]$Value }
+        elseif ([string]$Value.GetType().FullName -eq 'System.DirectoryServices.ActiveDirectorySecurity') { $bytes = [byte[]]$Value.GetSecurityDescriptorBinaryForm() }
+        if ($null -eq $bytes) {
+            $out.Error = ("a value of type {0} is not a security descriptor this tool reads" -f $Value.GetType().FullName)
+            return $out
+        }
+        $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($bytes, 0)
+        if ($null -ne $raw.Owner) { $out.OwnerSid = [string]$raw.Owner.Value }
+        if ((([int]$raw.ControlFlags) -band 4) -eq 0) {
+            $out.Class = 'DaclAbsent'
+            $out.Error = 'the descriptor carries no DACL (the DACL-present flag is clear)'
+            return $out
+        }
+        if ($null -eq $raw.DiscretionaryAcl) {
+            # The DACL-present flag is set and no ACL came with it: a NULL DACL (measured 2026-11-16 with
+            # SDDL "D:NO_ACCESS_CONTROL"), which Learn documents as granting full access to any user.
+            $out.Class = 'NullDacl'
+            $out.Error = 'the descriptor carries a NULL DACL (the DACL-present flag is set and no ACL is attached)'
+            return $out
+        }
+        $records = New-Object System.Collections.ArrayList
+        $index = 0
+        foreach ($ace in $raw.DiscretionaryAcl) {
+            $kind = 'Other'; $allow = $false; $deny = $false; $sid = ''; $mask = [int64]0; $objectType = ''; $inheritedType = ''
+            $flags = [int]$ace.AceFlags
+            if ($ace -is [System.Security.AccessControl.QualifiedAce] -and -not [bool]$ace.IsCallback) {
+                if ($ace -is [System.Security.AccessControl.ObjectAce]) {
+                    $kind = 'Object'
+                    $objectFlags = [int]$ace.ObjectAceFlags
+                    if (($objectFlags -band 1) -ne 0) { $objectType = $ace.ObjectAceType.ToString().ToLowerInvariant() }
+                    if (($objectFlags -band 2) -ne 0) { $inheritedType = $ace.InheritedObjectAceType.ToString().ToLowerInvariant() }
+                }
+                elseif ($ace -is [System.Security.AccessControl.CommonAce]) { $kind = 'Common' }
+                if ($kind -ne 'Other') {
+                    $qualifier = [string]$ace.AceQualifier
+                    if ($qualifier -eq 'AccessAllowed') { $allow = $true }
+                    elseif ($qualifier -eq 'AccessDenied') { $deny = $true }
+                    else { $kind = 'Other' }
+                    $sid = [string]$ace.SecurityIdentifier.Value
+                    $mask = [int64]$ace.AccessMask
+                    if ($mask -lt 0) { $mask = $mask + [int64]4294967296 }
+                }
+            }
+            [void]$records.Add([pscustomobject]@{
+                    Index = $index; Sid = $sid; Allow = $allow; Deny = $deny; Kind = $kind; Mask = $mask
+                    InheritOnly = (($flags -band 8) -ne 0); Inherited = (($flags -band 16) -ne 0)
+                    ObjectType = $objectType; InheritedObjectType = $inheritedType
+                })
+            $index++
+        }
+        $out.Aces = $records.ToArray()
+        $out.AceCount = $records.Count
+        $out.Class = 'Read'
+        $out.Ok = $true
+    }
+    catch {
+        $out.Class = 'Unparseable'
+        $out.Error = [string]$_.Exception.Message
+    }
+    return $out
+}
+
+function Get-AdfaAclNormalMask {
+    <#
+    .SYNOPSIS
+        Pure: an access mask with its two generic bits replaced by what they stand for on a directory
+        object - GENERIC_ALL (0x10000000) by GenericAll 983551, GENERIC_WRITE (0x40000000) by
+        GenericWrite 131112 (Learn: ads_rights_enum, ActiveDirectoryRights).
+    .OUTPUTS
+        [int64]
+    #>
+    [CmdletBinding()]
+    [OutputType([int64])]
+    param([int64]$Mask, [Parameter(Mandatory)][hashtable]$Config)
+    $m = $Config['Masks']
+    $value = $Mask
+    if (($value -band [int64]$m['GenericAllBit']) -ne 0) { $value = $value -bor [int64]$m['GenericAll'] }
+    if (($value -band [int64]$m['GenericWriteBit']) -ne 0) { $value = $value -bor [int64]$m['GenericWrite'] }
+    return $value
+}
+
+function Get-AdfaAclAceRight {
+    <#
+    .SYNOPSIS
+        Pure: the rights this section grades that one ACE grants, decided by its access mask bits and
+        object type - never by a rights name, whose text for a combined mask is not stable.
+    .DESCRIPTION
+        First the object type. An object type that is the GUID of the object's own class, or of a class
+        above it (Config.ClassGuids for -ObjectKind), is the node of the object itself, which grants on
+        every node below it (OBJECT_TYPE_LIST level zero, MS-DTYP 2.5.3.2), so the ACE is graded as if it
+        had no object type (tool rule for the classes above the structural one: may over-report, never
+        under-reports). An object type that is any other GUID scopes the ACE to that one node: only
+        the replication right whose GUID it is can be granted (by ExtendedRight, which GenericAll also
+        carries), and WriteDacl, WriteOwner, write of all properties and full control are never
+        granted on the object by it.
+
+        With no object type: GenericAll: every bit of 983551 (0xF01FF), or the GENERIC_ALL bit; it
+        grants every right below. WriteDacl 0x40000. WriteOwner 0x80000. WriteAllProperties:
+        WriteProperty 0x20, or GENERIC_WRITE - a write scoped to one property or property set is not
+        graded. AllExtendedRights: ExtendedRight 0x100, which Learn documents as every extended right,
+        so it also grants the three replication rights. Any other extended right (Apply-Group-Policy on
+        a GPO, for instance) is not graded. ReadControl, which GenericWrite also carries, is not a right
+        this section grades, so a plain read ACE grants nothing here.
+    .OUTPUTS
+        [pscustomobject] GenericAll, Atoms (in the order of Config.RightNames), Scope (None | Class | Node).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)]$Ace, [Parameter(Mandatory)][string]$ObjectKind, [Parameter(Mandatory)][hashtable]$Config)
+    $m = $Config['Masks']
+    $mask = Get-AdfaAclNormalMask -Mask ([int64]$Ace.Mask) -Config $Config
+    $objectType = ([string]$Ace.ObjectType).Trim().ToLowerInvariant()
+    $scope = 'None'
+    if ($objectType -ne '') {
+        $classes = @()
+        $classTable = $Config['ClassGuids']
+        if ($null -ne $classTable -and $classTable.Contains($ObjectKind)) { $classes = @(@($classTable[$ObjectKind]) | ForEach-Object { ([string]$_).ToLowerInvariant() }) }
+        if ($classes -contains $objectType) { $scope = 'Class'; $objectType = '' }
+        else { $scope = 'Node' }
+    }
+    $atoms = New-Object System.Collections.Generic.List[string]
+    if ($scope -eq 'Node') {
+        # Scoped to one node that is not the object itself: only a replication right's own GUID counts.
+        if (($mask -band [int64]$m['ExtendedRight']) -ne 0) {
+            foreach ($rep in @($Config['ReplicationRights'])) {
+                if (([string]$rep['Guid']).ToLowerInvariant() -eq $objectType) { $atoms.Add([string]$rep['Name']) }
+            }
+        }
+        return [pscustomobject]@{ GenericAll = $false; Atoms = $atoms.ToArray(); Scope = $scope }
+    }
+    $genericAll = (($mask -band [int64]$m['GenericAll']) -eq [int64]$m['GenericAll'])
+    if ($genericAll) {
+        foreach ($name in @($Config['RightNames'])) { $atoms.Add([string]$name) }
+    }
+    else {
+        if (($mask -band [int64]$m['WriteDacl']) -ne 0) { $atoms.Add('WriteDacl') }
+        if (($mask -band [int64]$m['WriteOwner']) -ne 0) { $atoms.Add('WriteOwner') }
+        if (($mask -band [int64]$m['WriteProperty']) -ne 0) { $atoms.Add('WriteAllProperties') }
+        if (($mask -band [int64]$m['ExtendedRight']) -ne 0) {
+            $atoms.Add('AllExtendedRights')
+            foreach ($rep in @($Config['ReplicationRights'])) { $atoms.Add([string]$rep['Name']) }
+        }
+    }
+    return [pscustomobject]@{ GenericAll = $genericAll; Atoms = $atoms.ToArray(); Scope = $scope }
+}
+
+function Test-AdfaAclDenyCover {
+    <#
+    .SYNOPSIS
+        Pure: whether an allow ACE is cancelled by a deny ACE that comes before it in the DACL.
+    .DESCRIPTION
+        The real access check depends on the reader's token, which this tool cannot see, so a deny is
+        honoured only when it is beyond doubt: it names the same SID, comes earlier in the DACL, is not
+        inherit-only, applies to every object type (none) or to the allow's own object type, and covers
+        every graded bit of the allow (WriteDacl, WriteOwner, WriteProperty, ExtendedRight, after the
+        generic bits are mapped). Anything less leaves the grant flagged. Tool rule (Learn's MS-DTYP
+        access check evaluates ACEs in order; group membership is not expanded here).
+    .OUTPUTS
+        [bool]
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([AllowEmptyCollection()]$Aces = @(), [int]$Index, [Parameter(Mandatory)][hashtable]$Config)
+    $list = @($Aces)
+    if ($Index -lt 0 -or $Index -ge $list.Count) { return $false }
+    $m = $Config['Masks']
+    $graded = [int64]$m['WriteDacl'] -bor [int64]$m['WriteOwner'] -bor [int64]$m['WriteProperty'] -bor [int64]$m['ExtendedRight']
+    $allow = $list[$Index]
+    $relevant = (Get-AdfaAclNormalMask -Mask ([int64]$allow.Mask) -Config $Config) -band $graded
+    if ($relevant -eq 0) { return $false }
+    $allowType = ([string]$allow.ObjectType).Trim().ToLowerInvariant()
+    for ($j = 0; $j -lt $Index; $j++) {
+        $d = $list[$j]
+        if ([string]$d.Kind -eq 'Other' -or [bool]$d.Allow -or -not [bool]$d.Deny -or [bool]$d.InheritOnly) { continue }
+        if ([string]$d.Sid -ne [string]$allow.Sid) { continue }
+        $denyType = ([string]$d.ObjectType).Trim().ToLowerInvariant()
+        if ($denyType -ne '' -and $denyType -ne $allowType) { continue }
+        $denyMask = Get-AdfaAclNormalMask -Mask ([int64]$d.Mask) -Config $Config
+        if (($denyMask -band $relevant) -eq $relevant) { return $true }
+    }
+    return $false
+}
+
+function Get-AdfaAclAllowedSet {
+    <#
+    .SYNOPSIS
+        Pure: the allowlist for one kind of object, as SID text -> the rights it may hold there.
+    .DESCRIPTION
+        Built from Config.Allowlist and Config.AdditionalAllowed (what an override file adds). A row
+        with Sid is that SID; a row with Rid and Scope Domain is <scoped domain SID>-RID, and with Scope
+        ForestRoot <forest root domain SID>-RID. A row whose domain SID was not read is left out - the
+        verdict then fails closed on any SID it can no longer decide. Rights '*' is every right in
+        Config.RightNames. Nothing here reads a name.
+    .OUTPUTS
+        [hashtable] SID -> @{ Rights = string[]; Reasons = string[] (override reasons) }
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][string]$ObjectKind,
+        [AllowEmptyString()][string]$DomainSid = '',
+        [AllowEmptyString()][string]$RootDomainSid = '',
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $set = @{}
+    $all = @($Config['RightNames'])
+    foreach ($r in @(@($Config['Allowlist']) + @($Config['AdditionalAllowed']))) {
+        if ($null -eq $r -or $r -isnot [System.Collections.IDictionary]) { continue }
+        if (@($r['Objects']) -notcontains $ObjectKind) { continue }
+        $sid = ''
+        if ($r.Contains('Sid') -and -not [string]::IsNullOrWhiteSpace([string]$r['Sid'])) { $sid = [string]$r['Sid'] }
+        elseif ([string]$r['Scope'] -eq 'Domain') { if ($DomainSid -ne '') { $sid = ("{0}-{1}" -f $DomainSid, [string]$r['Rid']) } }
+        elseif ([string]$r['Scope'] -eq 'ForestRoot') { if ($RootDomainSid -ne '') { $sid = ("{0}-{1}" -f $RootDomainSid, [string]$r['Rid']) } }
+        if ($sid -eq '') { continue }
+        $sid = $sid.Trim().ToUpperInvariant()
+        $rights = @($r['Rights'])
+        if ($rights -contains '*') { $rights = $all }
+        if (-not $set.ContainsKey($sid)) { $set[$sid] = @{ Rights = @(); Reasons = @() } }
+        $set[$sid]['Rights'] = @(@($set[$sid]['Rights']) + @($rights | ForEach-Object { [string]$_ }) | Select-Object -Unique)
+        if ($r.Contains('Reason')) { $set[$sid]['Reasons'] = @(@($set[$sid]['Reasons']) + @([string]$r['Reason'])) }
+    }
+    return $set
+}
+
+function Get-AdfaAclAnalysis {
+    <#
+    .SYNOPSIS
+        Pure: one object's descriptor against the allowlist, for the rights one row grades.
+    .DESCRIPTION
+        Every ACE in DACL order. Skipped: a deny ACE (it grants nothing), an inherit-only ACE (Learn: it
+        "does not control access to the object to which it is attached") and an ACE that grants none of
+        the row's rights. NOT skipped: an ACE scoped to a child class through InheritedObjectType that is
+        not inherit-only, which Learn documents as effective on the container too; and an object ACE
+        whose object type is the object's own class or a class above it, which Get-AdfaAclAceRight
+        grades as unscoped. An ACE of a type the
+        tool does not interpret is counted in Unrecognised. An allow ACE whose SID may hold every right
+        it grants passes; one cancelled by an earlier deny (Test-AdfaAclDenyCover) is recorded and
+        passes; otherwise its SID is flagged with the rights it may not hold - unless the SID is an
+        account-domain SID that cannot be decided because the domain SID it would be judged against was
+        not read (with the forest root's SID unread, that includes the scoped domain's own RIDs that the
+        allowlist judges against the root, -519 and -498), when it is Undecided. With Owner set for the
+        row, the owner is graded as holding
+        WriteDacl, which Learn says an owner holds implicitly.
+
+        The principal is compared by SID text only. No name is read here.
+    .OUTPUTS
+        [pscustomobject] Flagged (Sid, Rights, GenericAll), Undecided (SID text), Unrecognised,
+        Considered, Cancelled, DenyNotes, OverrideUsed, AceCount.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Descriptor,
+        [Parameter(Mandatory)][string]$ObjectKind,
+        [Parameter(Mandatory)][string]$RowKey,
+        [AllowEmptyString()][string]$DomainSid = '',
+        [AllowEmptyString()][string]$RootDomainSid = '',
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rowConfig = $Config['Rows'][$RowKey]
+    $rowRights = @($rowConfig['Rights'])
+    $allowed = Get-AdfaAclAllowedSet -ObjectKind $ObjectKind -DomainSid $DomainSid -RootDomainSid $RootDomainSid -Config $Config
+    $aces = @(@($Descriptor.Aces) | Where-Object { $null -ne $_ })
+    $flaggedOrder = New-Object System.Collections.Generic.List[string]
+    $flaggedRights = @{}
+    $flaggedGeneric = @{}
+    $undecided = New-Object System.Collections.Generic.List[string]
+    $cancelled = New-Object System.Collections.Generic.List[string]
+    $denyNotes = New-Object System.Collections.Generic.List[string]
+    $overrideUsed = New-Object System.Collections.Generic.List[string]
+    $unrecognised = 0
+    $considered = 0
+    $denySids = @($aces | Where-Object { [string]$_.Kind -ne 'Other' -and [bool]$_.Deny } | ForEach-Object { ([string]$_.Sid).ToUpperInvariant() })
+    # Whether a SID that is not allowed can be decided at all: an account-domain SID is undecidable when
+    # the scoped domain's SID was not read, or when the forest root's was not read and the SID is either
+    # not of the scoped domain or carries a RID the allowlist judges against the forest root (Enterprise
+    # Admins, ERODC) - with the root's SID unread, the scoped domain may itself be the root, so its own
+    # -519 or -498 may be a default holder.
+    $rootRids = @(@(@($Config['Allowlist']) + @($Config['AdditionalAllowed'])) | Where-Object { $null -ne $_ -and $_ -is [System.Collections.IDictionary] -and [string]$_['Scope'] -eq 'ForestRoot' } | ForEach-Object { [string]$_['Rid'] })
+    $isUndecidable = {
+        param([string]$Sid)
+        $parsed = ConvertFrom-AdfaSidValue -Value $Sid
+        if (-not $parsed.Ok -or -not $parsed.IsAccountDomain) { return $false }
+        if ($DomainSid -eq '') { return $true }
+        if ($RootDomainSid -eq '') {
+            if ($parsed.DomainPart -ne $DomainSid.ToUpperInvariant()) { return $true }
+            if ($rootRids -contains [string]$parsed.Rid) { return $true }
+        }
+        return $false
+    }
+    $addFlag = {
+        param([string]$Sid, [string[]]$Rights, [bool]$Generic)
+        if (-not $flaggedRights.ContainsKey($Sid)) { $flaggedOrder.Add($Sid); $flaggedRights[$Sid] = @(); $flaggedGeneric[$Sid] = $false }
+        $flaggedRights[$Sid] = @(@($flaggedRights[$Sid]) + @($Rights) | Select-Object -Unique)
+        if ($Generic) { $flaggedGeneric[$Sid] = $true }
+    }
+    for ($i = 0; $i -lt $aces.Count; $i++) {
+        $ace = $aces[$i]
+        if ([string]$ace.Kind -eq 'Other') { $unrecognised++; continue }
+        if ([bool]$ace.InheritOnly -or -not [bool]$ace.Allow) { continue }
+        $right = Get-AdfaAclAceRight -Ace $ace -ObjectKind $ObjectKind -Config $Config
+        $atoms = @(@($right.Atoms) | Where-Object { $rowRights -contains $_ })
+        if ($atoms.Count -eq 0) { continue }
+        $considered++
+        $sid = ([string]$ace.Sid).Trim().ToUpperInvariant()
+        $mayHold = @()
+        if ($allowed.ContainsKey($sid)) { $mayHold = @($allowed[$sid]['Rights']) }
+        $notAllowed = @($atoms | Where-Object { $mayHold -notcontains $_ })
+        if ($notAllowed.Count -eq 0) {
+            foreach ($reason in @($allowed[$sid]['Reasons'])) { $note = ("{0} ({1})" -f $sid, $reason); if (-not $overrideUsed.Contains($note)) { $overrideUsed.Add($note) } }
+            continue
+        }
+        if (Test-AdfaAclDenyCover -Aces $aces -Index $i -Config $Config) { $cancelled.Add(("{0} (ACE {1})" -f $sid, $i)); continue }
+        if ($denySids -contains $sid) { $denyNotes.Add(("{0} (ACE {1})" -f $sid, $i)) }
+        if (& $isUndecidable $sid) { if (-not $undecided.Contains($sid)) { $undecided.Add($sid) }; continue }
+        & $addFlag $sid $notAllowed ([bool]$right.GenericAll)
+    }
+    $owner = ([string]$Descriptor.OwnerSid).Trim().ToUpperInvariant()
+    if ([bool]$rowConfig['Owner'] -and $owner -ne '') {
+        $mayHold = @()
+        if ($allowed.ContainsKey($owner)) { $mayHold = @($allowed[$owner]['Rights']) }
+        if ($mayHold -notcontains 'WriteDacl') {
+            if (& $isUndecidable $owner) { if (-not $undecided.Contains($owner)) { $undecided.Add($owner) } }
+            else { & $addFlag $owner @('owner (implicit WriteDacl)') $false }
+        }
+    }
+    $flagged = @(foreach ($s in $flaggedOrder) {
+            $ordered = @(@($Config['RightNames']) + @('owner (implicit WriteDacl)') | Where-Object { @($flaggedRights[$s]) -contains $_ })
+            [pscustomobject]@{ Sid = $s; Rights = $ordered; GenericAll = [bool]$flaggedGeneric[$s] }
+        })
+    return [pscustomobject]@{
+        Flagged = $flagged; Undecided = $undecided.ToArray(); Unrecognised = $unrecognised; Considered = $considered
+        Cancelled = $cancelled.ToArray(); DenyNotes = $denyNotes.ToArray(); OverrideUsed = $overrideUsed.ToArray(); AceCount = $aces.Count
+    }
+}
+
+function Get-AdfaAclReadLead {
+    <#
+    .SYNOPSIS
+        Pure: the opening of a Not Assessed row for a descriptor that was not read, by class.
+    .DESCRIPTION
+        Unreachable, access denied and timed out are worded from the exception (type first, then text)
+        by Get-AdfaLapsReadFailureLead. A successful answer without nTSecurityDescriptor is "Not
+        returned": Learn documents that a search can succeed without the properties the caller cannot
+        read, so it is not measured, never "no ACE". A descriptor without a DACL is "No DACL returned":
+        this read cannot tell a DACL that was not handed over from an object that has none.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Read, [Parameter(Mandatory)][string]$What)
+    if ($null -eq $Read) { return 'Not assessed: the read returned nothing. This is a defect in the tool, not a result.' }
+    $class = [string]$Read.Class
+    $err = ([string]$Read.Error).Trim()
+    if ($class -eq 'Refused') { return ("Not assessed: {0} - nothing was asked of the directory. This is a defect in the tool, not a result." -f $err) }
+    if ($class -eq 'NotReturned') {
+        return ("Not returned: the directory answered for {0} but returned no nTSecurityDescriptor, so no ACE was read. A read can succeed without the attributes the account may not see; reading the owner and the DACL needs READ_CONTROL on the object. This is not a clean result." -f $What)
+    }
+    if ($class -eq 'DaclAbsent') {
+        return ("No DACL returned: the security descriptor of {0} came back without a DACL, so no ACE was read. Either the DACL was not handed to this account or the object has none - and no DACL at all lets anyone do anything - and this read cannot tell the two apart. This is not a clean result." -f $What)
+    }
+    if ($class -eq 'Unparseable') { return ("Not read: the security descriptor of {0} could not be read: {1}. This is not a clean result." -f $What, $err) }
+    return ("{0} This is not a clean result." -f (Get-AdfaLapsReadFailureLead -Message ([string]$Read.Error) -TypeName ([string]$Read.ErrorType) -What ("the security descriptor of {0}" -f $What)))
+}
+
+function Get-AdfaAclObjectVerdict {
+    <#
+    .SYNOPSIS
+        Pure: one object read to one row - the domain head's DCSync row or its control row, the
+        AdminSDHolder row, or one GPO's row.
+    .DESCRIPTION
+        Not Assessed, with the cause, when the descriptor was not read (Get-AdfaAclReadLead). A NULL
+        DACL (the present flag set, no ACL) is the row's grade with Everyone (S-1-1-0) flagged for every
+        right the row grades: Learn documents that a null DACL grants full access to any user.
+        Otherwise the row's grade (Config.FlaggedStatus, a tool default) when at least one SID outside
+        the allowlist holds a graded right, naming every such SID and its rights in Detail - also when
+        another ACE is of a type the tool does not interpret or another SID could not be decided, which
+        the Detail then names; Not Assessed when none is flagged but an ACE was not interpreted or a SID
+        could not be decided; Pass otherwise. Every graded row says the allowlist is provisional and
+        that matching is by SID only.
+
+        -NameResolver turns a SID into a display name for the Principals column only. It is called for
+        the flagged and undecided SIDs, after the verdict, and a SID it cannot name stays a SID marked
+        "unresolved". No decision reads a name.
+    .OUTPUTS
+        [pscustomobject] one row (New-AdfaAclRow).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$ObjectKind,
+        [Parameter(Mandatory)][string]$RowKey,
+        [Parameter(Mandatory)][string]$What,
+        [AllowNull()]$Read,
+        [AllowEmptyString()][string]$DomainSid = '',
+        [AllowEmptyString()][string]$DomainSidError = '',
+        [AllowEmptyString()][string]$RootDomainSid = '',
+        [AllowEmptyString()][string]$RootDomainSidError = '',
+        [Parameter(Mandatory)][hashtable]$Config,
+        [AllowNull()][scriptblock]$NameResolver = $null
+    )
+    $rowConfig = $Config['Rows'][$RowKey]
+    $notRun = 'Not read by this check: the SACL; the members of a group that holds a right (a group is graded as its own SID); and any deny ACE that names a group rather than the SID itself.'
+    if ($ObjectKind -eq 'Gpo') { $notRun = ("{0} The permissions of the GPO's folder in SYSVOL were not read either." -f $notRun) }
+    $common = @{
+        Scope = $Domain; Item = $Item; NotRun = $notRun; CatalogueId = [string]$rowConfig['CatalogueId']; Severity = [string]$rowConfig['Severity']
+        ObjectKind = $ObjectKind; AllowlistNote = [string]$Config['AllowlistNote']
+    }
+    $dn = ''; $server = ''
+    if ($null -ne $Read) { $dn = [string]$Read.Dn; $server = [string]$Read.Server }
+    $evidence = 'none'
+    if ($dn -ne '') { $evidence = ("nTSecurityDescriptor of '{0}', read from {1}" -f $dn, $server) }
+    $rightsText = 'a write or control right (WriteDacl, WriteOwner, write of all properties, all extended rights, a replication right or full control) or ownership'
+    if ($RowKey -eq 'DCSync') { $rightsText = 'a replication right (DS-Replication-Get-Changes, DS-Replication-Get-Changes-All or DS-Replication-Get-Changes-In-Filtered-Set, held alone or through all extended rights or full control)' }
+    elseif ($RowKey -eq 'DomainRootControl') { $rightsText = 'WriteDacl, WriteOwner, write of all properties or full control, or ownership' }
+    $nameOf = {
+        param([string]$Sid)
+        $name = ''
+        if ($null -ne $NameResolver) { try { $name = [string](& $NameResolver $Sid) } catch { $name = '' } }
+        if ([string]::IsNullOrWhiteSpace($name)) { return ("{0} = unresolved" -f $Sid) }
+        return ("{0} = {1}" -f $Sid, $name.Trim())
+    }
+    if ($null -ne $Read -and [string]$Read.Class -eq 'NullDacl' -and $null -ne $Read.Descriptor) {
+        # A NULL DACL was returned: measured, and Microsoft documents it as granting full access to any
+        # user, so Everyone holds every right the row grades.
+        $status = [string]$Config['FlaggedStatus']
+        $everyone = 'S-1-1-0'
+        $rowRights = @(@($Config['RightNames']) | Where-Object { @($rowConfig['Rights']) -contains $_ })
+        $detail = ("NULL DACL: the security descriptor of {0} came back with the DACL-present flag set and no ACL attached - a NULL DACL, which Microsoft documents as granting full access to any user that requests it - so everyone ({1}) holds {2}. Graded {3}: {4}; {5}." -f `
+                $What, $everyone, $rightsText, $status, [string]$Config['ThresholdSource'], [string]$Config['AllowlistNote'])
+        return (New-AdfaAclRow @common -Status $status -Detail $detail -Evidence $evidence -ObjectDn $dn -ReadFrom $server -OwnerSid ([string]$Read.Descriptor.OwnerSid) `
+                -FlaggedSids $everyone -RightsHeld ("{0}: {1}" -f $everyone, ($rowRights -join ', ')) -Principals (& $nameOf $everyone))
+    }
+    if ($null -eq $Read -or -not [bool]$Read.Ok -or $null -eq $Read.Descriptor) {
+        $owner = ''
+        if ($null -ne $Read -and $null -ne $Read.Descriptor) { $owner = [string]$Read.Descriptor.OwnerSid }
+        return (New-AdfaAclRow @common -Status $script:Status.NotAssessed -Detail (Get-AdfaAclReadLead -Read $Read -What $What) -Evidence $evidence -ObjectDn $dn -ReadFrom $server -OwnerSid $owner)
+    }
+    $descriptor = $Read.Descriptor
+    $an = Get-AdfaAclAnalysis -Descriptor $descriptor -ObjectKind $ObjectKind -RowKey $RowKey -DomainSid $DomainSid -RootDomainSid $RootDomainSid -Config $Config
+    $owner = [string]$descriptor.OwnerSid
+    $notes = @()
+    if (@($an.Cancelled).Count -gt 0) { $notes += ("{0} grant(s) cancelled by an earlier deny ACE naming the same SID and covering every graded bit: {1}" -f @($an.Cancelled).Count, (@($an.Cancelled) -join ', ')) }
+    if (@($an.DenyNotes).Count -gt 0) { $notes += ("{0} flagged grant(s) beside a deny ACE naming the same SID that was not judged to cancel them (a deny counts only when it comes first, applies to the object and covers every graded bit): {1}" -f @($an.DenyNotes).Count, (@($an.DenyNotes) -join ', ')) }
+    if (@($an.OverrideUsed).Count -gt 0) { $notes += ("allowed by the config override: {0}" -f (@($an.OverrideUsed) -join '; ')) }
+    if ($notes.Count -gt 0) { $evidence = ("{0}; {1}" -f $evidence, ($notes -join '; ')) }
+    $unrecognisedText = ''
+    if ([int]$an.Unrecognised -gt 0) {
+        $unrecognisedText = ("{0} ACE(s) of {1} are of a type this tool does not interpret (not a plain or object allow or deny ACE, or a callback ACE), so what they grant was not interpreted" -f [int]$an.Unrecognised, $What)
+    }
+    $flagged = @($an.Flagged)
+    $undecided = @($an.Undecided)
+    $principals = (@(@($flagged | ForEach-Object { [string]$_.Sid }) + @($undecided) | ForEach-Object { & $nameOf $_ }) -join '; ')
+    $undecidedText = ''
+    if ($undecided.Count -gt 0) {
+        $why = @()
+        if ($DomainSid -eq '') { $why += ("the SID of {0} was not read ({1})" -f $Domain, $DomainSidError) }
+        if ($RootDomainSid -eq '') { $why += ("the SID of the forest root domain was not read ({0})" -f $RootDomainSidError) }
+        $undecidedText = (" {0} SID(s) holding one of these rights could not be decided against the allowlist, because {1}; they are listed in the Undecided column." -f $undecided.Count, ($why -join ' and '))
+    }
+    # A measured grant outside the allowlist takes the grade before anything the tool could not judge -
+    # an ACE it does not interpret, or a SID it cannot decide - so neither hides it; both are named.
+    if ($flagged.Count -gt 0) {
+        $status = [string]$Config['FlaggedStatus']
+        $list = @($flagged | ForEach-Object { "{0} ({1})" -f $_.Sid, (@($_.Rights) -join ', ') })
+        $unrecognisedNote = ''
+        if ($unrecognisedText -ne '') { $unrecognisedNote = (" Besides, {0}." -f $unrecognisedText) }
+        $detail = ("{0} principal(s) outside the allowlist hold {1} on {2}: {3}. Principals were matched by SID only, never by name; a group is graded as its own SID and its members were not expanded.{4}{5} Graded {6}: {7}; {8}." -f `
+                $flagged.Count, $rightsText, $What, ($list -join '; '), $undecidedText, $unrecognisedNote, $status, [string]$Config['ThresholdSource'], [string]$Config['AllowlistNote'])
+        return (New-AdfaAclRow @common -Status $status -Detail $detail -Evidence $evidence -ObjectDn $dn -ReadFrom $server -OwnerSid $owner -AceCount ([int]$an.AceCount) `
+                -FlaggedSids (@($flagged | ForEach-Object { [string]$_.Sid }) -join '; ') -RightsHeld (@($flagged | ForEach-Object { "{0}: {1}" -f $_.Sid, (@($_.Rights) -join ', ') }) -join '; ') `
+                -Principals $principals -Undecided ($undecided -join '; '))
+    }
+    if ($unrecognisedText -ne '') {
+        return (New-AdfaAclRow @common -Status $script:Status.NotAssessed -Evidence $evidence -ObjectDn $dn -ReadFrom $server -OwnerSid $owner -AceCount ([int]$an.AceCount) -Principals $principals -Undecided ($undecided -join '; ') `
+                -Detail ("Not assessed: no principal outside the allowlist was found holding {0} on {1}, but {2}, and no grade is given.{3} This is not a clean result." -f $rightsText, $What, $unrecognisedText, $undecidedText))
+    }
+    if ($undecided.Count -gt 0) {
+        return (New-AdfaAclRow @common -Status $script:Status.NotAssessed -Evidence $evidence -ObjectDn $dn -ReadFrom $server -OwnerSid $owner -AceCount ([int]$an.AceCount) -Principals $principals -Undecided ($undecided -join '; ') `
+                -Detail ("Not assessed: no principal outside the allowlist was found holding {0} on {1}, but{2} This is not a clean result." -f $rightsText, $What, $undecidedText))
+    }
+    $detail = ("No principal outside the allowlist holds {0} on {1}: {2} ACE(s) read, {3} of them granting one of these rights, each to a SID the allowlist allows it. Principals were matched by SID only, never by name; {4}." -f `
+            $rightsText, $What, [int]$an.AceCount, [int]$an.Considered, [string]$Config['AllowlistNote'])
+    return (New-AdfaAclRow @common -Status $script:Status.Pass -Detail $detail -Evidence $evidence -ObjectDn $dn -ReadFrom $server -OwnerSid $owner -AceCount ([int]$an.AceCount))
+}
+
+function Get-AdfaAclDomainRaw {
+    <#
+    .SYNOPSIS
+        Directory seam of C9: a domain's distinguished name and SID. Read-only. Never throws.
+    .DESCRIPTION
+        Get-ADDomain -Identity <domain> -Server <domain>, with the caller's other AD parameters
+        (-Credential): the read goes to the domain it is about, as the descriptor reads do, never to the
+        run's -Server (Learn: -Server takes a fully qualified domain name). Ok is true when the
+        distinguished name was read; the SID is parsed with ConvertFrom-AdfaSidValue and is '' with
+        DomainSidError when it was not.
+    .OUTPUTS
+        [pscustomobject] Ok, Error, ErrorType, DomainDn, DomainSid, DomainSidError.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
+    $out = [pscustomobject]@{ Ok = $false; Error = ''; ErrorType = ''; DomainDn = ''; DomainSid = ''; DomainSidError = '' }
+    try {
+        $domainArgs = @{} + $AdParams
+        $domainArgs.Identity = $DomainName
+        $domainArgs.Server = $DomainName
+        $domainArgs.ErrorAction = 'Stop'
+        $domain = Get-ADDomain @domainArgs
+        if ($null -ne $domain) {
+            $dnProp = $domain.PSObject.Properties['DistinguishedName']
+            if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $out.DomainDn = ([string]$dnProp.Value).Trim() }
+            $sidProp = $domain.PSObject.Properties['DomainSID']
+            if ($null -ne $sidProp -and $null -ne $sidProp.Value) {
+                $parsed = ConvertFrom-AdfaSidValue -Value $sidProp.Value
+                if ($parsed.Ok) { $out.DomainSid = $parsed.Text }
+                else { $out.DomainSidError = ("the DomainSID Get-ADDomain returned for {0} could not be read as a SID: {1}" -f $DomainName, $parsed.Error) }
+            }
+            else { $out.DomainSidError = ("Get-ADDomain returned no DomainSID for {0}" -f $DomainName) }
+        }
+        if ($out.DomainDn -eq '') { $out.Error = ("Get-ADDomain returned no DistinguishedName for {0}" -f $DomainName) }
+        else { $out.Ok = $true }
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+        $out.DomainSidError = $out.Error
+    }
+    return $out
+}
+
+function Get-AdfaAclObjectRaw {
+    <#
+    .SYNOPSIS
+        Directory seam of C9: one object's security descriptor. Read-only. Never throws.
+    .DESCRIPTION
+        Get-ADObject -Identity <DN> -Server <domain> -Properties nTSecurityDescriptor, with the caller's
+        other AD parameters (-Credential) and the domain as -Server - so the read goes to the domain it is
+        about, and neither the AD: drive nor Get-Acl is used. A property list that is not
+        nTSecurityDescriptor alone is refused before any call. The value is read by
+        ConvertTo-AdfaAclDescriptor, in memory; nothing is written and Persist is never called.
+
+        Classes: Read; NotReturned (the answer held no nTSecurityDescriptor); DaclAbsent; Unparseable;
+        Refused; and, for a read that threw, Unreachable, AccessDenied, TimedOut or Error
+        (Get-AdfaDirectoryReadErrorClass, from the exception type first).
+    .OUTPUTS
+        [pscustomobject] Ok, Class, Error, ErrorType, Dn, Server, Descriptor.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Dn,
+        [Parameter(Mandatory)][string]$Server,
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $out = [pscustomobject]@{ Ok = $false; Class = ''; Error = ''; ErrorType = ''; Dn = $Dn; Server = $Server; Descriptor = $null }
+    $properties = @(@($Config['Properties']) | ForEach-Object { [string]$_ })
+    if ($properties.Count -ne 1 -or $properties[0] -ne 'nTSecurityDescriptor') {
+        $out.Class = 'Refused'
+        $out.Error = ("the property list is '{0}', not nTSecurityDescriptor alone" -f ($properties -join ','))
+        return $out
+    }
+    try {
+        $objectArgs = @{} + $AdParams
+        $objectArgs.Identity = $Dn
+        $objectArgs.Server = $Server
+        $objectArgs.Properties = @($properties)
+        $objectArgs.ErrorAction = 'Stop'
+        $object = Get-ADObject @objectArgs
+        $sdProp = $null
+        if ($null -ne $object) { $sdProp = $object.PSObject.Properties['nTSecurityDescriptor'] }
+        if ($null -eq $sdProp -or $null -eq $sdProp.Value) {
+            $out.Class = 'NotReturned'
+            $out.Error = 'the answer held no nTSecurityDescriptor'
+            return $out
+        }
+        $descriptor = ConvertTo-AdfaAclDescriptor -Value $sdProp.Value
+        $out.Descriptor = $descriptor
+        $out.Class = [string]$descriptor.Class
+        $out.Error = [string]$descriptor.Error
+        $out.Ok = [bool]$descriptor.Ok
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+        $out.Class = Get-AdfaDirectoryReadErrorClass -Message $out.Error -TypeName $out.ErrorType
+    }
+    return $out
+}
+
+function Get-AdfaAclGpoRaw {
+    <#
+    .SYNOPSIS
+        Directory seam of C9: every groupPolicyContainer of a domain, each with its security
+        descriptor. Read-only. Never throws.
+    .DESCRIPTION
+        One search: Get-ADObject -Server <domain> -SearchBase CN=Policies,CN=System,<domain DN>
+        -SearchScope OneLevel -LDAPFilter (objectClass=groupPolicyContainer), asking for
+        nTSecurityDescriptor only. Every GPO the search returns is one item, in the shape
+        Get-AdfaAclObjectRaw returns, so a GPO whose answer held no descriptor is NotReturned and is
+        never dropped. A GPO this account may not see at all is not returned by the search (Learn), and
+        cannot be counted. A property list that is not nTSecurityDescriptor alone is refused before any
+        call.
+    .OUTPUTS
+        [pscustomobject] Ok, Class, Error, ErrorType, SearchBase, Items (Guid, Dn, Read).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [Parameter(Mandatory)][string]$DomainDn,
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $out = [pscustomobject]@{ Ok = $false; Class = ''; Error = ''; ErrorType = ''; SearchBase = ("{0},{1}" -f [string]$Config['PoliciesContainerRdn'], $DomainDn); Items = @() }
+    $properties = @(@($Config['Properties']) | ForEach-Object { [string]$_ })
+    if ($properties.Count -ne 1 -or $properties[0] -ne 'nTSecurityDescriptor') {
+        $out.Class = 'Refused'
+        $out.Error = ("the property list is '{0}', not nTSecurityDescriptor alone" -f ($properties -join ','))
+        return $out
+    }
+    try {
+        $objectArgs = @{} + $AdParams
+        $objectArgs.Server = $DomainName
+        $objectArgs.LDAPFilter = [string]$Config['GpoFilter']
+        $objectArgs.SearchBase = $out.SearchBase
+        $objectArgs.SearchScope = 'OneLevel'
+        $objectArgs.Properties = @($properties)
+        $objectArgs.ErrorAction = 'Stop'
+        $items = New-Object System.Collections.ArrayList
+        Get-ADObject @objectArgs | ForEach-Object {
+            if ($null -ne $_) {
+                $dnProp = $_.PSObject.Properties['DistinguishedName']
+                $nameProp = $_.PSObject.Properties['Name']
+                $sdProp = $_.PSObject.Properties['nTSecurityDescriptor']
+                $itemDn = ''
+                if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $itemDn = ([string]$dnProp.Value).Trim() }
+                $guid = ''
+                if ($null -ne $nameProp -and $null -ne $nameProp.Value) { $guid = ([string]$nameProp.Value).Trim().ToUpperInvariant() }
+                if ($guid -eq '') { $guid = $itemDn }
+                $read = [pscustomobject]@{ Ok = $false; Class = 'NotReturned'; Error = 'the answer held no nTSecurityDescriptor'; ErrorType = ''; Dn = $itemDn; Server = $DomainName; Descriptor = $null }
+                if ($null -ne $sdProp -and $null -ne $sdProp.Value) {
+                    $descriptor = ConvertTo-AdfaAclDescriptor -Value $sdProp.Value
+                    $read.Descriptor = $descriptor
+                    $read.Class = [string]$descriptor.Class
+                    $read.Error = [string]$descriptor.Error
+                    $read.Ok = [bool]$descriptor.Ok
+                }
+                [void]$items.Add([pscustomobject]@{ Guid = $guid; Dn = $itemDn; Read = $read })
+            }
+        }
+        $out.Items = $items.ToArray()
+        $out.Class = 'Read'
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+        $out.Class = Get-AdfaDirectoryReadErrorClass -Message $out.Error -TypeName $out.ErrorType
+    }
+    return $out
+}
+
+function Get-AdfaAclDomainFinding {
+    <#
+    .SYNOPSIS
+        Pure: one domain's reads to its rows - "DCSync rights", "Domain root control rights" and
+        "AdminSDHolder rights" (each ": <domain>"), one "GPO rights: {GUID}" per groupPolicyContainer
+        returned, and "GPO rights summary: <domain>", in that order.
+    .DESCRIPTION
+        A domain whose distinguished name was not read gets the three object rows and the summary, Not
+        Assessed with the cause. The summary's population is the number of containers the search
+        returned; it is Not Assessed when the search failed or returned none (a domain normally holds
+        at least its two default GPOs, so none visible is not "no GPO"), the grade when any GPO is
+        flagged, Not Assessed when any GPO could not be graded, and Pass only when every GPO was read
+        and none is flagged. The summary is Not Assessed, as a defect in the tool, unless there is exactly
+        one GPO row per container returned.
+    .OUTPUTS
+        [pscustomobject[]] rows.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [AllowNull()]$DomainRaw,
+        [AllowNull()]$RootRaw,
+        [AllowNull()]$HeadRead,
+        [AllowNull()]$AdminRead,
+        [AllowNull()]$GpoRaw,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [AllowNull()][scriptblock]$NameResolver = $null
+    )
     $rows = @()
+    $headWhat = ("the domain head of {0}" -f $Domain)
+    $adminWhat = ("CN=AdminSDHolder of {0}" -f $Domain)
+    $gpoRow = $Config['Rows']['Gpo']
+    $summaryItem = ("GPO rights summary: {0}" -f $Domain)
+    $summaryCommon = @{ Scope = $Domain; Item = $summaryItem; CatalogueId = [string]$gpoRow['CatalogueId']; Severity = [string]$gpoRow['Severity']; ObjectKind = 'Gpo'; AllowlistNote = [string]$Config['AllowlistNote'] }
+    if ($null -eq $DomainRaw -or -not [bool]$DomainRaw.Ok) {
+        $why = 'Not assessed: the domain was not read. This is a defect in the tool, not a result.'
+        if ($null -ne $DomainRaw) {
+            $why = ("{0} No security descriptor of this domain was read. This is not a clean result." -f (Get-AdfaLapsReadFailureLead -Message ([string]$DomainRaw.Error) -TypeName ([string]$DomainRaw.ErrorType) -What ("the domain {0} (its distinguished name and SID)" -f $Domain)))
+        }
+        foreach ($spec in @(@('DCSync', 'DCSync rights'), @('DomainRootControl', 'Domain root control rights'), @('AdminSDHolder', 'AdminSDHolder rights'))) {
+            $rc = $Config['Rows'][$spec[0]]
+            $rows += New-AdfaAclRow -Scope $Domain -Item ("{0}: {1}" -f $spec[1], $Domain) -Status $script:Status.NotAssessed -Detail $why -Evidence 'none' -CatalogueId ([string]$rc['CatalogueId']) -Severity ([string]$rc['Severity']) -AllowlistNote ([string]$Config['AllowlistNote'])
+        }
+        $rows += New-AdfaAclRow @summaryCommon -Status $script:Status.NotAssessed -Detail $why -Evidence 'none'
+        return @($rows)
+    }
+    $sids = @{
+        DomainSid = [string]$DomainRaw.DomainSid; DomainSidError = [string]$DomainRaw.DomainSidError
+        RootDomainSid = ''; RootDomainSidError = 'the forest root domain was not read'
+    }
+    if ($null -ne $RootRaw) { $sids.RootDomainSid = [string]$RootRaw.Sid; $sids.RootDomainSidError = [string]$RootRaw.Error }
+    $rows += Get-AdfaAclObjectVerdict -Domain $Domain -Item ("DCSync rights: {0}" -f $Domain) -ObjectKind 'DomainRoot' -RowKey 'DCSync' -What $headWhat -Read $HeadRead @sids -Config $Config -NameResolver $NameResolver
+    $rows += Get-AdfaAclObjectVerdict -Domain $Domain -Item ("Domain root control rights: {0}" -f $Domain) -ObjectKind 'DomainRoot' -RowKey 'DomainRootControl' -What $headWhat -Read $HeadRead @sids -Config $Config -NameResolver $NameResolver
+    $rows += Get-AdfaAclObjectVerdict -Domain $Domain -Item ("AdminSDHolder rights: {0}" -f $Domain) -ObjectKind 'AdminSDHolder' -RowKey 'AdminSDHolder' -What $adminWhat -Read $AdminRead @sids -Config $Config -NameResolver $NameResolver
+    if ($null -eq $GpoRaw -or -not [bool]$GpoRaw.Ok) {
+        $searchBase = ''
+        if ($null -ne $GpoRaw) { $searchBase = [string]$GpoRaw.SearchBase }
+        $rows += New-AdfaAclRow @summaryCommon -Status $script:Status.NotAssessed -ObjectDn $searchBase -Evidence 'none' `
+            -Detail (Get-AdfaAclReadLead -Read $GpoRaw -What ("the groupPolicyContainer objects of {0}" -f $Domain))
+        return @($rows)
+    }
+    $gpoRows = @()
+    foreach ($item in @($GpoRaw.Items | Where-Object { $null -ne $_ })) {
+        $gpoRows += @(Get-AdfaAclObjectVerdict -Domain $Domain -Item ("GPO rights: {0}" -f [string]$item.Guid) -ObjectKind 'Gpo' -RowKey 'Gpo' -What ("the GPO {0} of {1}" -f [string]$item.Guid, $Domain) -Read $item.Read @sids -Config $Config -NameResolver $NameResolver)
+    }
+    $rows += $gpoRows
+    $population = @($GpoRaw.Items | Where-Object { $null -ne $_ }).Count
+    $flaggedStatus = [string]$Config['FlaggedStatus']
+    $flagged = @($gpoRows | Where-Object { $_.Status -eq $flaggedStatus }).Count
+    $notAssessed = @($gpoRows | Where-Object { $_.Status -eq $script:Status.NotAssessed }).Count
+    $read = @($gpoRows | Where-Object { $_.Status -ne $script:Status.NotAssessed }).Count
+    $counts = @{ Population = $population; ReadCount = $read; FlaggedCount = $flagged; NotAssessedCount = $notAssessed }
+    $evidence = ("Get-ADObject -SearchBase '{0}' -SearchScope OneLevel -LDAPFilter '{1}' -Server {2} -Properties nTSecurityDescriptor" -f [string]$GpoRaw.SearchBase, [string]$Config['GpoFilter'], $Domain)
+    if ($population -eq 0) {
+        $rows += New-AdfaAclRow @summaryCommon @counts -Status $script:Status.NotAssessed -ObjectDn ([string]$GpoRaw.SearchBase) -Evidence $evidence `
+            -Detail ("Not assessed: No groupPolicyContainer is visible to this account under {0}. A domain normally holds at least the Default Domain Policy and the Default Domain Controllers Policy, so this is not read as 'no GPO': a GPO whose permissions deny this account read access is not returned at all. This is not a clean result." -f [string]$GpoRaw.SearchBase)
+        return @($rows)
+    }
+    # Exactly one graded row per container returned: a verdict that gave none, or more than one, would
+    # make every count below wrong. ReadCount + NotAssessedCount is the number of rows by construction,
+    # so the row count itself is what is checked.
+    if (@($gpoRows).Count -ne $population) {
+        $rows += New-AdfaAclRow @summaryCommon @counts -Status $script:Status.NotAssessed -ObjectDn ([string]$GpoRaw.SearchBase) -Evidence $evidence `
+            -Detail ("Not assessed: the {0} GPO row(s) of {1} are not one per container for the {2} container(s) returned. This is a defect in the tool, not a result." -f @($gpoRows).Count, $Domain, $population)
+        return @($rows)
+    }
+    if ($flagged -gt 0) {
+        $rows += New-AdfaAclRow @summaryCommon @counts -Status $flaggedStatus -ObjectDn ([string]$GpoRaw.SearchBase) -Evidence $evidence `
+            -Detail ("{0} of {1} GPO(s) of {2} visible to this account have a principal outside the allowlist holding a write or control right or ownership; {3} could not be assessed. Each is in its own row. Graded {4}: {5}; {6}." -f $flagged, $population, $Domain, $notAssessed, $flaggedStatus, [string]$Config['ThresholdSource'], [string]$Config['AllowlistNote'])
+        return @($rows)
+    }
+    if ($notAssessed -gt 0) {
+        $rows += New-AdfaAclRow @summaryCommon @counts -Status $script:Status.NotAssessed -ObjectDn ([string]$GpoRaw.SearchBase) -Evidence $evidence `
+            -Detail ("Not assessed: {0} of {1} GPO(s) of {2} visible to this account were read and none is flagged, but {3} could not be assessed; each is in its own row. This is not a clean result." -f $read, $population, $Domain, $notAssessed)
+        return @($rows)
+    }
+    $rows += New-AdfaAclRow @summaryCommon @counts -Status $script:Status.Pass -ObjectDn ([string]$GpoRaw.SearchBase) -Evidence $evidence `
+        -Detail ("All {0} GPO(s) of {1} visible to this account were read, and no principal outside the allowlist holds a write or control right or ownership on any of them. Principals were matched by SID only, never by name; {2}." -f $population, $Domain, [string]$Config['AllowlistNote'])
+    return @($rows)
+}
+
+function Resolve-AdfaAclSidName {
+    <#
+    .SYNOPSIS
+        A SID's account name, for display only, or '' when it cannot be translated. Never throws.
+    .DESCRIPTION
+        SecurityIdentifier.Translate([NTAccount]), a lookup through the local security authority of the
+        host running the assessment (a read). Learn documents IdentityNotMappedException for a SID that
+        cannot be translated; any failure gives ''. The result is shown in the Principals column only:
+        no verdict reads it.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowEmptyString()][string]$Sid = '')
+    if ([string]::IsNullOrWhiteSpace($Sid)) { return '' }
     try {
-        $dp = @{} + $AdParams; $dp.Identity = $DomainName
-        $dn = (Get-ADDomain @dp).DistinguishedName
-        $acl = Get-Acl -Path ("AD:\{0}" -f $dn) -ErrorAction Stop
-        $flagged = @()
-        foreach ($ace in $acl.Access) {
-            if (Test-AdfaDcSyncAce -Ace $ace) {
-                $id = "$($ace.IdentityReference)"
-                $isDefault = $false
-                foreach ($p in $script:Config.DcSyncAllowedPatterns) { if ($id -match [regex]::Escape($p)) { $isDefault = $true; break } }
-                if (-not $isDefault) { $flagged += $id }
+        $identity = New-Object System.Security.Principal.SecurityIdentifier -ArgumentList $Sid
+        return [string]$identity.Translate([System.Security.Principal.NTAccount]).Value
+    }
+    catch { return '' }
+}
+
+function Get-AdfaDangerousAcl {
+    <#
+    .SYNOPSIS
+        Dangerous rights in the directory, per scoped domain: replication rights and control rights on
+        the domain head, write and control rights on AdminSDHolder and on every GPO, judged against an
+        allowlist matched by SID only. Directory reads only.
+    .DESCRIPTION
+        Three seams, each read-only and none of which throws: Get-AdfaAclDomainRaw (Get-ADDomain, for the
+        forest root once and for every scoped domain), Get-AdfaAclObjectRaw (Get-ADObject for the domain
+        head and for CN=AdminSDHolder,CN=System) and Get-AdfaAclGpoRaw (one Get-ADObject search). Every
+        read goes to the domain it is about (-Server <domain>). Nothing is written: no Set-Acl, no
+        Set-ADObject, and an ActiveDirectorySecurity is never persisted. The name-matching check this
+        replaces (Get-Acl on the AD: drive, principals matched by name) is gone.
+
+        DECLARED POPULATION: the domains named in -Domains. Each gets at least the three object rows and
+        the GPO summary, whatever happened to its reads; with none scoped there is one "Dangerous ACLs
+        (no domain scoped)" row. An exception while one domain is handled makes its four rows Not
+        Assessed and never ends the section.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$Domains = @(),
+        [AllowEmptyString()][string]$RootDomain = '',
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config,
+        [AllowNull()][scriptblock]$NameResolver = $null
+    )
+    $rows = @()
+    if ($null -eq $NameResolver) { $NameResolver = { param($Sid) Resolve-AdfaAclSidName -Sid $Sid } }
+    $scoped = New-Object System.Collections.ArrayList
+    foreach ($name in @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if (@($scoped | Where-Object { $_ -eq $name.Trim() }).Count -eq 0) { [void]$scoped.Add($name.Trim()) }
+    }
+    if ($scoped.Count -eq 0) {
+        $rows += New-AdfaAclRow -Item 'Dangerous ACLs (no domain scoped)' -Status $script:Status.NotAssessed -Evidence 'none' `
+            -Detail 'No domain was scoped for this run, so no security descriptor was read. This is not a clean result.'
+        return @($rows)
+    }
+    $domainReads = @{}
+    $root = [pscustomobject]@{ Sid = ''; Error = 'the forest reported no root domain' }
+    if (-not [string]::IsNullOrWhiteSpace($RootDomain)) {
+        $rootRead = Get-AdfaAclDomainRaw -DomainName $RootDomain.Trim() -AdParams $AdParams
+        $domainReads[$RootDomain.Trim().ToLowerInvariant()] = $rootRead
+        $rootError = [string]$rootRead.DomainSidError
+        if ($rootError -eq '') { $rootError = [string]$rootRead.Error }
+        $root = [pscustomobject]@{ Sid = [string]$rootRead.DomainSid; Error = $rootError }
+    }
+    foreach ($domain in $scoped) {
+        try {
+            $key = ([string]$domain).ToLowerInvariant()
+            if ($domainReads.ContainsKey($key)) { $domainRead = $domainReads[$key] }
+            else { $domainRead = Get-AdfaAclDomainRaw -DomainName $domain -AdParams $AdParams; $domainReads[$key] = $domainRead }
+            $head = $null; $admin = $null; $gpo = $null
+            if ([bool]$domainRead.Ok) {
+                $head = Get-AdfaAclObjectRaw -Dn ([string]$domainRead.DomainDn) -Server $domain -AdParams $AdParams -Config $Config
+                $admin = Get-AdfaAclObjectRaw -Dn ("{0},{1}" -f [string]$Config['AdminSdHolderRdn'], [string]$domainRead.DomainDn) -Server $domain -AdParams $AdParams -Config $Config
+                $gpo = Get-AdfaAclGpoRaw -DomainName $domain -DomainDn ([string]$domainRead.DomainDn) -AdParams $AdParams -Config $Config
+            }
+            $rows += @(Get-AdfaAclDomainFinding -Domain $domain -DomainRaw $domainRead -RootRaw $root -HeadRead $head -AdminRead $admin -GpoRaw $gpo -Config $Config -NameResolver $NameResolver)
+        }
+        catch {
+            # A defect in this tool, not in the directory. Fail closed for this domain only.
+            $why = ("Not assessed: handling the security descriptors of {0} failed inside this tool, so nothing about this domain is graded; this is a defect in the tool, not a result. Error: {1}" -f $domain, [string]$_.Exception.Message)
+            foreach ($prefix in @('DCSync rights', 'Domain root control rights', 'AdminSDHolder rights', 'GPO rights summary')) {
+                $rows += New-AdfaAclRow -Scope $domain -Item ("{0}: {1}" -f $prefix, $domain) -Status $script:Status.NotAssessed -Evidence 'none' -Detail $why -AllowlistNote ([string]$Config['AllowlistNote'])
             }
         }
-        $flagged = @($flagged | Sort-Object -Unique)
-        if ($flagged.Count -gt 0) {
-            $rows += New-Finding -Scope $DomainName -Area 'ACL' -Item 'DCSync rights (non-default principals)' -Status $script:Status.Fail -Detail ("{0}: {1}" -f $flagged.Count, ($flagged -join ', '))
-        }
-        else {
-            $rows += New-Finding -Scope $DomainName -Area 'ACL' -Item 'DCSync rights (non-default principals)' -Status $script:Status.Pass -Detail 'Only default principals hold replication rights on the domain head.'
-        }
-    }
-    catch {
-        $rows += New-Finding -Scope $DomainName -Area 'ACL' -Item 'DCSync rights review' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
     }
     return @($rows)
+}
+
+function Merge-AdfaAclConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in Dangerous ACLs table, with validation. The Acl
+        validator for -ConfigOverridePath.
+    .DESCRIPTION
+        What a file can change: FlaggedStatus (Warning or Fail, the grade of a row with a principal
+        outside the allowlist) and AdditionalAllowed, a list of SIDs to add to the allowlist, each for
+        named objects and named rights, with the reason:
+
+            { "Acl": { "FlaggedStatus": "Fail",
+                       "AdditionalAllowed": [ { "Sid": "S-1-5-21-...-1105", "Objects": [ "DomainRoot" ],
+                                                "Rights": [ "DS-Replication-Get-Changes", "DS-Replication-Get-Changes-All" ],
+                                                "Reason": "Entra Connect AD DS connector account" } ] } }
+
+        What it cannot: the built-in allowlist, the masks, the GUIDs, the rows, the filter and the
+        property list. Every such key is refused as unknown.
+
+        Refused with the reason: an override that is not one object, an empty object, an unknown key, a
+        null, a FlaggedStatus that is not the text Warning or Fail; an AdditionalAllowed that is not a
+        non-empty list of objects; an entry with a key other than Sid, Objects, Rights and Reason or
+        without one of them; a Sid that is not a SID in its text form (a name is refused - the allowlist
+        is matched by SID only); a SID that may never be allowlisted (Everyone, Anonymous Logon,
+        Authenticated Users, Users, Guests, or RID 513, 514 or 515 of any domain); an Objects or Rights
+        list that is empty or names something unknown ("*" included); a Reason that is blank.
+
+        Provenance follows the keys: ThresholdSource is rewritten to name the override's source for
+        exactly the keys it supplied.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) {
+        throw ("Acl config override must be a single object with named keys (for example {{ ""FlaggedStatus"": ""Fail"" }}), not a {0}." -f $Override.GetType().Name)
+    }
+    if ($table.Count -eq 0) {
+        throw 'Acl config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    $known = @('FlaggedStatus', 'AdditionalAllowed')
+    $supplied = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("Acl config override names an unknown key '{0}'. Known keys: {1}. The built-in allowlist, the masks, the GUIDs, the rows, the filter and the property list cannot be set from a file." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        if ($supplied -contains $name) { throw ("Acl config override names '{0}' more than once." -f $name) }
+        $value = $table[$k]
+        if ($null -eq $value) { throw ("Acl config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name) }
+        if ($name -eq 'FlaggedStatus') {
+            if ($value -isnot [string]) {
+                throw ("Acl config override sets 'FlaggedStatus' to a value of type {0}, not a single text value. It must be the text Warning or Fail: a principal outside the allowlist is never reported as a pass." -f $value.GetType().Name)
+            }
+            $statusMatch = @(@('Warning', 'Fail') | Where-Object { $_ -eq $value.Trim() })
+            if ($statusMatch.Count -eq 0) {
+                throw ("Acl config override sets 'FlaggedStatus' to '{0}'. It must be Warning or Fail: a principal outside the allowlist is never reported as a pass." -f $value)
+            }
+            $merged['FlaggedStatus'] = [string]$statusMatch[0]
+        }
+        else {
+            if ($value -is [string] -or $value -is [System.Collections.IDictionary] -or $value -isnot [System.Collections.IList]) {
+                throw ("Acl config override sets 'AdditionalAllowed' to a value of type {0}. It must be a list (a JSON array) of objects, each with Sid, Objects, Rights and Reason." -f $value.GetType().Name)
+            }
+            $entries = @($value)
+            if ($entries.Count -eq 0) { throw "Acl config override sets 'AdditionalAllowed' to an empty list. Remove the key to keep the built-in allowlist." }
+            $added = @()
+            $entryKeys = @('Sid', 'Objects', 'Rights', 'Reason')
+            for ($n = 0; $n -lt $entries.Count; $n++) {
+                $label = ("Acl config override: entry {0} of AdditionalAllowed" -f ($n + 1))
+                $entry = ConvertTo-AdfaOverrideTable -Value $entries[$n]
+                if ($null -eq $entry) { throw ("{0} is not an object; each entry must be an object with Sid, Objects, Rights and Reason." -f $label) }
+                foreach ($ek in @($entry.Keys)) {
+                    if (@($entryKeys | Where-Object { $_ -eq [string]$ek }).Count -eq 0) { throw ("{0} names an unknown key '{1}'. Known keys: {2}." -f $label, [string]$ek, ($entryKeys -join ', ')) }
+                }
+                $values = @{}
+                foreach ($ek in $entryKeys) {
+                    $found = @(@($entry.Keys) | Where-Object { [string]$_ -eq $ek })
+                    if ($found.Count -eq 0 -or $null -eq $entry[$found[0]]) { throw ("{0} has no '{1}'. Each entry needs Sid, Objects, Rights and Reason." -f $label, $ek) }
+                    $values[$ek] = $entry[$found[0]]
+                }
+                if ($values['Sid'] -isnot [string]) { throw ("{0}: 'Sid' must be a SID in its text form, not a value of type {1}." -f $label, $values['Sid'].GetType().Name) }
+                $parsed = ConvertFrom-AdfaSidValue -Value ([string]$values['Sid'])
+                if (-not $parsed.Ok) { throw ("{0}: '{1}' is not a SID in its text form; names are refused, because the allowlist is matched by SID only." -f $label, [string]$values['Sid']) }
+                $refusedRid = ($parsed.IsAccountDomain -and @(@($BaseConfig['RefusedOverrideRids']) | Where-Object { [uint32]$_ -eq $parsed.Rid }).Count -gt 0)
+                if (@($BaseConfig['RefusedOverrideSids']) -contains $parsed.Text -or $refusedRid) {
+                    throw ("{0}: {1} can never be allowlisted: it stands for everyone, every authenticated user, every user, every guest or every computer of a domain." -f $label, $parsed.Text)
+                }
+                foreach ($listKey in @('Objects', 'Rights')) {
+                    $listValue = $values[$listKey]
+                    if ($listValue -is [string] -or $listValue -isnot [System.Collections.IList] -or @($listValue).Count -eq 0) {
+                        throw ("{0}: '{1}' must be a non-empty list." -f $label, $listKey)
+                    }
+                    $allowedNames = @($BaseConfig['ObjectKinds'])
+                    if ($listKey -eq 'Rights') { $allowedNames = @($BaseConfig['RightNames']) }
+                    foreach ($v in @($listValue)) {
+                        $hit = @()
+                        if ($v -is [string]) { $hit = @($allowedNames | Where-Object { $_ -eq $v.Trim() }) }
+                        if ($hit.Count -eq 0) {
+                            $kind = 'object'
+                            if ($listKey -eq 'Rights') { $kind = 'right' }
+                            throw ("{0} names an unknown {1} '{2}'. Known: {3}." -f $label, $kind, [string]$v, ($allowedNames -join ', '))
+                        }
+                    }
+                }
+                if ($values['Reason'] -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$values['Reason'])) {
+                    throw ("{0}: 'Reason' must be text that is not blank, saying why this SID may hold these rights." -f $label)
+                }
+                $objects = @(@($values['Objects']) | ForEach-Object { $o = $_.Trim(); @($BaseConfig['ObjectKinds'] | Where-Object { $_ -eq $o })[0] } | Select-Object -Unique)
+                $rights = @(@($values['Rights']) | ForEach-Object { $r = $_.Trim(); @($BaseConfig['RightNames'] | Where-Object { $_ -eq $r })[0] } | Select-Object -Unique)
+                $added += @{ Sid = $parsed.Text; Objects = $objects; Rights = $rights; Reason = ([string]$values['Reason']).Trim(); Origin = 'config override' }
+            }
+            $merged['AdditionalAllowed'] = $added
+        }
+        $supplied += $name
+    }
+    $from = 'an override whose source was not recorded'
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+    $fromOverride = @($known | Where-Object { $supplied -contains $_ })
+    $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+    $builtIn = @($known | Where-Object { $supplied -notcontains $_ })
+    if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
+    $merged['ThresholdSource'] = $text
+    return $merged
 }
 
 function Get-AdfaKerberosExposure {
@@ -12617,6 +13932,7 @@ $script:ConfigOverrideSections = [ordered]@{
     RidPool        = @{ ConfigKey = 'RidPool'; Section = 'RidPool'; Merge = 'Merge-AdfaRidPoolConfig' }
     SidHistory     = @{ ConfigKey = 'SidHistory'; Section = 'SecurityPosture'; Merge = 'Merge-AdfaSidHistoryConfig' }
     Gpo            = @{ ConfigKey = 'Gpo'; Section = 'Gpo'; Merge = 'Merge-AdfaGpoConfig' }
+    Acl            = @{ ConfigKey = 'Acl'; Section = 'Acl'; Merge = 'Merge-AdfaAclConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -16727,6 +18043,42 @@ $script:RecommendationMap = @(
        Text  = 'Confirm that no Group Policy object uses this GUID before treating the folder as orphaned: read CN=Policies,CN=System with an account that can read every GPO (a GPO whose permissions deny this account looks the same as a missing one), and check the domain''s other domain controllers. Microsoft''s SYSVOL rebuild guidance says that a SYSVOL folder whose GUID is not listed in Active Directory is an orphaned GPO and can be deleted from the file system; take a copy of the folder first. The grade is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
     @{ Section = '(?i)^gpo inventory'; Match = '(?i)^GPO Inventory :: GPO (version|folder)'
        Text  = '' }
+    # --- Section-scoped: Dangerous ACLs (PORT-PLAN C9). One entry per row family, anchored on the Item
+    #     prefix this tool writes ("DCSync rights: <domain>", "Domain root control rights: <domain>",
+    #     "AdminSDHolder rights: <domain>", "GPO rights: {GUID}" and "GPO rights summary: <domain>"),
+    #     and a prefix catch-all that gives every other row of the section no advice. Every graded row's
+    #     Detail says "replication", and a provenance file path could say "backup" or "stale", so without
+    #     these the unscoped 'replication', 'dcsync', 'sysvol|dfsr', 'pdc emulator', 'delegation' and
+    #     'backup' entries would answer them with the fix for a different fault. Tests pin each family.
+    #     Sources, read 2026-11-16:
+    #       default holders of the replication and control rights on the domain object
+    #         - https://learn.microsoft.com/windows/win32/adschema/c-domaindns
+    #       Get-Changes-All is "the replication of secret domain data"
+    #         - https://learn.microsoft.com/windows/win32/adschema/r-ds-replication-get-changes-all
+    #       Enterprise Read-only Domain Controllers: Replicating Directory Changes only, and the fix when
+    #       they hold Replicating Directory Changes All
+    #         - https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8453
+    #         - https://learn.microsoft.com/troubleshoot/windows-server/active-directory/rodc-replicates-passwords-grant-incorrect-permissions
+    #       the Entra Connect AD DS connector account holds both replication rights by design
+    #         - https://learn.microsoft.com/troubleshoot/entra/entra-id/user-prov-sync/password-writeback-access-rights-permissions
+    #       WRITE_DAC "modify the DACL", WRITE_OWNER "assume ownership"; an owner implicitly holds WRITE_DAC
+    #         - https://learn.microsoft.com/windows/win32/api/iads/ne-iads-ads_rights_enum
+    #         - https://learn.microsoft.com/windows/win32/secauthz/owner-of-a-new-object
+    #       AdminSDHolder: who may change it, its owner, SDProp every 60 minutes on the PDC emulator
+    #         - https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory
+    #       groupPolicyContainer default descriptor; a Group Policy Creator Owners member owns what it creates
+    #         - https://learn.microsoft.com/windows/win32/adschema/c-grouppolicycontainer
+    #         - https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-identifiers
+    @{ Section = '(?i)^dangerous acls'; Match = '(?i)^Dangerous ACLs \(DCSync\) :: DCSync rights: '
+       Text  = 'Review each SID this finding names. None of them is a holder Microsoft publishes for the replication rights on the domain head (Domain Controllers and Administrators for Replicating Directory Changes All; Enterprise Domain Controllers, Administrators and the forest root''s Enterprise Read-only Domain Controllers for Replicating Directory Changes), nor Domain Admins, Enterprise Admins or SYSTEM, which hold every extended right there by default. Some products hold these rights by design: Microsoft documents granting Replicating Directory Changes and Replicating Directory Changes All on the domain root to the Microsoft Entra Connect AD DS connector account. Confirm what each SID is and why it holds the right before changing anything; if it is legitimate, add its SID to AdditionalAllowed in the Acl section of the config override file, with the reason. Remove a grant nobody can explain from the permissions of the domain head and treat it as a possible compromise: Microsoft describes Replicating Directory Changes All as the right to replicate secret domain data. Where Enterprise Read-only Domain Controllers hold Replicating Directory Changes All, Microsoft''s fix is to change that grant to Replicating Directory Changes. This report reads only and changes nothing, and the allowlist it judged against is provisional.' }
+    @{ Section = '(?i)^dangerous acls'; Match = '(?i)^Dangerous ACLs \(DCSync\) :: Domain root control rights: '
+       Text  = 'Review each SID this finding names. WriteDacl lets the holder modify the permissions of the domain head, WriteOwner lets it take ownership, and an owner always holds WriteDacl; write of all properties and full control go further. Any of them is enough to grant the holder the replication rights. Microsoft''s published default descriptor of the domain object gives these rights to Domain Admins, Administrators, Enterprise Admins and SYSTEM only. Remove a grant or an ownership that has no documented owner and reason, and find out who made it; if one is legitimate, add its SID to AdditionalAllowed in the Acl section of the config override file, with the reason. This report reads only and changes nothing, and the allowlist it judged against is provisional.' }
+    @{ Section = '(?i)^dangerous acls'; Match = '(?i)^Dangerous ACLs \(DCSync\) :: AdminSDHolder rights: '
+       Text  = 'Remove the grants this finding names from CN=AdminSDHolder,CN=System of the domain, after finding out who made them. Microsoft documents that SDProp applies the permissions of AdminSDHolder to the protected accounts and groups - by default every 60 minutes, on the PDC emulator - so a grant here becomes a grant on Domain Admins, Enterprise Admins and every other protected account and group of the domain. By default only Enterprise Admins and the domain''s Domain Admins and Administrators can change AdminSDHolder, and Domain Admins owns it. This report reads only and changes nothing, and the allowlist it judged against is provisional.' }
+    @{ Section = '(?i)^dangerous acls'; Match = '(?i)^Dangerous ACLs \(DCSync\) :: GPO rights( summary)?: '
+       Text  = 'Review who can change the Group Policy objects this finding names. Microsoft''s default descriptor of a Group Policy container gives full control to Domain Admins, Enterprise Admins, SYSTEM and, through Creator Owner, the account that created the GPO; Microsoft also documents that a member of Group Policy Creator Owners who creates a GPO owns it. A delegated creator is therefore expected here and is reported so that the delegation is seen. Remove write and control rights and ownership from anyone who should not edit the GPO; if a delegation is intended, add its SID to AdditionalAllowed in the Acl section of the config override file, with the reason. The permissions of the GPO''s folder in SYSVOL were not read and need the same review. This report reads only and changes nothing, and the allowlist it judged against is provisional.' }
+    @{ Section = '(?i)^dangerous acls'; Match = '(?i)^Dangerous ACLs \(DCSync\) :: '
+       Text  = '' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
     # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
@@ -17575,8 +18927,22 @@ function Invoke-Main {
         $sectionData['PKI / AD CS'] = Get-AdfaPkiHealth -AdParams $adParams
     }
     if (Test-SectionSelected 'Acl' $Sections) {
-        Write-Stage 'Dangerous ACLs (DCSync)'
-        $aclRows = foreach ($d in $targetDomains) { Get-AdfaDangerousAcl -DomainName $d -AdParams $adParams }
+        # Dangerous rights (PORT-PLAN C9): per scoped domain, the domain head's replication and control
+        # rights, AdminSDHolder and every GPO, from nTSecurityDescriptor, matched by SID against an
+        # allowlist. The table the file supplied where it supplied one, otherwise the built-in table;
+        # the file was validated before any section ran.
+        Write-Stage 'Dangerous ACLs (replication and control rights on the domain head, AdminSDHolder and GPOs)'
+        $aclConfig = $script:Config.Acl
+        if ($configOverrides.ContainsKey('Acl')) { $aclConfig = $configOverrides['Acl'] }
+        # With the forest unreadable there is no domain to scope and no forest root SID to read, and the
+        # rows say so in one row instead of asking whatever the default server is.
+        if ($forestError) {
+            $aclRows = @(New-AdfaAclRow -Item 'Dangerous ACLs' -Status $script:Status.NotAssessed -Evidence 'none' `
+                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no security descriptor was read. This is not a clean result." -f $forestError))
+        }
+        else {
+            $aclRows = @(Get-AdfaDangerousAcl -Domains $targetDomains -RootDomain $rootDomain -AdParams $adParams -Config $aclConfig)
+        }
         $sectionData['Dangerous ACLs (DCSync)'] = @($aclRows)
     }
     if (Test-SectionSelected 'Kerberos' $Sections) {

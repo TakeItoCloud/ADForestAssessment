@@ -146,15 +146,20 @@ Describe 'Deep security pure logic' {
         $t = [pscustomobject]@{ 'msPKI-Certificate-Name-Flag' = 1; 'msPKI-Enrollment-Flag' = 2; 'msPKI-RA-Signature' = 0; 'pKIExtendedKeyUsage' = @('1.3.6.1.5.5.7.3.2') }
         (Test-AdfaEsc1Template -Template $t).Vulnerable | Should -BeFalse
     }
+    # Migrated by PORT-PLAN C9 from the retired Test-AdfaDcSyncAce, which matched rights as text and
+    # principals by name. The same two claims, on the access mask and by SID.
     It 'detects a DCSync Get-Changes-All grant' {
-        $guid = $script:Config.DcSyncRightGuids['DS-Replication-Get-Changes-All']
-        $ace = [pscustomobject]@{ AccessControlType = 'Allow'; ActiveDirectoryRights = 'ExtendedRight'; ObjectType = $guid; IdentityReference = 'x' }
-        Test-AdfaDcSyncAce -Ace $ace | Should -BeTrue
+        $guid = @($script:Config.Acl['ReplicationRights'] | Where-Object { $_['Name'] -eq 'DS-Replication-Get-Changes-All' })[0]['Guid']
+        $ace = [pscustomobject]@{ Index = 0; Sid = 'S-1-5-21-1-2-3-1105'; Allow = $true; Deny = $false; Kind = 'Object'; Mask = 0x100; InheritOnly = $false; Inherited = $false; ObjectType = $guid; InheritedObjectType = '' }
+        @((Get-AdfaAclAceRight -Ace $ace -ObjectKind 'DomainRoot' -Config $script:Config.Acl).Atoms) | Should -Contain 'DS-Replication-Get-Changes-All'
     }
     It 'ignores a Deny ACE and an ordinary read' {
-        $guid = $script:Config.DcSyncRightGuids['DS-Replication-Get-Changes-All']
-        (Test-AdfaDcSyncAce -Ace ([pscustomobject]@{ AccessControlType = 'Deny'; ActiveDirectoryRights = 'ExtendedRight'; ObjectType = $guid; IdentityReference = 'x' })) | Should -BeFalse
-        (Test-AdfaDcSyncAce -Ace ([pscustomobject]@{ AccessControlType = 'Allow'; ActiveDirectoryRights = 'ReadProperty'; ObjectType = ([guid]::Empty); IdentityReference = 'x' })) | Should -BeFalse
+        $guid = @($script:Config.Acl['ReplicationRights'] | Where-Object { $_['Name'] -eq 'DS-Replication-Get-Changes-All' })[0]['Guid']
+        $deny = [pscustomobject]@{ Index = 0; Sid = 'S-1-5-21-1-2-3-1105'; Allow = $false; Deny = $true; Kind = 'Object'; Mask = 0x100; InheritOnly = $false; Inherited = $false; ObjectType = $guid; InheritedObjectType = '' }
+        $descriptor = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; OwnerSid = 'S-1-5-32-544'; Aces = @($deny); AceCount = 1 }
+        @((Get-AdfaAclAnalysis -Descriptor $descriptor -ObjectKind 'DomainRoot' -RowKey 'DCSync' -DomainSid 'S-1-5-21-1-2-3' -RootDomainSid 'S-1-5-21-1-2-3' -Config $script:Config.Acl).Flagged).Count | Should -Be 0
+        $read = [pscustomobject]@{ Index = 0; Sid = 'S-1-5-21-1-2-3-1105'; Allow = $true; Deny = $false; Kind = 'Common'; Mask = 0x10; InheritOnly = $false; Inherited = $false; ObjectType = ''; InheritedObjectType = '' }
+        @((Get-AdfaAclAceRight -Ace $read -ObjectKind 'DomainRoot' -Config $script:Config.Acl).Atoms).Count | Should -Be 0
     }
     It 'finds duplicate SPNs and reports none for empty input' {
         $objs = @(
@@ -5279,9 +5284,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcHardening' -and $n.Extent.Text -match '-DomainControllers \$dcNames' }, $true)).Count | Should -Be 0
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
+            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
             # DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -7286,7 +7291,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # the principals' and the trusted domains', each from the SidHistory config table.
         # 15 since v1.25.0: PORT-PLAN C8 added one splatted property list in Get-AdfaGpoContainerRaw, the
         # groupPolicyContainer attributes from the Gpo config table.
-        $script:C4PropertiesAssignmentCount = 15
+        # 17 since v1.26.0: PORT-PLAN C9 added two splatted property lists, in Get-AdfaAclObjectRaw and
+        # Get-AdfaAclGpoRaw, each nTSecurityDescriptor alone from the Acl config table.
+        $script:C4PropertiesAssignmentCount = 17
         $script:C4SectionFunctionCount = 20
 
         function New-C4Schema {
@@ -7453,8 +7460,8 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaLaps' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
+            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7506,9 +7513,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.25.0 (bumped by PORT-PLAN C8)' {
-            [string]$script:Config.Version | Should -Be '1.25.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.25.0'
+        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
+            [string]$script:Config.Version | Should -Be '1.26.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
         }
     }
 
@@ -9096,8 +9103,8 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             Get-C5Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
+            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
             $entry = $script:ConfigOverrideSections['DcCertificates']
             [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
             [string]$entry['Section'] | Should -Be 'DcCertificates'
@@ -9178,9 +9185,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.25.0 (bumped by PORT-PLAN C8)' {
-            [string]$script:Config.Version | Should -Be '1.25.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.25.0'
+        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
+            [string]$script:Config.Version | Should -Be '1.26.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
         }
     }
 
@@ -10096,8 +10103,8 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             Get-C6Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
+            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
             $entry = $script:ConfigOverrideSections['RidPool']
             [string]$entry['ConfigKey'] | Should -Be 'RidPool'
             [string]$entry['Section'] | Should -Be 'RidPool'
@@ -10157,7 +10164,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'rIDAvailablePool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'RidPool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnAtPercentUsed'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eight sections can be named'
         }
         It 'has one row in the README Coverage table, and the README says what the row cannot see' {
             $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
@@ -10168,9 +10175,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.25.0 (bumped by PORT-PLAN C8)' {
-            [string]$script:Config.Version | Should -Be '1.25.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.25.0'
+        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
+            [string]$script:Config.Version | Should -Be '1.26.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
         }
     }
 
@@ -11051,8 +11058,8 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($script:C7Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaSidHistory' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath under SidHistory, used by SecurityPosture, with its own validator' {
-            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
+            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
             $entry = $script:ConfigOverrideSections['SidHistory']
             [string]$entry['ConfigKey'] | Should -Be 'SidHistory'
             [string]$entry['Section'] | Should -Be 'SecurityPosture'
@@ -11094,7 +11101,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             $help = $script:C7Ast.GetHelpContent()
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'SID history'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'sIDHistory'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eight sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'SidHistory'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'PresentStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'NameListCap'
@@ -11107,9 +11114,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.25.0 (bumped by PORT-PLAN C8)' {
-            [string]$script:Config.Version | Should -Be '1.25.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.25.0'
+        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
+            [string]$script:Config.Version | Should -Be '1.26.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
         }
     }
 
@@ -11989,8 +11996,8 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($script:C8Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaGpoVersion' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath under Gpo, used by the Gpo section, with its own validator' {
-            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
+            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
             $entry = $script:ConfigOverrideSections['Gpo']
             [string]$entry['ConfigKey'] | Should -Be 'Gpo'
             [string]$entry['Section'] | Should -Be 'Gpo'
@@ -12085,7 +12092,7 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'PDC emulator'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eight sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Gpo"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'MismatchStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'OrphanFolderStatus'
@@ -12098,9 +12105,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.25.0 (bumped by PORT-PLAN C8)' {
-            [string]$script:Config.Version | Should -Be '1.25.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.25.0'
+        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
+            [string]$script:Config.Version | Should -Be '1.26.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
         }
     }
 
@@ -13058,6 +13065,1053 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             $findings[2].Recommendation | Should -Match 'orphaned'
             $findings[3].Recommendation | Should -Be $findings[0].Recommendation
             foreach ($f in $findings) { $f.Item | Should -Not -Be 'GPO Inventory' }
+        }
+    }
+}
+
+Describe 'Dangerous rights: replication and control rights on the domain head, AdminSDHolder and GPOs, matched by SID (C9)' {
+    BeforeAll {
+        $script:Ac = $script:Config.Acl
+        # Fictional domain SIDs. contoso.com is the forest root; north.contoso.com a child domain.
+        $script:C9Root = 'S-1-5-21-1000-2000-3000'
+        $script:C9North = 'S-1-5-21-1000-2000-3001'
+        # Held in variables: PSAvoidUsingComputerNameHardcoded flags a literal -ComputerName.
+        $script:C9Rep = @{ Get = '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'; All = '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'; Filtered = '89e95b76-444d-4c62-991a-0facbeda640c' }
+        # Apply-Group-Policy (a specific extended right on a GPO) and a property set GUID (an example
+        # of a property-scoped write), neither of which may be flagged.
+        $script:C9ApplyGp = 'edacfd8f-ffb3-11d1-b41d-00a0c968f939'
+        $script:C9PropGuid = 'bf967a68-0de6-11d0-a285-00aa003049e2'
+        $script:C9UserClass = 'bf967aba-0de6-11d0-a285-00aa003049e2'
+        $script:C9G1 = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+        $script:C9G2 = '{6AC1786C-016F-11D2-945F-00C04FB984F9}'
+        $script:C9G3 = '{A1B2C3D4-0000-4000-8000-000000000003}'
+        $script:C9Hostile = 'krbtgt Backup Operators replication global catalog stale NOT a pass tombstone lifetime delegation pdc emulator event 1106 on dc1 sysvol dfsr certificate template lingering object dcsync C:\Backup\stale-aging.json'
+        # Access masks in the SDDL letters of the Domain-DNS default descriptor (Learn, read 2026-11-16):
+        # RP 0x10, WP 0x20, CR 0x100, LC 0x4, LO 0x80, CC 0x1, DC 0x2, RC 0x20000, WD 0x40000, WO 0x80000,
+        # SW 0x8, SD 0x10000, DT 0x40.
+        $script:C9Mask = @{
+            AuRead = 0x20094          # RPLCLORC
+            Da     = 0xE01BD          # RPWPCRLCLOCCRCWDWOSW
+            Ba     = 0xF01BD          # RPWPCRLCLOCCRCWDWOSDSW
+            Sy     = 0xF01FF          # RPWPCRLCLOCCDCRCWDWOSDDTSW
+            Ea     = 0xF01FF
+            Cr     = 0x100
+            Wp     = 0x20
+            Wd     = 0x40000
+            Wo     = 0x80000
+        }
+        # One ACE as ConvertTo-AdfaAclDescriptor records it.
+        function New-C9Ace {
+            param([string]$Sid, [int64]$Mask, [string]$ObjectType = '', [bool]$Allow = $true, [bool]$InheritOnly = $false, [string]$InheritedObjectType = '', [string]$Kind = '', [bool]$Inherited = $false)
+            if ($Kind -eq '') { if ($ObjectType -ne '' -or $InheritedObjectType -ne '') { $Kind = 'Object' } else { $Kind = 'Common' } }
+            [pscustomobject]@{ Index = 0; Sid = $Sid; Allow = $Allow; Deny = (-not $Allow); Kind = $Kind; Mask = $Mask; InheritOnly = $InheritOnly; Inherited = $Inherited; ObjectType = $ObjectType; InheritedObjectType = $InheritedObjectType }
+        }
+        # The descriptor ConvertTo-AdfaAclDescriptor returns; ACE order is the order given.
+        function New-C9Descriptor {
+            param($Aces = @(), [string]$Owner = '', [string]$Class = 'Read', [string]$Err = '')
+            $list = @($Aces)
+            for ($i = 0; $i -lt $list.Count; $i++) { $list[$i].Index = $i }
+            [pscustomobject]@{ Ok = ($Class -eq 'Read'); Class = $Class; Error = $Err; OwnerSid = $Owner; Aces = $list; AceCount = $list.Count }
+        }
+        # One object read, in the shape Get-AdfaAclObjectRaw returns.
+        function New-C9Read {
+            param($Descriptor = $null, [string]$Class = 'Read', [string]$Err = '', [string]$Type = '', [string]$Dn = 'DC=contoso,DC=com', [string]$Server = 'contoso.com')
+            if ($Class -eq 'Read' -and $null -eq $Descriptor) { $Descriptor = New-C9Descriptor }
+            $ok = ($Class -eq 'Read')
+            [pscustomobject]@{ Ok = $ok; Class = $Class; Error = $Err; ErrorType = $Type; Dn = $Dn; Server = $Server; Descriptor = $Descriptor }
+        }
+        # The ACEs of Microsoft's published Domain-DNS default descriptor, plus the RODCPREP grant.
+        function Get-C9DefaultHead {
+            param([string]$Dom = $script:C9Root, [string]$Root = $script:C9Root)
+            @(
+                (New-C9Ace -Sid 'S-1-5-11' -Mask $script:C9Mask.AuRead)
+                (New-C9Ace -Sid ('{0}-512' -f $Dom) -Mask $script:C9Mask.Da)
+                (New-C9Ace -Sid 'S-1-5-32-544' -Mask $script:C9Mask.Ba)
+                (New-C9Ace -Sid 'S-1-5-18' -Mask $script:C9Mask.Sy)
+                (New-C9Ace -Sid ('{0}-519' -f $Root) -Mask $script:C9Mask.Ea)
+                (New-C9Ace -Sid 'S-1-5-9' -Mask $script:C9Mask.Cr -ObjectType $script:C9Rep.Get)
+                (New-C9Ace -Sid 'S-1-5-9' -Mask $script:C9Mask.Cr -ObjectType $script:C9Rep.Filtered)
+                (New-C9Ace -Sid ('{0}-516' -f $Dom) -Mask $script:C9Mask.Cr -ObjectType $script:C9Rep.All)
+                (New-C9Ace -Sid 'S-1-5-32-544' -Mask $script:C9Mask.Cr -ObjectType $script:C9Rep.Get)
+                (New-C9Ace -Sid 'S-1-5-32-544' -Mask $script:C9Mask.Cr -ObjectType $script:C9Rep.All)
+                (New-C9Ace -Sid 'S-1-5-32-544' -Mask $script:C9Mask.Cr -ObjectType $script:C9Rep.Filtered)
+                (New-C9Ace -Sid ('{0}-498' -f $Root) -Mask $script:C9Mask.Cr -ObjectType $script:C9Rep.Get)
+                # Principal Self, inherit-only and scoped to the user class: never effective here.
+                (New-C9Ace -Sid 'S-1-5-10' -Mask $script:C9Mask.Wp -InheritOnly $true -InheritedObjectType $script:C9UserClass)
+            )
+        }
+        function Get-C9Verdict {
+            param($Read, [string]$RowKey = 'DCSync', [string]$Kind = 'DomainRoot', [string]$DomainSid = $script:C9Root, [string]$RootSid = $script:C9Root, $Config = $script:Ac,
+                [scriptblock]$Resolver = $null, [string]$DomainSidError = '', [string]$RootSidError = '')
+            Get-AdfaAclObjectVerdict -Domain 'contoso.com' -Item ('{0}: contoso.com' -f $RowKey) -ObjectKind $Kind -RowKey $RowKey -What 'the domain head of contoso.com' -Read $Read `
+                -DomainSid $DomainSid -DomainSidError $DomainSidError -RootDomainSid $RootSid -RootDomainSidError $RootSidError -Config $Config -NameResolver $Resolver
+        }
+        function Get-C9HeadVerdict {
+            param($Aces, [string]$Owner = ('{0}-512' -f $script:C9Root), [string]$RowKey = 'DCSync', [string]$DomainSid = $script:C9Root, [string]$RootSid = $script:C9Root, $Config = $script:Ac, [scriptblock]$Resolver = $null)
+            Get-C9Verdict -Read (New-C9Read -Descriptor (New-C9Descriptor -Aces $Aces -Owner $Owner)) -RowKey $RowKey -DomainSid $DomainSid -RootSid $RootSid -Config $Config -Resolver $Resolver
+        }
+        # The shape Get-AdfaAclDomainRaw returns.
+        function New-C9DomainRaw {
+            param([bool]$Ok = $true, [string]$Dn = 'DC=contoso,DC=com', [string]$Sid = $script:C9Root, [string]$Err = '', [string]$Type = '', [string]$SidError = '')
+            [pscustomobject]@{ Ok = $Ok; Error = $Err; ErrorType = $Type; DomainDn = $Dn; DomainSid = $Sid; DomainSidError = $SidError }
+        }
+        # The shape Get-AdfaAclGpoRaw returns.
+        function New-C9GpoRaw {
+            param($Items = @(), [bool]$Ok = $true, [string]$Err = '', [string]$Type = '')
+            $class = 'Read'
+            if (-not $Ok) { $class = Get-AdfaDirectoryReadErrorClass -Message $Err -TypeName $Type }
+            [pscustomobject]@{ Ok = $Ok; Class = $class; Error = $Err; ErrorType = $Type; SearchBase = 'CN=Policies,CN=System,DC=contoso,DC=com'; Items = @($Items) }
+        }
+        function New-C9GpoItem {
+            param([string]$Guid, $Read)
+            [pscustomobject]@{ Guid = $Guid; Dn = ('CN={0},CN=Policies,CN=System,DC=contoso,DC=com' -f $Guid); Read = $Read }
+        }
+        function Get-C9DefaultGpoAces {
+            param([string]$Dom = $script:C9Root, [string]$Root = $script:C9Root)
+            @(
+                (New-C9Ace -Sid ('{0}-512' -f $Dom) -Mask 0xF00FF)
+                (New-C9Ace -Sid ('{0}-519' -f $Root) -Mask 0xF00FF)
+                (New-C9Ace -Sid 'S-1-3-0' -Mask 0xF00FF -InheritOnly $true)
+                (New-C9Ace -Sid 'S-1-5-18' -Mask 0xF00FF)
+                (New-C9Ace -Sid 'S-1-5-11' -Mask $script:C9Mask.AuRead)
+                (New-C9Ace -Sid 'S-1-5-11' -Mask $script:C9Mask.Cr -ObjectType $script:C9ApplyGp)
+                (New-C9Ace -Sid 'S-1-5-9' -Mask $script:C9Mask.AuRead)
+            )
+        }
+        function Get-C9DomainRows {
+            param($DomainRaw = (New-C9DomainRaw), $Root = [pscustomobject]@{ Sid = $script:C9Root; Error = '' }, $Head = $null, $Admin = $null, $GpoRaw = $null, $Config = $script:Ac, [string]$Domain = 'contoso.com')
+            if ($null -eq $Head) { $Head = New-C9Read -Descriptor (New-C9Descriptor -Aces (Get-C9DefaultHead) -Owner ('{0}-512' -f $script:C9Root)) }
+            if ($null -eq $Admin) { $Admin = New-C9Read -Dn 'CN=AdminSDHolder,CN=System,DC=contoso,DC=com' -Descriptor (New-C9Descriptor -Owner ('{0}-512' -f $script:C9Root) -Aces @((New-C9Ace -Sid ('{0}-512' -f $script:C9Root) -Mask $script:C9Mask.Da), (New-C9Ace -Sid 'S-1-5-18' -Mask $script:C9Mask.Sy), (New-C9Ace -Sid 'S-1-5-11' -Mask $script:C9Mask.AuRead))) }
+            if ($null -eq $GpoRaw) { $GpoRaw = New-C9GpoRaw -Items @((New-C9GpoItem -Guid $script:C9G1 -Read (New-C9Read -Descriptor (New-C9Descriptor -Aces (Get-C9DefaultGpoAces) -Owner ('{0}-512' -f $script:C9Root))))) }
+            @(Get-AdfaAclDomainFinding -Domain $Domain -DomainRaw $DomainRaw -RootRaw $Root -HeadRead $Head -AdminRead $Admin -GpoRaw $GpoRaw -Config $Config -NameResolver $null)
+        }
+        function Get-C9Row { param($Rows, [string]$Item) $m = @($Rows | Where-Object { $_.Item -eq $Item }); if ($m.Count -eq 0) { return $null }; return $m[0] }
+        # SDDL to the two shapes the directory read may hand over. Windows only: SecurityIdentifier and
+        # ActiveDirectorySecurity are not supported elsewhere.
+        function ConvertTo-C9SdBytes { param([string]$Sddl)
+            $raw = New-Object System.Security.AccessControl.RawSecurityDescriptor -ArgumentList $Sddl
+            $bytes = New-Object byte[] $raw.BinaryLength
+            $raw.GetBinaryForm($bytes, 0)
+            return , $bytes }
+        $script:C9Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C9Main = @($script:C9Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C9Function { param([string]$Name)
+            return @($script:C9Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
+        function Get-C9Parameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C9Guard { param($Node)
+            $g = $Node.Parent
+            while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+            return $g.Clauses[0].Item1.Extent.Text }
+        function Get-C9Branch {
+            return @($script:C9Main[0].FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $n.Clauses[0].Item1.Extent.Text -match "^Test-SectionSelected 'Acl' \`$Sections$" }, $true)) }
+        # The functions of the row. Declared population: these 16, each found by name below.
+        $script:C9SectionNames = @('New-AdfaAclRow', 'ConvertTo-AdfaAclDescriptor', 'Get-AdfaAclAceRight', 'Test-AdfaAclDenyCover', 'Get-AdfaAclAllowedSet', 'Get-AdfaAclAnalysis',
+            'Get-AdfaAclReadLead', 'Get-AdfaAclObjectVerdict', 'Get-AdfaAclDomainRaw', 'Get-AdfaAclObjectRaw', 'Get-AdfaAclGpoRaw', 'Get-AdfaAclDomainFinding', 'Resolve-AdfaAclSidName',
+            'Get-AdfaDangerousAcl', 'Merge-AdfaAclConfig', 'Get-AdfaAclNormalMask')
+        $c9Names = @($script:C9SectionNames)
+        $script:C9SectionFunctions = @($script:C9Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $c9Names -contains $n.Name }.GetNewClosure(), $true))
+    }
+
+    Context 'Section wiring' {
+        It 'adds no -Sections value: Acl is the one value, and part of the default All run' {
+            $param = @($script:C9Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $param.Count | Should -Be 1
+            $values = @(@($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })[0].PositionalArguments | ForEach-Object { $_.Value })
+            $values | Should -Contain 'Acl'
+            $values | Should -Contain 'Gpo'   # non-vacuity: the list really was read
+            @($values | Where-Object { $_ -match '(?i)acl|dcsync|adminsd' }).Count | Should -Be 1
+            Test-SectionSelected 'Acl' @('All') | Should -BeTrue
+            Test-SectionSelected 'Acl' @('Gpo') | Should -BeFalse
+        }
+        It 'is called once, from the Acl branch of Invoke-Main, with the scoped domains, the forest root, the AD parameters and its config' {
+            $script:C9Main.Count | Should -Be 1
+            $branches = @(Get-C9Branch)
+            # Declared population: the one Acl branch.
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $calls = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDangerousAcl' }, $true))
+            $calls.Count | Should -Be 1
+            $expected = [ordered]@{ Domains = '$targetDomains'; RootDomain = '$rootDomain'; AdParams = '$adParams'; Config = '$aclConfig' }
+            # Declared population: the four parameters the collector is called with.
+            @($expected.Keys).Count | Should -Be 4
+            foreach ($p in @($expected.Keys)) {
+                $given = Get-C9Parameter -Call $calls[0] -Name $p
+                $given | Should -Not -BeNullOrEmpty -Because "the collector must be given -$p"
+                $given.Extent.Text | Should -Be $expected[$p] -Because "-$p must carry that value"
+            }
+            # The old per-domain call shape is gone.
+            (Get-C9Parameter -Call $calls[0] -Name 'DomainName') | Should -BeNullOrEmpty
+            Get-C9Guard $calls[0] | Should -Be '$forestError'
+            $rowAssign = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$aclRows' }, $true))
+            # Declared population: the forest-unreadable row and the collector's rows.
+            $rowAssign.Count | Should -Be 2
+            $rowAssign[0].Right.Extent.Text | Should -Match 'New-AdfaAclRow '
+            $rowAssign[0].Right.Extent.Text | Should -Match "-Status `\`$script:Status.NotAssessed"
+            $configAssigns = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$aclConfig' }, $true))
+            $configAssigns.Count | Should -Be 2
+            $configAssigns[0].Right.Extent.Text | Should -Be '$script:Config.Acl'
+            $configAssigns[1].Right.Extent.Text | Should -Be "`$configOverrides['Acl']"
+            Get-C9Guard $configAssigns[1] | Should -Be "`$configOverrides.ContainsKey('Acl')"
+            $section = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['Dangerous ACLs (DCSync)']" }, $true))
+            $section.Count | Should -Be 1
+            $section[0].Right.Extent.Text | Should -Be '@($aclRows)'
+            @($script:C9Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDangerousAcl' }, $true)).Count | Should -Be 1
+        }
+        It 'is registered for -ConfigOverridePath under Acl, used by the Acl section, with its own validator' {
+            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
+            $entry = $script:ConfigOverrideSections['Acl']
+            [string]$entry['ConfigKey'] | Should -Be 'Acl'
+            [string]$entry['Section'] | Should -Be 'Acl'
+            [string]$entry['Merge'] | Should -Be 'Merge-AdfaAclConfig'
+            Get-Command -Name 'Merge-AdfaAclConfig' -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        }
+        It 'retires the name-matching check: no Test-AdfaDcSyncAce, no DcSyncAllowedPatterns, no DcSyncRightGuids, no Get-Acl on the AD: drive' {
+            @(Get-C9Function -Name 'Test-AdfaDcSyncAce').Count | Should -Be 0
+            $script:Config.ContainsKey('DcSyncAllowedPatterns') | Should -BeFalse
+            $script:Config.ContainsKey('DcSyncRightGuids') | Should -BeFalse
+            $script:Config.ContainsKey('Acl') | Should -BeTrue   # non-vacuity
+            @($script:C9Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-Acl' }, $true)).Count | Should -Be 0
+        }
+        It 'reads through its seams only: two named AD cmdlets in three reads, and nothing that writes or persists a descriptor' {
+            # Declared population: the section's functions, every one found.
+            $script:C9SectionFunctions.Count | Should -Be $script:C9SectionNames.Count
+            $collector = @(Get-C9Function -Name 'Get-AdfaDangerousAcl')
+            $collector.Count | Should -Be 1
+            $inside = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            foreach ($seam in @('Get-AdfaAclObjectRaw', 'Get-AdfaAclGpoRaw', 'Get-AdfaAclDomainFinding')) {
+                @($inside | Where-Object { $_ -eq $seam }).Count | Should -BeGreaterThan 0 -Because "the collector calls $seam"
+            }
+            $adCalls = @()
+            foreach ($f in $script:C9SectionFunctions) {
+                $names = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+                @($names | Where-Object { $_ -match '(?i)^(Set|New|Remove|Add|Clear|Move|Rename|Enable|Disable|Reset|Update|Invoke|Import|Export|Start|Stop|Restore|Sync|Grant|Revoke)-(AD(?!fa)|Cim|Item|Acl|WmiObject|GP)' }).Count | Should -Be 0 -Because "$($f.Name) must not call a state-changing cmdlet"
+                @($names | Where-Object { $_ -match '(?i)^(Set-Acl|Get-Acl|dsacls|icacls|netdom|nltest|dcdiag|repadmin|ntdsutil|ldifde)(\.exe)?$|^Invoke-Expression$|^Invoke-ExternalCommand$' }).Count | Should -Be 0 -Because "$($f.Name) must not run a tool or touch the AD: drive"
+                $members = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] }, $true) | ForEach-Object { [string]$_.Member.Extent.Text })
+                @($members | Where-Object { $_ -match '(?i)^(Persist|SetAccessRule|AddAccessRule|RemoveAccessRule\w*|PurgeAccessRules|SetOwner|SetSecurityDescriptor\w*|SetAccessRuleProtection|Put|PutEx|SetInfo|CommitChanges|InvokeSet|Invoke|ModifyAccessRule)$' }).Count | Should -Be 0 -Because "$($f.Name) must not change or persist a security descriptor"
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -match '(?i)^(Replace|Add|Remove|Clear|Instance)$' }, $true)).Count | Should -Be 0 -Because "$($f.Name) must not pass a write parameter"
+                $adCalls += @($names | Where-Object { $_ -match '(?i)^Get-AD(?!fa)' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
+            }
+            # Declared population: the three directory reads of the row, in its three seams.
+            ($adCalls -join ',') | Should -Be 'Get-AdfaAclDomainRaw:Get-ADDomain,Get-AdfaAclObjectRaw:Get-ADObject,Get-AdfaAclGpoRaw:Get-ADObject'
+            # The descriptor is read through GetSecurityDescriptorBinaryForm and RawSecurityDescriptor, never GetAccessRules
+            # (which turns a descriptor without a DACL into "Everyone, full control").
+            $conv = @(Get-C9Function -Name 'ConvertTo-AdfaAclDescriptor')
+            $conv.Count | Should -Be 1
+            $convMembers = @($conv[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true) | ForEach-Object { [string]$_.Member.Extent.Text })
+            $convMembers | Should -Contain 'GetSecurityDescriptorBinaryForm'
+            $convMembers | Should -Not -Contain 'GetAccessRules'
+        }
+        It 'asks for nTSecurityDescriptor only, from the config table, by splat' {
+            $assigned = @()
+            foreach ($f in $script:C9SectionFunctions) {
+                $assigned += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Left.Member.Extent.Text -eq 'Properties' }, $true) | ForEach-Object { [string]$_.Right.Extent.Text })
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -eq 'Properties' }, $true)).Count | Should -Be 0 -Because "$($f.Name) passes its property list by splat"
+            }
+            # Declared population: the two property lists, the single objects' and the GPO search's.
+            ($assigned -join ' | ') | Should -Be '@($properties) | @($properties)'
+            (@($script:Ac['Properties']) -join ',') | Should -Be 'nTSecurityDescriptor'
+        }
+        It 'documents the rows and the Acl override key in the help' {
+            $help = $script:C9Ast.GetHelpContent()
+            ([string]$help.Description -replace '\s+', ' ') | Should -Match 'AdminSDHolder'
+            ([string]$help.Description -replace '\s+', ' ') | Should -Match 'matched by SID'
+            ([string]$help.Description -replace '\s+', ' ') | Should -Not -Match 'Dangerous ACLs: non-default principals holding DCSync rights on the domain head'
+            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'nTSecurityDescriptor'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eight sections can be named'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Acl"'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'FlaggedStatus'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'AdditionalAllowed'
+        }
+        It 'has the reworked row in the README Coverage table, and a README section of its own' {
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($readme | Where-Object { $_ -match '^\| Dangerous ACLs \|' })
+            $row.Count | Should -Be 1
+            $row[0] | Should -Match 'AdminSDHolder'
+            $row[0] | Should -Match 'SID'
+            @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
+            @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
+        }
+        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
+            [string]$script:Config.Version | Should -Be '1.26.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
+        }
+    }
+
+    Context 'Config table' {
+        It 'holds the tool default, labelled as such, the read date and its sources' {
+            [string]$script:Ac['FlaggedStatus'] | Should -Be 'Warning'
+            [string]$script:Ac['ThresholdSource'] | Should -Match 'tool default'
+            [string]$script:Ac['ThresholdSource'] | Should -Match 'not a Microsoft value'
+            [string]$script:Ac['AllowlistNote'] | Should -Match 'allowlist provisional'
+            [string]$script:Ac['ReadDate'] | Should -Be '2026-11-16'
+            foreach ($u in @('c-domaindns', 'c-grouppolicycontainer', 'appendix-c--protected-accounts', 'replication-error-8453')) { [string]$script:Ac['SourceUrl'] | Should -Match $u }
+            [string]$script:Ac['AdminSdHolderRdn'] | Should -Be 'CN=AdminSDHolder,CN=System'
+            [string]$script:Ac['PoliciesContainerRdn'] | Should -Be 'CN=Policies,CN=System'
+            [string]$script:Ac['GpoFilter'] | Should -Be '(objectClass=groupPolicyContainer)'
+            @($script:Ac['AdditionalAllowed']).Count | Should -Be 0
+        }
+        It 'holds the three replication rights GUIDs Microsoft publishes, under their full names' {
+            $rep = @($script:Ac['ReplicationRights'])
+            # Declared population: three rights.
+            $rep.Count | Should -Be 3
+            (@($rep | ForEach-Object { '{0}={1}' -f $_['Name'], $_['Guid'] }) -join ',') | Should -Be ('DS-Replication-Get-Changes={0},DS-Replication-Get-Changes-All={1},DS-Replication-Get-Changes-In-Filtered-Set={2}' -f $script:C9Rep.Get, $script:C9Rep.All, $script:C9Rep.Filtered)
+            $m = $script:Ac['Masks']
+            '{0},{1},{2},{3},{4},{5},{6},{7}' -f $m['WriteDacl'], $m['WriteOwner'], $m['WriteProperty'], $m['ExtendedRight'], $m['GenericAllBit'], $m['GenericWriteBit'], $m['GenericAll'], $m['GenericWrite'] | Should -Be '262144,524288,32,256,268435456,1073741824,983551,131112'
+        }
+        It 'holds the allowlist by SID or RID only, each row with its origin, and nothing matched by name' {
+            $rows = @($script:Ac['Allowlist'])
+            # Declared population: eighteen allowlist rows (ten before the C9 review split the GPO rights
+            # Learn publishes from the extended rights it does not, and added ED's Get-Changes-All).
+            $rows.Count | Should -Be 18
+            $keys = @($rows | ForEach-Object { if ($_.ContainsKey('Sid')) { '{0}:{1}' -f $_['Sid'], (@($_['Objects']) -join '+') } else { '{0}-{1}:{2}' -f $_['Scope'], $_['Rid'], (@($_['Objects']) -join '+') } })
+            ($keys -join ',') | Should -Be 'S-1-5-18:DomainRoot,S-1-5-18:Gpo,S-1-5-18:AdminSDHolder,S-1-5-18:Gpo,S-1-5-32-544:DomainRoot+AdminSDHolder,S-1-5-32-544:Gpo,Domain-512:DomainRoot+AdminSDHolder,Domain-512:Gpo,Domain-512:Gpo,ForestRoot-519:DomainRoot+AdminSDHolder,ForestRoot-519:Gpo,ForestRoot-519:Gpo,S-1-5-9:DomainRoot,S-1-5-9:DomainRoot,Domain-516:DomainRoot,ForestRoot-498:DomainRoot,S-1-3-0:Gpo,S-1-3-0:Gpo'
+            foreach ($r in $rows) { [string]$r['Origin'] | Should -Match '^(Learn: |tool default \((D14|C9)\), not a Microsoft value$)' }
+            # Enterprise Read-only Domain Controllers: Replicating Directory Changes only, never -All.
+            (@(@($rows | Where-Object { $_['Rid'] -eq 498 })[0]['Rights']) -join ',') | Should -Be 'DS-Replication-Get-Changes'
+            (@(@($rows | Where-Object { $_['Rid'] -eq 516 })[0]['Rights']) -join ',') | Should -Be 'DS-Replication-Get-Changes-All'
+        }
+    }
+
+    Context 'ConvertTo-AdfaAclDescriptor (the Windows seam: the binary descriptor read in memory)' {
+        It 'reads owner, DACL presence and every ACE in order, from bytes and from an ActiveDirectorySecurity alike' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $sddl = ('O:{0}-512G:{0}-512D:(OD;;CR;{1};;{0}-1105)(OA;;CR;{1};;{0}-1105)(A;;RPLCLORC;;;AU)(A;CIIO;GA;;;{0}-1106)(OA;CI;WP;;{2};{0}-1107)(A;ID;WD;;;{0}-1110)' -f $script:C9Root, $script:C9Rep.All, $script:C9UserClass)
+            $bytes = ConvertTo-C9SdBytes -Sddl $sddl
+            $fromBytes = ConvertTo-AdfaAclDescriptor -Value $bytes
+            Add-Type -AssemblyName System.DirectoryServices
+            $ads = New-Object System.DirectoryServices.ActiveDirectorySecurity
+            $ads.SetSecurityDescriptorBinaryForm($bytes)
+            $fromAds = ConvertTo-AdfaAclDescriptor -Value $ads
+            $expected = @(('{0}-1105|False|Object|256|False|False|{1}|' -f $script:C9Root, $script:C9Rep.All), ('{0}-1105|True|Object|256|False|False|{1}|' -f $script:C9Root, $script:C9Rep.All),
+                'S-1-5-11|True|Common|131220|False|False||', ('{0}-1106|True|Common|268435456|True|False||' -f $script:C9Root), ('{0}-1107|True|Object|32|False|False||{1}' -f $script:C9Root, $script:C9UserClass),
+                ('{0}-1110|True|Common|262144|False|True||' -f $script:C9Root))
+            foreach ($d in @($fromBytes, $fromAds)) {
+                $d.Ok | Should -BeTrue
+                $d.Class | Should -Be 'Read'
+                $d.OwnerSid | Should -Be ('{0}-512' -f $script:C9Root)
+                # Declared population: six ACEs.
+                $d.AceCount | Should -Be 6
+                $got = @($d.Aces | ForEach-Object { '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}' -f $_.Sid, $_.Allow, $_.Kind, $_.Mask, $_.InheritOnly, $_.Inherited, $_.ObjectType, $_.InheritedObjectType })
+                (@($got | Sort-Object) -join ' / ') | Should -Be (@($expected | Sort-Object) -join ' / ')
+                (@($d.Aces | ForEach-Object { [string]$_.Index }) -join ',') | Should -Be '0,1,2,3,4,5'
+                # The deny comes first, as in the descriptor, and the inherited ACE last.
+                $got[0] | Should -Be $expected[0]
+                $got[5] | Should -Be $expected[5]
+            }
+            # From bytes the order is the DACL's own. An ActiveDirectorySecurity hands a canonical DACL back
+            # regrouped (measured 2026-11-16 on 5.1 and 7: explicit allows reordered among themselves, denies
+            # still first), which does not change which deny comes before which allow.
+            ($expected -join ' / ') | Should -Be (@($fromBytes.Aces | ForEach-Object { '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}' -f $_.Sid, $_.Allow, $_.Kind, $_.Mask, $_.InheritOnly, $_.Inherited, $_.ObjectType, $_.InheritedObjectType }) -join ' / ')
+        }
+        It 'reports a descriptor with no DACL as DaclAbsent, never as "Everyone, full control" and never as no ACE' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $bytes = ConvertTo-C9SdBytes -Sddl ('O:{0}-512G:{0}-512' -f $script:C9Root)
+            $d = ConvertTo-AdfaAclDescriptor -Value $bytes
+            $d.Ok | Should -BeFalse
+            $d.Class | Should -Be 'DaclAbsent'
+            $d.OwnerSid | Should -Be ('{0}-512' -f $script:C9Root)
+            @($d.Aces).Count | Should -Be 0
+            # An EMPTY DACL is a DACL: read, with no ACE.
+            $empty = ConvertTo-AdfaAclDescriptor -Value (ConvertTo-C9SdBytes -Sddl ('O:{0}-512G:{0}-512D:' -f $script:C9Root))
+            $empty.Class | Should -Be 'Read'
+            $empty.AceCount | Should -Be 0
+        }
+        It 'reads a generic bit and an access mask with the top bit set as an unsigned number' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $d = ConvertTo-AdfaAclDescriptor -Value (ConvertTo-C9SdBytes -Sddl ('O:{0}-512D:(A;;GR;;;{0}-1105)(A;;GW;;;{0}-1106)' -f $script:C9Root))
+            (@($d.Aces | ForEach-Object { [string]$_.Mask }) -join ',') | Should -Be '2147483648,1073741824'
+        }
+        It 'refuses what is not a descriptor, and says a value that was not returned was not returned, without throwing' {
+            $null2 = ConvertTo-AdfaAclDescriptor -Value $null
+            $null2.Class | Should -Be 'NotReturned'
+            $null2.Ok | Should -BeFalse
+            $text = ConvertTo-AdfaAclDescriptor -Value 'O:DAG:DAD:(A;;GA;;;WD)'
+            $text.Class | Should -Be 'Unparseable'
+            $text.Error | Should -Match 'String'
+            $junk = ConvertTo-AdfaAclDescriptor -Value ([byte[]](1, 2, 3))
+            $junk.Class | Should -Be 'Unparseable'
+            $junk.Ok | Should -BeFalse
+        }
+    }
+
+    Context 'Rights of one ACE (pure): decided by access mask bits, never by a rights name' {
+        It 'reads full control, the generic bits, WriteDacl, WriteOwner, write of all properties and the extended rights' {
+            $cases = [ordered]@{
+                'full control 0xF01FF'          = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0xF01FF); Expect = 'True|WriteDacl,WriteOwner,WriteAllProperties,AllExtendedRights,DS-Replication-Get-Changes,DS-Replication-Get-Changes-All,DS-Replication-Get-Changes-In-Filtered-Set' }
+                'GENERIC_ALL bit'               = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x10000000); Expect = 'True|WriteDacl,WriteOwner,WriteAllProperties,AllExtendedRights,DS-Replication-Get-Changes,DS-Replication-Get-Changes-All,DS-Replication-Get-Changes-In-Filtered-Set' }
+                'GENERIC_WRITE bit'             = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x40000000); Expect = 'False|WriteAllProperties' }
+                'GenericWrite 131112'           = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 131112); Expect = 'False|WriteAllProperties' }
+                'GenericRead 131220'            = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 131220); Expect = 'False|' }
+                'ReadControl alone'             = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x20000); Expect = 'False|' }
+                'WriteDacl'                     = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x40000); Expect = 'False|WriteDacl' }
+                'WriteOwner'                    = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x80000); Expect = 'False|WriteOwner' }
+                'write one property'            = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x20 -ObjectType $script:C9PropGuid); Expect = 'False|' }
+                'all extended rights'           = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x100); Expect = 'False|AllExtendedRights,DS-Replication-Get-Changes,DS-Replication-Get-Changes-All,DS-Replication-Get-Changes-In-Filtered-Set' }
+                'Get-Changes'                   = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x100 -ObjectType $script:C9Rep.Get); Expect = 'False|DS-Replication-Get-Changes' }
+                'Get-Changes-All, upper case'   = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x100 -ObjectType $script:C9Rep.All.ToUpperInvariant()); Expect = 'False|DS-Replication-Get-Changes-All' }
+                'In-Filtered-Set'               = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x100 -ObjectType $script:C9Rep.Filtered); Expect = 'False|DS-Replication-Get-Changes-In-Filtered-Set' }
+                'Apply-Group-Policy'            = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x100 -ObjectType $script:C9ApplyGp); Expect = 'False|' }
+                'Domain Admins default 0xE01BD' = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0xE01BD); Expect = 'False|WriteDacl,WriteOwner,WriteAllProperties,AllExtendedRights,DS-Replication-Get-Changes,DS-Replication-Get-Changes-All,DS-Replication-Get-Changes-In-Filtered-Set' }
+            }
+            # Declared population: fifteen masks.
+            @($cases.Keys).Count | Should -Be 15
+            foreach ($k in @($cases.Keys)) {
+                $r = Get-AdfaAclAceRight -Ace $cases[$k]['Ace'] -ObjectKind 'DomainRoot' -Config $script:Ac
+                ('{0}|{1}' -f $r.GenericAll, (@($r.Atoms) -join ',')) | Should -Be $cases[$k]['Expect'] -Because $k
+            }
+        }
+        It 'reads one bit short of full control as not full control' {
+            (Get-AdfaAclAceRight -Ace (New-C9Ace -Sid 'S-1-1-0' -Mask 0xF01FE) -ObjectKind 'DomainRoot' -Config $script:Ac).GenericAll | Should -BeFalse
+            (Get-AdfaAclAceRight -Ace (New-C9Ace -Sid 'S-1-1-0' -Mask 0xF01FF) -ObjectKind 'DomainRoot' -Config $script:Ac).GenericAll | Should -BeTrue
+        }
+    }
+
+    Context 'Verdicts (pure): one object read to one row' {
+        It 'passes Microsoft''s published default holders of the domain head on both rows, matched by SID' {
+            $dcsync = Get-C9HeadVerdict -Aces (Get-C9DefaultHead)
+            $dcsync.Status | Should -Be 'Pass'
+            $dcsync.Detail | Should -Match '^No principal outside the allowlist holds '
+            $dcsync.Detail | Should -Match 'allowlist provisional'
+            $dcsync.AceCount | Should -Be '13'
+            $control = Get-C9HeadVerdict -Aces (Get-C9DefaultHead) -RowKey 'DomainRootControl'
+            $control.Status | Should -Be 'Pass'
+            # Declared population of the row's columns.
+            (@($dcsync.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') | Should -Be 'Scope,Area,Item,Status,Detail,NotRun,Evidence,CatalogueId,Severity,ObjectKind,ObjectDn,ReadFrom,OwnerSid,AceCount,FlaggedSids,RightsHeld,Principals,Undecided,AllowlistNote,Population,ReadCount,FlaggedCount,NotAssessedCount'
+            $dcsync.CatalogueId | Should -Be 'ADA-ACL-001'
+            $dcsync.Severity | Should -Be 'High'
+            $dcsync.Area | Should -Be 'ACL'
+            $dcsync.Scope | Should -Be 'contoso.com'
+        }
+        It 'flags a SID outside the allowlist that holds Get-Changes-All, whatever name it resolves to (red demo: "Fake Administrators")' {
+            $fake = ('{0}-1105' -f $script:C9Root)
+            $resolver = { param($Sid) if ($Sid -like '*-1105') { 'CONTOSO\Fake Administrators' } else { 'BUILTIN\Administrators' } }
+            $aces = @(Get-C9DefaultHead) + @(New-C9Ace -Sid $fake -Mask 0x100 -ObjectType $script:C9Rep.All)
+            $r = Get-C9HeadVerdict -Aces $aces -Resolver $resolver
+            $r.Status | Should -Be 'Warning'
+            $r.Detail | Should -Match ('^1 principal\(s\) outside the allowlist hold .* on the domain head of contoso\.com: {0} \(DS-Replication-Get-Changes-All\)' -f [regex]::Escape($fake))
+            $r.Detail | Should -Match 'matched by SID only, never by name'
+            $r.Detail | Should -Not -Match 'Fake Administrators'
+            $r.FlaggedSids | Should -Be $fake
+            $r.Principals | Should -Be ('{0} = CONTOSO\Fake Administrators' -f $fake)
+            # The same SID resolving to the real builtin name changes nothing: the name is never read.
+            $resolver2 = { param($Sid) 'BUILTIN\Administrators' }
+            (Get-C9HeadVerdict -Aces $aces -Resolver $resolver2).Status | Should -Be 'Warning'
+        }
+        It 'keeps an unresolvable SID as its SID, marked unresolved, and never drops it' {
+            $sid = ('{0}-1200' -f $script:C9North)
+            $r = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid $sid -Mask 0x100)) -Resolver { param($Sid) '' }
+            $r.Status | Should -Be 'Warning'
+            $r.FlaggedSids | Should -Be $sid
+            $r.Principals | Should -Be ('{0} = unresolved' -f $sid)
+            $r.RightsHeld | Should -Match ('^{0}: AllExtendedRights, DS-Replication-Get-Changes, DS-Replication-Get-Changes-All, DS-Replication-Get-Changes-In-Filtered-Set$' -f [regex]::Escape($sid))
+            # With no resolver at all every name is unresolved.
+            (Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid $sid -Mask 0x100))).Principals | Should -Be ('{0} = unresolved' -f $sid)
+        }
+        It 'allows Enterprise Read-only Domain Controllers Replicating Directory Changes, and flags Replicating Directory Changes All' {
+            $erodc = ('{0}-498' -f $script:C9Root)
+            (Get-C9HeadVerdict -Aces (Get-C9DefaultHead)).Status | Should -Be 'Pass'
+            $r = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid $erodc -Mask 0x100 -ObjectType $script:C9Rep.All))
+            $r.Status | Should -Be 'Warning'
+            $r.RightsHeld | Should -Be ('{0}: DS-Replication-Get-Changes-All' -f $erodc)
+        }
+        It 'resolves Enterprise Admins and ERODC against the forest root, and Domain Admins and Domain Controllers against the scoped domain' {
+            # north.contoso.com: its own -512 and -516, the root's -519 and -498 pass.
+            (Get-C9HeadVerdict -Aces (Get-C9DefaultHead -Dom $script:C9North -Root $script:C9Root) -DomainSid $script:C9North -Owner ('{0}-512' -f $script:C9North)).Status | Should -Be 'Pass'
+            # The ROOT domain's Domain Controllers holding Get-Changes-All on the CHILD domain head is not a default.
+            $r = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead -Dom $script:C9North) + @(New-C9Ace -Sid ('{0}-516' -f $script:C9Root) -Mask 0x100 -ObjectType $script:C9Rep.All)) -DomainSid $script:C9North -Owner ('{0}-512' -f $script:C9North)
+            $r.Status | Should -Be 'Warning'
+            $r.FlaggedSids | Should -Be ('{0}-516' -f $script:C9Root)
+        }
+        It 'honours a deny only when it names the same SID, comes first, applies to the object and covers every flagged bit' {
+            $x = ('{0}-1105' -f $script:C9Root)
+            $allow = New-C9Ace -Sid $x -Mask 0x100 -ObjectType $script:C9Rep.All
+            $cases = [ordered]@{
+                'deny first, same SID, same right'   = @{ Aces = @((New-C9Ace -Sid $x -Mask 0x100 -ObjectType $script:C9Rep.All -Allow $false), $allow); Expect = 'Pass' }
+                'deny first, all extended rights'    = @{ Aces = @((New-C9Ace -Sid $x -Mask 0x100 -Allow $false), $allow); Expect = 'Pass' }
+                'deny after the allow'               = @{ Aces = @($allow, (New-C9Ace -Sid $x -Mask 0x100 -ObjectType $script:C9Rep.All -Allow $false)); Expect = 'Warning' }
+                'deny of another SID'                = @{ Aces = @((New-C9Ace -Sid ('{0}-1106' -f $script:C9Root) -Mask 0x100 -Allow $false), $allow); Expect = 'Warning' }
+                'deny of another right'              = @{ Aces = @((New-C9Ace -Sid $x -Mask 0x100 -ObjectType $script:C9Rep.Get -Allow $false), $allow); Expect = 'Warning' }
+                'deny that is inherit-only'          = @{ Aces = @((New-C9Ace -Sid $x -Mask 0x100 -Allow $false -InheritOnly $true), $allow); Expect = 'Warning' }
+            }
+            # Declared population: six orderings.
+            @($cases.Keys).Count | Should -Be 6
+            foreach ($k in @($cases.Keys)) {
+                $r = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @($cases[$k]['Aces']))
+                $r.Status | Should -Be $cases[$k]['Expect'] -Because $k
+            }
+            # A deny that covers WriteDacl only leaves the WriteOwner of a full-control grant flagged.
+            $partial = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @((New-C9Ace -Sid $x -Mask 0x40000 -Allow $false), (New-C9Ace -Sid $x -Mask 0xF01FF))) -RowKey 'DomainRootControl'
+            $partial.Status | Should -Be 'Warning'
+            $partial.Evidence | Should -Match 'deny'
+            $covered = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @((New-C9Ace -Sid $x -Mask 0xF01FF -Allow $false), (New-C9Ace -Sid $x -Mask 0xF01FF))) -RowKey 'DomainRootControl'
+            $covered.Status | Should -Be 'Pass'
+            $covered.Evidence | Should -Match 'cancelled by an earlier deny'
+        }
+        It 'skips an inherit-only ACE, and flags one scoped to a child class through InheritedObjectType but not inherit-only' {
+            $x = ('{0}-1107' -f $script:C9Root)
+            (Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid $x -Mask 0xF01FF -InheritOnly $true))).Status | Should -Be 'Pass'
+            (Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid $x -Mask 0x40000 -InheritOnly $true -InheritedObjectType $script:C9UserClass)) -RowKey 'DomainRootControl').Status | Should -Be 'Pass'
+            $effective = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid $x -Mask 0x40000 -InheritedObjectType $script:C9UserClass)) -RowKey 'DomainRootControl'
+            $effective.Status | Should -Be 'Warning'
+            $effective.RightsHeld | Should -Be ('{0}: WriteDacl' -f $x)
+            # An inherited ACE is effective on the object.
+            (Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid $x -Mask 0x80000 -Inherited $true)) -RowKey 'DomainRootControl').Status | Should -Be 'Warning'
+        }
+        It 'grades the owner as holding WriteDacl on the control row, and not on the DCSync row' {
+            $owner = ('{0}-1300' -f $script:C9Root)
+            $control = Get-C9HeadVerdict -Aces (Get-C9DefaultHead) -Owner $owner -RowKey 'DomainRootControl'
+            $control.Status | Should -Be 'Warning'
+            $control.RightsHeld | Should -Be ('{0}: owner (implicit WriteDacl)' -f $owner)
+            $control.OwnerSid | Should -Be $owner
+            (Get-C9HeadVerdict -Aces (Get-C9DefaultHead) -Owner $owner -RowKey 'DCSync').Status | Should -Be 'Pass'
+            (Get-C9HeadVerdict -Aces (Get-C9DefaultHead) -Owner 'S-1-5-32-544' -RowKey 'DomainRootControl').Status | Should -Be 'Pass'
+        }
+        It 'fails closed on an account SID it cannot decide because a domain SID was not read, and still decides the rest' {
+            $x = ('{0}-1105' -f $script:C9Root)
+            # Domain SID not read: an account-domain SID could be this domain's Domain Admins.
+            $u = Get-C9HeadVerdict -Aces (Get-C9DefaultHead) -DomainSid ''
+            $u.Status | Should -Be 'Not Assessed'
+            $u.Detail | Should -Match 'could not be decided'
+            $u.Undecided | Should -Match ('{0}-512' -f $script:C9Root)
+            # A non-default account SID is undecided too - never passed - while the domain SID is unknown.
+            $ux = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid $x -Mask 0x100)) -DomainSid ''
+            $ux.Status | Should -Be 'Not Assessed'
+            $ux.Undecided | Should -Match $x
+            # Root SID not read: the child domain's own SIDs are decided; the root's -519 is not.
+            $child = Get-C9HeadVerdict -Aces (Get-C9DefaultHead -Dom $script:C9North) -DomainSid $script:C9North -RootSid '' -Owner ('{0}-512' -f $script:C9North)
+            $child.Status | Should -Be 'Not Assessed'
+            $child.Undecided | Should -Match ('{0}-519' -f $script:C9Root)
+            $child.Undecided | Should -Not -Match ('{0}-512' -f $script:C9North)
+            # Well-known SIDs never need a domain SID: SYSTEM alone with full control passes.
+            (Get-C9HeadVerdict -Aces @(New-C9Ace -Sid 'S-1-5-18' -Mask 0xF01FF) -DomainSid '' -RootSid '' -Owner 'S-1-5-18' -RowKey 'DomainRootControl').Status | Should -Be 'Pass'
+            # A flagged well-known SID beside an undecided one: the row is the flagged grade and names both.
+            $mixed = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid 'S-1-5-11' -Mask 0x100)) -DomainSid ''
+            $mixed.Status | Should -Be 'Warning'
+            $mixed.FlaggedSids | Should -Be 'S-1-5-11'
+            $mixed.Detail | Should -Match 'could not be decided'
+        }
+        It 'fails closed on an ACE it cannot interpret' {
+            $r = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid 'S-1-1-0' -Mask 0xF01FF -Kind 'Other'))
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'not interpreted'
+        }
+        It 'tells unreachable, access denied, timed out, not returned, no DACL and unparseable apart, and never passes any of them' {
+            $cases = [ordered]@{
+                Unreachable  = @{ Read = (New-C9Read -Class 'Unreachable' -Err 'Unable to contact the server.' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException'); Lead = '^Unreachable: ' }
+                AccessDenied = @{ Read = (New-C9Read -Class 'AccessDenied' -Err 'Access is denied.' -Type 'System.UnauthorizedAccessException'); Lead = '^Access denied: ' }
+                TimedOut     = @{ Read = (New-C9Read -Class 'TimedOut' -Err 'The operation timed out.' -Type 'System.TimeoutException'); Lead = '^Timed out: ' }
+                NotReturned  = @{ Read = (New-C9Read -Class 'NotReturned' -Err 'x'); Lead = '^Not returned: ' }
+                DaclAbsent   = @{ Read = (New-C9Read -Class 'DaclAbsent' -Descriptor (New-C9Descriptor -Class 'DaclAbsent' -Owner 'S-1-5-32-544')); Lead = '^No DACL returned: ' }
+                Unparseable  = @{ Read = (New-C9Read -Class 'Unparseable' -Err 'a value of type System.String is not a security descriptor'); Lead = '^Not read: ' }
+                Refused      = @{ Read = (New-C9Read -Class 'Refused' -Err 'the property list is not nTSecurityDescriptor alone'); Lead = 'defect in the tool' }
+            }
+            # Declared population: seven failed reads.
+            @($cases.Keys).Count | Should -Be 7
+            foreach ($k in @($cases.Keys)) {
+                $r = Get-C9Verdict -Read $cases[$k]['Read']
+                $r.Status | Should -Be 'Not Assessed' -Because $k
+                $r.Detail | Should -Match $cases[$k]['Lead'] -Because $k
+                $r.FlaggedSids | Should -Be '' -Because $k
+                $r.AceCount | Should -Be '' -Because "$k measured no ACE"
+            }
+            (Get-C9Verdict -Read $null).Detail | Should -Match 'defect in the tool'
+        }
+        It 'grades a flagged row Fail when the file says so, and cites the file' {
+            $cfg = Merge-AdfaAclConfig -BaseConfig $script:Ac -Override @{ FlaggedStatus = 'Fail' } -OverrideSource 'C:\cfg\acl.json'
+            $r = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid 'S-1-5-11' -Mask 0x100)) -Config $cfg
+            $r.Status | Should -Be 'Fail'
+            $r.Detail | Should -Match 'acl\.json'
+            (Get-C9HeadVerdict -Aces (Get-C9DefaultHead) -Config $cfg).Status | Should -Be 'Pass'
+        }
+    }
+
+    Context 'One domain (pure): four rows, then one row per GPO and a summary' {
+        It 'gives the domain head two rows, AdminSDHolder one, each GPO one and the GPOs a summary, in that order, scoped to the domain' {
+            $gpo = New-C9GpoRaw -Items @(
+                (New-C9GpoItem -Guid $script:C9G1 -Read (New-C9Read -Descriptor (New-C9Descriptor -Aces (Get-C9DefaultGpoAces) -Owner ('{0}-512' -f $script:C9Root))))
+                (New-C9GpoItem -Guid $script:C9G2 -Read (New-C9Read -Descriptor (New-C9Descriptor -Aces (Get-C9DefaultGpoAces) -Owner ('{0}-512' -f $script:C9Root)))))
+            $rows = Get-C9DomainRows -GpoRaw $gpo
+            # Declared population: 3 object rows + 2 GPO rows + 1 summary.
+            $rows.Count | Should -Be 6
+            (@($rows | ForEach-Object { '{0}={1}' -f $_.Item, $_.Status }) -join ',') | Should -Be ('DCSync rights: contoso.com=Pass,Domain root control rights: contoso.com=Pass,AdminSDHolder rights: contoso.com=Pass,GPO rights: {0}=Pass,GPO rights: {1}=Pass,GPO rights summary: contoso.com=Pass' -f $script:C9G1, $script:C9G2)
+            @($rows | Where-Object { $_.Scope -ne 'contoso.com' -or $_.Area -ne 'ACL' }).Count | Should -Be 0
+            (@($rows | ForEach-Object { $_.CatalogueId }) -join ',') | Should -Be 'ADA-ACL-001,ADA-ACL-001,ADA-ACL-002,ADA-ACL-003,ADA-ACL-003,ADA-ACL-003'
+            $sum = Get-C9Row $rows 'GPO rights summary: contoso.com'
+            '{0}/{1}/{2}/{3}' -f $sum.Population, $sum.ReadCount, $sum.FlaggedCount, $sum.NotAssessedCount | Should -Be '2/2/0/0'
+            $first = (@($rows[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ',')
+            foreach ($r in $rows) { (@($r.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') | Should -Be $first }
+        }
+        It 'flags the creator of a GPO who holds full control through the Creator Owner grant, and the Apply-Group-Policy right of Authenticated Users never' {
+            $creator = ('{0}-1400' -f $script:C9Root)
+            $aces = @(Get-C9DefaultGpoAces) + @(New-C9Ace -Sid $creator -Mask 0xF00FF)
+            $gpo = New-C9GpoRaw -Items @((New-C9GpoItem -Guid $script:C9G1 -Read (New-C9Read -Descriptor (New-C9Descriptor -Aces $aces -Owner $creator))))
+            $rows = Get-C9DomainRows -GpoRaw $gpo
+            $g = Get-C9Row $rows ('GPO rights: {0}' -f $script:C9G1)
+            $g.Status | Should -Be 'Warning'
+            $g.FlaggedSids | Should -Be $creator
+            $g.RightsHeld | Should -Match 'owner \(implicit WriteDacl\)'
+            $g.Severity | Should -Be 'Medium'
+            (Get-C9Row $rows 'GPO rights summary: contoso.com').Status | Should -Be 'Warning'
+            (Get-C9Row $rows 'GPO rights summary: contoso.com').FlaggedCount | Should -Be '1'
+        }
+        It 'gives a mixed GPO population - one flagged, one read, one refused, one with no descriptor - one row each and counts that add up' {
+            $ok = New-C9Read -Descriptor (New-C9Descriptor -Aces (Get-C9DefaultGpoAces) -Owner ('{0}-512' -f $script:C9Root))
+            $bad = New-C9Read -Descriptor (New-C9Descriptor -Aces (@(Get-C9DefaultGpoAces) + @(New-C9Ace -Sid 'S-1-5-11' -Mask 0x40000)) -Owner ('{0}-512' -f $script:C9Root))
+            $gpo = New-C9GpoRaw -Items @((New-C9GpoItem -Guid $script:C9G1 -Read $ok), (New-C9GpoItem -Guid $script:C9G2 -Read $bad), (New-C9GpoItem -Guid $script:C9G3 -Read (New-C9Read -Class 'NotReturned' -Err 'x')))
+            $rows = Get-C9DomainRows -GpoRaw $gpo
+            # Declared population: three GPO rows and the summary beside the three object rows.
+            $rows.Count | Should -Be 7
+            (@($rows | Where-Object { $_.Item -like 'GPO rights: *' } | ForEach-Object { $_.Status }) -join ',') | Should -Be 'Pass,Warning,Not Assessed'
+            $sum = Get-C9Row $rows 'GPO rights summary: contoso.com'
+            $sum.Status | Should -Be 'Warning'
+            '{0}/{1}/{2}/{3}' -f $sum.Population, $sum.ReadCount, $sum.FlaggedCount, $sum.NotAssessedCount | Should -Be '3/2/1/1'
+            $sum.Detail | Should -Match '1 could not be assessed'
+            # Without the flagged one the summary is Not Assessed, never Pass.
+            $gpo2 = New-C9GpoRaw -Items @((New-C9GpoItem -Guid $script:C9G1 -Read $ok), (New-C9GpoItem -Guid $script:C9G3 -Read (New-C9Read -Class 'AccessDenied' -Err 'Access is denied.' -Type 'System.UnauthorizedAccessException')))
+            (Get-C9Row (Get-C9DomainRows -GpoRaw $gpo2) 'GPO rights summary: contoso.com').Status | Should -Be 'Not Assessed'
+        }
+        It 'reports an empty GPO search and a refused GPO search as Not Assessed, never as a clean domain' {
+            $empty = Get-C9Row (Get-C9DomainRows -GpoRaw (New-C9GpoRaw -Items @())) 'GPO rights summary: contoso.com'
+            $empty.Status | Should -Be 'Not Assessed'
+            $empty.Population | Should -Be '0'
+            $empty.Detail | Should -Match 'No groupPolicyContainer is visible to this account'
+            $denied = @(Get-C9DomainRows -GpoRaw (New-C9GpoRaw -Ok $false -Err 'Access is denied.' -Type 'System.UnauthorizedAccessException'))
+            @($denied | Where-Object { $_.Item -like 'GPO rights: *' }).Count | Should -Be 0
+            $ds = Get-C9Row $denied 'GPO rights summary: contoso.com'
+            $ds.Status | Should -Be 'Not Assessed'
+            $ds.Detail | Should -Match '^Access denied: '
+            $ds.Population | Should -Be ''
+        }
+        It 'gives a domain that could not be read four Not Assessed rows with its cause, unreachable and denied told apart' {
+            $un = Get-C9DomainRows -DomainRaw (New-C9DomainRaw -Ok $false -Dn '' -Sid '' -Err 'Unable to contact the server.' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException')
+            # Declared population: the four rows a domain always gets.
+            @($un).Count | Should -Be 4
+            (@($un | ForEach-Object { $_.Item }) -join ',') | Should -Be 'DCSync rights: contoso.com,Domain root control rights: contoso.com,AdminSDHolder rights: contoso.com,GPO rights summary: contoso.com'
+            @($un | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Unreachable: ' }).Count | Should -Be 4
+            $den = Get-C9DomainRows -DomainRaw (New-C9DomainRaw -Ok $false -Dn '' -Sid '' -Err 'Access is denied.' -Type 'System.UnauthorizedAccessException')
+            @($den | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Access denied: ' }).Count | Should -Be 4
+        }
+        It 'makes only the rows of a refused head read Not Assessed, and grades AdminSDHolder and the GPOs on their own reads' {
+            $rows = Get-C9DomainRows -Head (New-C9Read -Class 'AccessDenied' -Err 'Access is denied.' -Type 'System.UnauthorizedAccessException')
+            (@($rows | ForEach-Object { $_.Status }) -join ',') | Should -Be 'Not Assessed,Not Assessed,Pass,Pass,Pass'
+        }
+        It 'flags a non-default writer on AdminSDHolder' {
+            $x = ('{0}-1500' -f $script:C9North)
+            $admin = New-C9Read -Dn 'CN=AdminSDHolder,CN=System,DC=contoso,DC=com' -Descriptor (New-C9Descriptor -Owner ('{0}-512' -f $script:C9Root) -Aces @((New-C9Ace -Sid 'S-1-5-18' -Mask 0xF01FF), (New-C9Ace -Sid $x -Mask 0x20)))
+            $r = Get-C9Row (Get-C9DomainRows -Admin $admin) 'AdminSDHolder rights: contoso.com'
+            $r.Status | Should -Be 'Warning'
+            $r.RightsHeld | Should -Be ('{0}: WriteAllProperties' -f $x)
+            $r.CatalogueId | Should -Be 'ADA-ACL-002'
+            $r.ObjectDn | Should -Be 'CN=AdminSDHolder,CN=System,DC=contoso,DC=com'
+        }
+    }
+
+    Context 'The collector, against stubbed directory reads' {
+        BeforeAll {
+            # A domain head carrying the published defaults, as the converter returns it.
+            $script:C9StubDescriptor = { param([string]$Dn, [string]$Domain)
+                $dom = $script:C9Root
+                if ($Domain -eq 'north.contoso.com') { $dom = $script:C9North }
+                if ($Dn -like 'CN=AdminSDHolder,*') { return (New-C9Descriptor -Owner ('{0}-512' -f $dom) -Aces @((New-C9Ace -Sid 'S-1-5-18' -Mask 0xF01FF))) }
+                if ($Dn -like 'CN={*') { return (New-C9Descriptor -Owner ('{0}-512' -f $dom) -Aces (Get-C9DefaultGpoAces -Dom $dom)) }
+                $aces = @(Get-C9DefaultHead -Dom $dom)
+                # north.contoso.com has one non-default replication grant.
+                if ($Domain -eq 'north.contoso.com') { $aces += (New-C9Ace -Sid ('{0}-1105' -f $dom) -Mask 0x100 -ObjectType $script:C9Rep.All) }
+                return (New-C9Descriptor -Owner ('{0}-512' -f $dom) -Aces $aces) }
+        }
+        It 'reads every scoped domain from that domain, the forest root once, and gives each domain its own rows' {
+            $script:C9Calls = @()
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction)
+                # Records -Server too, so a Get-ADDomain sent to the run's -Server is caught (C9 review).
+                $script:C9Calls += ('Get-ADDomain:{0}@{1}' -f $Identity, $Server)
+                $sid = $script:C9Root; $dn = 'DC=contoso,DC=com'
+                if ($Identity -eq 'north.contoso.com') { $sid = $script:C9North; $dn = 'DC=north,DC=contoso,DC=com' }
+                [pscustomobject]@{ DistinguishedName = $dn; DomainSID = [pscustomobject]@{ Value = $sid } } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$SearchBase, [string]$SearchScope, [string]$LDAPFilter, $Credential, $ErrorAction)
+                if ((@($Properties) -join ',') -ne 'nTSecurityDescriptor') { throw ('STUB: asked for {0}' -f (@($Properties) -join ',')) }
+                if ($LDAPFilter) {
+                    $script:C9Calls += ('Search:{0}@{1}:{2}' -f $SearchBase, $Server, $SearchScope)
+                    return [pscustomobject]@{ DistinguishedName = ('CN={0},{1}' -f $script:C9G1, $SearchBase); Name = $script:C9G1; nTSecurityDescriptor = [pscustomobject]@{ StubDn = ('CN={0},{1}' -f $script:C9G1, $SearchBase); StubDomain = $Server } }
+                }
+                $script:C9Calls += ('Get-ADObject:{0}@{1}' -f $Identity, $Server)
+                [pscustomobject]@{ DistinguishedName = $Identity; nTSecurityDescriptor = [pscustomobject]@{ StubDn = $Identity; StubDomain = $Server } } }
+            function ConvertTo-AdfaAclDescriptor { param($Value) & $script:C9StubDescriptor ([string]$Value.StubDn) ([string]$Value.StubDomain) }
+            $rows = @(Get-AdfaDangerousAcl -Domains @('contoso.com', 'north.contoso.com', 'contoso.com') -RootDomain 'contoso.com' -AdParams @{ Server = 'dc9.contoso.com' } -Config $script:Ac -NameResolver { param($Sid) '' })
+            # Declared population: two domains, five rows each (three objects, one GPO, one summary).
+            $rows.Count | Should -Be 10
+            foreach ($d in @('contoso.com', 'north.contoso.com')) {
+                @($rows | Where-Object { $_.Scope -eq $d }).Count | Should -Be 5 -Because $d
+                @($rows | Where-Object { $_.Item -eq ('DCSync rights: {0}' -f $d) }).Count | Should -Be 1
+            }
+            (Get-C9Row $rows 'DCSync rights: contoso.com').Status | Should -Be 'Pass'
+            $north = Get-C9Row $rows 'DCSync rights: north.contoso.com'
+            $north.Status | Should -Be 'Warning'
+            $north.FlaggedSids | Should -Be ('{0}-1105' -f $script:C9North)
+            $north.ReadFrom | Should -Be 'north.contoso.com'
+            # Each read goes to the domain it is about, never to the -Server of the run.
+            @($script:C9Calls | Where-Object { $_ -match 'dc9\.contoso\.com' }).Count | Should -Be 0
+            @($script:C9Calls | Where-Object { $_ -eq 'Get-ADObject:DC=north,DC=contoso,DC=com@north.contoso.com' }).Count | Should -Be 1
+            @($script:C9Calls | Where-Object { $_ -eq 'Get-ADObject:CN=AdminSDHolder,CN=System,DC=north,DC=contoso,DC=com@north.contoso.com' }).Count | Should -Be 1
+            @($script:C9Calls | Where-Object { $_ -eq 'Search:CN=Policies,CN=System,DC=north,DC=contoso,DC=com@north.contoso.com:OneLevel' }).Count | Should -Be 1
+            # The forest root is read once, though it is also a scoped domain.
+            @($script:C9Calls | Where-Object { $_ -eq 'Get-ADDomain:contoso.com@contoso.com' }).Count | Should -Be 1
+            @($script:C9Calls | Where-Object { $_ -eq 'Get-ADDomain:north.contoso.com@north.contoso.com' }).Count | Should -Be 1
+            # Declared population: two Get-ADDomain reads, the root (once) and north, every one to its own domain.
+            @($script:C9Calls | Where-Object { $_ -like 'Get-ADDomain:*' }).Count | Should -Be 2
+        }
+        It 'grades a domain whose head read was refused Not Assessed with the class of the refusal, and keeps the other domain graded' {
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction)
+                $sid = $script:C9Root; $dn = 'DC=contoso,DC=com'
+                if ($Identity -eq 'north.contoso.com') { $sid = $script:C9North; $dn = 'DC=north,DC=contoso,DC=com' }
+                [pscustomobject]@{ DistinguishedName = $dn; DomainSID = [pscustomobject]@{ Value = $sid } } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$SearchBase, [string]$SearchScope, [string]$LDAPFilter, $Credential, $ErrorAction)
+                if ($Server -eq 'north.contoso.com') { throw (New-Object System.UnauthorizedAccessException 'Access is denied.') }
+                if ($LDAPFilter) { return [pscustomobject]@{ DistinguishedName = ('CN={0},{1}' -f $script:C9G1, $SearchBase); Name = $script:C9G1; nTSecurityDescriptor = [pscustomobject]@{ StubDn = ('CN={0},x' -f $script:C9G1); StubDomain = $Server } } }
+                [pscustomobject]@{ DistinguishedName = $Identity; nTSecurityDescriptor = [pscustomobject]@{ StubDn = $Identity; StubDomain = $Server } } }
+            function ConvertTo-AdfaAclDescriptor { param($Value) & $script:C9StubDescriptor ([string]$Value.StubDn) ([string]$Value.StubDomain) }
+            $rows = @(Get-AdfaDangerousAcl -Domains @('contoso.com', 'north.contoso.com') -RootDomain 'contoso.com' -Config $script:Ac -NameResolver { param($Sid) '' })
+            $north = @($rows | Where-Object { $_.Scope -eq 'north.contoso.com' })
+            # Declared population: three object rows and the GPO summary of the refused domain.
+            $north.Count | Should -Be 4
+            @($north | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Access denied: ' }).Count | Should -Be 4
+            @($rows | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Status -eq 'Pass' }).Count | Should -Be 5
+        }
+        It 'reports an unreachable domain as unreachable, and an attribute the answer left out as not returned' {
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction)
+                if ($Identity -eq 'north.contoso.com') { throw 'Unable to contact the server. This may be because this server does not exist, it is currently down, or it does not have the Active Directory Web Services running.' }
+                [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; DomainSID = [pscustomobject]@{ Value = $script:C9Root } } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$SearchBase, [string]$SearchScope, [string]$LDAPFilter, $Credential, $ErrorAction)
+                if ($LDAPFilter) { return [pscustomobject]@{ DistinguishedName = ('CN={0},{1}' -f $script:C9G1, $SearchBase); Name = $script:C9G1 } }
+                [pscustomobject]@{ DistinguishedName = $Identity } }
+            $rows = @(Get-AdfaDangerousAcl -Domains @('contoso.com', 'north.contoso.com') -RootDomain 'contoso.com' -Config $script:Ac -NameResolver { param($Sid) '' })
+            @($rows | Where-Object { $_.Scope -eq 'north.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Unreachable: ' }).Count | Should -Be 4
+            $contoso = @($rows | Where-Object { $_.Scope -eq 'contoso.com' })
+            # Declared population: three object rows, one GPO row, one summary - none of them Pass.
+            $contoso.Count | Should -Be 5
+            @($contoso | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            @($contoso | Where-Object { $_.Item -ne 'GPO rights summary: contoso.com' -and $_.Detail -match '^Not returned: ' }).Count | Should -Be 4
+        }
+        It 'gives one Not Assessed row when no domain is scoped, and keeps a domain whose handling threw to its own Not Assessed rows' {
+            $none = @(Get-AdfaDangerousAcl -Domains @() -RootDomain 'contoso.com' -Config $script:Ac)
+            $none.Count | Should -Be 1
+            $none[0].Item | Should -Be 'Dangerous ACLs (no domain scoped)'
+            $none[0].Status | Should -Be 'Not Assessed'
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction)
+                [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; DomainSID = [pscustomobject]@{ Value = $script:C9Root } } }
+            function Get-AdfaAclObjectRaw { param([string]$Dn, [string]$Server, $AdParams, $Config) throw 'STUB: defect' }
+            $boom = @(Get-AdfaDangerousAcl -Domains @('contoso.com') -RootDomain 'contoso.com' -Config $script:Ac)
+            $boom.Count | Should -Be 4
+            @($boom | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match 'defect in the tool' -and $_.Detail -match 'STUB: defect' }).Count | Should -Be 4
+        }
+        It 'refuses to ask for anything but nTSecurityDescriptor, before any call' {
+            $script:C9Asked = 0
+            function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a) $script:C9Asked++ }
+            $cfg = @{}; foreach ($k in @($script:Ac.Keys)) { $cfg[$k] = $script:Ac[$k] }
+            $cfg['Properties'] = @('*')
+            $r = Get-AdfaAclObjectRaw -Dn 'DC=contoso,DC=com' -Server 'contoso.com' -Config $cfg
+            $r.Class | Should -Be 'Refused'
+            $g = Get-AdfaAclGpoRaw -DomainName 'contoso.com' -DomainDn 'DC=contoso,DC=com' -Config $cfg
+            $g.Class | Should -Be 'Refused'
+            $script:C9Asked | Should -Be 0
+        }
+    }
+
+    Context 'Config override (Merge-AdfaAclConfig)' {
+        It 'takes FlaggedStatus and AdditionalAllowed, and allows the added SID for the named objects and rights only' {
+            $sync = ('{0}-1105' -f $script:C9Root)
+            $ov = '{ "FlaggedStatus": "Fail", "AdditionalAllowed": [ { "Sid": "' + $sync + '", "Objects": ["DomainRoot"], "Rights": ["DS-Replication-Get-Changes", "DS-Replication-Get-Changes-All"], "Reason": "Entra Connect connector account" } ] }' | ConvertFrom-Json
+            $m = Merge-AdfaAclConfig -BaseConfig $script:Ac -Override $ov -OverrideSource 'C:\cfg\acl.json'
+            $m['FlaggedStatus'] | Should -Be 'Fail'
+            @($m['AdditionalAllowed']).Count | Should -Be 1
+            $m['ThresholdSource'] | Should -Match 'acl\.json'
+            $m['ThresholdSource'] | Should -Match 'FlaggedStatus, AdditionalAllowed'
+            # The built-in table is untouched.
+            @($script:Ac['AdditionalAllowed']).Count | Should -Be 0
+            $aces = @(Get-C9DefaultHead) + @(New-C9Ace -Sid $sync -Mask 0x100 -ObjectType $script:C9Rep.Get) + @(New-C9Ace -Sid $sync -Mask 0x100 -ObjectType $script:C9Rep.All)
+            $pass = Get-C9HeadVerdict -Aces $aces -Config $m
+            $pass.Status | Should -Be 'Pass'
+            $pass.Evidence | Should -Match 'Entra Connect connector account'
+            # The same SID with WriteDacl, or on AdminSDHolder, is still flagged.
+            (Get-C9HeadVerdict -Aces (@($aces) + @(New-C9Ace -Sid $sync -Mask 0x40000)) -RowKey 'DomainRootControl' -Config $m).Status | Should -Be 'Fail'
+            $rows = Get-C9DomainRows -Config $m -Admin (New-C9Read -Descriptor (New-C9Descriptor -Owner ('{0}-512' -f $script:C9Root) -Aces @(New-C9Ace -Sid $sync -Mask 0x100 -ObjectType $script:C9Rep.All)))
+            (Get-C9Row $rows 'AdminSDHolder rights: contoso.com').Status | Should -Be 'Fail'
+        }
+        It 'throws on every malformed shape, naming what is wrong' {
+            $good = @{ Sid = ('{0}-1105' -f $script:C9Root); Objects = @('DomainRoot'); Rights = @('DS-Replication-Get-Changes'); Reason = 'r' }
+            function New-C9Entry { param([hashtable]$Change = @{}, [string[]]$Drop = @())
+                $e = @{}; foreach ($k in $good.Keys) { if ($Drop -notcontains $k) { $e[$k] = $good[$k] } }
+                foreach ($k in $Change.Keys) { $e[$k] = $Change[$k] }
+                return $e }
+            $cases = [ordered]@{
+                'not an object'             = @{ Override = @(1, 2); Message = 'single object' }
+                'empty object'              = @{ Override = @{}; Message = 'empty object' }
+                'unknown key'               = @{ Override = @{ Allowlist = @() }; Message = "unknown key 'Allowlist'" }
+                'a mask'                    = @{ Override = @{ Masks = @{} }; Message = "unknown key 'Masks'" }
+                'null'                      = @{ Override = @{ FlaggedStatus = $null }; Message = 'null' }
+                'status Pass'               = @{ Override = @{ FlaggedStatus = 'Pass' }; Message = 'Warning or Fail' }
+                'status in a list'          = @{ Override = @{ FlaggedStatus = @('Fail') }; Message = 'not a single text value' }
+                'allowed not a list'        = @{ Override = @{ AdditionalAllowed = 'S-1-5-21-1-2-3-1105' }; Message = 'list' }
+                'allowed empty'             = @{ Override = @{ AdditionalAllowed = @() }; Message = 'empty' }
+                'entry not an object'       = @{ Override = @{ AdditionalAllowed = @('x') }; Message = 'object' }
+                'entry unknown key'         = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Change @{ Name = 'svc' })) }; Message = "unknown key 'Name'" }
+                'entry without Sid'         = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Drop @('Sid'))) }; Message = "'Sid'" }
+                'entry without Reason'      = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Drop @('Reason'))) }; Message = "'Reason'" }
+                'a name for a SID'          = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Change @{ Sid = 'CONTOSO\svc-sync' })) }; Message = 'names are refused' }
+                'Everyone'                  = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Change @{ Sid = 'S-1-1-0' })) }; Message = 'never be allowlisted' }
+                'Authenticated Users'       = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Change @{ Sid = 'S-1-5-11' })) }; Message = 'never be allowlisted' }
+                'Domain Users'              = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Change @{ Sid = ('{0}-513' -f $script:C9North) })) }; Message = 'never be allowlisted' }
+                'unknown object'            = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Change @{ Objects = @('Schema') })) }; Message = "'Schema'" }
+                'no object'                 = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Change @{ Objects = @() })) }; Message = 'Objects' }
+                'unknown right'             = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Change @{ Rights = @('GenericAll') })) }; Message = "'GenericAll'" }
+                'every right by wildcard'   = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Change @{ Rights = @('*') })) }; Message = "'\*'" }
+                'blank reason'              = @{ Override = @{ AdditionalAllowed = @((New-C9Entry -Change @{ Reason = '  ' })) }; Message = 'Reason' }
+            }
+            # Declared population: twenty-two malformed overrides.
+            @($cases.Keys).Count | Should -Be 22
+            foreach ($k in @($cases.Keys)) {
+                $ov = $cases[$k]['Override']
+                if ($ov -is [string]) { $ov = $ov | ConvertFrom-Json }
+                $thrown = ''
+                try { Merge-AdfaAclConfig -BaseConfig $script:Ac -Override $ov | Out-Null } catch { $thrown = [string]$_.Exception.Message }
+                $thrown | Should -Not -BeNullOrEmpty -Because "$k must be refused"
+                $thrown | Should -Match $cases[$k]['Message'] -Because $k
+            }
+        }
+        It 'is reached through the generic loader: a file that names Acl is validated, and a bad one stops the run' {
+            $resolved = Resolve-AdfaConfigOverride -Override ('{ "Acl": { "FlaggedStatus": "Fail" } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\acl.json'
+            $resolved['Acl']['FlaggedStatus'] | Should -Be 'Fail'
+            { Resolve-AdfaConfigOverride -Override ('{ "Acl": { "FlaggedStatus": "Pass" } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'x' } | Should -Throw '*Warning or Fail*'
+        }
+    }
+
+    Context 'Recommendation' {
+        It 'gives each row family its own advice, whatever its Detail holds, and no unscoped entry reaches the section' {
+            $section = 'Dangerous ACLs (DCSync)'
+            $dcsync = Get-AdfaRecommendation -Section $section -Item 'DCSync rights: contoso.com' -Detail $script:C9Hostile
+            $control = Get-AdfaRecommendation -Section $section -Item 'Domain root control rights: contoso.com' -Detail $script:C9Hostile
+            $admin = Get-AdfaRecommendation -Section $section -Item 'AdminSDHolder rights: contoso.com' -Detail $script:C9Hostile
+            $gpo = Get-AdfaRecommendation -Section $section -Item ('GPO rights: {0}' -f $script:C9G1) -Detail $script:C9Hostile
+            $gpoSum = Get-AdfaRecommendation -Section $section -Item 'GPO rights summary: contoso.com' -Detail $script:C9Hostile
+            $other = Get-AdfaRecommendation -Section $section -Item 'Dangerous ACLs (no domain scoped)' -Detail $script:C9Hostile
+            $dcsync | Should -Match 'Replicating Directory Changes'
+            $dcsync | Should -Match 'Entra Connect'
+            $control | Should -Match 'WriteDacl'
+            $admin | Should -Match 'SDProp'
+            $gpo | Should -Match 'Group Policy'
+            $gpoSum | Should -Be $gpo
+            $other | Should -Be ''
+            # Declared population: five distinct texts among six rows.
+            @(@($dcsync, $control, $admin, $gpo, $other) | Sort-Object -Unique).Count | Should -Be 5
+            foreach ($t in @($dcsync, $control, $admin, $gpo)) { $t | Should -Not -Match 'dfsrmig|wbadmin|New-KrbtgtKeys|repadmin /replsummary|setspn|lingering' }
+        }
+        It 'places its entries before every unscoped entry, anchored on the Item prefixes it writes, with a prefix catch-all' {
+            $map = @($script:RecommendationMap)
+            $mine = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Section -eq '(?i)^dangerous acls') { $i } })
+            # Declared population: four families and the catch-all.
+            $mine.Count | Should -Be 5
+            $firstUnscoped = @(for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $i } })[0]
+            foreach ($i in $mine) { $i | Should -BeLessThan $firstUnscoped }
+            foreach ($i in $mine) { [string]$map[$i].Match | Should -Match '^\(\?i\)\^Dangerous ACLs \\\(DCSync\\\) :: ' }
+            [string]$map[$mine[4]].Text | Should -Be ''
+        }
+        It 'attaches advice to Warning and Fail rows only, chosen without the NotRun note' {
+            $gpo = New-C9GpoRaw -Items @((New-C9GpoItem -Guid $script:C9G1 -Read (New-C9Read -Class 'AccessDenied' -Err 'Access is denied.' -Type 'System.UnauthorizedAccessException')))
+            $rows = Get-C9DomainRows -GpoRaw $gpo -Head (New-C9Read -Descriptor (New-C9Descriptor -Owner ('{0}-512' -f $script:C9Root) -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid 'S-1-5-11' -Mask 0x100))))
+            $findings = @($rows | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'Dangerous ACLs (DCSync)' -Row $_ -StatusColumn 'Status' })
+            # Declared population: two head rows, AdminSDHolder, one GPO, the summary.
+            $findings.Count | Should -Be 5
+            (@($findings | ForEach-Object { $_.Status }) -join ',') | Should -Be 'Warning,Pass,Pass,Not Assessed,Not Assessed'
+            $findings[0].Recommendation | Should -Match 'Replicating Directory Changes'
+            @($findings | Select-Object -Skip 1 | Where-Object { $_.Recommendation }).Count | Should -Be 0
+            $findings[0].Detail | Should -Match 'SACL'
+        }
+    }
+
+    Context 'Found by the independent review before commit' {
+        BeforeAll {
+            # Class schemaIDGUIDs (Learn adschema pages, read 2026-11-16).
+            $script:C9Class = @{ DomainDns = '19195a5b-6da0-11d0-afd3-00c04fd930c9'; Domain = '19195a5a-6da0-11d0-afd3-00c04fd930c9'; Top = 'bf967ab7-0de6-11d0-a285-00aa003049e2'
+                Container = 'bf967a8b-0de6-11d0-a285-00aa003049e2'; Gpc = 'f30e3bc2-9ff0-11d1-b603-0000f80367c1'; Computer = 'bf967a86-0de6-11d0-a285-00aa003049e2' }
+            $script:C9AllRights = 'WriteDacl,WriteOwner,WriteAllProperties,AllExtendedRights,DS-Replication-Get-Changes,DS-Replication-Get-Changes-All,DS-Replication-Get-Changes-In-Filtered-Set'
+        }
+        It 'grades an object ACE scoped to the object''s own class, or a class above it, as unscoped, for each object kind' {
+            $cases = [ordered]@{
+                'CR+WP on domainDNS, domain head'       = @{ Kind = 'DomainRoot'; Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x120 -ObjectType $script:C9Class.DomainDns); Expect = 'Class|WriteAllProperties,AllExtendedRights,DS-Replication-Get-Changes,DS-Replication-Get-Changes-All,DS-Replication-Get-Changes-In-Filtered-Set' }
+                'CR on domain (superclass), head'       = @{ Kind = 'DomainRoot'; Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x100 -ObjectType $script:C9Class.Domain); Expect = 'Class|AllExtendedRights,DS-Replication-Get-Changes,DS-Replication-Get-Changes-All,DS-Replication-Get-Changes-In-Filtered-Set' }
+                'WD on top, domain head'                = @{ Kind = 'DomainRoot'; Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x40000 -ObjectType $script:C9Class.Top.ToUpperInvariant()); Expect = 'Class|WriteDacl' }
+                'full control on domainDNS'             = @{ Kind = 'DomainRoot'; Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0xF01FF -ObjectType $script:C9Class.DomainDns); Expect = ('Class|{0}' -f $script:C9AllRights) }
+                'WP on container, AdminSDHolder'        = @{ Kind = 'AdminSDHolder'; Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x20 -ObjectType $script:C9Class.Container); Expect = 'Class|WriteAllProperties' }
+                'WP on groupPolicyContainer, GPO'       = @{ Kind = 'Gpo'; Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x20 -ObjectType $script:C9Class.Gpc); Expect = 'Class|WriteAllProperties' }
+                'CR on domainDNS is not a GPO class'    = @{ Kind = 'Gpo'; Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x100 -ObjectType $script:C9Class.DomainDns); Expect = 'Node|' }
+                'WP on groupPolicyContainer, AdminSDH'  = @{ Kind = 'AdminSDHolder'; Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x20 -ObjectType $script:C9Class.Gpc); Expect = 'Node|' }
+            }
+            # Declared population: eight scoped ACEs.
+            @($cases.Keys).Count | Should -Be 8
+            foreach ($k in @($cases.Keys)) {
+                $r = Get-AdfaAclAceRight -Ace $cases[$k]['Ace'] -ObjectKind $cases[$k]['Kind'] -Config $script:Ac
+                ('{0}|{1}' -f $r.Scope, (@($r.Atoms) -join ',')) | Should -Be $cases[$k]['Expect'] -Because $k
+            }
+            # The class list is the table's, per kind (declared population: three kinds).
+            @($script:Ac['ClassGuids'].Keys).Count | Should -Be 3
+            (@($script:Ac['ClassGuids']['DomainRoot']) -join ',') | Should -Be ('{0},{1},{2}' -f $script:C9Class.DomainDns, $script:C9Class.Domain, $script:C9Class.Top)
+        }
+        It 'never grants WriteDacl, WriteOwner, write of all properties or full control through an ACE scoped to a property or a right, and only the replication right a scoped grant names' {
+            $cases = [ordered]@{
+                'WD scoped to the computer class'      = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x40000 -ObjectType $script:C9Class.Computer); Expect = 'False|' }
+                'WO scoped to a property'              = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x80000 -ObjectType $script:C9PropGuid); Expect = 'False|' }
+                'GA scoped to the computer class'      = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x10000000 -ObjectType $script:C9Class.Computer); Expect = 'False|' }
+                'full control scoped to Get-Changes-All' = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0xF01FF -ObjectType $script:C9Rep.All); Expect = 'False|DS-Replication-Get-Changes-All' }
+                'WD scoped to Get-Changes-All'         = @{ Ace = (New-C9Ace -Sid 'S-1-1-0' -Mask 0x40000 -ObjectType $script:C9Rep.All); Expect = 'False|' }
+            }
+            # Declared population: five scoped ACEs.
+            @($cases.Keys).Count | Should -Be 5
+            foreach ($k in @($cases.Keys)) {
+                $r = Get-AdfaAclAceRight -Ace $cases[$k]['Ace'] -ObjectKind 'DomainRoot' -Config $script:Ac
+                ('{0}|{1}' -f $r.GenericAll, (@($r.Atoms) -join ',')) | Should -Be $cases[$k]['Expect'] -Because $k
+            }
+            # Through the verdict: Everyone's WriteDacl scoped to the computer class is no finding on the head.
+            (Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid 'S-1-1-0' -Mask 0x40000 -ObjectType $script:C9Class.Computer)) -RowKey 'DomainRootControl').Status | Should -Be 'Pass'
+            (Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid 'S-1-1-0' -Mask 0x10000000 -ObjectType $script:C9Class.Computer))).Status | Should -Be 'Pass'
+        }
+        It 'flags DCSync and write-all granted through an ACE scoped to the domainDNS or domain class, read from SDDL through the real converter' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $x = ('{0}-1105' -f $script:C9Root)
+            foreach ($class in @($script:C9Class.DomainDns, $script:C9Class.Domain)) {
+                $descriptor = ConvertTo-AdfaAclDescriptor -Value (ConvertTo-C9SdBytes -Sddl ('O:BAG:BAD:(A;;GA;;;SY)(OA;;CRWP;{0};;{1})' -f $class, $x))
+                $descriptor.Class | Should -Be 'Read'
+                $read = New-C9Read -Descriptor $descriptor
+                $dcsync = Get-C9Verdict -Read $read
+                $dcsync.Status | Should -Be 'Warning' -Because $class
+                $dcsync.FlaggedSids | Should -Be $x
+                $dcsync.RightsHeld | Should -Match 'DS-Replication-Get-Changes-All'
+                $control = Get-C9Verdict -Read $read -RowKey 'DomainRootControl'
+                $control.Status | Should -Be 'Warning' -Because $class
+                $control.RightsHeld | Should -Be ('{0}: WriteAllProperties' -f $x)
+            }
+        }
+        It 'reports a flagged principal when another ACE of the DACL is of a type it does not interpret, and counts that GPO as flagged' {
+            $aces = @(Get-C9DefaultHead) + @((New-C9Ace -Sid 'S-1-1-0' -Mask 0x10000000), (New-C9Ace -Sid 'S-1-1-0' -Mask 0x100 -Kind 'Other'))
+            $r = Get-C9HeadVerdict -Aces $aces
+            $r.Status | Should -Be 'Warning'
+            $r.FlaggedSids | Should -Be 'S-1-1-0'
+            $r.RightsHeld | Should -Match 'DS-Replication-Get-Changes-All'
+            $r.Detail | Should -Match '1 ACE\(s\) of .* not interpreted'
+            # Without a flagged SID the uninterpreted ACE still makes the row Not Assessed.
+            (Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid 'S-1-1-0' -Mask 0x100 -Kind 'Other'))).Status | Should -Be 'Not Assessed'
+            $gpoAces = @(Get-C9DefaultGpoAces) + @((New-C9Ace -Sid 'S-1-5-11' -Mask 0x40000), (New-C9Ace -Sid 'S-1-1-0' -Mask 0x20 -Kind 'Other'))
+            $rows = Get-C9DomainRows -GpoRaw (New-C9GpoRaw -Items @((New-C9GpoItem -Guid $script:C9G1 -Read (New-C9Read -Descriptor (New-C9Descriptor -Aces $gpoAces -Owner ('{0}-512' -f $script:C9Root))))))
+            (Get-C9Row $rows ('GPO rights: {0}' -f $script:C9G1)).Status | Should -Be 'Warning'
+            $sum = Get-C9Row $rows 'GPO rights summary: contoso.com'
+            '{0}|{1}/{2}/{3}/{4}' -f $sum.Status, $sum.Population, $sum.ReadCount, $sum.FlaggedCount, $sum.NotAssessedCount | Should -Be 'Warning|1/1/1/0'
+        }
+        It 'reads a callback ACE as one it does not interpret, never as a plain allow' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $d = ConvertTo-AdfaAclDescriptor -Value (ConvertTo-C9SdBytes -Sddl ('O:BAD:(XA;;GA;;;{0}-1105;(Member_of {{SID(BA)}}))' -f $script:C9Root))
+            $d.Class | Should -Be 'Read'
+            # Declared population: one ACE.
+            @($d.Aces).Count | Should -Be 1
+            $d.Aces[0].Kind | Should -Be 'Other'
+            $d.Aces[0].Allow | Should -BeFalse
+            $r = Get-C9Verdict -Read (New-C9Read -Descriptor $d)
+            $r.Status | Should -Be 'Not Assessed'
+            $r.FlaggedSids | Should -Be ''
+        }
+        It 'tells a NULL DACL (present flag set, no ACL) from a DACL that was not returned, and flags it as Everyone holding every right' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $null1 = ConvertTo-AdfaAclDescriptor -Value (ConvertTo-C9SdBytes -Sddl 'O:BAD:NO_ACCESS_CONTROL')
+            $null1.Class | Should -Be 'NullDacl'
+            $null1.Ok | Should -BeFalse
+            $null1.OwnerSid | Should -Be 'S-1-5-32-544'
+            # The flag-clear descriptor stays DaclAbsent.
+            (ConvertTo-AdfaAclDescriptor -Value (ConvertTo-C9SdBytes -Sddl 'O:BAG:BA')).Class | Should -Be 'DaclAbsent'
+            $read = New-C9Read -Class 'NullDacl' -Descriptor $null1
+            $r = Get-C9Verdict -Read $read
+            $r.Status | Should -Be 'Warning'
+            $r.FlaggedSids | Should -Be 'S-1-1-0'
+            $r.RightsHeld | Should -Be 'S-1-1-0: AllExtendedRights, DS-Replication-Get-Changes, DS-Replication-Get-Changes-All, DS-Replication-Get-Changes-In-Filtered-Set'
+            $r.Detail | Should -Match '^NULL DACL: '
+            (Get-C9Verdict -Read $read -RowKey 'DomainRootControl').RightsHeld | Should -Be 'S-1-1-0: WriteDacl, WriteOwner, WriteAllProperties'
+            # A NULL DACL on a GPO makes the summary flagged, never Not Assessed or Pass.
+            $sum = Get-C9Row (Get-C9DomainRows -GpoRaw (New-C9GpoRaw -Items @((New-C9GpoItem -Guid $script:C9G1 -Read $read)))) 'GPO rights summary: contoso.com'
+            '{0}|{1}' -f $sum.Status, $sum.FlaggedCount | Should -Be 'Warning|1'
+        }
+        It 'leaves the scoped domain''s own -519 and -498 undecided while the forest root''s SID is unread, and still decides its -512' {
+            $ea = ('{0}-519' -f $script:C9Root)
+            $erodcAll = New-C9Ace -Sid ('{0}-498' -f $script:C9Root) -Mask 0x100 -ObjectType $script:C9Rep.Get
+            $u = Get-C9HeadVerdict -Aces @((New-C9Ace -Sid 'S-1-5-18' -Mask 0xF01FF), (New-C9Ace -Sid $ea -Mask 0xF01FF), $erodcAll) -DomainSid $script:C9Root -RootSid '' -Owner 'S-1-5-18'
+            $u.Status | Should -Be 'Not Assessed'
+            $u.FlaggedSids | Should -Be ''
+            $u.Undecided | Should -Be ('{0}; {1}-498' -f $ea, $script:C9Root)
+            # The same DACL with the root's SID read passes: the SIDs were default holders all along.
+            (Get-C9HeadVerdict -Aces @((New-C9Ace -Sid 'S-1-5-18' -Mask 0xF01FF), (New-C9Ace -Sid $ea -Mask 0xF01FF), $erodcAll) -DomainSid $script:C9Root -RootSid $script:C9Root -Owner 'S-1-5-18').Status | Should -Be 'Pass'
+            # The scoped domain's own Domain Admins are still decided without the root's SID.
+            (Get-C9HeadVerdict -Aces @(New-C9Ace -Sid ('{0}-512' -f $script:C9Root) -Mask 0xE01BD) -DomainSid $script:C9Root -RootSid '' -Owner 'S-1-5-18').Status | Should -Be 'Pass'
+        }
+        It 'leaves an account-domain owner undecided on a row that grades the owner, when the domain SID was not read' {
+            $owner = ('{0}-512' -f $script:C9Root)
+            $r = Get-C9HeadVerdict -Aces @(New-C9Ace -Sid 'S-1-5-18' -Mask 0xF01FF) -Owner $owner -RowKey 'DomainRootControl' -DomainSid '' -RootSid ''
+            $r.Status | Should -Be 'Not Assessed'
+            $r.FlaggedSids | Should -Be ''
+            $r.Undecided | Should -Be $owner
+            # A non-default account owner is undecided too, never flagged on a guess.
+            $other = Get-C9HeadVerdict -Aces @(New-C9Ace -Sid 'S-1-5-18' -Mask 0xF01FF) -Owner ('{0}-1300' -f $script:C9Root) -RowKey 'AdminSDHolder' -DomainSid '' -RootSid ''
+            $other.Status | Should -Be 'Not Assessed'
+            $other.Undecided | Should -Be ('{0}-1300' -f $script:C9Root)
+        }
+        It 'honours a deny of GENERIC_ALL that comes first, as the full control it stands for' {
+            $x = ('{0}-1105' -f $script:C9Root)
+            $r = Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @((New-C9Ace -Sid $x -Mask 0x10000000 -Allow $false), (New-C9Ace -Sid $x -Mask 0xF01FF))) -RowKey 'DomainRootControl'
+            $r.Status | Should -Be 'Pass'
+            $r.Evidence | Should -Match 'cancelled by an earlier deny'
+            (Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @((New-C9Ace -Sid $x -Mask 0x10000000 -Allow $false), (New-C9Ace -Sid $x -Mask 0xF01FF)))).Status | Should -Be 'Pass'
+        }
+        It 'grades the GPO summary Fail under a Fail override, counting each flagged GPO' {
+            $cfg = Merge-AdfaAclConfig -BaseConfig $script:Ac -Override @{ FlaggedStatus = 'Fail' } -OverrideSource 'C:\cfg\acl.json'
+            $ok = New-C9Read -Descriptor (New-C9Descriptor -Aces (Get-C9DefaultGpoAces) -Owner ('{0}-512' -f $script:C9Root))
+            $bad = New-C9Read -Descriptor (New-C9Descriptor -Aces (@(Get-C9DefaultGpoAces) + @(New-C9Ace -Sid 'S-1-5-11' -Mask 0x40000)) -Owner ('{0}-512' -f $script:C9Root))
+            $rows = Get-C9DomainRows -Config $cfg -GpoRaw (New-C9GpoRaw -Items @((New-C9GpoItem -Guid $script:C9G1 -Read $ok), (New-C9GpoItem -Guid $script:C9G2 -Read $bad)))
+            (@($rows | Where-Object { $_.Item -like 'GPO rights: *' } | ForEach-Object { $_.Status }) -join ',') | Should -Be 'Pass,Fail'
+            $sum = Get-C9Row $rows 'GPO rights summary: contoso.com'
+            '{0}|{1}/{2}/{3}/{4}' -f $sum.Status, $sum.Population, $sum.ReadCount, $sum.FlaggedCount, $sum.NotAssessedCount | Should -Be 'Fail|2/2/1/0'
+        }
+        It 'makes the GPO summary Not Assessed, as a defect in the tool, when the GPO rows are not one per container' {
+            function Get-AdfaAclObjectVerdict { param($Domain, $Item, $ObjectKind, $RowKey, $What, $Read, $DomainSid, $DomainSidError, $RootDomainSid, $RootDomainSidError, $Config, $NameResolver)
+                if ($ObjectKind -eq 'Gpo') { return }
+                New-AdfaAclRow -Scope $Domain -Item $Item -Status 'Pass' }
+            $rows = Get-C9DomainRows -GpoRaw (New-C9GpoRaw -Items @((New-C9GpoItem -Guid $script:C9G1 -Read (New-C9Read -Descriptor (New-C9Descriptor -Aces (Get-C9DefaultGpoAces))))))
+            # Declared population: three object rows, no GPO row (the stub gave none), the summary.
+            @($rows).Count | Should -Be 4
+            $sum = Get-C9Row $rows 'GPO rights summary: contoso.com'
+            $sum.Status | Should -Be 'Not Assessed'
+            $sum.Detail | Should -Match 'not one per container'
+            $sum.Detail | Should -Match 'defect in the tool'
+        }
+        It 'allows only the GPO rights Learn''s groupPolicyContainer descriptor grants as Microsoft''s, and labels the extended rights on GPOs a tool default' {
+            $gpoRows = @(@($script:Ac['Allowlist']) | Where-Object { @($_['Objects']) -contains 'Gpo' })
+            # Declared population: nine GPO allowlist rows - four from Learn, four C9 tool defaults, Administrators (D14).
+            $gpoRows.Count | Should -Be 9
+            $learn = @($gpoRows | Where-Object { [string]$_['Origin'] -like 'Learn:*' })
+            $learn.Count | Should -Be 4
+            foreach ($r in $learn) { (@($r['Rights']) -join ',') | Should -Be 'WriteDacl,WriteOwner,WriteAllProperties' -Because ([string]$r['Name']) }
+            $tool = @($gpoRows | Where-Object { [string]$_['Origin'] -eq 'tool default (C9), not a Microsoft value' })
+            $tool.Count | Should -Be 4
+            foreach ($r in $tool) { @($r['Rights']) | Should -Not -Contain 'WriteDacl' }
+        }
+        It 'allows Enterprise Domain Controllers Get-Changes-All on the domain head, in a row of its own that records the disagreement between the two Learn pages' {
+            $ed = @(@($script:Ac['Allowlist']) | Where-Object { [string]$_['Sid'] -eq 'S-1-5-9' })
+            # Declared population: two ED rows.
+            $ed.Count | Should -Be 2
+            (@($ed[1]['Rights']) -join ',') | Should -Be 'DS-Replication-Get-Changes-All'
+            [string]$ed[1]['Origin'] | Should -Match 'rodc-replicates-passwords.*disagree'
+            (Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid 'S-1-5-9' -Mask 0x100 -ObjectType $script:C9Rep.All))).Status | Should -Be 'Pass'
         }
     }
 }

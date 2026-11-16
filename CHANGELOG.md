@@ -10,6 +10,263 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed — 2026-11-16 (Dangerous rights: replication and control rights on the domain head, AdminSDHolder and every GPO, matched by SID, tool v1.26.0)
+
+**PORT-PLAN C9.** The existing `Acl` section (report section `Dangerous ACLs (DCSync)`, no new
+`-Sections` value) is rebuilt. It addresses the AdAssessment26 catalogue rows ADA-ACL-001 (dangerous
+rights on the domain root), ADA-ACL-002 (on AdminSDHolder) and ADA-ACL-003 (on GPOs).
+
+**This has run only against stubs.** No `Get-ADObject` call in it has met a real domain controller,
+and no descriptor it has read came from a directory: the Pester tests build real descriptors from
+SDDL on Windows, the harnesses use records in the converter's shape. The first run against a real
+forest is PORT-PLAN C17, owned by the operator, and PORT-PLAN C9a lists what that run must confirm -
+first of all which .NET type `Get-ADObject` returns for `nTSecurityDescriptor` and which descriptor
+parts the module asks for, neither of which Microsoft publishes.
+
+**What was wrong with the old check.** `Get-AdfaDangerousAcl` decided "default" by matching the
+`IdentityReference` NAME against `DcSyncAllowedPatterns` with `-match` on an escaped substring, so
+any group whose name contains an allowed name passed (`Not Domain Controllers`, `Fake
+Administrators`) and a localised name failed; it read the descriptor with `Get-Acl -Path AD:\<dn>`,
+which takes neither the run's `-Server` nor its `-Credential` and needs the AD: drive; it matched
+rights as text (`-match 'ExtendedRight|GenericAll'`), ignored WriteDacl, WriteOwner, GenericWrite,
+an extended right with no object type and inherit-only ACEs; and one `catch` turned any failure
+into a single `Not Assessed` row holding the raw exception. `Test-AdfaDcSyncAce`, `DcSyncRightGuids`
+(whose third key was a truncated name) and `DcSyncAllowedPatterns` are retired; nothing else read
+them.
+
+**What it reads, and nothing else.** Per scoped domain, each read sent to that domain
+(`-Server <domain>`, with `-Credential` when the run has one), asking for `nTSecurityDescriptor`
+alone - a property list that is anything else is refused before any call:
+
+- `Get-ADDomain -Identity <domain>` for the DN and SID, and once for the forest root domain's SID
+  (Enterprise Admins and Enterprise Read-only Domain Controllers are SIDs of the root domain).
+- `Get-ADObject -Identity <domain DN>` and `Get-ADObject -Identity CN=AdminSDHolder,CN=System,<DN>`.
+- One `Get-ADObject -SearchBase CN=Policies,CN=System,<DN> -SearchScope OneLevel -LDAPFilter
+  '(objectClass=groupPolicyContainer)'` - **every** GPO, as the catalogue's ADA-ACL-003 says, not only
+  those linked at the domain root and the Domain Controllers OU as the plan row said (PORT-PLAN C9c).
+
+The descriptor - an `ActiveDirectorySecurity` or a byte array; anything else is `Not Assessed` - is
+turned into its binary form and read in memory with `RawSecurityDescriptor`: the owner SID, whether
+a DACL is present, and every ACE in order, each principal as its SID. Not with `GetAccessRules`:
+**measured in this session** (Windows PowerShell 5.1 and PowerShell 7.6, descriptors built from
+SDDL), `GetAccessRules` reports a descriptor that carries no DACL as one "Everyone, full control"
+rule, which would turn "the DACL was not returned" into a finding about Everyone. Also measured: an
+`ActiveDirectorySecurity` hands a canonical DACL back with its explicit allow ACEs regrouped, denies
+still first, which does not change which deny precedes which allow. Nothing is written: no
+`Set-Acl`, no `Set-ADObject`, `Persist` is never called (Learn documents `Persist` as the method that
+writes an in-memory descriptor to storage). A test pins the three AD reads by function and refuses
+any write cmdlet, write parameter, external tool, `Get-Acl` and any descriptor-changing method.
+
+**The rule** (catalogue, operator-approved 2026-09-24): an allow ACE that applies to the object and
+grants full control, `WriteDacl`, `WriteOwner`, write of all properties, all extended rights or one
+of the three replication rights, to a SID outside the allowlist. Decided by **access mask bits**,
+never by a rights name: full control is every bit of 983551 or the GENERIC_ALL bit; write of all
+properties is `WriteProperty` (0x20) with no object type, or GENERIC_WRITE - not `GenericWrite`'s
+`ReadControl` bit, so a read ACE is never flagged; all extended rights is `ExtendedRight` (0x100) with
+no object type, which Learn documents as every extended right and so includes the three replication
+rights; a replication right is `ExtendedRight` with its GUID. A write scoped to one property, and
+any other extended right (Apply-Group-Policy on a GPO), is not graded. An object ACE scoped to the
+object's own class, or a class above it (domainDNS, domain, top; groupPolicyContainer, container,
+top; container, top for AdminSDHolder), is graded as unscoped; one scoped to any other GUID grants
+only that node - never `WriteDacl`, `WriteOwner` or full control on the object, and only the
+replication right whose GUID it names. An **inherit-only** ACE is
+skipped (Learn: it "does not control access to the object to which it is attached"). An ACE scoped
+to a child class through `InheritedObjectType` but **not** inherit-only is graded: Learn documents
+that such an ACE is also effective on the container - the plan row's "an ACE scoped to a child class
+does not grant on the domain object" holds only with the inherit-only flag. A **deny** ACE cancels a
+grant only when it names the same SID, comes earlier, applies to the object and covers every graded
+bit; otherwise the grant is flagged and the deny is named in `Evidence`. The **owner** is graded as
+holding `WriteDacl`, which Learn says an owner holds implicitly.
+
+**The allowlist, by SID only**, per object and per right (`Config.Acl.Allowlist`): from Microsoft -
+the Domain-DNS default descriptor (Domain Admins, Administrators, SYSTEM and Enterprise Admins hold
+`WriteDacl`, `WriteOwner`, write of all properties and every extended right; Enterprise Domain
+Controllers `Get-Changes` and `In-Filtered-Set`; Domain Controllers `Get-Changes-All`), the RODC
+article (Enterprise Domain Controllers, "only writeable DCs", `Get-Changes-All` - which the
+Domain-DNS descriptor does not list; the two pages disagree and the row says so), the 8453 and RODC
+articles (the forest root's Enterprise Read-only DCs: `Get-Changes` only - holding
+`Get-Changes-All` is the misconfiguration Microsoft says to change back, and is flagged), AdminSDHolder
+appendix C (Enterprise Admins, Domain Admins, Administrators) and the groupPolicyContainer default
+descriptor (Domain Admins, Enterprise Admins, SYSTEM, Creator Owner: write of all properties,
+`WriteDacl` and `WriteOwner` only - that descriptor grants them no control access); and **tool
+defaults**, labelled as such - SYSTEM on AdminSDHolder and Administrators on GPOs (AdAssessment26
+decision D14), and all extended rights and the replication rights on GPOs for Domain Admins,
+Enterprise Admins, SYSTEM and Creator Owner (C9).
+Every graded row says the allowlist is **provisional** until it is captured from a clean lab forest
+(catalogue P44/P45). A test shows a SID that resolves to "Fake Administrators", or even to
+"BUILTIN\Administrators", is still flagged: no decision reads a name.
+
+**What it reports.**
+
+| Row | Results |
+| --- | --- |
+| `DCSync rights: <domain>` | ADA-ACL-001, High. The flagged grade (`Warning`, a **tool default**, the catalogue rule; `Fail` by override) naming each SID outside the allowlist that holds a replication right and which; `Pass` otherwise |
+| `Domain root control rights: <domain>` | ADA-ACL-001, High. The same for `WriteDacl`, `WriteOwner`, write of all properties, full control and ownership. ADA-ACL-001 is two rows because the advice differs |
+| `AdminSDHolder rights: <domain>` | ADA-ACL-002, High. Every graded right and ownership |
+| `GPO rights: {GUID}` | ADA-ACL-003, Medium. One per GPO the search returned ("one part per GPO") |
+| `GPO rights summary: <domain>` | `Population`, `ReadCount`, `FlaggedCount`, `NotAssessedCount`; `Not Assessed` as a defect in the tool unless there is exactly one GPO row per container returned. The flagged grade when any GPO is flagged; `Not Assessed` when any could not be read, when none is visible (a domain holds its two default GPOs) or when the search failed; `Pass` only when every GPO was read and none is flagged |
+| `Dangerous ACLs (no domain scoped)`, `Dangerous ACLs` | `Not Assessed`: no domain scoped; the forest unreadable |
+
+`Not Assessed`, each in its own words: `Unreachable:`, `Access denied:`, `Timed out:`, `Read
+failed:` (from the exception type first), `Not returned:` (the answer held no `nTSecurityDescriptor`;
+Learn: a read can succeed without the attributes the caller may not see), `No DACL returned:` (which
+cannot be told from an object with no DACL), `Not read:` (not a descriptor), an ACE of a type the tool
+does not interpret, and an account SID that could not be decided because the scoped domain's or the
+forest root's SID was not read (with the root's SID unread, the scoped domain's own -519 and -498
+too) - each only when no SID is flagged: a flagged SID takes the grade and the Detail names the rest.
+A NULL DACL (`NULL DACL:`, the present flag set and no ACL), which Microsoft documents as granting
+full access to any user, is graded as Everyone (`S-1-1-0`) holding every right of the row. A domain
+whose DN was not read gets its four rows, never a gap; an
+exception while one domain is handled makes its four rows `Not Assessed` and the next domain is still
+graded. Detail names SIDs only; display names are resolved for the `Principals` column only, a SID
+that cannot be named stays a SID marked `unresolved`, and no decision reads that column. Other
+columns: `CatalogueId`, `Severity`, `ObjectKind`, `ObjectDn`, `ReadFrom`, `OwnerSid`, `AceCount`,
+`FlaggedSids`, `RightsHeld`, `Undecided`, `AllowlistNote`, `NotRun`.
+
+**Config.** A new versioned table `Acl`, overridable under a new `Acl` key of `-ConfigOverridePath`:
+`FlaggedStatus` (`Warning` or `Fail`) and `AdditionalAllowed`, a list of `{ Sid, Objects, Rights,
+Reason }` for the operator's legitimate non-default holders (Microsoft documents both replication
+rights for the Entra Connect AD DS connector account). A name in place of a SID is refused, and so
+are Everyone, Anonymous Logon, Authenticated Users, Users, Guests and RIDs 513, 514 and 515 of any
+domain; `*` is not a right. The built-in allowlist, masks, GUIDs, filter and property list are
+refused. A finding cites the file for exactly the keys it supplied; the reason of an override entry
+that allowed a grant is in `Evidence`.
+
+**Advice.** Section-scoped entries anchored on the Item prefixes the tool writes - DCSync, domain
+root control, AdminSDHolder, GPO (and its summary) - and a prefix catch-all with no advice, all ahead
+of the unscoped entries: every graded row says "replication", which the unscoped `replication` entry
+would otherwise answer with DNS and `repadmin` advice. Each text is Microsoft's own facts, cited in
+the map's comment.
+
+**Changed tests, because behaviour legitimately changed.** The two Pester tests and four
+Run-Validation asserts that pinned `Test-AdfaDcSyncAce` and `DcSyncRightGuids` now make the same four
+claims on the new functions (a Get-Changes-All grant is detected, a deny and a plain read are not,
+full control is); the pinned list of `-ConfigOverridePath` sections gains `Acl` (Pester, six places,
+and Run-Validation); the five version pins move to 1.26.0; the three help tests expecting "Seven
+sections can be named" now expect "Eight"; the count of splatted `Properties` assignments in the
+script, which the Laps section pins, goes from 15 to 17 (the lists of `Get-AdfaAclObjectRaw` and
+`Get-AdfaAclGpoRaw`). No test was deleted or weakened. The smoke harness's `Get-ADObject` stub gains
+a branch for descriptor reads, chosen by `nTSecurityDescriptor` in the property list, ahead of the
+C8 `groupPolicyContainer` branch, which is unchanged; `ConvertTo-AdfaAclDescriptor` and
+`Resolve-AdfaAclSidName` are stubbed there because `SecurityIdentifier` and
+`ActiveDirectorySecurity` do not exist off Windows and the harness must run anywhere.
+
+**Guards shown able to fail.** Nineteen single mutations of the new code, each applied alone to the script, run against the new and migrated Pester tests (the C9 Describe and "Deep security pure logic", PowerShell 7 on Windows) and then reverted byte for byte, SHA-256 checked after each: a right the SID may not hold read as allowed; a failed read turned into `Pass`; an unreachable domain read as reachable; access denied worded as unreachable; `FlaggedStatus` `Pass` accepted by the validator; the collector's wiring dropped from Invoke-Main; the full-control mask off by one; the per-domain loop and the per-GPO loop each cut to the first item; a deny after the allow honoured; inherit-only ACEs graded; the owner not graded; an undecidable account SID passed; the unsigned mask off by one; an empty GPO population passed; the DCSync advice unscoped; Enterprise Read-only DCs allowed every replication right; and the no-DACL guard removed (caught). Eighteen were caught. The one that survived was removing only the `ControlFlags` half of the no-DACL test. The reason first given for it - that `RawSecurityDescriptor.DiscretionaryAcl` is null exactly when `DiscretionaryAclPresent` is clear - is false: a NULL DACL (SDDL `D:NO_ACCESS_CONTROL`) has the flag set and a null `DiscretionaryAcl` (measured on 5.1). The two halves are now separate classes (`DaclAbsent`, `NullDacl`), and the same mutation is caught (see the review paragraph below).
+
+**Found by an independent review of the diff before commit, and fixed in it.** Seventeen findings.
+For each defect in behaviour a test was added that fails against the defect, and the fix makes it
+pass; each was shown by applying the defect back alone to a scratch copy of the script and running
+the C9 and "Deep security" Pester tests (PowerShell 7, 66 tests), restored byte for byte and
+checked by SHA-256 after each - all fourteen were caught.
+
+- An object ACE whose object type was the object's own class GUID (for example
+  `(OA;;CRWP;19195a5b-...;;<SID>)` on the domain head) was not graded at all, so a real DCSync or
+  write-all grant came out `Pass` (two findings). It is now graded as unscoped, for the class and
+  every class above it (MS-DTYP 2.5.3.2 and OBJECT_TYPE_LIST: the object itself is level zero and
+  a grant there applies to every node below; which class GUID the directory puts at level zero is in
+  MS-ADTS, not read in this session, so the whole chain is read as the object - may over-report,
+  never under-reports; PORT-PLAN C9d).
+- `WriteDacl`, `WriteOwner` and full control inside an object ACE scoped to a property, another class
+  or a right were graded as object-wide rights, so a scoped grant was reported as every replication
+  right. A scoped ACE now grants only the replication right whose GUID it names.
+- A flagged principal was hidden behind `Not Assessed` when the same DACL held one ACE of a type the
+  tool does not interpret (two findings). The flagged SID now takes the grade and the Detail names the
+  uninterpreted ACEs; with none flagged the row is still `Not Assessed`.
+- With the forest root's SID unread, the scoped domain's own Enterprise Admins (-519) and Enterprise
+  Read-only DCs (-498) were flagged; they are now undecided (`Not Assessed`).
+- `Get-ADDomain` was sent to the run's `-Server`, not to the domain it is about, although the docs said
+  every read is; and the test claiming to check it recorded only `-Identity`. It now sends
+  `-Server <domain>` (Learn: `-Server` takes a fully qualified domain name) and the stub records it.
+- A NULL DACL (present flag set, no ACL) was reported as "no DACL returned". It is its own class and is
+  graded as Everyone holding every right, which is what Microsoft documents a null DACL to grant. The
+  earlier entry's claim that `DiscretionaryAcl` is null "exactly when" the flag is clear was false and
+  is corrected above.
+- The groupPolicyContainer default descriptor grants DA, EA, SYSTEM and Creator Owner no control
+  access, but the allowlist gave them every right on GPOs as a Learn fact. The Learn rows now hold
+  `WriteDacl`, `WriteOwner` and write of all properties; all extended rights and the replication
+  rights on GPOs are a separate row per principal, labelled a tool default.
+- The RODC article cited by the config says Enterprise Domain Controllers hold `Get-Changes-All` by
+  default; the Domain-DNS descriptor does not. ED is now allowed it, in its own row whose origin
+  records the disagreement (PORT-PLAN C9d).
+- Tests that could not fail: the GPO summary under a `Fail` override; an undecidable owner on a row
+  that grades the owner; a deny carrying GENERIC_ALL; the callback-ACE exclusion in the converter.
+  Each now has a test, and the reviewer's mutation fails it. The summary's "counts add up" guard could
+  never fire as written; it now checks one GPO row per container returned, and a test that makes the
+  verdict return no row shows it firing.
+- Documentation: the C8 entry's "Twenty single mutations" had been changed to "Nineteen" by this
+  change and is restored; the help no longer states that Authenticated Users hold READ_CONTROL on
+  AdminSDHolder by default (not published), and now names the SACL caveat of C9a.
+
+Tests changed because behaviour legitimately changed: `Get-AdfaAclAceRight` takes a mandatory
+`-ObjectKind`, so its existing callers (two "Deep security" tests, two C9 tests, four Run-Validation
+asserts) now pass `-ObjectKind 'DomainRoot'`, with the same expectations; the allowlist test now
+declares eighteen rows, not ten, and accepts the `tool default (C9)` origin; the collector test's
+`Get-ADDomain` stub records `-Server` and the two `Get-ADDomain` assertions expect it.
+
+**Not verified.** Everything listed in PORT-PLAN C9a and C9d: the .NET type `Get-ADObject` returns for
+`nTSecurityDescriptor` and the descriptor parts the module asks for (if the module asks for the SACL
+without SeSecurityPrivilege, an ordinary account may get `Not returned:` on every object, and the
+documented fallback `DirectorySearcher.SecurityMasks = Dacl | Owner` would be needed); the exception
+types of a real refused, unreachable or timed-out read; the real default DACL of the domain head on a
+Windows Server 2016 or later schema and of AdminSDHolder (Learn's adschema pages stop at Windows
+Server 2012); whether a GPO whose permissions deny this account read is absent from the search; the
+time the name lookups of flagged SIDs take. The converter's tests run on Windows only and are skipped
+on the Linux CI runner. Not built (PORT-PLAN C9b): the permissions of GPO folders in SYSVOL, group
+membership of flagged principals, the SACL. Decisions for the operator to confirm are in PORT-PLAN
+C9c, among them every GPO rather than the linked ones, `Warning` rather than the old `Fail`, and a
+delegated GPO creator being flagged.
+
+**Vendor sources, all read on Microsoft Learn on 2026-11-16:**
+
+- DS-Replication-Get-Changes - https://learn.microsoft.com/windows/win32/adschema/r-ds-replication-get-changes
+- DS-Replication-Get-Changes-All - https://learn.microsoft.com/windows/win32/adschema/r-ds-replication-get-changes-all
+- DS-Replication-Get-Changes-In-Filtered-Set - https://learn.microsoft.com/windows/win32/adschema/r-ds-replication-get-changes-in-filtered-set
+- Domain-DNS class (default security descriptor, schemaIDGUID) - https://learn.microsoft.com/windows/win32/adschema/c-domaindns
+- Group-Policy-Container class (default security descriptor) - https://learn.microsoft.com/windows/win32/adschema/c-grouppolicycontainer
+- Container class (schemaIDGUID, subclass of top; not stated to be AdminSDHolder's descriptor) - https://learn.microsoft.com/windows/win32/adschema/c-container
+- Domain class (schemaIDGUID, the superclass of domainDNS) - https://learn.microsoft.com/windows/win32/adschema/c-domain
+- Top class (schemaIDGUID) - https://learn.microsoft.com/windows/win32/adschema/c-top
+- OBJECT_TYPE_LIST ("Level zero indicates the object itself") - https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-object_type_list
+- ACEs to control access to an object's properties (rights granted at a higher level apply to the lower levels) - https://learn.microsoft.com/windows/win32/secauthz/aces-to-control-access-to-an-object-s-properties
+- Null DACLs and empty DACLs ("A null DACL grants full access to any user that requests it") - https://learn.microsoft.com/windows/win32/secauthz/null-dacls-and-empty-dacls
+- Get-ADDomain (-Server takes a fully qualified domain name) - https://learn.microsoft.com/powershell/module/activedirectory/get-addomain
+- Defender for Identity posture assessments ("the CN=AdminSDHolder container") - https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts
+- Replication error 8453 (default holders, Enterprise Read-only DCs and RODCPREP) - https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8453
+- RODC replicates passwords because of incorrect permissions - https://learn.microsoft.com/troubleshoot/windows-server/active-directory/rodc-replicates-passwords-grant-incorrect-permissions
+- Appendix C: protected accounts and groups (AdminSDHolder, its owner and writers, SDProp) - https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory
+- Security identifiers - https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-identifiers
+- Security groups (Enterprise Read-only Domain Controllers, RID 498) - https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-groups
+- SID strings (SDDL abbreviations) - https://learn.microsoft.com/windows/win32/secauthz/sid-strings
+- nTSecurityDescriptor attribute - https://learn.microsoft.com/windows/win32/adschema/a-ntsecuritydescriptor
+- LDAP_SERVER_SD_FLAGS_OID - https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/3888c2b7-35b9-45b7-afeb-b772aa932dd0
+- Reading an object's security descriptor (READ_CONTROL, SE_SECURITY_NAME) - https://learn.microsoft.com/windows/win32/ad/reading-an-objectampaposs-security-descriptor
+- Access control and read operations (a search succeeds without unreadable properties) - https://learn.microsoft.com/windows/win32/ad/access-control-and-read-operations
+- Get-ADObject - https://learn.microsoft.com/powershell/module/activedirectory/get-adobject
+- DirectorySearcher.SecurityMasks (documented alternative, not used) - https://learn.microsoft.com/dotnet/api/system.directoryservices.directorysearcher.securitymasks
+- ActiveDirectorySecurity (Persist writes to storage) - https://learn.microsoft.com/dotnet/api/system.directoryservices.activedirectorysecurity
+- DirectoryObjectSecurity.GetAccessRules - https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.directoryobjectsecurity.getaccessrules
+- ActiveDirectoryRights (GenericAll 983551, GenericWrite 131112) - https://learn.microsoft.com/dotnet/api/system.directoryservices.activedirectoryrights
+- ActiveDirectoryAccessRule - https://learn.microsoft.com/dotnet/api/system.directoryservices.activedirectoryaccessrule
+- ADS_RIGHTS_ENUM (access mask bits; no object type = all properties, all extended rights) - https://learn.microsoft.com/windows/win32/api/iads/ne-iads-ads_rights_enum
+- ACE_HEADER (inherit-only) - https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-ace_header
+- Setting rights to specific types of objects (InheritedObjectType without inherit-only is effective on the container) - https://learn.microsoft.com/windows/win32/ad/setting-rights-to-specific-types-of-objects
+- MS-DTYP access check (order, deny, owner's implicit rights, null and empty DACL) - https://learn.microsoft.com/openspecs/windows_protocols/ms-dtyp/4f1bbcbb-814a-4c70-a11e-2a5b8779a6f9
+- Owner of a new object (implicit WRITE_DAC) - https://learn.microsoft.com/windows/win32/secauthz/owner-of-a-new-object
+- ControlFlags (DiscretionaryAclPresent) - https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.controlflags
+- AceFlags (InheritOnly, Inherited) - https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.aceflags
+- ObjectAce - https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.objectace
+- ObjectAceFlags - https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.objectaceflags
+- RawSecurityDescriptor constructors - https://learn.microsoft.com/dotnet/api/system.security.accesscontrol.rawsecuritydescriptor.-ctor
+- SecurityIdentifier.Translate (IdentityNotMappedException) - https://learn.microsoft.com/dotnet/api/system.security.principal.securityidentifier.translate
+- Password writeback access rights (Entra Connect connector account holds both replication rights) - https://learn.microsoft.com/troubleshoot/entra/entra-id/user-prov-sync/password-writeback-access-rights-permissions
+- Default GPO GUIDs - https://learn.microsoft.com/troubleshoot/windows-server/group-policy/rebuild-sysvol-tree-and-content-in-a-domain
+
+Not published on Learn, and handled as such: the .NET type and descriptor parts of
+`Get-ADObject -Properties nTSecurityDescriptor`; the full default DACL of the domain head on later
+schemas and of AdminSDHolder; the numeric OID of the SD flags control (not cited); AdminSDHolder's
+object class; which class GUID the directory places at level zero of the object type list (MS-ADTS,
+not retrieved in this session).
+
 ### Added — 2026-11-16 (GPO version consistency: directory versionNumber against GPT.INI in SYSVOL, read from the PDC emulator, tool v1.25.0)
 
 **PORT-PLAN C8.** New rows in the existing `Gpo` section (report section `GPO Inventory`), so no
