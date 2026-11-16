@@ -55,6 +55,8 @@ function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubDomainNamed = ConvertTo-StubArgument -Given $a
     $stubDomainSid = 'S-1-5-21-1-2-3'
     if ($stubDomainNamed.ContainsKey('Identity') -and $script:SmokeDomainSids.ContainsKey([string]$stubDomainNamed['Identity'])) { $stubDomainSid = $script:SmokeDomainSids[[string]$stubDomainNamed['Identity']] }
+    # C8: remembered so the groupPolicyContainer stub knows which domain it is answering for.
+    if ($stubDomainNamed.ContainsKey('Identity')) { $script:SmokeGpoLastDomain = [string]$stubDomainNamed['Identity'] }
     [pscustomobject]@{ DNSRoot='contoso.com'; NetBIOSName='CONTOSO'; DomainMode='Windows2016Domain'
         PDCEmulator='dc1.contoso.com'; RIDMaster='dc1.contoso.com'; InfrastructureMaster='dc1.contoso.com'
         DomainSID=(New-StubSid $stubDomainSid); DistinguishedName='DC=contoso,DC=com' } }
@@ -192,6 +194,46 @@ function New-StubSidHistoryPrincipal {
     if ($Asked -contains 'sAMAccountName') { $o | Add-Member -NotePropertyName 'sAMAccountName' -NotePropertyValue $Sam }
     if ($null -ne $Uac -and $Asked -contains 'userAccountControl') { $o | Add-Member -NotePropertyName 'userAccountControl' -NotePropertyValue ([int]$Uac) }
     return $o
+}
+# C8 (GPO version consistency): two groupPolicyContainer objects per domain, in the shape
+# Get-ADObject returns - the default properties always (DistinguishedName, Name = the GUID in braces,
+# ObjectClass, ObjectGUID), and of the four attributes the row declares only those asked for, with
+# versionNumber as the Int32 the schema's Enumeration syntax gives. The Get-ADDomain stub answers
+# every domain with the same PDC and DN, so the stub tells the domains apart by the -Identity of the
+# Get-ADDomain call that comes just before (the seam's own order). Per domain:
+#   contoso.com        both GPOs at 65537 in the directory and in GPT.INI: they agree
+#   north.contoso.com  the second GPO at 131073 in the directory, 65537 in GPT.INI: user half differs
+#   south.contoso.com  both agree, and SYSVOL holds a third GUID folder with no container
+# Every Policies folder also holds PolicyDefinitions (the central store), which is not a GPO.
+# SYSVOL is never touched: the two file seams are stubbed below, and record every path asked for.
+# $script:SmokeGpoFail makes the container query throw an access-denied exception.
+$script:SmokeGpoFail = $false
+$script:SmokeGpoLastDomain = 'contoso.com'
+$script:SmokeGpoAllowed = @('versionNumber', 'gPCFileSysPath', 'displayName', 'flags')
+$script:SmokeGpoGuids = @('{31B2F340-016D-11D2-945F-00C04FB984F9}', '{6AC1786C-016F-11D2-945F-00C04FB984F9}')
+$script:SmokeGpoOrphan = '{A1B2C3D4-0000-4000-8000-0000000000FF}'
+$script:SmokeGptIniCalls = @()
+$script:SmokeGpoListCalls = @()
+function New-StubGpoContainer {
+    param([string]$Guid, [string]$Domain, [string]$DisplayName, [int]$Version, [string[]]$Asked)
+    $o = [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Policies,CN=System,DC=contoso,DC=com" -f $Guid); Name = $Guid; ObjectClass = 'groupPolicyContainer'; ObjectGUID = [guid]::NewGuid() }
+    if ($Asked -contains 'versionNumber') { $o | Add-Member -NotePropertyName 'versionNumber' -NotePropertyValue ([int]$Version) }
+    if ($Asked -contains 'gPCFileSysPath') { $o | Add-Member -NotePropertyName 'gPCFileSysPath' -NotePropertyValue ("\\{0}\SysVol\{0}\Policies\{1}" -f $Domain, $Guid) }
+    if ($Asked -contains 'displayName') { $o | Add-Member -NotePropertyName 'displayName' -NotePropertyValue $DisplayName }
+    if ($Asked -contains 'flags') { $o | Add-Member -NotePropertyName 'flags' -NotePropertyValue ([int]0) }
+    return $o
+}
+function Get-AdfaSysvolPolicyFolderRaw {
+    param([string]$Path)
+    $script:SmokeGpoListCalls += $Path
+    $names = @($script:SmokeGpoGuids) + @('PolicyDefinitions')
+    if ($Path -match '\\south\.contoso\.com\\Policies$') { $names += $script:SmokeGpoOrphan }
+    [pscustomobject]@{ Ok = $true; Class = 'Read'; Names = @($names); Error = ''; ErrorType = ''; HResult = 0; Path = $Path }
+}
+function Get-AdfaGptIniRaw {
+    param([string]$Path, [int]$MaxBytes)
+    $script:SmokeGptIniCalls += $Path
+    [pscustomobject]@{ Ok = $true; Class = 'Read'; Bytes = [byte[]][System.Text.Encoding]::ASCII.GetBytes("[General]`r`nVersion=65537`r`ndisplayName=New Group Policy Object`r`n"); Error = ''; ErrorType = ''; HResult = 0; Path = $Path }
 }
 # The named arguments a remaining-arguments stub was called with: a splatted -Name value arrives as
 # the string "-Name:" followed by the value.
@@ -433,6 +475,24 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
                 trustPartner = 'fabrikam.com'; flatName = 'FABRIKAM'; securityIdentifier = (New-StubSidBytes -Sid $script:SmokeFabrikamSid) }
         }
         return
+    }
+    # C8: the groupPolicyContainer objects, one level under CN=Policies,CN=System, read from the PDC.
+    if ([string]$stubNamed['LDAPFilter'] -eq '(objectClass=groupPolicyContainer)') {
+        if ($script:SmokeGpoFail) { throw [System.UnauthorizedAccessException]'STUB: groupPolicyContainer query refused' }
+        $gpoAsked = @($stubNamed['Properties'] | ForEach-Object { [string]$_ })
+        foreach ($p in $gpoAsked) {
+            if ($p -match '[*?]' -or $script:SmokeGpoAllowed -notcontains $p) { throw ("STUB: the GPO query asked for '{0}', which it does not declare" -f $p) }
+        }
+        if ([string]$stubNamed['SearchBase'] -ne 'CN=Policies,CN=System,DC=contoso,DC=com') { throw ("STUB: GPO containers are under CN=Policies,CN=System, not '{0}'" -f [string]$stubNamed['SearchBase']) }
+        if ([string]$stubNamed['SearchScope'] -ne 'OneLevel') { throw 'STUB: the GPO container search must be one level' }
+        if ([string]$stubNamed['Server'] -ne 'dc1.contoso.com') { throw ("STUB: the GPO containers must be read from the PDC emulator, not '{0}'" -f [string]$stubNamed['Server']) }
+        $gpoDomain = $script:SmokeGpoLastDomain
+        $secondVersion = 65537
+        if ($gpoDomain -eq 'north.contoso.com') { $secondVersion = 131073 }
+        return @(
+            (New-StubGpoContainer -Guid $script:SmokeGpoGuids[0] -Domain $gpoDomain -DisplayName 'Default Domain Policy' -Version 65537 -Asked $gpoAsked)
+            (New-StubGpoContainer -Guid $script:SmokeGpoGuids[1] -Domain $gpoDomain -DisplayName 'Default Domain Controllers Policy' -Version $secondVersion -Asked $gpoAsked)
+        )
     }
     # C6: CN=RID Manager$ of the domain named by -Server, with the one attribute asked for.
     if ($stubNamed.ContainsKey('Identity') -and [string]$stubNamed['Identity'] -match '^CN=RID Manager\$,CN=System,') {
@@ -756,6 +816,22 @@ if (Test-Path $spCsv) {
     Check (@($spCsvRows | Where-Object { $_.Item -eq 'krbtgt password age' }).Count -eq 1) 'SID history: non-vacuity - the CSV holds the older rows too'
 }
 else { Check $false 'Security Posture CSV exists' }
+# C8: the GPO version rows must be wired into GPO Inventory after the unchanged inventory rows, must
+# read the containers through the stubbed query and GPT.INI through the stubbed file seam, on the PDC.
+$gpoRows = @($smokeFindings | Where-Object { $_.Section -eq 'GPO Inventory' })
+$gpoVer = @($gpoRows | Where-Object { $_.Item -like 'GPO version*' -or $_.Item -like 'GPO folder*' })
+Check (@($gpoVer).Count -eq 1) ("GPO version: wired into GPO Inventory with one summary row for the stub domain, and no row for two GPOs that agree ({0} rows, expected 1)" -f @($gpoVer).Count)
+Check (@($gpoRows | Where-Object { $_.Item -eq 'GroupPolicy module' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'GPO version: non-vacuity - the inventory''s own row (no GroupPolicy module on this host) is still there'
+$gpoSum = @($gpoVer | Where-Object { $_.Item -eq 'GPO version summary: contoso.com' })
+Check (@($gpoSum).Count -eq 1 -and $gpoSum[0].Status -eq 'Pass' -and $gpoSum[0].Scope -eq 'contoso.com' -and $gpoSum[0].Detail -match '^All 2 GPO\(s\) of contoso\.com visible to this account were compared on dc1\.contoso\.com' -and -not $gpoSum[0].Recommendation) 'GPO version: two GPOs whose directory and GPT.INI versions agree pass on the PDC, without the GroupPolicy module, and carry no advice'
+Check (@($script:SmokeGptIniCalls).Count -eq 2 -and @($script:SmokeGptIniCalls | Where-Object { $_ -notmatch '^\\\\dc1\.contoso\.com\\SYSVOL\\contoso\.com\\Policies\\\{[0-9A-F-]{36}\}\\GPT\.INI$' }).Count -eq 0) ("GPO version: each GPT.INI is read from the PDC's own SYSVOL share, never from the host gPCFileSysPath names ({0})" -f ($script:SmokeGptIniCalls -join ', '))
+$gpoCsv = Join-Path $result.CsvPath 'GPO Inventory.csv'
+if (Test-Path $gpoCsv) {
+    $gpoCsvSum = @(Import-Csv $gpoCsv | Where-Object { $_.Item -eq 'GPO version summary: contoso.com' })
+    Check (@($gpoCsvSum).Count -eq 1 -and $gpoCsvSum[0].Population -eq '2' -and $gpoCsvSum[0].Compared -eq '2' -and $gpoCsvSum[0].Mismatched -eq '0' -and $gpoCsvSum[0].ReadFrom -eq 'dc1.contoso.com' -and $gpoCsvSum[0].FoldersWithoutContainer -eq '0') 'GPO version: the section CSV carries the declared population and the counts in their own columns'
+    Check (@($gpoCsvSum).Count -eq 1 -and $gpoCsvSum[0].Evidence -eq 'directory and SYSVOL') 'GPO version: the summary''s Evidence names SYSVOL, which was listed and read'
+}
+else { Check $false 'GPO Inventory CSV exists' }
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
@@ -788,6 +864,7 @@ function Get-ADForest { param([Parameter(ValueFromRemainingArguments)]$a)
 $out2 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_multi_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out2
 $script:AllDomains = $true
+$script:SmokeGptIniCalls = @()
 $result2 = Invoke-Main
 
 Check ($null -ne $result2) 'Multi-domain: Invoke-Main returned a summary object'
@@ -797,7 +874,7 @@ Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scop
 $findings2 = @(Import-Csv (Join-Path $result2.CsvPath 'Findings-Consolidated.csv'))
 Check ($findings2.Count -gt 0) ("Multi-domain: consolidated findings are not empty ({0} rows)" -f $findings2.Count)
 
-foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space', 'DC Hardening', 'Windows LAPS', 'DC Certificates', 'RID Pool')) {
+foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency', 'DC Secure Channel & Machine Passwords', 'DC System', 'DC Disk Space', 'DC Hardening', 'Windows LAPS', 'DC Certificates', 'RID Pool', 'GPO Inventory')) {
     $n = @($findings2 | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Multi-domain: section '{0}' reached the consolidated findings ({1} rows)" -f $sec, $n)
 }
@@ -878,6 +955,20 @@ Check (@($sh2 | Where-Object { $_.Item -eq 'SID history same-domain: north.conto
 Check (@($sh2 | Where-Object { $_.Item -eq 'SID history privileged: north.contoso.com' -and $_.Status -eq 'Fail' -and $_.Detail -match 'Enterprise Admins \(RID 519\) x1' -and $_.Recommendation -match 'Enterprise Admins' -and $_.Recommendation -notmatch 'New-KrbtgtKeys|wbadmin' }).Count -eq 1) 'Multi-domain: the Enterprise Admins SID of contoso.com in north.contoso.com is a privileged Fail, named, with its advice'
 Check (@($sh2 | Where-Object { $_.Item -eq 'SID history same-domain: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Multi-domain: the same-domain row is per domain - contoso.com, whose values come from other domains, passes'
 Check (@($sh2 | Where-Object { $_.Scope -eq 'south.contoso.com' -and $_.Item -ne 'SID history sources: south.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 3 -and @($sh2 | Where-Object { $_.Item -eq 'SID history: south.contoso.com' -and $_.Detail -match '^None visible: ' }).Count -eq 1) 'Multi-domain: south.contoso.com, with no principal returned, passes worded "none visible to this account"'
+# C8: one summary row per scoped domain, each graded on that domain's own containers and its own
+# GPT.INI files - not three copies of the first domain. Declared population: three summaries, one
+# mismatched GPO in north.contoso.com, one folder without a container in south.contoso.com.
+$gpo2 = @($findings2 | Where-Object { $_.Section -eq 'GPO Inventory' -and ($_.Item -like 'GPO version*' -or $_.Item -like 'GPO folder*') })
+Check (@($gpo2).Count -eq 5) ("Multi-domain: GPO version has a summary for each of the three domains, the mismatched GPO of north.contoso.com and the orphan folder of south.contoso.com ({0}, expected 5)" -f @($gpo2).Count)
+foreach ($d in $multiDomains) {
+    Check (@($gpo2 | Where-Object { $_.Scope -eq $d -and $_.Item -eq ("GPO version summary: {0}" -f $d) }).Count -eq 1) ("Multi-domain: GPO version has the summary of '{0}', scoped to it" -f $d)
+    Check (@($script:SmokeGptIniCalls | Where-Object { $_ -match ("^\\\\dc1\.contoso\.com\\SYSVOL\\{0}\\Policies\\" -f [regex]::Escape($d)) }).Count -ge 2) ("Multi-domain: the GPT.INI files of '{0}' are read under that domain's own SYSVOL folder" -f $d)
+}
+Check (@($gpo2 | Where-Object { $_.Item -eq 'GPO version summary: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Multi-domain: contoso.com, whose two GPOs agree, passes'
+Check (@($gpo2 | Where-Object { $_.Item -eq ("GPO version: {0}" -f $script:SmokeGpoGuids[1]) -and $_.Scope -eq 'north.contoso.com' -and $_.Status -eq 'Warning' -and $_.Detail -match 'holds 131073 \(user 2, computer 1\) and GPT\.INI in SYSVOL holds 65537 \(user 1, computer 1\); the user half differs' -and $_.Detail -match 'replication still in flight' -and $_.Recommendation -match 'converged' -and $_.Recommendation -notmatch 'dfsrmig|wbadmin|repadmin /replicate' }).Count -eq 1) 'Multi-domain: the GPO of north.contoso.com whose directory version is ahead of GPT.INI is a Warning naming the user half, with its own advice and not the restore advice'
+Check (@($gpo2 | Where-Object { $_.Item -eq 'GPO version summary: north.contoso.com' -and $_.Status -eq 'Warning' }).Count -eq 1) 'Multi-domain: north.contoso.com''s summary is a Warning'
+Check (@($gpo2 | Where-Object { $_.Item -eq ("GPO folder without container: {0}" -f $script:SmokeGpoOrphan) -and $_.Scope -eq 'south.contoso.com' -and $_.Status -eq 'Warning' -and $_.Recommendation -match 'orphaned' }).Count -eq 1) 'Multi-domain: the GUID folder of south.contoso.com with no container is a Warning with its own advice'
+Check (@($gpo2 | Where-Object { $_.Item -eq 'GPO version summary: south.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Multi-domain: south.contoso.com''s versions agree, so its summary passes beside the orphan folder row'
 
 # C2: the same three domains with DcDisk selected WITHOUT DomainControllers. There is then no DC
 # inventory, and the section used to fall back to one unscoped Get-ADDomainController call,
@@ -1313,8 +1404,12 @@ $script:SmokeRidFail = $true
 # C7: the SID history rows read the directory without Get-ADDomainController either, so their
 # principal query is refused too (an access-denied exception).
 $script:SmokeSidHistoryFail = $true
+# C8: the GPO version check reads the directory without Get-ADDomainController too, so its container
+# query is refused (an access-denied exception).
+$script:SmokeGpoFail = $true
+$script:SmokeGptIniCalls = @()
 
-$out3 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
+$out3 =Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out3
 $script:AllDomains = $false
 $result3 = Invoke-Main
@@ -1401,6 +1496,19 @@ $sh3 = @($findings3 | Where-Object { $_.Section -eq 'Security Posture' -and $_.I
 Check (@($sh3).Count -eq 4 -and @($sh3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: SID history reports nothing but Not Assessed, and never Pass ({0} rows, expected 4)" -f @($sh3).Count)
 Check (@($sh3 | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Detail -match '^Access denied: ' -and $_.Detail -match 'STUB: sIDHistory query refused' -and $_.Detail -match 'not a clean result' }).Count -eq 4) 'Failure mode: every SID history row says Access denied, not unreachable, with the cause'
 Check (@($sh3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a SID history row that measured nothing carries no advice'
+# C8: the container query refused. The domain's one version row is its summary, Not Assessed, saying
+# "Access denied" with the cause; no SYSVOL file is read, nothing passes and nothing carries advice.
+$gpo3 = @($findings3 | Where-Object { $_.Section -eq 'GPO Inventory' -and ($_.Item -like 'GPO version*' -or $_.Item -like 'GPO folder*') })
+Check (@($gpo3).Count -eq 1 -and $gpo3[0].Item -eq 'GPO version summary: contoso.com' -and $gpo3[0].Status -eq 'Not Assessed' -and $gpo3[0].Scope -eq 'contoso.com') ("Failure mode: GPO version reports the scoped domain's summary as Not Assessed, and never Pass ({0} rows, expected 1)" -f @($gpo3).Count)
+Check (@($gpo3 | Where-Object { $_.Detail -match '^Access denied: ' -and $_.Detail -match 'STUB: groupPolicyContainer query refused' -and $_.Detail -match 'not a clean result' }).Count -eq 1) 'Failure mode: the GPO version summary says Access denied, not unreachable, with the cause'
+Check (@($script:SmokeGptIniCalls).Count -eq 0) 'Failure mode: no GPT.INI is read when the containers could not be'
+$gpoCsv3 = Join-Path $result3.CsvPath 'GPO Inventory.csv'
+if (Test-Path $gpoCsv3) {
+    $gpoCsv3Sum = @(Import-Csv $gpoCsv3 | Where-Object { $_.Item -eq 'GPO version summary: contoso.com' })
+    Check (@($gpoCsv3Sum).Count -eq 1 -and $gpoCsv3Sum[0].Evidence -eq 'none' -and $gpoCsv3Sum[0].Population -eq '') 'Failure mode: the GPO version summary claims no evidence and no population when the containers could not be read'
+}
+else { Check $false 'Failure mode: GPO Inventory CSV exists' }
+Check (@($gpo3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a GPO version row that measured nothing carries no advice'
 # The schema readable and the computer query failing: the schema row stands, the domain rows
 # are Not Assessed with the query's own error.
 $out3l = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_lapsonly_" + [guid]::NewGuid().ToString('N'))
@@ -1504,6 +1612,9 @@ if ($null -ne $result4) {
     # C7: with no forest no domain is scoped; the SID history rows ask nothing and say so in one row.
     $sh4 = @($findings4 | Where-Object { $_.Section -eq 'Security Posture' -and $_.Item -like 'SID history*' })
     Check (@($sh4).Count -eq 1 -and $sh4[0].Item -eq 'SID history' -and $sh4[0].Status -eq 'Not Assessed' -and $sh4[0].Detail -match 'The forest could not be read' -and $sh4[0].Detail -match 'not contactable') 'No forest: SID history is one Not Assessed row carrying the cause'
+    # C8: with no forest no domain is scoped; the GPO version check asks nothing and says so in one row.
+    $gpo4 = @($findings4 | Where-Object { $_.Section -eq 'GPO Inventory' })
+    Check (@($gpo4).Count -eq 1 -and $gpo4[0].Item -eq 'GPO version' -and $gpo4[0].Status -eq 'Not Assessed' -and $gpo4[0].Detail -match 'The forest could not be read' -and $gpo4[0].Detail -match 'not contactable') 'No forest: GPO Inventory is one Not Assessed GPO version row carrying the cause'
 
     # The critical property: with no forest, nothing may claim to have passed.
     $passes4 = @($findings4 | Where-Object { $_.Status -eq 'Pass' })

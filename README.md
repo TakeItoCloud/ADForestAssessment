@@ -33,7 +33,7 @@ Extracted from
 | **SYSVOL / DFSR** | DFSR migration state; **SYSVOL and NETLOGON share presence per DC** (SMB-unreachable is reported as unknown, never as a missing share); and the two attributes a D2/D4-equivalent rebuild edits by hand — `msDFSR-Enabled=FALSE` (replication switched off) and `msDFSR-options=1` (authoritative member), with **more than one authoritative member reported as a conflict**, which no single DC can reveal |
 | **SYSVOL backlog** | Opt-in (`-IncludeSysvolBacklog`): pending SYSVOL files **in both directions** between every DC and its domain's PDC emulator. `Get-DfsrBacklog` shows at most 100 records with the true total only in its verbose stream, so where that cannot be read the figure is reported as **"at least N"**, never as a total |
 | **DFS Replication events** | Per-DC DFSR log scan for dirty shutdown (2213), content freshness stop (4012), membership disabled (4114/4144), waiting for initial sync (4614) and successful initialisation (4604) — **gated on log coverage** like the Directory Service scan, and silence with no 4604 is a `Warning`, not a pass |
-| Group Policy | Linked / unlinked GPOs, WMI filters, central store |
+| Group Policy | Linked / unlinked GPOs (GroupPolicy module), central store; and **GPO version consistency** per scoped domain (part of `-Sections Gpo`, no module needed): each GPO's version in the directory (`versionNumber`) against its `GPT.INI` in SYSVOL, user and computer halves, both read from the domain's **PDC emulator**. A difference is a `Warning` (a **tool default**, `Fail` by override) that names the half and both numbers and says it can be replication in flight; a GPO that could not be compared is `Not Assessed` with its cause (unreachable, access denied, folder or `GPT.INI` absent, not parsed, `versionNumber` not returned, a `gPCFileSysPath` that is not the GPO's own folder); a SYSVOL folder named by a GPO GUID with no container visible is a `Warning`. A per-domain summary row states the containers read, compared, mismatched and not compared, and passes only when every one was compared and none differs. Details under [GPO version consistency](#gpo-version-consistency) |
 | Policy | Default and fine-grained password and lockout policy |
 | Privilege | DA/EA/SA/Administrators membership, adminCount orphans, SPNs on privileged accounts, Protected Users |
 | Security posture | krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota, AdminSDHolder, stale / never-expiring / RC4-DES accounts; and **SID history** per scoped domain (directory reads only, `sIDHistory` never written): the principals that carry it (`Warning` when any - a tool default, `Info` by override; `Pass` worded "none visible to this account" when the read succeeded and returned none), a historic SID of the principal's own domain (`Fail`), a privileged well-known RID or SID (`Fail`, named), and the source domains (`Info`: this forest, a trust partner, or "unresolved"). Details under [SID history](#sid-history) |
@@ -106,6 +106,14 @@ refuses the whole read shows as `Access denied`. One that hides a single attribu
 Microsoft documents that a read then succeeds without that attribute. That is why an allocation
 attribute or a `rIDAvailablePool` that is not returned, and a RID Set that is not found, are
 `Not Assessed` and never a pass; the tool does not evaluate the ACL (PORT-PLAN C6d).
+
+The GPO version check of `Gpo` reads the `groupPolicyContainer` objects with domain read access
+(Microsoft's default security descriptor grants Authenticated Users read; a GPO whose permissions
+deny the account is not returned and not counted) and reads `GPT.INI` over the PDC's `SYSVOL`
+share as the account running the script, with SMB (TCP 445) reachable from the host running the
+assessment. `-Credential` is not used for those file reads. The default ACL of the SYSVOL share
+was not found on Microsoft Learn, so a refused read is reported as `Access denied` and no default is
+claimed.
 
 **Running `Identity` (part of `All`) with rights to read LAPS passwords.** The Identity export
 asks for every attribute of every computer (`Get-ADComputer -Properties *`), and the directory
@@ -861,11 +869,65 @@ Trusts section; the trusted domain objects of other forest domains; the security
 `SetSidFilteringStatus`. Names and SIDs are in their own columns (`Principals`, `HistoricSids`,
 `SourceDomains`, `DomainSid`), never in the text a recommendation is chosen from.
 
+## GPO version consistency
+
+`-Sections Gpo` (part of `All`) gives every scoped domain a version check after the section's
+inventory rows, which keep their shape. (One defect in them was fixed with C8: an unlinked GPO's
+report has no `LinksTo` element, and reading it under StrictMode threw, so every domain holding
+one unlinked GPO got the `(enumeration failed)` row instead of its linked and unlinked rows.) **Run against stubs only** so far; the first run against a
+real forest is PORT-PLAN C17, and C8a lists what that run must confirm.
+
+**What it reads, all from the domain's PDC emulator** - the DC Group Policy editing targets by
+default - so that a difference is a difference on one DC, not between two:
+
+1. `Get-ADDomain -Identity <domain>` for the PDC emulator and the domain's DN.
+2. `Get-ADObject -Server <PDC> -SearchBase CN=Policies,CN=System,<domain DN> -SearchScope OneLevel
+   -LDAPFilter '(objectClass=groupPolicyContainer)'`, asking for `versionNumber`, `gPCFileSysPath`,
+   `displayName` and `flags` only (domain read access).
+3. A probe of SMB, TCP 445, on the PDC. With no answer nothing in SYSVOL is read, and every GPO is
+   `Not Assessed` as unreachable - a file is never reported absent unless the DC answered.
+4. The folder names under `\\<PDC>\SYSVOL\<domain>\Policies`, and each GPO's `GPT.INI`, opened
+   for read access only and sharing read, write and delete with every other handle - so a GPMC
+   save or a DFSR install of the same file on the PDC is never refused because the tool holds it -
+   and taken only up to 64 KB (a tool default). File reads run as the account running the
+   script: `-Credential` is not passed to them. When the listing fails, the files are still read
+   one by one only if it was refused as access denied; after any other failure (unreachable, timed
+   out, not found) no file is read and every GPO is `Not Assessed` with the listing's cause.
+
+The `GPT.INI` path is built from the PDC's name and the container's GUID. The host written in
+`gPCFileSysPath` is **never contacted**: it is a value in the directory, and reading a path it names
+would send this account's credentials to whatever host was written there. A `gPCFileSysPath` that is
+not `\\<domain>\sysvol\<domain>\policies\<GUID>` for this domain and this GPO makes that GPO
+`Not Assessed`, because the file clients read is then not the one this tool would read.
+
+| Row | Results |
+| --- | --- |
+| `GPO version: {GUID}` | Written only when there is something to say. `Warning` (a **tool default**, the catalogue rule ADA-GPO-001; `Fail` by override) when the directory and `GPT.INI` versions differ, naming the half that differs - user (upper 16 bits) or computer (lower 16 bits), as Microsoft's MS-GPOL publishes - and both numbers, and saying that it can be replication still in flight. `Not Assessed`, each in its own words: `Unreachable:`, `Access denied:`, `Timed out:`, `Not found:` (the GPO's folder is not on this DC - an orphaned container or a folder not yet replicated - or the folder holds no `GPT.INI`), `Not parsed:` (no `[General]` section, no or two `Version` keys, not a 32-bit number), `Not returned:` (`versionNumber` not set or not readable), `Not read:` (a file above the size bound), `Not assessed:` (`gPCFileSysPath` not the GPO's own folder) |
+| `GPO folder without container: {GUID}` | `Warning` (a tool default; `Info` by override): a folder under `Policies` named by a GPO GUID with no `groupPolicyContainer` visible to this account. Folders not named by a GUID, such as `PolicyDefinitions`, are counted and not graded |
+| `GPO folder listing: <domain>` | `Not Assessed` when the `Policies` folder could not be listed, with the cause |
+| `GPO version summary: <domain>` | Always one per scoped domain, with the containers read (`Population`), `Compared`, `Mismatched`, `NotAssessedCount` and `FoldersWithoutContainer` in their own columns; `Evidence` says `directory and SYSVOL` only when the `Policies` folder was listed or a `GPT.INI` version read, `directory` otherwise, `none` when the containers were not read. `Pass` only when at least one container was read, every one was compared and none differs; the mismatch status when any differs; otherwise `Not Assessed`. No container at all is `Not Assessed` - a domain holds at least the Default Domain Policy |
+| `GPO version (no domain scoped)`, `GPO version` | `Not Assessed`: no domain scoped, or the forest unreadable |
+
+**Where Microsoft is silent, the tool says so.** Microsoft publishes how the two versions are laid
+out and that both are updated on every edit, but no grade for a difference and no time after which
+one stops being transient; the `Warning` and the advice ("run again once replication has
+converged") are this tool's. The `versionNumber` attribute is a signed 32-bit integer, so a user
+half of 32768 or more reads as a negative number; it is taken as its 32-bit pattern, an inference
+from the type. A `GPT.INI` is read as ANSI, as MS-GPOL requires, and a UTF-16 or UTF-8 file is
+tolerated and named in the `Encoding` column.
+
+**Not read, not done**: the `GroupPolicy` module's own version properties (Learn does not document
+them; they are a second instrument for C17, PORT-PLAN C8b); the other DCs' SYSVOL copies; a
+container this account cannot read, which is not counted and makes its folder look orphaned.
+Nothing is written: no `Set-GP*`, no `Backup-GPO`, no `gpupdate`, and `GPT.INI` is never opened for
+writing. A GPO's display name and its `gPCFileSysPath` are in their own columns (`GPOName`,
+`FileSysPath`), never in the text a recommendation is chosen from.
+
 ## One override file for section config: `-ConfigOverridePath`
 
 A JSON file whose top-level keys are section names. Each value is checked by that section's own
-rules. Six sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates`,
-`RidPool` and `SidHistory` (used by `SecurityPosture`);
+rules. Seven sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates`,
+`RidPool`, `SidHistory` (used by `SecurityPosture`) and `Gpo`;
 later checks add their own key.
 
 ```json
@@ -903,6 +965,10 @@ later checks add their own key.
   "SidHistory": {
     "PresentStatus": "Warning",
     "NameListCap": 25
+  },
+  "Gpo": {
+    "MismatchStatus": "Warning",
+    "OrphanFolderStatus": "Warning"
   }
 }
 ```
@@ -960,6 +1026,10 @@ later checks add their own key.
   stay a `Fail`), and `NameListCap` a whole JSON number from 0 to 1000. The privileged RIDs and
   SIDs, the filters and the property lists are refused, so a file cannot make the tool ask for
   every attribute or stop a privileged SID from failing.
+- For `Gpo` the two keys above are the only ones: `MismatchStatus` is the text `Warning` or
+  `Fail`, and `OrphanFolderStatus` the text `Warning` or `Info` (neither is ever a pass). The
+  filter, the property list, the share, the folder and file names, the port and the size bound
+  are refused, so a file cannot make the tool read another path or ask for every attribute.
 - For `DcDisk`, `WsmanPort` and `RpcPort` change the port that is **probed** before a read. The
   CIM session itself is opened without a port, so it still goes to the default one: setting
   either key to anything but the default can make a reachable DC read as unreachable, and does

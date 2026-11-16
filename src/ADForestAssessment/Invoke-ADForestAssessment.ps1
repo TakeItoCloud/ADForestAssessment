@@ -26,7 +26,13 @@
         - Parsed DC diagnostics (dcdiag key tests + core service state) as PASS/FAIL
         - DNS health (zones, scavenging, forwarders, zone transfer)         [DnsServer optional]
         - SYSVOL / DFSR replication migration state                          [DFSR optional]
-        - GPO inventory (linked / unlinked / WMI filters)                    [GroupPolicy optional]
+        - GPO inventory (linked / unlinked)                                  [GroupPolicy optional]
+        - GPO version consistency, per scoped domain: each GPO's version in the directory
+          (versionNumber) against the version in its GPT.INI in SYSVOL, user and computer
+          halves, both read from the domain's PDC emulator; GPOs whose SYSVOL folder or GPT.INI
+          is missing, and SYSVOL GPO folders with no container. A directory read and a
+          read-only file read over SMB; the GroupPolicy module is not needed for it and nothing
+          is written
         - Password & lockout policy (default + fine-grained)
         - Privileged group membership and security posture
           (krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota,
@@ -234,9 +240,24 @@
     and SIDs are in their own columns, never in Detail. Whether a trust filters SID history is in
     the Trusts section.
 
+    Gpo also compares, for every scoped domain, each GPO's version in the directory with the
+    version in its GPT.INI, both read from the domain's PDC emulator: the groupPolicyContainer
+    objects under CN=Policies,CN=System (versionNumber, gPCFileSysPath, displayName and flags
+    only, domain read access), then, after a probe of SMB port 445, a listing of
+    \\<PDC>\SYSVOL\<domain>\Policies and a read-only open of each GPT.INI, as the account running
+    the script (-Credential is not used for file reads). A GPO whose two versions differ is a
+    Warning (a tool default; Fail by override) naming the half - user or computer - and both
+    numbers, and saying it can be replication in flight. A GPO that could not be compared is
+    Not Assessed with its cause: unreachable, access denied, folder or GPT.INI not found, not
+    parsed, versionNumber not returned, or a gPCFileSysPath that is not the GPO's own folder (the
+    host it names is never contacted). A SYSVOL folder named by a GPO GUID with no container
+    visible to this account is a Warning (Info by override). Every scoped domain gets a summary
+    row with the number of containers read, compared, mismatched and not compared; it passes only
+    when every GPO was compared and none differs. The inventory rows are unchanged.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Six sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Seven sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -286,6 +307,15 @@
     refused:
 
         { "SidHistory": { "PresentStatus": "Info", "NameListCap": 50 } }
+
+    And Gpo, used by the Gpo section's version check, whose keys are MismatchStatus (the grade of
+    a GPO whose directory and GPT.INI versions differ: Warning or Fail) and OrphanFolderStatus
+    (the grade of a SYSVOL GPO folder with no container: Warning or Info). Both are tool
+    defaults, not Microsoft values: Microsoft publishes no grade for either. The filter, the
+    property list, the share, the folder and file names, the port and the size bound are
+    refused:
+
+        { "Gpo": { "MismatchStatus": "Fail" } }
 
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
@@ -478,7 +508,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool" and "SidHistory" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory" and "Gpo" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -512,7 +542,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.24.0'
+    Version                 = '1.25.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1526,6 +1556,134 @@ $script:Config = @{
             @{ Sid = 'S-1-5-32-550'; Name = 'Print Operators' }
             @{ Sid = 'S-1-5-32-551'; Name = 'Backup Operators' }
             @{ Sid = 'S-1-5-9'; Name = 'Enterprise Domain Controllers' }
+        )
+    }
+    # --- Group Policy version consistency: the version of each GPO in the directory against the
+    #     version in its GPT.INI in SYSVOL, both read from the domain's PDC emulator (PORT-PLAN C8;
+    #     rows of the Gpo section, report section "GPO Inventory") ---
+    # Instrument: a directory read of the groupPolicyContainer objects under CN=Policies,CN=System
+    # and a read-only file read of each GPO's GPT.INI over the PDC's SYSVOL share. The GroupPolicy
+    # module is NOT used for this check: Learn documents Get-GPO's formatted output ("AD Version: n,
+    # SysVol Version: n") but not the Microsoft.GroupPolicy.Gpo members behind it, nor which DC's
+    # SYSVOL it reads. Every URL below was read on 2026-11-16.
+    #
+    # Vendor facts (MS-GPOL, Microsoft's Group Policy protocol specification, on Learn):
+    #   "user GPO version: ... a 16-bit integer encoded in the upper 16 bits of a GPO version";
+    #   "machine Group Policy Object (GPO) version: ... encoded in the lower 16 bits"; the GPO
+    #   container version is "stored in the Active Directory portion of the GPO" and the file
+    #   system version "in the file system portion".
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/2f362c13-9a2d-469b-8c4b-7b4045258995
+    #   versionNumber: "A GPO container version. It is a 32-bit integer which consists of 16 bits of
+    #   user GPO version and 16 bits of machine GPO version"; "<gpo path>\gpt.ini ... corresponds to
+    #   the file system path retrieved for the GPO in the gPCFileSysPath attribute"; gpt.ini "MUST be
+    #   encoded in ANSI", "MUST have the required section, "General"" (otherwise "the file is
+    #   considered corrupt"), and its key "Version" "MUST be a 32-bit integer"; flags 0 enabled,
+    #   bit 0 ignore for user mode, bit 1 ignore for computer mode, 3 disabled for both; cn is "a
+    #   curly braced GUID string"; displayName "a human-readable directory string" (free text, so
+    #   it never reaches Item or Detail).
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/b0e5c9e8-e858-4a7a-a94a-4a3d0a9d87a2
+    #   On every edit "both the GPO container version and the GPO file system version" of the
+    #   edited half MUST be updated - the basis for expecting them equal.
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/70fd86b1-926a-4dcf-9ce7-6f9d2149c20d
+    #   The GPO path "will always be a Universal Naming Convention (UNC) path of the form:
+    #   "\\<dns domain name>\sysvol\<dns domain name>\policies\<gpo guid>"" (the glossary above);
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/2f362c13-9a2d-469b-8c4b-7b4045258995
+    #   and "the GUID in the GPO DN and the GPO path MUST be the same" (3.1.1 Server Abstract Data
+    #   Model, which says only that a GPO path MUST be available, not its form).
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/34f68012-77c5-4487-837f-84a23829273b
+    #   versionNumber has syntax 2.5.5.9 (Enumeration, VT_I4, System.Int32): a user half of 0x8000
+    #   or more therefore reads as a negative Int32 and is masked to 32 bits before it is split -
+    #   an INFERENCE from the type, not a Learn statement.
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-ada3/5e517dde-c710-45fa-b694-2704e17b5612
+    #     https://learn.microsoft.com/windows/win32/adschema/s-enumeration
+    #   groupPolicyContainer's default security descriptor grants Authenticated Users RPLCLORC; an
+    #   administrator can remove it per GPO, and such a GPO is then invisible to the runner.
+    #     https://learn.microsoft.com/windows/win32/adschema/c-grouppolicycontainer
+    #   Get-GPO contacts the PDC emulator when -Server is not given, and the Group Policy Object
+    #   Editor uses the PDC Operations Master unless configured otherwise - why both reads here are
+    #   pinned to the PDC.
+    #     https://learn.microsoft.com/powershell/module/grouppolicy/get-gpo
+    #     https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-grouppolicy
+    #   AD and SYSVOL are "two independent mechanisms"; DFSR SYSVOL "Within sites, replication
+    #   occurs every 15 minutes" - why a mismatch can be in flight.
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-policy/group-policy-processing
+    #   A SYSVOL folder whose GUID "is not listed in Active Directory" is an orphaned GPO; a container
+    #   with no folder "on any domain controller in the domain" can be deleted from the directory.
+    #     https://learn.microsoft.com/troubleshoot/windows-server/group-policy/rebuild-sysvol-tree-and-content-in-a-domain
+    #   SMB on TCP 445 for the SYSVOL share (the port probed before any file read).
+    #     https://learn.microsoft.com/troubleshoot/windows-server/networking/service-overview-and-network-port-requirements
+    #   Error codes 2 file not found, 3 path not found, 5 access denied, 51 and 53 network path not
+    #   found, 64 network name no longer available, 65 network access denied, 1231/1232 network
+    #   location cannot be reached; an IOException's code is its HResult with the upper 16 bits
+    #   stripped; ERROR_FILE_NOT_FOUND maps to FileNotFoundException and ERROR_PATH_NOT_FOUND to
+    #   DirectoryNotFoundException; SecurityException is thrown "for applications running in
+    #   limited trust ... on .NET Framework only" - not for a refused file, so it is not read as
+    #   access denied.
+    #     https://learn.microsoft.com/windows/win32/debug/system-error-codes--0-499-
+    #     https://learn.microsoft.com/windows/win32/debug/system-error-codes--1000-1299-
+    #     https://learn.microsoft.com/dotnet/standard/io/handling-io-errors
+    #   DriveNotFoundException: "a drive or share that is not available"; it carries
+    #   COR_E_DIRECTORYNOTFOUND and "can be thrown when a Win32 ERROR_PATH_NOT_FOUND" occurs - so it
+    #   is read as not found, like error 3.
+    #     https://learn.microsoft.com/dotnet/api/system.io.drivenotfoundexception
+    #   GPT.INI is opened with new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite
+    #   | FileShare.Delete): read access only, and every other open - for reading, writing or delete -
+    #   left free while it is held. FileShare.Read alone (what File.OpenRead uses) would make a GPMC
+    #   save or a DFSR install of that GPT.INI on the PDC fail while the tool held it - of
+    #   FileShare.Write: "If this flag is not specified, any request to open the file for writing
+    #   (by this process or another process) will fail until the file is closed".
+    #     https://learn.microsoft.com/dotnet/api/system.io.filestream.-ctor
+    #     https://learn.microsoft.com/dotnet/api/system.io.fileshare
+    #
+    # NOT PUBLISHED ON MICROSOFT LEARN, and labelled where a row relies on it:
+    #   - Any grade for a version mismatch, or a time after which one stops being transient.
+    #     MismatchStatus Warning is a TOOL DEFAULT, the operator-approved rule of the AdAssessment26
+    #     catalogue (ADA-GPO-001); a file may set Fail.
+    #   - Any grade for a SYSVOL folder with no container. OrphanFolderStatus Warning is a TOOL
+    #     DEFAULT; a file may set Info.
+    #   - The default ACL of the SYSVOL share and folders: access denied is reported as such, and
+    #     no default is claimed.
+    #   - GptIniMaxBytes (a GPT.INI larger than this is not read) and SmbProbeTimeoutMs are tool
+    #     defaults.
+    #
+    # Replaceable from a file via -ConfigOverridePath, under the key "Gpo": MismatchStatus (Warning
+    # or Fail) and OrphanFolderStatus (Warning or Info). Nothing else - not the filter, the property
+    # list, the share, the folder or the file name.
+    Gpo                     = @{
+        SourceUrl            = 'https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/2f362c13-9a2d-469b-8c4b-7b4045258995 and https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/b0e5c9e8-e858-4a7a-a94a-4a3d0a9d87a2 and https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-policy/group-policy-processing'
+        ReadDate             = '2026-11-16'
+        ThresholdSource      = 'tool default (AdAssessment26 catalogue ADA-GPO-001, operator-approved 2026-09-24), not a Microsoft value'
+        # Tool defaults, both.
+        MismatchStatus       = 'Warning'
+        OrphanFolderStatus   = 'Warning'
+        # What is asked, and of what. Fixed: a file cannot change them.
+        ContainerFilter      = '(objectClass=groupPolicyContainer)'
+        PoliciesContainerRdn = 'CN=Policies,CN=System'
+        ContainerProperties  = @('versionNumber', 'gPCFileSysPath', 'displayName', 'flags')
+        SysvolShare          = 'SYSVOL'
+        PoliciesFolder       = 'Policies'
+        GptIniFileName       = 'GPT.INI'
+        GptIniSection        = 'General'
+        GptIniKey            = 'Version'
+        # MS-GPOL: every GPO common name is "a curly braced GUID string".
+        GuidPattern          = '^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$'
+        SmbPort              = 445
+        # Tool defaults.
+        SmbProbeTimeoutMs    = 1200
+        GptIniMaxBytes       = 65536
+        # Tool rule, not a Microsoft value: when the Policies folder could not be listed, GPT.INI
+        # files are still read one by one only after a listing refused as access denied (a folder
+        # can refuse a listing and still let its files be read). After any other class -
+        # unreachable, timed out, not found, or an error not interpreted - no file is read: each
+        # read would go to the same path that just failed, with no timeout of its own. Fixed: a
+        # file cannot change it.
+        ReadFilesAfterListingClass = @('AccessDenied')
+        # MS-GPOL flags values (Learn, read 2026-11-16).
+        FlagLabels           = @(
+            @{ Value = 0; Label = 'enabled' }
+            @{ Value = 1; Label = 'user settings disabled' }
+            @{ Value = 2; Label = 'computer settings disabled' }
+            @{ Value = 3; Label = 'all settings disabled' }
         )
     }
     # Directory Service events that block or mask recovery in a mixed-restore forest.
@@ -3121,7 +3279,8 @@ function Get-AdfaSysvolHealth {
 function Get-AdfaGpoInventory {
     <#
     .SYNOPSIS
-        GPO inventory: links, unlinked GPOs, WMI filters (GroupPolicy module; degrades if absent).
+        GPO inventory: links and unlinked GPOs (GroupPolicy module; degrades if absent). WMI
+        filters are not read. The version check of the same section is Get-AdfaGpoVersion.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -3138,7 +3297,12 @@ function Get-AdfaGpoInventory {
         $rows += [pscustomobject]@{ Scope = $DomainName; GPOName = '(total)'; Status = $script:Status.Info; Detail = ("{0} GPOs" -f $gpos.Count) }
         foreach ($g in $gpos) {
             [xml]$rep = $g.GenerateReport('Xml')
-            $linksNode = $rep.GPO.LinksTo
+            # An unlinked GPO's report has no LinksTo element; under StrictMode reading
+            # $rep.GPO.LinksTo directly throws, which sent every domain with one unlinked GPO to the
+            # catch-all. Read through PSObject.Properties: absent is $null.
+            $linksNode = $null
+            $linksProp = $rep.GPO.PSObject.Properties['LinksTo']
+            if ($null -ne $linksProp) { $linksNode = $linksProp.Value }
             $linked = $null -ne $linksNode
             $rows += [pscustomobject]@{
                 Scope   = $DomainName
@@ -3149,9 +3313,1034 @@ function Get-AdfaGpoInventory {
         }
     }
     catch {
-        $rows += [pscustomobject]@{ Scope = $DomainName; GPOName = '(enumeration failed)'; Status = $script:Status.NotAssessed; Detail = $_.Exception.Message }
+        # Fail closed, in the four columns this row always had (Scope, GPOName, Status, Detail). The
+        # class leads the Detail, as in the C4-C8 rows: unreachable, access denied and timed out are
+        # different results. Rows written before the failure are kept and counted.
+        $message = [string]$_.Exception.Message
+        $type = [string]$_.Exception.GetType().FullName
+        $lead = Get-AdfaGpoFailureLead -Class (Get-AdfaDirectoryReadErrorClass -Message $message -TypeName $type)
+        $detail = ("{0}: the GPO inventory of {1} could not be completed ({2} row(s) were written before the failure), so it is not a clean result. Reported by Get-GPO or the GPO report: {3} (exception type: {4})" -f $lead, $DomainName, @($rows).Count, $message.Trim(), $type)
+        $rows += [pscustomobject]@{ Scope = $DomainName; GPOName = '(enumeration failed)'; Status = $script:Status.NotAssessed; Detail = $detail }
     }
     return @($rows)
+}
+
+# ---------------------------------------------------------------------------
+# GPO version consistency (PORT-PLAN C8): the version of each GPO in the directory against the
+# version in its GPT.INI in SYSVOL, both read from the domain's PDC emulator. Rows of the Gpo
+# section (report section "GPO Inventory"). Sources and tool defaults: $script:Config.Gpo.
+# ---------------------------------------------------------------------------
+
+function New-AdfaGpoVersionRow {
+    <#
+    .SYNOPSIS
+        Pure: one GPO version row. Every row has the same columns, so a consumer never has to test
+        whether a column exists.
+    .DESCRIPTION
+        The GPO's display name is free text that anyone allowed to edit the GPO can set, and the
+        gPCFileSysPath value is a path the directory holds: both go in their own columns (GPOName,
+        FileSysPath), never in Item or Detail, because the consolidated findings choose a
+        recommendation from Item and Detail. Item carries only text this tool writes and the GPO's
+        GUID. A number that was not measured is an empty string, never 0.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$NotRun = '',
+        [AllowEmptyString()][string]$Evidence = '',
+        [AllowEmptyString()][string]$GPOName = '',
+        [AllowEmptyString()][string]$GpoGuid = '',
+        [AllowEmptyString()][string]$ReadFrom = '',
+        [AllowNull()]$DsVersion = $null,
+        [AllowNull()]$SysvolVersion = $null,
+        [AllowNull()]$Flags = $null,
+        [AllowEmptyString()][string]$FlagsLabel = '',
+        [AllowEmptyString()][string]$GptIniPath = '',
+        [AllowEmptyString()][string]$FileSysPath = '',
+        [AllowEmptyString()][string]$Encoding = '',
+        [AllowNull()]$Population = $null,
+        [AllowNull()]$Compared = $null,
+        [AllowNull()]$Mismatched = $null,
+        [AllowNull()]$NotAssessedCount = $null,
+        [AllowNull()]$FoldersWithoutContainer = $null
+    )
+    $row = New-Finding -Scope $Scope -Area 'GPO' -Item $Item -Status $Status -Detail $Detail
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $asText = { param($Number) if ($null -eq $Number) { return '' } return ([int64]$Number).ToString($inv) }
+    $dsUser = ''; $dsComputer = ''; $svUser = ''; $svComputer = ''
+    if ($null -ne $DsVersion) { $split = Split-AdfaGpoVersion -Version ([int64]$DsVersion); $dsUser = & $asText $split.User; $dsComputer = & $asText $split.Computer }
+    if ($null -ne $SysvolVersion) { $split = Split-AdfaGpoVersion -Version ([int64]$SysvolVersion); $svUser = & $asText $split.User; $svComputer = & $asText $split.Computer }
+    $row | Add-Member -NotePropertyName 'NotRun' -NotePropertyValue $NotRun
+    $row | Add-Member -NotePropertyName 'Evidence' -NotePropertyValue $Evidence
+    $row | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $GPOName
+    $row | Add-Member -NotePropertyName 'GpoGuid' -NotePropertyValue $GpoGuid
+    $row | Add-Member -NotePropertyName 'ReadFrom' -NotePropertyValue $ReadFrom
+    $row | Add-Member -NotePropertyName 'DsVersion' -NotePropertyValue (& $asText $DsVersion)
+    $row | Add-Member -NotePropertyName 'DsUser' -NotePropertyValue $dsUser
+    $row | Add-Member -NotePropertyName 'DsComputer' -NotePropertyValue $dsComputer
+    $row | Add-Member -NotePropertyName 'SysvolVersion' -NotePropertyValue (& $asText $SysvolVersion)
+    $row | Add-Member -NotePropertyName 'SysvolUser' -NotePropertyValue $svUser
+    $row | Add-Member -NotePropertyName 'SysvolComputer' -NotePropertyValue $svComputer
+    $row | Add-Member -NotePropertyName 'Flags' -NotePropertyValue (& $asText $Flags)
+    $row | Add-Member -NotePropertyName 'FlagsLabel' -NotePropertyValue $FlagsLabel
+    $row | Add-Member -NotePropertyName 'GptIniPath' -NotePropertyValue $GptIniPath
+    $row | Add-Member -NotePropertyName 'FileSysPath' -NotePropertyValue $FileSysPath
+    $row | Add-Member -NotePropertyName 'Encoding' -NotePropertyValue $Encoding
+    $row | Add-Member -NotePropertyName 'Population' -NotePropertyValue (& $asText $Population)
+    $row | Add-Member -NotePropertyName 'Compared' -NotePropertyValue (& $asText $Compared)
+    $row | Add-Member -NotePropertyName 'Mismatched' -NotePropertyValue (& $asText $Mismatched)
+    $row | Add-Member -NotePropertyName 'NotAssessedCount' -NotePropertyValue (& $asText $NotAssessedCount)
+    $row | Add-Member -NotePropertyName 'FoldersWithoutContainer' -NotePropertyValue (& $asText $FoldersWithoutContainer)
+    return $row
+}
+
+function ConvertTo-AdfaGpoVersionNumber {
+    <#
+    .SYNOPSIS
+        Pure: a GPO version (versionNumber, or the Version value of GPT.INI) as a whole number from 0
+        to 4294967295, or the reason it is not one.
+    .DESCRIPTION
+        MS-GPOL defines both as a 32-bit integer of a 16-bit user half and a 16-bit computer half.
+        versionNumber has the Enumeration syntax, a signed Int32, so a user half of 0x8000 or more
+        reads as a negative number: a value from -2147483648 to -1 is taken as its 32-bit pattern
+        (Masked = $true). That is an inference from the type, not a Learn statement. A value outside
+        -2147483648..4294967295 does not fit in 32 bits and is refused (OutOfRange).
+
+        Causes: NotReturned (null, or an empty collection), MultiValued (more than one value),
+        NotANumber (not a whole number), OutOfRange.
+    .OUTPUTS
+        [pscustomobject] Ok, Version ([int64] or $null), Cause, Masked.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Value)
+    $out = [pscustomobject]@{ Ok = $false; Version = $null; Cause = ''; Masked = $false }
+    if ($null -eq $Value) { $out.Cause = 'NotReturned'; return $out }
+    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+        $items = @($Value)
+        if ($items.Count -eq 0) { $out.Cause = 'NotReturned'; return $out }
+        if ($items.Count -gt 1) { $out.Cause = 'MultiValued'; return $out }
+        $Value = $items[0]
+        if ($null -eq $Value) { $out.Cause = 'NotReturned'; return $out }
+    }
+    $number = [int64]0
+    $integerTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64])
+    if ($integerTypes -contains $Value.GetType()) { $number = [int64]$Value }
+    elseif ($Value -is [uint64]) {
+        if ([uint64]$Value -gt [uint64]4294967295) { $out.Cause = 'OutOfRange'; return $out }
+        $number = [int64]$Value
+    }
+    elseif ($Value -is [string]) {
+        $text = $Value.Trim()
+        if ($text -notmatch '^-?[0-9]+$') { $out.Cause = 'NotANumber'; return $out }
+        if (-not [int64]::TryParse($text, [System.Globalization.NumberStyles]::AllowLeadingSign, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$number)) {
+            $out.Cause = 'OutOfRange'; return $out
+        }
+    }
+    else { $out.Cause = 'NotANumber'; return $out }
+    if ($number -lt [int64]-2147483648 -or $number -gt [int64]4294967295) { $out.Cause = 'OutOfRange'; return $out }
+    if ($number -lt 0) { $number = $number + [int64]4294967296; $out.Masked = $true }
+    $out.Version = [int64]$number
+    $out.Ok = $true
+    return $out
+}
+
+function Split-AdfaGpoVersion {
+    <#
+    .SYNOPSIS
+        Pure: the user half (upper 16 bits) and the computer half (lower 16 bits) of a GPO version,
+        as MS-GPOL publishes them.
+    .OUTPUTS
+        [pscustomobject] User, Computer.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][int64]$Version)
+    $v = $Version -band [int64]4294967295
+    return [pscustomobject]@{ User = [int64](($v -shr 16) -band 65535); Computer = [int64]($v -band 65535) }
+}
+
+function ConvertFrom-AdfaGptIniVersion {
+    <#
+    .SYNOPSIS
+        Pure: the GPO file system version from the bytes of a GPT.INI - the Version key of its
+        [General] section - or the reason there is none.
+    .DESCRIPTION
+        MS-GPOL requires the file in ANSI, with a [General] section ("If this section is not present,
+        the file is considered corrupt") holding a Version key that is a 32-bit integer. Section and
+        key names are compared without regard to case, and spaces around '=' are allowed. A
+        comment line (';Version=5') is never taken as the key: its key would be ';Version', so no
+        separate comment rule is needed. A UTF-16 or UTF-8 file is tolerated and says so in Encoding:
+        a byte-order mark decides; with none, a zero second byte is read as UTF-16LE (inferred);
+        otherwise the bytes are ANSI, read byte for byte (ISO-8859-1), which keeps every ASCII
+        character - the only ones a version is written in - exact on any host code page.
+
+        Causes: Empty, NoGeneralSection, NoVersionKey, DuplicateVersionKey, NotANumber, OutOfRange.
+        The value itself is not quoted in CauseText: the file's content is not for the report text.
+    .OUTPUTS
+        [pscustomobject] Ok, Version ([int64] or $null), Cause, CauseText, Encoding.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][byte[]]$Bytes,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $out = [pscustomobject]@{ Ok = $false; Version = $null; Cause = ''; CauseText = ''; Encoding = '' }
+    $texts = @{
+        Empty               = 'GPT.INI is empty'
+        NoGeneralSection    = 'GPT.INI has no [General] section (MS-GPOL: the file is then considered corrupt)'
+        NoVersionKey        = 'the [General] section of GPT.INI has no Version key'
+        DuplicateVersionKey = 'the [General] section of GPT.INI has more than one Version key'
+        NotANumber          = 'the Version value of GPT.INI is not a whole number'
+        OutOfRange          = 'the Version value of GPT.INI does not fit in 32 bits'
+    }
+    if ($null -eq $Bytes -or $Bytes.Length -eq 0) { $out.Cause = 'Empty'; $out.CauseText = $texts['Empty']; return $out }
+    $offset = 0
+    $encoding = [System.Text.Encoding]::GetEncoding(28591)
+    $out.Encoding = 'ANSI (no BOM)'
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) { $encoding = [System.Text.Encoding]::Unicode; $offset = 2; $out.Encoding = 'UTF-16LE (BOM)' }
+    elseif ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) { $encoding = [System.Text.Encoding]::BigEndianUnicode; $offset = 2; $out.Encoding = 'UTF-16BE (BOM)' }
+    elseif ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { $encoding = [System.Text.Encoding]::UTF8; $offset = 3; $out.Encoding = 'UTF-8 (BOM)' }
+    elseif ($Bytes.Length -ge 2 -and $Bytes[0] -ne 0 -and $Bytes[1] -eq 0) { $encoding = [System.Text.Encoding]::Unicode; $out.Encoding = 'UTF-16LE (no BOM, inferred)' }
+    $text = $encoding.GetString($Bytes, $offset, $Bytes.Length - $offset)
+    $section = [string]$Config['GptIniSection']
+    $key = [string]$Config['GptIniKey']
+    $inGeneral = $false
+    $sawGeneral = $false
+    $values = @()
+    foreach ($line in @($text -split "`r`n|`n|`r")) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '') { continue }
+        if ($trimmed -match '^\[\s*([^\]]*?)\s*\]$') {
+            $inGeneral = ([string]$Matches[1] -eq $section)
+            if ($inGeneral) { $sawGeneral = $true }
+            continue
+        }
+        if ($inGeneral -and $trimmed -match '^([^=]+?)\s*=\s*(.*)$' -and [string]$Matches[1] -eq $key) { $values += [string]$Matches[2] }
+    }
+    $cause = ''
+    if (-not $sawGeneral) { $cause = 'NoGeneralSection' }
+    elseif ($values.Count -eq 0) { $cause = 'NoVersionKey' }
+    elseif ($values.Count -gt 1) { $cause = 'DuplicateVersionKey' }
+    if ($cause -ne '') { $out.Cause = $cause; $out.CauseText = $texts[$cause]; return $out }
+    $number = ConvertTo-AdfaGpoVersionNumber -Value ([string]$values[0])
+    if (-not $number.Ok) { $out.Cause = [string]$number.Cause; $out.CauseText = $texts[[string]$number.Cause]; return $out }
+    $out.Version = [int64]$number.Version
+    $out.Ok = $true
+    return $out
+}
+
+function Get-AdfaGpoFailureLead {
+    <#
+    .SYNOPSIS
+        Pure: the words a Not Assessed row of this section starts with, for a read failure class.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowEmptyString()][string]$Class)
+    switch ($Class) {
+        'Unreachable' { return 'Unreachable' }
+        'AccessDenied' { return 'Access denied' }
+        'TimedOut' { return 'Timed out' }
+        'NotFound' { return 'Not found' }
+        'TooLarge' { return 'Not read' }
+    }
+    return 'Read failed'
+}
+
+function Get-AdfaGpoFileReadErrorClass {
+    <#
+    .SYNOPSIS
+        Pure: NotFound, AccessDenied, Unreachable, TimedOut or Error, for a file or folder read over
+        SMB that threw.
+    .DESCRIPTION
+        From the exception type first, then from the Win32 code an IOException carries in the low
+        16 bits of its HResult (Learn: "strip out the upper 16 bits"), then from its text. Types:
+        FileNotFound, DirectoryNotFound and DriveNotFound (COR_E_DIRECTORYNOTFOUND, Learn) not
+        found; UnauthorizedAccess access denied; Timeout timed out. SecurityException is NOT read
+        as access denied: Learn says .NET Framework throws it only in limited trust, not for a
+        refused file, so it is Error. Codes read on Learn 2026-11-16: 2 and 3 not found; 5 access
+        denied and 65 network access denied; 51 and 53 network path not found, 64 network name no
+        longer available, 1231 and 1232 network location cannot be reached. Anything else is
+        Error, quoted and not interpreted. Which exception a real SYSVOL read throws for each case
+        is not published (PORT-PLAN C8a).
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$TypeName,
+        [int]$HResult = 0,
+        [AllowNull()][AllowEmptyString()][string]$Message
+    )
+    if (-not [string]::IsNullOrWhiteSpace($TypeName)) {
+        if ($TypeName -match '(?i)(FileNotFound|DirectoryNotFound|ItemNotFound|DriveNotFound)Exception$') { return 'NotFound' }
+        if ($TypeName -match '(?i)UnauthorizedAccessException$') { return 'AccessDenied' }
+        if ($TypeName -match '(?i)TimeoutException$') { return 'TimedOut' }
+    }
+    if (($HResult -band 0xFFFF0000) -eq 0x80070000) {
+        $code = $HResult -band 0xFFFF
+        if (@(2, 3) -contains $code) { return 'NotFound' }
+        if (@(5, 65) -contains $code) { return 'AccessDenied' }
+        if (@(51, 53, 64, 1231, 1232) -contains $code) { return 'Unreachable' }
+    }
+    if ((Get-AdfaRemoteReadErrorClass -Message $Message -ErrorCode '') -eq 'AccessDenied') { return 'AccessDenied' }
+    return 'Error'
+}
+
+function Get-AdfaGpoFileFailure {
+    <#
+    .SYNOPSIS
+        Pure: what a file or folder read that threw is reported as - the innermost exception that
+        PowerShell did not add, its type, HResult and class.
+    .DESCRIPTION
+        A .NET method called from PowerShell throws a MethodInvocationException around the real
+        exception; that wrapper says nothing about the cause and is unwrapped first.
+    .OUTPUTS
+        [pscustomobject] Class, Error, ErrorType, HResult.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][System.Exception]$Exception)
+    $ex = $Exception
+    while ($ex -is [System.Management.Automation.MethodException] -and $null -ne $ex.InnerException) { $ex = $ex.InnerException }
+    $type = [string]$ex.GetType().FullName
+    $message = [string]$ex.Message
+    $hresult = [int]$ex.HResult
+    return [pscustomobject]@{ Class = (Get-AdfaGpoFileReadErrorClass -TypeName $type -HResult $hresult -Message $message); Error = $message.Trim(); ErrorType = $type; HResult = $hresult }
+}
+
+function Get-AdfaGpoSysvolPath {
+    <#
+    .SYNOPSIS
+        Pure: where this tool reads a GPO's GPT.INI - always the PDC's own SYSVOL share - and whether
+        the directory's gPCFileSysPath agrees that this is the GPO's folder.
+    .DESCRIPTION
+        The path read is built from the PDC's name, the domain and the container's GUID name:
+        \\<PDC>\SYSVOL\<domain>\Policies\<GUID>\GPT.INI. The host in gPCFileSysPath is never
+        contacted: the value is a directory string, and reading a path it names would send this
+        account's credentials to whatever host an administrator of the GPO wrote there.
+
+        gPCFileSysPath must have the form MS-GPOL defines, \\<domain>\sysvol\<domain>\policies\<GUID>
+        (case-insensitive, an optional trailing backslash), with this domain and this GPO's GUID.
+        Otherwise the GPT.INI that clients read is not the one this tool would read, and the GPO is
+        not compared (Ok = $false, IniPath empty). A PDC or domain name that is not a plain DNS name
+        is refused rather than put in a path.
+    .OUTPUTS
+        [pscustomobject] Ok, PoliciesPath, FolderPath, IniPath, Cause.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Pdc = '',
+        [AllowEmptyString()][string]$Domain = '',
+        [AllowEmptyString()][string]$Guid = '',
+        [AllowNull()][AllowEmptyString()][string]$FileSysPath = '',
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $out = [pscustomobject]@{ Ok = $false; PoliciesPath = ''; FolderPath = ''; IniPath = ''; Cause = '' }
+    $dns = '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$'
+    if ($Pdc -notmatch $dns -or $Domain -notmatch $dns) {
+        $out.Cause = 'the PDC emulator or the domain name is not a plain DNS name, so no SYSVOL path was built from it'
+        return $out
+    }
+    $out.PoliciesPath = ("\\{0}\{1}\{2}\{3}" -f $Pdc, [string]$Config['SysvolShare'], $Domain, [string]$Config['PoliciesFolder'])
+    if ($Guid -notmatch [string]$Config['GuidPattern']) {
+        $out.Cause = 'the container''s name is not a GUID in braces, which MS-GPOL requires of every GPO, so there is no SYSVOL folder to match it to'
+        return $out
+    }
+    if ([string]::IsNullOrWhiteSpace($FileSysPath)) {
+        $out.Cause = 'gPCFileSysPath was not returned (not set, or not readable by this account), so the folder clients read for this GPO is not known'
+        return $out
+    }
+    $expected = ("\\{0}\sysvol\{0}\policies\{1}" -f $Domain, $Guid)
+    $given = $FileSysPath.Trim().TrimEnd('\')
+    if (-not [string]::Equals($given, $expected, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $out.Cause = 'gPCFileSysPath is not the path MS-GPOL defines for this GPO (\\<domain>\sysvol\<domain>\policies\<GUID>, with this domain and this GPO''s GUID), so the GPT.INI clients read is not the one this tool would read; the value is in the FileSysPath column'
+        return $out
+    }
+    $out.FolderPath = ("{0}\{1}" -f $out.PoliciesPath, $Guid)
+    $out.IniPath = ("{0}\{1}" -f $out.FolderPath, [string]$Config['GptIniFileName'])
+    $out.Ok = $true
+    return $out
+}
+
+function ConvertTo-AdfaGpoContainerRecord {
+    <#
+    .SYNOPSIS
+        Pure: one groupPolicyContainer object as the small record the verdicts read.
+    .DESCRIPTION
+        Every value is read through PSObject.Properties, so an attribute the object does not carry is
+        $null and never an error under StrictMode. The GUID is the object's name (cn), which MS-GPOL
+        defines as "a curly braced GUID string"; it is upper-cased so that folder names compare
+        without regard to case.
+    .OUTPUTS
+        [pscustomobject] Guid, DisplayName, Version (as returned), FileSysPath, Flags (as returned), Dn.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)]$Object)
+    $values = @{}
+    foreach ($attribute in @('Name', 'cn', 'displayName', 'versionNumber', 'gPCFileSysPath', 'flags', 'DistinguishedName')) {
+        $values[$attribute] = $null
+        $p = $Object.PSObject.Properties[$attribute]
+        if ($null -ne $p) { $values[$attribute] = $p.Value }
+    }
+    $guid = [string]$values['Name']
+    if ([string]::IsNullOrWhiteSpace($guid)) { $guid = [string]$values['cn'] }
+    $fileSysPath = $null
+    if ($null -ne $values['gPCFileSysPath']) { $fileSysPath = [string]$values['gPCFileSysPath'] }
+    return [pscustomobject]@{
+        Guid = $guid.Trim().ToUpperInvariant(); DisplayName = [string]$values['displayName']; Version = $values['versionNumber']
+        FileSysPath = $fileSysPath; Flags = $values['flags']; Dn = [string]$values['DistinguishedName']
+    }
+}
+
+function Get-AdfaGpoContainerRaw {
+    <#
+    .SYNOPSIS
+        The directory seam of C8: the domain's PDC emulator, and its groupPolicyContainer objects,
+        read from that PDC. Read-only. Never throws.
+    .DESCRIPTION
+        Two reads:
+          Get-ADDomain -Identity <domain>   with the caller's AD parameters unchanged, for the
+                                            domain's DN and PDCEmulator
+          Get-ADObject -Server <PDC> -SearchBase CN=Policies,CN=System,<domain DN> -SearchScope
+                                            OneLevel -LDAPFilter (objectClass=groupPolicyContainer),
+                                            asking for Config.ContainerProperties only
+        Both reads of this check - the directory here and SYSVOL in Get-AdfaGpoSysvolRaw - go to the
+        same DC, the PDC emulator, which Group Policy editing targets by default; so a difference is
+        a difference on that one DC, not between two DCs. A property list that is empty or holds a
+        blank or a wildcard is refused before any call. Nothing here writes.
+    .OUTPUTS
+        [pscustomobject] Ok, Refused, Error, ErrorType, Pdc, PdcError, PdcErrorType, DomainDn,
+        Containers (records of ConvertTo-AdfaGpoContainerRecord).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $out = [pscustomobject]@{ Ok = $false; Refused = $false; Error = ''; ErrorType = ''; Pdc = ''; PdcError = ''; PdcErrorType = ''; DomainDn = ''; Containers = @() }
+    $properties = @(@($Config['ContainerProperties']) | ForEach-Object { [string]$_ })
+    $bad = @($properties | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -match '[*?]' })
+    if ($properties.Count -eq 0 -or $bad.Count -gt 0) {
+        $out.Refused = $true
+        $out.Error = 'the property list is empty or holds a blank or a wildcard, so nothing was asked of the directory'
+        return $out
+    }
+    try {
+        $domainArgs = @{} + $AdParams
+        $domainArgs.Identity = $DomainName
+        $domainArgs.ErrorAction = 'Stop'
+        $domain = Get-ADDomain @domainArgs
+        if ($null -ne $domain) {
+            $dnProp = $domain.PSObject.Properties['DistinguishedName']
+            if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $out.DomainDn = ([string]$dnProp.Value).Trim() }
+            $pdcProp = $domain.PSObject.Properties['PDCEmulator']
+            if ($null -ne $pdcProp -and -not [string]::IsNullOrWhiteSpace([string]$pdcProp.Value)) { $out.Pdc = ([string]$pdcProp.Value).Trim() }
+        }
+        if ($out.Pdc -eq '') { $out.PdcError = ("Get-ADDomain returned no PDCEmulator for {0}" -f $DomainName) }
+        elseif ($out.DomainDn -eq '') { $out.PdcError = ("Get-ADDomain returned no DistinguishedName for {0}" -f $DomainName); $out.Pdc = '' }
+    }
+    catch {
+        $out.PdcError = [string]$_.Exception.Message
+        $out.PdcErrorType = [string]$_.Exception.GetType().FullName
+    }
+    if ($out.Pdc -eq '') { return $out }
+    try {
+        $objectArgs = @{} + $AdParams
+        $objectArgs.Server = $out.Pdc
+        $objectArgs.LDAPFilter = [string]$Config['ContainerFilter']
+        $objectArgs.SearchBase = ("{0},{1}" -f [string]$Config['PoliciesContainerRdn'], $out.DomainDn)
+        $objectArgs.SearchScope = 'OneLevel'
+        $objectArgs.Properties = @($properties)
+        $objectArgs.ErrorAction = 'Stop'
+        $records = New-Object System.Collections.ArrayList
+        Get-ADObject @objectArgs | ForEach-Object {
+            if ($null -ne $_) { [void]$records.Add((ConvertTo-AdfaGpoContainerRecord -Object $_)) }
+        }
+        $out.Containers = $records.ToArray()
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function Get-AdfaSysvolPolicyFolderRaw {
+    <#
+    .SYNOPSIS
+        File seam of C8: the names of the folders under a SYSVOL Policies folder. Read-only. Never
+        throws.
+    .DESCRIPTION
+        One directory listing ([System.IO.Directory]::GetDirectories); nothing is opened, created,
+        changed or deleted. Runs as the account running the script: -Credential is not passed to
+        file reads.
+    .OUTPUTS
+        [pscustomobject] Ok, Class (Read or a class of Get-AdfaGpoFileReadErrorClass), Names, Error,
+        ErrorType, HResult, Path.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Path)
+    $out = [pscustomobject]@{ Ok = $false; Class = ''; Names = @(); Error = ''; ErrorType = ''; HResult = 0; Path = $Path }
+    try {
+        $out.Names = @([System.IO.Directory]::GetDirectories($Path) | ForEach-Object { [System.IO.Path]::GetFileName([string]$_) })
+        $out.Class = 'Read'
+        $out.Ok = $true
+    }
+    catch {
+        $f = Get-AdfaGpoFileFailure -Exception $_.Exception
+        $out.Class = $f.Class; $out.Error = $f.Error; $out.ErrorType = $f.ErrorType; $out.HResult = $f.HResult
+    }
+    return $out
+}
+
+function Get-AdfaGptIniRaw {
+    <#
+    .SYNOPSIS
+        File seam of C8: the bytes of one GPT.INI, opened for reading only. Never throws.
+    .DESCRIPTION
+        new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)
+        (Learn): read access only, and no other open of the file - for reading, writing or delete -
+        is refused while this handle is held, so a GPMC save or a DFSR install of the same GPT.INI
+        on the PDC is never made to fail by this read (File.OpenRead's FileShare.Read would refuse
+        them). At most MaxBytes + 1 bytes are read: a larger file is not taken (TooLarge), so a file
+        in SYSVOL cannot make the tool read without bound. The MS-GPOL update sequence opens GPT.INI
+        for read/write; this never does. Runs as the account running the script: -Credential is not
+        passed to file reads.
+    .OUTPUTS
+        [pscustomobject] Ok, Class (Read, TooLarge or a class of Get-AdfaGpoFileReadErrorClass),
+        Bytes, Error, ErrorType, HResult, Path.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateRange(1, 16777216)][int]$MaxBytes = 65536
+    )
+    $out = [pscustomobject]@{ Ok = $false; Class = ''; Bytes = $null; Error = ''; ErrorType = ''; HResult = 0; Path = $Path }
+    $stream = $null
+    try {
+        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+        $stream = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+        $buffer = New-Object byte[] ($MaxBytes + 1)
+        $total = 0
+        while ($total -lt $buffer.Length) {
+            $n = $stream.Read($buffer, $total, $buffer.Length - $total)
+            if ($n -le 0) { break }
+            $total += $n
+        }
+        if ($total -gt $MaxBytes) {
+            $out.Class = 'TooLarge'
+            $out.Error = ("the file is larger than {0} bytes" -f $MaxBytes)
+        }
+        else {
+            $bytes = New-Object byte[] $total
+            for ($i = 0; $i -lt $total; $i++) { $bytes[$i] = $buffer[$i] }
+            $out.Bytes = $bytes
+            $out.Class = 'Read'
+            $out.Ok = $true
+        }
+    }
+    catch {
+        $f = Get-AdfaGpoFileFailure -Exception $_.Exception
+        $out.Class = $f.Class; $out.Error = $f.Error; $out.ErrorType = $f.ErrorType; $out.HResult = $f.HResult
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+    return $out
+}
+
+function Get-AdfaGpoSysvolRaw {
+    <#
+    .SYNOPSIS
+        The SYSVOL seam of C8: on the PDC, a probe of SMB, a listing of the Policies folder, and a
+        read of each GPT.INI. Read-only. Never throws.
+    .DESCRIPTION
+        1. Test-AdfaDcPort <PDC> 445 (the per-run probe cache). With no answer nothing else is
+           tried: a UNC "not found" cannot be told from a host that did not answer, so no file is
+           reported absent unless this DC answered.
+        2. The folder names under \\<PDC>\SYSVOL\<domain>\Policies (Get-AdfaSysvolPolicyFolderRaw).
+        3. GPT.INI of each target whose folder the listing holds (Get-AdfaGptIniRaw). A target whose
+           folder is not listed is not read: its folder is absent, which the verdict reports. When
+           the listing failed, every target is read only if the listing's class is in
+           Config.ReadFilesAfterListingClass (access denied: a folder can refuse a listing and still
+           let its files be read); after any other class - unreachable, timed out, not found, an
+           error not interpreted - nothing is read, because each read would go to the path that
+           just failed and has no timeout of its own, and the verdict reports every GPO with the
+           listing's class.
+    .OUTPUTS
+        [pscustomobject] PortOk, Port, Pdc, PoliciesPath, Listing (or $null when SMB did not answer),
+        Reads (hashtable: GUID -> read).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Pdc,
+        [Parameter(Mandatory)][string]$Domain,
+        [AllowNull()][AllowEmptyCollection()]$Targets = @(),
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $port = [int]$Config['SmbPort']
+    $policies = ("\\{0}\{1}\{2}\{3}" -f $Pdc, [string]$Config['SysvolShare'], $Domain, [string]$Config['PoliciesFolder'])
+    $out = [pscustomobject]@{ PortOk = $false; Port = $port; Pdc = $Pdc; PoliciesPath = $policies; Listing = $null; Reads = @{} }
+    $out.PortOk = [bool](Test-AdfaDcPort -ComputerName $Pdc -Port $port -TimeoutMs ([int]$Config['SmbProbeTimeoutMs']))
+    if (-not $out.PortOk) { return $out }
+    $out.Listing = Get-AdfaSysvolPolicyFolderRaw -Path $policies
+    $listed = @{}
+    if ($out.Listing.Ok) { foreach ($name in @($out.Listing.Names)) { $listed[([string]$name).ToUpperInvariant()] = $true } }
+    elseif (@($Config['ReadFilesAfterListingClass']) -notcontains [string]$out.Listing.Class) { return $out }
+    foreach ($target in @($Targets | Where-Object { $null -ne $_ })) {
+        $guid = ([string]$target.Guid).ToUpperInvariant()
+        if ($out.Listing.Ok -and -not $listed.ContainsKey($guid)) { continue }
+        $out.Reads[$guid] = Get-AdfaGptIniRaw -Path ([string]$target.IniPath) -MaxBytes ([int]$Config['GptIniMaxBytes'])
+    }
+    return $out
+}
+
+function Get-AdfaGpoVersionVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the verdict on one GPO whose two versions were read - equal (Pass, and no row is
+        written for it) or not (Config.MismatchStatus), naming the half that differs.
+    .DESCRIPTION
+        The whole 32-bit numbers decide; the halves (MS-GPOL: user upper 16 bits, computer lower 16
+        bits) only explain. Learn publishes no grade for a difference and no time after which one
+        stops being transient, so the status is the config's, labelled with its source.
+    .OUTPUTS
+        [pscustomobject] Status, Half (None, User, Computer, Both), Detail.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][int64]$DsVersion,
+        [Parameter(Mandatory)][int64]$SysvolVersion,
+        [AllowEmptyString()][string]$ReadFrom = '',
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    if ($DsVersion -eq $SysvolVersion) { return [pscustomobject]@{ Status = $script:Status.Pass; Half = 'None'; Detail = '' } }
+    $ds = Split-AdfaGpoVersion -Version $DsVersion
+    $sv = Split-AdfaGpoVersion -Version $SysvolVersion
+    $user = ($ds.User -ne $sv.User)
+    $computer = ($ds.Computer -ne $sv.Computer)
+    $half = 'Both'
+    $halfText = 'the user and computer halves differ'
+    if ($user -and -not $computer) { $half = 'User'; $halfText = 'the user half differs' }
+    elseif ($computer -and -not $user) { $half = 'Computer'; $halfText = 'the computer half differs' }
+    $status = [string]$Config['MismatchStatus']
+    $detail = ("Version mismatch on {0}: the directory (versionNumber) holds {1} (user {2}, computer {3}) and GPT.INI in SYSVOL holds {4} (user {5}, computer {6}); {7}. The directory and SYSVOL replicate independently (Microsoft: DFSR replicates SYSVOL within a site every 15 minutes), so this can be replication still in flight: run the assessment again once replication has converged. A mismatch that remains means this domain controller's directory copy and SYSVOL copy of the GPO disagree. Graded {8}: {9}." -f `
+            $ReadFrom, $DsVersion, $ds.User, $ds.Computer, $SysvolVersion, $sv.User, $sv.Computer, $halfText, $status, [string]$Config['ThresholdSource'])
+    return [pscustomobject]@{ Status = $status; Half = $half; Detail = $detail }
+}
+
+function Get-AdfaGpoDomainVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the summary verdict for one domain from its counts.
+    .DESCRIPTION
+        Pass only when the population was read, holds at least one GPO, every GPO in it was compared
+        and none differs. Any difference is Config.MismatchStatus. Otherwise any GPO not compared
+        makes the domain Not Assessed. An empty population is Not Assessed: a domain holds at least
+        the Default Domain Policy, so no container visible to this account is not a clean result.
+        Counts that do not add up (compared + not compared against the population, more mismatched
+        than compared) are a defect in the tool and are said to be.
+    .OUTPUTS
+        [pscustomobject] Status, Detail.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [AllowEmptyString()][string]$ReadFrom = '',
+        [AllowNull()]$Population,
+        [int]$Compared = 0,
+        [int]$Mismatched = 0,
+        [int]$NotAssessed = 0,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    if ($null -eq $Population -or ($Compared + $NotAssessed) -ne [int]$Population -or $Mismatched -gt $Compared -or $Compared -lt 0 -or $NotAssessed -lt 0) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed
+            Detail = ("Not assessed: the counts for {0} do not add up ({1} compared and {2} not compared against a population of {3}, {4} mismatched); this is a defect in the tool, not a result." -f $Domain, $Compared, $NotAssessed, [string]$Population, $Mismatched) }
+    }
+    $n = [int]$Population
+    if ($n -le 0) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed
+            Detail = ("Not assessed: no groupPolicyContainer object under CN=Policies,CN=System of {0} is visible to this account on {1}. A domain holds at least the Default Domain Policy, so an empty answer is not a clean result." -f $Domain, $ReadFrom) }
+    }
+    if ($Mismatched -gt 0) {
+        $status = [string]$Config['MismatchStatus']
+        return [pscustomobject]@{ Status = $status
+            Detail = ("{0} of {1} GPO(s) of {2} have a directory version that differs from GPT.INI in SYSVOL on {3} (see their 'GPO version' rows); {4} compared, {5} not compared. This can be replication still in flight: run the assessment again once replication has converged. Graded {6}: {7}." -f $Mismatched, $n, $Domain, $ReadFrom, $Compared, $NotAssessed, $status, [string]$Config['ThresholdSource']) }
+    }
+    if ($NotAssessed -gt 0) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed
+            Detail = ("Not assessed: {0} of {1} GPO(s) of {2} could not be compared on {3} (see their 'GPO version' rows); {4} compared, none mismatched. This is not a clean result." -f $NotAssessed, $n, $Domain, $ReadFrom, $Compared) }
+    }
+    return [pscustomobject]@{ Status = $script:Status.Pass
+        Detail = ("All {0} GPO(s) of {1} visible to this account were compared on {2}: for each, the directory version (versionNumber) equals the GPT.INI version in SYSVOL, both halves. A GPO this account cannot read is not counted." -f $n, $Domain, $ReadFrom) }
+}
+
+function Get-AdfaGpoDomainFinding {
+    <#
+    .SYNOPSIS
+        Pure: one domain's reads (directory and SYSVOL) to its rows.
+    .DESCRIPTION
+        Rows, in this order, written only where there is something to say:
+          "GPO version: {GUID}"               one per GPO whose versions differ, or that could not be
+                                              compared (Not Assessed, each cause in its own words)
+          "GPO folder without container: {GUID}"  one per GUID-named folder under Policies with no
+                                              container visible to this account (OrphanFolderStatus)
+          "GPO folder listing: <domain>"      Not Assessed, when the Policies folder was not listed
+          "GPO version summary: <domain>"     always: the declared population (containers read),
+                                              compared, mismatched and not compared
+        A failed directory read gives the summary row only. Every row's Evidence says what was
+        measured: 'none', 'directory', 'SYSVOL' or 'directory and SYSVOL'; the summary says SYSVOL
+        only when the Policies folder was listed or a GPT.INI version was read.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [Parameter(Mandatory)]$Raw,
+        [AllowNull()]$Sysvol,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rows = @()
+    $summaryItem = ("GPO version summary: {0}" -f $Domain)
+    $pdc = [string]$Raw.Pdc
+    if ($Raw.Refused) {
+        return @(New-AdfaGpoVersionRow -Scope $Domain -Item $summaryItem -Status $script:Status.NotAssessed -Evidence 'none' `
+                -Detail ("Not assessed: {0}; this is a defect in the tool, not a result." -f [string]$Raw.Error))
+    }
+    if ([string]::IsNullOrWhiteSpace($pdc)) {
+        $lead = Get-AdfaGpoFailureLead -Class (Get-AdfaDirectoryReadErrorClass -Message ([string]$Raw.PdcError) -TypeName ([string]$Raw.PdcErrorType))
+        $type = ''
+        if (-not [string]::IsNullOrWhiteSpace([string]$Raw.PdcErrorType)) { $type = (" (exception type: {0})" -f [string]$Raw.PdcErrorType) }
+        return @(New-AdfaGpoVersionRow -Scope $Domain -Item $summaryItem -Status $script:Status.NotAssessed -Evidence 'none' `
+                -Detail ("{0}: the PDC emulator of {1} could not be identified, so there was no domain controller to read the GPOs and their GPT.INI from. This is not a clean result. Reported: {2}{3}" -f $lead, $Domain, ([string]$Raw.PdcError).Trim(), $type))
+    }
+    if (-not $Raw.Ok) {
+        $lead = Get-AdfaGpoFailureLead -Class (Get-AdfaDirectoryReadErrorClass -Message ([string]$Raw.Error) -TypeName ([string]$Raw.ErrorType))
+        return @(New-AdfaGpoVersionRow -Scope $Domain -Item $summaryItem -Status $script:Status.NotAssessed -Evidence 'none' -ReadFrom $pdc `
+                -Detail ("{0}: the groupPolicyContainer objects of {1} could not be read from {2}, so no GPO was compared and no SYSVOL folder was looked at. This is not a clean result. Reported: {3} (exception type: {4})" -f $lead, $Domain, $pdc, ([string]$Raw.Error).Trim(), [string]$Raw.ErrorType))
+    }
+
+    $guidPattern = [string]$Config['GuidPattern']
+    $portOk = ($null -ne $Sysvol -and [bool]$Sysvol.PortOk)
+    $listing = $null
+    if ($portOk) { $listing = $Sysvol.Listing }
+    $listingOk = ($null -ne $listing -and [bool]$listing.Ok)
+    $listingClass = ''
+    if ($null -ne $listing) { $listingClass = [string]$listing.Class }
+    # After a failed listing, files were read only for these classes (Get-AdfaGpoSysvolRaw).
+    $listingSkippedReads = ($portOk -and -not $listingOk -and @($Config['ReadFilesAfterListingClass']) -notcontains $listingClass)
+    $policies = ''
+    if ($null -ne $Sysvol) { $policies = [string]$Sysvol.PoliciesPath }
+    $smbPort = [int]$Config['SmbPort']
+    $listed = @{}
+    $nonGuidFolders = 0
+    if ($listingOk) {
+        foreach ($name in @($listing.Names)) {
+            $upper = ([string]$name).ToUpperInvariant()
+            if ($upper -match $guidPattern) { $listed[$upper] = $true } else { $nonGuidFolders++ }
+        }
+    }
+    $reads = @{}
+    if ($null -ne $Sysvol -and $null -ne $Sysvol.Reads) { $reads = $Sysvol.Reads }
+
+    $containers = @($Raw.Containers | Where-Object { $null -ne $_ })
+    $population = $containers.Count
+    $compared = 0
+    $mismatched = 0
+    $notAssessed = 0
+    $sysvolVersionsRead = 0
+    $containerGuids = @{}
+    foreach ($c in $containers) {
+        $guid = ([string]$c.Guid).ToUpperInvariant()
+        $validGuid = ($guid -match $guidPattern)
+        if ($validGuid) { $containerGuids[$guid] = $true }
+        $item = ("GPO version: {0}" -f $guid)
+        if (-not $validGuid) { $item = 'GPO version: (container with no GUID name)' }
+        $flagsLabel = ''
+        $flagsNumber = $null
+        $flagsRead = ConvertTo-AdfaGpoVersionNumber -Value $c.Flags
+        if ($flagsRead.Ok) {
+            $flagsNumber = $flagsRead.Version
+            $flagsLabel = 'other bits set (not interpreted)'
+            foreach ($entry in @($Config['FlagLabels'])) { if ([int64]$entry['Value'] -eq $flagsNumber) { $flagsLabel = [string]$entry['Label'] } }
+        }
+        $path = Get-AdfaGpoSysvolPath -Pdc $pdc -Domain $Domain -Guid $guid -FileSysPath ([string]$c.FileSysPath) -Config $Config
+        $ds = ConvertTo-AdfaGpoVersionNumber -Value $c.Version
+        $causes = @()
+        $sysvolVersion = $null
+        $encoding = ''
+        if (-not $path.Ok) { $causes += ("Not assessed: {0}. GPT.INI was not read." -f $path.Cause) }
+        if (-not $ds.Ok) {
+            if ($ds.Cause -eq 'NotReturned') { $causes += "Not returned: versionNumber of this GPO's container was not returned (not set, or not readable by this account), so the directory version is not known." }
+            else { $causes += ("Not parsed: versionNumber of this GPO's container could not be read as a 32-bit version ({0})." -f [string]$ds.Cause) }
+        }
+        if ($path.Ok) {
+            if (-not $portOk) {
+                $causes += ("Unreachable: port {0} (SMB) of {1} did not answer, so GPT.INI of this GPO was not read and its versions were not compared. This is not a clean result." -f $smbPort, $pdc)
+            }
+            elseif ($listingOk -and -not $listed.ContainsKey($guid)) {
+                $causes += ("Not found: the GPO's folder is not in {0} on {1}, although that folder was listed: a container with no SYSVOL folder on this domain controller - an orphaned container, or a folder not yet replicated here. Microsoft calls a container orphaned only when no domain controller of the domain holds its folder, and only this one was read." -f $policies, $pdc)
+            }
+            elseif (-not $reads.ContainsKey($guid) -and $listingSkippedReads) {
+                $causes += ("{0}: {1} could not be listed on {2}, so GPT.INI of this GPO was not read and its versions were not compared (after a listing failure of this kind no file is read: each read would go to the path that just failed). This is not a clean result." -f (Get-AdfaGpoFailureLead -Class $listingClass), $policies, $pdc)
+            }
+            elseif (-not $reads.ContainsKey($guid)) {
+                $causes += 'Not assessed: GPT.INI of this GPO was not read although its path was known; this is a defect in the tool, not a result.'
+            }
+            else {
+                $read = $reads[$guid]
+                if ($read.Ok) {
+                    $parsed = ConvertFrom-AdfaGptIniVersion -Bytes $read.Bytes -Config $Config
+                    $encoding = [string]$parsed.Encoding
+                    if ($parsed.Ok) { $sysvolVersion = [int64]$parsed.Version; $sysvolVersionsRead++ }
+                    else { $causes += ("Not parsed: GPT.INI on {0} was read but its version could not be taken from it: {1}." -f $pdc, [string]$parsed.CauseText) }
+                }
+                else {
+                    $class = [string]$read.Class
+                    $reported = ''
+                    if (-not [string]::IsNullOrWhiteSpace([string]$read.Error)) { $reported = (" Reported: {0}" -f ([string]$read.Error).Trim()) }
+                    if (-not [string]::IsNullOrWhiteSpace([string]$read.ErrorType)) { $reported = ("{0} (exception type: {1})" -f $reported, [string]$read.ErrorType) }
+                    switch ($class) {
+                        'NotFound' {
+                            if ($listingOk) { $causes += ("Not found: the GPO's folder is on {0} but holds no GPT.INI, so the SYSVOL version is not known. This is not a clean result.{1}" -f $pdc, $reported) }
+                            else { $causes += ("Not found: GPT.INI was not found at the path read on {0}; the Policies folder could not be listed, so whether the GPO's folder exists is not known.{1}" -f $pdc, $reported) }
+                        }
+                        'AccessDenied' { $causes += ("Access denied: GPT.INI of this GPO on {0} could not be read by the account running this script (file reads run as that account; -Credential is not passed to them). This is not a clean result.{1}" -f $pdc, $reported) }
+                        'TooLarge' { $causes += ("Not read: GPT.INI on {0} is larger than {1} bytes (GptIniMaxBytes, a tool default, not a Microsoft value), so it was not read." -f $pdc, [int]$Config['GptIniMaxBytes']) }
+                        default { $causes += ("{0}: GPT.INI of this GPO on {1} could not be read. This is not a clean result.{2}" -f (Get-AdfaGpoFailureLead -Class $class), $pdc, $reported) }
+                    }
+                }
+            }
+        }
+        $dsVersion = $null
+        if ($ds.Ok) { $dsVersion = [int64]$ds.Version }
+        $rowArgs = @{
+            Scope = $Domain; Item = $item; GPOName = [string]$c.DisplayName; GpoGuid = $guid; ReadFrom = $pdc; DsVersion = $dsVersion; SysvolVersion = $sysvolVersion
+            Flags = $flagsNumber; FlagsLabel = $flagsLabel; GptIniPath = [string]$path.IniPath; FileSysPath = [string]$c.FileSysPath; Encoding = $encoding
+        }
+        if ($causes.Count -gt 0) {
+            $notAssessed++
+            $evidence = 'none'
+            if ($null -ne $dsVersion -and $null -ne $sysvolVersion) { $evidence = 'directory and SYSVOL' }
+            elseif ($null -ne $dsVersion) { $evidence = 'directory' }
+            elseif ($null -ne $sysvolVersion) { $evidence = 'SYSVOL' }
+            $rows += New-AdfaGpoVersionRow @rowArgs -Status $script:Status.NotAssessed -Evidence $evidence -Detail ($causes -join ' Also: ')
+            continue
+        }
+        $compared++
+        $verdict = Get-AdfaGpoVersionVerdict -DsVersion $dsVersion -SysvolVersion $sysvolVersion -ReadFrom $pdc -Config $Config
+        if ($verdict.Status -ne $script:Status.Pass) {
+            $mismatched++
+            $rows += New-AdfaGpoVersionRow @rowArgs -Status $verdict.Status -Evidence 'directory and SYSVOL' -Detail $verdict.Detail
+        }
+    }
+
+    # SYSVOL folders named by a GPO GUID with no container visible to this account.
+    $orphans = $null
+    if ($listingOk) {
+        $orphans = 0
+        foreach ($name in @($listing.Names)) {
+            $upper = ([string]$name).ToUpperInvariant()
+            if ($upper -notmatch $guidPattern -or $containerGuids.ContainsKey($upper)) { continue }
+            $orphans++
+            $orphanStatus = [string]$Config['OrphanFolderStatus']
+            $rows += New-AdfaGpoVersionRow -Scope $Domain -Item ("GPO folder without container: {0}" -f $upper) -Status $orphanStatus -Evidence 'SYSVOL' -GpoGuid $upper -ReadFrom $pdc `
+                -Detail ("SYSVOL folder with no container visible to this account: {0}\{1} on {2} is named by a GPO GUID, and no groupPolicyContainer with that GUID was returned under CN=Policies,CN=System. Microsoft calls such a folder an orphaned GPO in the file system. A container this account cannot read looks the same as a missing one. Graded {3}: {4}." -f $policies, $upper, $pdc, $orphanStatus, [string]$Config['ThresholdSource'])
+        }
+    }
+    elseif (-not $portOk) {
+        $rows += New-AdfaGpoVersionRow -Scope $Domain -Item ("GPO folder listing: {0}" -f $Domain) -Status $script:Status.NotAssessed -Evidence 'none' -ReadFrom $pdc `
+            -Detail ("Unreachable: port {0} (SMB) of {1} did not answer, so {2} was not listed and SYSVOL folders with no container were not looked for. This is not a clean result." -f $smbPort, $pdc, $policies)
+    }
+    else {
+        $lead = Get-AdfaGpoFailureLead -Class $listingClass
+        $listingError = ''
+        $listingType = ''
+        if ($null -ne $listing) { $listingError = ([string]$listing.Error).Trim(); $listingType = [string]$listing.ErrorType }
+        $rows += New-AdfaGpoVersionRow -Scope $Domain -Item ("GPO folder listing: {0}" -f $Domain) -Status $script:Status.NotAssessed -Evidence 'none' -ReadFrom $pdc `
+            -Detail ("{0}: {1} could not be listed on {2}, so SYSVOL folders with no container were not looked for. This is not a clean result. Reported: {3} (exception type: {4})" -f $lead, $policies, $pdc, $listingError, $listingType)
+    }
+
+    $summary = Get-AdfaGpoDomainVerdict -Domain $Domain -ReadFrom $pdc -Population $population -Compared $compared -Mismatched $mismatched -NotAssessed $notAssessed -Config $Config
+    $summaryDetail = [string]$summary.Detail
+    if ($listingOk) {
+        $summaryDetail = ("{0} SYSVOL folder(s) with no container visible to this account: {1}. {2} folder(s) of the Policies folder whose name is not a GPO GUID (such as PolicyDefinitions, the central store) were not considered." -f $summaryDetail, $orphans, $nonGuidFolders)
+    }
+    # Evidence says what was measured for this domain, as on the GPO rows: the containers were read
+    # (the directory), and SYSVOL only when the Policies folder was listed or at least one GPT.INI
+    # version was taken from a file.
+    $summaryEvidence = 'directory'
+    if ($listingOk -or $sysvolVersionsRead -gt 0) { $summaryEvidence = 'directory and SYSVOL' }
+    $rows += New-AdfaGpoVersionRow -Scope $Domain -Item $summaryItem -Status $summary.Status -Evidence $summaryEvidence -ReadFrom $pdc -Detail $summaryDetail `
+        -Population $population -Compared $compared -Mismatched $mismatched -NotAssessedCount $notAssessed -FoldersWithoutContainer $orphans
+    return @($rows)
+}
+
+function Get-AdfaGpoVersion {
+    <#
+    .SYNOPSIS
+        GPO version consistency, per scoped domain: each GPO's version in the directory against the
+        version in its GPT.INI in SYSVOL, both read from the domain's PDC emulator, and SYSVOL GPO
+        folders with no container. Read-only.
+    .DESCRIPTION
+        Two seams, each read-only and neither of which throws: Get-AdfaGpoContainerRaw (Get-ADDomain
+        and Get-ADObject) and Get-AdfaGpoSysvolRaw (a port probe, a folder listing and GPT.INI reads).
+        No GroupPolicy cmdlet is used: Learn does not document the Gpo object's version properties.
+        Nothing is written: no Set-GP*, no Backup-GPO, no gpupdate, and GPT.INI is opened for reading
+        only.
+
+        DECLARED POPULATION: the domains named in -Domains. Each gets exactly one "GPO version
+        summary: <domain>" row, whatever happened to its reads; with none scoped there is one "GPO
+        version (no domain scoped)" row. Per domain, the population is the number of
+        groupPolicyContainer objects returned, stated in the summary's Population column. An
+        exception while one domain is handled makes its summary Not Assessed and never ends the
+        section.
+    .OUTPUTS
+        [pscustomobject[]] Finding rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][AllowEmptyString()][string[]]$Domains = @(),
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rows = @()
+    $scoped = New-Object System.Collections.ArrayList
+    foreach ($name in @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if (@($scoped | Where-Object { $_ -eq $name.Trim() }).Count -eq 0) { [void]$scoped.Add($name.Trim()) }
+    }
+    if ($scoped.Count -eq 0) {
+        $rows += New-AdfaGpoVersionRow -Item 'GPO version (no domain scoped)' -Status $script:Status.NotAssessed -Evidence 'none' `
+            -Detail 'No domain was scoped for this run, so no GPO version was read. This is not a clean result.'
+        return @($rows)
+    }
+    foreach ($domain in $scoped) {
+        try {
+            $raw = Get-AdfaGpoContainerRaw -DomainName $domain -AdParams $AdParams -Config $Config
+            $sysvol = $null
+            if ($raw.Ok -and -not [string]::IsNullOrWhiteSpace([string]$raw.Pdc)) {
+                $targets = @()
+                foreach ($c in @($raw.Containers | Where-Object { $null -ne $_ })) {
+                    $path = Get-AdfaGpoSysvolPath -Pdc ([string]$raw.Pdc) -Domain $domain -Guid ([string]$c.Guid) -FileSysPath ([string]$c.FileSysPath) -Config $Config
+                    if ($path.Ok) { $targets += [pscustomobject]@{ Guid = ([string]$c.Guid).ToUpperInvariant(); IniPath = [string]$path.IniPath } }
+                }
+                $sysvol = Get-AdfaGpoSysvolRaw -Pdc ([string]$raw.Pdc) -Domain $domain -Targets $targets -Config $Config
+            }
+            $rows += @(Get-AdfaGpoDomainFinding -Domain $domain -Raw $raw -Sysvol $sysvol -Config $Config)
+        }
+        catch {
+            # A defect in this tool, not in the directory. Fail closed for this domain only.
+            $rows += New-AdfaGpoVersionRow -Scope $domain -Item ("GPO version summary: {0}" -f $domain) -Status $script:Status.NotAssessed -Evidence 'none' `
+                -Detail ("Not assessed: handling the GPO versions of {0} failed inside this tool, so nothing about this domain is graded; this is a defect in the tool, not a result. Error: {1}" -f $domain, [string]$_.Exception.Message)
+        }
+    }
+    return @($rows)
+}
+
+function Merge-AdfaGpoConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in GPO version table, with validation. The Gpo
+        validator for -ConfigOverridePath.
+    .DESCRIPTION
+        What a file can change: MismatchStatus (Warning or Fail, the grade of a GPO whose directory
+        and GPT.INI versions differ) and OrphanFolderStatus (Warning or Info, the grade of a SYSVOL
+        GPO folder with no container):
+
+            { "Gpo": { "MismatchStatus": "Fail", "OrphanFolderStatus": "Info" } }
+
+        What it cannot: the filter, the property list, the share, the folder and file names, the
+        port, the size bound and the sources. Every such key is refused as unknown, so a file cannot
+        make the tool read another path or ask for every attribute.
+
+        Refused with the reason: an override that is not one object, an empty object, an unknown
+        key, a null, a value that is not a single text value (named by its type), and a status that
+        is not one of the two the key allows (a mismatch or an orphan folder is never reported as a
+        pass).
+
+        Provenance follows the keys: ThresholdSource is rewritten to name the override's source for
+        exactly the keys it supplied.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) {
+        throw ("GPO config override must be a single object with named keys (for example {{ ""MismatchStatus"": ""Fail"" }}), not a {0}." -f $Override.GetType().Name)
+    }
+    if ($table.Count -eq 0) {
+        throw 'GPO config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
+    }
+    $known = @('MismatchStatus', 'OrphanFolderStatus')
+    $allowed = @{ MismatchStatus = @('Warning', 'Fail'); OrphanFolderStatus = @('Warning', 'Info') }
+    $supplied = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("GPO config override names an unknown key '{0}'. Known keys: {1}. The filter, the property list, the share, the folder and file names, the port, the size bound and the sources cannot be set from a file." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        if ($supplied -contains $name) { throw ("GPO config override names '{0}' more than once." -f $name) }
+        $value = $table[$k]
+        if ($null -eq $value) {
+            throw ("GPO config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name)
+        }
+        if ($value -isnot [string]) {
+            # Named by its type, never by [string]$value: a list holding 'Fail' would print as 'Fail'
+            # and read as if that allowed value had been refused.
+            throw ("GPO config override sets '{0}' to a value of type {1}, not a single text value. It must be the text {2}: a finding of this kind is never reported as a pass." -f $name, $value.GetType().Name, ($allowed[$name] -join ' or '))
+        }
+        $statusMatch = @($allowed[$name] | Where-Object { $_ -eq $value.Trim() })
+        if ($statusMatch.Count -eq 0) {
+            throw ("GPO config override sets '{0}' to '{1}'. It must be {2}: a finding of this kind is never reported as a pass." -f $name, $value, ($allowed[$name] -join ' or '))
+        }
+        $merged[$name] = [string]$statusMatch[0]
+        $supplied += $name
+    }
+    $from = 'an override whose source was not recorded'
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+    $fromOverride = @($known | Where-Object { $supplied -contains $_ })
+    $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+    $builtIn = @($known | Where-Object { $supplied -notcontains $_ })
+    if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
+    $merged['ThresholdSource'] = $text
+    return $merged
 }
 
 # ===========================================================================
@@ -11427,6 +12616,7 @@ $script:ConfigOverrideSections = [ordered]@{
     DcCertificates = @{ ConfigKey = 'DcCertificates'; Section = 'DcCertificates'; Merge = 'Merge-AdfaDcCertificatesConfig' }
     RidPool        = @{ ConfigKey = 'RidPool'; Section = 'RidPool'; Merge = 'Merge-AdfaRidPoolConfig' }
     SidHistory     = @{ ConfigKey = 'SidHistory'; Section = 'SecurityPosture'; Merge = 'Merge-AdfaSidHistoryConfig' }
+    Gpo            = @{ ConfigKey = 'Gpo'; Section = 'Gpo'; Merge = 'Merge-AdfaGpoConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -15514,6 +16704,29 @@ $script:RecommendationMap = @(
        Text  = 'Confirm that the migrations that left this SID history are finished, re-permission the resources that still grant access to the old SIDs so they name the current principals, and then remove the values. Microsoft''s Defender for Identity remediation for SID history is to identify the value (Get-ADUser -Identity <account> -Properties SidHistory) and remove it (Set-ADUser -Identity <account> -Remove @{SIDHistory=''<SID>''}); removing a value removes any access granted through it, so check first. Microsoft also names eliminating SID history as one way to reduce token size. Same-domain and privileged values are graded in their own findings and come first. That present SID history is graded at all is this tool''s default (catalogue ADA-OBJ-009), not a Microsoft grade; this report reads only and changes nothing.' }
     @{ Section = '(?i)^security posture'; Match = '(?i)^Security Posture :: SID history'
        Text  = '' }
+    # --- Section-scoped: GPO version consistency rows of GPO Inventory (PORT-PLAN C8). Anchored on
+    #     the Item prefixes this tool writes ("GPO version: {GUID}", "GPO version summary: <domain>",
+    #     "GPO folder without container: {GUID}"), NOT on the section: the inventory's older rows
+    #     have the section name as their Item and keep whatever they matched before. Every version
+    #     row's Detail says SYSVOL and replication, which the unscoped 'sysvol|dfsr' and
+    #     'replication' entries would otherwise answer with restore advice; a config file path in the
+    #     provenance could say "backup" or "stale". The prefix catch-all gives every other version
+    #     row no advice. A GPO's display name and its gPCFileSysPath are never in Item or Detail.
+    #     Sources, read 2026-11-16:
+    #       AD and SYSVOL replicate independently; DFSR within a site every 15 minutes
+    #         - https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-policy/group-policy-processing
+    #       both versions updated on every edit; clients compare versions to decide whether to reprocess
+    #         - https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/70fd86b1-926a-4dcf-9ce7-6f9d2149c20d
+    #         - https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/bc953fef-0ca0-495f-8097-20772b3f6a6e
+    #       a SYSVOL folder whose GUID is not listed in Active Directory is an orphaned GPO that can be
+    #       deleted from the file system
+    #         - https://learn.microsoft.com/troubleshoot/windows-server/group-policy/rebuild-sysvol-tree-and-content-in-a-domain
+    @{ Section = '(?i)^gpo inventory'; Match = '(?i)^GPO Inventory :: GPO version(: \{| summary: )'
+       Text  = 'Run the assessment again once Active Directory and SYSVOL replication have converged: Microsoft documents that the directory part and the SYSVOL part of a GPO replicate by two independent mechanisms (DFSR replicates SYSVOL within a site every 15 minutes), so a version difference can be an edit still in flight. If it remains, the domain controller this finding names holds a directory version and a GPT.INI version that disagree, although Microsoft''s Group Policy protocol requires both to be updated together on every edit and clients compare them to decide whether to apply the GPO again. Check SYSVOL replication first - the SYSVOL / DFSR section of this report, and its backlog with -IncludeSysvolBacklog - and compare this GPO''s GPT.INI on the other domain controllers; do not edit or copy policy files until replication is healthy. Grading a difference at all is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^gpo inventory'; Match = '(?i)^GPO Inventory :: GPO folder without container: \{'
+       Text  = 'Confirm that no Group Policy object uses this GUID before treating the folder as orphaned: read CN=Policies,CN=System with an account that can read every GPO (a GPO whose permissions deny this account looks the same as a missing one), and check the domain''s other domain controllers. Microsoft''s SYSVOL rebuild guidance says that a SYSVOL folder whose GUID is not listed in Active Directory is an orphaned GPO and can be deleted from the file system; take a copy of the folder first. The grade is this tool''s default, not a Microsoft grade; this report reads only and changes nothing.' }
+    @{ Section = '(?i)^gpo inventory'; Match = '(?i)^GPO Inventory :: GPO (version|folder)'
+       Text  = '' }
     # --- Section-scoped: Exchange SE. Ahead of the unscoped entries so the generic
     #     replication/time wording in a detail line cannot hijack a readiness finding.
     # A forest ABOVE the listed levels gets NO advice, and this entry is what guarantees it.
@@ -16306,7 +17519,23 @@ function Invoke-Main {
     if (Test-SectionSelected 'Gpo' $Sections) {
         Write-Stage 'GPO inventory'
         $g = foreach ($d in $targetDomains) { Get-AdfaGpoInventory -DomainName $d }
-        $sectionData['GPO Inventory'] = @($g)
+        # GPO version consistency (PORT-PLAN C8): per scoped domain, each GPO's version in the
+        # directory against GPT.INI in SYSVOL, both read from the domain's PDC emulator. Appended
+        # after the inventory rows, whose shape is unchanged. The table the file supplied where it
+        # supplied one, otherwise the built-in table; the file was validated before any section ran.
+        Write-Stage 'GPO version consistency (directory against SYSVOL, on each domain PDC)'
+        $gpoConfig = $script:Config.Gpo
+        if ($configOverrides.ContainsKey('Gpo')) { $gpoConfig = $configOverrides['Gpo'] }
+        # With the forest unreadable there is no domain to scope, and the rows say so in one row
+        # instead of asking whatever the default server is.
+        if ($forestError) {
+            $gpoVersionRows = @(New-AdfaGpoVersionRow -Item 'GPO version' -Status $script:Status.NotAssessed -Evidence 'none' `
+                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no GPO version was read. This is not a clean result." -f $forestError))
+        }
+        else {
+            $gpoVersionRows = @(Get-AdfaGpoVersion -Domains $targetDomains -AdParams $adParams -Config $gpoConfig)
+        }
+        $sectionData['GPO Inventory'] = @(@($g) + @($gpoVersionRows))
     }
     if (Test-SectionSelected 'PasswordPolicy' $Sections) {
         $pp = foreach ($d in $targetDomains) { Get-AdfaPasswordPolicy -DomainName $d -AdParams $adParams }

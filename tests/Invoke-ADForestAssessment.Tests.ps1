@@ -5279,9 +5279,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcHardening' -and $n.Extent.Text -match '-DomainControllers \$dcNames' }, $true)).Count | Should -Be 0
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the six sections the file can carry (SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
+            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
             # DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -7284,7 +7284,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # three in Get-AdfaDcRidSetRaw, each a fixed attribute name from the RidPool config table.
         # 14 since v1.24.0: PORT-PLAN C7 added two splatted property lists in Get-AdfaSidHistoryRaw,
         # the principals' and the trusted domains', each from the SidHistory config table.
-        $script:C4PropertiesAssignmentCount = 14
+        # 15 since v1.25.0: PORT-PLAN C8 added one splatted property list in Get-AdfaGpoContainerRaw, the
+        # groupPolicyContainer attributes from the Gpo config table.
+        $script:C4PropertiesAssignmentCount = 15
         $script:C4SectionFunctionCount = 20
 
         function New-C4Schema {
@@ -7451,8 +7453,8 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaLaps' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the six sections the file can carry (SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory'
+            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7504,9 +7506,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.24.0 (bumped by PORT-PLAN C7)' {
-            [string]$script:Config.Version | Should -Be '1.24.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.24.0'
+        It 'carries the same version in the script and the manifest: 1.25.0 (bumped by PORT-PLAN C8)' {
+            [string]$script:Config.Version | Should -Be '1.25.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.25.0'
         }
     }
 
@@ -9094,8 +9096,8 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             Get-C5Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the six sections the file can carry (SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory'
+            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
             $entry = $script:ConfigOverrideSections['DcCertificates']
             [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
             [string]$entry['Section'] | Should -Be 'DcCertificates'
@@ -9176,9 +9178,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.24.0 (bumped by PORT-PLAN C7)' {
-            [string]$script:Config.Version | Should -Be '1.24.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.24.0'
+        It 'carries the same version in the script and the manifest: 1.25.0 (bumped by PORT-PLAN C8)' {
+            [string]$script:Config.Version | Should -Be '1.25.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.25.0'
         }
     }
 
@@ -10094,8 +10096,8 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             Get-C6Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the six sections the file can carry (SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory'
+            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
             $entry = $script:ConfigOverrideSections['RidPool']
             [string]$entry['ConfigKey'] | Should -Be 'RidPool'
             [string]$entry['Section'] | Should -Be 'RidPool'
@@ -10155,7 +10157,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'rIDAvailablePool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'RidPool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnAtPercentUsed'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Six sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seven sections can be named'
         }
         It 'has one row in the README Coverage table, and the README says what the row cannot see' {
             $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
@@ -10166,9 +10168,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.24.0 (bumped by PORT-PLAN C7)' {
-            [string]$script:Config.Version | Should -Be '1.24.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.24.0'
+        It 'carries the same version in the script and the manifest: 1.25.0 (bumped by PORT-PLAN C8)' {
+            [string]$script:Config.Version | Should -Be '1.25.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.25.0'
         }
     }
 
@@ -11049,8 +11051,8 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($script:C7Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaSidHistory' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath under SidHistory, used by SecurityPosture, with its own validator' {
-            # Declared population: the six sections the file can carry (SidHistory since v1.24.0, PORT-PLAN C7).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory'
+            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
             $entry = $script:ConfigOverrideSections['SidHistory']
             [string]$entry['ConfigKey'] | Should -Be 'SidHistory'
             [string]$entry['Section'] | Should -Be 'SecurityPosture'
@@ -11092,7 +11094,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             $help = $script:C7Ast.GetHelpContent()
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'SID history'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'sIDHistory'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Six sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seven sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'SidHistory'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'PresentStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'NameListCap'
@@ -11105,9 +11107,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.24.0 (bumped by PORT-PLAN C7)' {
-            [string]$script:Config.Version | Should -Be '1.24.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.24.0'
+        It 'carries the same version in the script and the manifest: 1.25.0 (bumped by PORT-PLAN C8)' {
+            [string]$script:Config.Version | Should -Be '1.25.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.25.0'
         }
     }
 
@@ -11838,6 +11840,1224 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             $findings[2].Recommendation | Should -Match 'Enterprise Admins'
             $findings[3].Recommendation | Should -Be ''
             $findings[3].Detail | Should -Match 'Trusts section'
+        }
+    }
+}
+
+Describe 'GPO version consistency: versionNumber in the directory against GPT.INI in SYSVOL, both read from the PDC emulator (C8)' {
+    BeforeAll {
+        $script:Gc = $script:Config.Gpo
+        # Held in variables: PSAvoidUsingComputerNameHardcoded flags a literal -ComputerName.
+        $script:C8Pdc = 'dc1.contoso.com'
+        $script:C8PdcNorth = 'dc1.north.contoso.com'
+        $script:C8Policies = '\\dc1.contoso.com\SYSVOL\contoso.com\Policies'
+        # Microsoft's two default GPO GUIDs, and fictional ones.
+        $script:C8G1 = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+        $script:C8G2 = '{6AC1786C-016F-11D2-945F-00C04FB984F9}'
+        $script:C8G3 = '{A1B2C3D4-0000-4000-8000-000000000003}'
+        $script:C8G4 = '{A1B2C3D4-0000-4000-8000-000000000004}'
+        $script:C8G5 = '{A1B2C3D4-0000-4000-8000-000000000005}'
+        $script:C8G6 = '{A1B2C3D4-0000-4000-8000-000000000006}'
+        $script:C8G7 = '{A1B2C3D4-0000-4000-8000-000000000007}'
+        $script:C8Orphan = '{A1B2C3D4-0000-4000-8000-0000000000FF}'
+        $script:C8Hostile = 'krbtgt Backup Operators replication global catalog stale leftover NOT a pass delegation central store sysvol dfsr event 1106 on dc1 clock certificate template C:\Backup\stale-aging.json <script>'
+        # GPT.INI as a file holds it, in the encoding named.
+        function New-C8IniBytes {
+            param([string]$Text, [string]$Encoding = 'Ansi')
+            switch ($Encoding) {
+                'Ansi' { return , ([byte[]][System.Text.Encoding]::ASCII.GetBytes($Text)) }
+                'Utf16Bom' { $e = [System.Text.Encoding]::Unicode; return , ([byte[]](@($e.GetPreamble()) + @($e.GetBytes($Text)))) }
+                'Utf16NoBom' { return , ([byte[]][System.Text.Encoding]::Unicode.GetBytes($Text)) }
+                'Utf8Bom' { $e = New-Object System.Text.UTF8Encoding -ArgumentList $true; return , ([byte[]](@($e.GetPreamble()) + @($e.GetBytes($Text)))) }
+                'Utf16BeBom' { $e = [System.Text.Encoding]::BigEndianUnicode; return , ([byte[]](@($e.GetPreamble()) + @($e.GetBytes($Text)))) }
+            }
+            throw "unknown encoding $Encoding"
+        }
+        function New-C8IniText { param($Version) ("[General]`r`nVersion={0}`r`ndisplayName=New Group Policy Object`r`n" -f $Version) }
+        # The record ConvertTo-AdfaGpoContainerRecord returns.
+        function New-C8Container {
+            param([string]$Guid, $Version = 65537, [string]$Name = 'Policy', $Flags = 0, [string]$Domain = 'contoso.com', [AllowNull()]$FileSysPath = 'auto')
+            $path = $FileSysPath
+            if ($path -eq 'auto') { $path = ("\\{0}\sysvol\{0}\Policies\{1}" -f $Domain, $Guid) }
+            [pscustomobject]@{ Guid = $Guid; DisplayName = $Name; Version = $Version; FileSysPath = $path; Flags = $Flags
+                Dn = ("CN={0},CN=Policies,CN=System,DC=contoso,DC=com" -f $Guid) }
+        }
+        # The shape Get-AdfaGpoContainerRaw returns.
+        function New-C8Raw {
+            param($Containers = @(), [bool]$Ok = $true, [string]$Err = '', [string]$Type = '', [string]$Pdc = $script:C8Pdc, [string]$PdcError = '', [string]$PdcType = '', [bool]$Refused = $false)
+            [pscustomobject]@{ Ok = $Ok; Refused = $Refused; Error = $Err; ErrorType = $Type; Pdc = $Pdc; PdcError = $PdcError; PdcErrorType = $PdcType
+                DomainDn = 'DC=contoso,DC=com'; Containers = @($Containers) }
+        }
+        # One file read, in the shape Get-AdfaGptIniRaw returns.
+        function New-C8Read {
+            param($Bytes = $null, [string]$Class = 'Read', [string]$Err = '', [string]$Type = '')
+            [pscustomobject]@{ Ok = ($Class -eq 'Read'); Class = $Class; Bytes = $Bytes; Error = $Err; ErrorType = $Type; HResult = 0; Path = '' }
+        }
+        function New-C8Ini { param($Version, [string]$Encoding = 'Ansi') New-C8Read -Bytes (New-C8IniBytes -Text (New-C8IniText $Version) -Encoding $Encoding) }
+        # The shape Get-AdfaGpoSysvolRaw returns. -Names $null is a listing that failed with -ListingClass.
+        function New-C8Sysvol {
+            param([bool]$PortOk = $true, [AllowNull()]$Names = @(), [string]$ListingClass = 'Read', [string]$ListingError = '', [string]$ListingType = '', [hashtable]$Reads = @{})
+            $listing = $null
+            if ($PortOk) {
+                $ok = ($null -ne $Names)
+                $class = 'Read'
+                if (-not $ok) { $class = $ListingClass }
+                $listing = [pscustomobject]@{ Ok = $ok; Class = $class; Names = @($Names); Error = $ListingError; ErrorType = $ListingType; HResult = 0; Path = $script:C8Policies }
+            }
+            [pscustomobject]@{ PortOk = $PortOk; Port = 445; Pdc = $script:C8Pdc; PoliciesPath = $script:C8Policies; Listing = $listing; Reads = $Reads }
+        }
+        function Get-C8Rows { param($Raw, $Sysvol, $Config = $script:Gc, [string]$Domain = 'contoso.com')
+            @(Get-AdfaGpoDomainFinding -Domain $Domain -Raw $Raw -Sysvol $Sysvol -Config $Config) }
+        function Get-C8Row { param($Rows, [string]$Item) $m = @($Rows | Where-Object { $_.Item -eq $Item }); if ($m.Count -eq 0) { return $null }; return $m[0] }
+        $script:C8Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C8Main = @($script:C8Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C8Function { param([string]$Name)
+            return @($script:C8Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
+        function Get-C8Parameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C8Guard { param($Node)
+            $g = $Node.Parent
+            while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+            return $g.Clauses[0].Item1.Extent.Text }
+        function Get-C8Branch {
+            return @($script:C8Main[0].FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $n.Clauses[0].Item1.Extent.Text -match "^Test-SectionSelected 'Gpo' \`$Sections$" }, $true)) }
+        # The functions of the row. Declared population: these 18, each found by name below.
+        $script:C8SectionNames = @('New-AdfaGpoVersionRow', 'ConvertTo-AdfaGpoVersionNumber', 'ConvertFrom-AdfaGptIniVersion', 'Split-AdfaGpoVersion', 'Get-AdfaGpoVersionVerdict',
+            'Get-AdfaGpoDomainVerdict', 'Get-AdfaGpoSysvolPath', 'Get-AdfaGpoFileReadErrorClass', 'Get-AdfaGpoFileFailure', 'Get-AdfaGpoFailureLead', 'ConvertTo-AdfaGpoContainerRecord',
+            'Get-AdfaGpoContainerRaw', 'Get-AdfaSysvolPolicyFolderRaw', 'Get-AdfaGptIniRaw', 'Get-AdfaGpoSysvolRaw', 'Get-AdfaGpoDomainFinding', 'Get-AdfaGpoVersion', 'Merge-AdfaGpoConfig')
+        $c8Names = @($script:C8SectionNames)
+        $script:C8SectionFunctions = @($script:C8Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $c8Names -contains $n.Name }.GetNewClosure(), $true))
+    }
+
+    Context 'Section wiring' {
+        It 'adds no -Sections value: Gpo is the one value, and part of the default All run' {
+            $param = @($script:C8Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $param.Count | Should -Be 1
+            $values = @(@($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })[0].PositionalArguments | ForEach-Object { $_.Value })
+            $values | Should -Contain 'Gpo'
+            $values | Should -Contain 'SecurityPosture'   # non-vacuity: the list really was read
+            @($values | Where-Object { $_ -match '(?i)gpo|gpt|sysvol' }).Count | Should -Be 2   # Gpo and the existing Sysvol
+            Test-SectionSelected 'Gpo' @('All') | Should -BeTrue
+            Test-SectionSelected 'Gpo' @('Sysvol') | Should -BeFalse
+        }
+        It 'is called once, from the Gpo branch of Invoke-Main, after the unchanged inventory, with the scoped domains, the AD parameters and its config' {
+            $script:C8Main.Count | Should -Be 1
+            $branches = @(Get-C8Branch)
+            # Declared population: the one Gpo branch.
+            $branches.Count | Should -Be 1
+            $body = $branches[0].Clauses[0].Item2
+            $calls = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaGpoVersion' }, $true))
+            $calls.Count | Should -Be 1
+            $expected = [ordered]@{ Domains = '$targetDomains'; AdParams = '$adParams'; Config = '$gpoConfig' }
+            # Declared population: the three parameters the collector is called with.
+            @($expected.Keys).Count | Should -Be 3
+            foreach ($p in @($expected.Keys)) {
+                $given = Get-C8Parameter -Call $calls[0] -Name $p
+                $given | Should -Not -BeNullOrEmpty -Because "the collector must be given -$p"
+                $given.Extent.Text | Should -Be $expected[$p] -Because "-$p must carry that value"
+            }
+            Get-C8Guard $calls[0] | Should -Be '$forestError'
+            $rowAssign = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$gpoVersionRows' }, $true))
+            # Declared population: the forest-unreadable row and the collector's rows.
+            $rowAssign.Count | Should -Be 2
+            $rowAssign[0].Right.Extent.Text | Should -Match 'New-AdfaGpoVersionRow '
+            $rowAssign[0].Right.Extent.Text | Should -Match "-Status `\`$script:Status.NotAssessed"
+            $configAssigns = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$gpoConfig' }, $true))
+            $configAssigns.Count | Should -Be 2
+            $configAssigns[0].Right.Extent.Text | Should -Be '$script:Config.Gpo'
+            $configAssigns[1].Right.Extent.Text | Should -Be "`$configOverrides['Gpo']"
+            Get-C8Guard $configAssigns[1] | Should -Be "`$configOverrides.ContainsKey('Gpo')"
+            $section = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['GPO Inventory']" }, $true))
+            $section.Count | Should -Be 1
+            $section[0].Right.Extent.Text | Should -Be '@(@($g) + @($gpoVersionRows))'
+            # The existing inventory is still called, unchanged, for every scoped domain.
+            $inventory = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaGpoInventory' }, $true))
+            $inventory.Count | Should -Be 1
+            (Get-C8Parameter -Call $inventory[0] -Name 'DomainName').Extent.Text | Should -Be '$d'
+            @($script:C8Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaGpoVersion' }, $true)).Count | Should -Be 1
+        }
+        It 'is registered for -ConfigOverridePath under Gpo, used by the Gpo section, with its own validator' {
+            # Declared population: the seven sections the file can carry (Gpo since v1.25.0, PORT-PLAN C8).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo'
+            $entry = $script:ConfigOverrideSections['Gpo']
+            [string]$entry['ConfigKey'] | Should -Be 'Gpo'
+            [string]$entry['Section'] | Should -Be 'Gpo'
+            [string]$entry['Merge'] | Should -Be 'Merge-AdfaGpoConfig'
+            Get-Command -Name 'Merge-AdfaGpoConfig' -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        }
+        It 'reads through its seams only: two named AD cmdlets, one port probe, a directory listing and a read-only file open, and nothing that writes' {
+            # Declared population: the section's functions, every one found.
+            $script:C8SectionFunctions.Count | Should -Be $script:C8SectionNames.Count
+            $collector = @(Get-C8Function -Name 'Get-AdfaGpoVersion')
+            $collector.Count | Should -Be 1
+            $inside = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            foreach ($seam in @('Get-AdfaGpoContainerRaw', 'Get-AdfaGpoSysvolRaw', 'Get-AdfaGpoDomainFinding')) {
+                @($inside | Where-Object { $_ -eq $seam }).Count | Should -Be 1 -Because "the collector calls $seam once"
+            }
+            $adCalls = @()
+            $probes = @()
+            $members = @()
+            foreach ($f in $script:C8SectionFunctions) {
+                $names = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+                @($names | Where-Object { $_ -match '(?i)^(Set|New|Remove|Add|Clear|Move|Rename|Enable|Disable|Reset|Update|Invoke|Import|Export|Start|Stop|Restore|Sync|Backup|Copy|Out)-(AD(?!fa)|Cim|Item|Content|GP|WmiObject|File)' }).Count | Should -Be 0 -Because "$($f.Name) must not call a state-changing cmdlet"
+                @($names | Where-Object { $_ -match '(?i)^(gpupdate|gpfixup|dcgpofix|netdom|nltest|dcdiag|repadmin|ntdsutil|robocopy|xcopy|icacls)(\.exe)?$|^Invoke-Expression$|^Invoke-ExternalCommand$|^Get-GPO$|^Get-GPOReport$|^Test-TcpPort$|^Set-Content$|^Add-Content$' }).Count | Should -Be 0 -Because "$($f.Name) must not run a tool, write, or probe outside the per-run cache"
+                $members += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true) | ForEach-Object { "{0}:{1}" -f $f.Name, [string]$_.Member.Extent.Text })
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -match '(?i)^(Replace|Add|Remove|Clear|Instance)$' }, $true)).Count | Should -Be 0 -Because "$($f.Name) must not pass a write parameter"
+                $adCalls += @($names | Where-Object { $_ -match '(?i)^Get-AD(?!fa)' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
+                $probes += @($names | Where-Object { $_ -eq 'Test-AdfaDcPort' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
+            }
+            # Declared population: the two directory reads, in the container seam.
+            ($adCalls -join ',') | Should -Be 'Get-AdfaGpoContainerRaw:Get-ADDomain,Get-AdfaGpoContainerRaw:Get-ADObject'
+            # Declared population: one port probe, through the per-run cache, in the SYSVOL seam.
+            ($probes -join ',') | Should -Be 'Get-AdfaGpoSysvolRaw:Test-AdfaDcPort'
+            # A whitelist, not a blacklist: every command, every .NET method (static, with its type and
+            # the function that calls it, and instance), every type literal and every New-Object type
+            # the row's 18 functions use is pinned. Any addition - Set-Acl, [IO.File]::ReadAllBytes,
+            # [IO.Directory]::EnumerateFiles, a StreamWriter - fails here, whatever its name.
+            $commands = @(); $static = @(); $instance = @(); $types = @(); $newObjects = @()
+            foreach ($f in $script:C8SectionFunctions) {
+                $commands += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object {
+                        $cn = $_.GetCommandName(); if ($null -eq $cn) { '&' + $_.CommandElements[0].Extent.Text } else { [string]$cn } })
+                foreach ($m in @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true))) {
+                    if ($m.Static) { $static += ("{0}:[{1}]::{2}" -f $f.Name, $m.Expression.TypeName.FullName, $m.Member.Extent.Text) } else { $instance += ('.' + $m.Member.Extent.Text) }
+                }
+                $types += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.TypeExpressionAst] -or $n -is [System.Management.Automation.Language.TypeConstraintAst] -or $n -is [System.Management.Automation.Language.ConvertExpressionAst] }, $true) | ForEach-Object {
+                        if ($_ -is [System.Management.Automation.Language.ConvertExpressionAst]) { $_.Type.TypeName.FullName } else { $_.TypeName.FullName } })
+                $newObjects += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'New-Object' }, $true) | ForEach-Object { $_.CommandElements[1].Extent.Text })
+            }
+            $expectedCommands = @('&$asText', 'Add-Member', 'ConvertFrom-AdfaGptIniVersion', 'ConvertTo-AdfaGpoContainerRecord', 'ConvertTo-AdfaGpoVersionNumber', 'ConvertTo-AdfaOverrideTable', 'ForEach-Object',
+                'Get-ADDomain', 'Get-AdfaDirectoryReadErrorClass', 'Get-AdfaGpoContainerRaw', 'Get-AdfaGpoDomainFinding', 'Get-AdfaGpoDomainVerdict', 'Get-AdfaGpoFailureLead', 'Get-AdfaGpoFileFailure',
+                'Get-AdfaGpoFileReadErrorClass', 'Get-AdfaGpoSysvolPath', 'Get-AdfaGpoSysvolRaw', 'Get-AdfaGpoVersionVerdict', 'Get-AdfaGptIniRaw', 'Get-AdfaRemoteReadErrorClass', 'Get-AdfaSysvolPolicyFolderRaw',
+                'Get-ADObject', 'Get-Date', 'New-AdfaGpoVersionRow', 'New-Finding', 'New-Object', 'Split-AdfaGpoVersion', 'Test-AdfaDcPort', 'Where-Object')
+            $expectedStatic = @('ConvertFrom-AdfaGptIniVersion:[System.Text.Encoding]::GetEncoding', 'ConvertTo-AdfaGpoVersionNumber:[int64]::TryParse',
+                'Get-AdfaGpoSysvolPath:[string]::Equals', 'Get-AdfaGptIniRaw:[System.IO.FileStream]::new',
+                'Get-AdfaSysvolPolicyFolderRaw:[System.IO.Directory]::GetDirectories', 'Get-AdfaSysvolPolicyFolderRaw:[System.IO.Path]::GetFileName',
+                'ConvertTo-AdfaGpoContainerRecord:[string]::IsNullOrWhiteSpace', 'Get-AdfaGpoContainerRaw:[string]::IsNullOrWhiteSpace', 'Get-AdfaGpoDomainFinding:[string]::IsNullOrWhiteSpace',
+                'Get-AdfaGpoFileReadErrorClass:[string]::IsNullOrWhiteSpace', 'Get-AdfaGpoSysvolPath:[string]::IsNullOrWhiteSpace', 'Get-AdfaGpoVersion:[string]::IsNullOrWhiteSpace',
+                'Merge-AdfaGpoConfig:[string]::IsNullOrWhiteSpace')
+            $expectedInstance = @('.Add', '.ContainsKey', '.Dispose', '.GetString', '.GetType', '.Read', '.ToArray', '.ToString', '.ToUpperInvariant', '.Trim', '.TrimEnd')
+            # Declared population: these 29 commands, 13 static method calls (by function), 11 instance methods and 2 New-Object types.
+            $expectedCommands.Count | Should -Be 29
+            $expectedStatic.Count | Should -Be 13
+            $expectedInstance.Count | Should -Be 11
+            (@($commands | Sort-Object -Unique) -join ',') | Should -Be (@($expectedCommands | Sort-Object -Unique) -join ',')
+            (@($static | Sort-Object -Unique) -join ',') | Should -Be (@($expectedStatic | Sort-Object -Unique) -join ',')
+            (@($instance | Sort-Object -Unique) -join ',') | Should -Be (@($expectedInstance | Sort-Object -Unique) -join ',')
+            (@($newObjects | Sort-Object -Unique) -join ',') | Should -Be 'byte[],System.Collections.ArrayList'
+            # No type literal names a file or directory class other than those the two reads use.
+            (@($types | Where-Object { $_ -match '(?i)^(System\.)?IO\.' } | Sort-Object -Unique) -join ',') | Should -Be 'System.IO.Directory,System.IO.FileAccess,System.IO.FileMode,System.IO.FileShare,System.IO.FileStream,System.IO.Path'
+            # GPT.INI is opened for read access only, and leaves every other open of the file free.
+            $open = @(@(Get-C8Function -Name 'Get-AdfaGptIniRaw')[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static -and $n.Member.Extent.Text -eq 'new' }, $true))
+            $open.Count | Should -Be 1
+            (@($open[0].Arguments | ForEach-Object { $_.Extent.Text }) -join ' | ') | Should -Be '$Path | [System.IO.FileMode]::Open | [System.IO.FileAccess]::Read | $share'
+            $shareAssign = @(@(Get-C8Function -Name 'Get-AdfaGptIniRaw')[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$share' }, $true))
+            $shareAssign.Count | Should -Be 1
+            $shareAssign[0].Right.Extent.Text | Should -Be '[System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete'
+            @($members | Where-Object { $_ -match '(?i):(Write\w*|Create\w*|Delete|Move\w*|Copy\w*|Replace|SetAttributes|SetAccessControl|Open|OpenWrite|AppendAll\w*|Encrypt|Decrypt|Put|PutEx|SetInfo|CommitChanges|InvokeSet|Invoke)$' }).Count | Should -Be 0
+            # The old inventory keeps its own reads (Get-GPO, GenerateReport) and gains no write.
+            $inventory = @(Get-C8Function -Name 'Get-AdfaGpoInventory')
+            $inventory.Count | Should -Be 1
+            @($inventory[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -match '(?i)^(Set|New|Remove|Backup|Import|Restore|Copy|Invoke)-GP' }, $true)).Count | Should -Be 0
+        }
+        It 'asks for named attributes only, from the config table, by splat' {
+            $assigned = @()
+            foreach ($f in $script:C8SectionFunctions) {
+                $assigned += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Left.Member.Extent.Text -eq 'Properties' }, $true) | ForEach-Object { [string]$_.Right.Extent.Text })
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -eq 'Properties' }, $true)).Count | Should -Be 0 -Because "$($f.Name) passes its property list by splat"
+            }
+            # Declared population: the one property list, the containers'.
+            ($assigned -join ' | ') | Should -Be '@($properties)'
+        }
+        It 'documents the rows and the Gpo override key in the help' {
+            $help = $script:C8Ast.GetHelpContent()
+            ([string]$help.Description -replace '\s+', ' ') | Should -Match 'GPT\.INI'
+            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'GPT\.INI'
+            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'PDC emulator'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seven sections can be named'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Gpo"'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'MismatchStatus'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'OrphanFolderStatus'
+        }
+        It 'has the version check in the README Coverage row of Group Policy, and a README section of its own' {
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($readme | Where-Object { $_ -match '^\| Group Policy \|' })
+            $row.Count | Should -Be 1
+            $row[0] | Should -Match 'GPT\.INI'
+            @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
+            @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
+        }
+        It 'carries the same version in the script and the manifest: 1.25.0 (bumped by PORT-PLAN C8)' {
+            [string]$script:Config.Version | Should -Be '1.25.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.25.0'
+        }
+    }
+
+    Context 'Config table' {
+        It 'holds the two tool defaults, labelled as such, the fixed reads and the read date' {
+            [string]$script:Gc['MismatchStatus'] | Should -Be 'Warning'
+            [string]$script:Gc['OrphanFolderStatus'] | Should -Be 'Warning'
+            [string]$script:Gc['ThresholdSource'] | Should -Match 'tool default'
+            [string]$script:Gc['ThresholdSource'] | Should -Match 'not a Microsoft value'
+            [string]$script:Gc['ReadDate'] | Should -Be '2026-11-16'
+            [string]$script:Gc['SourceUrl'] | Should -Match 'ms-gpol'
+            [string]$script:Gc['SourceUrl'] | Should -Match 'group-policy-processing'
+            [string]$script:Gc['ContainerFilter'] | Should -Be '(objectClass=groupPolicyContainer)'
+            [string]$script:Gc['PoliciesContainerRdn'] | Should -Be 'CN=Policies,CN=System'
+            (@($script:Gc['ContainerProperties']) -join ',') | Should -Be 'versionNumber,gPCFileSysPath,displayName,flags'
+            [string]$script:Gc['SysvolShare'] | Should -Be 'SYSVOL'
+            [string]$script:Gc['PoliciesFolder'] | Should -Be 'Policies'
+            [string]$script:Gc['GptIniFileName'] | Should -Be 'GPT.INI'
+            [int]$script:Gc['SmbPort'] | Should -Be 445
+            [int]$script:Gc['GptIniMaxBytes'] | Should -Be 65536
+            # Declared population: the four flags values MS-GPOL publishes.
+            (@($script:Gc['FlagLabels'] | ForEach-Object { [string]$_['Value'] }) -join ',') | Should -Be '0,1,2,3'
+        }
+    }
+
+    Context 'Version numbers (pure): versionNumber read as 32 bits, split as MS-GPOL publishes' {
+        It 'reads a whole number in range, masks a negative Int32 to 32 bits, and refuses what is not one' {
+            $cases = [ordered]@{
+                'Int32 65537'                 = @{ Value = [int]65537; Ok = $true; Version = 65537; Cause = '' }
+                'Int32 negative (user 0x8001)' = @{ Value = [int]-2147418111; Ok = $true; Version = 2147549185; Cause = '' }
+                'Int32 -1'                    = @{ Value = [int]-1; Ok = $true; Version = 4294967295; Cause = '' }
+                'Int64 at the top edge'       = @{ Value = [int64]4294967295; Ok = $true; Version = 4294967295; Cause = '' }
+                'Int64 one above'             = @{ Value = [int64]4294967296; Ok = $false; Version = $null; Cause = 'OutOfRange' }
+                'Int64 one below Int32'       = @{ Value = [int64]-2147483649; Ok = $false; Version = $null; Cause = 'OutOfRange' }
+                'text'                        = @{ Value = ' 9437184 '; Ok = $true; Version = 9437184; Cause = '' }
+                'not a number'                = @{ Value = 'abc'; Ok = $false; Version = $null; Cause = 'NotANumber' }
+                'a fraction'                  = @{ Value = [double]1.5; Ok = $false; Version = $null; Cause = 'NotANumber' }
+                'null'                        = @{ Value = $null; Ok = $false; Version = $null; Cause = 'NotReturned' }
+                'one value in a collection'   = @{ Value = (New-Object System.Collections.ArrayList (, @([int]7))); Ok = $true; Version = 7; Cause = '' }
+                'two values'                  = @{ Value = (New-Object System.Collections.ArrayList (, @([int]7, [int]8))); Ok = $false; Version = $null; Cause = 'MultiValued' }
+                'an empty collection'         = @{ Value = (New-Object System.Collections.ArrayList); Ok = $false; Version = $null; Cause = 'NotReturned' }
+                'UInt64 at the top edge'      = @{ Value = [uint64]4294967295; Ok = $true; Version = 4294967295; Cause = '' }
+                'UInt64 one above'            = @{ Value = [uint64]4294967296; Ok = $false; Version = $null; Cause = 'OutOfRange' }
+                # Above Int64: refused before the cast to Int64, which would otherwise throw.
+                'UInt64 maximum'              = @{ Value = [uint64]::MaxValue; Ok = $false; Version = $null; Cause = 'OutOfRange' }
+            }
+            # Declared population: sixteen values.
+            @($cases.Keys).Count | Should -Be 16
+            foreach ($k in @($cases.Keys)) {
+                $r = ConvertTo-AdfaGpoVersionNumber -Value $cases[$k]['Value']
+                $r.Ok | Should -Be $cases[$k]['Ok'] -Because $k
+                $r.Cause | Should -Be $cases[$k]['Cause'] -Because $k
+                if ($cases[$k]['Ok']) { $r.Version | Should -Be ([int64]$cases[$k]['Version']) -Because $k } else { ($null -eq $r.Version) | Should -BeTrue -Because $k }
+            }
+        }
+        It 'splits user (upper 16 bits) and computer (lower 16 bits), on Microsoft''s sample value and at the edges' {
+            $s = Split-AdfaGpoVersion -Version 9437184
+            $s.User | Should -Be 144
+            $s.Computer | Should -Be 0
+            $e = Split-AdfaGpoVersion -Version 4294967295
+            $e.User | Should -Be 65535
+            $e.Computer | Should -Be 65535
+            $m = Split-AdfaGpoVersion -Version 65537
+            $m.User | Should -Be 1
+            $m.Computer | Should -Be 1
+            (Split-AdfaGpoVersion -Version 2147549185).User | Should -Be 32769
+        }
+    }
+
+    Context 'GPT.INI (pure): [General] Version, in ANSI as MS-GPOL requires, and tolerated in UTF-16 and UTF-8' {
+        It 'reads the version from each encoding and says which it was' {
+            $cases = [ordered]@{
+                'Ansi'       = 'ANSI (no BOM)'
+                'Utf16Bom'   = 'UTF-16LE (BOM)'
+                'Utf16NoBom' = 'UTF-16LE (no BOM, inferred)'
+                'Utf8Bom'    = 'UTF-8 (BOM)'
+                'Utf16BeBom' = 'UTF-16BE (BOM)'
+            }
+            # Declared population: five encodings.
+            @($cases.Keys).Count | Should -Be 5
+            foreach ($enc in @($cases.Keys)) {
+                $r = ConvertFrom-AdfaGptIniVersion -Bytes (New-C8IniBytes -Text (New-C8IniText 9437184) -Encoding $enc) -Config $script:Gc
+                $r.Ok | Should -BeTrue -Because $enc
+                $r.Version | Should -Be 9437184 -Because $enc
+                $r.Encoding | Should -Be $cases[$enc] -Because $enc
+            }
+        }
+        It 'reads the key in [General] only, case-insensitively, with spaces around the equals sign' {
+            $text = "[Other]`r`nVersion=5`r`n[general]`r`n  version = 131073  `r`n"
+            $r = ConvertFrom-AdfaGptIniVersion -Bytes (New-C8IniBytes -Text $text) -Config $script:Gc
+            $r.Ok | Should -BeTrue
+            $r.Version | Should -Be 131073
+            (ConvertFrom-AdfaGptIniVersion -Bytes (New-C8IniBytes -Text "[General]`nVersion=4294967295`n") -Config $script:Gc).Version | Should -Be 4294967295
+            # A commented-out Version beside the real one is neither taken nor counted as a second key.
+            $commented = ConvertFrom-AdfaGptIniVersion -Bytes (New-C8IniBytes -Text "[General]`r`n;Version=5`r`n  ; Version = 6`r`nVersion=7`r`n") -Config $script:Gc
+            $commented.Ok | Should -BeTrue
+            $commented.Version | Should -Be 7
+        }
+        It 'refuses a file it cannot take a version from, naming why' {
+            $cases = [ordered]@{
+                'empty'               = @{ Text = ''; Cause = 'Empty' }
+                'no [General]'        = @{ Text = "[Other]`r`nVersion=5`r`n"; Cause = 'NoGeneralSection' }
+                'no Version key'      = @{ Text = "[General]`r`ndisplayName=x`r`n"; Cause = 'NoVersionKey' }
+                'Version twice'       = @{ Text = "[General]`r`nVersion=1`r`nVersion=2`r`n"; Cause = 'DuplicateVersionKey' }
+                'not a number'        = @{ Text = "[General]`r`nVersion=abc`r`n"; Cause = 'NotANumber' }
+                'one above 32 bits'   = @{ Text = "[General]`r`nVersion=4294967296`r`n"; Cause = 'OutOfRange' }
+                'Version in comment'  = @{ Text = "[General]`r`n;Version=5`r`n"; Cause = 'NoVersionKey' }
+            }
+            # Declared population: seven files.
+            @($cases.Keys).Count | Should -Be 7
+            foreach ($k in @($cases.Keys)) {
+                $r = ConvertFrom-AdfaGptIniVersion -Bytes (New-C8IniBytes -Text $cases[$k]['Text']) -Config $script:Gc
+                $r.Ok | Should -BeFalse -Because $k
+                $r.Cause | Should -Be $cases[$k]['Cause'] -Because $k
+                $r.CauseText | Should -Not -BeNullOrEmpty -Because $k
+                ($null -eq $r.Version) | Should -BeTrue -Because $k
+            }
+            (ConvertFrom-AdfaGptIniVersion -Bytes $null -Config $script:Gc).Cause | Should -Be 'Empty'
+        }
+    }
+
+    Context 'Verdicts (pure)' {
+        It 'compares the whole 32-bit number, in both directions, and names the half that differs' {
+            $equal = Get-AdfaGpoVersionVerdict -DsVersion 65537 -SysvolVersion 65537 -ReadFrom $script:C8Pdc -Config $script:Gc
+            $equal.Status | Should -Be 'Pass'
+            $equal.Half | Should -Be 'None'
+            $cases = [ordered]@{
+                'user half, directory ahead'    = @{ Ds = 131073; Sv = 65537; Half = 'User'; Name = 'the user half differs' }
+                'user half, SYSVOL ahead'       = @{ Ds = 65537; Sv = 131073; Half = 'User'; Name = 'the user half differs' }
+                'computer half'                 = @{ Ds = 65538; Sv = 65537; Half = 'Computer'; Name = 'the computer half differs' }
+                'both halves'                   = @{ Ds = 131074; Sv = 65537; Half = 'Both'; Name = 'the user and computer halves differ' }
+                'by one at the top'             = @{ Ds = 4294967295; Sv = 4294967294; Half = 'Computer'; Name = 'the computer half differs' }
+            }
+            # Declared population: five mismatches.
+            @($cases.Keys).Count | Should -Be 5
+            foreach ($k in @($cases.Keys)) {
+                $v = Get-AdfaGpoVersionVerdict -DsVersion $cases[$k]['Ds'] -SysvolVersion $cases[$k]['Sv'] -ReadFrom $script:C8Pdc -Config $script:Gc
+                $v.Status | Should -Be 'Warning' -Because $k
+                $v.Half | Should -Be $cases[$k]['Half'] -Because $k
+                $v.Detail | Should -Match ([regex]::Escape($cases[$k]['Name'])) -Because $k
+                $v.Detail | Should -Match ("holds {0} " -f $cases[$k]['Ds']) -Because $k
+                $v.Detail | Should -Match ("holds {0} " -f $cases[$k]['Sv']) -Because $k
+            }
+            $w = Get-AdfaGpoVersionVerdict -DsVersion 131073 -SysvolVersion 65537 -ReadFrom $script:C8Pdc -Config $script:Gc
+            $w.Detail | Should -Match '^Version mismatch on dc1\.contoso\.com: the directory \(versionNumber\) holds 131073 \(user 2, computer 1\) and GPT\.INI in SYSVOL holds 65537 \(user 1, computer 1\)'
+            $w.Detail | Should -Match 'replication still in flight'
+            $w.Detail | Should -Match 'tool default'
+            $w.Detail | Should -Match 'not a Microsoft value'
+            $fail = Merge-AdfaGpoConfig -BaseConfig $script:Gc -Override @{ MismatchStatus = 'Fail' } -OverrideSource 'C:\cfg\gpo.json'
+            $f = Get-AdfaGpoVersionVerdict -DsVersion 131073 -SysvolVersion 65537 -ReadFrom $script:C8Pdc -Config $fail
+            $f.Status | Should -Be 'Fail'
+            $f.Detail | Should -Match ([regex]::Escape('C:\cfg\gpo.json'))
+        }
+        It 'passes a domain only when every GPO read was compared and none differs, and never on an empty population' {
+            $cases = [ordered]@{
+                'all compared, none differs'   = @{ P = 3; C = 3; M = 0; N = 0; Status = 'Pass'; Lead = '^All 3 GPO\(s\) of contoso\.com visible to this account were compared on dc1\.contoso\.com' }
+                'one GPO'                      = @{ P = 1; C = 1; M = 0; N = 0; Status = 'Pass'; Lead = '^All 1 GPO' }
+                'none visible'                 = @{ P = 0; C = 0; M = 0; N = 0; Status = 'Not Assessed'; Lead = '^Not assessed: no groupPolicyContainer object' }
+                'one not compared'             = @{ P = 3; C = 2; M = 0; N = 1; Status = 'Not Assessed'; Lead = '^Not assessed: 1 of 3 GPO\(s\) of contoso\.com could not be compared' }
+                'one differs'                  = @{ P = 3; C = 3; M = 1; N = 0; Status = 'Warning'; Lead = '^1 of 3 GPO\(s\) of contoso\.com have a directory version that differs' }
+                'one differs, one not read'    = @{ P = 3; C = 2; M = 1; N = 1; Status = 'Warning'; Lead = '1 not compared' }
+                'counts do not add up'         = @{ P = 3; C = 1; M = 0; N = 1; Status = 'Not Assessed'; Lead = 'defect in the tool' }
+                'more mismatched than compared' = @{ P = 2; C = 1; M = 2; N = 1; Status = 'Not Assessed'; Lead = 'defect in the tool' }
+                'population not read'          = @{ P = $null; C = 0; M = 0; N = 0; Status = 'Not Assessed'; Lead = 'defect in the tool' }
+            }
+            # Declared population: nine count sets.
+            @($cases.Keys).Count | Should -Be 9
+            foreach ($k in @($cases.Keys)) {
+                $c = $cases[$k]
+                $v = Get-AdfaGpoDomainVerdict -Domain 'contoso.com' -ReadFrom $script:C8Pdc -Population $c['P'] -Compared $c['C'] -Mismatched $c['M'] -NotAssessed $c['N'] -Config $script:Gc
+                $v.Status | Should -Be $c['Status'] -Because $k
+                $v.Detail | Should -Match $c['Lead'] -Because $k
+            }
+            (Get-AdfaGpoDomainVerdict -Domain 'contoso.com' -ReadFrom $script:C8Pdc -Population 3 -Compared 3 -Mismatched 0 -NotAssessed 0 -Config $script:Gc).Detail | Should -Not -Match 'could not|failed|unreachable'
+        }
+    }
+
+    Context 'Paths (pure): the GPT.INI read is always on the PDC, never on a host the directory names' {
+        It 'builds the PDC path from the GUID, and accepts gPCFileSysPath only in the form MS-GPOL defines' {
+            $ok = Get-AdfaGpoSysvolPath -Pdc $script:C8Pdc -Domain 'contoso.com' -Guid $script:C8G1 -FileSysPath ("\\CONTOSO.COM\SysVol\contoso.com\Policies\{0}\" -f $script:C8G1.ToLowerInvariant()) -Config $script:Gc
+            $ok.Ok | Should -BeTrue
+            $ok.PoliciesPath | Should -Be $script:C8Policies
+            $ok.FolderPath | Should -Be ("{0}\{1}" -f $script:C8Policies, $script:C8G1)
+            $ok.IniPath | Should -Be ("{0}\{1}\GPT.INI" -f $script:C8Policies, $script:C8G1)
+            $bad = [ordered]@{
+                'another host'          = @{ Path = ("\\fileserver.fabrikam.com\sysvol\contoso.com\Policies\{0}" -f $script:C8G1); Guid = $script:C8G1; Cause = 'not the path MS-GPOL defines' }
+                'another GPO''s folder' = @{ Path = ("\\contoso.com\sysvol\contoso.com\Policies\{0}" -f $script:C8G2); Guid = $script:C8G1; Cause = 'not the path MS-GPOL defines' }
+                'another domain'        = @{ Path = ("\\fabrikam.com\sysvol\fabrikam.com\Policies\{0}" -f $script:C8G1); Guid = $script:C8G1; Cause = 'not the path MS-GPOL defines' }
+                'a path that climbs'    = @{ Path = ("\\contoso.com\sysvol\contoso.com\Policies\..\{0}" -f $script:C8G1); Guid = $script:C8G1; Cause = 'not the path MS-GPOL defines' }
+                'not returned'          = @{ Path = ''; Guid = $script:C8G1; Cause = 'gPCFileSysPath was not returned' }
+                'a name that is no GUID' = @{ Path = '\\contoso.com\sysvol\contoso.com\Policies\x'; Guid = 'x'; Cause = 'not a GUID in braces' }
+            }
+            # Declared population: six refusals.
+            @($bad.Keys).Count | Should -Be 6
+            foreach ($k in @($bad.Keys)) {
+                $r = Get-AdfaGpoSysvolPath -Pdc $script:C8Pdc -Domain 'contoso.com' -Guid $bad[$k]['Guid'] -FileSysPath $bad[$k]['Path'] -Config $script:Gc
+                $r.Ok | Should -BeFalse -Because $k
+                $r.Cause | Should -Match ([regex]::Escape($bad[$k]['Cause'])) -Because $k
+                $r.IniPath | Should -Be '' -Because "$k leaves nothing to read"
+            }
+            # A PDC or domain name that is not a plain DNS name is refused rather than put in a path -
+            # even when gPCFileSysPath names exactly the path that name would build.
+            $names = [ordered]@{
+                'PDC'    = @{ Pdc = 'dc1\x'; Domain = 'contoso.com' }
+                'domain' = @{ Pdc = $script:C8Pdc; Domain = 'contoso.com\..\x' }
+            }
+            # Declared population: the two names put in the path.
+            @($names.Keys).Count | Should -Be 2
+            foreach ($k in @($names.Keys)) {
+                $d = $names[$k]['Domain']
+                $r = Get-AdfaGpoSysvolPath -Pdc $names[$k]['Pdc'] -Domain $d -Guid $script:C8G1 -FileSysPath ("\\{0}\sysvol\{0}\policies\{1}" -f $d, $script:C8G1) -Config $script:Gc
+                $r.Ok | Should -BeFalse -Because $k
+                $r.PoliciesPath | Should -Be '' -Because "$k builds no path"
+                $r.IniPath | Should -Be '' -Because $k
+                $r.Cause | Should -Match 'not a plain DNS name' -Because $k
+            }
+        }
+    }
+
+    Context 'File read classes (pure): not found, access denied, unreachable and other errors kept apart' {
+        It 'decides from the exception type first, then from the Win32 code in its HResult, then from its text' {
+            $cases = [ordered]@{
+                'FileNotFoundException'               = @{ Type = 'System.IO.FileNotFoundException'; H = 0; Msg = ''; Class = 'NotFound' }
+                'DirectoryNotFoundException'          = @{ Type = 'System.IO.DirectoryNotFoundException'; H = 0; Msg = ''; Class = 'NotFound' }
+                'ItemNotFoundException'               = @{ Type = 'System.Management.Automation.ItemNotFoundException'; H = 0; Msg = ''; Class = 'NotFound' }
+                'UnauthorizedAccessException'         = @{ Type = 'System.UnauthorizedAccessException'; H = 0; Msg = ''; Class = 'AccessDenied' }
+                'IOException 5'                       = @{ Type = 'System.IO.IOException'; H = [int]0x80070005; Msg = ''; Class = 'AccessDenied' }
+                'IOException 65 (network access)'     = @{ Type = 'System.IO.IOException'; H = [int]0x80070041; Msg = ''; Class = 'AccessDenied' }
+                'IOException 53 (bad network path)'   = @{ Type = 'System.IO.IOException'; H = [int]0x80070035; Msg = ''; Class = 'Unreachable' }
+                'IOException 51'                      = @{ Type = 'System.IO.IOException'; H = [int]0x80070033; Msg = ''; Class = 'Unreachable' }
+                'IOException 64 (name gone)'          = @{ Type = 'System.IO.IOException'; H = [int]0x80070040; Msg = ''; Class = 'Unreachable' }
+                'IOException 1231'                    = @{ Type = 'System.IO.IOException'; H = [int]0x800704CF; Msg = ''; Class = 'Unreachable' }
+                'IOException 1232'                    = @{ Type = 'System.IO.IOException'; H = [int]0x800704D0; Msg = ''; Class = 'Unreachable' }
+                'IOException 3'                       = @{ Type = 'System.IO.IOException'; H = [int]0x80070003; Msg = ''; Class = 'NotFound' }
+                'IOException 2'                       = @{ Type = 'System.IO.IOException'; H = [int]0x80070002; Msg = ''; Class = 'NotFound' }
+                'IOException 32 (sharing violation)'  = @{ Type = 'System.IO.IOException'; H = [int]0x80070020; Msg = 'in use'; Class = 'Error' }
+                'DriveNotFoundException'              = @{ Type = 'System.IO.DriveNotFoundException'; H = 0; Msg = ''; Class = 'NotFound' }
+                # Learn: thrown only in limited trust on .NET Framework, not for a refused file.
+                'SecurityException'                   = @{ Type = 'System.Security.SecurityException'; H = 0; Msg = 'STUB: request failed'; Class = 'Error' }
+                'TimeoutException'                    = @{ Type = 'System.TimeoutException'; H = 0; Msg = ''; Class = 'TimedOut' }
+                'text only, denied'                   = @{ Type = ''; H = 0; Msg = 'Access is denied.'; Class = 'AccessDenied' }
+                'nothing'                             = @{ Type = ''; H = 0; Msg = ''; Class = 'Error' }
+            }
+            # Declared population: nineteen failures.
+            @($cases.Keys).Count | Should -Be 19
+            foreach ($k in @($cases.Keys)) {
+                Get-AdfaGpoFileReadErrorClass -TypeName $cases[$k]['Type'] -HResult $cases[$k]['H'] -Message $cases[$k]['Msg'] | Should -Be $cases[$k]['Class'] -Because $k
+            }
+        }
+        It 'unwraps the exception PowerShell wraps around a .NET method call before it decides' {
+            $inner = New-Object System.UnauthorizedAccessException -ArgumentList 'STUB: denied'
+            $outer = New-Object System.Management.Automation.MethodInvocationException -ArgumentList 'STUB: outer', $inner
+            $f = Get-AdfaGpoFileFailure -Exception $outer
+            $f.Class | Should -Be 'AccessDenied'
+            $f.ErrorType | Should -Be 'System.UnauthorizedAccessException'
+            $f.Error | Should -Be 'STUB: denied'
+            $net = New-Object System.IO.IOException -ArgumentList 'STUB: The network path was not found.', ([int]0x80070035)
+            $g = Get-AdfaGpoFileFailure -Exception (New-Object System.Management.Automation.MethodInvocationException -ArgumentList 'STUB: outer', $net)
+            $g.Class | Should -Be 'Unreachable'
+            $g.HResult | Should -Be ([int]0x80070035)
+            (Get-AdfaGpoFailureLead -Class 'AccessDenied') | Should -Be 'Access denied'
+            (Get-AdfaGpoFailureLead -Class 'Unreachable') | Should -Be 'Unreachable'
+            (Get-AdfaGpoFailureLead -Class 'TimedOut') | Should -Be 'Timed out'
+            (Get-AdfaGpoFailureLead -Class 'NotFound') | Should -Be 'Not found'
+            (Get-AdfaGpoFailureLead -Class 'Error') | Should -Be 'Read failed'
+        }
+    }
+
+    Context 'File seams, run against files this test creates in its own temporary folder (read only)' {
+        BeforeEach {
+            $script:C8Temp = Join-Path ([IO.Path]::GetTempPath()) ("adfa_c8_" + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $script:C8Temp | Out-Null
+        }
+        AfterEach { Remove-Item -LiteralPath $script:C8Temp -Recurse -Force -ErrorAction SilentlyContinue }
+        It 'reads GPT.INI as bytes without changing it, and refuses a file above the size bound at the edge' {
+            $path = Join-Path $script:C8Temp 'GPT.INI'
+            $bytes = New-C8IniBytes -Text (New-C8IniText 65537)
+            [IO.File]::WriteAllBytes($path, $bytes)
+            $before = (Get-Item -LiteralPath $path).LastWriteTimeUtc
+            $r = Get-AdfaGptIniRaw -Path $path -MaxBytes 65536
+            $r.Ok | Should -BeTrue
+            $r.Class | Should -Be 'Read'
+            ([Convert]::ToBase64String([byte[]]$r.Bytes)) | Should -Be ([Convert]::ToBase64String($bytes))
+            (Get-Item -LiteralPath $path).LastWriteTimeUtc | Should -Be $before
+            ([Convert]::ToBase64String([IO.File]::ReadAllBytes($path))) | Should -Be ([Convert]::ToBase64String($bytes))
+            $edge = Join-Path $script:C8Temp 'edge.ini'
+            [IO.File]::WriteAllBytes($edge, [byte[]](1..10))
+            (Get-AdfaGptIniRaw -Path $edge -MaxBytes 10).Ok | Should -BeTrue
+            $over = Get-AdfaGptIniRaw -Path $edge -MaxBytes 9
+            $over.Ok | Should -BeFalse
+            $over.Class | Should -Be 'TooLarge'
+            ($null -eq $over.Bytes) | Should -BeTrue
+        }
+        It 'reads GPT.INI while another handle holds it open for writing, which an open sharing for reading only cannot do' {
+            $path = Join-Path $script:C8Temp 'GPT.INI'
+            $bytes = New-C8IniBytes -Text (New-C8IniText 131073)
+            [IO.File]::WriteAllBytes($path, $bytes)
+            # A writer that shares with readers and writers, as an editor saving the file would be:
+            # a reader opening with FileShare.Read alone is refused while it is open.
+            $writer = New-Object System.IO.FileStream -ArgumentList $path, ([IO.FileMode]::Open), ([IO.FileAccess]::ReadWrite), ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            try {
+                $r = Get-AdfaGptIniRaw -Path $path -MaxBytes 65536
+                $r.Class | Should -Be 'Read' -Because ("a read-only open must not be refused by a writer that shares; got: {0} {1}" -f $r.ErrorType, $r.Error)
+                ([Convert]::ToBase64String([byte[]]$r.Bytes)) | Should -Be ([Convert]::ToBase64String($bytes))
+            }
+            finally { $writer.Dispose() }
+            # Non-vacuity: this writer really does refuse an open that shares for reading only.
+            # Share modes are enforced by Windows only; .NET on Unix enforces FileShare.None alone
+            # (an advisory lock) and ignores the other flags, so the refusal cannot be shown there.
+            # The tool reads SYSVOL from Windows hosts only, so the check runs where it is meaningful.
+            if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+                $writer = New-Object System.IO.FileStream -ArgumentList $path, ([IO.FileMode]::Open), ([IO.FileAccess]::ReadWrite), ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+                try {
+                    $refused = $false
+                    try { ([IO.File]::OpenRead($path)).Dispose() } catch { $refused = $true }
+                    $refused | Should -BeTrue
+                }
+                finally { $writer.Dispose() }
+            }
+            ([Convert]::ToBase64String([IO.File]::ReadAllBytes($path))) | Should -Be ([Convert]::ToBase64String($bytes))
+        }
+        It 'reports a missing file and a missing folder as not found, never throwing' {
+            $missing = Get-AdfaGptIniRaw -Path (Join-Path $script:C8Temp 'nope\GPT.INI') -MaxBytes 65536
+            $missing.Ok | Should -BeFalse
+            $missing.Class | Should -Be 'NotFound'
+            $missing.ErrorType | Should -Match 'NotFoundException$'
+            $nofile = Get-AdfaGptIniRaw -Path (Join-Path $script:C8Temp 'GPT.INI') -MaxBytes 65536
+            $nofile.Class | Should -Be 'NotFound'
+            $list = Get-AdfaSysvolPolicyFolderRaw -Path (Join-Path $script:C8Temp 'Policies')
+            $list.Ok | Should -BeFalse
+            $list.Class | Should -Be 'NotFound'
+        }
+        It 'lists the folder names under Policies, GUIDs and others alike' {
+            $policies = Join-Path $script:C8Temp 'Policies'
+            foreach ($n in @($script:C8G1, $script:C8G2, 'PolicyDefinitions')) { New-Item -ItemType Directory -Path (Join-Path $policies $n) -Force | Out-Null }
+            [IO.File]::WriteAllText((Join-Path $policies 'readme.txt'), 'x')
+            $list = Get-AdfaSysvolPolicyFolderRaw -Path $policies
+            $list.Ok | Should -BeTrue
+            # Declared population: three folders; the file is not a folder.
+            (@($list.Names | Sort-Object) -join ',') | Should -Be ((@($script:C8G1, $script:C8G2, 'PolicyDefinitions') | Sort-Object) -join ',')
+        }
+    }
+
+    Context 'Get-AdfaGpoContainerRaw (the directory seam)' {
+        BeforeEach { $script:C8Asked = @() }
+        It 'finds the PDC, then reads the containers one level under CN=Policies,CN=System from it, asking for the named attributes only' {
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction)
+                $script:C8Asked += ("Get-ADDomain|{0}|{1}" -f $Identity, $Server)
+                [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; PDCEmulator = $script:C8Pdc; DNSRoot = 'contoso.com' } }
+            function Get-ADObject { param([string]$LDAPFilter, [string]$Server, [string]$SearchBase, [string]$SearchScope, [string[]]$Properties, $Credential, $ErrorAction)
+                $script:C8Asked += ("Get-ADObject|{0}|{1}|{2}|{3}|{4}" -f $Server, $LDAPFilter, $SearchBase, $SearchScope, ($Properties -join ','))
+                [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Policies,CN=System,DC=contoso,DC=com" -f $script:C8G1); Name = $script:C8G1; ObjectClass = 'groupPolicyContainer'
+                    versionNumber = [int]-2147418111; gPCFileSysPath = ("\\contoso.com\sysvol\contoso.com\Policies\{0}" -f $script:C8G1); displayName = 'Default Domain Policy'; flags = 0 }
+                [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Policies,CN=System,DC=contoso,DC=com" -f $script:C8G2); Name = $script:C8G2; ObjectClass = 'groupPolicyContainer'; displayName = '<script>' } }
+            $raw = Get-AdfaGpoContainerRaw -DomainName 'contoso.com' -AdParams @{ Server = 'dc9.contoso.com' } -Config $script:Gc
+            ($script:C8Asked -join ' ; ') | Should -Be 'Get-ADDomain|contoso.com|dc9.contoso.com ; Get-ADObject|dc1.contoso.com|(objectClass=groupPolicyContainer)|CN=Policies,CN=System,DC=contoso,DC=com|OneLevel|versionNumber,gPCFileSysPath,displayName,flags'
+            $raw.Ok | Should -BeTrue
+            $raw.Pdc | Should -Be $script:C8Pdc
+            # Declared population: two containers.
+            @($raw.Containers).Count | Should -Be 2
+            $raw.Containers[0].Guid | Should -Be $script:C8G1
+            $raw.Containers[0].Version | Should -Be ([int]-2147418111)
+            $raw.Containers[1].DisplayName | Should -Be '<script>'
+            ($null -eq $raw.Containers[1].Version) | Should -BeTrue
+            ($null -eq $raw.Containers[1].FileSysPath) | Should -BeTrue
+        }
+        It 'reports a PDC that could not be found and a container query that failed, with their types, never throwing' {
+            function Get-ADDomain { param([string]$Identity, $ErrorAction) throw [System.UnauthorizedAccessException]'STUB: domain refused' }
+            function Get-ADObject { param([string]$LDAPFilter, [string]$Server, [string]$SearchBase, [string]$SearchScope, [string[]]$Properties, $ErrorAction) $script:C8Asked += 'object' }
+            $noPdc = Get-AdfaGpoContainerRaw -DomainName 'contoso.com' -AdParams @{} -Config $script:Gc
+            $noPdc.Ok | Should -BeFalse
+            $noPdc.Pdc | Should -Be ''
+            $noPdc.PdcError | Should -Match 'STUB: domain refused'
+            $noPdc.PdcErrorType | Should -Be 'System.UnauthorizedAccessException'
+            @($script:C8Asked).Count | Should -Be 0
+            function Get-ADDomain { param([string]$Identity, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; PDCEmulator = '' } }
+            (Get-AdfaGpoContainerRaw -DomainName 'contoso.com' -AdParams @{} -Config $script:Gc).PdcError | Should -Match 'no PDCEmulator'
+            # A PDC but no DN: no container query is sent with the search base 'CN=Policies,CN=System,'.
+            function Get-ADDomain { param([string]$Identity, $ErrorAction) [pscustomobject]@{ PDCEmulator = $script:C8Pdc; DNSRoot = 'contoso.com' } }
+            $noDn = Get-AdfaGpoContainerRaw -DomainName 'contoso.com' -AdParams @{} -Config $script:Gc
+            $noDn.Ok | Should -BeFalse
+            $noDn.Pdc | Should -Be ''
+            $noDn.PdcError | Should -Match 'no DistinguishedName'
+            @($script:C8Asked).Count | Should -Be 0
+            $noDnRows = @(Get-C8Rows -Raw $noDn -Sysvol $null)
+            $noDnRows.Count | Should -Be 1
+            $noDnRows[0].Detail | Should -Match 'the PDC emulator of contoso\.com could not be identified'
+            function Get-ADDomain { param([string]$Identity, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; PDCEmulator = $script:C8Pdc } }
+            function Get-ADObject { param([string]$LDAPFilter, [string]$Server, [string]$SearchBase, [string]$SearchScope, [string[]]$Properties, $ErrorAction) throw [System.TimeoutException]'STUB: slow' }
+            $slow = Get-AdfaGpoContainerRaw -DomainName 'contoso.com' -AdParams @{} -Config $script:Gc
+            $slow.Ok | Should -BeFalse
+            $slow.Pdc | Should -Be $script:C8Pdc
+            $slow.ErrorType | Should -Be 'System.TimeoutException'
+        }
+        It 'asks nothing when the property list holds a wildcard, a blank or is empty' {
+            function Get-ADDomain { param([string]$Identity, $ErrorAction) $script:C8Asked += 'domain'; [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; PDCEmulator = $script:C8Pdc } }
+            function Get-ADObject { param([string]$LDAPFilter, [string]$Server, [string]$SearchBase, [string]$SearchScope, [string[]]$Properties, $ErrorAction) $script:C8Asked += 'object' }
+            foreach ($bad in @(@('versionNumber', '*'), @('versionNumber', ' '), @())) {
+                $cfg = @{}
+                foreach ($k in @($script:Gc.Keys)) { $cfg[$k] = $script:Gc[$k] }
+                $cfg['ContainerProperties'] = $bad
+                $raw = Get-AdfaGpoContainerRaw -DomainName 'contoso.com' -AdParams @{} -Config $cfg
+                $raw.Ok | Should -BeFalse
+                $raw.Refused | Should -BeTrue
+            }
+            @($script:C8Asked).Count | Should -Be 0
+        }
+    }
+
+    Context 'Get-AdfaGpoSysvolRaw (the SYSVOL seam)' {
+        BeforeEach {
+            $script:C8Calls = @()
+            $script:C8PortAnswer = $true
+            function Test-AdfaDcPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C8Calls += ("probe|{0}|{1}" -f $ComputerName, $Port); $script:C8PortAnswer }
+            function Get-AdfaGptIniRaw { param([string]$Path, [int]$MaxBytes) $script:C8Calls += ("read|{0}" -f $Path); New-C8Ini 65537 }
+        }
+        It 'probes SMB on the PDC once, lists the Policies folder, then reads each GPT.INI whose folder is listed' {
+            function Get-AdfaSysvolPolicyFolderRaw { param([string]$Path) $script:C8Calls += ("list|{0}" -f $Path); [pscustomobject]@{ Ok = $true; Class = 'Read'; Names = @($script:C8G1.ToLowerInvariant(), $script:C8G2, 'PolicyDefinitions'); Error = ''; ErrorType = ''; HResult = 0; Path = $Path } }
+            $targets = @(
+                [pscustomobject]@{ Guid = $script:C8G1; IniPath = ("{0}\{1}\GPT.INI" -f $script:C8Policies, $script:C8G1) }
+                [pscustomobject]@{ Guid = $script:C8G2; IniPath = ("{0}\{1}\GPT.INI" -f $script:C8Policies, $script:C8G2) }
+                [pscustomobject]@{ Guid = $script:C8G3; IniPath = ("{0}\{1}\GPT.INI" -f $script:C8Policies, $script:C8G3) }
+            )
+            $s = Get-AdfaGpoSysvolRaw -Pdc $script:C8Pdc -Domain 'contoso.com' -Targets $targets -Config $script:Gc
+            $s.PortOk | Should -BeTrue
+            # Declared population: one probe, one listing, two reads - G3's folder is not listed, so it is not read.
+            ($script:C8Calls -join ' ; ') | Should -Be ("probe|dc1.contoso.com|445 ; list|{0} ; read|{0}\{1}\GPT.INI ; read|{0}\{2}\GPT.INI" -f $script:C8Policies, $script:C8G1, $script:C8G2)
+            @($s.Reads.Keys).Count | Should -Be 2
+            $s.Reads[$script:C8G1].Ok | Should -BeTrue
+            $s.Reads.ContainsKey($script:C8G3) | Should -BeFalse
+        }
+        It 'reads nothing when the PDC does not answer on SMB, and still reads each file when the listing alone failed' {
+            function Get-AdfaSysvolPolicyFolderRaw { param([string]$Path) $script:C8Calls += 'list'; [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Names = @(); Error = 'STUB: denied'; ErrorType = 'System.UnauthorizedAccessException'; HResult = 0; Path = $Path } }
+            $targets = @([pscustomobject]@{ Guid = $script:C8G1; IniPath = 'x1' }, [pscustomobject]@{ Guid = $script:C8G2; IniPath = 'x2' })
+            $script:C8PortAnswer = $false
+            $closed = Get-AdfaGpoSysvolRaw -Pdc $script:C8Pdc -Domain 'contoso.com' -Targets $targets -Config $script:Gc
+            $closed.PortOk | Should -BeFalse
+            ($null -eq $closed.Listing) | Should -BeTrue
+            ($script:C8Calls -join ',') | Should -Be 'probe|dc1.contoso.com|445'
+            @($closed.Reads.Keys).Count | Should -Be 0
+            $script:C8Calls = @()
+            $script:C8PortAnswer = $true
+            $denied = Get-AdfaGpoSysvolRaw -Pdc $script:C8Pdc -Domain 'contoso.com' -Targets $targets -Config $script:Gc
+            $denied.Listing.Ok | Should -BeFalse
+            ($script:C8Calls -join ',') | Should -Be 'probe|dc1.contoso.com|445,list,read|x1,read|x2'
+            @($denied.Reads.Keys).Count | Should -Be 2
+        }
+        It 'reads no GPT.INI after a listing that failed as unreachable, timed out, not found or an error not interpreted' {
+            $script:C8ListClass = ''
+            function Get-AdfaSysvolPolicyFolderRaw { param([string]$Path) $script:C8Calls += 'list'; [pscustomobject]@{ Ok = $false; Class = $script:C8ListClass; Names = @(); Error = 'STUB'; ErrorType = 'System.IO.IOException'; HResult = 0; Path = $Path } }
+            $targets = @([pscustomobject]@{ Guid = $script:C8G1; IniPath = 'x1' }, [pscustomobject]@{ Guid = $script:C8G2; IniPath = 'x2' }, [pscustomobject]@{ Guid = $script:C8G3; IniPath = 'x3' })
+            $classes = @('Unreachable', 'TimedOut', 'NotFound', 'Error')
+            # Declared population: the four listing classes after which no file is read.
+            $classes.Count | Should -Be 4
+            (@($script:Gc['ReadFilesAfterListingClass']) -join ',') | Should -Be 'AccessDenied'
+            foreach ($class in $classes) {
+                $script:C8Calls = @()
+                $script:C8ListClass = $class
+                $s = Get-AdfaGpoSysvolRaw -Pdc $script:C8Pdc -Domain 'contoso.com' -Targets $targets -Config $script:Gc
+                ($script:C8Calls -join ',') | Should -Be 'probe|dc1.contoso.com|445,list' -Because $class
+                @($s.Reads.Keys).Count | Should -Be 0 -Because $class
+                $s.Listing.Class | Should -Be $class
+                # Every GPO is then Not Assessed with the listing's class, never as a defect in the tool.
+                $containers = @((New-C8Container -Guid $script:C8G1), (New-C8Container -Guid $script:C8G2), (New-C8Container -Guid $script:C8G3))
+                $rows = @(Get-C8Rows -Raw (New-C8Raw -Containers $containers) -Sysvol $s)
+                $rows.Count | Should -Be 5 -Because $class
+                foreach ($g in @($script:C8G1, $script:C8G2, $script:C8G3)) {
+                    $r = Get-C8Row $rows ("GPO version: {0}" -f $g)
+                    $r.Status | Should -Be 'Not Assessed' -Because "$class $g"
+                    $r.Detail | Should -Match ('^{0}: \\\\dc1\.contoso\.com\\SYSVOL\\contoso\.com\\Policies could not be listed on dc1\.contoso\.com, so GPT\.INI of this GPO was not read' -f (Get-AdfaGpoFailureLead -Class $class)) -Because "$class $g"
+                    $r.Detail | Should -Not -Match 'defect in the tool' -Because "$class $g"
+                    $r.Evidence | Should -Be 'directory' -Because "$class $g"
+                }
+                (Get-C8Row $rows 'GPO version summary: contoso.com').Evidence | Should -Be 'directory' -Because $class
+            }
+        }
+    }
+
+    Context 'Domain rows (pure): one domain''s reads to rows' {
+        It 'normal data: one row per GPO that differs, none for one that agrees, and a summary with the declared population' {
+            $containers = @((New-C8Container -Guid $script:C8G1), (New-C8Container -Guid $script:C8G2 -Name 'Default Domain Controllers Policy'), (New-C8Container -Guid $script:C8G3 -Version 131073 -Name $script:C8Hostile))
+            $reads = @{ $script:C8G1 = (New-C8Ini 65537); $script:C8G2 = (New-C8Ini 65537 -Encoding 'Utf16Bom'); $script:C8G3 = (New-C8Ini 65537) }
+            $rows = @(Get-C8Rows -Raw (New-C8Raw -Containers $containers) -Sysvol (New-C8Sysvol -Names @($script:C8G1, $script:C8G2, $script:C8G3, 'PolicyDefinitions') -Reads $reads))
+            # Declared population: the one mismatched GPO and the summary.
+            $rows.Count | Should -Be 2
+            $m = Get-C8Row $rows ("GPO version: {0}" -f $script:C8G3)
+            $m.Status | Should -Be 'Warning'
+            $m.Scope | Should -Be 'contoso.com'
+            $m.Area | Should -Be 'GPO'
+            $m.GPOName | Should -Be $script:C8Hostile
+            $m.GpoGuid | Should -Be $script:C8G3
+            $m.ReadFrom | Should -Be $script:C8Pdc
+            $m.DsVersion | Should -Be '131073'
+            $m.SysvolVersion | Should -Be '65537'
+            $m.DsUser | Should -Be '2'
+            $m.SysvolUser | Should -Be '1'
+            $m.DsComputer | Should -Be '1'
+            $m.SysvolComputer | Should -Be '1'
+            $m.Flags | Should -Be '0'
+            $m.FlagsLabel | Should -Be 'enabled'
+            $m.Encoding | Should -Be 'ANSI (no BOM)'
+            $m.GptIniPath | Should -Be ("{0}\{1}\GPT.INI" -f $script:C8Policies, $script:C8G3)
+            $m.Detail | Should -Match 'the user half differs'
+            $m.Evidence | Should -Be 'directory and SYSVOL'
+            $s = Get-C8Row $rows 'GPO version summary: contoso.com'
+            $s.Evidence | Should -Be 'directory and SYSVOL'
+            $s.Status | Should -Be 'Warning'
+            $s.Population | Should -Be '3'
+            $s.Compared | Should -Be '3'
+            $s.Mismatched | Should -Be '1'
+            $s.NotAssessedCount | Should -Be '0'
+            $s.FoldersWithoutContainer | Should -Be '0'
+            $s.Detail | Should -Match '1 folder\(s\) of the Policies folder whose name is not a GPO GUID'
+            # The display name is free text: it is in GPOName and nowhere the advice is chosen from.
+            foreach ($r in $rows) {
+                $r.Item | Should -Not -Match 'script|krbtgt' -Because $r.Item
+                $r.Detail | Should -Not -Match 'script|krbtgt|Backup' -Because $r.Item
+            }
+            $all = @(Get-C8Rows -Raw (New-C8Raw -Containers @($containers[0], $containers[1])) -Sysvol (New-C8Sysvol -Names @($script:C8G1, $script:C8G2) -Reads $reads))
+            $all.Count | Should -Be 1
+            $all[0].Status | Should -Be 'Pass'
+            $all[0].Population | Should -Be '2'
+            $all[0].Compared | Should -Be '2'
+        }
+        It 'empty data: no container visible is Not Assessed, never Pass, and every listed GUID folder is a folder without a container' {
+            $rows = @(Get-C8Rows -Raw (New-C8Raw -Containers @()) -Sysvol (New-C8Sysvol -Names @($script:C8G1, 'PolicyDefinitions')))
+            $rows.Count | Should -Be 2
+            $s = Get-C8Row $rows 'GPO version summary: contoso.com'
+            $s.Status | Should -Be 'Not Assessed'
+            $s.Population | Should -Be '0'
+            $s.Detail | Should -Match 'not a clean result'
+            $o = Get-C8Row $rows ("GPO folder without container: {0}" -f $script:C8G1)
+            $o.Status | Should -Be 'Warning'
+            $o.Detail | Should -Match 'no container visible to this account'
+            $o.Evidence | Should -Be 'SYSVOL'
+            $s.Evidence | Should -Be 'directory and SYSVOL' -Because 'the Policies folder was listed'
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+            # No container and SMB silent: nothing in SYSVOL was read, and the summary does not say it was.
+            $closed = @(Get-C8Rows -Raw (New-C8Raw -Containers @()) -Sysvol (New-C8Sysvol -PortOk $false))
+            $closed.Count | Should -Be 2
+            (Get-C8Row $closed 'GPO version summary: contoso.com').Evidence | Should -Be 'directory'
+            (Get-C8Row $closed 'GPO version summary: contoso.com').Status | Should -Be 'Not Assessed'
+        }
+        It 'unreachable DC: every GPO, the listing and the summary are Not Assessed as Unreachable, and none is Pass' {
+            $containers = @((New-C8Container -Guid $script:C8G1), (New-C8Container -Guid $script:C8G2))
+            $rows = @(Get-C8Rows -Raw (New-C8Raw -Containers $containers) -Sysvol (New-C8Sysvol -PortOk $false))
+            # Declared population: two GPOs, the listing row and the summary.
+            $rows.Count | Should -Be 4
+            foreach ($g in @($script:C8G1, $script:C8G2)) {
+                $r = Get-C8Row $rows ("GPO version: {0}" -f $g)
+                $r.Status | Should -Be 'Not Assessed' -Because $g
+                $r.Detail | Should -Match '^Unreachable: port 445 \(SMB\) of dc1\.contoso\.com did not answer' -Because $g
+                $r.DsVersion | Should -Be '65537' -Because 'the directory half was read'
+                $r.SysvolVersion | Should -Be '' -Because 'an unmeasured number is empty, never 0'
+                $r.Evidence | Should -Be 'directory' -Because 'only the directory half was measured'
+            }
+            (Get-C8Row $rows 'GPO folder listing: contoso.com').Detail | Should -Match '^Unreachable: '
+            (Get-C8Row $rows 'GPO folder listing: contoso.com').Evidence | Should -Be 'none'
+            $s = Get-C8Row $rows 'GPO version summary: contoso.com'
+            $s.Evidence | Should -Be 'directory' -Because 'nothing in SYSVOL was read'
+            $s.Status | Should -Be 'Not Assessed'
+            $s.NotAssessedCount | Should -Be '2'
+            $s.Compared | Should -Be '0'
+            $s.FoldersWithoutContainer | Should -Be ''
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'access denied: reported as access denied, never as unreachable, on the files and on the listing' {
+            $containers = @((New-C8Container -Guid $script:C8G1), (New-C8Container -Guid $script:C8G2))
+            $reads = @{ $script:C8G1 = (New-C8Read -Class 'AccessDenied' -Err 'STUB: Access is denied.' -Type 'System.UnauthorizedAccessException'); $script:C8G2 = (New-C8Read -Class 'AccessDenied' -Err 'STUB: Access is denied.' -Type 'System.UnauthorizedAccessException') }
+            $rows = @(Get-C8Rows -Raw (New-C8Raw -Containers $containers) -Sysvol (New-C8Sysvol -Names $null -ListingClass 'AccessDenied' -ListingError 'STUB: denied' -ListingType 'System.UnauthorizedAccessException' -Reads $reads))
+            $rows.Count | Should -Be 4
+            foreach ($g in @($script:C8G1, $script:C8G2)) {
+                $r = Get-C8Row $rows ("GPO version: {0}" -f $g)
+                $r.Status | Should -Be 'Not Assessed'
+                $r.Detail | Should -Match '^Access denied: '
+                $r.Detail | Should -Not -Match '^Unreachable'
+                $r.Detail | Should -Match '-Credential is not passed'
+                $r.Detail | Should -Match 'System\.UnauthorizedAccessException'
+            }
+            (Get-C8Row $rows 'GPO folder listing: contoso.com').Detail | Should -Match '^Access denied: '
+            (Get-C8Row $rows 'GPO version summary: contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C8Row $rows 'GPO version summary: contoso.com').Evidence | Should -Be 'directory' -Because 'no listing and no GPT.INI was read'
+        }
+        It 'mixed result: each cause in its own words - agreed, differs, GPT.INI absent, folder absent, not parsed, versionNumber not returned, path not trusted, too large' {
+            $containers = @(
+                (New-C8Container -Guid $script:C8G1)
+                (New-C8Container -Guid $script:C8G2 -Version 65538)
+                (New-C8Container -Guid $script:C8G3)
+                (New-C8Container -Guid $script:C8G4)
+                (New-C8Container -Guid $script:C8G5)
+                (New-C8Container -Guid $script:C8G6 -Version $null)
+                (New-C8Container -Guid $script:C8G7 -FileSysPath ("\\fileserver.fabrikam.com\share\{0}" -f $script:C8G7))
+            )
+            $reads = @{
+                $script:C8G1 = (New-C8Ini 65537)
+                $script:C8G2 = (New-C8Ini 65537)
+                $script:C8G3 = (New-C8Read -Class 'NotFound' -Err 'STUB: not found' -Type 'System.IO.FileNotFoundException')
+                $script:C8G5 = (New-C8Read -Bytes (New-C8IniBytes -Text "[Other]`r`nVersion=1`r`n"))
+                $script:C8G6 = (New-C8Ini 65537)
+            }
+            $listed = @($script:C8G1, $script:C8G2, $script:C8G3, $script:C8G5, $script:C8G6, $script:C8G7, $script:C8Orphan, 'PolicyDefinitions')
+            $rows = @(Get-C8Rows -Raw (New-C8Raw -Containers $containers) -Sysvol (New-C8Sysvol -Names $listed -Reads $reads))
+            # Declared population: six GPO rows (G1 agrees and has none), one folder without a container, the summary.
+            $rows.Count | Should -Be 8
+            (Get-C8Row $rows ("GPO version: {0}" -f $script:C8G1)) | Should -BeNullOrEmpty
+            $expect = [ordered]@{
+                $script:C8G2 = @{ Status = 'Warning'; Lead = '^Version mismatch on dc1\.contoso\.com: .*the computer half differs' }
+                $script:C8G3 = @{ Status = 'Not Assessed'; Lead = '^Not found: the GPO''s folder is on dc1\.contoso\.com but holds no GPT\.INI' }
+                $script:C8G4 = @{ Status = 'Not Assessed'; Lead = '^Not found: the GPO''s folder is not in .* on dc1\.contoso\.com.*orphaned container' }
+                $script:C8G5 = @{ Status = 'Not Assessed'; Lead = '^Not parsed: GPT\.INI on dc1\.contoso\.com was read .*no \[General\] section' }
+                $script:C8G6 = @{ Status = 'Not Assessed'; Lead = '^Not returned: versionNumber of this GPO''s container was not returned' }
+                $script:C8G7 = @{ Status = 'Not Assessed'; Lead = '^Not assessed: gPCFileSysPath is not the path MS-GPOL defines' }
+            }
+            foreach ($g in @($expect.Keys)) {
+                $r = Get-C8Row $rows ("GPO version: {0}" -f $g)
+                $r | Should -Not -BeNullOrEmpty -Because $g
+                $r.Status | Should -Be $expect[$g]['Status'] -Because $g
+                $r.Detail | Should -Match $expect[$g]['Lead'] -Because $g
+            }
+            # The host the directory named is never read, and is not in Detail; it is in its own column.
+            (Get-C8Row $rows ("GPO version: {0}" -f $script:C8G7)).Detail | Should -Not -Match 'fabrikam'
+            (Get-C8Row $rows ("GPO version: {0}" -f $script:C8G7)).FileSysPath | Should -Match 'fabrikam'
+            (Get-C8Row $rows ("GPO version: {0}" -f $script:C8G7)).GptIniPath | Should -Be ''
+            # G6 had no directory version but its file was read: the SYSVOL number is still shown.
+            (Get-C8Row $rows ("GPO version: {0}" -f $script:C8G6)).SysvolVersion | Should -Be '65537'
+            # Evidence names what was measured on each row.
+            $evidence = [ordered]@{ $script:C8G2 = 'directory and SYSVOL'; $script:C8G3 = 'directory'; $script:C8G6 = 'SYSVOL'; $script:C8G7 = 'directory' }
+            foreach ($g in @($evidence.Keys)) { (Get-C8Row $rows ("GPO version: {0}" -f $g)).Evidence | Should -Be $evidence[$g] -Because $g }
+            $o = Get-C8Row $rows ("GPO folder without container: {0}" -f $script:C8Orphan)
+            $o.Status | Should -Be 'Warning'
+            $o.GpoGuid | Should -Be $script:C8Orphan
+            $s = Get-C8Row $rows 'GPO version summary: contoso.com'
+            $s.Status | Should -Be 'Warning'
+            $s.Population | Should -Be '7'
+            $s.Compared | Should -Be '2'
+            $s.Mismatched | Should -Be '1'
+            $s.NotAssessedCount | Should -Be '5'
+            $s.FoldersWithoutContainer | Should -Be '1'
+            # Every distinct cause leads with its own words.
+            @($rows | Where-Object { $_.Item -like 'GPO version: *' } | ForEach-Object { ($_.Detail -split ':')[0] } | Sort-Object -Unique).Count | Should -Be 5
+        }
+        It 'a GPT.INI that is too large, unreachable, timed out or failed otherwise is Not Assessed with the class in front' {
+            $cases = [ordered]@{
+                'TooLarge'    = '^Not read: GPT\.INI on dc1\.contoso\.com is larger than 65536 bytes'
+                'Unreachable' = '^Unreachable: '
+                'TimedOut'    = '^Timed out: '
+                'Error'       = '^Read failed: '
+                'NotFound'    = '^Not found: '
+            }
+            # Declared population: five classes.
+            @($cases.Keys).Count | Should -Be 5
+            foreach ($k in @($cases.Keys)) {
+                $rows = @(Get-C8Rows -Raw (New-C8Raw -Containers @(New-C8Container -Guid $script:C8G1)) -Sysvol (New-C8Sysvol -Names $null -ListingClass 'Error' -Reads @{ $script:C8G1 = (New-C8Read -Class $k -Err 'STUB' -Type 'System.IO.IOException') }))
+                $r = Get-C8Row $rows ("GPO version: {0}" -f $script:C8G1)
+                $r.Status | Should -Be 'Not Assessed' -Because $k
+                $r.Detail | Should -Match $cases[$k] -Because $k
+            }
+            $nf = Get-C8Row (Get-C8Rows -Raw (New-C8Raw -Containers @(New-C8Container -Guid $script:C8G1)) -Sysvol (New-C8Sysvol -Names $null -ListingClass 'Error' -Reads @{ $script:C8G1 = (New-C8Read -Class 'NotFound') })) ("GPO version: {0}" -f $script:C8G1)
+            $nf.Detail | Should -Match 'whether the GPO''s folder exists is not known'
+        }
+        It 'a failed directory read gives one summary row, worded by class, and looks at no SYSVOL folder' {
+            $cases = [ordered]@{
+                'Microsoft.ActiveDirectory.Management.ADServerDownException' = '^Unreachable: '
+                'System.UnauthorizedAccessException'                         = '^Access denied: '
+                'System.TimeoutException'                                    = '^Timed out: '
+                'System.InvalidOperationException'                           = '^Read failed: '
+            }
+            # Declared population: four exception types.
+            @($cases.Keys).Count | Should -Be 4
+            foreach ($t in @($cases.Keys)) {
+                $rows = @(Get-C8Rows -Raw (New-C8Raw -Ok $false -Err 'STUB: query' -Type $t) -Sysvol $null)
+                $rows.Count | Should -Be 1 -Because $t
+                $rows[0].Item | Should -Be 'GPO version summary: contoso.com'
+                $rows[0].Status | Should -Be 'Not Assessed' -Because $t
+                $rows[0].Detail | Should -Match $cases[$t] -Because $t
+                $rows[0].Detail | Should -Match 'not a clean result'
+                $rows[0].Population | Should -Be '' -Because 'a population that was not read is empty, never 0'
+                $rows[0].Evidence | Should -Be 'none' -Because $t
+            }
+            $noPdc = @(Get-C8Rows -Raw (New-C8Raw -Ok $false -Pdc '' -PdcError 'STUB: down' -PdcType 'Microsoft.ActiveDirectory.Management.ADServerDownException') -Sysvol $null)
+            $noPdc.Count | Should -Be 1
+            $noPdc[0].Detail | Should -Match '^Unreachable: the PDC emulator of contoso\.com could not be identified'
+            $refused = @(Get-C8Rows -Raw (New-C8Raw -Ok $false -Refused $true -Err 'list refused') -Sysvol $null)
+            $refused[0].Status | Should -Be 'Not Assessed'
+            $refused[0].Detail | Should -Match 'defect in the tool'
+        }
+        It 'reads the directory half as 32 bits: a negative Int32 versionNumber equal to GPT.INI is no mismatch' {
+            $rows = @(Get-C8Rows -Raw (New-C8Raw -Containers @(New-C8Container -Guid $script:C8G1 -Version ([int]-2147418111) -Flags 1)) -Sysvol (New-C8Sysvol -Names @($script:C8G1) -Reads @{ $script:C8G1 = (New-C8Ini 2147549185) }))
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Pass'
+            $other = @(Get-C8Rows -Raw (New-C8Raw -Containers @(New-C8Container -Guid $script:C8G1 -Version ([int]-2147418111) -Flags 1)) -Sysvol (New-C8Sysvol -Names @($script:C8G1) -Reads @{ $script:C8G1 = (New-C8Ini 2147549184) }))
+            $r = Get-C8Row $other ("GPO version: {0}" -f $script:C8G1)
+            $r.DsVersion | Should -Be '2147549185'
+            $r.DsUser | Should -Be '32769'
+            $r.FlagsLabel | Should -Be 'user settings disabled'
+        }
+        It 'labels flags only from the four MS-GPOL values: other bits are named as not interpreted, and flags not returned are empty' {
+            $cases = [ordered]@{
+                'enabled (0)'          = @{ Flags = 0; Number = '0'; Label = 'enabled' }
+                'all disabled (3)'     = @{ Flags = 3; Number = '3'; Label = 'all settings disabled' }
+                'another bit (4)'      = @{ Flags = 4; Number = '4'; Label = 'other bits set (not interpreted)' }
+                'bits beyond (7)'      = @{ Flags = 7; Number = '7'; Label = 'other bits set (not interpreted)' }
+                'not returned'         = @{ Flags = $null; Number = ''; Label = '' }
+            }
+            # Declared population: five flags values.
+            @($cases.Keys).Count | Should -Be 5
+            foreach ($k in @($cases.Keys)) {
+                # The versions differ, so a row is written and its flags columns can be read.
+                $rows = @(Get-C8Rows -Raw (New-C8Raw -Containers @(New-C8Container -Guid $script:C8G1 -Version 131073 -Flags $cases[$k]['Flags'])) -Sysvol (New-C8Sysvol -Names @($script:C8G1) -Reads @{ $script:C8G1 = (New-C8Ini 65537) }))
+                $r = Get-C8Row $rows ("GPO version: {0}" -f $script:C8G1)
+                $r | Should -Not -BeNullOrEmpty -Because $k
+                $r.Flags | Should -Be $cases[$k]['Number'] -Because $k
+                $r.FlagsLabel | Should -Be $cases[$k]['Label'] -Because $k
+            }
+        }
+    }
+
+    Context 'Collector: Get-AdfaGpoVersion' {
+        BeforeEach {
+            $script:C8Domains = @()
+            $script:C8Sysvols = @()
+        }
+        It 'gives every scoped domain its own rows, reading each domain once and its own PDC''s SYSVOL' {
+            function Get-AdfaGpoContainerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config)
+                $script:C8Domains += $DomainName
+                $pdc = ("dc1.{0}" -f $DomainName)
+                $version = 65537
+                if ($DomainName -eq 'north.contoso.com') { $version = 131073 }
+                New-C8Raw -Pdc $pdc -Containers @((New-C8Container -Guid $script:C8G1 -Domain $DomainName), (New-C8Container -Guid $script:C8G2 -Domain $DomainName -Version $version)) }
+            function Get-AdfaGpoSysvolRaw { param([string]$Pdc, [string]$Domain, $Targets, [hashtable]$Config)
+                $script:C8Sysvols += ("{0}|{1}|{2}" -f $Pdc, $Domain, (@($Targets | ForEach-Object { $_.IniPath }) -join ';'))
+                $s = New-C8Sysvol -Names @($script:C8G1, $script:C8G2) -Reads @{ $script:C8G1 = (New-C8Ini 65537); $script:C8G2 = (New-C8Ini 65537) }
+                $s.Pdc = $Pdc
+                $s }
+            $rows = @(Get-AdfaGpoVersion -Domains @('contoso.com', 'north.contoso.com', 'south.contoso.com', 'north.contoso.com') -AdParams @{} -Config $script:Gc)
+            # Declared population: three distinct domains; north has one mismatch.
+            ($script:C8Domains -join ',') | Should -Be 'contoso.com,north.contoso.com,south.contoso.com'
+            $script:C8Sysvols.Count | Should -Be 3
+            $script:C8Sysvols[1] | Should -Be ("dc1.north.contoso.com|north.contoso.com|\\dc1.north.contoso.com\SYSVOL\north.contoso.com\Policies\{0}\GPT.INI;\\dc1.north.contoso.com\SYSVOL\north.contoso.com\Policies\{1}\GPT.INI" -f $script:C8G1, $script:C8G2)
+            $rows.Count | Should -Be 4
+            foreach ($d in @('contoso.com', 'north.contoso.com', 'south.contoso.com')) {
+                @($rows | Where-Object { $_.Scope -eq $d -and $_.Item -eq ("GPO version summary: {0}" -f $d) }).Count | Should -Be 1 -Because $d
+            }
+            (Get-C8Row $rows 'GPO version summary: north.contoso.com').Status | Should -Be 'Warning'
+            (Get-C8Row $rows 'GPO version summary: south.contoso.com').Status | Should -Be 'Pass'
+            @($rows | Where-Object { $_.Scope -eq 'north.contoso.com' -and $_.Item -eq ("GPO version: {0}" -f $script:C8G2) -and $_.ReadFrom -eq $script:C8PdcNorth }).Count | Should -Be 1
+        }
+        It 'does not read SYSVOL for a domain whose directory read failed, and keeps the domains apart in one mixed run' {
+            function Get-AdfaGpoContainerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config)
+                $script:C8Domains += $DomainName
+                switch ($DomainName) {
+                    'north.contoso.com' { return (New-C8Raw -Ok $false -Err 'STUB: down' -Type 'Microsoft.ActiveDirectory.Management.ADServerDownException') }
+                    'south.contoso.com' { return (New-C8Raw -Ok $false -Err 'STUB: refused' -Type 'System.UnauthorizedAccessException') }
+                }
+                New-C8Raw -Containers @(New-C8Container -Guid $script:C8G1) }
+            function Get-AdfaGpoSysvolRaw { param([string]$Pdc, [string]$Domain, $Targets, [hashtable]$Config)
+                $script:C8Sysvols += $Domain
+                New-C8Sysvol -Names @($script:C8G1) -Reads @{ $script:C8G1 = (New-C8Ini 65537) } }
+            $rows = @(Get-AdfaGpoVersion -Domains @('contoso.com', 'north.contoso.com', 'south.contoso.com') -AdParams @{} -Config $script:Gc)
+            ($script:C8Sysvols -join ',') | Should -Be 'contoso.com'
+            $rows.Count | Should -Be 3
+            (Get-C8Row $rows 'GPO version summary: contoso.com').Status | Should -Be 'Pass'
+            (Get-C8Row $rows 'GPO version summary: north.contoso.com').Detail | Should -Match '^Unreachable: '
+            (Get-C8Row $rows 'GPO version summary: south.contoso.com').Detail | Should -Match '^Access denied: '
+        }
+        It 'turns a domain whose handling throws into a Not Assessed summary without stopping the others' {
+            function Get-AdfaGpoContainerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config)
+                if ($DomainName -eq 'contoso.com') { throw 'STUB: defect' }
+                New-C8Raw -Containers @(New-C8Container -Guid $script:C8G1 -Domain $DomainName) }
+            function Get-AdfaGpoSysvolRaw { param([string]$Pdc, [string]$Domain, $Targets, [hashtable]$Config) New-C8Sysvol -Names @($script:C8G1) -Reads @{ $script:C8G1 = (New-C8Ini 65537) } }
+            $rows = @(Get-AdfaGpoVersion -Domains @('contoso.com', 'north.contoso.com') -AdParams @{} -Config $script:Gc)
+            $rows.Count | Should -Be 2
+            $bad = Get-C8Row $rows 'GPO version summary: contoso.com'
+            $bad.Status | Should -Be 'Not Assessed'
+            $bad.Detail | Should -Match 'STUB: defect'
+            $bad.Detail | Should -Match 'defect in the tool'
+            (Get-C8Row $rows 'GPO version summary: north.contoso.com').Status | Should -Be 'Pass'
+        }
+        It 'says so in one row when no domain was scoped, and reads nothing' {
+            function Get-AdfaGpoContainerRaw { param([string]$DomainName, [hashtable]$AdParams, [hashtable]$Config) $script:C8Domains += $DomainName }
+            $rows = @(Get-AdfaGpoVersion -Domains @() -AdParams @{} -Config $script:Gc)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'GPO version (no domain scoped)'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            @($script:C8Domains).Count | Should -Be 0
+        }
+    }
+
+    Context 'Merge-AdfaGpoConfig (the Gpo validator)' {
+        It 'merges the two keys and cites the file for exactly the keys it supplied' {
+            $m = Merge-AdfaGpoConfig -BaseConfig $script:Gc -Override ([pscustomobject]@{ MismatchStatus = 'fail'; OrphanFolderStatus = 'Info' }) -OverrideSource 'C:\cfg\over.json'
+            $m['MismatchStatus'] | Should -Be 'Fail'
+            $m['OrphanFolderStatus'] | Should -Be 'Info'
+            $m['ThresholdSource'] | Should -Match '^C:\\cfg\\over\.json \(loaded \d{4}-\d{2}-\d{2}\) for MismatchStatus, OrphanFolderStatus$'
+            $one = Merge-AdfaGpoConfig -BaseConfig $script:Gc -Override @{ OrphanFolderStatus = 'Warning' } -OverrideSource 'C:\cfg\over.json'
+            $one['ThresholdSource'] | Should -Match 'for OrphanFolderStatus; tool default .*, for MismatchStatus$'
+            [string]$script:Gc['MismatchStatus'] | Should -Be 'Warning'
+            (@($m['ContainerProperties']) -join ',') | Should -Be 'versionNumber,gPCFileSysPath,displayName,flags'
+        }
+        It 'refuses every shape it could not use' {
+            $bad = [ordered]@{
+                'not an object'          = @{ Value = @(1, 2); Expect = 'single object' }
+                'an empty object'        = @{ Value = @{}; Expect = 'empty object' }
+                'the property list'      = @{ Value = @{ ContainerProperties = @('*') }; Expect = "unknown key 'ContainerProperties'" }
+                'the filter'             = @{ Value = @{ ContainerFilter = '(objectClass=*)' }; Expect = "unknown key 'ContainerFilter'" }
+                'the share'              = @{ Value = @{ SysvolShare = 'C$' }; Expect = "unknown key 'SysvolShare'" }
+                'the size bound'         = @{ Value = @{ GptIniMaxBytes = 1 }; Expect = "unknown key 'GptIniMaxBytes'" }
+                'a null'                 = @{ Value = @{ MismatchStatus = $null }; Expect = 'to null' }
+                'mismatch as Pass'       = @{ Value = @{ MismatchStatus = 'Pass' }; Expect = 'Warning or Fail' }
+                'mismatch as Info'       = @{ Value = @{ MismatchStatus = 'Info' }; Expect = 'Warning or Fail' }
+                'mismatch as a number'   = @{ Value = @{ MismatchStatus = 1 }; Expect = 'Warning or Fail' }
+                'orphan as Pass'         = @{ Value = @{ OrphanFolderStatus = 'Pass' }; Expect = 'Warning or Info' }
+                'orphan as Fail'         = @{ Value = @{ OrphanFolderStatus = 'Fail' }; Expect = 'Warning or Info' }
+                'orphan as a list'       = @{ Value = @{ OrphanFolderStatus = @('Info') }; Expect = 'Warning or Info' }
+            }
+            # Declared population: thirteen shapes.
+            @($bad.Keys).Count | Should -Be 13
+            foreach ($name in @($bad.Keys)) {
+                { Merge-AdfaGpoConfig -BaseConfig $script:Gc -Override $bad[$name]['Value'] } | Should -Throw -ExpectedMessage ("*{0}*" -f $bad[$name]['Expect']) -Because $name
+            }
+            # A value that is not one text value is refused by its type, never printed as text: a JSON
+            # list holding an allowed value must not read as if that value had been refused.
+            $lists = [ordered]@{
+                'MismatchStatus'     = '{ "MismatchStatus": ["Fail"] }'
+                'OrphanFolderStatus' = '{ "OrphanFolderStatus": ["Info"] }'
+                'a number'           = '{ "MismatchStatus": 1 }'
+            }
+            # Declared population: three values of the wrong type, as a JSON file gives them.
+            @($lists.Keys).Count | Should -Be 3
+            foreach ($k in @($lists.Keys)) {
+                $message = ''
+                try { Merge-AdfaGpoConfig -BaseConfig $script:Gc -Override ($lists[$k] | ConvertFrom-Json) | Out-Null }
+                catch { $message = [string]$_.Exception.Message }
+                $message | Should -Match 'not a single text value' -Because $k
+                $message | Should -Match 'to a value of type \w' -Because $k
+                $message | Should -Not -Match "to '(Fail|Info|1)'" -Because $k
+            }
+        }
+        It 'is reached through the generic loader, which refuses a key written twice' {
+            $merged = Resolve-AdfaConfigOverride -Override ([pscustomobject]@{ Gpo = [pscustomobject]@{ MismatchStatus = 'Fail' } }) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'x.json'
+            $merged['Gpo']['MismatchStatus'] | Should -Be 'Fail'
+            { Resolve-AdfaConfigOverride -Override ([pscustomobject]@{ Gpo = [pscustomobject]@{ GptIniFileName = 'x' } }) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
+                Should -Throw -ExpectedMessage "*section 'Gpo'*unknown key 'GptIniFileName'*"
+            $path = Join-Path ([IO.Path]::GetTempPath()) ("adfa_c8_" + [guid]::NewGuid().ToString('N') + '.json')
+            try {
+                '{ "Gpo": { "MismatchStatus": "Fail", "MismatchStatus": "Warning" } }' | Out-File -LiteralPath $path -Encoding UTF8
+                { Import-AdfaConfigOverride -Path $path -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*'Gpo.MismatchStatus' more than once*"
+            }
+            finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'The old inventory: its rows keep their shape, and its catch-all says why' {
+        It 'turns a failed Get-GPO into one Not Assessed row with the class in front, in the four columns it always had' {
+            function Test-ModuleAvailable { param([string]$Name) $true }
+            function Import-Module { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+            function Get-GPO { param([switch]$All, [string]$Domain, $ErrorAction) throw [System.UnauthorizedAccessException]'STUB: GPO list refused' }
+            $rows = @(Get-AdfaGpoInventory -DomainName 'contoso.com')
+            $rows.Count | Should -Be 1
+            (@($rows[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ',') | Should -Be 'Scope,GPOName,Status,Detail'
+            $rows[0].GPOName | Should -Be '(enumeration failed)'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '^Access denied: '
+            $rows[0].Detail | Should -Match 'STUB: GPO list refused'
+            $rows[0].Detail | Should -Match 'not a clean result'
+        }
+        It 'keeps the module-missing row as it was' {
+            function Test-ModuleAvailable { param([string]$Name) $false }
+            $missing = @(Get-AdfaGpoInventory -DomainName 'contoso.com')
+            $missing.Count | Should -Be 1
+            $missing[0].Item | Should -Be 'GroupPolicy module'
+            $missing[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'keeps the inventory rows of a Get-GPO that answers as they were before C8: a total, one row per GPO, linked Info and unlinked Warning' {
+            function Test-ModuleAvailable { param([string]$Name) $true }
+            function Import-Module { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+            # Microsoft.GroupPolicy.Gpo, as far as the inventory reads it: DisplayName and GenerateReport('Xml').
+            function New-C8Gpo { param([string]$Name, [string]$Xml)
+                $g = [pscustomobject]@{ DisplayName = $Name; ReportXml = $Xml }
+                $g | Add-Member -MemberType ScriptMethod -Name GenerateReport -Value { param($Type) if ($Type -ne 'Xml') { throw 'STUB: only Xml' }; $this.ReportXml }
+                $g }
+            $ns = 'http://www.microsoft.com/GroupPolicy/Settings'
+            $script:C8Gpos = @(
+                (New-C8Gpo -Name 'Default Domain Policy' -Xml ('<GPO xmlns="{0}"><Name>Default Domain Policy</Name><LinksTo><SOMName>contoso</SOMName><SOMPath>contoso.com</SOMPath></LinksTo></GPO>' -f $ns))
+                (New-C8Gpo -Name 'Servers Baseline' -Xml ('<GPO xmlns="{0}"><Name>Servers Baseline</Name><LinksTo><SOMPath>contoso.com/Servers</SOMPath></LinksTo><LinksTo><SOMPath>contoso.com/Hosts</SOMPath></LinksTo></GPO>' -f $ns))
+                (New-C8Gpo -Name 'Old Test Policy' -Xml ('<GPO xmlns="{0}"><Name>Old Test Policy</Name></GPO>' -f $ns))
+            )
+            function Get-GPO { param([switch]$All, [string]$Domain, $ErrorAction) $script:C8Gpos }
+            $rows = @(Get-AdfaGpoInventory -DomainName 'contoso.com')
+            # Declared population: the total and the three GPOs Get-GPO returned.
+            $rows.Count | Should -Be 4
+            foreach ($r in $rows) { (@($r.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') | Should -Be 'Scope,GPOName,Status,Detail' -Because $r.GPOName }
+            @($rows | ForEach-Object { "{0}|{1}|{2}|{3}" -f $_.Scope, $_.GPOName, $_.Status, $_.Detail }) | Should -Be @(
+                'contoso.com|(total)|Info|3 GPOs'
+                'contoso.com|Default Domain Policy|Info|Linked: contoso.com'
+                'contoso.com|Servers Baseline|Info|Linked: contoso.com/Servers, contoso.com/Hosts'
+                'contoso.com|Old Test Policy|Warning|Unlinked GPO (candidate for cleanup).'
+            )
+        }
+    }
+
+    Context 'Recommendations' {
+        It 'gives a mismatch, on a GPO row or a summary row, its own advice whatever the Detail holds' {
+            $gpo = Get-AdfaRecommendation -Section 'GPO Inventory' -Item ("GPO version: {0}" -f $script:C8G1) -Detail $script:C8Hostile
+            $sum = Get-AdfaRecommendation -Section 'GPO Inventory' -Item 'GPO version summary: contoso.com' -Detail $script:C8Hostile
+            $gpo | Should -Match 'replication'
+            $gpo | Should -Match 'GPT\.INI'
+            $gpo | Should -Match 'changes nothing'
+            $sum | Should -Be $gpo
+            $gpo | Should -Not -Match 'dfsrmig|New-KrbtgtKeys|wbadmin|repadmin /replicate|Disable first|setspn|w32tm|central store'
+            # A domain name that looks like other advice changes nothing.
+            (Get-AdfaRecommendation -Section 'GPO Inventory' -Item 'GPO version summary: backup-stale.contoso.com' -Detail $script:C8Hostile) | Should -Be $gpo
+        }
+        It 'gives a folder without a container its own advice, and every other version row none' {
+            $orphan = Get-AdfaRecommendation -Section 'GPO Inventory' -Item ("GPO folder without container: {0}" -f $script:C8Orphan) -Detail $script:C8Hostile
+            $orphan | Should -Match 'orphaned'
+            $orphan | Should -Match 'changes nothing'
+            $orphan | Should -Not -Be (Get-AdfaRecommendation -Section 'GPO Inventory' -Item ("GPO version: {0}" -f $script:C8G1) -Detail '')
+            foreach ($item in @('GPO folder listing: contoso.com', 'GPO version (no domain scoped)', 'GPO version', 'GPO version: (container with no GUID name)', 'GPO version something new: x')) {
+                Get-AdfaRecommendation -Section 'GPO Inventory' -Item $item -Detail $script:C8Hostile | Should -Be '' -Because $item
+            }
+        }
+        It 'leaves the old inventory rows, whose Item is the section name, to the entries they had before' {
+            $before = @($script:RecommendationMap | Where-Object { -not ($_.ContainsKey('Section') -and [string]$_.Section -eq '(?i)^gpo inventory') })
+            $map = $script:RecommendationMap
+            try {
+                $script:RecommendationMap = $before
+                $old = Get-AdfaRecommendation -Section 'GPO Inventory' -Item 'GPO Inventory' -Detail 'Unlinked GPO (candidate for cleanup).'
+            }
+            finally { $script:RecommendationMap = $map }
+            (Get-AdfaRecommendation -Section 'GPO Inventory' -Item 'GPO Inventory' -Detail 'Unlinked GPO (candidate for cleanup).') | Should -Be $old
+            # Non-vacuity: the section's own entries really were taken out for the comparison.
+            ($script:RecommendationMap.Count - $before.Count) | Should -Be 3
+        }
+        It 'places its entries before every unscoped entry of the map, anchored on its Item prefixes, with no section-wide catch-all' {
+            $map = @($script:RecommendationMap)
+            $mine = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Section -eq '(?i)^gpo inventory') { $i } })
+            # Declared population: the mismatch family, the folder family and the prefix catch-all.
+            $mine.Count | Should -Be 3
+            $firstUnscoped = @(for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $i } })[0]
+            foreach ($i in $mine) { $i | Should -BeLessThan $firstUnscoped }
+            foreach ($i in $mine) { [string]$map[$i].Match | Should -Match '^\(\?i\)\^GPO Inventory :: GPO (version|folder|\(version)' }
+            [string]$map[$mine[2]].Text | Should -Be ''
+        }
+        It 'attaches advice to Warning and Fail rows only, chosen without the NotRun note' {
+            $containers = @((New-C8Container -Guid $script:C8G1), (New-C8Container -Guid $script:C8G2 -Version 131073), (New-C8Container -Guid $script:C8G3))
+            $reads = @{ $script:C8G1 = (New-C8Ini 65537); $script:C8G2 = (New-C8Ini 65537); $script:C8G3 = (New-C8Read -Class 'AccessDenied' -Err 'STUB' -Type 'System.UnauthorizedAccessException') }
+            $rows = @(Get-C8Rows -Raw (New-C8Raw -Containers $containers) -Sysvol (New-C8Sysvol -Names @($script:C8G1, $script:C8G2, $script:C8G3, $script:C8Orphan) -Reads $reads))
+            $findings = @($rows | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'GPO Inventory' -Row $_ -StatusColumn 'Status' })
+            # Declared population: G2 differs, G3 not read, one folder without a container, the summary.
+            $findings.Count | Should -Be 4
+            (@($findings | ForEach-Object { "{0}={1}" -f ($_.Item -replace ': .*$', ''), $_.Status }) -join ',') | Should -Be 'GPO version=Warning,GPO version=Not Assessed,GPO folder without container=Warning,GPO version summary=Warning'
+            $findings[0].Recommendation | Should -Match 'replication'
+            $findings[1].Recommendation | Should -Be ''
+            $findings[2].Recommendation | Should -Match 'orphaned'
+            $findings[3].Recommendation | Should -Be $findings[0].Recommendation
+            foreach ($f in $findings) { $f.Item | Should -Not -Be 'GPO Inventory' }
         }
     }
 }
