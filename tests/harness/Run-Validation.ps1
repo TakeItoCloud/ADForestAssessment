@@ -2106,7 +2106,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the eight sections the file can carry (Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the nine sections the file can carry (Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -2741,6 +2741,93 @@ $aclBadGpo = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorTyp
 $aclFailRows = @(Get-AdfaAclDomainFinding -Domain 'contoso.com' -DomainRaw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; DomainDn = 'DC=contoso,DC=com'; DomainSid = $aclRoot; DomainSidError = '' }) -RootRaw ([pscustomobject]@{ Sid = $aclRoot; Error = '' }) -HeadRead $aclHeadRead -AdminRead $aclAdminRead -GpoRaw ([pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; SearchBase = 'CN=Policies,CN=System,DC=contoso,DC=com'; Items = @([pscustomobject]@{ Guid = '{G}'; Dn = 'x'; Read = $aclBadGpo }) }) -Config $aclFailCfg)
 $aclFailSum = @($aclFailRows | Where-Object { $_.Item -eq 'GPO rights summary: contoso.com' })[0]
 Assert-Equal 'Fail|1/1/1/0' ('{0}|{1}/{2}/{3}/{4}' -f $aclFailSum.Status, $aclFailSum.Population, $aclFailSum.ReadCount, $aclFailSum.FlaggedCount, $aclFailSum.NotAssessedCount) 'Dangerous rights: under a Fail override a flagged GPO makes the summary Fail and is counted as flagged'
+
+Write-Host "== C10. Privileged groups and delegation (pure logic) ==" -ForegroundColor Cyan
+$pv = $script:Config.Privileged
+$pvRoot = 'S-1-5-21-1000-2000-3000'
+function New-ValPrivRecord {
+    param([string]$Name, [string]$Kind = 'User', [string]$Sid = '', $Uac = 512, [string[]]$Spns = @(), [string[]]$Members = @(), $PrimaryGroupId = $null, [string[]]$DelegateTo = @(), [string]$Dn = '')
+    if ($Dn -eq '') { $Dn = ("CN={0},CN=Users,DC=contoso,DC=com" -f $Name) }
+    $p = $null; if ($Sid -ne '') { $p = ConvertFrom-AdfaSidValue -Value $Sid }
+    $enabled = $null; if (($Kind -eq 'User' -or $Kind -eq 'Computer') -and $null -ne $Uac) { $enabled = (([int64]$Uac -band 2) -eq 0) }
+    $uacValue = $null; if ($null -ne $Uac) { $uacValue = [int64]$Uac }
+    [pscustomobject]@{ Dn = $Dn; Sam = $Name; Name = $Name; Class = $Kind.ToLowerInvariant(); Kind = $Kind; Sid = $Sid; DomainPart = $(if ($null -ne $p) { $p.DomainPart } else { '' }); Rid = $(if ($null -ne $p) { $p.Rid } else { $null })
+        IsAccountDomainSid = $(if ($null -ne $p) { $p.IsAccountDomain } else { $false }); Uac = $uacValue; Enabled = $enabled; AdminCount = $null; Spns = @($Spns); PrimaryGroupId = $PrimaryGroupId; Members = @($Members); DelegateTo = @($DelegateTo); HasRbcd = $false; Rbcd = $null }
+}
+# The SID filter value, against Learn's own example (how-to-specify-comparison-values).
+Assert-Equal '\01\04\00\00\00\00\00\05\15\00\00\00\11\c3\5f\73\19\52\5f\12\75\b9\75\54' (ConvertTo-AdfaLdapSidFilterValue -Sid 'S-1-5-21-1935655697-308236825-1417001333') 'Privileged: a SID in an objectSid filter is the encoded byte string of Learn''s example'
+Assert-Equal '' (ConvertTo-AdfaLdapSidFilterValue -Sid 'Domain Admins') 'Privileged: a name is never turned into a filter value - groups are located by SID only'
+# The protected list: Appendix C (13 groups + Administrator and krbtgt) plus Enterprise RODCs.
+$pvProtected = @(@($pv['Groups']) | Where-Object { [bool]$_['Protected'] })
+Assert-Equal 14 $pvProtected.Count 'Privileged: declared population - 13 Appendix C groups and Enterprise Read-only Domain Controllers are protected'
+Assert-Equal '500,502' (@($pv['ProtectedAccountRids']) -join ',') 'Privileged: Administrator and krbtgt are protected as themselves'
+Assert-Equal '524288|16777216|1048576' ('{0}|{1}|{2}' -f $pv['Uac']['TrustedForDelegation'], $pv['Uac']['TrustedToAuthForDelegation'], $pv['Uac']['NotDelegated']) 'Privileged: the delegation bits are Learn''s decimals'
+# Routing: the longest suffix wins, an unscoped forest domain is out of scope, a shared DN is never guessed.
+$pvMap = @{ 'contoso.com' = [pscustomobject]@{ Ok = $true; DomainDn = 'DC=contoso,DC=com' }; 'north.contoso.com' = [pscustomobject]@{ Ok = $true; DomainDn = 'DC=north,DC=contoso,DC=com' } }
+Assert-Equal 'Routed:north.contoso.com|OutOfScope|Ambiguous' ('{0}:{1}|{2}|{3}' -f (Resolve-AdfaPrivDnDomain -Dn 'CN=a,DC=north,DC=contoso,DC=com' -DomainMap $pvMap -Scoped @('contoso.com', 'north.contoso.com')).Class, (Resolve-AdfaPrivDnDomain -Dn 'CN=a,DC=north,DC=contoso,DC=com' -DomainMap $pvMap -Scoped @('contoso.com', 'north.contoso.com')).Domain, (Resolve-AdfaPrivDnDomain -Dn 'CN=a,DC=north,DC=contoso,DC=com' -DomainMap $pvMap -Scoped @('contoso.com')).Class, (Resolve-AdfaPrivDnDomain -Dn 'CN=a,DC=contoso,DC=com' -DomainMap @{ a = $pvMap['contoso.com']; b = $pvMap['contoso.com'] } -Scoped @('a', 'b')).Class) 'Privileged: a member DN is routed to the domain that holds it, an unscoped domain is out of scope, a shared DN is ambiguous'
+# The closure: nested, primary group, foreign principal, unresolved, cycle.
+$pvCtx = New-AdfaPrivContext -DomainMap @{} -Config $pv -Offline
+$pvG1 = New-ValPrivRecord -Name 'G1' -Kind 'Group' -Sid "$pvRoot-512" -Uac $null -Members @('CN=G2,CN=Users,DC=contoso,DC=com', 'CN=u1,CN=Users,DC=contoso,DC=com', 'CN=gone,DC=fabrikam,DC=com', 'CN=S-1-5-11,CN=ForeignSecurityPrincipals,DC=contoso,DC=com')
+$pvG2 = New-ValPrivRecord -Name 'G2' -Kind 'Group' -Sid "$pvRoot-1500" -Uac $null -Members @('CN=G1,CN=Users,DC=contoso,DC=com', 'CN=u2,CN=Users,DC=contoso,DC=com')
+foreach ($r in @($pvG2, (New-ValPrivRecord -Name 'u1' -Sid "$pvRoot-1601"), (New-ValPrivRecord -Name 'u2' -Sid "$pvRoot-1602"), (New-ValPrivRecord -Name 'S-1-5-11' -Kind 'Foreign' -Sid 'S-1-5-11' -Uac $null -Dn 'CN=S-1-5-11,CN=ForeignSecurityPrincipals,DC=contoso,DC=com'))) {
+    $pvCtx['Objects'][$r.Dn.ToLowerInvariant()] = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Record = $r }
+}
+$pvCtx['Objects']['cn=gone,dc=fabrikam,dc=com'] = [pscustomobject]@{ Ok = $false; Class = 'OutOfScope'; Error = 'not in this forest'; ErrorType = ''; Record = $null }
+$pvCtx['Primary']['cn=g1,cn=users,dc=contoso,dc=com|512'] = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Records = @(New-ValPrivRecord -Name 'u3' -Sid "$pvRoot-1603" -PrimaryGroupId 512) }
+$pvClosure = Resolve-AdfaPrivGroupClosure -Group $pvG1 -Context $pvCtx -Config $pv
+Assert-Equal 'u1=direct,u2=nested,u3=primary|F1|U1|False' ('{0}|F{1}|U{2}|{3}' -f (@($pvClosure.Principals | ForEach-Object { '{0}={1}' -f $_.Record.Name, $_.Via } | Sort-Object) -join ','), @($pvClosure.Foreign).Count, @($pvClosure.Unresolved).Count, $pvClosure.Complete) 'Privileged: membership is followed through nested groups and primary groups, a cycle ends, a foreign principal is kept by SID and an unresolved DN makes it incomplete'
+# Schema Admins: 0 members Pass, 1 member Warning, not read Not Assessed (never Pass).
+$pvSaGroup = New-ValPrivRecord -Name 'Schema Admins' -Kind 'Group' -Sid "$pvRoot-518" -Uac $null
+$pvSpec = [pscustomobject]@{ Key = 'SchemaAdmins'; Name = 'Schema Admins'; Rid = 518; Scope = 'ForestRoot'; Protected = $true; Always = $true; Sid = "$pvRoot-518" }
+$pvLocate = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Filter = '(objectSid=x)'; Record = $pvSaGroup }
+$pvEmpty = [pscustomobject]@{ Spec = $pvSpec; Locate = $pvLocate; Closure = [pscustomobject]@{ Group = $pvSaGroup; Complete = $true; Principals = @(); Groups = @(); Foreign = @(); Unresolved = @() } }
+$pvOne = [pscustomobject]@{ Spec = $pvSpec; Locate = $pvLocate; Closure = [pscustomobject]@{ Group = $pvSaGroup; Complete = $true; Principals = @([pscustomobject]@{ Record = (New-ValPrivRecord -Name 'x' -Sid "$pvRoot-1900"); Via = 'direct' }); Groups = @(); Foreign = @(); Unresolved = @() } }
+$pvDenied = [pscustomobject]@{ Spec = $pvSpec; Locate = [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Error = 'Access is denied.'; ErrorType = 'System.UnauthorizedAccessException'; Filter = '(objectSid=x)'; Record = $null }; Closure = $null }
+Assert-Equal 'Pass|Warning|Not Assessed' (@($pvEmpty, $pvOne, $pvDenied | ForEach-Object { (Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'SchemaAdmins' -Entry $_ -DomainSid $pvRoot -Config $pv).Status }) -join '|') 'Privileged: Schema Admins passes empty, warns at one member, and is Not Assessed when it could not be read'
+# Delegation: a registered DC is excluded by DN, a non-DC with the bit is a Warning, an unread DC population is Not Assessed.
+$pvDc = New-ValPrivRecord -Name 'DC1$' -Kind 'Computer' -Uac 532480 -Dn 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'
+$pvSvc = New-ValPrivRecord -Name 'svc.web' -Uac (512 + 524288)
+$pvSearch = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Filter = ''; Records = @($pvDc, $pvSvc) }
+$pvForest = [pscustomobject]@{ DcOk = $true; DcClass = 'Read'; DcError = ''; DcDns = @('cn=dc1,ou=domain controllers,dc=contoso,dc=com'); DsaCount = 1; NoReference = @() }
+$pvUnc = @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation $pvSearch -Forest $pvForest -Config $pv -DomainDn 'DC=contoso,DC=com')[0]
+Assert-True ($pvUnc.Status -eq 'Warning' -and $pvUnc.Principals -eq 'svc.web' -and $pvUnc.ExcludedCount -eq '1') 'Privileged: unconstrained delegation on a non-DC is a Warning; the registered DC is excluded by DN'
+$pvNoDc = @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation $pvSearch -Forest ([pscustomobject]@{ DcOk = $false; DcClass = 'Unreachable'; DcError = 'down'; DcDns = @() }) -Config $pv -DomainDn 'DC=contoso,DC=com')[0]
+Assert-Equal 'Not Assessed' $pvNoDc.Status 'Privileged: with the DC population unread, unconstrained delegation is Not Assessed, never judged by name'
+# Review fixes: a DC population read incompletely never lets a DC be graded as a non-DC; a search that
+# did not return the domain's registered DC never passes; a population without the domain's
+# Administrator never passes.
+$pvNoDsa = [pscustomobject]@{ DcOk = $true; DcClass = 'Read'; DcError = ''; DcDns = @(); DsaCount = 0; NoReference = @() }
+$pvDcOnly = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Filter = ''; Records = @($pvDc) }
+$pvNoDsaRow = @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation $pvDcOnly -Forest $pvNoDsa -Config $pv -DomainDn 'DC=contoso,DC=com')[0]
+Assert-True ($pvNoDsaRow.Status -eq 'Not Assessed' -and $pvNoDsaRow.Principals -eq '') 'Privileged: with no nTDSDSA object read, a DC carrying TRUSTED_FOR_DELEGATION is never graded as a non-DC'
+$pvEmptySearch = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Filter = ''; Records = @() }
+$pvEmptyRows = @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation $pvEmptySearch -Forest $pvForest -Config $pv -DomainDn 'DC=contoso,DC=com')
+Assert-Equal 'Not Assessed|Not Assessed|Not Assessed|Not Assessed' (@($pvEmptyRows | ForEach-Object { $_.Status }) -join '|') 'Privileged: a delegation search that did not return the registered DC passes none of its four rows (declared population: four rows)'
+Assert-Equal 'Pass|Pass|Info|Pass' (@(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation $pvDcOnly -Forest $pvForest -Config $pv -DomainDn 'DC=contoso,DC=com' | ForEach-Object { $_.Status }) -join '|') 'Privileged: the registered DC alone coming back is a measured "none"'
+$pvComplete = [pscustomobject]@{ Complete = $true; Missing = @(); BySid = @{}; ByDn = @{}; Members = @(); DomainSid = $pvRoot }
+$pvHeur = [pscustomobject]@{ Known = $true; MaskZero = $true; Character = '0'; Text = 'x' }
+Assert-Equal 'Not Assessed' (Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount ([pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Filter = ''; Records = @() }) -Protected $pvComplete -Heuristics $pvHeur -Config $pv).Status 'Privileged: an adminCount search without the domain''s Administrator (RID 500) is not a clean result'
+Assert-Equal 'Not Assessed' (Get-AdfaPrivSpnVerdict -Domain 'contoso.com' -Population ([pscustomobject]@{ Records = @(); Complete = $true; Gaps = @() }) -Config $pv).Status 'Privileged: an empty privileged-account population is not passed'
+# Search failures are worded as searches; a scoped domain that could not be read keeps its own cause.
+Assert-True ((Get-AdfaPrivLocateLead -Locate ([pscustomobject]@{ Class = 'NotFound'; Error = 'x'; ErrorType = '' }) -What 'the objects with adminCount=1' -Search) -notmatch 'no group with the SID') 'Privileged: a search answered "not found" is not worded as a missing group'
+$pvUnreadMap = @{ 'contoso.local' = [pscustomobject]@{ Ok = $true; DomainDn = 'DC=contoso,DC=local'; Error = ''; ErrorType = '' }; 'fabrikam.local' = [pscustomobject]@{ Ok = $false; DomainDn = ''; Error = 'STUB: access is denied'; ErrorType = 'System.UnauthorizedAccessException' } }
+Assert-Equal 'AccessDenied' (Resolve-AdfaPrivDnDomain -Dn 'CN=u,DC=fabrikam,DC=local' -DomainMap $pvUnreadMap -Scoped @('contoso.local', 'fabrikam.local')).Class 'Privileged: a member in a scoped domain that refused its own read is access denied, not out of scope'
+# Enterprise Key Admins is a forest-root group; Protected Users counts only at DFL 2012 R2 or later.
+Assert-Equal 'ForestRoot' ([string]@(@($pv['Groups']) | Where-Object { $_['Key'] -eq 'EnterpriseKeyAdmins' })[0]['Scope']) 'Privileged: Enterprise Key Admins (-527) is read from the forest root (Learn, domain-wide updates, Operation 85)'
+$pvAlice = New-ValPrivRecord -Name 'adm.alice' -Sid "$pvRoot-1101"
+$pvAdmin = New-ValPrivRecord -Name 'Administrator' -Sid "$pvRoot-500" -Uac (512 + 1048576)
+$pvPop = [pscustomobject]@{ Records = @($pvAlice, $pvAdmin); Complete = $true; Gaps = @() }
+$pvPu = { param($E) [pscustomobject]@{ Known = $true; Dns = @{ ($pvAlice.Dn.ToLowerInvariant()) = $true }; Why = ''; DelegationEnforced = $E; ModeText = 'x' } }
+Assert-Equal 'Pass|Warning|Not Assessed' ((@($true, $false, $null) | ForEach-Object { (Get-AdfaPrivDelegableVerdict -Domain 'contoso.com' -Population $pvPop -ProtectedUsers (& $pvPu $_) -Config $pv).Status }) -join '|') 'Privileged: a Protected Users member is protected from delegation at DFL 2012 R2 or later, delegable below it, undecided when the level is unknown'
+# The validator.
+Assert-Throws { Merge-AdfaPrivilegedConfig -BaseConfig $pv -Override @{ OrphanStatus = 'Pass' } } 'Warning or Fail' 'Privileged override: a finding can never be configured to pass'
+Assert-Throws { Merge-AdfaPrivilegedConfig -BaseConfig $pv -Override @{ Groups = @() } } "unknown key 'Groups'" 'Privileged override: the group table cannot be replaced from a file'
+Assert-Throws { Merge-AdfaPrivilegedConfig -BaseConfig $pv -Override @{ NameListCap = 1001 } } 'whole number from 0 to 1000' 'Privileged override: NameListCap is bounded'
+Assert-Throws { Merge-AdfaPrivilegedConfig -BaseConfig $pv -Override @{ EnterpriseAdminsExemptRootAdministrator = 'yes' } } 'JSON true or false' 'Privileged override: the exemption switch is a boolean'
+# The advice: each graded family gets its own, whatever the Detail holds.
+$pvHostile = 'replication backup stale sysvol krbtgt pdc emulator delegation dcsync enrol C:\Backup\stale.json'
+$pvRecs = @(foreach ($pair in @(@('Privileged Accounts', 'Schema Admins members: contoso.com'), @('Privileged Hygiene', 'adminCount orphans: contoso.com'), @('Kerberos Exposure', 'Resource-based delegation: contoso.com'), @('Privileged Accounts', 'Privileged group: Backup Operators: contoso.com'))) { Get-AdfaRecommendation -Section $pair[0] -Item $pair[1] -Detail $pvHostile })
+Assert-True ($pvRecs[0] -match 'temporarily' -and $pvRecs[1] -match 'inheritance' -and $pvRecs[2] -match 'PrincipalsAllowedToDelegateToAccount' -and $pvRecs[3] -eq '' -and @($pvRecs | Where-Object { $_ -match 'wbadmin|repadmin|New-KrbtgtKeys|replace with resource-based' }).Count -eq 0) 'Privileged advice: each family gets its own advice and no unscoped entry reaches the three sections (declared population: four items)'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue

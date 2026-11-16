@@ -5284,9 +5284,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcHardening' -and $n.Extent.Text -match '-DomainControllers \$dcNames' }, $true)).Count | Should -Be 0
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
+            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
             # DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -7282,7 +7282,10 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # Declared populations, pinned so that a new -Properties argument or assignment anywhere in
         # the script is looked at by whoever adds it, and so that the scans below cannot pass on
         # an empty set.
-        $script:C4PropertiesArgumentCount = 23
+        # 28 since v1.27.0: PORT-PLAN C10 removed three literal lists (the old unconstrained-delegation,
+        # RBCD and adminCount reads) and added eight -Properties arguments to its own two seams
+        # (Get-AdfaPrivSearchRaw x6, Get-AdfaPrivObjectRaw x2), each a list from the Privileged config table.
+        $script:C4PropertiesArgumentCount = 28
         # 7 since v1.22.0: PORT-PLAN C5 added $computerArgs.Properties = @('userCertificate') in
         # Get-AdfaDcCertificateDirectoryRaw.
         # 12 since v1.23.0: PORT-PLAN C6 added five splatted property lists, two in Get-AdfaRidManagerRaw and
@@ -7293,7 +7296,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # groupPolicyContainer attributes from the Gpo config table.
         # 17 since v1.26.0: PORT-PLAN C9 added two splatted property lists, in Get-AdfaAclObjectRaw and
         # Get-AdfaAclGpoRaw, each nTSecurityDescriptor alone from the Acl config table.
-        $script:C4PropertiesAssignmentCount = 17
+        # 19 since v1.27.0: PORT-PLAN C10 added two splatted property lists, in Get-AdfaPrivSearchRaw and
+        # Get-AdfaPrivObjectRaw, each a guarded list from the Privileged config table.
+        $script:C4PropertiesAssignmentCount = 19
         $script:C4SectionFunctionCount = 20
 
         function New-C4Schema {
@@ -7460,8 +7465,8 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             @($script:C4Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaLaps' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
+            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7513,9 +7518,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
-            [string]$script:Config.Version | Should -Be '1.26.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
+        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
+            [string]$script:Config.Version | Should -Be '1.27.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
         }
     }
 
@@ -9103,8 +9108,8 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             Get-C5Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
+            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
             $entry = $script:ConfigOverrideSections['DcCertificates']
             [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
             [string]$entry['Section'] | Should -Be 'DcCertificates'
@@ -9185,9 +9190,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
-            [string]$script:Config.Version | Should -Be '1.26.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
+        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
+            [string]$script:Config.Version | Should -Be '1.27.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
         }
     }
 
@@ -10103,8 +10108,8 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             Get-C6Guard $own[0] | Should -Be '-not $dcInventoryCollected'
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
-            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
+            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
             $entry = $script:ConfigOverrideSections['RidPool']
             [string]$entry['ConfigKey'] | Should -Be 'RidPool'
             [string]$entry['Section'] | Should -Be 'RidPool'
@@ -10164,7 +10169,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'rIDAvailablePool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'RidPool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnAtPercentUsed'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eight sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Nine sections can be named'
         }
         It 'has one row in the README Coverage table, and the README says what the row cannot see' {
             $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
@@ -10175,9 +10180,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
-            [string]$script:Config.Version | Should -Be '1.26.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
+        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
+            [string]$script:Config.Version | Should -Be '1.27.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
         }
     }
 
@@ -11058,8 +11063,8 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($script:C7Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaSidHistory' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath under SidHistory, used by SecurityPosture, with its own validator' {
-            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
+            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
             $entry = $script:ConfigOverrideSections['SidHistory']
             [string]$entry['ConfigKey'] | Should -Be 'SidHistory'
             [string]$entry['Section'] | Should -Be 'SecurityPosture'
@@ -11101,7 +11106,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             $help = $script:C7Ast.GetHelpContent()
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'SID history'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'sIDHistory'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eight sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Nine sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'SidHistory'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'PresentStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'NameListCap'
@@ -11114,9 +11119,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
-            [string]$script:Config.Version | Should -Be '1.26.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
+        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
+            [string]$script:Config.Version | Should -Be '1.27.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
         }
     }
 
@@ -11996,8 +12001,8 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($script:C8Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaGpoVersion' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath under Gpo, used by the Gpo section, with its own validator' {
-            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
+            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
             $entry = $script:ConfigOverrideSections['Gpo']
             [string]$entry['ConfigKey'] | Should -Be 'Gpo'
             [string]$entry['Section'] | Should -Be 'Gpo'
@@ -12092,7 +12097,7 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'PDC emulator'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eight sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Nine sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Gpo"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'MismatchStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'OrphanFolderStatus'
@@ -12105,9 +12110,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
-            [string]$script:Config.Version | Should -Be '1.26.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
+        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
+            [string]$script:Config.Version | Should -Be '1.27.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
         }
     }
 
@@ -13271,8 +13276,8 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($script:C9Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDangerousAcl' }, $true)).Count | Should -Be 1
         }
         It 'is registered for -ConfigOverridePath under Acl, used by the Acl section, with its own validator' {
-            # Declared population: the eight sections the file can carry (Acl since v1.26.0, PORT-PLAN C9).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl'
+            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
             $entry = $script:ConfigOverrideSections['Acl']
             [string]$entry['ConfigKey'] | Should -Be 'Acl'
             [string]$entry['Section'] | Should -Be 'Acl'
@@ -13331,7 +13336,7 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'matched by SID'
             ([string]$help.Description -replace '\s+', ' ') | Should -Not -Match 'Dangerous ACLs: non-default principals holding DCSync rights on the domain head'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'nTSecurityDescriptor'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eight sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Nine sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Acl"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'FlaggedStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'AdditionalAllowed'
@@ -13345,9 +13350,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.26.0 (bumped by PORT-PLAN C9)' {
-            [string]$script:Config.Version | Should -Be '1.26.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.26.0'
+        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
+            [string]$script:Config.Version | Should -Be '1.27.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
         }
     }
 
@@ -14112,6 +14117,1399 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             (@($ed[1]['Rights']) -join ',') | Should -Be 'DS-Replication-Get-Changes-All'
             [string]$ed[1]['Origin'] | Should -Match 'rodc-replicates-passwords.*disagree'
             (Get-C9HeadVerdict -Aces (@(Get-C9DefaultHead) + @(New-C9Ace -Sid 'S-1-5-9' -Mask 0x100 -ObjectType $script:C9Rep.All))).Status | Should -Be 'Pass'
+        }
+    }
+}
+
+Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group counts, adminCount orphans, SPNs and delegation (C10)' {
+    BeforeAll {
+        $script:Pc = $script:Config.Privileged
+        # Fictional forest: contoso.com (root) and north.contoso.com, each with its own SID.
+        $script:C10Root = 'contoso.com'
+        $script:C10North = 'north.contoso.com'
+        $script:C10RootSid = 'S-1-5-21-1000-2000-3000'
+        $script:C10NorthSid = 'S-1-5-21-1000-2000-3001'
+        $script:C10RootDn = 'DC=contoso,DC=com'
+        $script:C10NorthDn = 'DC=north,DC=contoso,DC=com'
+        $script:C10Cfg = 'CN=Configuration,DC=contoso,DC=com'
+        # A type whose name the module's identity-not-found exception shares, so the classifier can be
+        # driven without the ActiveDirectory module (the CI runner has none).
+        if (-not ('C10Stub.ADIdentityNotFoundException' -as [type])) {
+            Add-Type -TypeDefinition 'namespace C10Stub { public class ADIdentityNotFoundException : System.Exception { public ADIdentityNotFoundException(string m) : base(m) {} } public class ADServerDownException : System.Exception { public ADServerDownException(string m) : base(m) {} } }' -WarningAction SilentlyContinue
+        }
+        # A SID as the directory stores it (MS-DTYP 2.4.2.2), built with no help from the script.
+        function New-C10SidBytes {
+            param([string]$Sid)
+            $parts = $Sid.Split('-')
+            $subs = @($parts | Select-Object -Skip 3)
+            $bytes = New-Object System.Collections.Generic.List[byte]
+            $bytes.Add([byte]1); $bytes.Add([byte]$subs.Count)
+            $authority = [uint64]$parts[2]
+            for ($i = 5; $i -ge 0; $i--) { $bytes.Add([byte](($authority -shr (8 * $i)) -band 255)) }
+            foreach ($s in $subs) { $v = [uint64]$s; for ($i = 0; $i -lt 4; $i++) { $bytes.Add([byte](($v -shr (8 * $i)) -band 255)) } }
+            return , $bytes.ToArray()
+        }
+        # The record ConvertTo-AdfaPrivRecord returns, built directly for the pure verdicts.
+        function New-C10Record {
+            param([string]$Name, [string]$Kind = 'User', [string]$Sid = '', [string]$Dn = '', $Uac = 512, [string[]]$Spns = @(), [string[]]$Members = @(),
+                $PrimaryGroupId = $null, [string[]]$DelegateTo = @(), [bool]$HasRbcd = $false, $Rbcd = $null, $AdminCount = $null)
+            if ($Dn -eq '') { $Dn = ("CN={0},CN=Users,DC=contoso,DC=com" -f $Name) }
+            $class = @{ User = 'user'; Computer = 'computer'; Group = 'group'; Foreign = 'foreignSecurityPrincipal'; Other = 'contact' }[$Kind]
+            $domainPart = ''; $rid = $null; $isAccount = $false
+            if ($Sid -ne '') { $p = ConvertFrom-AdfaSidValue -Value $Sid; $domainPart = $p.DomainPart; $rid = $p.Rid; $isAccount = $p.IsAccountDomain }
+            $enabled = $null
+            if (($Kind -eq 'User' -or $Kind -eq 'Computer') -and $null -ne $Uac) { $enabled = (([int64]$Uac -band 2) -eq 0) }
+            $uacValue = $null
+            if ($null -ne $Uac) { $uacValue = [int64]$Uac }
+            [pscustomobject]@{ Dn = $Dn; Sam = $Name; Name = $Name; Class = $class; Kind = $Kind; Sid = $Sid; DomainPart = $domainPart; Rid = $rid; IsAccountDomainSid = $isAccount
+                Uac = $uacValue; Enabled = $enabled; AdminCount = $AdminCount; Spns = @($Spns); PrimaryGroupId = $PrimaryGroupId; Members = @($Members); DelegateTo = @($DelegateTo); HasRbcd = $HasRbcd; Rbcd = $Rbcd }
+        }
+        function New-C10Locate {
+            param([string]$Class = 'Read', $Record = $null, [string]$Err = '', [string]$Type = '')
+            [pscustomobject]@{ Ok = ($Class -eq 'Read'); Class = $Class; Error = $Err; ErrorType = $Type; Filter = '(objectSid=\01\05)'; Record = $Record }
+        }
+        function New-C10Closure {
+            param($Group, [object[]]$Principals = @(), [object[]]$Groups = @(), [object[]]$Foreign = @(), [object[]]$Unresolved = @(), [string]$Via = 'direct')
+            [pscustomobject]@{ Group = $Group; Complete = (@($Unresolved).Count -eq 0); Principals = @($Principals | ForEach-Object { [pscustomobject]@{ Record = $_; Via = $Via } })
+                Groups = @($Groups); Foreign = @($Foreign); Unresolved = @($Unresolved) }
+        }
+        function New-C10Entry {
+            param([string]$Key, [string]$Sid, $Locate, $Closure = $null)
+            $g = @(@($script:Pc['Groups']) | Where-Object { $_['Key'] -eq $Key })[0]
+            $spec = [pscustomobject]@{ Key = $Key; Name = [string]$g['Name']; Rid = $g['Rid']; Scope = [string]$g['Scope']; Protected = [bool]$g['Protected']; Always = [bool]$g['Always']; Sid = $Sid }
+            [pscustomobject]@{ Spec = $spec; Locate = $Locate; Closure = $Closure }
+        }
+        function New-C10Unresolved { param([string]$Ref = 'CN=x,DC=fabrikam,DC=com', [string]$Reason = 'out of scope: it is not under any domain') [pscustomobject]@{ Ref = $Ref; Reason = $Reason } }
+        function New-C10Ace { param([string]$Sid, [bool]$Allow = $true, [string]$Kind = 'Common') [pscustomobject]@{ Index = 0; Sid = $Sid; Allow = $Allow; Deny = (-not $Allow); Kind = $Kind; Mask = 0x100; InheritOnly = $false; Inherited = $false; ObjectType = ''; InheritedObjectType = '' } }
+        function New-C10Search { param([bool]$Ok = $true, [string]$Class = 'Read', [string]$Err = '', [string]$Type = '', [object[]]$Records = @()) [pscustomobject]@{ Ok = $Ok; Class = $Class; Error = $Err; ErrorType = $Type; Filter = '(adminCount=1)'; Records = @($Records) } }
+        function New-C10Forest { param([bool]$DcOk = $true, [string[]]$DcDns = @(), [bool]$HeurOk = $true, [bool]$Present = $false, [string]$Value = '', [string]$DcClass = 'Read', [string]$DcError = '')
+            [pscustomobject]@{ ConfigNc = $script:C10Cfg; DcOk = $DcOk; DcClass = $DcClass; DcError = $DcError; DcErrorType = ''; DcDns = @($DcDns); DsaCount = @($DcDns).Count; ServerCount = @($DcDns).Count; NoReference = @()
+                HeuristicsOk = $HeurOk; HeuristicsClass = 'Read'; HeuristicsError = ''; HeuristicsErrorType = ''; HeuristicsPresent = $Present; HeuristicsValue = $Value } }
+        function Get-C10Row { param($Rows, [string]$Prefix) @($Rows | Where-Object { $_.Item -like ("{0}*" -f $Prefix) }) }
+
+        # ---- A fake directory for the seams: objects by DN, each in one domain, answered by the stubs below. ----
+        function New-C10Object {
+            param([string]$Domain, [string]$Dn, [string]$Class, [string]$Sid = '', [string]$Sam = '', $Uac = $null, $AdminCount = $null, [string[]]$Spns = @(),
+                $PrimaryGroupId = $null, [string[]]$Members = @(), [string[]]$DelegateTo = @(), $Rbcd = $null)
+            @{ Domain = $Domain; Dn = $Dn; Class = $Class; Sid = $Sid; Sam = $Sam; Uac = $Uac; AdminCount = $AdminCount; Spns = @($Spns); PrimaryGroupId = $PrimaryGroupId; Members = @($Members); DelegateTo = @($DelegateTo); Rbcd = $Rbcd }
+        }
+        function New-C10Directory {
+            $r = $script:C10RootSid; $n = $script:C10NorthSid
+            $u = 'CN=Users,DC=contoso,DC=com'; $b = 'CN=Builtin,DC=contoso,DC=com'
+            $nu = 'CN=Users,DC=north,DC=contoso,DC=com'; $nb = 'CN=Builtin,DC=north,DC=contoso,DC=com'
+            $list = @(
+                # contoso.com - groups
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Administrators,$b" -Class 'group' -Sid 'S-1-5-32-544' -Sam 'Administrators' -AdminCount 1 -Members @("CN=Enterprise Admins,$u", "CN=Domain Admins,$u", "CN=adm.alice,$u"))
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Domain Admins,$u" -Class 'group' -Sid "$r-512" -Sam 'Domain Admins' -AdminCount 1 -Members @("CN=adm.bob,$u"))
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Enterprise Admins,$u" -Class 'group' -Sid "$r-519" -Sam 'Enterprise Admins' -AdminCount 1 -Members @("CN=Administrator,$u"))
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Schema Admins,$u" -Class 'group' -Sid "$r-518" -Sam 'Schema Admins' -AdminCount 1)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Account Operators,$b" -Class 'group' -Sid 'S-1-5-32-548' -Sam 'Account Operators' -AdminCount 1 -Members @("CN=ops.carol,$u"))
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Server Operators,$b" -Class 'group' -Sid 'S-1-5-32-549' -Sam 'Server Operators')
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Print Operators,$b" -Class 'group' -Sid 'S-1-5-32-550' -Sam 'Print Operators')
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Backup Operators,$b" -Class 'group' -Sid 'S-1-5-32-551' -Sam 'Backup Operators')
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Replicator,$b" -Class 'group' -Sid 'S-1-5-32-552' -Sam 'Replicator')
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Domain Controllers,$u" -Class 'group' -Sid "$r-516" -Sam 'Domain Controllers' -AdminCount 1)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Read-only Domain Controllers,$u" -Class 'group' -Sid "$r-521" -Sam 'Read-only Domain Controllers' -AdminCount 1)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Cert Publishers,$u" -Class 'group' -Sid "$r-517" -Sam 'Cert Publishers')
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Group Policy Creator Owners,$u" -Class 'group' -Sid "$r-520" -Sam 'Group Policy Creator Owners')
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Protected Users,$u" -Class 'group' -Sid "$r-525" -Sam 'Protected Users' -Members @("CN=adm.alice,$u"))
+                # contoso.com - accounts
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=Administrator,$u" -Class 'user' -Sid "$r-500" -Sam 'Administrator' -Uac (512 + 1048576) -AdminCount 1 -PrimaryGroupId 513)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=krbtgt,$u" -Class 'user' -Sid "$r-502" -Sam 'krbtgt' -Uac 514 -AdminCount 1 -Spns @('kadmin/changepw') -PrimaryGroupId 513)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=adm.alice,$u" -Class 'user' -Sid "$r-1101" -Sam 'adm.alice' -Uac 512 -AdminCount 1 -PrimaryGroupId 513)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=adm.bob,$u" -Class 'user' -Sid "$r-1102" -Sam 'adm.bob' -Uac 512 -AdminCount 1 -Spns @('MSSQLSvc/sql1.contoso.com:1433') -PrimaryGroupId 513)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=ops.carol,$u" -Class 'user' -Sid "$r-1103" -Sam 'ops.carol' -Uac (512 + 1048576) -AdminCount 1 -PrimaryGroupId 513)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=pg.dave,$u" -Class 'user' -Sid "$r-1104" -Sam 'pg.dave' -Uac (512 + 1048576) -PrimaryGroupId 512)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=old.erin,$u" -Class 'user' -Sid "$r-1105" -Sam 'old.erin' -Uac 512 -AdminCount 1 -PrimaryGroupId 513)
+                (New-C10Object -Domain 'contoso.com' -Dn 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' -Class 'computer' -Sid "$r-1000" -Sam 'DC1$' -Uac 532480 -PrimaryGroupId 516)
+                (New-C10Object -Domain 'contoso.com' -Dn 'CN=RODC1,OU=Domain Controllers,DC=contoso,DC=com' -Class 'computer' -Sid "$r-1001" -Sam 'RODC1$' -Uac 83890176 -PrimaryGroupId 521)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=svc.web,$u" -Class 'user' -Sid "$r-1201" -Sam 'svc.web' -Uac (512 + 524288) -PrimaryGroupId 513)
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=svc.app,$u" -Class 'user' -Sid "$r-1202" -Sam 'svc.app' -Uac (512 + 16777216) -PrimaryGroupId 513 -DelegateTo @('HTTP/web1.contoso.com'))
+                (New-C10Object -Domain 'contoso.com' -Dn "CN=svc.kcd,$u" -Class 'user' -Sid "$r-1203" -Sam 'svc.kcd' -Uac 512 -PrimaryGroupId 513 -DelegateTo @('CIFS/fs1.contoso.com'))
+                (New-C10Object -Domain 'contoso.com' -Dn 'CN=FAKEDC,CN=Computers,DC=contoso,DC=com' -Class 'computer' -Sid "$r-1204" -Sam 'FAKEDC$' -Uac 532480 -PrimaryGroupId 516)
+                (New-C10Object -Domain 'contoso.com' -Dn 'CN=WS1,CN=Computers,DC=contoso,DC=com' -Class 'computer' -Sid "$r-1205" -Sam 'WS1$' -Uac 4096 -PrimaryGroupId 515 -Rbcd 'C10-RBCD')
+                # north.contoso.com
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Administrators,$nb" -Class 'group' -Sid 'S-1-5-32-544' -Sam 'Administrators' -AdminCount 1 -Members @("CN=Domain Admins,$nu", "CN=Enterprise Admins,$u"))
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Domain Admins,$nu" -Class 'group' -Sid "$n-512" -Sam 'Domain Admins' -AdminCount 1 -Members @("CN=n.admin,$nu", 'CN=S-1-5-21-7000-8000-9000-1500,CN=ForeignSecurityPrincipals,DC=north,DC=contoso,DC=com'))
+                (New-C10Object -Domain 'north.contoso.com' -Dn 'CN=S-1-5-21-7000-8000-9000-1500,CN=ForeignSecurityPrincipals,DC=north,DC=contoso,DC=com' -Class 'foreignSecurityPrincipal' -Sid 'S-1-5-21-7000-8000-9000-1500')
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Account Operators,$nb" -Class 'group' -Sid 'S-1-5-32-548' -Sam 'Account Operators')
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Server Operators,$nb" -Class 'group' -Sid 'S-1-5-32-549' -Sam 'Server Operators')
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Print Operators,$nb" -Class 'group' -Sid 'S-1-5-32-550' -Sam 'Print Operators')
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Backup Operators,$nb" -Class 'group' -Sid 'S-1-5-32-551' -Sam 'Backup Operators')
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Replicator,$nb" -Class 'group' -Sid 'S-1-5-32-552' -Sam 'Replicator')
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Domain Controllers,$nu" -Class 'group' -Sid "$n-516" -Sam 'Domain Controllers' -AdminCount 1)
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Cert Publishers,$nu" -Class 'group' -Sid "$n-517" -Sam 'Cert Publishers')
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Group Policy Creator Owners,$nu" -Class 'group' -Sid "$n-520" -Sam 'Group Policy Creator Owners')
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=n.admin,$nu" -Class 'user' -Sid "$n-1101" -Sam 'n.admin' -Uac (512 + 1048576) -AdminCount 1 -PrimaryGroupId 513)
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=Administrator,$nu" -Class 'user' -Sid "$n-500" -Sam 'Administrator' -Uac (512 + 1048576) -AdminCount 1 -PrimaryGroupId 513)
+                (New-C10Object -Domain 'north.contoso.com' -Dn 'CN=DC2,OU=Domain Controllers,DC=north,DC=contoso,DC=com' -Class 'computer' -Sid "$n-1000" -Sam 'DC2$' -Uac 532480 -PrimaryGroupId 516)
+                (New-C10Object -Domain 'north.contoso.com' -Dn "CN=svc.north,$nu" -Class 'user' -Sid "$n-1201" -Sam 'svc.north' -Uac (512 + 524288) -PrimaryGroupId 513)
+            )
+            $dir = @{}
+            foreach ($o in $list) { $dir[$o.Dn.ToLowerInvariant()] = $o }
+            return $dir
+        }
+        # Configuration partition: three DCs registered (DC1, RODC1, DC2); FAKEDC is not one.
+        $script:C10Dsas = @(
+            ("CN=NTDS Settings,CN=DC1,CN=Servers,CN=Site1,CN=Sites,{0}" -f $script:C10Cfg), ("CN=NTDS Settings,CN=RODC1,CN=Servers,CN=Site1,CN=Sites,{0}" -f $script:C10Cfg),
+            ("CN=NTDS Settings,CN=DC2,CN=Servers,CN=Site1,CN=Sites,{0}" -f $script:C10Cfg))
+        $script:C10Servers = @(
+            @{ Dn = ("CN=DC1,CN=Servers,CN=Site1,CN=Sites,{0}" -f $script:C10Cfg); Ref = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' }
+            @{ Dn = ("CN=RODC1,CN=Servers,CN=Site1,CN=Sites,{0}" -f $script:C10Cfg); Ref = 'CN=RODC1,OU=Domain Controllers,DC=contoso,DC=com' }
+            @{ Dn = ("CN=DC2,CN=Servers,CN=Site1,CN=Sites,{0}" -f $script:C10Cfg); Ref = 'CN=DC2,OU=Domain Controllers,DC=north,DC=contoso,DC=com' }
+            @{ Dn = ("CN=OLD,CN=Servers,CN=Site1,CN=Sites,{0}" -f $script:C10Cfg); Ref = 'CN=FAKEDC,CN=Computers,DC=contoso,DC=com' }
+        )
+        # The shape Get-ADObject hands back: the default properties always, a requested attribute only
+        # where the object has a value; objectSid as bytes, as the directory stores it.
+        function ConvertTo-C10Answer {
+            param($O, [string[]]$Asked)
+            $a = [pscustomobject]@{ DistinguishedName = $O.Dn; Name = ($O.Dn -replace '^CN=([^,]+),.*$', '$1'); ObjectClass = $O.Class; ObjectGUID = [guid]::NewGuid() }
+            $map = @{ objectClass = $O.Class; sAMAccountName = $O.Sam; userAccountControl = $O.Uac; adminCount = $O.AdminCount; primaryGroupID = $O.PrimaryGroupId }
+            foreach ($k in @($map.Keys)) { if ($Asked -contains $k -and $null -ne $map[$k] -and [string]$map[$k] -ne '') { $a | Add-Member -NotePropertyName $k -NotePropertyValue $map[$k] -Force } }
+            if ($Asked -contains 'objectSid' -and $O.Sid -ne '') { $a | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue (New-C10SidBytes -Sid $O.Sid) }
+            if ($Asked -contains 'servicePrincipalName' -and @($O.Spns).Count -gt 0) { $a | Add-Member -NotePropertyName 'servicePrincipalName' -NotePropertyValue @($O.Spns) }
+            if ($Asked -contains 'member' -and @($O.Members).Count -gt 0) { $a | Add-Member -NotePropertyName 'member' -NotePropertyValue @($O.Members) }
+            if ($Asked -contains 'msDS-AllowedToDelegateTo' -and @($O.DelegateTo).Count -gt 0) { $a | Add-Member -NotePropertyName 'msDS-AllowedToDelegateTo' -NotePropertyValue @($O.DelegateTo) }
+            if ($Asked -contains 'msDS-AllowedToActOnBehalfOfOtherIdentity' -and $null -ne $O.Rbcd) { $a | Add-Member -NotePropertyName 'msDS-AllowedToActOnBehalfOfOtherIdentity' -NotePropertyValue $O.Rbcd }
+            return $a
+        }
+        # Faults by domain: 'Unreachable', 'AccessDenied', 'TimedOut' (every read of that domain), or
+        # 'DomainUnreachable' (Get-ADDomain alone).
+        $script:C10Fault = @{}
+        $script:C10Calls = @()
+        function Invoke-C10Fault {
+            param([string]$Server)
+            switch ([string]$script:C10Fault[$Server]) {
+                'Unreachable' { throw (New-Object C10Stub.ADServerDownException 'Unable to contact the server. This may be because this server does not exist.') }
+                'AccessDenied' { throw (New-Object System.UnauthorizedAccessException 'STUB: access is denied') }
+                'TimedOut' { throw (New-Object System.TimeoutException 'STUB: the operation timed out') }
+            }
+        }
+        function Get-C10State {
+            param([string[]]$Domains = @($script:C10Root, $script:C10North), [string[]]$Forest = @($script:C10Root, $script:C10North), [string[]]$Parts = @('Groups', 'Hygiene', 'Delegation'), $Config = $script:Pc)
+            $script:C10Dir = New-C10Directory
+            Get-AdfaPrivilegedState -Domains $Domains -ForestDomains $Forest -RootDomain $script:C10Root -AdParams @{} -Config $Config -Parts $Parts
+        }
+        function Get-C10AllRows { param($State, $Config = $script:Pc)
+            @(@(Get-AdfaPrivilegedAccount -State $State -Config $Config) + @(Get-AdfaPrivilegedHygiene -State $State -Config $Config) + @(Get-AdfaKerberosExposure -State $State -Config $Config)) }
+
+        $script:C10Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C10Main = @($script:C10Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C10Function { param([string]$Name)
+            return @($script:C10Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
+        function Get-C10Parameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C10Guard { param($Node)
+            $g = $Node.Parent
+            while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+            return $g.Clauses[0].Item1.Extent.Text }
+        # The section's own branch: the one-line branches that only add to $privParts are not it.
+        function Get-C10Branch { param([string]$Section)
+            return @($script:C10Main[0].FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $n.Clauses[0].Item1.Extent.Text -eq ("Test-SectionSelected '{0}' `$Sections" -f $Section) -and
+                        $n.Clauses[0].Item2.Extent.Text -notmatch '^\{\s*\$privParts \+= ' }.GetNewClosure(), $true)) }
+        # The functions of the row. Declared population: these 42, each found by name below.
+        $script:C10SectionNames = @('New-AdfaPrivilegedRow', 'ConvertTo-AdfaLdapSidFilterValue', 'ConvertTo-AdfaPrivInteger', 'ConvertTo-AdfaPrivRecord', 'Get-AdfaPrivReadClass',
+            'Get-AdfaPrivSearchRaw', 'Get-AdfaPrivObjectRaw', 'Get-AdfaPrivForestRaw', 'Get-AdfaPrivHeuristicsState', 'Get-AdfaPrivDcPopulationState', 'Get-AdfaPrivDnDomainPart',
+            'Get-AdfaPrivDomainDcList', 'Get-AdfaPrivDcMembershipGap', 'Get-AdfaPrivGroupSpec', 'Resolve-AdfaPrivDnDomain', 'New-AdfaPrivContext',
+            'Read-AdfaPrivObject', 'Read-AdfaPrivPrimary', 'Find-AdfaPrivGroup', 'Get-AdfaPrivUnresolvedText', 'Resolve-AdfaPrivGroupClosure', 'Get-AdfaPrivDelegationFilter',
+            'Get-AdfaKerberosRoastRaw', 'Get-AdfaPrivilegedState', 'Get-AdfaPrivNameList', 'Get-AdfaPrivLocateLead', 'Get-AdfaPrivMemberSummary', 'Get-AdfaPrivEmptyGroupVerdict',
+            'Get-AdfaPrivGroupCountVerdict', 'Get-AdfaPrivGroupPopulationVerdict', 'Get-AdfaPrivilegedAccount', 'Get-AdfaPrivProtectedSet', 'Get-AdfaPrivOrphanVerdict',
+            'Get-AdfaPrivAccountPopulation', 'Get-AdfaPrivSpnVerdict', 'Get-AdfaPrivDelegableVerdict', 'Get-AdfaPrivProtectedUsersVerdict', 'Get-AdfaPrivilegedHygiene',
+            'Get-AdfaKerberosRoastVerdict', 'Get-AdfaPrivDelegationVerdict', 'Get-AdfaKerberosExposure', 'Merge-AdfaPrivilegedConfig')
+        $c10Names = @($script:C10SectionNames)
+        $script:C10SectionFunctions = @($script:C10Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $c10Names -contains $n.Name }.GetNewClosure(), $true))
+        $script:C10Hostile = 'krbtgt Backup Operators replication global catalog stale leftover NOT a pass tombstone lifetime delegation pdc emulator event 1106 on dc1 certificate template enrol lingering object C:\Backup\stale-aging.json kerberoast as-rep sysvol clock'
+    }
+
+    BeforeEach {
+        # The AD cmdlets the seams call, answered from the fake directory. The CI runner has no
+        # ActiveDirectory module: these are the only implementations it sees.
+        $script:C10Fault = @{}
+        $script:C10Calls = @()
+        $script:C10DomainMode = @{}
+        function Get-ADDomain {
+            param([string]$Identity, [string]$Server, $Credential, $ErrorAction)
+            $script:C10Calls += ("Get-ADDomain {0}@{1}" -f $Identity, $Server)
+            if ([string]$script:C10Fault[$Identity] -eq 'DomainUnreachable') { throw (New-Object C10Stub.ADServerDownException 'Unable to contact the server.') }
+            Invoke-C10Fault -Server $Identity
+            $sid = @{ 'contoso.com' = $script:C10RootSid; 'north.contoso.com' = $script:C10NorthSid; 'south.contoso.com' = 'S-1-5-21-1000-2000-3002' }[$Identity]
+            $dn = @{ 'contoso.com' = $script:C10RootDn; 'north.contoso.com' = $script:C10NorthDn; 'south.contoso.com' = 'DC=south,DC=contoso,DC=com' }[$Identity]
+            $mode = 'Windows2016Domain'
+            if ($null -ne $script:C10DomainMode -and $script:C10DomainMode.ContainsKey($Identity)) { $mode = $script:C10DomainMode[$Identity] }
+            [pscustomobject]@{ DNSRoot = $Identity; DistinguishedName = $dn; DomainSID = $sid; DomainMode = $mode }
+        }
+        function Get-ADRootDSE {
+            param([string]$Server, $Credential, $ErrorAction)
+            if ([string]$script:C10Fault['config'] -eq 'Unreachable') { throw (New-Object C10Stub.ADServerDownException 'Unable to contact the server.') }
+            [pscustomobject]@{ configurationNamingContext = $script:C10Cfg }
+        }
+        function Get-ADUser {
+            param([string]$LDAPFilter, [string]$Server, [string[]]$Properties, $Credential, $ErrorAction)
+            Invoke-C10Fault -Server $Server
+            if ($LDAPFilter -match 'servicePrincipalName') { return [pscustomobject]@{ SamAccountName = 'svc.sql'; Enabled = $true } }
+            return
+        }
+        function Get-ADObject {
+            param([string]$Identity, [string]$Server, [string[]]$Properties, [string]$LDAPFilter, [string]$SearchBase, [string]$SearchScope, $Credential, $ErrorAction, [int]$ResultSetSize = 0)
+            # The cmdlet's -ResultSetSize: at most that many objects are returned.
+            if ($ResultSetSize -gt 0) {
+                $sizeArgs = @{} + $PSBoundParameters
+                [void]$sizeArgs.Remove('ResultSetSize')
+                return @(Get-ADObject @sizeArgs | Select-Object -First $ResultSetSize)
+            }
+            foreach ($p in @($Properties)) { if ([string]$p -match '[*?]') { throw 'STUB: a wildcard property list was sent' } }
+            if ($SearchBase -like ('CN=Sites,{0}' -f $script:C10Cfg)) {
+                if ([string]$script:C10Fault['config'] -eq 'AccessDenied') { throw (New-Object System.UnauthorizedAccessException 'STUB: configuration refused') }
+                if ($LDAPFilter -eq '(objectClass=nTDSDSA)') { return @($script:C10Dsas | ForEach-Object { [pscustomobject]@{ DistinguishedName = $_; ObjectClass = 'nTDSDSA' } }) }
+                if ($LDAPFilter -eq '(objectClass=server)') { return @($script:C10Servers | ForEach-Object { [pscustomobject]@{ DistinguishedName = $_.Dn; ObjectClass = 'server'; serverReference = $_.Ref } }) }
+                throw ("STUB: no configuration search '{0}'" -f $LDAPFilter)
+            }
+            if ($Identity -like 'CN=Directory Service,*') {
+                $o = [pscustomobject]@{ DistinguishedName = $Identity; ObjectClass = 'nTDSService' }
+                if ($null -ne $script:C10Heuristics) { $o | Add-Member -NotePropertyName 'dSHeuristics' -NotePropertyValue $script:C10Heuristics }
+                return $o
+            }
+            $script:C10Calls += ("Get-ADObject {0}{1}@{2}" -f $Identity, $LDAPFilter, $Server)
+            Invoke-C10Fault -Server $Server
+            $inDomain = @($script:C10Dir.Values | Where-Object { $_.Domain -eq $Server })
+            # 'Blind': what an account without read rights on these attributes sees - the objects answer
+            # without them, and a search on them matches nothing. No error is raised.
+            $blindAttrs = @('member', 'adminCount', 'userAccountControl', 'primaryGroupID', 'msDS-AllowedToDelegateTo', 'msDS-AllowedToActOnBehalfOfOtherIdentity')
+            $blind = ([string]$script:C10Fault[$Server] -eq 'Blind')
+            if ($blind) {
+                $Properties = @($Properties | Where-Object { $blindAttrs -notcontains $_ })
+                if ($LDAPFilter -match '^\((primaryGroupID|adminCount)=' -or $LDAPFilter -eq (Get-AdfaPrivDelegationFilter -Config $script:Pc)) { return }
+            }
+            if ($Identity -ne '') {
+                $o = $script:C10Dir[$Identity.ToLowerInvariant()]
+                if ($null -eq $o -or $o.Domain -ne $Server) { throw (New-Object C10Stub.ADIdentityNotFoundException ("Cannot find an object with identity: '{0}'" -f $Identity)) }
+                return (ConvertTo-C10Answer -O $o -Asked $Properties)
+            }
+            if ($LDAPFilter -match '^\(objectSid=(.+)\)$') {
+                $wanted = $Matches[1]
+                return @($inDomain | Where-Object { $_.Sid -ne '' -and (ConvertTo-AdfaLdapSidFilterValue -Sid $_.Sid) -eq $wanted } | ForEach-Object { ConvertTo-C10Answer -O $_ -Asked $Properties })
+            }
+            if ($LDAPFilter -match '^\(primaryGroupID=(\d+)\)$') {
+                $rid = [int]$Matches[1]
+                return @($inDomain | Where-Object { $null -ne $_.PrimaryGroupId -and [int]$_.PrimaryGroupId -eq $rid } | ForEach-Object { ConvertTo-C10Answer -O $_ -Asked $Properties })
+            }
+            if ($LDAPFilter -eq '(adminCount=1)') { return @($inDomain | Where-Object { $_.AdminCount -eq 1 } | ForEach-Object { ConvertTo-C10Answer -O $_ -Asked $Properties }) }
+            if ($LDAPFilter -eq (Get-AdfaPrivDelegationFilter -Config $script:Pc)) {
+                return @($inDomain | Where-Object { ($null -ne $_.Uac -and ((([int64]$_.Uac) -band 524288) -ne 0 -or (([int64]$_.Uac) -band 16777216) -ne 0)) -or @($_.DelegateTo).Count -gt 0 -or $null -ne $_.Rbcd } | ForEach-Object { ConvertTo-C10Answer -O $_ -Asked $Properties })
+            }
+            throw ("STUB: no answer for '{0}{1}'" -f $Identity, $LDAPFilter)
+        }
+        # The C9 converter, which reads a real descriptor on Windows only: here the RBCD marker becomes
+        # the record the real converter returns (one allow ACE, one deny ACE).
+        function ConvertTo-AdfaAclDescriptor {
+            param($Value)
+            if ([string]$Value -eq 'C10-RBCD') {
+                return [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; OwnerSid = 'S-1-5-32-544'; AceCount = 2; Aces = @((New-C10Ace -Sid 'S-1-5-21-1000-2000-3000-1203'), (New-C10Ace -Sid 'S-1-5-21-1000-2000-3000-1300' -Allow $false)) }
+            }
+            return [pscustomobject]@{ Ok = $false; Class = 'Unparseable'; Error = 'STUB: not a descriptor'; OwnerSid = ''; AceCount = 0; Aces = @() }
+        }
+        $script:C10Heuristics = $null
+    }
+
+    Context 'Section wiring' {
+        It 'adds no -Sections value: PrivilegedAccounts, PrivilegedHygiene and Kerberos are the three values, all in the default All run' {
+            $param = @($script:C10Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $param.Count | Should -Be 1
+            $values = @(@($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })[0].PositionalArguments | ForEach-Object { $_.Value })
+            foreach ($v in @('PrivilegedAccounts', 'PrivilegedHygiene', 'Kerberos')) { $values | Should -Contain $v; Test-SectionSelected $v @('All') | Should -BeTrue }
+            $values | Should -Contain 'Acl'   # non-vacuity: the list really was read
+            # MsdcsDelegation is the _msdcs DNS delegation check, not Kerberos delegation.
+            (@($values | Where-Object { $_ -match '(?i)privileg|deleg|kerberos|admincount' } | Sort-Object) -join ',') | Should -Be 'Kerberos,MsdcsDelegation,PrivilegedAccounts,PrivilegedHygiene'
+        }
+        It 'reads the directory ONCE for the three sections, before their branches, with the scoped domains, the forest, the root, the AD parameters, the config and the parts selected' {
+            $script:C10Main.Count | Should -Be 1
+            $calls = @($script:C10Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaPrivilegedState' }, $true))
+            # Declared population: one state read per run.
+            $calls.Count | Should -Be 1
+            $expected = [ordered]@{ Domains = '$targetDomains'; ForestDomains = '@($forest.Domains)'; RootDomain = '$rootDomain'; AdParams = '$adParams'; Config = '$privConfig'; Parts = '$privParts' }
+            @($expected.Keys).Count | Should -Be 6
+            foreach ($p in @($expected.Keys)) {
+                $given = Get-C10Parameter -Call $calls[0] -Name $p
+                $given | Should -Not -BeNullOrEmpty -Because "the state read must be given -$p"
+                $given.Extent.Text | Should -Be $expected[$p] -Because "-$p must carry that value"
+            }
+            (Get-C10Guard $calls[0]) | Should -Be '@($privParts).Count -gt 0 -and -not $forestError'
+            $configAssigns = @($script:C10Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$privConfig' }, $true))
+            $configAssigns.Count | Should -Be 2
+            $configAssigns[0].Right.Extent.Text | Should -Be '$script:Config.Privileged'
+            $configAssigns[1].Right.Extent.Text | Should -Be "`$configOverrides['Privileged']"
+            Get-C10Guard $configAssigns[1] | Should -Be "`$configOverrides.ContainsKey('Privileged')"
+            # The state read comes before every one of the three branches.
+            foreach ($section in @('PrivilegedAccounts', 'PrivilegedHygiene', 'Kerberos')) {
+                $branch = @(Get-C10Branch -Section $section)
+                $branch.Count | Should -Be 1 -Because "one $section branch"
+                $calls[0].Extent.StartOffset | Should -BeLessThan $branch[0].Extent.StartOffset
+            }
+            # Each part is asked for by the sections that need it, and only by them.
+            $partAssigns = @($script:C10Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$privParts' }, $true))
+            $partAssigns.Count | Should -Be 4
+            $partAssigns[0].Right.Extent.Text | Should -Be '@()'
+            (@($partAssigns | Select-Object -Skip 1 | ForEach-Object { "{0} => {1}" -f (Get-C10Guard $_), $_.Right.Extent.Text }) -join ' | ') |
+                Should -Be "Test-SectionSelected 'PrivilegedAccounts' `$Sections => 'Groups' | Test-SectionSelected 'PrivilegedHygiene' `$Sections => @('Groups', 'Hygiene') | Test-SectionSelected 'Kerberos' `$Sections => 'Delegation'"
+        }
+        It 'builds each section from the shared state, with a forest-unreadable row, and keeps the report section names' {
+            $spec = @(
+                @{ Section = 'PrivilegedAccounts'; Builder = 'Get-AdfaPrivilegedAccount'; Rows = '$paRows'; Data = "`$sectionData['Privileged Accounts']" }
+                @{ Section = 'PrivilegedHygiene'; Builder = 'Get-AdfaPrivilegedHygiene'; Rows = '$phRows'; Data = "`$sectionData['Privileged Hygiene']" }
+                @{ Section = 'Kerberos'; Builder = 'Get-AdfaKerberosExposure'; Rows = '$kRows'; Data = "`$sectionData['Kerberos Exposure']" }
+            )
+            # Declared population: the three sections.
+            $spec.Count | Should -Be 3
+            foreach ($s in $spec) {
+                $body = @(Get-C10Branch -Section $s.Section)[0].Clauses[0].Item2
+                $calls = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq $s.Builder }.GetNewClosure(), $true))
+                $calls.Count | Should -Be 1 -Because "$($s.Section) calls $($s.Builder) once"
+                (Get-C10Parameter -Call $calls[0] -Name 'State').Extent.Text | Should -Be '$privState'
+                (Get-C10Parameter -Call $calls[0] -Name 'Config').Extent.Text | Should -Be '$privConfig'
+                (Get-C10Parameter -Call $calls[0] -Name 'DomainName') | Should -BeNullOrEmpty
+                Get-C10Guard $calls[0] | Should -Be '$forestError'
+                $rowAssign = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq $s.Rows }.GetNewClosure(), $true))
+                $rowAssign.Count | Should -Be 2
+                $rowAssign[0].Right.Extent.Text | Should -Match 'New-AdfaPrivilegedRow '
+                $rowAssign[0].Right.Extent.Text | Should -Match "-Status `\`$script:Status.NotAssessed"
+                $data = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq $s.Data }.GetNewClosure(), $true))
+                $data.Count | Should -Be 1
+                $data[0].Right.Extent.Text | Should -Be ("@({0})" -f $s.Rows)
+                @($script:C10Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq $s.Builder }.GetNewClosure(), $true)).Count | Should -Be 1
+            }
+        }
+        It 'is registered for -ConfigOverridePath under Privileged, used by PrivilegedAccounts and also by PrivilegedHygiene and Kerberos, with its own validator' {
+            # Declared population: the nine sections the file can carry (Privileged since v1.27.0, PORT-PLAN C10).
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged'
+            $entry = $script:ConfigOverrideSections['Privileged']
+            [string]$entry['ConfigKey'] | Should -Be 'Privileged'
+            [string]$entry['Section'] | Should -Be 'PrivilegedAccounts'
+            (@($entry['AlsoUsedBy']) -join ',') | Should -Be 'PrivilegedHygiene,Kerberos'
+            [string]$entry['Merge'] | Should -Be 'Merge-AdfaPrivilegedConfig'
+            Get-Command -Name 'Merge-AdfaPrivilegedConfig' -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+            # The "validated but not used" log reads AlsoUsedBy as well, so a run selecting only Kerberos does not call the table unused.
+            $logIf = @($script:C10Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$usedBy' }, $true))
+            $logIf.Count | Should -Be 1
+            $logIf[0].Right.Extent.Text | Should -Match "AlsoUsedBy"
+        }
+        It 'retires the old collectors: no Get-ADGroupMember, no DC exclusion by name, no dead PrivilegedGroupRids' {
+            foreach ($f in $script:C10SectionFunctions) {
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -match '^(Get-ADGroupMember|Get-ADDomainController|Get-ADGroup)$' }, $true)).Count | Should -Be 0 -Because "$($f.Name) reads groups by SID through Get-ADObject"
+            }
+            $script:Config.ContainsKey('PrivilegedGroupRids') | Should -BeFalse
+            $script:Config.ContainsKey('BuiltinAdministrators') | Should -BeFalse
+            $script:Config.ContainsKey('Privileged') | Should -BeTrue   # non-vacuity
+        }
+        It 'reads through its seams only, with four named AD cmdlets, and nothing that writes' {
+            # Declared population: the section's functions, every one found.
+            $script:C10SectionFunctions.Count | Should -Be $script:C10SectionNames.Count
+            $adCalls = @()
+            foreach ($f in $script:C10SectionFunctions) {
+                $names = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+                @($names | Where-Object { $_ -match '(?i)^(Set|New|Remove|Add|Clear|Move|Rename|Enable|Disable|Reset|Update|Invoke|Import|Export|Start|Stop|Restore|Sync|Grant|Revoke|Unlock)-(AD(?!fa)|Cim|Item|Acl|WmiObject)' }).Count | Should -Be 0 -Because "$($f.Name) must not call a state-changing cmdlet"
+                @($names | Where-Object { $_ -match '(?i)^(Set-ADAccountControl|Add-ADGroupMember|Set-ADUser|Set-ADComputer|Set-ADObject|dsacls|netdom|nltest|dcdiag|repadmin|ntdsutil|ldifde|setspn)(\.exe)?$|^Invoke-Expression$|^Invoke-ExternalCommand$' }).Count | Should -Be 0 -Because "$($f.Name) must not run a tool or a write"
+                $members = @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] }, $true) | ForEach-Object { [string]$_.Member.Extent.Text })
+                @($members | Where-Object { $_ -match '(?i)^(Put|PutEx|SetInfo|CommitChanges|InvokeSet|Invoke|Persist|ModifyRequest)$' }).Count | Should -Be 0 -Because "$($f.Name) must not write through ADSI or System.DirectoryServices"
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -match '(?i)^(Replace|Add|Remove|Clear|Instance)$' }, $true)).Count | Should -Be 0 -Because "$($f.Name) must not pass a write parameter"
+                @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -match '(?i)RunProtectAdminGroupsTask' }, $true)).Count | Should -Be 0 -Because "$($f.Name) must never trigger SDProp"
+                $adCalls += @($names | Where-Object { $_ -match '(?i)^Get-AD(?!fa)' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
+            }
+            # Declared population: the directory reads of the row, each in its seam (Get-ADDomain is read
+            # through the C9 seam Get-AdfaAclDomainRaw, reused).
+            ($adCalls -join ',') | Should -Be 'Get-AdfaPrivSearchRaw:Get-ADObject,Get-AdfaPrivObjectRaw:Get-ADObject,Get-AdfaPrivForestRaw:Get-ADRootDSE,Get-AdfaKerberosRoastRaw:Get-ADUser,Get-AdfaKerberosRoastRaw:Get-ADUser'
+            $state = @(Get-C10Function -Name 'Get-AdfaPrivilegedState')
+            @($state[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaAclDomainRaw' }, $true)).Count | Should -Be 1
+        }
+        It 'asks for named attributes only, from the config table, and never for a secret or a wildcard' {
+            $assigned = @()
+            foreach ($f in $script:C10SectionFunctions) {
+                $assigned += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Left.Member.Extent.Text -eq 'Properties' }, $true) | ForEach-Object { [string]$_.Right.Extent.Text })
+            }
+            # Declared population: the two splatted lists, in the two Get-ADObject seams.
+            ($assigned -join ' | ') | Should -Be '@($names) | @($names)'
+            foreach ($list in @('ObjectProperties', 'DelegationProperties', 'DsaProperties', 'ServerProperties', 'HeuristicsProperties')) {
+                $values = @($script:Pc[$list])
+                $values.Count | Should -BeGreaterThan 0
+                @($values | Where-Object { $_ -match '[*?]' -or $_ -match '(?i)password|unicodePwd|msLAPS|ms-Mcs' }).Count | Should -Be 0 -Because "$list holds named, non-secret attributes"
+            }
+            (@($script:Pc['ObjectProperties']) -join ',') | Should -Be 'objectClass,objectSid,sAMAccountName,userAccountControl,adminCount,servicePrincipalName,primaryGroupID,member'
+            (@($script:Pc['DelegationProperties']) -join ',') | Should -Be 'objectClass,objectSid,sAMAccountName,userAccountControl,primaryGroupID,msDS-AllowedToDelegateTo,msDS-AllowedToActOnBehalfOfOtherIdentity'
+        }
+        It 'documents the three sections and the Privileged override key in the help' {
+            $help = $script:C10Ast.GetHelpContent()
+            ([string]$help.Description -replace '\s+', ' ') | Should -Match 'Schema Admins and Enterprise Admins'
+            ([string]$help.Description -replace '\s+', ' ') | Should -Match 'protocol transition'
+            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'primaryGroupID'
+            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'serverReference'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Nine sections can be named'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Privileged"'
+            [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'EnterpriseAdminsExemptRootAdministrator'
+        }
+        It 'has the reworked rows in the README Coverage table, and a README section of its own' {
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($readme | Where-Object { $_ -match '^\| Privilege \|' })
+            $row.Count | Should -Be 1
+            $row[0] | Should -Match 'SID'
+            $krb = @($readme | Where-Object { $_ -match '^\| Kerberos exposure \|' })
+            $krb.Count | Should -Be 1
+            $krb[0] | Should -Match 'protocol transition'
+            @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
+            @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
+        }
+        It 'carries the same version in the script and the manifest: 1.27.0 (bumped by PORT-PLAN C10)' {
+            [string]$script:Config.Version | Should -Be '1.27.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.27.0'
+        }
+    }
+
+    Context 'Config table' {
+        It 'holds the tool defaults, labelled as such, the read date and its sources' {
+            [string]$script:Pc['ReadDate'] | Should -Be '2026-11-16'
+            [string]$script:Pc['ThresholdSource'] | Should -Match 'tool default'
+            [string]$script:Pc['ThresholdSource'] | Should -Match 'not a Microsoft value'
+            [string]$script:Pc['SourceUrl'] | Should -Match 'appendix-c--protected-accounts-and-groups-in-active-directory'
+            $statuses = @('SchemaAdminsStatus', 'EnterpriseAdminsStatus', 'OrphanStatus', 'PrivilegedSpnStatus', 'DelegableStatus', 'UnconstrainedStatus', 'ProtocolTransitionStatus', 'RbcdStatus')
+            # Declared population: the eight grades.
+            $statuses.Count | Should -Be 8
+            foreach ($s in $statuses) { [string]$script:Pc[$s] | Should -Be 'Warning' -Because "$s is the catalogue's Warning" }
+            [bool]$script:Pc['EnterpriseAdminsExemptRootAdministrator'] | Should -BeFalse
+            [int]$script:Pc['NameListCap'] | Should -Be 25
+            [int]$script:Pc['MaxExpandedObjects'] | Should -Be 5000
+            # Declared population: the two range-retrieval sizes the docs name (1500 default MaxValRange, 5000 hard-coded).
+            (@($script:Pc['MemberRangeLimits']) -join ',') | Should -Be '1500,5000'
+            # Declared population: the DomainMode values at or above 2012 R2 (3) and below it (6), Set-ADDomainMode's list less UnknownDomain.
+            (@($script:Pc['ProtectedUsersDelegationModes']) -join ',') | Should -Be 'Windows2012R2Domain,Windows2016Domain,Windows2025Domain'
+            @($script:Pc['BelowProtectedUsersModes']).Count | Should -Be 6
+        }
+        It 'holds the userAccountControl bits Learn publishes, as decimals' {
+            $u = $script:Pc['Uac']
+            [int64]$u['AccountDisable'] | Should -Be 2
+            [int64]$u['ServerTrust'] | Should -Be 8192
+            [int64]$u['TrustedForDelegation'] | Should -Be 0x80000
+            [int64]$u['NotDelegated'] | Should -Be 0x100000
+            [int64]$u['TrustedToAuthForDelegation'] | Should -Be 0x1000000
+            [int64]$u['PartialSecrets'] | Should -Be 0x4000000
+            Get-AdfaPrivDelegationFilter -Config $script:Pc | Should -Be '(|(userAccountControl:1.2.840.113556.1.4.803:=524288)(userAccountControl:1.2.840.113556.1.4.803:=16777216)(msDS-AllowedToDelegateTo=*)(msDS-AllowedToActOnBehalfOfOtherIdentity=*))'
+        }
+        It 'holds the Appendix C protected groups by SID or RID, plus Enterprise Read-only Domain Controllers, and three unprotected groups' {
+            $groups = @($script:Pc['Groups'])
+            # Declared population: the 17 groups of the table.
+            $groups.Count | Should -Be 17
+            $protected = @($groups | Where-Object { [bool]$_['Protected'] } | ForEach-Object { if ($_['Scope'] -eq 'Builtin') { $_['Sid'] } else { "{0}:{1}" -f $_['Scope'], $_['Rid'] } } | Sort-Object)
+            # Enterprise Key Admins (-527) is a forest-root group (Learn, domain-wide-updates, Operation 85).
+            ($protected -join ',') | Should -Be 'Domain:512,Domain:516,Domain:521,Domain:526,ForestRoot:498,ForestRoot:518,ForestRoot:519,ForestRoot:527,S-1-5-32-544,S-1-5-32-548,S-1-5-32-549,S-1-5-32-550,S-1-5-32-551,S-1-5-32-552'
+            $other = @($groups | Where-Object { -not [bool]$_['Protected'] } | ForEach-Object { [int]$_['Rid'] } | Sort-Object)
+            ($other -join ',') | Should -Be '517,520,525'
+            (@($script:Pc['ProtectedAccountRids']) -join ',') | Should -Be '500,502'
+            # Appendix C's 15 entries: 13 groups here plus Administrator and krbtgt by RID; -498 is the security-groups page's addition.
+            ($protected.Count + @($script:Pc['ProtectedAccountRids']).Count) | Should -Be 16
+            # No group is located by name: every one has a SID or a RID.
+            @($groups | Where-Object { -not $_.ContainsKey('Sid') -and -not $_.ContainsKey('Rid') }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Pure: SID filter value, record conversion and DN routing' {
+        It 'encodes a SID for an objectSid filter exactly as Learn''s example does' {
+            # Learn (how-to-specify-comparison-values): S-1-5-21-1935655697-308236825-1417001333 is
+            # \01\04\00\00\00\00\00\05\15\00\00\00\11\C3\5Fs\19R\5F\12u\B9uT (s, R, u, u, T are 73, 52, 75, 75, 54).
+            ConvertTo-AdfaLdapSidFilterValue -Sid 'S-1-5-21-1935655697-308236825-1417001333' | Should -Be '\01\04\00\00\00\00\00\05\15\00\00\00\11\c3\5f\73\19\52\5f\12\75\b9\75\54'
+            ConvertTo-AdfaLdapSidFilterValue -Sid 'S-1-5-32-544' | Should -Be '\01\02\00\00\00\00\00\05\20\00\00\00\20\02\00\00'
+            ConvertTo-AdfaLdapSidFilterValue -Sid 'S-1-5-21-1-2-3-4294967295' | Should -Match '\\ff\\ff\\ff\\ff$'
+            ConvertTo-AdfaLdapSidFilterValue -Sid 'Domain Admins' | Should -Be ''
+            ConvertTo-AdfaLdapSidFilterValue -Sid '' | Should -Be ''
+        }
+        It 'reads a directory object into a record, with the SID from bytes, the bits from userAccountControl and nothing assumed for an absent attribute' {
+            $o = [pscustomobject]@{ DistinguishedName = 'CN=adm.bob,CN=Users,DC=contoso,DC=com'; Name = 'adm.bob'; objectClass = @('top', 'person', 'organizationalPerson', 'user')
+                objectSid = (New-C10SidBytes -Sid "$($script:C10RootSid)-1102"); sAMAccountName = 'adm.bob'; userAccountControl = 514; servicePrincipalName = @('HTTP/a', 'HTTP/b') }
+            $r = ConvertTo-AdfaPrivRecord -Object $o -Config $script:Pc
+            $r.Kind | Should -Be 'User'
+            $r.Sid | Should -Be "$($script:C10RootSid)-1102"
+            [int64]$r.Rid | Should -Be 1102
+            $r.Enabled | Should -BeFalse
+            @($r.Spns).Count | Should -Be 2
+            $r.AdminCount | Should -BeNullOrEmpty
+            @($r.Members).Count | Should -Be 0
+            $r.HasRbcd | Should -BeFalse
+            $noUac = ConvertTo-AdfaPrivRecord -Object ([pscustomobject]@{ DistinguishedName = 'CN=x,DC=contoso,DC=com'; objectClass = 'computer' }) -Config $script:Pc
+            $noUac.Kind | Should -Be 'Computer'
+            $noUac.Uac | Should -BeNullOrEmpty
+            $noUac.Enabled | Should -BeNullOrEmpty
+            (ConvertTo-AdfaPrivRecord -Object ([pscustomobject]@{ DistinguishedName = 'CN=S-1-5-11,CN=ForeignSecurityPrincipals,DC=contoso,DC=com'; objectClass = 'foreignSecurityPrincipal'; objectSid = 'S-1-5-11' }) -Config $script:Pc).Kind | Should -Be 'Foreign'
+        }
+        It 'routes a DN to the scoped domain that holds it, the longest suffix winning, and never guesses' {
+            $map = @{ 'contoso.com' = [pscustomobject]@{ Ok = $true; DomainDn = $script:C10RootDn }; 'north.contoso.com' = [pscustomobject]@{ Ok = $true; DomainDn = $script:C10NorthDn } }
+            (Resolve-AdfaPrivDnDomain -Dn 'CN=a,CN=Users,DC=north,DC=contoso,DC=com' -DomainMap $map -Scoped @('contoso.com', 'north.contoso.com')).Domain | Should -Be 'north.contoso.com'
+            (Resolve-AdfaPrivDnDomain -Dn 'CN=a,CN=Users,DC=contoso,DC=com' -DomainMap $map -Scoped @('contoso.com', 'north.contoso.com')).Domain | Should -Be 'contoso.com'
+            $out = Resolve-AdfaPrivDnDomain -Dn 'CN=a,CN=Users,DC=north,DC=contoso,DC=com' -DomainMap $map -Scoped @('contoso.com')
+            $out.Class | Should -Be 'OutOfScope'
+            $out.Why | Should -Match 'did not scope'
+            (Resolve-AdfaPrivDnDomain -Dn 'CN=a,DC=fabrikam,DC=com' -DomainMap $map -Scoped @('contoso.com')).Class | Should -Be 'OutOfScope'
+            $same = @{ 'contoso.com' = [pscustomobject]@{ Ok = $true; DomainDn = $script:C10RootDn }; 'south.contoso.com' = [pscustomobject]@{ Ok = $true; DomainDn = $script:C10RootDn } }
+            (Resolve-AdfaPrivDnDomain -Dn 'CN=a,DC=contoso,DC=com' -DomainMap $same -Scoped @('contoso.com', 'south.contoso.com')).Class | Should -Be 'Ambiguous'
+            $unread = @{ 'contoso.com' = [pscustomobject]@{ Ok = $true; DomainDn = $script:C10RootDn }; 'north.contoso.com' = [pscustomobject]@{ Ok = $false; DomainDn = '' } }
+            (Resolve-AdfaPrivDnDomain -Dn 'CN=a,DC=north,DC=contoso,DC=com' -DomainMap $unread -Scoped @('contoso.com')).Class | Should -Be 'Ambiguous'
+        }
+    }
+
+    Context 'Pure: transitive membership' {
+        It 'follows nested groups and primary groups, keeps a foreign principal by SID, records what it could not resolve, and survives a cycle' {
+            $ctx = New-AdfaPrivContext -DomainMap @{} -Config $script:Pc -Offline
+            $g1 = New-C10Record -Name 'G1' -Kind 'Group' -Sid "$($script:C10RootSid)-512" -Dn 'CN=G1,DC=contoso,DC=com' -Uac $null -Members @('CN=G2,DC=contoso,DC=com', 'CN=u1,DC=contoso,DC=com', 'CN=lost,DC=fabrikam,DC=com', 'CN=S-1-5-11,CN=ForeignSecurityPrincipals,DC=contoso,DC=com')
+            $g2 = New-C10Record -Name 'G2' -Kind 'Group' -Sid "$($script:C10RootSid)-1500" -Dn 'CN=G2,DC=contoso,DC=com' -Uac $null -Members @('CN=G1,DC=contoso,DC=com', 'CN=u2,DC=contoso,DC=com')
+            $u1 = New-C10Record -Name 'u1' -Sid "$($script:C10RootSid)-1601" -Dn 'CN=u1,DC=contoso,DC=com'
+            $u2 = New-C10Record -Name 'u2' -Sid "$($script:C10RootSid)-1602" -Dn 'CN=u2,DC=contoso,DC=com'
+            $u3 = New-C10Record -Name 'u3' -Sid "$($script:C10RootSid)-1603" -Dn 'CN=u3,DC=contoso,DC=com' -PrimaryGroupId 512
+            $fsp = New-C10Record -Name 'S-1-5-11' -Kind 'Foreign' -Sid 'S-1-5-11' -Dn 'CN=S-1-5-11,CN=ForeignSecurityPrincipals,DC=contoso,DC=com' -Uac $null
+            foreach ($r in @($g2, $u1, $u2, $fsp)) { $ctx['Objects'][$r.Dn.ToLowerInvariant()] = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Record = $r } }
+            $ctx['Objects']['cn=lost,dc=fabrikam,dc=com'] = [pscustomobject]@{ Ok = $false; Class = 'OutOfScope'; Error = 'it is not under any domain'; ErrorType = ''; Record = $null }
+            $ctx['Primary'][('{0}|512' -f $g1.Dn.ToLowerInvariant())] = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Records = @($u3) }
+            $c = Resolve-AdfaPrivGroupClosure -Group $g1 -Context $ctx -Config $script:Pc
+            # Declared population: u1 direct, u2 nested, u3 primary.
+            (@($c.Principals | ForEach-Object { "{0}={1}" -f $_.Record.Name, $_.Via } | Sort-Object) -join ',') | Should -Be 'u1=direct,u2=nested,u3=primary'
+            @($c.Groups).Count | Should -Be 1
+            @($c.Foreign).Count | Should -Be 1
+            $c.Foreign[0].Sid | Should -Be 'S-1-5-11'
+            @($c.Unresolved).Count | Should -Be 1
+            $c.Unresolved[0].Ref | Should -Be 'CN=lost,DC=fabrikam,DC=com'
+            $c.Unresolved[0].Reason | Should -Match '^out of scope'
+            $c.Complete | Should -BeFalse
+        }
+        It 'marks a member list cut at a range-retrieval limit as unresolved, and a primary-group search that failed too' {
+            $ctx = New-AdfaPrivContext -DomainMap @{} -Config $script:Pc -Offline
+            $members = @(1..1500 | ForEach-Object { "CN=u$_,DC=contoso,DC=com" })
+            foreach ($m in $members) { $ctx['Objects'][$m.ToLowerInvariant()] = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Record = (New-C10Record -Name 'u' -Dn $m) } }
+            $big = New-C10Record -Name 'Big' -Kind 'Group' -Sid 'S-1-5-32-544' -Dn 'CN=Big,DC=contoso,DC=com' -Uac $null -Members $members
+            $c = Resolve-AdfaPrivGroupClosure -Group $big -Context $ctx -Config $script:Pc
+            @($c.Principals).Count | Should -Be 1500
+            $c.Complete | Should -BeFalse
+            $c.Unresolved[0].Reason | Should -Match 'exactly 1500 values'
+            $ok = New-C10Record -Name 'Ok' -Kind 'Group' -Sid 'S-1-5-32-544' -Dn 'CN=Ok,DC=contoso,DC=com' -Uac $null -Members @($members | Select-Object -First 1499)
+            (Resolve-AdfaPrivGroupClosure -Group $ok -Context $ctx -Config $script:Pc).Complete | Should -BeTrue
+            $da = New-C10Record -Name 'DA' -Kind 'Group' -Sid "$($script:C10RootSid)-512" -Dn 'CN=DA,DC=contoso,DC=com' -Uac $null
+            $ctx['Primary']['cn=da,dc=contoso,dc=com|512'] = [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Error = 'STUB'; ErrorType = ''; Records = @() }
+            $p = Resolve-AdfaPrivGroupClosure -Group $da -Context $ctx -Config $script:Pc
+            $p.Complete | Should -BeFalse
+            $p.Unresolved[0].Ref | Should -Match '^primaryGroupID=512 of '
+            $p.Unresolved[0].Reason | Should -Match '^access denied'
+        }
+        It 'stops reading at MaxExpandedObjects and says so, never counting the rest as absent' {
+            $cfg = Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ([pscustomobject]@{ MaxExpandedObjects = 1 })
+            $map = @{ 'contoso.com' = [pscustomobject]@{ Ok = $true; DomainDn = $script:C10RootDn } }
+            $ctx = New-AdfaPrivContext -DomainMap $map -Scoped @('contoso.com') -Config $cfg
+            $script:C10Dir = New-C10Directory
+            $g = New-C10Record -Name 'G' -Kind 'Group' -Sid 'S-1-5-32-544' -Dn 'CN=Administrators,CN=Builtin,DC=contoso,DC=com' -Uac $null -Members @('CN=adm.alice,CN=Users,DC=contoso,DC=com', 'CN=adm.bob,CN=Users,DC=contoso,DC=com')
+            $c = Resolve-AdfaPrivGroupClosure -Group $g -Context $ctx -Config $cfg
+            @($c.Principals).Count | Should -Be 1
+            @($c.Unresolved).Count | Should -Be 1
+            $c.Unresolved[0].Reason | Should -Match 'read cap'
+        }
+    }
+
+    Context 'Pure: Schema Admins, Enterprise Admins, group counts and the population row' {
+        It 'passes an empty Schema Admins, warns at one member (the boundary), and fails closed when the group was not read' {
+            $group = New-C10Record -Name 'Schema Admins' -Kind 'Group' -Sid "$($script:C10RootSid)-518" -Uac $null
+            $empty = New-C10Entry -Key 'SchemaAdmins' -Sid "$($script:C10RootSid)-518" -Locate (New-C10Locate -Record $group) -Closure (New-C10Closure -Group $group)
+            $r = Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'SchemaAdmins' -Entry $empty -DomainSid $script:C10RootSid -Config $script:Pc
+            $r.Status | Should -Be 'Pass'
+            $r.Item | Should -Be 'Schema Admins members: contoso.com'
+            $r.CatalogueId | Should -Be 'ADA-PRIV-001'
+            $r.Count | Should -Be '0'
+            $one = New-C10Entry -Key 'SchemaAdmins' -Sid "$($script:C10RootSid)-518" -Locate (New-C10Locate -Record $group) -Closure (New-C10Closure -Group $group -Principals @((New-C10Record -Name 'adm.zed' -Sid "$($script:C10RootSid)-1900")))
+            $w = Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'SchemaAdmins' -Entry $one -DomainSid $script:C10RootSid -Config $script:Pc
+            $w.Status | Should -Be 'Warning'
+            $w.Count | Should -Be '1'
+            $w.Principals | Should -Be 'adm.zed'
+            $w.Detail | Should -Not -Match 'adm\.zed|S-1-5-21'
+            $w.Detail | Should -Match 'temporarily and occasionally'
+            $w.Detail | Should -Match 'tool default, not a Microsoft value'
+            foreach ($class in @('NotFound', 'AccessDenied', 'Unreachable', 'TimedOut')) {
+                $types = @{ NotFound = ''; AccessDenied = 'System.UnauthorizedAccessException'; Unreachable = 'C10Stub.ADServerDownException'; TimedOut = 'System.TimeoutException' }
+                $na = Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'SchemaAdmins' -Entry (New-C10Entry -Key 'SchemaAdmins' -Sid "$($script:C10RootSid)-518" -Locate (New-C10Locate -Class $class -Err 'STUB' -Type $types[$class])) -DomainSid $script:C10RootSid -Config $script:Pc
+                $na.Status | Should -Be 'Not Assessed' -Because $class
+                $na.Count | Should -Be '' -Because "$class measured nothing"
+            }
+            $lead = @{ AccessDenied = '^Access denied: '; Unreachable = '^Unreachable: '; TimedOut = '^Timed out: '; NotFound = '^Not found: ' }
+            foreach ($class in @($lead.Keys)) {
+                $types = @{ NotFound = ''; AccessDenied = 'System.UnauthorizedAccessException'; Unreachable = 'C10Stub.ADServerDownException'; TimedOut = 'System.TimeoutException' }
+                (Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'SchemaAdmins' -Entry (New-C10Entry -Key 'SchemaAdmins' -Sid 'x' -Locate (New-C10Locate -Class $class -Err 'STUB' -Type $types[$class])) -DomainSid $script:C10RootSid -Config $script:Pc).Detail | Should -Match $lead[$class]
+            }
+        }
+        It 'keeps a member found when other references are unresolved, and is Not Assessed when none was resolved' {
+            $group = New-C10Record -Name 'Enterprise Admins' -Kind 'Group' -Sid "$($script:C10RootSid)-519" -Uac $null
+            $partial = New-C10Entry -Key 'EnterpriseAdmins' -Sid "$($script:C10RootSid)-519" -Locate (New-C10Locate -Record $group) -Closure (New-C10Closure -Group $group -Principals @((New-C10Record -Name 'a' -Sid "$($script:C10RootSid)-1901")) -Unresolved @((New-C10Unresolved)))
+            $w = Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'EnterpriseAdmins' -Entry $partial -DomainSid $script:C10RootSid -Config $script:Pc
+            $w.Status | Should -Be 'Warning'
+            $w.Detail | Should -Match 'may be higher'
+            $w.Unresolved | Should -Match 'fabrikam'
+            $none = New-C10Entry -Key 'EnterpriseAdmins' -Sid "$($script:C10RootSid)-519" -Locate (New-C10Locate -Record $group) -Closure (New-C10Closure -Group $group -Unresolved @((New-C10Unresolved)))
+            (Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'EnterpriseAdmins' -Entry $none -DomainSid $script:C10RootSid -Config $script:Pc).Status | Should -Be 'Not Assessed'
+        }
+        It 'counts the forest root Administrator in Enterprise Admins by default, quoting Learn''s exception, and leaves it out only when the config says so' {
+            $group = New-C10Record -Name 'Enterprise Admins' -Kind 'Group' -Sid "$($script:C10RootSid)-519" -Uac $null
+            $admin = New-C10Record -Name 'Administrator' -Sid "$($script:C10RootSid)-500"
+            $entry = New-C10Entry -Key 'EnterpriseAdmins' -Sid "$($script:C10RootSid)-519" -Locate (New-C10Locate -Record $group) -Closure (New-C10Closure -Group $group -Principals @($admin))
+            $w = Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'EnterpriseAdmins' -Entry $entry -DomainSid $script:C10RootSid -Config $script:Pc
+            $w.Status | Should -Be 'Warning'
+            $w.CatalogueId | Should -Be 'ADA-PRIV-002'
+            $w.Detail | Should -Match 'default member of this group'
+            $w.Detail | Should -Match 'possible exception of the forest root domain''s Administrator'
+            $cfg = Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ([pscustomobject]@{ EnterpriseAdminsExemptRootAdministrator = $true })
+            $p = Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'EnterpriseAdmins' -Entry $entry -DomainSid $script:C10RootSid -Config $cfg
+            $p.Status | Should -Be 'Pass'
+            $p.ExcludedCount | Should -Be '1'
+            # A child domain's Administrator (RID 500 of another domain) is never exempt.
+            $child = New-C10Entry -Key 'EnterpriseAdmins' -Sid "$($script:C10RootSid)-519" -Locate (New-C10Locate -Record $group) -Closure (New-C10Closure -Group $group -Principals @((New-C10Record -Name 'Administrator' -Sid "$($script:C10NorthSid)-500")))
+            (Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'EnterpriseAdmins' -Entry $child -DomainSid $script:C10RootSid -Config $cfg).Status | Should -Be 'Warning'
+            # A Fail override grades it Fail.
+            $fail = Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ([pscustomobject]@{ EnterpriseAdminsStatus = 'Fail' })
+            (Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'EnterpriseAdmins' -Entry $entry -DomainSid $script:C10RootSid -Config $fail).Status | Should -Be 'Fail'
+        }
+        It 'counts a group as Info, never with a lower number when a reference is unresolved, and tells an optional absent group from one that must exist' {
+            $spec = @(Get-AdfaPrivGroupSpec -DomainSid $script:C10RootSid -IsRoot $true -Config $script:Pc | Where-Object { $_.Key -eq 'DomainAdmins' })[0]
+            $group = New-C10Record -Name 'Domain Admins' -Kind 'Group' -Sid "$($script:C10RootSid)-512" -Uac $null
+            $members = @((New-C10Record -Name 'a' -Sid "$($script:C10RootSid)-1"), (New-C10Record -Name 'w' -Kind 'Computer' -Sid "$($script:C10RootSid)-2"))
+            $entry = New-C10Entry -Key 'DomainAdmins' -Sid $spec.Sid -Locate (New-C10Locate -Record $group) -Closure (New-C10Closure -Group $group -Principals $members -Foreign @((New-C10Record -Name 'f' -Kind 'Foreign' -Sid 'S-1-5-21-9-9-9-1' -Uac $null)))
+            $r = Get-AdfaPrivGroupCountVerdict -Domain 'contoso.com' -Spec $spec -Entry $entry -Config $script:Pc
+            $r.Status | Should -Be 'Info'
+            $r.Item | Should -Be 'Privileged group: Domain Admins: contoso.com'
+            $r.Count | Should -Be '3'
+            $r.ForeignSids | Should -Be 'S-1-5-21-9-9-9-1'
+            $r.CatalogueId | Should -Be 'ADA-INV-005'
+            $partial = New-C10Entry -Key 'DomainAdmins' -Sid $spec.Sid -Locate (New-C10Locate -Record $group) -Closure (New-C10Closure -Group $group -Principals $members -Unresolved @((New-C10Unresolved)))
+            $n = Get-AdfaPrivGroupCountVerdict -Domain 'contoso.com' -Spec $spec -Entry $partial -Config $script:Pc
+            $n.Status | Should -Be 'Not Assessed'
+            $n.Count | Should -Be ''
+            (Get-AdfaPrivGroupCountVerdict -Domain 'contoso.com' -Spec $spec -Entry (New-C10Entry -Key 'DomainAdmins' -Sid $spec.Sid -Locate (New-C10Locate -Class 'NotFound')) -Config $script:Pc).Status | Should -Be 'Not Assessed'
+            $ka = @(Get-AdfaPrivGroupSpec -DomainSid $script:C10RootSid -Config $script:Pc | Where-Object { $_.Key -eq 'KeyAdmins' })[0]
+            $absent = Get-AdfaPrivGroupCountVerdict -Domain 'contoso.com' -Spec $ka -Entry (New-C10Entry -Key 'KeyAdmins' -Sid $ka.Sid -Locate (New-C10Locate -Class 'NotFound')) -Config $script:Pc
+            $absent.Status | Should -Be 'Info'
+            $absent.Detail | Should -Match '^Not present: '
+        }
+        It 'scopes the forest-root groups to the forest root only and every other group to every domain' {
+            $root = @(Get-AdfaPrivGroupSpec -DomainSid $script:C10RootSid -IsRoot $true -Config $script:Pc)
+            $child = @(Get-AdfaPrivGroupSpec -DomainSid $script:C10NorthSid -IsRoot $false -Config $script:Pc)
+            $root.Count | Should -Be 17
+            # Declared population: the 17 groups less the four forest-root groups (-498, -518, -519, -527).
+            $child.Count | Should -Be 13
+            @($child | Where-Object { $_.Key -match '^(SchemaAdmins|EnterpriseAdmins|EnterpriseReadOnlyDomainControllers|EnterpriseKeyAdmins)$' }).Count | Should -Be 0
+            @($root | Where-Object { $_.Key -eq 'EnterpriseKeyAdmins' })[0].Sid | Should -Be "$($script:C10RootSid)-527"
+            @($child | Where-Object { $_.Key -eq 'DomainAdmins' })[0].Sid | Should -Be "$($script:C10NorthSid)-512"
+            @($child | Where-Object { $_.Key -eq 'Administrators' })[0].Sid | Should -Be 'S-1-5-32-544'
+            @(Get-AdfaPrivGroupSpec -DomainSid '' -IsRoot $false -Config $script:Pc | Where-Object { $_.Key -eq 'DomainAdmins' })[0].Sid | Should -Be ''
+        }
+    }
+
+    Context 'Pure: adminCount orphans, SPNs and delegable accounts' {
+        BeforeAll {
+            function New-C10Protected {
+                param([object[]]$Members = @(), [hashtable]$BySid = @{}, [string[]]$Missing = @(), [bool]$PuKnown = $true, [string[]]$PuDns = @(), $PuEnforced = $true,
+                    [string]$ModeText = 'the domain functional level is Windows2016Domain')
+                $dns = @{}; foreach ($d in $PuDns) { $dns[$d.ToLowerInvariant()] = $true }
+                [pscustomobject]@{ Complete = (@($Missing).Count -eq 0); Missing = @($Missing); BySid = $BySid; ByDn = @{}; Members = @($Members); DomainSid = $script:C10RootSid
+                    ProtectedUsers = [pscustomobject]@{ Known = $PuKnown; Dns = $dns; Why = 'Protected Users was not read (access denied: STUB)'; DelegationEnforced = $PuEnforced; ModeText = $ModeText } }
+            }
+            # The domain's built-in Administrator, NOT_DELEGATED set and no SPN: always in the population.
+            $script:C10Admin = New-C10Record -Name 'Administrator' -Sid "$($script:C10RootSid)-500" -Uac (512 + 1048576)
+            $script:C10Heur0 = [pscustomobject]@{ Known = $true; MaskZero = $true; Character = '0'; Text = 'dSHeuristics is not set' }
+            $script:C10HeurSet = [pscustomobject]@{ Known = $true; MaskZero = $false; Character = '1'; Text = 'dwAdminSDExMask is 1' }
+        }
+        It 'warns on an adminCount=1 object outside every protected group, passes when none, and never calls Administrator or krbtgt an orphan' {
+            $alice = New-C10Record -Name 'adm.alice' -Sid "$($script:C10RootSid)-1101"
+            $erin = New-C10Record -Name 'old.erin' -Sid "$($script:C10RootSid)-1105"
+            $krbtgt = New-C10Record -Name 'krbtgt' -Sid "$($script:C10RootSid)-502" -Uac 514
+            $admin = New-C10Record -Name 'Administrator' -Sid "$($script:C10RootSid)-500"
+            $prot = New-C10Protected -BySid @{ ("$($script:C10RootSid)-1101") = @('DomainAdmins') }
+            $w = Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Records @($alice, $erin, $krbtgt, $admin)) -Protected $prot -Heuristics $script:C10Heur0 -Config $script:Pc
+            $w.Status | Should -Be 'Warning'
+            $w.Count | Should -Be '1'
+            $w.Principals | Should -Be 'old.erin'
+            $w.ExcludedCount | Should -Be '3'
+            $w.CatalogueId | Should -Be 'ADA-OBJ-001'
+            $w.Detail | Should -Match 'inference'
+            $w.Detail | Should -Not -Match 'old\.erin'
+            $p = Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Records @($alice, $krbtgt, $admin)) -Protected $prot -Heuristics $script:C10Heur0 -Config $script:Pc
+            $p.Status | Should -Be 'Pass'
+            $p.Count | Should -Be '0'
+        }
+        It 'is Not Assessed when the protected groups were not all read, when the search failed, and when only an operator group protects and dSHeuristics may exclude it' {
+            $erin = New-C10Record -Name 'old.erin' -Sid "$($script:C10RootSid)-1105"
+            $na = Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Records @($erin)) -Protected (New-C10Protected -Missing @('Enterprise Admins of contoso.com: not read')) -Heuristics $script:C10Heur0 -Config $script:Pc
+            $na.Status | Should -Be 'Not Assessed'
+            $na.Detail | Should -Match 'candidates only'
+            $failed = Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Ok $false -Class 'AccessDenied' -Err 'STUB: refused' -Type 'System.UnauthorizedAccessException') -Protected (New-C10Protected) -Heuristics $script:C10Heur0 -Config $script:Pc
+            $failed.Status | Should -Be 'Not Assessed'
+            $failed.Detail | Should -Match '^Access denied: '
+            $carol = New-C10Record -Name 'ops.carol' -Sid "$($script:C10RootSid)-1103"
+            # The domain's Administrator is always among the adminCount=1 objects (the declared population).
+            $admin = New-C10Record -Name 'Administrator' -Sid "$($script:C10RootSid)-500"
+            $prot = New-C10Protected -BySid @{ ("$($script:C10RootSid)-1103") = @('AccountOperators') }
+            (Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Records @($carol, $admin)) -Protected $prot -Heuristics $script:C10HeurSet -Config $script:Pc).Status | Should -Be 'Not Assessed'
+            (Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Records @($carol, $admin)) -Protected $prot -Heuristics $script:C10Heur0 -Config $script:Pc).Status | Should -Be 'Pass'
+            $both = New-C10Protected -BySid @{ ("$($script:C10RootSid)-1103") = @('AccountOperators', 'DomainAdmins') }
+            (Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Records @($carol, $admin)) -Protected $both -Heuristics $script:C10HeurSet -Config $script:Pc).Status | Should -Be 'Pass'
+        }
+        It 'reads dwAdminSDExMask from character 16 of dSHeuristics, an absent or short value being the documented 0' {
+            (Get-AdfaPrivHeuristicsState -Forest (New-C10Forest) -Config $script:Pc).MaskZero | Should -BeTrue
+            (Get-AdfaPrivHeuristicsState -Forest (New-C10Forest -Present $true -Value '00000000010000') -Config $script:Pc).MaskZero | Should -BeTrue
+            $set = Get-AdfaPrivHeuristicsState -Forest (New-C10Forest -Present $true -Value '000000000100000f') -Config $script:Pc
+            $set.MaskZero | Should -BeFalse
+            $set.Character | Should -Be 'f'
+            (Get-AdfaPrivHeuristicsState -Forest (New-C10Forest -Present $true -Value '0000000001000000') -Config $script:Pc).MaskZero | Should -BeTrue
+            $unread = Get-AdfaPrivHeuristicsState -Forest (New-C10Forest -HeurOk $false) -Config $script:Pc
+            $unread.Known | Should -BeFalse
+        }
+        It 'warns on an enabled privileged user with an SPN, leaves computers, disabled accounts and krbtgt out, and fails closed on gaps' {
+            $bob = New-C10Record -Name 'adm.bob' -Sid "$($script:C10RootSid)-1102" -Spns @('MSSQLSvc/sql1')
+            $off = New-C10Record -Name 'adm.off' -Sid "$($script:C10RootSid)-1110" -Uac 514 -Spns @('HTTP/x')
+            $pc = New-C10Record -Name 'PC1$' -Kind 'Computer' -Sid "$($script:C10RootSid)-1111" -Uac 4096 -Spns @('HOST/pc1')
+            $krb = New-C10Record -Name 'krbtgt' -Sid "$($script:C10RootSid)-502" -Uac 512 -Spns @('kadmin/changepw')
+            $pop = Get-AdfaPrivAccountPopulation -Protected (New-C10Protected -Members @($bob, $pc, $krb)) -AdminCount (New-C10Search -Records @($off)) -Config $script:Pc -IncludeAdminCount
+            # Declared population: the two users of this domain (bob, off); the computer and krbtgt are not in it.
+            (@($pop.Records | ForEach-Object { $_.Name } | Sort-Object) -join ',') | Should -Be 'adm.bob,adm.off'
+            $w = Get-AdfaPrivSpnVerdict -Domain 'contoso.com' -Population $pop -Config $script:Pc
+            $w.Status | Should -Be 'Warning'
+            $w.Count | Should -Be '1'
+            $w.Principals | Should -Be 'adm.bob'
+            $w.Targets | Should -Match 'MSSQLSvc/sql1'
+            $w.Detail | Should -Not -Match 'MSSQLSvc|adm\.bob'
+            $w.CatalogueId | Should -Be 'ADA-OBJ-006'
+            $clean = Get-AdfaPrivAccountPopulation -Protected (New-C10Protected -Members @($off, $script:C10Admin)) -AdminCount (New-C10Search) -Config $script:Pc -IncludeAdminCount
+            (Get-AdfaPrivSpnVerdict -Domain 'contoso.com' -Population $clean -Config $script:Pc).Status | Should -Be 'Pass'
+            $gap = Get-AdfaPrivAccountPopulation -Protected (New-C10Protected -Members @($off) -Missing @('x')) -AdminCount (New-C10Search) -Config $script:Pc -IncludeAdminCount
+            (Get-AdfaPrivSpnVerdict -Domain 'contoso.com' -Population $gap -Config $script:Pc).Status | Should -Be 'Not Assessed'
+            $noUac = Get-AdfaPrivAccountPopulation -Protected (New-C10Protected -Members @((New-C10Record -Name 'u' -Sid "$($script:C10RootSid)-1120" -Uac $null -Spns @('HTTP/u')))) -AdminCount (New-C10Search) -Config $script:Pc
+            (Get-AdfaPrivSpnVerdict -Domain 'contoso.com' -Population $noUac -Config $script:Pc).Status | Should -Be 'Not Assessed'
+        }
+        It 'warns on a privileged user with neither NOT_DELEGATED nor Protected Users, counts either as protection, and never guesses when Protected Users was not read' {
+            $bob = New-C10Record -Name 'adm.bob' -Sid "$($script:C10RootSid)-1102" -Uac 512
+            $flagged = New-C10Record -Name 'adm.flag' -Sid "$($script:C10RootSid)-1103" -Uac (512 + 1048576)
+            $alice = New-C10Record -Name 'adm.alice' -Sid "$($script:C10RootSid)-1101" -Uac 512
+            $prot = New-C10Protected -Members @($bob, $flagged, $alice) -PuDns @($alice.Dn)
+            $pop = Get-AdfaPrivAccountPopulation -Protected $prot -AdminCount (New-C10Search) -Config $script:Pc
+            $w = Get-AdfaPrivDelegableVerdict -Domain 'contoso.com' -Population $pop -ProtectedUsers $prot.ProtectedUsers -Config $script:Pc
+            $w.Status | Should -Be 'Warning'
+            $w.Principals | Should -Be 'adm.bob'
+            $w.ExcludedCount | Should -Be '2'
+            $w.Detail | Should -Match 'C10 addition'
+            $w.CatalogueId | Should -Be ''
+            $ok = New-C10Protected -Members @($flagged, $alice, $script:C10Admin) -PuDns @($alice.Dn)
+            (Get-AdfaPrivDelegableVerdict -Domain 'contoso.com' -Population (Get-AdfaPrivAccountPopulation -Protected $ok -AdminCount (New-C10Search) -Config $script:Pc) -ProtectedUsers $ok.ProtectedUsers -Config $script:Pc).Status | Should -Be 'Pass'
+            $unknown = New-C10Protected -Members @($alice) -PuKnown $false
+            $u = Get-AdfaPrivDelegableVerdict -Domain 'contoso.com' -Population (Get-AdfaPrivAccountPopulation -Protected $unknown -AdminCount (New-C10Search) -Config $script:Pc) -ProtectedUsers $unknown.ProtectedUsers -Config $script:Pc
+            $u.Status | Should -Be 'Not Assessed'
+            $u.Unresolved | Should -Match 'Protected Users was not read'
+        }
+    }
+
+    Context 'Pure: delegation rows' {
+        BeforeAll {
+            $script:C10DcDn = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'
+            $script:C10RodcDn = 'CN=RODC1,OU=Domain Controllers,DC=contoso,DC=com'
+            function Get-C10Delegation { param([object[]]$Records, $Forest = (New-C10Forest -DcDns @($script:C10DcDn.ToLowerInvariant(), $script:C10RodcDn.ToLowerInvariant())), $Config = $script:Pc)
+                @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation (New-C10Search -Records $Records) -Forest $Forest -Config $Config -DomainDn $script:C10RootDn) }
+            # The two registered DCs of contoso.com as the delegation search returns them: each carries its default bit.
+            $script:C10DcRec = New-C10Record -Name 'DC1$' -Kind 'Computer' -Dn 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' -Uac 532480 -PrimaryGroupId 516
+            $script:C10RodcRec = New-C10Record -Name 'RODC1$' -Kind 'Computer' -Dn 'CN=RODC1,OU=Domain Controllers,DC=contoso,DC=com' -Uac 83890176 -PrimaryGroupId 521
+        }
+        It 'excludes registered DCs and RODCs by DN, grades the rest, and keeps an account with a DC primary group that is not registered' {
+            $dc = New-C10Record -Name 'DC1$' -Kind 'Computer' -Dn $script:C10DcDn -Uac 532480 -PrimaryGroupId 516
+            $rodc = New-C10Record -Name 'RODC1$' -Kind 'Computer' -Dn $script:C10RodcDn -Uac 83890176 -PrimaryGroupId 521
+            $fake = New-C10Record -Name 'FAKEDC$' -Kind 'Computer' -Dn 'CN=FAKEDC,CN=Computers,DC=contoso,DC=com' -Uac 532480 -PrimaryGroupId 516
+            $rows = Get-C10Delegation -Records @($dc, $rodc, $fake)
+            # Declared population: four delegation rows.
+            (@($rows | ForEach-Object { "{0}={1}" -f ($_.Item -replace ': .*$', ''), $_.Status }) -join ',') | Should -Be 'Unconstrained delegation=Warning,Protocol transition delegation=Pass,Constrained delegation=Info,Resource-based delegation=Pass'
+            $u = Get-C10Row $rows 'Unconstrained delegation'
+            $u[0].Principals | Should -Be 'FAKEDC$'
+            $u[0].ExcludedCount | Should -Be '1'
+            $u[0].Detail | Should -Match 'not registered DCs'
+            $u[0].CatalogueId | Should -Be 'ADA-OBJ-002'
+            (Get-C10Row $rows 'Protocol transition delegation')[0].ExcludedCount | Should -Be '1'
+            # A DC is never recognised by name: a non-DC computer named DC1 is graded.
+            $namesake = New-C10Record -Name 'DC1$' -Kind 'Computer' -Dn 'CN=DC1,CN=Computers,DC=contoso,DC=com' -Uac (4096 + 524288) -PrimaryGroupId 515
+            (Get-C10Row (Get-C10Delegation -Records @($dc, $namesake)) 'Unconstrained delegation')[0].Count | Should -Be '1'
+        }
+        It 'warns at one account (the boundary) and passes at none, for both bit rows' {
+            $dcs = @($script:C10DcRec, $script:C10RodcRec)
+            $one = New-C10Record -Name 'svc.web' -Uac (512 + 524288)
+            (Get-C10Row (Get-C10Delegation -Records (@($one) + $dcs)) 'Unconstrained delegation')[0].Status | Should -Be 'Warning'
+            # "None" is only the registered DCs coming back, each excluded by DN.
+            (Get-C10Row (Get-C10Delegation -Records $dcs) 'Unconstrained delegation')[0].Status | Should -Be 'Pass'
+            $pt = New-C10Record -Name 'svc.app' -Uac (512 + 16777216) -DelegateTo @('HTTP/web1')
+            $rows = Get-C10Delegation -Records (@($pt) + $dcs)
+            (Get-C10Row $rows 'Protocol transition delegation')[0].Status | Should -Be 'Warning'
+            (Get-C10Row $rows 'Protocol transition delegation')[0].Targets | Should -Be 'svc.app: HTTP/web1'
+            (Get-C10Row $rows 'Constrained delegation')[0].Count | Should -Be '0'
+            $kcd = New-C10Record -Name 'svc.kcd' -Uac 512 -DelegateTo @('CIFS/fs1')
+            $k = Get-C10Row (Get-C10Delegation -Records (@($kcd) + $dcs)) 'Constrained delegation'
+            $k[0].Status | Should -Be 'Info'
+            $k[0].Count | Should -Be '1'
+            $k[0].CatalogueId | Should -Be 'ADA-INV-017'
+        }
+        It 'is Not Assessed for the two bit rows when the DC population was not read, and never falls back to names' {
+            $dc = New-C10Record -Name 'DC1$' -Kind 'Computer' -Dn $script:C10DcDn -Uac 532480 -PrimaryGroupId 516
+            $rows = Get-C10Delegation -Records @($dc) -Forest (New-C10Forest -DcOk $false -DcClass 'AccessDenied' -DcError 'STUB: configuration refused')
+            (Get-C10Row $rows 'Unconstrained delegation')[0].Status | Should -Be 'Not Assessed'
+            (Get-C10Row $rows 'Unconstrained delegation')[0].Detail | Should -Match 'access denied: STUB'
+            (Get-C10Row $rows 'Protocol transition delegation')[0].Status | Should -Be 'Not Assessed'
+            # With no DC population the search cannot be checked against it, so "none" is not passed either.
+            (Get-C10Row $rows 'Resource-based delegation')[0].Status | Should -Be 'Not Assessed'
+            $noUac = New-C10Record -Name 'x' -Uac $null -DelegateTo @('HTTP/x')
+            $n = Get-C10Delegation -Records @($noUac)
+            (Get-C10Row $n 'Unconstrained delegation')[0].Status | Should -Be 'Not Assessed'
+            (Get-C10Row $n 'Constrained delegation')[0].Status | Should -Be 'Not Assessed'
+            $failed = @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation (New-C10Search -Ok $false -Class 'Unreachable' -Err 'Unable to contact the server.' -Type 'C10Stub.ADServerDownException') -Forest (New-C10Forest) -Config $script:Pc)
+            $failed.Count | Should -Be 4
+            @($failed | Where-Object { $_.Status -ne 'Not Assessed' -or $_.Detail -notmatch '^Unreachable: ' }).Count | Should -Be 0
+        }
+        It 'warns on RBCD and lists the allowed and denied SIDs of each descriptor, a descriptor it could not read marked as such' {
+            $desc = [pscustomobject]@{ Ok = $true; Class = 'Read'; Aces = @((New-C10Ace -Sid 'S-1-5-21-1-2-3-1203'), (New-C10Ace -Sid 'S-1-5-21-1-2-3-1300' -Allow $false), (New-C10Ace -Sid '' -Kind 'Other')) }
+            $ws = New-C10Record -Name 'WS1$' -Kind 'Computer' -Uac 4096 -HasRbcd $true -Rbcd $desc
+            $bad = New-C10Record -Name 'WS2$' -Kind 'Computer' -Uac 4096 -HasRbcd $true -Rbcd ([pscustomobject]@{ Ok = $false; Class = 'Unparseable'; Aces = @() })
+            $r = Get-C10Row (Get-C10Delegation -Records @($ws, $bad)) 'Resource-based delegation'
+            $r[0].Status | Should -Be 'Warning'
+            $r[0].Count | Should -Be '2'
+            $r[0].UnresolvedCount | Should -Be '1'
+            $r[0].AllowedSids | Should -Match 'WS1\$: allowed S-1-5-21-1-2-3-1203; denied S-1-5-21-1-2-3-1300; 1 ACE\(s\) not interpreted'
+            $r[0].AllowedSids | Should -Match 'WS2\$: descriptor not parsed \(Unparseable\)'
+            $r[0].Detail | Should -Not -Match 'S-1-5-21|WS1'
+            $r[0].CatalogueId | Should -Be 'ADA-OBJ-004'
+        }
+    }
+
+    Context 'Collector: two domains through the seams' {
+        It 'reads both domains, each from itself, and grades each on its own data (normal data)' {
+            $state = Get-C10State
+            $rows = Get-C10AllRows -State $state
+            # Declared population: 2 root rows; 17 + 1 rows for contoso, 13 + 1 for north; 4 hygiene and 6 Kerberos rows per domain.
+            @(Get-C10Row $rows 'Schema Admins members: ').Count | Should -Be 1
+            @(Get-C10Row $rows 'Enterprise Admins members: ').Count | Should -Be 1
+            @($rows | Where-Object { $_.Area -eq 'Privileged' -and $_.Scope -eq 'contoso.com' }).Count | Should -Be 20
+            @($rows | Where-Object { $_.Area -eq 'Privileged' -and $_.Scope -eq 'north.contoso.com' }).Count | Should -Be 14
+            foreach ($d in @('contoso.com', 'north.contoso.com')) {
+                @($rows | Where-Object { $_.Area -eq 'PrivHygiene' -and $_.Scope -eq $d }).Count | Should -Be 4 -Because $d
+                @($rows | Where-Object { $_.Area -eq 'Kerberos' -and $_.Scope -eq $d }).Count | Should -Be 6 -Because $d
+                (Get-C10Row $rows ("Privileged group population: {0}" -f $d))[0].Status | Should -Be 'Pass' -Because $d
+            }
+            (Get-C10Row $rows 'Schema Admins members: contoso.com')[0].Status | Should -Be 'Pass'
+            $ea = (Get-C10Row $rows 'Enterprise Admins members: contoso.com')[0]
+            $ea.Status | Should -Be 'Warning'
+            $ea.Principals | Should -Be 'Administrator'
+            # Administrators of contoso: adm.alice direct, adm.bob through Domain Admins, Administrator through EA, pg.dave through DA's primary group.
+            $adm = (Get-C10Row $rows 'Privileged group: Administrators: contoso.com')[0]
+            $adm.Count | Should -Be '4'
+            $adm.Principals | Should -Be 'adm.alice; adm.bob; Administrator; pg.dave'
+            (Get-C10Row $rows 'Privileged group: Domain Admins: contoso.com')[0].Count | Should -Be '2'
+            # north: n.admin and a foreign principal through its Domain Admins, contoso's Administrator through contoso's EA.
+            $nAdm = (Get-C10Row $rows 'Privileged group: Administrators: north.contoso.com')[0]
+            $nAdm.Count | Should -Be '3'
+            $nAdm.ForeignSids | Should -Be 'S-1-5-21-7000-8000-9000-1500'
+            (Get-C10Row $rows 'Privileged group: Key Admins: north.contoso.com')[0].Detail | Should -Match '^Not present: '
+            # Hygiene.
+            $orphan = (Get-C10Row $rows 'adminCount orphans: contoso.com')[0]
+            $orphan.Status | Should -Be 'Warning'
+            $orphan.Principals | Should -Be 'old.erin'
+            (Get-C10Row $rows 'adminCount orphans: north.contoso.com')[0].Status | Should -Be 'Pass'
+            $spn = (Get-C10Row $rows 'Privileged accounts with SPN: contoso.com')[0]
+            $spn.Status | Should -Be 'Warning'
+            $spn.Principals | Should -Be 'adm.bob'
+            (Get-C10Row $rows 'Privileged accounts with SPN: north.contoso.com')[0].Status | Should -Be 'Pass'
+            $del = (Get-C10Row $rows 'Privileged accounts delegable: contoso.com')[0]
+            $del.Status | Should -Be 'Warning'
+            $del.Principals | Should -Be 'adm.bob'
+            (Get-C10Row $rows 'Privileged accounts delegable: north.contoso.com')[0].Status | Should -Be 'Pass'
+            (Get-C10Row $rows 'Protected Users members: contoso.com')[0].Count | Should -Be '1'
+            # Kerberos.
+            (Get-C10Row $rows 'Unconstrained delegation: contoso.com')[0].Principals | Should -Be 'FAKEDC$; svc.web'
+            (Get-C10Row $rows 'Unconstrained delegation: north.contoso.com')[0].Principals | Should -Be 'svc.north'
+            (Get-C10Row $rows 'Unconstrained delegation: north.contoso.com')[0].ExcludedCount | Should -Be '1'
+            (Get-C10Row $rows 'Protocol transition delegation: contoso.com')[0].Principals | Should -Be 'svc.app'
+            (Get-C10Row $rows 'Constrained delegation: contoso.com')[0].Principals | Should -Be 'svc.kcd'
+            (Get-C10Row $rows 'Resource-based delegation: contoso.com')[0].AllowedSids | Should -Be 'WS1$: allowed S-1-5-21-1000-2000-3000-1203; denied S-1-5-21-1000-2000-3000-1300'
+            (Get-C10Row $rows 'Resource-based delegation: north.contoso.com')[0].Status | Should -Be 'Pass'
+            # Each domain's objects were read from that domain only.
+            @($script:C10Calls | Where-Object { $_ -match 'DC=north' -and $_ -notmatch '@north\.contoso\.com$' }).Count | Should -Be 0
+            @($script:C10Calls | Where-Object { $_ -match '^Get-ADObject CN=[^,]+,CN=(Users|Builtin),DC=contoso,DC=com@' -and $_ -notmatch '@contoso\.com$' }).Count | Should -Be 0
+            @($script:C10Calls | Where-Object { $_ -match '@north\.contoso\.com$' }).Count | Should -BeGreaterThan 0
+            # No name, SID, SPN or DN reaches a Detail.
+            @($rows | Where-Object { $_.Detail -match 'adm\.|old\.erin|svc\.|MSSQLSvc|S-1-5-21-|CN=' }).Count | Should -Be 0
+        }
+        It 'returns one Not Assessed row per section when no domain is scoped (empty data)' {
+            $state = Get-C10State -Domains @()
+            $rows = Get-C10AllRows -State $state
+            (@($rows | ForEach-Object { $_.Item }) -join ',') | Should -Be 'Privileged groups (no domain scoped),Privileged hygiene (no domain scoped),Kerberos exposure (no domain scoped)'
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+        }
+        It 'keeps an unreachable domain, an access-denied domain and a timed-out domain apart, and grades the other domain (mixed result)' {
+            foreach ($case in @(@{ Fault = 'Unreachable'; Lead = '^Unreachable: ' }, @{ Fault = 'AccessDenied'; Lead = '^Access denied: ' }, @{ Fault = 'TimedOut'; Lead = '^Timed out: ' })) {
+                $script:C10Fault = @{ 'north.contoso.com' = $case.Fault }
+                $rows = Get-C10AllRows -State (Get-C10State)
+                $north = @($rows | Where-Object { $_.Scope -eq 'north.contoso.com' })
+                # Declared population: the 13 group rows, the population row, 4 hygiene and 6 Kerberos rows of north.
+                $north.Count | Should -Be 24 -Because $case.Fault
+                @($north | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0 -Because "$($case.Fault): nothing of north was measured"
+                @($north | Where-Object { $_.Detail -notmatch $case.Lead }).Count | Should -Be 0 -Because "$($case.Fault) is named as such"
+                (Get-C10Row $rows 'Privileged group population: contoso.com')[0].Status | Should -Not -Be 'Not Assessed' -Because 'contoso was read'
+                (Get-C10Row $rows 'Unconstrained delegation: contoso.com')[0].Status | Should -Be 'Warning' -Because 'contoso was read'
+            }
+        }
+        It 'keeps a domain whose Get-ADDomain alone failed apart from one that answered, and never reads its groups' {
+            $script:C10Fault = @{ 'north.contoso.com' = 'DomainUnreachable' }
+            $rows = Get-C10AllRows -State (Get-C10State)
+            (Get-C10Row $rows 'Privileged group: Domain Admins: north.contoso.com')[0].Detail | Should -Match '^Unreachable: '
+            (Get-C10Row $rows 'adminCount orphans: north.contoso.com')[0].Status | Should -Be 'Not Assessed'
+            @($script:C10Calls | Where-Object { $_ -match '^Get-ADObject .*@north\.contoso\.com$' }).Count | Should -Be 0
+            # contoso's Administrators holds no north member, so contoso is still graded completely.
+            (Get-C10Row $rows 'Privileged group population: contoso.com')[0].Status | Should -Be 'Pass'
+        }
+        It 'is Not Assessed, never lower, when a member is in a forest domain the run did not scope' {
+            $rows = Get-C10AllRows -State (Get-C10State -Domains @('north.contoso.com'))
+            $adm = (Get-C10Row $rows 'Privileged group: Administrators: north.contoso.com')[0]
+            $adm.Status | Should -Be 'Not Assessed'
+            $adm.Count | Should -Be ''
+            $adm.Unresolved | Should -Match 'did not scope'
+            (Get-C10Row $rows 'Schema Admins members: contoso.com')[0].Detail | Should -Match 'did not scope'
+            (Get-C10Row $rows 'adminCount orphans: north.contoso.com')[0].Status | Should -Be 'Not Assessed'
+            # Delegation does not depend on group membership and is still graded.
+            (Get-C10Row $rows 'Unconstrained delegation: north.contoso.com')[0].Status | Should -Be 'Warning'
+        }
+        It 'makes the two bit rows Not Assessed when the configuration partition is refused, and the orphan row when dSHeuristics masks an operator group' {
+            $script:C10Fault = @{ config = 'AccessDenied' }
+            $rows = Get-C10AllRows -State (Get-C10State)
+            foreach ($d in @('contoso.com', 'north.contoso.com')) {
+                (Get-C10Row $rows ("Unconstrained delegation: {0}" -f $d))[0].Status | Should -Be 'Not Assessed' -Because $d
+                (Get-C10Row $rows ("Protocol transition delegation: {0}" -f $d))[0].Status | Should -Be 'Not Assessed' -Because $d
+            }
+            $script:C10Fault = @{}
+            $script:C10Heuristics = '000000000100000f'
+            $rows2 = Get-C10AllRows -State (Get-C10State)
+            # old.erin is still an orphan; ops.carol and the Account Operators group itself (both reached only
+            # from Account Operators) are now undecided.
+            $o = (Get-C10Row $rows2 'adminCount orphans: contoso.com')[0]
+            $o.Status | Should -Be 'Warning'
+            $o.UnresolvedCount | Should -Be '2'
+            $o.Detail | Should -Match 'could not be decided'
+        }
+        It 'reads only the parts the selected sections need' {
+            $state = Get-C10State -Parts @('Delegation')
+            @($state.Domains['contoso.com'].Groups.Keys).Count | Should -Be 0
+            $state.Domains['contoso.com'].AdminCount | Should -BeNullOrEmpty
+            $state.Domains['contoso.com'].Delegation | Should -Not -BeNullOrEmpty
+            $groupsOnly = Get-C10State -Parts @('Groups')
+            # The registered DCs are read for the group rows too: their membership reads are checked against them.
+            $groupsOnly.Forest | Should -Not -BeNullOrEmpty
+            $groupsOnly.Domains['contoso.com'].AdminCount | Should -BeNullOrEmpty
+            $groupsOnly.Domains['contoso.com'].Delegation | Should -BeNullOrEmpty
+            @($groupsOnly.Domains['contoso.com'].Groups.Keys).Count | Should -Be 17
+        }
+        It 'turns a failure inside the tool for one domain into Not Assessed rows for that domain only' {
+            $state = Get-C10State
+            $state.Domains['north.contoso.com'] = [pscustomobject]@{ Domain = 'north.contoso.com'; Raw = $null; Groups = [ordered]@{}; AdminCount = $null; Delegation = $null; Roast = $null; Error = 'STUB: defect' }
+            $rows = Get-C10AllRows -State $state
+            $north = @($rows | Where-Object { $_.Scope -eq 'north.contoso.com' })
+            @($north | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            @($north | Where-Object { $_.Detail -match 'defect in the tool' }).Count | Should -Be $north.Count
+            (Get-C10Row $rows 'adminCount orphans: contoso.com')[0].Status | Should -Be 'Warning'
+        }
+    }
+
+    Context 'Independent review fixes (before commit)' {
+        BeforeAll {
+            # A run state built directly: every group of the table located in each domain with an empty
+            # closure, unless Closures["<domain>|<Key>"] gives one.
+            function New-C10PureState {
+                param([hashtable]$Closures = @{}, [string[]]$Scoped = @('contoso.com', 'north.contoso.com'), [string]$Mode = 'Windows2016Domain')
+                $domains = @{}
+                foreach ($d in $Scoped) {
+                    $sid = $script:C10RootSid; $dn = $script:C10RootDn
+                    if ($d -eq 'north.contoso.com') { $sid = $script:C10NorthSid; $dn = $script:C10NorthDn }
+                    $groups = [ordered]@{}
+                    foreach ($spec in @(Get-AdfaPrivGroupSpec -DomainSid $sid -IsRoot ($d -eq 'contoso.com') -Config $script:Pc)) {
+                        $rec = New-C10Record -Name $spec.Name -Kind 'Group' -Sid $spec.Sid -Dn ("CN={0},CN=Users,{1}" -f $spec.Name, $dn) -Uac $null
+                        $closure = $Closures[("{0}|{1}" -f $d, $spec.Key)]
+                        if ($null -eq $closure) { $closure = New-C10Closure -Group $rec }
+                        $groups[$spec.Key] = [pscustomobject]@{ Spec = $spec; Locate = (New-C10Locate -Record $rec); Closure = $closure }
+                    }
+                    $domains[$d] = [pscustomobject]@{ Domain = $d; Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; DomainDn = $dn; DomainSid = $sid; DomainSidError = ''; DomainMode = $Mode }
+                        Groups = $groups; AdminCount = $null; Delegation = $null; Roast = $null; Error = '' }
+                }
+                [pscustomobject]@{ Scoped = @($Scoped); RootDomain = 'contoso.com'; RootScoped = (@($Scoped) -contains 'contoso.com'); Parts = @('Groups', 'Hygiene', 'Delegation'); DomainMap = @{}; Forest = $null; Context = $null; Domains = $domains }
+            }
+            $script:C10Heur0b = [pscustomobject]@{ Known = $true; MaskZero = $true; Character = '0'; Text = 'dSHeuristics is not set' }
+            $script:C10RootAdmin = New-C10Record -Name 'Administrator' -Sid "$($script:C10RootSid)-500" -Uac (512 + 1048576) -AdminCount 1
+            $script:C10DcRec2 = New-C10Record -Name 'DC1$' -Kind 'Computer' -Dn 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' -Uac 532480 -PrimaryGroupId 516
+            $script:C10TwoDcForest = New-C10Forest -DcDns @('cn=dc1,ou=domain controllers,dc=contoso,dc=com', 'cn=dc2,ou=domain controllers,dc=north,dc=contoso,dc=com')
+        }
+        It 'never grades a DC as a non-DC when no nTDSDSA object, a server object without serverReference, or an unmatched nTDSDSA object was read (findings 1 and 9)' {
+            $noDsa = New-C10Forest -DcDns @(); $noDsa.DsaCount = 0
+            $noRef = New-C10Forest -DcDns @(); $noRef.DsaCount = 1; $noRef.NoReference = @(("CN=DC1,CN=Servers,CN=Site1,CN=Sites,{0}" -f $script:C10Cfg))
+            $short = New-C10Forest -DcDns @('cn=dc9,ou=domain controllers,dc=contoso,dc=com'); $short.DsaCount = 2
+            $cases = @(@{ Name = 'no nTDSDSA'; Forest = $noDsa; Why = 'returned no object' }, @{ Name = 'no serverReference'; Forest = $noRef; Why = 'serverReference' }, @{ Name = 'unmatched nTDSDSA'; Forest = $short; Why = 'incomplete' })
+            # Declared population: three ways the DC population is read incompletely.
+            $cases.Count | Should -Be 3
+            foreach ($case in $cases) {
+                $state = Get-AdfaPrivDcPopulationState -Forest $case.Forest
+                $state.Known | Should -BeFalse -Because $case.Name
+                $state.Why | Should -Match $case.Why -Because $case.Name
+                $rows = @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation (New-C10Search -Records @($script:C10DcRec2)) -Forest $case.Forest -Config $script:Pc -DomainDn $script:C10RootDn)
+                foreach ($prefix in @('Unconstrained delegation', 'Protocol transition delegation')) {
+                    $row = (Get-C10Row $rows $prefix)[0]
+                    $row.Status | Should -Be 'Not Assessed' -Because "$($case.Name): $prefix"
+                    $row.Principals | Should -Be '' -Because "$($case.Name): the DC is not named as a finding"
+                }
+            }
+            (Get-AdfaPrivDcPopulationState -Forest $script:C10TwoDcForest).Known | Should -BeTrue
+        }
+        It 'does not pass the delegation rows when the search returned none of the domain''s registered DCs, and expects only this domain''s DCs (findings 2 and 8)' {
+            $rows = @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation (New-C10Search -Records @()) -Forest $script:C10TwoDcForest -Config $script:Pc -DomainDn $script:C10RootDn)
+            # Declared population: the four delegation rows.
+            $rows.Count | Should -Be 4
+            foreach ($row in $rows) {
+                $row.Status | Should -Be 'Not Assessed' -Because $row.Item
+                $row.Detail | Should -Match '1 of the 1 domain controller\(s\) registered for contoso\.com were not returned' -Because $row.Item
+            }
+            (Get-C10Row $rows 'Constrained delegation')[0].Count | Should -Be ''
+            # DC2 belongs to north.contoso.com, a child naming context: contoso.com expects DC1 only.
+            Get-AdfaPrivDnDomainPart -Dn 'CN=DC2,OU=Domain Controllers,DC=north,DC=contoso,DC=com' | Should -Be 'dc=north,dc=contoso,dc=com'
+            (@(Get-AdfaPrivDomainDcList -DcState (Get-AdfaPrivDcPopulationState -Forest $script:C10TwoDcForest) -DomainDn $script:C10RootDn) -join ',') | Should -Be 'cn=dc1,ou=domain controllers,dc=contoso,dc=com'
+            $ok = @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation (New-C10Search -Records @($script:C10DcRec2)) -Forest $script:C10TwoDcForest -Config $script:Pc -DomainDn $script:C10RootDn)
+            (@($ok | ForEach-Object { $_.Status }) -join ',') | Should -Be 'Pass,Pass,Info,Pass'
+            # A domain with no registered DC in what was read is not passed either.
+            $none = @(Get-AdfaPrivDelegationVerdict -Domain 'south.contoso.com' -Delegation (New-C10Search -Records @()) -Forest $script:C10TwoDcForest -Config $script:Pc -DomainDn 'DC=south,DC=contoso,DC=com')
+            @($none | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+        }
+        It 'does not pass the orphan, SPN and delegable rows on an empty population or one without the domain''s Administrator (findings 3 and 7)' {
+            $complete = [pscustomobject]@{ Complete = $true; Missing = @(); BySid = @{}; ByDn = @{}; Members = @(); DomainSid = $script:C10RootSid
+                ProtectedUsers = [pscustomobject]@{ Known = $true; Dns = @{}; Why = ''; DelegationEnforced = $true; ModeText = 'x' } }
+            $o = Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Records @()) -Protected $complete -Heuristics $script:C10Heur0b -Config $script:Pc
+            $o.Status | Should -Be 'Not Assessed'
+            $o.Detail | Should -Match 'built-in Administrator \(RID 500\)'
+            $other = New-C10Record -Name 'adm.zed' -Sid "$($script:C10RootSid)-1900" -AdminCount 1
+            (Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Records @($other)) -Protected ([pscustomobject]@{ Complete = $true; Missing = @(); BySid = @{ ("$($script:C10RootSid)-1900") = @('DomainAdmins') }; ByDn = @{}; Members = @(); DomainSid = $script:C10RootSid }) -Heuristics $script:C10Heur0b -Config $script:Pc).Status | Should -Be 'Not Assessed'
+            $empty = [pscustomobject]@{ Records = @(); Complete = $true; Gaps = @() }
+            (Get-AdfaPrivSpnVerdict -Domain 'contoso.com' -Population $empty -Config $script:Pc).Status | Should -Be 'Not Assessed'
+            (Get-AdfaPrivDelegableVerdict -Domain 'contoso.com' -Population $empty -ProtectedUsers $complete.ProtectedUsers -Config $script:Pc).Status | Should -Be 'Not Assessed'
+            $pop = Get-AdfaPrivAccountPopulation -Protected $complete -AdminCount (New-C10Search -Records @()) -Config $script:Pc
+            $pop.Complete | Should -BeFalse
+            ($pop.Gaps -join ';') | Should -Match 'RID 500'
+            $withAdmin = Get-AdfaPrivAccountPopulation -Protected $complete -AdminCount (New-C10Search -Records @($script:C10RootAdmin)) -Config $script:Pc
+            $withAdmin.Complete | Should -BeTrue
+            (Get-AdfaPrivSpnVerdict -Domain 'contoso.com' -Population $withAdmin -Config $script:Pc).Status | Should -Be 'Pass'
+        }
+        It 'does not pass the group population row or an empty Schema Admins when the domain''s registered DCs were not found in the DC groups (finding 7)' {
+            $state = New-C10PureState -Scoped @('contoso.com')
+            $gap = Get-AdfaPrivDcMembershipGap -Domain 'contoso.com' -DomainDn $script:C10RootDn -Groups $state.Domains['contoso.com'].Groups -Forest $script:C10TwoDcForest
+            $gap | Should -Match '1 of the 1 domain controller\(s\) registered for contoso\.com were not found'
+            $dcGroup = $state.Domains['contoso.com'].Groups['DomainControllers']
+            $filled = New-C10PureState -Scoped @('contoso.com') -Closures @{ 'contoso.com|DomainControllers' = (New-C10Closure -Group $dcGroup.Locate.Record -Principals @($script:C10DcRec2) -Via 'primary') }
+            Get-AdfaPrivDcMembershipGap -Domain 'contoso.com' -DomainDn $script:C10RootDn -Groups $filled.Domains['contoso.com'].Groups -Forest $script:C10TwoDcForest | Should -Be ''
+            Get-AdfaPrivDcMembershipGap -Domain 'contoso.com' -DomainDn $script:C10RootDn -Groups $filled.Domains['contoso.com'].Groups -Forest $null | Should -Match 'not read completely'
+            $specs = @(Get-AdfaPrivGroupSpec -DomainSid $script:C10RootSid -IsRoot $true -Config $script:Pc)
+            (Get-AdfaPrivGroupPopulationVerdict -Domain 'contoso.com' -Specs $specs -Groups $state.Domains['contoso.com'].Groups -PopulationGap $gap).Status | Should -Be 'Not Assessed'
+            (Get-AdfaPrivGroupPopulationVerdict -Domain 'contoso.com' -Specs $specs -Groups $state.Domains['contoso.com'].Groups -PopulationGap '').Status | Should -Be 'Pass'
+            $sa = $state.Domains['contoso.com'].Groups['SchemaAdmins']
+            (Get-AdfaPrivEmptyGroupVerdict -Domain 'contoso.com' -Key 'SchemaAdmins' -Entry $sa -DomainSid $script:C10RootSid -Config $script:Pc -PopulationGap $gap).Status | Should -Be 'Not Assessed'
+            $state.Forest = $script:C10TwoDcForest
+            $paRows = @(Get-AdfaPrivilegedAccount -State $state -Config $script:Pc)
+            (Get-C10Row $paRows 'Schema Admins members: contoso.com')[0].Status | Should -Be 'Not Assessed'
+            (Get-C10Row $paRows 'Privileged group population: contoso.com')[0].Status | Should -Be 'Not Assessed'
+            $filled.Forest = $script:C10TwoDcForest
+            $paFilled = @(Get-AdfaPrivilegedAccount -State $filled -Config $script:Pc)
+            (Get-C10Row $paFilled 'Schema Admins members: contoso.com')[0].Status | Should -Be 'Pass'
+            (Get-C10Row $paFilled 'Privileged group population: contoso.com')[0].Status | Should -Be 'Pass'
+        }
+        It 'grades nothing Pass for a domain whose reads answer without the attributes (an account without read rights), and leaves the other domain graded (findings 3, 7 and 8)' {
+            $script:C10Fault = @{ 'contoso.com' = 'Blind' }
+            $rows = Get-C10AllRows -State (Get-C10State)
+            $items = @('Schema Admins members: contoso.com', 'Enterprise Admins members: contoso.com', 'Privileged group population: contoso.com', 'adminCount orphans: contoso.com', 'Privileged accounts with SPN: contoso.com',
+                'Privileged accounts delegable: contoso.com', 'Unconstrained delegation: contoso.com', 'Protocol transition delegation: contoso.com', 'Constrained delegation: contoso.com', 'Resource-based delegation: contoso.com')
+            # Declared population: the ten graded rows of contoso.com.
+            $items.Count | Should -Be 10
+            foreach ($item in $items) {
+                $row = @(Get-C10Row $rows $item)
+                $row.Count | Should -Be 1 -Because $item
+                $row[0].Status | Should -Be 'Not Assessed' -Because "$item measured nothing"
+            }
+            (Get-C10Row $rows 'Unconstrained delegation: north.contoso.com')[0].Status | Should -Be 'Warning'
+            (Get-C10Row $rows 'Privileged group population: north.contoso.com')[0].Status | Should -Be 'Pass'
+        }
+        It 'builds Targets and AllowedSids from the same accounts Principals names, and honours NameListCap (findings 4 and 17)' {
+            $hits = @((New-C10Record -Name 'zz.svc' -Sid "$($script:C10RootSid)-1999" -Spns @('HTTP/zz')))
+            $hits += @(1..29 | ForEach-Object { New-C10Record -Name ("a{0:D2}.svc" -f $_) -Sid ("{0}-{1}" -f $script:C10RootSid, (2000 + $_)) -Spns @("HTTP/a$_") })
+            # Declared population: 30 privileged accounts with an SPN, zz.svc returned first.
+            $hits.Count | Should -Be 30
+            $pop = [pscustomobject]@{ Records = @($hits + $script:C10RootAdmin); Complete = $true; Gaps = @() }
+            $r = Get-AdfaPrivSpnVerdict -Domain 'contoso.com' -Population $pop -Config $script:Pc
+            $r.Count | Should -Be '30'
+            $r.Listed | Should -Be '25'
+            $r.NotListed | Should -Be '5'
+            $named = @($r.Principals -split '; ')
+            $named.Count | Should -Be 25
+            $named | Should -Not -Contain 'zz.svc'
+            $targetNames = @($r.Targets -split '; ' | ForEach-Object { ($_ -split ': ')[0] })
+            ($targetNames -join ',') | Should -Be ($named -join ',')
+            $zero = Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ([pscustomobject]@{ NameListCap = 0 })
+            $z = Get-AdfaPrivSpnVerdict -Domain 'contoso.com' -Population $pop -Config $zero
+            $z.Principals | Should -Be ''
+            $z.Targets | Should -Be ''
+            $z.NotListed | Should -Be '30'
+            $two = Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ([pscustomobject]@{ NameListCap = 2 })
+            $desc = [pscustomobject]@{ Ok = $true; Class = 'Read'; Aces = @((New-C10Ace -Sid 'S-1-5-21-1-2-3-1203')) }
+            $rbcd = @('zz$', 'aa$', 'bb$') | ForEach-Object { New-C10Record -Name $_ -Kind 'Computer' -Dn ("CN={0},CN=Computers,DC=contoso,DC=com" -f $_.TrimEnd('$')) -Uac 4096 -HasRbcd $true -Rbcd $desc }
+            $rb = (Get-C10Row @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation (New-C10Search -Records @($rbcd)) -Forest $script:C10TwoDcForest -Config $two -DomainDn $script:C10RootDn) 'Resource-based delegation')[0]
+            $rb.Principals | Should -Be 'aa$; bb$'
+            $rb.AllowedSids | Should -Not -Match 'zz'
+            $rb.AllowedSids | Should -Match '^aa\$: allowed '
+        }
+        It 'words a failed search as a search, never as a missing group, and an ambiguous SID lookup as ambiguous, never as a refusal (findings 5 and 6)' {
+            $complete = [pscustomobject]@{ Complete = $true; Missing = @(); BySid = @{}; ByDn = @{}; Members = @(); DomainSid = $script:C10RootSid }
+            $o = Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Ok $false -Class 'NotFound' -Err 'STUB: no such base' -Type 'C10Stub.ADIdentityNotFoundException') -Protected $complete -Heuristics $script:C10Heur0b -Config $script:Pc
+            $o.Status | Should -Be 'Not Assessed'
+            $o.Detail | Should -Match '^Not found: the search for '
+            $o.Detail | Should -Not -Match 'no group with the SID'
+            $roast = [pscustomobject]@{ RoastOk = $false; RoastClass = 'NotFound'; RoastError = 'STUB'; RoastErrorType = ''; Roast = @(); AsRepOk = $true; AsRepClass = 'Read'; AsRepError = ''; AsRepErrorType = ''; AsRep = @() }
+            (Get-AdfaKerberosRoastVerdict -Domain 'contoso.com' -Roast $roast -Config $script:Pc)[0].Detail | Should -Not -Match 'no group with the SID'
+            $d = @(Get-AdfaPrivDelegationVerdict -Domain 'contoso.com' -Delegation (New-C10Search -Ok $false -Class 'NotFound' -Err 'STUB') -Forest $script:C10TwoDcForest -Config $script:Pc -DomainDn $script:C10RootDn)
+            @($d | Where-Object { $_.Detail -match 'no group with the SID' }).Count | Should -Be 0
+            # Two objects answer one SID: the lookup succeeded and is ambiguous.
+            function Get-ADObject { param([string]$Server, [string[]]$Properties, [string]$LDAPFilter, $ErrorAction)
+                @([pscustomobject]@{ DistinguishedName = 'CN=Domain Admins,CN=Users,DC=contoso,DC=com'; ObjectClass = 'group' }, [pscustomobject]@{ DistinguishedName = 'CN=Copy,CN=Users,DC=contoso,DC=com'; ObjectClass = 'group' }) }
+            $ctx = New-AdfaPrivContext -DomainMap @{} -Config $script:Pc
+            $locate = Find-AdfaPrivGroup -Context $ctx -Server 'contoso.com' -Sid "$($script:C10RootSid)-512"
+            $locate.Class | Should -Be 'Duplicate'
+            $spec = @(Get-AdfaPrivGroupSpec -DomainSid $script:C10RootSid -IsRoot $true -Config $script:Pc | Where-Object { $_.Key -eq 'DomainAdmins' })[0]
+            $row = Get-AdfaPrivGroupCountVerdict -Domain 'contoso.com' -Spec $spec -Entry ([pscustomobject]@{ Spec = $spec; Locate = $locate; Closure = $null }) -Config $script:Pc
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match 'ambiguous'
+            $row.Detail | Should -Not -Match '(?i)read failed|rights of the account|refusal in another language'
+            Get-AdfaPrivUnresolvedText -Read $locate | Should -Match '^ambiguous answer: '
+        }
+        It 'names an unreadable scoped domain''s own failure for a member DN in it, never "out of scope" (finding 10)' {
+            $map = @{ 'contoso.local' = [pscustomobject]@{ Ok = $true; DomainDn = 'DC=contoso,DC=local'; Error = ''; ErrorType = '' }
+                'fabrikam.local' = [pscustomobject]@{ Ok = $false; DomainDn = ''; Error = 'Unable to contact the server.'; ErrorType = 'C10Stub.ADServerDownException' } }
+            $dn = 'CN=u,CN=Users,DC=fabrikam,DC=local'
+            $r = Resolve-AdfaPrivDnDomain -Dn $dn -DomainMap $map -Scoped @('contoso.local', 'fabrikam.local')
+            $r.Class | Should -Be 'Unreachable'
+            $r.Why | Should -Match 'fabrikam\.local'
+            Get-AdfaPrivUnresolvedText -Read ([pscustomobject]@{ Class = $r.Class; Error = $r.Why }) | Should -Match '^unreachable: '
+            $map['fabrikam.local'] = [pscustomobject]@{ Ok = $false; DomainDn = ''; Error = 'STUB: access is denied'; ErrorType = 'System.UnauthorizedAccessException' }
+            (Resolve-AdfaPrivDnDomain -Dn $dn -DomainMap $map -Scoped @('contoso.local', 'fabrikam.local')).Class | Should -Be 'AccessDenied'
+            # Not scoped: out of scope, as before.
+            (Resolve-AdfaPrivDnDomain -Dn $dn -DomainMap $map -Scoped @('contoso.local')).Class | Should -Be 'OutOfScope'
+            (Resolve-AdfaPrivDnDomain -Dn 'CN=u,DC=litware,DC=local' -DomainMap $map -Scoped @('contoso.local', 'fabrikam.local')).Class | Should -Be 'OutOfScope'
+        }
+        It 'counts primary-group search results against MaxExpandedObjects and stops at it (finding 11)' {
+            $cfg = Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ([pscustomobject]@{ MaxExpandedObjects = 3 })
+            $map = @{ 'contoso.com' = [pscustomobject]@{ Ok = $true; DomainDn = $script:C10RootDn } }
+            $ctx = New-AdfaPrivContext -DomainMap $map -Scoped @('contoso.com') -Config $cfg
+            $script:C10Dir = New-C10Directory
+            # Declared population: the users of contoso.com whose primary group is 513 - more than the cap of 3.
+            @($script:C10Dir.Values | Where-Object { $_.Domain -eq 'contoso.com' -and $_.PrimaryGroupId -eq 513 }).Count | Should -BeGreaterThan 3
+            $du = New-C10Record -Name 'Domain Users' -Kind 'Group' -Sid "$($script:C10RootSid)-513" -Dn 'CN=Domain Users,CN=Users,DC=contoso,DC=com' -Uac $null
+            $c = Resolve-AdfaPrivGroupClosure -Group $du -Context $ctx -Config $cfg
+            @($c.Principals).Count | Should -Be 0
+            $c.Complete | Should -BeFalse
+            $c.Unresolved[0].Reason | Should -Match 'read cap'
+            [int]$ctx['Used'] | Should -Be 3
+            # Under the cap the results are counted.
+            $big = Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ([pscustomobject]@{ MaxExpandedObjects = 100 })
+            $ctx2 = New-AdfaPrivContext -DomainMap $map -Scoped @('contoso.com') -Config $big
+            $c2 = Resolve-AdfaPrivGroupClosure -Group $du -Context $ctx2 -Config $big
+            [int]$ctx2['Used'] | Should -Be @($c2.Principals).Count
+            $c2.Complete | Should -BeTrue
+        }
+        It 'counts a protected group''s nested groups and foreign members as protected (finding 12)' {
+            $state0 = New-C10PureState
+            $da = $state0.Domains['contoso.com'].Groups['DomainAdmins'].Locate.Record
+            $helpdesk = New-C10Record -Name 'Helpdesk' -Kind 'Group' -Sid "$($script:C10RootSid)-1400" -Dn 'CN=Helpdesk,CN=Users,DC=contoso,DC=com' -Uac $null -AdminCount 1
+            $fsp = New-C10Record -Name 'S-1-5-21-7000-8000-9000-1500' -Kind 'Foreign' -Sid 'S-1-5-21-7000-8000-9000-1500' -Dn 'CN=S-1-5-21-7000-8000-9000-1500,CN=ForeignSecurityPrincipals,DC=contoso,DC=com' -Uac $null -AdminCount 1
+            $state = New-C10PureState -Closures @{ 'contoso.com|DomainAdmins' = (New-C10Closure -Group $da -Groups @($helpdesk) -Foreign @($fsp)) }
+            $set = Get-AdfaPrivProtectedSet -State $state -Domain 'contoso.com' -Config $script:Pc
+            $set.Complete | Should -BeTrue
+            @($set.BySid[$helpdesk.Sid]) | Should -Contain 'DomainAdmins'
+            @($set.BySid[$fsp.Sid]) | Should -Contain 'DomainAdmins'
+            $o = Get-AdfaPrivOrphanVerdict -Domain 'contoso.com' -AdminCount (New-C10Search -Records @($helpdesk, $fsp, $script:C10RootAdmin)) -Protected $set -Heuristics $script:C10Heur0b -Config $script:Pc
+            $o.Status | Should -Be 'Pass'
+            $o.Count | Should -Be '0'
+        }
+        It 'counts the forest root''s Enterprise Key Admins as protected for a child domain, and never looks for -527 in a child (finding 15)' {
+            $root = New-C10PureState
+            $eka = $root.Domains['contoso.com'].Groups['EnterpriseKeyAdmins'].Locate.Record
+            $nKey = New-C10Record -Name 'n.key' -Sid "$($script:C10NorthSid)-1300" -Dn 'CN=n.key,CN=Users,DC=north,DC=contoso,DC=com' -AdminCount 1
+            $state = New-C10PureState -Closures @{ 'contoso.com|EnterpriseKeyAdmins' = (New-C10Closure -Group $eka -Principals @($nKey)) }
+            $state.Domains['north.contoso.com'].Groups.Contains('EnterpriseKeyAdmins') | Should -BeFalse
+            $set = Get-AdfaPrivProtectedSet -State $state -Domain 'north.contoso.com' -Config $script:Pc
+            $set.Complete | Should -BeTrue
+            @($set.BySid[$nKey.Sid]) | Should -Contain 'EnterpriseKeyAdmins'
+            $nAdmin = New-C10Record -Name 'Administrator' -Sid "$($script:C10NorthSid)-500" -Dn 'CN=Administrator,CN=Users,DC=north,DC=contoso,DC=com' -AdminCount 1
+            (Get-AdfaPrivOrphanVerdict -Domain 'north.contoso.com' -AdminCount (New-C10Search -Records @($nKey, $nAdmin)) -Protected $set -Heuristics $script:C10Heur0b -Config $script:Pc).Status | Should -Be 'Pass'
+        }
+        It 'leaves a disabled privileged account out of the delegable row (finding 13)' {
+            $off = New-C10Record -Name 'adm.off' -Sid "$($script:C10RootSid)-1110" -Uac 514
+            $prot = [pscustomobject]@{ Complete = $true; Missing = @(); BySid = @{}; ByDn = @{}; Members = @($off, $script:C10RootAdmin); DomainSid = $script:C10RootSid
+                ProtectedUsers = [pscustomobject]@{ Known = $true; Dns = @{}; Why = ''; DelegationEnforced = $true; ModeText = 'x' } }
+            $pop = Get-AdfaPrivAccountPopulation -Protected $prot -AdminCount (New-C10Search -Records @($script:C10RootAdmin)) -Config $script:Pc
+            # Declared population: the disabled account and the Administrator.
+            @($pop.Records).Count | Should -Be 2
+            $r = Get-AdfaPrivDelegableVerdict -Domain 'contoso.com' -Population $pop -ProtectedUsers $prot.ProtectedUsers -Config $script:Pc
+            $r.Status | Should -Be 'Pass'
+            $r.Principals | Should -Be ''
+            $r.ExcludedCount | Should -Be '2'
+        }
+        It 'counts Protected Users as delegation protection only at domain functional level 2012 R2 or later (finding 14)' {
+            $alice = New-C10Record -Name 'adm.alice' -Sid "$($script:C10RootSid)-1101" -Uac 512
+            $mk = { param($Enforced) [pscustomobject]@{ Known = $true; Dns = @{ ($alice.Dn.ToLowerInvariant()) = $true }; Why = ''; DelegationEnforced = $Enforced; ModeText = 'the domain functional level is Windows2012Domain, below Windows Server 2012 R2' } }
+            $pop = [pscustomobject]@{ Records = @($alice, $script:C10RootAdmin); Complete = $true; Gaps = @() }
+            (Get-AdfaPrivDelegableVerdict -Domain 'contoso.com' -Population $pop -ProtectedUsers (& $mk $true) -Config $script:Pc).Status | Should -Be 'Pass'
+            $below = Get-AdfaPrivDelegableVerdict -Domain 'contoso.com' -Population $pop -ProtectedUsers (& $mk $false) -Config $script:Pc
+            $below.Status | Should -Be 'Warning'
+            $below.Principals | Should -Be 'adm.alice'
+            $below.Detail | Should -Match 'below Windows Server 2012 R2'
+            $unknown = Get-AdfaPrivDelegableVerdict -Domain 'contoso.com' -Population $pop -ProtectedUsers (& $mk $null) -Config $script:Pc
+            $unknown.Status | Should -Be 'Not Assessed'
+            $unknown.Unresolved | Should -Match 'Windows Server 2012 R2'
+            # The level is read from Get-ADDomain's DomainMode, per domain.
+            $cases = @(@{ Mode = 'Windows2012Domain'; Expect = $false }, @{ Mode = 'Windows2012R2Domain'; Expect = $true }, @{ Mode = 'Windows2025Domain'; Expect = $true }, @{ Mode = 'UnknownDomain'; Expect = $null }, @{ Mode = ''; Expect = $null })
+            # Declared population: five DomainMode answers.
+            $cases.Count | Should -Be 5
+            foreach ($case in $cases) {
+                $set = Get-AdfaPrivProtectedSet -State (New-C10PureState -Mode $case.Mode) -Domain 'contoso.com' -Config $script:Pc
+                if ($null -eq $case.Expect) { $set.ProtectedUsers.DelegationEnforced | Should -BeNullOrEmpty -Because $case.Mode }
+                else { $set.ProtectedUsers.DelegationEnforced | Should -Be $case.Expect -Because $case.Mode }
+            }
+            # Through the seams: contoso.com at 2012 makes its Protected Users member adm.alice delegable.
+            $script:C10DomainMode = @{ 'contoso.com' = 'Windows2012Domain' }
+            $rows = Get-C10AllRows -State (Get-C10State)
+            (Get-C10Row $rows 'Privileged accounts delegable: contoso.com')[0].Principals | Should -Be 'adm.alice; adm.bob'
+            (Get-C10Row $rows 'Privileged accounts delegable: north.contoso.com')[0].Status | Should -Be 'Pass'
+        }
+        It 'marks a member list of exactly 5000 values, the second range-retrieval limit, as possibly truncated (finding 16)' {
+            $ctx = New-AdfaPrivContext -DomainMap @{} -Config $script:Pc -Offline
+            $members = @(1..5000 | ForEach-Object { "CN=u$_,DC=contoso,DC=com" })
+            $rec = New-C10Record -Name 'u' -Sid "$($script:C10RootSid)-3000"
+            foreach ($m in $members) { $ctx['Objects'][$m.ToLowerInvariant()] = [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; ErrorType = ''; Record = $rec } }
+            $big = New-C10Record -Name 'Big' -Kind 'Group' -Sid 'S-1-5-32-544' -Dn 'CN=Big,DC=contoso,DC=com' -Uac $null -Members $members
+            $c = Resolve-AdfaPrivGroupClosure -Group $big -Context $ctx -Config $script:Pc
+            $c.Complete | Should -BeFalse
+            $c.Unresolved[0].Reason | Should -Match 'exactly 5000 values'
+        }
+        It 'counts a Kerberoastable account whose Enabled state was not returned, never dropping it (finding 18)' {
+            $roast = [pscustomobject]@{ RoastOk = $true; RoastClass = 'Read'; RoastError = ''; RoastErrorType = ''; Roast = @([pscustomobject]@{ Name = 'svc.sql'; Enabled = $null })
+                AsRepOk = $true; AsRepClass = 'Read'; AsRepError = ''; AsRepErrorType = ''; AsRep = @() }
+            $r = @(Get-AdfaKerberosRoastVerdict -Domain 'contoso.com' -Roast $roast -Config $script:Pc)[0]
+            $r.Status | Should -Be 'Warning'
+            $r.Count | Should -Be '1'
+            $r.Principals | Should -Be 'svc.sql'
+        }
+    }
+
+    Context 'Config override' {
+        It 'accepts a valid override and rewrites the provenance for the keys it supplied only' {
+            $o = '{ "Privileged": { "OrphanStatus": "Fail", "NameListCap": 3, "MaxExpandedObjects": 100, "EnterpriseAdminsExemptRootAdministrator": true } }' | ConvertFrom-Json
+            $r = Resolve-AdfaConfigOverride -Override $o -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\priv.json'
+            $m = $r['Privileged']
+            [string]$m['OrphanStatus'] | Should -Be 'Fail'
+            [int]$m['NameListCap'] | Should -Be 3
+            [int]$m['MaxExpandedObjects'] | Should -Be 100
+            [bool]$m['EnterpriseAdminsExemptRootAdministrator'] | Should -BeTrue
+            [string]$m['SchemaAdminsStatus'] | Should -Be 'Warning'
+            [string]$m['ThresholdSource'] | Should -Match 'C:\\cfg\\priv\.json'
+            [string]$m['ThresholdSource'] | Should -Match 'OrphanStatus'
+            [string]$m['ThresholdSource'] | Should -Not -Match 'for .*SchemaAdminsStatus'
+            # The built-in table still says what it said.
+            [string]$script:Pc['OrphanStatus'] | Should -Be 'Warning'
+            (@($script:Pc['Groups'])).Count | Should -Be 17
+        }
+        It 'refuses <Name>' -TestCases @(
+            @{ Name = 'an array'; Json = '[ { "OrphanStatus": "Fail" } ]'; Pattern = 'single object' }
+            @{ Name = 'an empty object'; Json = '{ }'; Pattern = 'empty object' }
+            @{ Name = 'an unknown key'; Json = '{ "Groups": [] }'; Pattern = 'unknown key' }
+            @{ Name = 'a null'; Json = '{ "RbcdStatus": null }'; Pattern = 'null' }
+            @{ Name = 'a Pass grade'; Json = '{ "SchemaAdminsStatus": "Pass" }'; Pattern = 'Warning or Fail' }
+            @{ Name = 'an Info grade'; Json = '{ "UnconstrainedStatus": "Info" }'; Pattern = 'Warning or Fail' }
+            @{ Name = 'a quoted boolean'; Json = '{ "EnterpriseAdminsExemptRootAdministrator": "true" }'; Pattern = 'JSON true or false' }
+            @{ Name = 'a quoted number'; Json = '{ "NameListCap": "5" }'; Pattern = 'JSON number' }
+            @{ Name = 'a fraction'; Json = '{ "NameListCap": 2.5 }'; Pattern = 'whole number from 0 to 1000' }
+            @{ Name = 'a cap above the range'; Json = '{ "NameListCap": 1001 }'; Pattern = 'whole number from 0 to 1000' }
+            @{ Name = 'a read cap of zero'; Json = '{ "MaxExpandedObjects": 0 }'; Pattern = 'whole number from 1 to 100000' }
+            @{ Name = 'a bit value'; Json = '{ "Uac": { "NotDelegated": 0 } }'; Pattern = 'unknown key' }
+        ) {
+            param($Name, $Json, $Pattern)
+            # ConvertFrom-Json unrolls a top-level array on PowerShell 7, so the array is built directly.
+            if ($Name -eq 'an array') { $value = @([pscustomobject]@{ OrphanStatus = 'Fail' }) }
+            else { $value = $Json | ConvertFrom-Json }
+            { Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override $value -OverrideSource 'C:\cfg\bad.json' } | Should -Throw -ExpectedMessage ("*{0}*" -f $Pattern)
+        }
+        It 'accepts the boundaries of each range' {
+            (Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ('{ "NameListCap": 0 }' | ConvertFrom-Json))['NameListCap'] | Should -Be 0
+            (Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ('{ "NameListCap": 1000 }' | ConvertFrom-Json))['NameListCap'] | Should -Be 1000
+            (Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ('{ "MaxExpandedObjects": 1 }' | ConvertFrom-Json))['MaxExpandedObjects'] | Should -Be 1
+            (Merge-AdfaPrivilegedConfig -BaseConfig $script:Pc -Override ('{ "MaxExpandedObjects": 100000 }' | ConvertFrom-Json))['MaxExpandedObjects'] | Should -Be 100000
+        }
+    }
+
+    Context 'Recommendations' {
+        It 'places its entries before every unscoped entry, anchored on its Item prefixes, with a catch-all per section' {
+            $map = @($script:RecommendationMap)
+            $mine = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Section -match '^\(\?i\)\^(privileged accounts|privileged hygiene|kerberos exposure)$') { $i } })
+            # Declared population: 2 + catch-all, 3 + catch-all, 3 + catch-all.
+            $mine.Count | Should -Be 11
+            $firstUnscoped = @(for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $i } })[0]
+            foreach ($i in $mine) { $i | Should -BeLessThan $firstUnscoped }
+            foreach ($i in $mine) { [string]$map[$i].Match | Should -Match '^\(\?i\)\^(Privileged Accounts|Privileged Hygiene|Kerberos Exposure) :: ' }
+            @($mine | Where-Object { [string]$map[$_].Text -eq '' }).Count | Should -Be 3
+        }
+        It 'answers each graded family with its own advice, whatever its Detail says' {
+            $cases = @(
+                @{ Section = 'Privileged Accounts'; Item = 'Schema Admins members: contoso.com'; Expect = 'temporarily and occasionally' }
+                @{ Section = 'Privileged Accounts'; Item = 'Enterprise Admins members: contoso.com'; Expect = 'day-to-day' }
+                @{ Section = 'Privileged Hygiene'; Item = 'adminCount orphans: contoso.com'; Expect = 're-enable permission inheritance' }
+                @{ Section = 'Privileged Hygiene'; Item = 'Privileged accounts with SPN: contoso.com'; Expect = 'Remove the service principal names' }
+                @{ Section = 'Privileged Hygiene'; Item = 'Privileged accounts delegable: contoso.com'; Expect = 'Account is sensitive and cannot be delegated' }
+                @{ Section = 'Kerberos Exposure'; Item = 'Unconstrained delegation: contoso.com'; Expect = 'impersonate a client' }
+                @{ Section = 'Kerberos Exposure'; Item = 'Protocol transition delegation: contoso.com'; Expect = 'strictly controlled' }
+                @{ Section = 'Kerberos Exposure'; Item = 'Resource-based delegation: contoso.com'; Expect = 'PrincipalsAllowedToDelegateToAccount' }
+            )
+            # Declared population: the eight graded families.
+            $cases.Count | Should -Be 8
+            foreach ($c in $cases) {
+                $rec = Get-AdfaRecommendation -Section $c.Section -Item $c.Item -Detail $script:C10Hostile
+                $rec | Should -Match ([regex]::Escape($c.Expect)) -Because $c.Item
+                $rec | Should -Not -Match 'repadmin|wbadmin|New-KrbtgtKeys|dfsrmig|ENROLLEE_SUPPLIES_SUBJECT|replace with resource-based' -Because $c.Item
+            }
+            foreach ($item in @('Privileged group: Backup Operators: contoso.com', 'Privileged group population: contoso.com', 'Protected Users members: contoso.com', 'Constrained delegation: contoso.com')) {
+                $section = 'Privileged Accounts'
+                if ($item -match '^Protected Users') { $section = 'Privileged Hygiene' }
+                if ($item -match '^Constrained') { $section = 'Kerberos Exposure' }
+                Get-AdfaRecommendation -Section $section -Item $item -Detail $script:C10Hostile | Should -Be '' -Because $item
+            }
+        }
+        It 'still sends the Kerberoast and AS-REP rows to the advice they had' {
+            (Get-AdfaRecommendation -Section 'Kerberos Exposure' -Item 'Kerberoastable user accounts (SPN set)' -Detail '1 enabled user account(s) with a service principal name visible to this account; names are in the Principals column.') | Should -Match 'Group Managed Service Accounts'
+            (Get-AdfaRecommendation -Section 'Kerberos Exposure' -Item 'AS-REP roastable accounts (no pre-auth)' -Detail '1 enabled account(s) that do not require Kerberos pre-authentication visible to this account; names are in the Principals column.') | Should -Match 'pre-authentication'
+        }
+        It 'attaches advice to Warning rows only, chosen without the NotRun note, and none to a row that measured nothing' {
+            $rows = Get-C10AllRows -State (Get-C10State)
+            $findings = @($rows | ForEach-Object {
+                    $section = @{ Privileged = 'Privileged Accounts'; PrivHygiene = 'Privileged Hygiene'; Kerberos = 'Kerberos Exposure' }[$_.Area]
+                    ConvertTo-AdfaConsolidatedFinding -Section $section -Row $_ -StatusColumn 'Status' })
+            $findings.Count | Should -Be $rows.Count
+            @($findings | Where-Object { $_.Status -match '^(Pass|Info|Not Assessed)$' -and $_.Recommendation }).Count | Should -Be 0
+            @($findings | Where-Object { $_.Status -eq 'Warning' -and -not $_.Recommendation }).Count | Should -Be 0
+            @($findings | Where-Object { $_.Status -eq 'Warning' }).Count | Should -BeGreaterThan 5   # non-vacuity
+            $orphan = @($findings | Where-Object { $_.Item -eq 'adminCount orphans: contoso.com' })[0]
+            $orphan.Detail | Should -Match 'formerly protected'
         }
     }
 }

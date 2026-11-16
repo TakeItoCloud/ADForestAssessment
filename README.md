@@ -35,11 +35,11 @@ Extracted from
 | **DFS Replication events** | Per-DC DFSR log scan for dirty shutdown (2213), content freshness stop (4012), membership disabled (4114/4144), waiting for initial sync (4614) and successful initialisation (4604) — **gated on log coverage** like the Directory Service scan, and silence with no 4604 is a `Warning`, not a pass |
 | Group Policy | Linked / unlinked GPOs (GroupPolicy module), central store; and **GPO version consistency** per scoped domain (part of `-Sections Gpo`, no module needed): each GPO's version in the directory (`versionNumber`) against its `GPT.INI` in SYSVOL, user and computer halves, both read from the domain's **PDC emulator**. A difference is a `Warning` (a **tool default**, `Fail` by override) that names the half and both numbers and says it can be replication in flight; a GPO that could not be compared is `Not Assessed` with its cause (unreachable, access denied, folder or `GPT.INI` absent, not parsed, `versionNumber` not returned, a `gPCFileSysPath` that is not the GPO's own folder); a SYSVOL folder named by a GPO GUID with no container visible is a `Warning`. A per-domain summary row states the containers read, compared, mismatched and not compared, and passes only when every one was compared and none differs. Details under [GPO version consistency](#gpo-version-consistency) |
 | Policy | Default and fine-grained password and lockout policy |
-| Privilege | DA/EA/SA/Administrators membership, adminCount orphans, SPNs on privileged accounts, Protected Users |
+| Privilege | `-Sections PrivilegedAccounts` and `PrivilegedHygiene`. Per scoped domain, every privileged group located by SID (never by name) and expanded transitively - nested groups, primary-group members, foreign security principals by SID - with Schema Admins and Enterprise Admins graded (forest root; Warning at one member, a tool default) and every other group counted; a member that could not be resolved makes a count Not Assessed, never lower. adminCount=1 objects outside every protected group, enabled privileged users with an SPN, privileged accounts that can be delegated, Protected Users members. See [Privileged groups and delegation](#privileged-groups-and-delegation) |
 | Security posture | krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota, stale / never-expiring / RC4-DES accounts (the permissions of AdminSDHolder are in Dangerous ACLs); and **SID history** per scoped domain (directory reads only, `sIDHistory` never written): the principals that carry it (`Warning` when any - a tool default, `Info` by override; `Pass` worded "none visible to this account" when the read succeeded and returned none), a historic SID of the principal's own domain (`Fail`), a privileged well-known RID or SID (`Fail`, named), and the source domains (`Info`: this forest, a trust partner, or "unresolved"). Details under [SID history](#sid-history) |
 | AD CS / PKI | Enrolment CAs, ESC1-susceptible certificate templates |
 | Dangerous ACLs | `-Sections Acl`. Directory reads of `nTSecurityDescriptor` only, per scoped domain, read in memory (nothing written). Every principal is a **SID**, matched by SID against an allowlist - Microsoft's published default holders plus labelled tool defaults - and **never by name**, so a group named like a default group is still flagged. **DCSync rights** (a replication right on the domain head, alone or through all extended rights or full control), **Domain root control rights** (WriteDacl, WriteOwner, write of all properties, full control, or a non-default owner), **AdminSDHolder rights**, and one row per **GPO** with a per-domain summary. A flagged SID is a `Warning` (a **tool default**, `Fail` by override) and every row says the allowlist is **provisional**. A descriptor not returned, without a DACL, or unreadable is `Not Assessed` with its cause; unreachable, access denied and timed out are told apart. Details under [Dangerous rights in the directory](#dangerous-rights-in-the-directory) |
-| Kerberos exposure | Kerberoastable (SPN) users, AS-REP-roastable accounts, delegation |
+| Kerberos exposure | `-Sections Kerberos`. Kerberoastable (SPN) users, AS-REP-roastable accounts; per scoped domain, unconstrained delegation and protocol transition outside the domain controllers (excluded by the DN of their computer account from the configuration partition, never by name), Kerberos-only constrained delegation (inventory) and resource-based constrained delegation with the SIDs it allows |
 | **DC hardening** | `-Sections DcHardening`. Per DC, six registry values and three CIM classes read in one session: **LDAP server signing** (`LDAPServerIntegrity`) and its Windows Server 2025 **enforcement** (`LDAPServerEnforceIntegrity`), **LDAP channel binding** (`LdapEnforceChannelBinding`), **SMB server and client signing** (`RequireSecuritySignature`), the **LAN Manager authentication level** (`LmCompatibilityLevel`), the **Print Spooler** service and the **SMBv1** server. Each value is graded against what Microsoft's security baselines expect on a domain controller. A value that is **not set** is graded on the default Microsoft documents for the DC's OS build where it documents one, named as a default; where it documents none it is `Not Assessed`, never a pass and never a failure. Unreachable, access denied, not set, key absent and wrong type are separate results. These rows show the **configured policy, not what a client and the DC negotiate on the wire**. The **SMBv1** row is `Not Assessed` on any DC whose SMB configuration class returns no instance to a query, which is what the one host measured does (PORT-PLAN C3f). Details under [DC hardening](#dc-hardening) |
 | **DC system** | `-Sections DcSystem`. **OS lifecycle**: each DC's operating system against Microsoft's extended support end date, from a versioned table. Past the date is a `Fail` whose text says whether an Extended Security Updates (ESU) programme is still running, has also ended, or was never published — and always that **ESU enrolment is not assessed**. An OS the table does not list, or one that could not be read, is `Not Assessed` with the raw values, never `Pass`. Reads only the directory, so it needs no rights on any DC. **Patch level**: per DC, OS build, uptime and the latest update install date over remote CIM. This half is **inventory** (`Info` or `Not Assessed`, never `Pass`): Microsoft publishes no maximum uptime or update age for a DC, so none is applied. Unreachable, access denied and other read failures are three different results |
 | **DC disk space** | `-Sections DcDisk`. Free space on the volumes that hold the **NTDS database**, the **NTDS logs** and **SYSVOL**, per DC. The three paths are read from each DC's own registry and matched to a volume by the longest mount path, so a database under a mounted folder is judged on the right volume. One row per distinct volume, listing the roles it holds. `Fail` below 10 % free or below 2 GB free, `Warning` below 20 % or below 5 GB — **tool defaults, not Microsoft values**, labelled as such in every finding and overridable with `-ConfigOverridePath`. A path or a volume that could not be read is `Not Assessed` with its cause; unreachable, access denied, a registry value that is not set and any other read failure are different results. Covers the DCs of every scoped domain, with or without `DomainControllers` selected; a domain whose DCs could not be enumerated gets its own `Not Assessed` row. Needs local Administrators rights on each DC |
@@ -1016,12 +1016,112 @@ a group the principal belongs to is not honoured); the permissions of a GPO's fo
 module returns for `nTSecurityDescriptor`, and which descriptor parts it asks for, is not
 published; an `ActiveDirectorySecurity` and a byte array are both read, and anything else is
 `Not Assessed`.
+
+## Privileged groups and delegation
+
+`-Sections PrivilegedAccounts`, `PrivilegedHygiene` and `Kerberos` (all part of `All`) share one set
+of directory reads, made once per run for the sections selected. They cover the AdAssessment26
+catalogue rows ADA-PRIV-001 and -002 (Schema Admins, Enterprise Admins), ADA-INV-005 (privileged
+group counts), ADA-OBJ-001 (adminCount orphans), ADA-OBJ-002, -003 and -004 (unconstrained
+delegation, protocol transition, resource-based delegation), ADA-OBJ-006 (SPN on a privileged
+account) and ADA-INV-017 (Kerberos-only constrained delegation), and add one row of their own
+(privileged accounts that can be delegated). **Run against stubs only** so far; the first run
+against a real forest is PORT-PLAN C17, and C10a lists what it must confirm.
+
+**What it reads**, read-only, each from the domain it is about (`-Server <domain>`, with
+`-Credential` when given):
+
+1. `Get-ADDomain` for every domain of the forest: its DN and SID, so that a member DN is read from
+   the domain that holds it, and its `DomainMode` (whether Protected Users blocks delegation there).
+2. Per scoped domain, each group of `Config.Privileged.Groups` with `Get-ADObject -LDAPFilter
+   '(objectSid=<SID as escaped bytes>)'` - by SID, never by name. Every member DN with
+   `Get-ADObject -Identity <DN>` from its own domain; nested groups followed, security and
+   distribution alike (Learn: protection follows either); and `(primaryGroupID=<RID>)` for every
+   group with a domain SID, because primary-group membership is not in `member` (with
+   `-ResultSetSize` set to one more than what is left of `MaxExpandedObjects`).
+3. Per scoped domain, `(adminCount=1)`, and one delegation search:
+   `(|(userAccountControl:1.2.840.113556.1.4.803:=524288)(userAccountControl:1.2.840.113556.1.4.803:=16777216)(msDS-AllowedToDelegateTo=*)(msDS-AllowedToActOnBehalfOfOtherIdentity=*))`.
+   The Kerberoast and AS-REP reads are unchanged.
+4. Once per run, whichever of the three sections runs, under `CN=Sites` of the configuration
+   partition, every `nTDSDSA` object and every `server` object's `serverReference`: a server holding
+   an `nTDSDSA` child is a domain controller, and its `serverReference` is the DN of its computer
+   account. The population is used only when it is complete: at least one `nTDSDSA` object (a
+   forest always has a DC), every DC server object with a `serverReference`, and every `nTDSDSA`
+   object matched to its server. And `dSHeuristics` on `CN=Directory Service,CN=Windows NT,CN=Services`.
+
+**Declared populations** (each checked before anything is passed):
+
+- The group reads of a domain must find each DC registered for it among the members of Domain
+  Controllers or Read-only Domain Controllers (directly, nested or by `primaryGroupID` 516/521,
+  Microsoft's defaults). Otherwise the population row is `Not Assessed`, and an empty Schema Admins
+  or Enterprise Admins is not passed.
+- The `(adminCount=1)` search must return the domain's built-in Administrator (RID 500): Appendix C
+  lists it as protected, and Learn says a protected account has `adminCount` set to 1. The
+  privileged-account population of the SPN and delegable rows must hold it too.
+- The delegation search must return every DC registered for the domain (its computer account in the
+  domain's own naming context, not a child's): Learn documents that a writable DC carries
+  `TRUSTED_FOR_DELEGATION` and an RODC `TRUSTED_TO_AUTH_FOR_DELEGATION` by default, and the search
+  asks for either bit. This expectation is a tool rule built on those defaults.
+
+When one fails, no row built on it is `Pass` (the Constrained count is not given); a row that found
+accounts keeps its grade and says the search may be incomplete.
+
+Named attributes only (`objectClass`, `objectSid`, `sAMAccountName`, `userAccountControl`,
+`adminCount`, `servicePrincipalName`, `primaryGroupID`, `member`, `msDS-AllowedToDelegateTo`,
+`msDS-AllowedToActOnBehalfOfOtherIdentity`, `serverReference`, `dSHeuristics`), never a wildcard.
+Nothing is written: no `Set-AD*`, no `Add-ADGroupMember`, no `Set-ADAccountControl`, and never the
+rootDSE modify `RunProtectAdminGroupsTask` that Appendix C documents for triggering SDProp.
+
+**The groups** (`Config.Privileged.Groups`, from Learn's security-groups reference): Administrators,
+Account, Server, Print and Backup Operators and Replicator (builtin SIDs, every domain); Domain
+Admins, Domain Controllers, Read-only Domain Controllers, Key Admins, Cert Publishers, Group Policy
+Creator Owners and Protected Users (`<domain>-RID`, every domain); Schema Admins, Enterprise Admins,
+Enterprise Read-only Domain Controllers and Enterprise Key Admins (`<root>-RID`, forest root only).
+The protected ones are Appendix C's list plus Enterprise Read-only Domain Controllers, which the
+security-groups page marks as protected and Appendix C does not (the pages disagree; counting it can
+only keep an object from being called an orphan). Learn's pages also disagree on Key Admins and
+Enterprise Key Admins: -526 is looked up in every domain; -527 in the forest root only, because the
+domain-wide updates page (Operation 85) names "rootdomain\Enterprise Key Admins" and calls a
+domain-relative -527 in a nonroot domain "a nonresolvable -527 SID" - the root's group then counts as
+a protected source for every child domain. One that is absent is "not present" (Learn: both are
+created only once a Windows Server 2016 DC holds the PDC emulator role). DnsAdmins (variable RID,
+not protected) is not read: PORT-PLAN C10b.
+
+| Row | Results |
+| --- | --- |
+| `Schema Admins members: <root>` | ADA-PRIV-001. `Warning` (a tool default; `Fail` by override) at one transitive member or more - users, computers and foreign security principals, nested groups followed but not counted; `Pass` when none is visible; `Not Assessed` when the group was not read, or none was resolved and a reference was not. A member found stands even when another reference could not be resolved, and the row says the true number may be higher. Learn: Schema Admins "is intended to be populated only temporarily and occasionally" |
+| `Enterprise Admins members: <root>` | ADA-PRIV-002. The same. Learn's default member and "possible exception" - the forest root's built-in Administrator - is counted, as the catalogue rule says, and quoted; `EnterpriseAdminsExemptRootAdministrator: true` leaves it out |
+| `Privileged group: <name>: <domain>` | ADA-INV-005. `Info` with the count; `Not Assessed` with the count left empty when any reference was not resolved (never a lower number); `Info` "Not present" for a group Learn documents only from a later level (RODCs, Key Admins, Enterprise Key Admins, Protected Users, Enterprise RODCs); `Not Assessed` for one that must exist. 17 rows in the forest root, 13 in a child domain |
+| `Privileged group population: <domain>` | `Pass` when every declared group was located and expanded completely, or is optional and absent, and the domain's registered DCs were found in its DC groups; `Not Assessed` otherwise, naming the groups or the check that failed |
+| `adminCount orphans: <domain>` | ADA-OBJ-001. Every object `(adminCount=1)` returned - users, computers and groups, enabled or not - that no protected group of the domain or the forest root reaches (a protected group's own object, its nested groups and its foreign members count as reached), and that is not the domain's Administrator or krbtgt: `Warning` (tool default). `Not Assessed` when any protected group was not read completely (the objects are listed as candidates), when the search did not return the domain's Administrator (RID 500), or when an object is protected only through Account, Server, Print or Backup Operators and `dSHeuristics`' `dwAdminSDExMask` (character 16) is not `0` or was not read - Learn does not publish which bit removes which group. Learn says "formerly protected"; "orphan" is this tool's word |
+| `Privileged accounts with SPN: <domain>` | ADA-OBJ-006. Enabled user accounts of the domain that are protected-group members or carry adminCount=1 and have a `servicePrincipalName`: `Warning`. Computer accounts and krbtgt are not in the population; the SPNs are in `Targets`, for the same accounts `Principals` lists. `Not Assessed`, never `Pass`, when the population is empty or lacks the domain's Administrator |
+| `Privileged accounts delegable: <domain>` | Not a catalogue row: a C10 addition. Enabled privileged user accounts (protected-group members and the Administrator; disabled ones are left out) that can be delegated: `Warning`. `NOT_DELEGATED` ("Account is sensitive and cannot be delegated") always protects. Transitive Protected Users membership protects only at domain functional level Windows Server 2012 R2 or later (`DomainMode` `Windows2012R2Domain`, `Windows2016Domain` or `Windows2025Domain`): Learn says the DC-side restrictions, delegation among them, need that level. Below it the member is delegable and graded; with the level unread or not one of those values it is undecided. Undecided, never a finding, when Protected Users was not read; `Not Assessed` on an empty population |
+| `Protected Users members: <domain>` | `Info` with the count, or "Not present" |
+| `Kerberoastable user accounts (SPN set)`, `AS-REP roastable accounts (no pre-auth)` | Unchanged grades; names moved from Detail to `Principals` |
+| `Unconstrained delegation: <domain>` | ADA-OBJ-002. `TRUSTED_FOR_DELEGATION` (524288) on an account that is not a registered DC: `Warning`. DCs and RODCs are excluded by the DN of their computer account (from `serverReference`) - never by name, and never by `primaryGroupID` 516/521, which an account can carry without being a DC (such accounts are graded, and counted in Detail). `Not Assessed` when the DC population was not read completely, and - with no account found - when the search did not return every DC registered for the domain |
+| `Protocol transition delegation: <domain>` | ADA-OBJ-003. `TRUSTED_TO_AUTH_FOR_DELEGATION` (16777216), with the same exclusion: an RODC carries it by default (Learn, replication error 8453) |
+| `Constrained delegation: <domain>` | ADA-INV-017. `Info`: `msDS-AllowedToDelegateTo` set and protocol transition not; targets in `Targets` |
+| `Resource-based delegation: <domain>` | ADA-OBJ-004. `msDS-AllowedToActOnBehalfOfOtherIdentity` present: `Warning`. Its descriptor is read in memory (the C9 converter) and the SIDs it allows and denies are listed in `AllowedSids`; one that could not be read is counted and marked |
+| `... (no domain scoped)`, `Privileged groups`, `Privileged hygiene`, `Kerberos exposure` | `Not Assessed`: no domain scoped, or the forest unreadable |
+
+`Not Assessed`, each in its own words: `Unreachable:`, `Access denied:`, `Timed out:`, `Read
+failed:`, `Not found:`, and for a member reference "out of scope" (a forest domain this run did not
+scope - `-AllDomains` scopes them all; the reference rule, AdAssessment26 decision 56), "domain not
+decided", "not found", or a member list of exactly 1500 or 5000 values, which may be cut at
+`MaxValRange` (whether the ActiveDirectory module does range retrieval is not published). A run
+reads at most `MaxExpandedObjects` (5000, a tool default) objects - member reads and primary-group
+search results together. A member in a scoped domain whose own `Get-ADDomain` read failed carries
+that domain's cause (unreachable, access denied, timed out), not "out of scope". A SID lookup that
+returns two objects is "ambiguous", not a refusal. Names, SIDs, DNs and SPNs
+are in `Principals`, `PrincipalSids`, `ForeignSids`, `Unresolved`, `Targets` and `AllowedSids`, never
+in Detail, so they cannot change the advice.
+
 ## One override file for section config: `-ConfigOverridePath`
 
 A JSON file whose top-level keys are section names. Each value is checked by that section's own
-rules. Eight sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates`,
-`RidPool`, `SidHistory` (used by `SecurityPosture`), `Gpo` and `Acl`;
-later checks add their own key.
+rules. Nine sections can be named so far, `DcDisk`, `DcHardening`, `Laps`, `DcCertificates`,
+`RidPool`, `SidHistory` (used by `SecurityPosture`), `Gpo`, `Acl` and `Privileged` (used by
+`PrivilegedAccounts`, `PrivilegedHygiene` and `Kerberos`); later checks add their own key.
 
 ```json
 {
@@ -1073,6 +1173,12 @@ later checks add their own key.
         "Reason": "Entra Connect AD DS connector account"
       }
     ]
+  },
+  "Privileged": {
+    "SchemaAdminsStatus": "Warning",
+    "EnterpriseAdminsExemptRootAdministrator": false,
+    "NameListCap": 25,
+    "MaxExpandedObjects": 5000
   }
 }
 ```

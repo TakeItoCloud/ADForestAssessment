@@ -509,10 +509,111 @@ function Get-ADDefaultDomainPasswordPolicy { param([Parameter(ValueFromRemaining
     [pscustomobject]@{ MinPasswordLength=8; PasswordHistoryCount=24; MaxPasswordAge=[timespan]::FromDays(42)
         MinPasswordAge=[timespan]::FromDays(1); ComplexityEnabled=$true; LockoutThreshold=5; ReversibleEncryptionEnabled=$false } }
 function Get-ADFineGrainedPasswordPolicy { param([Parameter(ValueFromRemainingArguments)]$a) @() }
-function Get-ADGroupMember { param([Parameter(ValueFromRemainingArguments)]$a)
-    1..3 | ForEach-Object { [pscustomobject]@{ SamAccountName="admin$_" } } }
+# C10 retired Get-ADGroupMember: the privileged groups are read by SID through Get-ADObject. A call
+# now fails the run here instead of quietly returning three made-up members.
+function Get-ADGroupMember { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: Get-ADGroupMember is no longer used by this tool (PORT-PLAN C10)' }
+# C10: the Kerberoast and AS-REP reads are refused when $script:SmokePrivFail is set; every other call
+# receives the single object it always received.
 function Get-ADUser { param([Parameter(ValueFromRemainingArguments)]$a)
+    $stubUserNamed = ConvertTo-StubArgument -Given $a
+    if ($script:SmokePrivFail -and [string]$stubUserNamed['LDAPFilter'] -match 'servicePrincipalName|4194304') { throw [System.UnauthorizedAccessException]'STUB: roast read refused' }
     [pscustomobject]@{ PasswordLastSet=$now.AddDays(-30); SamAccountName='krbtgt' } }
+# C10 (PrivilegedAccounts, PrivilegedHygiene, Kerberos): one small directory per domain, keyed by the
+# -Server the read names. The Get-ADDomain stub gives every domain the same DN, so every object here
+# sits under DC=contoso,DC=com; in the three-domain pass a member DN therefore cannot be routed to one
+# domain, and the rows that depend on membership must say so (Not Assessed), never pass. Per domain:
+#   Administrators (builtin)  Domain Admins, and - in the forest root - Enterprise Admins
+#   Domain Admins (-512)      adm.smoke (enabled, an SPN, NOT_DELEGATED clear)
+#   Enterprise Admins (-519)  Administrator (root only); Schema Admins (-518) empty (root only)
+#   the other groups that always exist, empty; Domain Controllers holding DC1 by primaryGroupID 516
+#   old.smoke                 adminCount=1 and in no group: an orphan
+#   svc.deleg                 TRUSTED_FOR_DELEGATION; DC1 carries it too, and is a registered DC
+# The configuration partition registers DC1 (an nTDSDSA object and serverReference) and holds no
+# dSHeuristics. Answers carry the default properties and a requested attribute only where the object
+# has a value; objectSid as bytes. $script:SmokePrivFail refuses every one of these reads.
+$script:SmokePrivFail = $false
+$script:SmokePrivCalls = @()
+$script:SmokePrivCfg = 'CN=Configuration,DC=contoso,DC=com'
+$script:SmokePrivDc = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'
+function New-StubPrivDirectory {
+    param([string]$Domain)
+    $sid = $script:SmokeDomainSids[$Domain]
+    $u = 'CN=Users,DC=contoso,DC=com'; $b = 'CN=Builtin,DC=contoso,DC=com'
+    $isRoot = ($Domain -eq 'contoso.com')
+    $adminMembers = @("CN=Domain Admins,$u")
+    if ($isRoot) { $adminMembers += "CN=Enterprise Admins,$u" }
+    $objects = @(
+        @{ Dn = "CN=Administrators,$b"; Class = 'group'; Sid = 'S-1-5-32-544'; Sam = 'Administrators'; AdminCount = 1; Members = $adminMembers }
+        @{ Dn = "CN=Domain Admins,$u"; Class = 'group'; Sid = "$sid-512"; Sam = 'Domain Admins'; AdminCount = 1; Members = @("CN=adm.smoke,$u") }
+        @{ Dn = "CN=Account Operators,$b"; Class = 'group'; Sid = 'S-1-5-32-548'; Sam = 'Account Operators' }
+        @{ Dn = "CN=Server Operators,$b"; Class = 'group'; Sid = 'S-1-5-32-549'; Sam = 'Server Operators' }
+        @{ Dn = "CN=Print Operators,$b"; Class = 'group'; Sid = 'S-1-5-32-550'; Sam = 'Print Operators' }
+        @{ Dn = "CN=Backup Operators,$b"; Class = 'group'; Sid = 'S-1-5-32-551'; Sam = 'Backup Operators' }
+        @{ Dn = "CN=Replicator,$b"; Class = 'group'; Sid = 'S-1-5-32-552'; Sam = 'Replicator' }
+        @{ Dn = "CN=Domain Controllers,$u"; Class = 'group'; Sid = "$sid-516"; Sam = 'Domain Controllers'; AdminCount = 1 }
+        @{ Dn = "CN=Cert Publishers,$u"; Class = 'group'; Sid = "$sid-517"; Sam = 'Cert Publishers' }
+        @{ Dn = "CN=Group Policy Creator Owners,$u"; Class = 'group'; Sid = "$sid-520"; Sam = 'Group Policy Creator Owners' }
+        @{ Dn = "CN=Administrator,$u"; Class = 'user'; Sid = "$sid-500"; Sam = 'Administrator'; Uac = (512 + 1048576); AdminCount = 1; PrimaryGroupId = 513 }
+        @{ Dn = "CN=adm.smoke,$u"; Class = 'user'; Sid = "$sid-1101"; Sam = 'adm.smoke'; Uac = 512; AdminCount = 1; PrimaryGroupId = 513; Spns = @('HTTP/app.contoso.com') }
+        @{ Dn = "CN=old.smoke,$u"; Class = 'user'; Sid = "$sid-1102"; Sam = 'old.smoke'; Uac = 512; AdminCount = 1; PrimaryGroupId = 513 }
+        @{ Dn = "CN=svc.deleg,$u"; Class = 'user'; Sid = "$sid-1103"; Sam = 'svc.deleg'; Uac = (512 + 524288); PrimaryGroupId = 513 }
+        @{ Dn = $script:SmokePrivDc; Class = 'computer'; Sid = "$sid-1000"; Sam = 'DC1$'; Uac = 532480; PrimaryGroupId = 516 }
+    )
+    if ($isRoot) {
+        $objects += @{ Dn = "CN=Enterprise Admins,$u"; Class = 'group'; Sid = "$sid-519"; Sam = 'Enterprise Admins'; AdminCount = 1; Members = @("CN=Administrator,$u") }
+        $objects += @{ Dn = "CN=Schema Admins,$u"; Class = 'group'; Sid = "$sid-518"; Sam = 'Schema Admins'; AdminCount = 1 }
+    }
+    return $objects
+}
+function ConvertTo-StubPrivAnswer {
+    param([hashtable]$O, [string[]]$Asked)
+    $answer = [pscustomobject]@{ DistinguishedName = $O.Dn; Name = ($O.Dn -replace '^CN=([^,]+),.*$', '$1'); ObjectClass = $O.Class; ObjectGUID = [guid]::NewGuid() }
+    foreach ($k in @('sAMAccountName', 'userAccountControl', 'adminCount', 'primaryGroupID')) {
+        $v = @{ sAMAccountName = $O['Sam']; userAccountControl = $O['Uac']; adminCount = $O['AdminCount']; primaryGroupID = $O['PrimaryGroupId'] }[$k]
+        if ($Asked -contains $k -and $null -ne $v) { $answer | Add-Member -NotePropertyName $k -NotePropertyValue $v }
+    }
+    if ($Asked -contains 'objectClass') { $answer | Add-Member -NotePropertyName 'objectClass' -NotePropertyValue @('top', $O.Class) -Force }
+    if ($Asked -contains 'objectSid') { $answer | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue (New-StubSidBytes -Sid $O.Sid) }
+    if ($Asked -contains 'member' -and @($O['Members']).Count -gt 0 -and $null -ne $O['Members']) { $answer | Add-Member -NotePropertyName 'member' -NotePropertyValue @($O['Members']) }
+    if ($Asked -contains 'servicePrincipalName' -and $null -ne $O['Spns']) { $answer | Add-Member -NotePropertyName 'servicePrincipalName' -NotePropertyValue @($O['Spns']) }
+    return $answer
+}
+function Get-StubPrivAnswer {
+    param([hashtable]$Named, [string[]]$Asked)
+    foreach ($p in $Asked) { if ($p -match '[*?]') { throw 'STUB: a C10 read asked for every attribute' } }
+    $server = [string]$Named['Server']
+    $target = [string]$Named['Identity']
+    if ($target -eq '') { $target = [string]$Named['LDAPFilter'] }
+    $script:SmokePrivCalls += ("{0}@{1}" -f $target, $server)
+    if ($script:SmokePrivFail) { throw [System.UnauthorizedAccessException]'STUB: privileged read refused' }
+    if ([string]$Named['SearchBase'] -eq ("CN=Sites,{0}" -f $script:SmokePrivCfg)) {
+        if ([string]$Named['LDAPFilter'] -eq '(objectClass=nTDSDSA)') { return [pscustomobject]@{ DistinguishedName = ("CN=NTDS Settings,CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,{0}" -f $script:SmokePrivCfg); ObjectClass = 'nTDSDSA' } }
+        if ([string]$Named['LDAPFilter'] -eq '(objectClass=server)') { return [pscustomobject]@{ DistinguishedName = ("CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,{0}" -f $script:SmokePrivCfg); ObjectClass = 'server'; serverReference = $script:SmokePrivDc } }
+        throw ("STUB: no configuration search '{0}'" -f [string]$Named['LDAPFilter'])
+    }
+    if ($target -like 'CN=Directory Service,*') { return [pscustomobject]@{ DistinguishedName = $target; ObjectClass = 'nTDSService' } }
+    if (-not $script:SmokeDomainSids.ContainsKey($server)) { throw ("STUB: a C10 read must name its domain as -Server, not '{0}'" -f $server) }
+    $objects = @(New-StubPrivDirectory -Domain $server)
+    if ([string]$Named['Identity'] -ne '') {
+        $hit = @($objects | Where-Object { $_.Dn -eq [string]$Named['Identity'] })
+        if ($hit.Count -eq 0) { throw ("STUB: Cannot find an object with identity: '{0}'" -f [string]$Named['Identity']) }
+        return (ConvertTo-StubPrivAnswer -O $hit[0] -Asked $Asked)
+    }
+    $filter = [string]$Named['LDAPFilter']
+    if ($filter -match '^\(objectSid=(.+)\)$') {
+        $wanted = $Matches[1]
+        return @($objects | Where-Object { (ConvertTo-AdfaLdapSidFilterValue -Sid $_.Sid) -eq $wanted } | ForEach-Object { ConvertTo-StubPrivAnswer -O $_ -Asked $Asked })
+    }
+    if ($filter -match '^\(primaryGroupID=(\d+)\)$') {
+        $rid = [int]$Matches[1]
+        return @($objects | Where-Object { $null -ne $_['PrimaryGroupId'] -and [int]$_['PrimaryGroupId'] -eq $rid } | ForEach-Object { ConvertTo-StubPrivAnswer -O $_ -Asked $Asked })
+    }
+    if ($filter -eq '(adminCount=1)') { return @($objects | Where-Object { $_['AdminCount'] -eq 1 } | ForEach-Object { ConvertTo-StubPrivAnswer -O $_ -Asked $Asked }) }
+    if ($filter -like '(|(userAccountControl:1.2.840.113556.1.4.803:=524288)*') {
+        return @($objects | Where-Object { $null -ne $_['Uac'] -and ((([int64]$_['Uac']) -band 524288) -ne 0 -or (([int64]$_['Uac']) -band 16777216) -ne 0) } | ForEach-Object { ConvertTo-StubPrivAnswer -O $_ -Asked $Asked })
+    }
+    throw ("STUB: no C10 answer for '{0}'" -f $filter)
+}
 function Get-ADOptionalFeature { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ Name='Recycle Bin Feature'; EnabledScopes=@('CN=Partitions') } }
 function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a)
@@ -524,6 +625,13 @@ function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a)
 function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubAsked = (@($a | ForEach-Object { [string]$_ }) -join ' ')
     $stubNamed = ConvertTo-StubArgument -Given $a
+    # C10: told apart by what they ask for - the member and delegation property lists hold
+    # primaryGroupID, no other section's does - and by the configuration searches under CN=Sites and
+    # the read of CN=Directory Service.
+    $stubPrivAsked = @(@($stubNamed['Properties']) | ForEach-Object { [string]$_ })
+    if ($stubPrivAsked -contains 'primaryGroupID' -or [string]$stubNamed['SearchBase'] -like 'CN=Sites,*' -or [string]$stubNamed['Identity'] -like 'CN=Directory Service,*') {
+        return (Get-StubPrivAnswer -Named $stubNamed -Asked $stubPrivAsked)
+    }
     # C7: the principals with sIDHistory of the domain named by -Server, and its trusted domains.
     if ([string]$stubNamed['LDAPFilter'] -eq '(sIDHistory=*)') {
         if ($script:SmokeSidHistoryFail) { throw [System.UnauthorizedAccessException]'STUB: sIDHistory query refused' }
@@ -958,6 +1066,39 @@ if (Test-Path $aclCsv) {
     Check (@($aclCsvSum).Count -eq 1 -and $aclCsvSum[0].Population -eq '2' -and $aclCsvSum[0].ReadCount -eq '2' -and $aclCsvSum[0].FlaggedCount -eq '0' -and $aclCsvSum[0].NotAssessedCount -eq '0') 'Dangerous ACLs: the GPO summary carries the declared population and the counts in their own columns'
 }
 else { Check $false 'Dangerous ACLs CSV exists' }
+# C10: the three sections must be wired, must read every object from the scoped domain by SID (the
+# stub refuses a read that names no domain), and must grade the stub's members, orphan, SPN and
+# delegation. Names stay out of Detail.
+$paRows = @($smokeFindings | Where-Object { $_.Section -eq 'Privileged Accounts' })
+$phRows = @($smokeFindings | Where-Object { $_.Section -eq 'Privileged Hygiene' })
+$krRows = @($smokeFindings | Where-Object { $_.Section -eq 'Kerberos Exposure' })
+Check (@($paRows).Count -eq 20) ("Privileged Accounts: wired, with the two forest-root rows, 17 group rows and the population row for the stub domain ({0} rows, expected 20)" -f @($paRows).Count)
+Check (@($phRows).Count -eq 4 -and @($krRows).Count -eq 6) ("Privileged Hygiene and Kerberos Exposure: four and six rows for the stub domain ({0} and {1})" -f @($phRows).Count, @($krRows).Count)
+Check (@(@($paRows) + @($phRows) + @($krRows) | Where-Object { $_.Scope -ne 'contoso.com' }).Count -eq 0) 'C10: every row carries its domain as Scope'
+Check (@($paRows | Where-Object { $_.Item -eq 'Schema Admins members: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Privileged Accounts: the empty Schema Admins passes'
+$smokeEa = @($paRows | Where-Object { $_.Item -eq 'Enterprise Admins members: contoso.com' })
+Check (@($smokeEa).Count -eq 1 -and $smokeEa[0].Status -eq 'Warning' -and $smokeEa[0].Detail -match 'default member' -and $smokeEa[0].Recommendation -match 'day-to-day' -and $smokeEa[0].Recommendation -notmatch 'wbadmin|repadmin|New-KrbtgtKeys') 'Privileged Accounts: Enterprise Admins holding the root Administrator is a Warning that quotes Learn, with its own advice'
+Check (@($paRows | Where-Object { $_.Item -eq 'Privileged group population: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Privileged Accounts: every declared group was located by SID and expanded completely'
+Check (@($paRows | Where-Object { $_.Item -eq 'Privileged group: Backup Operators: contoso.com' -and $_.Status -eq 'Info' -and -not $_.Recommendation }).Count -eq 1) 'Privileged Accounts: a group named Backup Operators is inventory and attracts no backup advice'
+Check (@($phRows | Where-Object { $_.Item -eq 'adminCount orphans: contoso.com' -and $_.Status -eq 'Warning' -and $_.Recommendation -match 'inheritance' }).Count -eq 1) 'Privileged Hygiene: the adminCount=1 user in no protected group is an orphan Warning with its own advice'
+Check (@($phRows | Where-Object { $_.Item -eq 'Privileged accounts with SPN: contoso.com' -and $_.Status -eq 'Warning' }).Count -eq 1) 'Privileged Hygiene: the Domain Admins member with an SPN is a Warning'
+Check (@($phRows | Where-Object { $_.Item -eq 'Privileged accounts delegable: contoso.com' -and $_.Status -eq 'Warning' -and $_.Recommendation -match 'sensitive and cannot be delegated' }).Count -eq 1) 'Privileged Hygiene: the privileged account without NOT_DELEGATED or Protected Users is a Warning'
+Check (@($phRows | Where-Object { $_.Item -eq 'Protected Users members: contoso.com' -and $_.Status -eq 'Info' -and $_.Detail -match '^Not present: ' }).Count -eq 1) 'Privileged Hygiene: the absent Protected Users group is Info "Not present"'
+$smokeUnc = @($krRows | Where-Object { $_.Item -eq 'Unconstrained delegation: contoso.com' })
+Check (@($smokeUnc).Count -eq 1 -and $smokeUnc[0].Status -eq 'Warning' -and $smokeUnc[0].Detail -match '1 DC account' -and $smokeUnc[0].Recommendation -match 'impersonate') 'Kerberos Exposure: unconstrained delegation outside the DCs is a Warning; the registered DC is excluded by DN'
+Check (@($krRows | Where-Object { $_.Item -match '^(Protocol transition|Resource-based) delegation: contoso\.com$' -and $_.Status -eq 'Pass' }).Count -eq 2) 'Kerberos Exposure: no protocol transition and no RBCD pass - the search returned the registered DC, so "none" is measured'
+Check (@($krRows | Where-Object { $_.Item -eq 'Constrained delegation: contoso.com' -and $_.Status -eq 'Info' -and $_.Detail -match '^0 account\(s\) of contoso\.com use Kerberos-only' }).Count -eq 1) 'Kerberos Exposure: the constrained-delegation count is given (0) because the search returned the domain''s registered DC'Check (@(@($paRows) + @($phRows) + @($krRows) | Where-Object { $_.Detail -match 'adm\.smoke|old\.smoke|svc\.deleg|HTTP/app' }).Count -eq 0) 'C10: no account name or SPN in any Detail'
+Check (@($script:SmokePrivCalls).Count -gt 0 -and @($script:SmokePrivCalls | Where-Object { $_ -notmatch '@(contoso\.com)?$' }).Count -eq 0) ("C10: every directory read went to contoso.com or to the configuration partition ({0} reads)" -f @($script:SmokePrivCalls).Count)
+$phCsv = Join-Path $result.CsvPath 'Privileged Hygiene.csv'
+if (Test-Path $phCsv) {
+    $phCsvRows = @(Import-Csv $phCsv)
+    Check (@($phCsvRows | Where-Object { $_.Item -eq 'adminCount orphans: contoso.com' -and $_.Principals -eq 'old.smoke' -and $_.Count -eq '1' -and $_.CatalogueId -eq 'ADA-OBJ-001' }).Count -eq 1) 'Privileged Hygiene: the CSV names the orphan in its own column, with the count and the catalogue id'
+    Check (@($phCsvRows | Where-Object { $_.Item -eq 'Privileged accounts with SPN: contoso.com' -and $_.Principals -eq 'adm.smoke' -and $_.Targets -eq 'adm.smoke: HTTP/app.contoso.com' }).Count -eq 1) 'Privileged Hygiene: the CSV carries the SPN in Targets, not in Detail'
+    # Declared population: the three rows whose population always holds the domain's Administrator.
+    $phPopRows = @($phCsvRows | Where-Object { $_.Item -match '^(adminCount orphans|Privileged accounts with SPN|Privileged accounts delegable): contoso\.com$' })
+    Check ($phPopRows.Count -eq 3 -and @($phPopRows | Where-Object { $_.Unresolved -match 'RID 500' -or $_.Detail -match 'RID 500' }).Count -eq 0) 'Privileged Hygiene: the domain''s Administrator (RID 500) was in every population read, so no row reports it missing'
+}
+else { Check $false 'Privileged Hygiene CSV exists' }
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
@@ -992,6 +1133,7 @@ $script:OutputPath = $out2
 $script:AllDomains = $true
 $script:SmokeGptIniCalls = @()
 $script:SmokeAclCalls = @()
+$script:SmokePrivCalls = @()
 $result2 = Invoke-Main
 
 Check ($null -ne $result2) 'Multi-domain: Invoke-Main returned a summary object'
@@ -1109,6 +1251,25 @@ Check (@($acl2 | Where-Object { $_.Item -eq 'DCSync rights: contoso.com' -and $_
 Check (@($acl2 | Where-Object { $_.Item -eq 'DCSync rights: north.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'Multi-domain: north.contoso.com''s head passes - the forest root''s Enterprise Admins and Enterprise Read-only DCs are recognised by the root domain SID'
 Check (@($acl2 | Where-Object { $_.Item -eq 'AdminSDHolder rights: north.contoso.com' -and $_.Status -eq 'Warning' -and $_.Detail -match 'S-1-5-21-1-2-4-1500 \(WriteAllProperties\)' -and $_.Recommendation -match 'SDProp' }).Count -eq 1) 'Multi-domain: the non-default writer on north.contoso.com''s AdminSDHolder is a Warning with the AdminSDHolder advice'
 Check (@($acl2 | Where-Object { $_.Scope -eq 'south.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 6) 'Multi-domain: south.contoso.com, with only default grants, passes on all six rows'
+# C10: every scoped domain gets its own rows, read from that domain. The stub gives the three domains
+# one DN, so a member DN cannot be routed to one of them: every count that depends on a member is Not
+# Assessed with that cause - never a pass, never a lower number - while delegation, which reads no
+# membership, is graded per domain.
+$pa2 = @($findings2 | Where-Object { $_.Section -eq 'Privileged Accounts' })
+$ph2 = @($findings2 | Where-Object { $_.Section -eq 'Privileged Hygiene' })
+$kr2 = @($findings2 | Where-Object { $_.Section -eq 'Kerberos Exposure' })
+Check (@($pa2).Count -eq 48) ("Multi-domain: Privileged Accounts has 2 root rows, 18 rows for the root and 14 for each child - Enterprise Key Admins is a forest-root group ({0}, expected 48)" -f @($pa2).Count)
+Check (@($pa2 | Where-Object { $_.Item -match '^Privileged group: Enterprise Key Admins: ' } | ForEach-Object { $_.Scope }) -join ',') -eq 'contoso.com' 'Multi-domain: Enterprise Key Admins is read in the forest root only, never in a child domain'
+foreach ($d in $multiDomains) {
+    Check (@($ph2 | Where-Object { $_.Scope -eq $d }).Count -eq 4 -and @($kr2 | Where-Object { $_.Scope -eq $d }).Count -eq 6) ("Multi-domain: Privileged Hygiene has four and Kerberos Exposure six rows scoped '{0}'" -f $d)
+    Check (@($pa2 | Where-Object { $_.Item -eq ("Privileged group: Administrators: {0}" -f $d) -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'could not be resolved' }).Count -eq 1) ("Multi-domain: the Administrators count of '{0}' is Not Assessed, its members not routable to one domain" -f $d)
+    Check (@($ph2 | Where-Object { $_.Item -eq ("adminCount orphans: {0}" -f $d) -and $_.Status -eq 'Not Assessed' }).Count -eq 1) ("Multi-domain: the orphan row of '{0}' is Not Assessed, never Pass" -f $d)
+    Check (@($kr2 | Where-Object { $_.Item -eq ("Unconstrained delegation: {0}" -f $d) -and $_.Status -eq 'Warning' }).Count -eq 1) ("Multi-domain: unconstrained delegation of '{0}' is graded from its own search" -f $d)
+    Check (@($script:SmokePrivCalls | Where-Object { $_ -match '^\(adminCount=1\)@' -and $_ -match ("@{0}$" -f [regex]::Escape($d)) }).Count -eq 1) ("Multi-domain: the adminCount search of '{0}' went to that domain" -f $d)
+}
+Check (@($pa2 | Where-Object { $_.Item -match '^(Schema|Enterprise) Admins members: contoso\.com$' }).Count -eq 2) 'Multi-domain: the Schema Admins and Enterprise Admins rows appear once, for the forest root'
+Check (@($pa2 | Where-Object { $_.Item -match '^Privileged group: (Schema Admins|Enterprise Admins): (north|south)\.' }).Count -eq 0) 'Multi-domain: no child domain is given a forest-root group'
+Check (@($pa2 | Where-Object { $_.Item -match '^Privileged group: (Administrators|Domain Admins): ' }).Count -eq 6 -and @($pa2 | Where-Object { $_.Item -match '^Privileged group: (Administrators|Domain Admins): ' -and $_.Status -ne 'Not Assessed' }).Count -eq 0) 'Multi-domain: no count of a group with members is given on members it could not route (6 rows, all Not Assessed)'
 
 # C2: the same three domains with DcDisk selected WITHOUT DomainControllers. There is then no DC
 # inventory, and the section used to fall back to one unscoped Get-ADDomainController call,
@@ -1551,6 +1712,9 @@ $script:SmokeGptIniCalls = @()
 # C9: the descriptor reads do not use Get-ADDomainController either, so every one is refused (an
 # access-denied exception).
 $script:SmokeAclFail = $true
+# C10: every privileged-group, adminCount, delegation and configuration read, and the two roast reads,
+# are refused (an access-denied exception); Get-ADDomain still answers.
+$script:SmokePrivFail = $true
 
 $out3 =Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out3
@@ -1658,6 +1822,16 @@ $acl3 = @($findings3 | Where-Object { $_.Section -eq 'Dangerous ACLs (DCSync)' }
 Check (@($acl3).Count -eq 4 -and @($acl3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: Dangerous ACLs reports nothing but Not Assessed, and never Pass ({0} rows, expected 4)" -f @($acl3).Count)
 Check (@($acl3 | Where-Object { $_.Scope -eq 'contoso.com' -and $_.Detail -match '^Access denied: ' -and $_.Detail -match 'STUB: security descriptor read refused' -and $_.Detail -match 'not a clean result' }).Count -eq 4) 'Failure mode: every Dangerous ACLs row says Access denied, not unreachable, with the cause'
 Check (@($acl3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a Dangerous ACLs row that measured nothing carries no advice'
+# C10: every read refused. Every row of the three sections is Not Assessed - none passes, none is Info
+# (an optional group that could not be read is not "not present"), none carries advice - and the
+# rows say Access denied, not unreachable.
+$priv3 = @($findings3 | Where-Object { $_.Section -match '^(Privileged Accounts|Privileged Hygiene|Kerberos Exposure)$' })
+Check (@($priv3).Count -eq 30) ("Failure mode: the three C10 sections keep their declared rows - 20, 4 and 6 ({0} rows, expected 30)" -f @($priv3).Count)
+Check (@($priv3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: every C10 row is Not Assessed, never Pass or Info ({0} not)" -f @($priv3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count)
+Check (@($priv3 | Where-Object { $_.Item -match '^(Schema Admins members|Privileged group: Domain Admins|adminCount orphans|Unconstrained delegation): ' -and $_.Detail -match '^Access denied: ' -and $_.Detail -match 'STUB: privileged read refused' }).Count -eq 4) 'Failure mode: the C10 rows say Access denied, with the cause'
+Check (@($priv3 | Where-Object { $_.Item -eq 'Kerberoastable user accounts (SPN set)' -and $_.Detail -match '^Access denied: ' }).Count -eq 1) 'Failure mode: the Kerberoast row says Access denied too'
+Check (@($priv3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a C10 row that measured nothing carries no advice'
+$script:SmokePrivFail = $false
 # The same reads unreachable, and then answered without a DACL, with Acl selected alone: each is its
 # own Not Assessed result, and nothing passes.
 $out3a = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_aclonly_" + [guid]::NewGuid().ToString('N'))
@@ -1792,6 +1966,11 @@ if ($null -ne $result4) {
     # C9: with no forest no domain is scoped and no root SID read; the section asks nothing and says so.
     $acl4 = @($findings4 | Where-Object { $_.Section -eq 'Dangerous ACLs (DCSync)' })
     Check (@($acl4).Count -eq 1 -and $acl4[0].Item -eq 'Dangerous ACLs' -and $acl4[0].Status -eq 'Not Assessed' -and $acl4[0].Detail -match 'The forest could not be read' -and $acl4[0].Detail -match 'not contactable') 'No forest: Dangerous ACLs is one Not Assessed row carrying the cause'
+    # C10: with no forest no domain is scoped; each of the three sections asks nothing and says so in one row.
+    foreach ($privSpec in @(@('Privileged Accounts', 'Privileged groups'), @('Privileged Hygiene', 'Privileged hygiene'), @('Kerberos Exposure', 'Kerberos exposure'))) {
+        $priv4 = @($findings4 | Where-Object { $_.Section -eq $privSpec[0] })
+        Check (@($priv4).Count -eq 1 -and $priv4[0].Item -eq $privSpec[1] -and $priv4[0].Status -eq 'Not Assessed' -and $priv4[0].Detail -match 'The forest could not be read' -and $priv4[0].Detail -match 'not contactable') ("No forest: {0} is one Not Assessed row carrying the cause" -f $privSpec[0])
+    }
 
     # The critical property: with no forest, nothing may claim to have passed.
     $passes4 = @($findings4 | Where-Object { $_.Status -eq 'Pass' })

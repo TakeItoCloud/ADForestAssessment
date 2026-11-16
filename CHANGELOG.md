@@ -10,6 +10,232 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed — 2026-11-16 (Privileged groups and delegation: Schema and Enterprise Admins, privileged group counts, adminCount orphans, SPNs and delegation, read by SID, tool v1.27.0)
+
+**PORT-PLAN C10.** The existing `PrivilegedAccounts`, `PrivilegedHygiene` and `Kerberos` sections
+(report sections `Privileged Accounts`, `Privileged Hygiene` and `Kerberos Exposure`, no new
+`-Sections` value) are rebuilt on one set of directory reads made once per run. They address the
+AdAssessment26 catalogue rows ADA-PRIV-001 and -002, ADA-INV-005, ADA-OBJ-001, -002, -003, -004 and
+-006, and ADA-INV-017, and add one row the catalogue does not have (privileged accounts that can be
+delegated).
+
+**This has run only against stubs.** No read in it has met a real domain controller: the Pester
+tests answer the seams from a fake two-domain directory in the shape the module returns, and the
+harnesses from small stub directories. The first run against a real forest is PORT-PLAN C17, owned by
+the operator, and PORT-PLAN C10a lists what that run must confirm - first of all whether
+`Get-ADObject -Properties member` does range retrieval past MaxValRange, and what the module returns
+for `msDS-AllowedToActOnBehalfOfOtherIdentity`, neither of which Microsoft publishes.
+
+**What was wrong with the old checks.** `Get-AdfaPrivilegedAccount` read `Get-ADDomain` outside any
+`try`, expanded groups with `Get-ADGroupMember -Recursive` (Learn: it fails for a whole group with a
+member in another forest without ADWS; Learn does not say whether it returns members through
+`primaryGroupID`, and this was not measured, so whether the old count included them is unknown), built its group list
+in an unordered hashtable, put member names in a column and graded any group over 10 members a
+Warning, a threshold no source gives; Schema Admins and Enterprise Admins had no verdict at all.
+`Get-AdfaKerberosExposure` excluded DCs from unconstrained delegation by **name**, with a
+`Get-ADDomainController` call that dropped `-Credential`, filtered nothing (`-or $true`), never read
+constrained delegation or protocol transition, and counted RBCD without grading it.
+`Get-AdfaPrivilegedHygiene` computed no orphan (it counted adminCount=1 users), lost its SPN row when
+the read failed, read Protected Users without `-Credential` and graded it `Pass` at one member - with
+a Detail ("should be enrolled") that the unscoped ESC1 entry of the advice map answered with
+certificate-template advice. Names were in Detail throughout, where they can change the advice. All
+three are rebuilt; the dead `PrivilegedGroupRids` and `BuiltinAdministrators` config keys are gone.
+
+**Grades and Items that changed for a report reader.** Two client-facing grades went **down**:
+v1.26.0's `Unconstrained delegation (non-DC)` (`Fail`) is now `Unconstrained delegation: <domain>`
+at `Warning`, and `Privileged accounts with SPNs (Kerberoast risk)` (`Fail`) is now
+`Privileged accounts with SPN: <domain>` at `Warning` - the catalogue rule (ADA-OBJ-002 and
+ADA-OBJ-006), a tool default; `UnconstrainedStatus` and `PrivilegedSpnStatus` set to `Fail` in the
+override file restore the old grade. The old Item strings `Unconstrained delegation (non-DC)`,
+`Privileged accounts with SPNs (Kerberoast risk)`, `Protected Users group members` and
+`adminCount=1 users` are retired: a v1.26.0 report and a v1.27.0 report do not share those rows.
+Their replacements are listed under "What it reports".
+
+**What it reads, and nothing else** (named attributes only; a list with a wildcard or a blank is
+refused before any call; nothing is written - no `Set-AD*`, no `Add-ADGroupMember`, no
+`Set-ADAccountControl`, and never the rootDSE `RunProtectAdminGroupsTask` modify Appendix C documents):
+
+- `Get-ADDomain -Identity <d> -Server <d>` for every domain of the forest (through the C9 seam), for
+  its DN and SID, so that a member DN is read from the domain that holds it, and its `DomainMode`.
+- Per scoped domain, each group of the new `Privileged` table with `Get-ADObject -LDAPFilter
+  '(objectSid=<SID as escaped bytes>)'` - by SID, never by name; every member DN with
+  `Get-ADObject -Identity <DN>` from its own domain, nested groups followed security and distribution
+  alike; `(primaryGroupID=<RID>)` for every group with a domain SID, because primary-group membership
+  is not in `member`, with `-ResultSetSize` one more than what is left of `MaxExpandedObjects`. Each
+  object is read once per run.
+- Per scoped domain, `(adminCount=1)` and one delegation search for `TRUSTED_FOR_DELEGATION`,
+  `TRUSTED_TO_AUTH_FOR_DELEGATION`, `msDS-AllowedToDelegateTo` and
+  `msDS-AllowedToActOnBehalfOfOtherIdentity`, with the bits as decimals. The Kerberoast and AS-REP
+  reads are unchanged.
+- Once per run, whichever of the three sections runs, under `CN=Sites` of the configuration
+  partition, every `nTDSDSA` and `server` object (`serverReference`), and `dSHeuristics` on
+  `CN=Directory Service,CN=Windows NT,CN=Services`.
+
+**The rules.** Schema Admins and Enterprise Admins (forest root only, once per run): `Warning` at
+one transitive member - users, computers, others and foreign security principals by SID, nested
+groups followed but not counted - the catalogue rule; the forest root's built-in Administrator, which
+Learn names as the default member and a possible Enterprise Admins exception, is counted and quoted,
+and `EnterpriseAdminsExemptRootAdministrator` exempts it. Every privileged group is counted (Info, no
+threshold: the reference sets none). adminCount orphans: an adminCount=1 object - user, computer or
+group, enabled or not - that no protected group of the domain or the forest root reaches and that is
+not Administrator or krbtgt; Learn says "formerly protected", and "orphan" is labelled this tool's
+inference; an object protected only through Account, Server, Print or Backup Operators is undecided
+when `dwAdminSDExMask` (dSHeuristics character 16) is not 0 or was not read, because Learn does not
+publish its bit mapping. SPN on a privileged account: enabled users only, computers and krbtgt left
+out. Privileged accounts delegable (a C10 addition): enabled accounts with neither `NOT_DELEGATED`
+nor a transitive Protected Users membership that blocks delegation - which Learn says it does only at
+domain functional level Windows Server 2012 R2 or later, so below it a member is graded and with the
+level unread it is undecided. Unconstrained delegation and protocol transition
+exclude DCs and RODCs by the DN of their computer account from `serverReference` - never by name,
+never by primaryGroupID 516/521, which is reported when an account carries it without being a
+registered DC - because Learn shows a writable DC carries `TRUSTED_FOR_DELEGATION` and an RODC
+`TRUSTED_TO_AUTH_FOR_DELEGATION` by default; with the DC population unread or incomplete both rows
+are Not Assessed. Constrained delegation (Kerberos-only) is inventory with its targets. RBCD is graded
+and its descriptor is read in memory by the C9 converter, listing the SIDs it allows and denies.
+Nothing is passed on an empty answer: the DC population must be complete, each domain's registered
+DCs must be found in its DC groups and returned by its delegation search (a tool rule on Learn's
+defaults), and the adminCount search and the privileged-account population must hold the domain's
+Administrator (RID 500). Every grade is a **tool default** (`Warning`, `Fail` by override); Microsoft
+publishes none.
+
+**What it reports.** `Schema Admins members: <root>`, `Enterprise Admins members: <root>`,
+`Privileged group: <name>: <domain>` (17 groups in the forest root, 13 in a child domain) and
+`Privileged group population: <domain>`; `adminCount orphans`, `Privileged accounts with SPN`,
+`Privileged accounts delegable`, `Protected Users members` (each `: <domain>`); the Kerberoast and
+AS-REP rows, then `Unconstrained delegation`, `Protocol transition delegation`, `Constrained
+delegation` and `Resource-based delegation` (each `: <domain>`). Names, SIDs, DNs and SPNs are in
+`Principals`, `PrincipalSids`, `ForeignSids`, `Unresolved`, `Targets` and `AllowedSids`, never in
+Detail. `Not Assessed`, each in its own words: `Unreachable:`, `Access denied:`, `Timed out:`, `Read
+failed:`, `Not found:`, and for a member reference out of scope (a forest domain the run did not
+scope - the reference rule, AdAssessment26 decision 56), domain not decided, not found, the read cap
+(`MaxExpandedObjects`, 5000, a tool default) or a member list of exactly 1500 or 5000 values, which
+may be cut at MaxValRange; such a group's count is left empty - never a lower number - while a member
+found still grades Schema and Enterprise Admins.
+
+**Config.** New versioned table `Config.Privileged` with every source and its read date; override key
+`Privileged` in `-ConfigOverridePath`: the eight grades (Warning or Fail),
+`EnterpriseAdminsExemptRootAdministrator` (a JSON boolean), `NameListCap` (0 to 1000) and
+`MaxExpandedObjects` (1 to 100000); the groups, bits, filters and property lists are refused. The
+override registry gains `AlsoUsedBy`, so the "validated but not used" log is right whichever of the
+three sections a run selects. **Advice**: section-scoped entries for each graded family, ahead of the
+unscoped entries, with a catch-all for the new rows; the Kerberoast and AS-REP rows still reach the
+advice they had.
+
+**Tests.** A new Pester Describe (74 tests): wiring by AST, the config table, the SID filter value
+against Learn's own example, routing, the membership walk, every verdict, two domains through the
+seams with unreachable, access-denied and timed-out domains, the override (valid and twelve malformed
+shapes) and the advice. Twelve single mutations of the new code were each caught and the file
+restored byte for byte (SHA-256). Existing tests changed because behaviour changed: the override
+registry list and its declared population (seven places, and Run-Validation), "Eight sections can be
+named" to "Nine" (four places), the version 1.26.0 to 1.27.0 (six places), and the counts of
+`-Properties` arguments (23 to 28) and splatted property lists (17 to 19) in the C4 Describe - C10
+removed three literal lists and added eight arguments and two lists to its own seams. The smoke
+harness retires its `Get-ADGroupMember` stub (it now throws) and asserts the three sections in the
+single-domain, three-domain, failing-collector and unreadable-forest passes.
+
+**Not verified.** Anything against a real directory (C17, C10a): range retrieval of `member`; the
+shape of an attribute with no value; the type of the RBCD attribute; the exception types of a real
+not-found, refused, unreachable and timed-out read; that `(objectClass=nTDSDSA)` matches an RODC;
+that `serverReference` equals each DC's computer DN; run time on a large forest. Left out, PORT-PLAN
+C10b: DnsAdmins, the dwAdminSDExMask mapping (KB 817433, off Learn), the ACL of each adminCount=1
+object, the SDProp interval. Decisions for the operator, PORT-PLAN C10c. Left open by the review,
+PORT-PLAN C10d: the DC-defaults rule behind the delegation population check, a second non-vacuity
+check on `member`, a domain where SDProp has not yet run, whether the module honours `-ResultSetSize`
+with its paging, and `DomainMode` values of later releases.
+
+**Found by an independent review of the diff before commit, and fixed in it.** Twenty confirmed
+findings, each with a test that fails without the fix (or, for a test that could not fail, a test the
+reviewer's mutation now fails):
+
+1. A DC population read incompletely - no `nTDSDSA` object returned, a DC server object without
+   `serverReference`, an `nTDSDSA` object with no server object - was used as complete, so a DC's own
+   computer account could be graded as a non-DC with unconstrained delegation. `DsaCount` and
+   `NoReference` were computed and never read. `Get-AdfaPrivDcPopulationState` now checks all three,
+   and the two bit rows are `Not Assessed` when any fails.
+2. The delegation rows passed on a search that returned none of the domain's registered DCs, which
+   carry the delegation bits by default. The search now has a declared population - every DC
+   registered for the domain, told apart from a child domain's by its naming context - and no row
+   passes without it; the Constrained count is not given.
+3. The orphan, SPN and delegable rows passed on an empty population. The domain's Administrator (RID
+   500) is a protected account and Learn says a protected account has adminCount 1, so the adminCount
+   search and the account population must hold it; an empty population is `Not Assessed`.
+4. `Targets` and `AllowedSids` were taken from the unsorted hits while `Principals` lists the first
+   `NameListCap` in ordinal order, so past the cap they named other accounts. Both now come from the
+   records `Principals` lists.
+5. A search failing with the identity-not-found exception (adminCount, delegation, roast) was worded
+   as "no group with the SID of ...". Searches now say the search was answered "not found".
+6. A SID lookup answered with two objects was worded as a read failure that might be a missing right.
+   It is now class `Duplicate`, "ambiguous", not a refusal.
+7. With every group answering without members and every search answering empty (an account without
+   read rights), the hygiene rows, the population row and an empty Schema or Enterprise Admins passed.
+   The group reads of each domain must now find its registered DCs in its DC groups (Microsoft's
+   default primary groups 516 and 521); otherwise the population row is `Not Assessed` and an empty
+   Schema or Enterprise Admins is not passed. A "blind" stub domain proves no graded row passes.
+8. As 2, for the protocol-transition and RBCD rows.
+9. As 1, for a DC listed only in `NoReference`.
+10. A member in a scoped domain whose own `Get-ADDomain` read failed was "out of scope". It now
+    carries that domain's cause: unreachable, access denied, timed out or read failed.
+11. Primary-group searches were not counted against `MaxExpandedObjects`: `Domain Users` nested in a
+    protected group read every user. They now count, and ask `-ResultSetSize` one more than is left; a
+    larger answer is "read cap", its members not counted.
+12. No test pinned that a protected group's nested groups and foreign members count as protected
+    (mutations M4 and M5 survived). A pure test now fails on each.
+13. No test pinned that a disabled privileged account is left out of the delegable row (M8 survived).
+14. Protected Users membership counted as delegation protection at any functional level. Learn says
+    the DC-side restriction needs domain functional level Windows Server 2012 R2; `DomainMode` is now
+    read and a member below it is graded, with it unread undecided. The README no longer says "either
+    counts as protection".
+15. Enterprise Key Admins (-527) was looked up in every domain. Learn's domain-wide updates page
+    (Operation 85) names it a root-domain group, so it is now `ForestRoot`: not looked up in a child
+    domain (whose row said "documented only from a later level") and counted as a protected source for
+    every child. 13 group rows per child domain, not 14.
+16. No test pinned the 5000-value member limit (M1 survived).
+17. No test exercised `NameListCap` (M10 survived).
+18. No test pinned that a Kerberoastable account with no `Enabled` value is counted (M6 survived).
+19. This entry did not say that two rows went from `Fail` to `Warning` and that four Item strings are
+    retired - see "Grades and Items that changed".
+20. This entry stated as fact that the old collector "did not read the primary-group members", which
+    was never measured; it now says so.
+
+Existing tests changed because behaviour changed, each named: the protected-group list and the
+child-domain group count (Enterprise Key Admins is forest-root: 14 to 13, and the north row counts 15
+to 14 and 25 to 24); the orphan, SPN and delegable `Pass` cases now include the domain's
+Administrator; the delegation `Pass` cases now include the registered DCs in the search answer, and
+an empty answer is `Not Assessed`; RBCD with the DC population unread is `Not Assessed`, not `Pass`;
+`Get-AdfaPrivilegedState -Parts Groups` now reads the forest configuration; the smoke three-domain
+count 50 to 48. The test stubs gained `DomainMode` and `-ResultSetSize`, as the real cmdlets have.
+
+**Sources**, all read on Microsoft Learn on 2026-11-16:
+
+- https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory
+- https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/reducing-the-active-directory-attack-surface
+- https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/appendix-e--securing-enterprise-admins-groups-in-active-directory
+- https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-groups
+- https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-identifiers
+- https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-default-user-accounts
+- https://learn.microsoft.com/windows-server/identity/ad-ds/manage/how-to-configure-protected-accounts
+- https://learn.microsoft.com/windows-server/security/credentials-protection-and-management/protected-users-security-group
+- https://learn.microsoft.com/windows-server/security/kerberos/kerberos-constrained-delegation-overview
+- https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-managed-service-accounts/group-managed-service-accounts/configure-kerberos-delegation-group-managed-service-accounts
+- https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts
+- https://learn.microsoft.com/windows/win32/adschema/a-useraccountcontrol
+- https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties
+- https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8453
+- https://learn.microsoft.com/windows/win32/adschema/a-msds-allowedtodelegateto
+- https://learn.microsoft.com/windows/win32/adschema/a-msds-allowedtoactonbehalfofotheridentity
+- https://learn.microsoft.com/windows/win32/adschema/a-serverreference
+- https://learn.microsoft.com/windows/win32/adschema/c-ntdsdsaro
+- https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/e5899be4-862e-496f-9a38-33950617d2c5
+- https://learn.microsoft.com/windows/win32/ad/how-to-specify-comparison-values
+- https://learn.microsoft.com/windows/win32/adsi/search-filter-syntax
+- https://learn.microsoft.com/troubleshoot/windows-server/active-directory/domain-controller-returns-500-values-ldap-response
+- https://learn.microsoft.com/powershell/module/activedirectory/get-adgroupmember
+- https://learn.microsoft.com/windows-server/identity/ad-ds/deploy/domain-wide-updates (Enterprise Key Admins is "rootdomain\Enterprise Key Admins"; both key-admin groups are created once a Windows Server 2016 DC holds the PDC emulator role)
+- https://learn.microsoft.com/windows-server/identity/ad-ds/active-directory-functional-levels (Protected Users DC-side protections, delegation among them, at the 2012 R2 domain functional level)
+- https://learn.microsoft.com/powershell/module/activedirectory/set-addomainmode (the `DomainMode` values)
+- https://learn.microsoft.com/powershell/module/activedirectory/get-adobject (`-ResultSetSize`)
+- https://learn.microsoft.com/powershell/module/activedirectory/about/about_activedirectory_filter ("ResultSetSize controls the maximum number of returned objects")
+
 ### Changed — 2026-11-16 (Dangerous rights: replication and control rights on the domain head, AdminSDHolder and every GPO, matched by SID, tool v1.26.0)
 
 **PORT-PLAN C9.** The existing `Acl` section (report section `Dangerous ACLs (DCSync)`, no new
