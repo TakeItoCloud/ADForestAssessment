@@ -12408,13 +12408,18 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             }
             finally { $writer.Dispose() }
             # Non-vacuity: this writer really does refuse an open that shares for reading only.
-            $writer = New-Object System.IO.FileStream -ArgumentList $path, ([IO.FileMode]::Open), ([IO.FileAccess]::ReadWrite), ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
-            try {
-                $refused = $false
-                try { ([IO.File]::OpenRead($path)).Dispose() } catch { $refused = $true }
-                $refused | Should -BeTrue
+            # Share modes are enforced by Windows only; .NET on Unix enforces FileShare.None alone
+            # (an advisory lock) and ignores the other flags, so the refusal cannot be shown there.
+            # The tool reads SYSVOL from Windows hosts only, so the check runs where it is meaningful.
+            if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+                $writer = New-Object System.IO.FileStream -ArgumentList $path, ([IO.FileMode]::Open), ([IO.FileAccess]::ReadWrite), ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+                try {
+                    $refused = $false
+                    try { ([IO.File]::OpenRead($path)).Dispose() } catch { $refused = $true }
+                    $refused | Should -BeTrue
+                }
+                finally { $writer.Dispose() }
             }
-            finally { $writer.Dispose() }
             ([Convert]::ToBase64String([IO.File]::ReadAllBytes($path))) | Should -Be ([Convert]::ToBase64String($bytes))
         }
         It 'reports a missing file and a missing folder as not found, never throwing' {
