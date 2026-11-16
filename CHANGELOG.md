@@ -10,6 +10,222 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-11-16 (GPO version consistency: directory versionNumber against GPT.INI in SYSVOL, read from the PDC emulator, tool v1.25.0)
+
+**PORT-PLAN C8.** New rows in the existing `Gpo` section (report section `GPO Inventory`), so no
+new `-Sections` value: the inventory rows (linked / unlinked GPOs, through the GroupPolicy module)
+are unchanged and the version rows follow them. It addresses ADA-GPO-001 (GPO AD version differs
+from SYSVOL GPT.INI), for which the tool had nothing.
+
+**This has run only against stubs.** No `Get-ADObject` call, SMB probe, folder listing or file
+read in it has met a real domain controller. The first run against a real forest is PORT-PLAN C17,
+owned by the operator, and PORT-PLAN C8a lists what that run must confirm for this row - among
+them the exception types a real SYSVOL read throws (on which the `Not found:` / `Access denied:` /
+`Unreachable:` wording rests), and the type `Get-ADObject` returns for `versionNumber`.
+
+**Instrument.** The brief preferred the GroupPolicy module's Gpo object (`Computer.DSVersion`,
+`Computer.SysvolVersion` and the user pair) with a directory-plus-SYSVOL read as the fallback.
+Microsoft Learn documents only `Get-GPO`'s formatted output ("AD Version: n, SysVol Version: n"),
+not those members, and does not say which DC's SYSVOL it reads; MS-GPOL on Learn specifies the
+directory attribute, the file and their layout completely. So the version check does not use the
+module at all - it runs the same way with or without RSAT GPMC - and the module's properties are
+left to C17 as a second instrument (PORT-PLAN C8b).
+
+**What it reads, and nothing else.** Per scoped domain, all from the domain's **PDC emulator**
+(Learn: `Get-GPO` contacts it by default, and the Group Policy Object Editor uses it unless
+configured otherwise), so that a difference is a difference on one DC, not between two:
+
+- `Get-ADDomain -Identity <domain>` for the PDC and the domain's DN.
+- `Get-ADObject -Server <PDC> -SearchBase CN=Policies,CN=System,<DN> -SearchScope OneLevel
+  -LDAPFilter '(objectClass=groupPolicyContainer)'`, asking for `versionNumber`, `gPCFileSysPath`,
+  `displayName` and `flags` only. A wildcard or blank in the list is refused before any call.
+- `Test-AdfaDcPort <PDC> 445` (the per-run probe cache). With no answer nothing in SYSVOL is read,
+  so a UNC "not found" is never taken from a host that did not answer.
+- `[System.IO.Directory]::GetDirectories('\\<PDC>\SYSVOL\<domain>\Policies')`, and each GPO's
+  `GPT.INI` through `[System.IO.FileStream]::new(path, Open, FileAccess.Read, FileShare.ReadWrite
+  -bor FileShare.Delete)`: read access only, and no other open of the file - for reading, writing
+  or delete - refused while it is held, so a GPMC save or a DFSR install of that file on the PDC
+  is never made to fail by this read. At most 64 KB (a tool default; a larger file is not taken).
+  A GPO whose folder the listing does not hold is not read. When the listing fails, the files are
+  read one by one only after an access-denied listing (a folder can refuse a listing and still let
+  its files be read; a tool rule, `ReadFilesAfterListingClass`); after an unreachable, timed-out,
+  not-found or uninterpreted failure no file is read, because each read would go to the path that
+  just failed with no timeout of its own, and every GPO is `Not Assessed` with the listing's class.
+  File reads run as the account running the script: `-Credential` is not passed to them.
+
+The `GPT.INI` path is built from the PDC's name and the container's GUID. **The host written in
+`gPCFileSysPath` is never contacted**: it is a directory string, and reading a path it names would
+send this account's credentials to whatever host was written there. A `gPCFileSysPath` that is not
+`\\<domain>\sysvol\<domain>\policies\<GUID>` for this domain and GPO (case-insensitive) makes the
+GPO `Not Assessed`. Nothing is written: no `Set-GP*`, no `Backup-GPO`, no `Import-GPO`, no
+`gpupdate`, and `GPT.INI` is never opened for writing (the MS-GPOL editing sequence opens it
+read/write; this does not). A test reads the parsed script and pins, as a whitelist, every command
+(29), every static .NET call with its type and calling function (13), every instance method (11),
+every `New-Object` type (2) and every `System.IO` type literal the row's 18 functions use, and the
+four arguments of the one file open; any addition fails it, whatever its name. It also pins the two
+AD reads and the one probe by function, and still refuses by name any write parameter, external
+tool, `Get-GPO` or direct `Test-TcpPort`.
+
+**What it reports.**
+
+| Row | Results |
+| --- | --- |
+| `GPO version: {GUID}` | Only when there is something to say. `Warning` when the whole 32-bit numbers differ (a **tool default**, the catalogue rule ADA-GPO-001; `Fail` by override), naming the half that differs - user (upper 16 bits) or computer (lower 16 bits) - and both numbers with their halves, and saying it can be replication still in flight. `Not Assessed`, each cause in its own words: `Unreachable:` (SMB did not answer, or the network path), `Access denied:`, `Timed out:`, `Not found:` (the GPO's folder is not on this DC although the folder was listed - an orphaned container or a folder not yet replicated; or the folder holds no `GPT.INI`; or not found with the listing unread, said), `Not parsed:` (no `[General]` section, no or two `Version` keys, not a whole number, not 32 bits), `Not returned:` (`versionNumber`), `Not read:` (above the size bound), `Not assessed:` (`gPCFileSysPath` not the GPO's folder, or a container name that is not a GUID). The numbers that were read are in their columns even then |
+| `GPO folder without container: {GUID}` | `Warning` (tool default; `Info` by override): a folder under `Policies` named by a GPO GUID with no container visible to this account - Microsoft's "orphaned GPO" in the file system - worded so, because a container this account cannot read looks the same. Folders not named by a GUID (`PolicyDefinitions`) are counted in the summary and not graded |
+| `GPO folder listing: <domain>` | `Not Assessed` when the `Policies` folder was not listed, with the cause |
+| `GPO version summary: <domain>` | One per scoped domain, always. The declared population (containers returned), `Compared`, `Mismatched`, `NotAssessedCount` and `FoldersWithoutContainer` in their own columns. `Pass` only when at least one container was read, every one was compared and none differs; the mismatch status when any differs; otherwise `Not Assessed`. No container at all is `Not Assessed` (a domain holds at least the Default Domain Policy). A failed PDC lookup or container query gives this row only, worded by class from the exception type: `Unreachable:`, `Access denied:`, `Timed out:` or `Read failed:` |
+| `GPO version (no domain scoped)`, `GPO version` | `Not Assessed`: no domain scoped; the forest unreadable |
+
+A number that was not measured is empty, never 0. Every row's `Evidence` names what was measured:
+`none`, `directory`, `SYSVOL` or `directory and SYSVOL`; the summary names SYSVOL only when the
+`Policies` folder was listed or a `GPT.INI` version read. The GPO's display name (free text anyone allowed
+to edit the GPO can set) and its `gPCFileSysPath` are in their own columns (`GPOName`,
+`FileSysPath`), never in `Item` or `Detail`, which the recommendation is chosen from.
+
+**Vendor facts and where Microsoft is silent.** From MS-GPOL on Learn: the user version is the upper
+16 bits and the machine version the lower 16 bits of a GPO version, for `versionNumber` and for the
+`GPT.INI` `Version` alike (this supersedes the AdAssessment26 reference's N30, which recorded the
+split as not published); `GPT.INI` is ANSI and its `[General]` section is required; both versions
+are updated together on every edit; the four `flags` values. `versionNumber` has the Enumeration
+syntax, a signed Int32, so a user half of 32768 or more reads as a negative number and is taken as
+its 32-bit pattern - an **inference** from the type, tested at -2147418111 (user 32769). A UTF-16 or
+UTF-8 `GPT.INI` is tolerated and named in the `Encoding` column. Microsoft publishes **no grade** for
+a difference and **no time** after which one stops being transient: the `Warning` and the advice
+("run again once replication has converged") are this tool's, labelled in the row and the config.
+
+**Config.** A new versioned table `Gpo`, overridable under a new `Gpo` key of `-ConfigOverridePath`
+(`MismatchStatus` Warning or Fail, `OrphanFolderStatus` Warning or Info). The filter, the property
+list, the share, the folder and file names, the port, the size bound and the sources are refused, so
+a file cannot make the tool read another path or ask for every attribute. A finding cites the file
+for exactly the keys it supplied.
+
+**Advice.** Section-scoped recommendation entries anchored on the Item prefixes the tool writes -
+the mismatch family (`GPO version: {` and `GPO version summary: `) and the folder family - and a
+`GPO version|folder` prefix catch-all with no advice, all ahead of the unscoped entries: every
+version row says SYSVOL and replication, which the unscoped `sysvol|dfsr` and `replication`
+entries would otherwise answer with restore advice (`dfsrmig`, D2/D4, `repadmin /replicate`). No
+section-wide catch-all, so the inventory's older rows, whose Item is the section name, keep exactly
+the advice they had (a test compares with the map before C8).
+
+**The old inventory.** `Get-AdfaGpoInventory` is unchanged except its catch-all: the `(enumeration
+failed)` row keeps its four columns (`Scope`, `GPOName`, `Status`, `Detail`) and its Detail now
+leads with the class (`Access denied:`, `Unreachable:`, ...), counts the rows written before the
+failure and says it is not a clean result. Its help no longer claims WMI filters, which no code read.
+One defect on main is fixed: an unlinked GPO's report has no `LinksTo` element, and reading
+`$rep.GPO.LinksTo` under StrictMode threw `PropertyNotFoundException`, so every domain holding one
+unlinked GPO lost its inventory to the catch-all. The element is now read through
+`PSObject.Properties`; the linked and unlinked rows are unchanged in shape and text, and a new test
+pins them from a stubbed `Get-GPO` (it failed before the fix).
+
+**Changed tests, because behaviour legitimately changed.** The pinned list of `-ConfigOverridePath`
+sections gains `Gpo` (Pester, five places, and Run-Validation); the four version pins move to
+1.25.0; the two help tests expecting "Six sections can be named" now expect "Seven"; the count of
+splatted `Properties` assignments in the script, which the Laps section pins, goes from 14 to 15
+(the list of `Get-AdfaGpoContainerRaw`). The smoke harness's `Get-ADDomain` stub now remembers the
+`-Identity` it was last asked for, so the new `groupPolicyContainer` stub can answer per domain;
+everything it returns is unchanged. No test was deleted or weakened. One C8 test named "keeps the
+module-missing row and the inventory rows as they were" asserted only the module-missing row; it is
+renamed to say so, and a new test asserts the inventory rows.
+
+**Guards shown able to fail.** Twenty single mutations of the new code, each applied alone, run
+against the 49 new Pester tests and then reverted byte for byte (SHA-256 checked after each): an
+equal pair read as a mismatch, a GPO not compared turned into a domain `Pass`, the SMB probe ignored
+(in the seam and in the verdict), access denied reported as unreachable, the override validation
+removed, the collector's wiring dropped, the 32-bit bound and the empty-population bound each off
+by one, the per-domain loop and the per-GPO loop each cut to the first item, the negative-Int32
+mask removed, orphan-folder detection off, the `gPCFileSysPath` host trusted, the size bound off by
+one, an unlisted folder still read, the recommendation entries unscoped, the halves swapped, keys
+read outside `[General]`, a mismatch not counted. All twenty were caught. One test helper returned
+a single row that Windows PowerShell 5.1 unrolled to a scalar; its call sites are wrapped in `@()`.
+
+**Found by an independent review of the diff before commit, and fixed in it.**
+
+- The summary row claimed `Evidence` "directory and SYSVOL" even when nothing in SYSVOL was read
+  (SMB silent, every read failed, no container). It is now derived from what was read, as on the
+  GPO rows; no test had read `Evidence` on any C8 row, and now the normal, empty, unreachable,
+  access-denied, mixed and failed-query tests do.
+- A JSON list such as `["Fail"]` for `MismatchStatus` was refused with a message saying `'Fail'`
+  was refused. A value that is not one text value is now refused by its type.
+- After a listing that failed as unreachable or timed out, every `GPT.INI` was still read, each
+  with no timeout of its own. Files are now read after a failed listing only when it was refused
+  as access denied (PORT-PLAN C8d keeps the time bound that is still missing).
+- `File.OpenRead` shares the file for reading only, so a GPMC save or DFSR install of the same
+  `GPT.INI` on the PDC would have been refused while the tool held it. It is now opened with
+  `FileShare.ReadWrite | FileShare.Delete`; a test holds the file open for writing and reads it.
+- The no-write AST test was a blacklist with gaps (`Set-Acl`, `[IO.File]::ReadAllBytes`,
+  `[IO.Directory]::EnumerateFiles` passed it), and this entry overclaimed it. It is now a whitelist.
+- `SecurityException` was read as access denied; Learn says .NET Framework throws it only in
+  limited trust, not for a refused file, so it is now an uninterpreted error.
+- Guards not shown able to fail now have tests: error codes 2 and 1232, `DriveNotFoundException`,
+  the UTF-16BE byte-order mark, a domain name that is not a DNS name, a `Get-ADDomain` answer with
+  a PDC and no DN, a `UInt64` version at and above 32 bits and at its maximum, and `flags` values
+  above 3. The `';'` comment rule of the `GPT.INI` parser was dead code (a commented key reads as
+  `;Version`, never `Version`) and is removed; a test shows a commented `Version` beside the real
+  one is neither taken nor counted twice.
+- A code comment quoted the MS-GPOL GPO path form from 3.1.1, which does not hold it; it is in the
+  glossary, and the comment now cites each quotation to its page.
+- The test for the inventory claimed to cover its rows and did not; see "The old inventory".
+
+Twenty-one mutations were run for these, each alone on a scratch copy against the 53 C8 tests
+under Windows PowerShell 5.1 and restored byte for byte (SHA-256 checked): each fix reverted, and
+each mutation the review reported as surviving. Twenty were caught. The one that survives - the
+`UInt64` bound raised from 4294967295 to 4294967296 - is equivalent: the general 32-bit range check
+after it refuses 4294967296 either way. The bound exists to stop a larger `UInt64` overflowing the
+cast to `Int64`, and removing it is caught (`[UInt64]::MaxValue`).
+
+**Not verified.** Everything listed in PORT-PLAN C8a: the exception types and HResults of a real
+SYSVOL read (missing folder, missing file, refused, share absent, dropped session); the type of
+`versionNumber` from `Get-ADObject`; whether a read can hang past the bounded SMB probe; the
+`gPCFileSysPath` values of a real domain; the encodings GPMC writes; that the shared open leaves a
+real GPMC save and DFSR install unaffected (PORT-PLAN C8d). No time bound on the reads once the
+listing succeeded (C8d). Not built: the other DCs'
+SYSVOL copies, the `User` / `Machine` subfolders and the ACL comparison (PORT-PLAN C8c). Decisions
+for the operator to confirm are in PORT-PLAN C8b, among them `Warning` rather than the brief's
+`Fail` and the module not being used.
+
+**Vendor sources, all read on Microsoft Learn on 2026-11-16:**
+
+- MS-GPOL glossary (user and machine GPO version, container and file system version, GPO path) -
+  https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/2f362c13-9a2d-469b-8c4b-7b4045258995
+- MS-GPOL GPO search: groupPolicyContainer attributes, versionNumber, gpt.ini format and encoding,
+  flags, cn and displayName - https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/b0e5c9e8-e858-4a7a-a94a-4a3d0a9d87a2
+- MS-GPOL sample gpt.ini - https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/ab105255-75e9-44d9-aa8f-22f61c270bfa
+- MS-GPOL version update on edit - https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/70fd86b1-926a-4dcf-9ce7-6f9d2149c20d
+- MS-GPOL admin-tool increment of each half - https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/59bb540a-64f4-4c52-9c55-5ca2fd2c0270
+- MS-GPOL client version comparison - https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/bc953fef-0ca0-495f-8097-20772b3f6a6e
+- MS-GPOL client gpt.ini read - https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/5c7ecdad-469f-4b30-94b3-450b7fff868f
+- MS-GPOL 3.1.1 Server Abstract Data Model (a GPO path MUST be available; the GUID in the GPO DN
+  and the GPO path MUST be the same; the path's UNC form is in the glossary above) -
+  https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/34f68012-77c5-4487-837f-84a23829273b
+- versionNumber schema (2.5.5.9) - https://learn.microsoft.com/openspecs/windows_protocols/ms-ada3/5e517dde-c710-45fa-b694-2704e17b5612
+  and Enumeration syntax - https://learn.microsoft.com/windows/win32/adschema/s-enumeration
+- gPCFileSysPath schema (single-valued, not in the GC; its Learn description text is a defect and is
+  not quoted) - https://learn.microsoft.com/windows/win32/adschema/a-gpcfilesyspath
+- groupPolicyContainer class (default security descriptor) - https://learn.microsoft.com/windows/win32/adschema/c-grouppolicycontainer
+- Get-GPO (-Server, PDC emulator by default, formatted version output) - https://learn.microsoft.com/powershell/module/grouppolicy/get-gpo
+- Group Policy CSP, GPDCOptions (PDC Operations Master by default) - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-grouppolicy
+- Group Policy processing (AD and SYSVOL replicate independently; DFSR every 15 minutes within a
+  site) - https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-policy/group-policy-processing
+- Rebuild the SYSVOL tree (orphaned GPO in the file system; container with no folder on any DC) -
+  https://learn.microsoft.com/troubleshoot/windows-server/group-policy/rebuild-sysvol-tree-and-content-in-a-domain
+- Service overview and network port requirements (SMB TCP 445) -
+  https://learn.microsoft.com/troubleshoot/windows-server/networking/service-overview-and-network-port-requirements
+- System error codes 2, 3, 5, 51, 53, 64, 65, 67 - https://learn.microsoft.com/windows/win32/debug/system-error-codes--0-499-
+  and 1231, 1232 - https://learn.microsoft.com/windows/win32/debug/system-error-codes--1000-1299-
+- Handling I/O errors in .NET (error code to exception mapping; HResult low 16 bits;
+  SecurityException only in limited trust on .NET Framework) -
+  https://learn.microsoft.com/dotnet/standard/io/handling-io-errors
+- DriveNotFoundException (a drive or share not available; COR_E_DIRECTORYNOTFOUND, thrown on
+  ERROR_PATH_NOT_FOUND) - https://learn.microsoft.com/dotnet/api/system.io.drivenotfoundexception
+- FileStream(String, FileMode, FileAccess, FileShare) - https://learn.microsoft.com/dotnet/api/system.io.filestream.-ctor
+  and FileShare (Read, Write, ReadWrite, Delete; without Write "any request to open the file for
+  writing ... will fail until the file is closed") - https://learn.microsoft.com/dotnet/api/system.io.fileshare
+- File.OpenRead (FileAccess.Read, FileShare.Read; the open this row no longer uses) -
+  https://learn.microsoft.com/dotnet/api/system.io.file.openread
+  and File.ReadAllBytes exceptions - https://learn.microsoft.com/dotnet/api/system.io.file.readallbytes
+- Get-Credential notes (the Credential parameter is not supported by every provider) -
+  https://learn.microsoft.com/powershell/module/microsoft.powershell.security/get-credential
+
 ### Added — 2026-11-16 (SID history: principals with sIDHistory, same-domain and privileged historic SIDs, their source domains, tool v1.24.0)
 
 **PORT-PLAN C7.** Four new rows per scoped domain in the existing `SecurityPosture` section

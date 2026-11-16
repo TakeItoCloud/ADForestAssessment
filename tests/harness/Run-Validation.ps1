@@ -2100,7 +2100,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the six sections the file can carry (SidHistory since v1.24.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the seven sections the file can carry (Gpo since v1.25.0, SidHistory since v1.24.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -2578,6 +2578,78 @@ $shRecPriv = Get-AdfaRecommendation -Section 'Security Posture' -Item 'SID histo
 $shRecSrc = Get-AdfaRecommendation -Section 'Security Posture' -Item 'SID history sources: contoso.com' -Detail $shHostile
 $shRecKrb = Get-AdfaRecommendation -Section 'Security Posture' -Item 'krbtgt password age' -Detail '400 days'
 Assert-True ($shRecPriv -match 'Enterprise Admins' -and $shRecPriv -notmatch 'New-KrbtgtKeys|wbadmin|Disable first' -and $shRecSrc -eq '' -and $shRecKrb -match 'krbtgt') 'SID history advice: the privileged row gets its own advice, the sources row none, and the older krbtgt row still gets its own'
+
+Write-Host ""
+Write-Host "== GPO version consistency (C8): pure logic ==" -ForegroundColor Cyan
+$gpCfg = $script:Config.Gpo
+$gpG1 = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+$gpG2 = '{6AC1786C-016F-11D2-945F-00C04FB984F9}'
+$gpG3 = '{A1B2C3D4-0000-4000-8000-000000000003}'
+$gpOrphan = '{A1B2C3D4-0000-4000-8000-0000000000FF}'
+function New-GpIni { param($Version) [pscustomobject]@{ Ok = $true; Class = 'Read'; Bytes = [byte[]][System.Text.Encoding]::ASCII.GetBytes(("[General]`r`nVersion={0}`r`n" -f $Version)); Error = ''; ErrorType = ''; HResult = 0; Path = '' } }
+function New-GpFail { param([string]$Class) [pscustomobject]@{ Ok = $false; Class = $Class; Bytes = $null; Error = 'STUB'; ErrorType = 'System.IO.IOException'; HResult = 0; Path = '' } }
+function New-GpContainer { param([string]$Guid, $Version = 65537) [pscustomobject]@{ Guid = $Guid; DisplayName = 'x'; Version = $Version; FileSysPath = ("\\contoso.com\sysvol\contoso.com\Policies\{0}" -f $Guid); Flags = 0; Dn = '' } }
+function New-GpRaw { param($Containers = @(), [bool]$Ok = $true, [string]$Type = '') [pscustomobject]@{ Ok = $Ok; Refused = $false; Error = 'STUB'; ErrorType = $Type; Pdc = 'dc1.contoso.com'; PdcError = ''; PdcErrorType = ''; DomainDn = 'DC=contoso,DC=com'; Containers = @($Containers) } }
+function New-GpSysvol { param([bool]$PortOk = $true, $Names = @(), [hashtable]$Reads = @{})
+    $listing = $null
+    if ($PortOk) { $listing = [pscustomobject]@{ Ok = ($null -ne $Names); Class = $(if ($null -ne $Names) { 'Read' } else { 'AccessDenied' }); Names = @($Names); Error = 'STUB'; ErrorType = 'System.UnauthorizedAccessException'; HResult = 0; Path = '' } }
+    [pscustomobject]@{ PortOk = $PortOk; Port = 445; Pdc = 'dc1.contoso.com'; PoliciesPath = '\\dc1.contoso.com\SYSVOL\contoso.com\Policies'; Listing = $listing; Reads = $Reads } }
+# The version layout MS-GPOL publishes, and the 32-bit reading of a negative Int32.
+$gpSplit = Split-AdfaGpoVersion -Version 9437184
+Assert-Equal '144/0' ("{0}/{1}" -f $gpSplit.User, $gpSplit.Computer) 'GPO version: Microsoft''s sample GPT.INI value 9437184 is user 144, computer 0'
+$gpNumbers = @(foreach ($v in @([int]-2147418111, [int64]4294967295, [int64]4294967296, [int64]-2147483649, 'abc', $null)) { $n = ConvertTo-AdfaGpoVersionNumber -Value $v; if ($n.Ok) { [string]$n.Version } else { [string]$n.Cause } })
+Assert-Equal '2147549185,4294967295,OutOfRange,OutOfRange,NotANumber,NotReturned' ($gpNumbers -join ',') 'GPO version: versionNumber read as 32 bits - a negative Int32 masked, the edges held, the rest refused (declared population: six values)'
+$gpIni = @(foreach ($text in @("[General]`r`nVersion=65537", "[general]`r`n version = 131073 ", "[Other]`r`nVersion=1", "[General]`r`nVersion=1`r`nVersion=2", "[General]`r`nVersion=4294967296")) { $r = ConvertFrom-AdfaGptIniVersion -Bytes ([System.Text.Encoding]::ASCII.GetBytes($text)) -Config $gpCfg; if ($r.Ok) { [string]$r.Version } else { [string]$r.Cause } })
+Assert-Equal '65537,131073,NoGeneralSection,DuplicateVersionKey,OutOfRange' ($gpIni -join ',') 'GPO version: GPT.INI read from [General] only, case-insensitively; a file without it, with two versions or out of range is refused (declared population: five files)'
+$gpUtf16 = ConvertFrom-AdfaGptIniVersion -Bytes ([byte[]](@(0xFF, 0xFE) + @([System.Text.Encoding]::Unicode.GetBytes("[General]`r`nVersion=7")))) -Config $gpCfg
+Assert-True ($gpUtf16.Ok -and $gpUtf16.Version -eq 7 -and $gpUtf16.Encoding -eq 'UTF-16LE (BOM)') 'GPO version: a UTF-16 GPT.INI with a byte-order mark is read and named'
+# The verdicts: equal, the half that differs, the domain summary.
+$gpHalves = @(foreach ($pair in @(@(65537, 65537), @(131073, 65537), @(65538, 65537), @(131074, 65537))) { (Get-AdfaGpoVersionVerdict -DsVersion $pair[0] -SysvolVersion $pair[1] -ReadFrom 'dc1.contoso.com' -Config $gpCfg).Half })
+Assert-Equal 'None,User,Computer,Both' ($gpHalves -join ',') 'GPO version: equal, user half, computer half, both halves (declared population: four pairs)'
+$gpDomain = @(foreach ($c in @(@(2, 2, 0, 0), @(0, 0, 0, 0), @(2, 1, 0, 1), @(2, 2, 1, 0), @(2, 1, 0, 0))) { (Get-AdfaGpoDomainVerdict -Domain 'contoso.com' -ReadFrom 'dc1.contoso.com' -Population $c[0] -Compared $c[1] -Mismatched $c[2] -NotAssessed $c[3] -Config $gpCfg).Status })
+Assert-Equal 'Pass,Not Assessed,Not Assessed,Warning,Not Assessed' ($gpDomain -join ',') 'GPO version: a domain passes only when every GPO was compared and none differs; none visible, one not compared and counts that do not add up are Not Assessed (declared population: five count sets)'
+# One domain's reads to rows: normal, unreachable, access denied, mixed.
+$gpStatus = { param($Raw, $Sysvol) @(Get-AdfaGpoDomainFinding -Domain 'contoso.com' -Raw $Raw -Sysvol $Sysvol -Config $gpCfg | ForEach-Object { "{0}={1}" -f ($_.Item -replace ': .*$', ''), $_.Status }) -join ',' }
+$gpCases = [ordered]@{
+    'agree'          = @{ Raw = (New-GpRaw -Containers @((New-GpContainer $gpG1), (New-GpContainer $gpG2))); Sysvol = (New-GpSysvol -Names @($gpG1, $gpG2) -Reads @{ $gpG1 = (New-GpIni 65537); $gpG2 = (New-GpIni 65537) }); Expect = 'GPO version summary=Pass' }
+    'one differs'    = @{ Raw = (New-GpRaw -Containers @((New-GpContainer $gpG1), (New-GpContainer $gpG2 -Version 131073))); Sysvol = (New-GpSysvol -Names @($gpG1, $gpG2) -Reads @{ $gpG1 = (New-GpIni 65537); $gpG2 = (New-GpIni 65537) }); Expect = 'GPO version=Warning,GPO version summary=Warning' }
+    'unreachable'    = @{ Raw = (New-GpRaw -Containers @((New-GpContainer $gpG1))); Sysvol = (New-GpSysvol -PortOk $false); Expect = 'GPO version=Not Assessed,GPO folder listing=Not Assessed,GPO version summary=Not Assessed' }
+    'access denied'  = @{ Raw = (New-GpRaw -Containers @((New-GpContainer $gpG1))); Sysvol = (New-GpSysvol -Names $null -Reads @{ $gpG1 = (New-GpFail 'AccessDenied') }); Expect = 'GPO version=Not Assessed,GPO folder listing=Not Assessed,GPO version summary=Not Assessed' }
+    'mixed'          = @{ Raw = (New-GpRaw -Containers @((New-GpContainer $gpG1), (New-GpContainer $gpG2), (New-GpContainer $gpG3))); Sysvol = (New-GpSysvol -Names @($gpG1, $gpG2, $gpOrphan) -Reads @{ $gpG1 = (New-GpIni 65537); $gpG2 = (New-GpFail 'NotFound') }); Expect = 'GPO version=Not Assessed,GPO version=Not Assessed,GPO folder without container=Warning,GPO version summary=Not Assessed' }
+    'no container'   = @{ Raw = (New-GpRaw -Containers @()); Sysvol = (New-GpSysvol -Names @('PolicyDefinitions')); Expect = 'GPO version summary=Not Assessed' }
+    'query failed'   = @{ Raw = (New-GpRaw -Ok $false -Type 'System.UnauthorizedAccessException'); Sysvol = $null; Expect = 'GPO version summary=Not Assessed' }
+}
+$gpGot = @(foreach ($k in @($gpCases.Keys)) { & $gpStatus $gpCases[$k]['Raw'] $gpCases[$k]['Sysvol'] })
+Assert-Equal (@($gpCases.Values | ForEach-Object { $_['Expect'] }) -join ' / ') ($gpGot -join ' / ') 'GPO version: rows per domain - a difference is the tool-default Warning, unreachable, access denied, absent files and an empty population fail closed, a GUID folder with no container is a Warning (declared population: seven reads)'
+$gpLeads = @(foreach ($k in @('unreachable', 'access denied')) { @(Get-AdfaGpoDomainFinding -Domain 'contoso.com' -Raw $gpCases[$k]['Raw'] -Sysvol $gpCases[$k]['Sysvol'] -Config $gpCfg)[0].Detail -replace ':.*$', '' })
+Assert-Equal 'Unreachable,Access denied' ($gpLeads -join ',') 'GPO version: an unreachable PDC and a refused read are two different Not Assessed results'
+$gpClasses = @(foreach ($t in @(@('System.IO.FileNotFoundException', 0), @('System.UnauthorizedAccessException', 0), @('System.IO.IOException', [int]0x80070035), @('System.IO.IOException', [int]0x80070020))) { Get-AdfaGpoFileReadErrorClass -TypeName $t[0] -HResult $t[1] -Message '' })
+Assert-Equal 'NotFound,AccessDenied,Unreachable,Error' ($gpClasses -join ',') 'GPO version: file read failures - not found, access denied, network path not found (53), anything else quoted (declared population: four)'
+$gpPath = Get-AdfaGpoSysvolPath -Pdc 'dc1.contoso.com' -Domain 'contoso.com' -Guid $gpG1 -FileSysPath ("\\fileserver.fabrikam.com\sysvol\contoso.com\Policies\{0}" -f $gpG1) -Config $gpCfg
+Assert-True (-not $gpPath.Ok -and $gpPath.IniPath -eq '') 'GPO version: a gPCFileSysPath naming another host is never read'
+# The validator and the advice.
+Assert-Throws { Merge-AdfaGpoConfig -BaseConfig $gpCfg -Override @{ MismatchStatus = 'Pass' } } 'Warning or Fail' 'GPO override: a version mismatch can never be configured to pass'
+Assert-Throws { Merge-AdfaGpoConfig -BaseConfig $gpCfg -Override @{ OrphanFolderStatus = 'Pass' } } 'Warning or Info' 'GPO override: an orphan folder can never be configured to pass'
+Assert-Throws { Merge-AdfaGpoConfig -BaseConfig $gpCfg -Override @{ ContainerProperties = @('*') } } "unknown key 'ContainerProperties'" 'GPO override: the property list cannot be set from a file'
+$gpListMsg = ''
+try { Merge-AdfaGpoConfig -BaseConfig $gpCfg -Override ('{ "MismatchStatus": ["Fail"] }' | ConvertFrom-Json) | Out-Null } catch { $gpListMsg = [string]$_.Exception.Message }
+Assert-True ($gpListMsg -match 'not a single text value' -and $gpListMsg -notmatch "to 'Fail'") 'GPO override: a JSON list holding Fail is refused by its type, not as if Fail had been refused'
+# Evidence: the summary says SYSVOL only when SYSVOL was read (declared population: three reads).
+$gpEvidence = @(foreach ($k in @('agree', 'unreachable', 'access denied')) { @(Get-AdfaGpoDomainFinding -Domain 'contoso.com' -Raw $gpCases[$k]['Raw'] -Sysvol $gpCases[$k]['Sysvol'] -Config $gpCfg | Where-Object { $_.Item -eq 'GPO version summary: contoso.com' })[0].Evidence })
+Assert-Equal 'directory and SYSVOL,directory,directory' ($gpEvidence -join ',') 'GPO version: the summary''s Evidence names SYSVOL only when the folder was listed or a GPT.INI version read'
+# A listing that failed as unreachable: no file was read, and each GPO says so with that class - never as a defect in the tool.
+$gpUnreachList = New-GpSysvol -Names $null
+$gpUnreachList.Listing.Class = 'Unreachable'
+$gpUnreachRows = @(Get-AdfaGpoDomainFinding -Domain 'contoso.com' -Raw (New-GpRaw -Containers @((New-GpContainer $gpG1), (New-GpContainer $gpG2))) -Sysvol $gpUnreachList -Config $gpCfg | Where-Object { $_.Item -like 'GPO version: *' })
+Assert-True (@($gpUnreachRows).Count -eq 2 -and @($gpUnreachRows | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match '^Unreachable: .*could not be listed' -and $_.Detail -notmatch 'defect in the tool' }).Count -eq 2) 'GPO version: after an unreachable listing every GPO is Not Assessed as unreachable (declared population: two GPOs)'
+Assert-Equal 'AccessDenied' (@($gpCfg['ReadFilesAfterListingClass']) -join ',') 'GPO version: files are read one by one after a failed listing only when it was refused as access denied'
+$gpMore = @(foreach ($t in @(@('System.IO.IOException', [int]0x800704D0), @('System.IO.IOException', [int]0x80070002), @('System.Security.SecurityException', 0), @('System.IO.DriveNotFoundException', 0))) { Get-AdfaGpoFileReadErrorClass -TypeName $t[0] -HResult $t[1] -Message '' })
+Assert-Equal 'Unreachable,NotFound,Error,NotFound' ($gpMore -join ',') 'GPO version: 1232 unreachable, 2 not found, SecurityException not read as access denied, DriveNotFoundException not found (declared population: four)'
+$gpHostile = 'sysvol dfsr replication backup stale krbtgt C:\Backup\stale.json'
+$gpRecMis = Get-AdfaRecommendation -Section 'GPO Inventory' -Item ("GPO version: {0}" -f $gpG1) -Detail $gpHostile
+$gpRecOrphan = Get-AdfaRecommendation -Section 'GPO Inventory' -Item ("GPO folder without container: {0}" -f $gpOrphan) -Detail $gpHostile
+$gpRecList = Get-AdfaRecommendation -Section 'GPO Inventory' -Item 'GPO folder listing: contoso.com' -Detail $gpHostile
+Assert-True ($gpRecMis -match 'converged' -and $gpRecMis -notmatch 'dfsrmig|wbadmin|krbtgt' -and $gpRecOrphan -match 'orphaned' -and $gpRecList -eq '') 'GPO version advice: a mismatch and an orphan folder get their own advice, whatever the Detail holds, and the listing row none'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
