@@ -3600,10 +3600,10 @@ Describe 'DC disk space, and the generic config override (C2)' {
         }
         It 'forces -WhatIf and -Confirm off where a CIM session is closed, so a preference cannot leave sessions open' {
             $closes = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Remove-CimSession' })
-            # Declared population: the DcSystem seam, the DcDisk seam, the DcHardening seam (C3) and the DC
-            # network seam (C13), the four places a CIM session is opened.
-            $closes.Count | Should -Be 4
-            @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'New-CimSession' }).Count | Should -Be 4
+            # Declared population: the DcSystem seam, the DcDisk seam, the DcHardening seam (C3), the DC
+            # network seam (C13) and the W32Time seam (C15), the five places a CIM session is opened.
+            $closes.Count | Should -Be 5
+            @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'New-CimSession' }).Count | Should -Be 5
             foreach ($call in $closes) {
                 foreach ($switch in @('WhatIf', 'Confirm')) {
                     $w = @($call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $switch })
@@ -5314,7 +5314,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
             # DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -5349,7 +5349,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             $readParam.Count | Should -Be 1
             $allowed = @($readParam[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
             $allowed.Count | Should -Be 1
-            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw,Get-AdfaDcNetworkRaw'
+            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw,Get-AdfaDcNetworkRaw,Get-AdfaDcW32TimeRaw'
             { Invoke-AdfaDcRemoteRead -ComputerName $script:C3Dc1 -Protocols @('Wsman') -ReadCommand 'Remove-Item' } | Should -Throw
             # And DcDisk goes through the same loop: the helper was generalised, not copied.
             $disk = @(Get-C3Function -Name 'Get-AdfaDcDiskSpace')
@@ -7316,7 +7316,12 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # 27 since v1.31.0: PORT-PLAN C14 removed the two literal "-Properties LastLogonTimestamp" of the old
         # Get-AdfaStaleObject and added one, -Properties @('msDFSR-Flags') to Get-AdfaDirectoryObjectState in
         # Get-AdfaSysvolEngineRaw.
-        $script:C4PropertiesArgumentCount = 27
+        # 38 since v1.32.0: PORT-PLAN C15 added eleven -Properties arguments, each a call of its directory
+        # seam Get-AdfaInventoryDirectoryRaw with a list from the Inventory config table or a literal list
+        # of non-secret attributes (fSMORoleOwner, msDS-Behavior-Version, uPNSuffixes,
+        # msDS-AllowedDNSSuffixes): five in Get-AdfaTopologyInventory, one in Get-AdfaTrustInventory, one in
+        # Get-AdfaIdentityInventoryDepth and four in Get-AdfaGpoDirectoryInventory.
+        $script:C4PropertiesArgumentCount = 38
         # 7 since v1.22.0: PORT-PLAN C5 added $computerArgs.Properties = @('userCertificate') in
         # Get-AdfaDcCertificateDirectoryRaw.
         # 12 since v1.23.0: PORT-PLAN C6 added five splatted property lists, two in Get-AdfaRidManagerRaw and
@@ -7332,7 +7337,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # 22 since v1.31.0: PORT-PLAN C14 added three splatted property lists, in Get-AdfaStaleRaw (the listed
         # stale attributes), Get-AdfaLogonSyncIntervalRaw (msDS-LogonTimeSyncInterval) and
         # Get-AdfaDirectoryObjectState (the caller's list, msDFSR-Flags or none).
-        $script:C4PropertiesAssignmentCount = 22
+        # 23 since v1.32.0: PORT-PLAN C15 added one splatted property list, in Get-AdfaInventoryDirectoryRaw
+        # (the caller's list, refused when it holds a wildcard).
+        $script:C4PropertiesAssignmentCount = 23
         $script:C4SectionFunctionCount = 20
 
         function New-C4Schema {
@@ -7500,7 +7507,7 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7552,9 +7559,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
     }
 
@@ -9143,7 +9150,7 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
             $entry = $script:ConfigOverrideSections['DcCertificates']
             [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
             [string]$entry['Section'] | Should -Be 'DcCertificates'
@@ -9224,9 +9231,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
     }
 
@@ -10143,7 +10150,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
             $entry = $script:ConfigOverrideSections['RidPool']
             [string]$entry['ConfigKey'] | Should -Be 'RidPool'
             [string]$entry['Section'] | Should -Be 'RidPool'
@@ -10203,7 +10210,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'rIDAvailablePool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'RidPool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnAtPercentUsed'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seventeen sections can be named'
         }
         It 'has one row in the README Coverage table, and the README says what the row cannot see' {
             $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
@@ -10214,9 +10221,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
     }
 
@@ -11098,7 +11105,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
         }
         It 'is registered for -ConfigOverridePath under SidHistory, used by SecurityPosture, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
             $entry = $script:ConfigOverrideSections['SidHistory']
             [string]$entry['ConfigKey'] | Should -Be 'SidHistory'
             [string]$entry['Section'] | Should -Be 'SecurityPosture'
@@ -11140,7 +11147,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             $help = $script:C7Ast.GetHelpContent()
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'SID history'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'sIDHistory'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seventeen sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'SidHistory'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'PresentStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'NameListCap'
@@ -11153,9 +11160,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
     }
 
@@ -12036,7 +12043,7 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
         }
         It 'is registered for -ConfigOverridePath under Gpo, used by the Gpo section, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
             $entry = $script:ConfigOverrideSections['Gpo']
             [string]$entry['ConfigKey'] | Should -Be 'Gpo'
             [string]$entry['Section'] | Should -Be 'Gpo'
@@ -12131,7 +12138,7 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'PDC emulator'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seventeen sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Gpo"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'MismatchStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'OrphanFolderStatus'
@@ -12144,9 +12151,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
     }
 
@@ -13311,7 +13318,7 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
         }
         It 'is registered for -ConfigOverridePath under Acl, used by the Acl section, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
             $entry = $script:ConfigOverrideSections['Acl']
             [string]$entry['ConfigKey'] | Should -Be 'Acl'
             [string]$entry['Section'] | Should -Be 'Acl'
@@ -13370,7 +13377,7 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'matched by SID'
             ([string]$help.Description -replace '\s+', ' ') | Should -Not -Match 'Dangerous ACLs: non-default principals holding DCSync rights on the domain head'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'nTSecurityDescriptor'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seventeen sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Acl"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'FlaggedStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'AdditionalAllowed'
@@ -13384,9 +13391,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
     }
 
@@ -14526,7 +14533,7 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
         }
         It 'is registered for -ConfigOverridePath under Privileged, used by PrivilegedAccounts and also by PrivilegedHygiene and Kerberos, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
             $entry = $script:ConfigOverrideSections['Privileged']
             [string]$entry['ConfigKey'] | Should -Be 'Privileged'
             [string]$entry['Section'] | Should -Be 'PrivilegedAccounts'
@@ -14587,7 +14594,7 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'protocol transition'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'primaryGroupID'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'serverReference'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seventeen sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Privileged"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'EnterpriseAdminsExemptRootAdministrator'
         }
@@ -14602,9 +14609,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
     }
 
@@ -16468,13 +16475,13 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seventeen sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'TestTimeoutSeconds'
             ([string]$help.Parameters['INCLUDEDCDIAGACTIVETESTS'] -replace '\s+', ' ') | Should -Match 'SystemLog'
             ([string]$help.Parameters['INCLUDEDCDIAGACTIVETESTS'] -replace '\s+', ' ') | Should -Match 'once per site'
@@ -17139,9 +17146,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17292,9 +17299,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.31.0 in the script and the manifest (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries version 1.32.0 in the script and the manifest (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
     }
 
@@ -18376,7 +18383,7 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             $loop = @(Get-C13Function 'Invoke-AdfaDcRemoteRead')
             $readParam = @($loop[0].Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'ReadCommand' })
             $allowed = @($readParam[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
-            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw,Get-AdfaDcNetworkRaw'
+            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw,Get-AdfaDcNetworkRaw,Get-AdfaDcW32TimeRaw'
             $state = @(Get-C13Function 'Get-AdfaDcNetworkState')
             @($state[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-AdfaDcRemoteRead' }, $true)).Count | Should -Be 1
             @($state[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-TcpPort' }, $true)).Count | Should -Be 0
@@ -18432,7 +18439,7 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
         It 'documents the new section, the override key and the four DNS reads in the help and the README' {
             $help = $script:C13Ast.GetHelpContent()
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'DnsRecordExport'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Seventeen sections can be named'
             ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Dns, whose keys are'
             $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
             @($readme | Where-Object { $_ -match '^\| DNS record export \|' }).Count | Should -Be 1
@@ -18622,9 +18629,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.31.0 in the script and the manifest (bumped by PORT-PLAN C14)' {
-            [string]$script:Config.Version | Should -Be '1.31.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        It 'carries version 1.32.0 in the script and the manifest (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
         }
     }
 
@@ -18635,7 +18642,7 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
                 [string]$script:ConfigOverrideSections[$k]['Merge'] | Should -Be 'Merge-AdfaSpecConfig'
                 [string]$script:ConfigOverrideSections[$k]['ConfigKey'] | Should -Be $k
             }
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
         }
         It 'merges a valid override for each section and cites the file only for what it supplied: <Section>' -ForEach @(
             @{ Section = 'Reach'; Override = @{ ProbeTimeoutMs = 5000; UnreachableStatus = 'Warning' }; Key = 'ProbeTimeoutMs'; Value = 5000 }
@@ -19590,7 +19597,7 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
         It 'documents the C14 rows and the five override keys in the help and the README' {
             $help = $script:C14Ast.GetHelpContent()
             $cfgHelp = ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ')
-            $cfgHelp | Should -Match 'Sixteen sections can be named'
+            $cfgHelp | Should -Match 'Seventeen sections can be named'
             foreach ($k in @('Reach', 'SiteCoverage', 'ClockSkew', 'Stale', 'SysvolEngine')) { $cfgHelp | Should -Match ("And {0}, " -f $k) }
             $sec = ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ')
             $sec | Should -Match 'DC reachability'
@@ -19601,6 +19608,1297 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             $readme | Should -Match 'DC reachability'
             $readme | Should -Match 'Subnets without a site'
             $readme | Should -Match 'SYSVOL replication engine'
+        }
+    }
+}
+Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration (C15)' {
+    # PORT-PLAN C15: catalogue INV-001, INV-006..INV-012, INV-015, built into the existing sections Forest
+    # ('Topology Inventory'), Trusts ('Trust Inventory'), Identity ('Object Counts', 'Group Inventory'),
+    # StaleObjects ('Stale Objects'), Gpo ('GPO Directory Inventory'), DsEvents ('Event Inventory') and
+    # TimeHierarchy ('Time Configuration'). Every row is Info or Not Assessed: the catalogue grades none.
+    # Every name below is fictional (contoso, fabrikam, 192.0.2.0/24) and held in a variable.
+    BeforeAll {
+        $script:C15Dc1 = 'dc1.contoso.com'
+        $script:C15Dc2 = 'dc2.contoso.com'
+        $script:C15Dc3 = 'dc3.north.contoso.com'
+        $script:C15Disjoint = 'dc4.corp.fabrikam.com'
+        $script:C15Forest = 'contoso.com'
+        $script:C15Runner = 'ADMIN01'
+        $script:C15North = 'north.contoso.com'
+        $script:C15Cfg = $script:Config.Inventory
+        $script:C15Now = [datetime]::SpecifyKind([datetime]'2026-11-17 12:00:00', [System.DateTimeKind]::Utc)
+        $script:C15Ntds = 'CN=NTDS Settings,CN=DC1,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com'
+        $script:C15Gpo1 = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+        $script:C15Gpo2 = '{6AC1786C-016F-11D2-945F-00C04FB984F9}'
+        $script:C15Wmi = '{A1B2C3D4-0000-4000-8000-0000000000AA}'
+        $script:C15Functions = @('Get-AdfaInventoryDirectoryRaw', 'Get-AdfaInventoryReadCause', 'Get-AdfaInventoryDomainDn', 'Get-AdfaRootDseRaw',
+            'Get-AdfaLevelRow', 'Get-AdfaFsmoHolderName', 'Get-AdfaFsmoRow', 'Get-AdfaUpnSuffixRow', 'Get-AdfaAllowedDnsSuffixRow', 'Get-AdfaDnsSuffixRows',
+            'Get-AdfaRunnerRow', 'Get-AdfaTopologyInventory', 'Get-AdfaTrustAttributeDecode', 'Get-AdfaTrustInventoryRows', 'Get-AdfaTrustInventory',
+            'Get-AdfaObjectCountRows', 'Get-AdfaGroupInventoryRows', 'ConvertTo-AdfaGroupExportRow', 'Get-AdfaIdentityInventoryDepth',
+            'Get-AdfaStaleDisabledVerdict', 'ConvertFrom-AdfaGpLink', 'Get-AdfaGpoDirectoryRows', 'Get-AdfaGpoDirectoryInventory',
+            'Get-AdfaEventInventoryRaw', 'Get-AdfaEventInventoryRows', 'Get-AdfaEventInventory', 'Get-AdfaDcW32TimeRaw', 'Get-AdfaW32TimeConfigRow',
+            'Get-AdfaW32TimeInventory')
+        function New-C15Read { param($Records = @(), [bool]$Ok = $true, [string]$ErrorText = '', [string]$ErrorType = '', [bool]$Capped = $false, [bool]$NotFound = $false)
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = $ErrorType; NotFound = $NotFound; Records = @($Records); Count = @($Records).Count; Capped = $Capped; Filter = '(x)'; Identity = '' } }
+        function New-C15Object { param([hashtable]$Values) [pscustomobject]$Values }
+        # Get-C15Row: the comma keeps a one-row answer an array, so .Count works under StrictMode on Windows PowerShell 5.1.
+        # Get-C15Like returns the rows one by one; every caller wraps it in @().
+        function Get-C15Row { param($Rows, [string]$Item) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -eq $Item }) }
+        function Get-C15Like { param($Rows, [string]$Pattern) return @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like $Pattern }) }
+        function New-C15Target { param([string]$HostName, [string]$Scope) [pscustomobject]@{ HostName = $HostName; Scope = $Scope } }
+        function New-C15Interval { param([bool]$Ok = $true, [bool]$Present = $false, $Value = $null)
+            [pscustomobject]@{ Ok = $Ok; Present = $Present; Value = $Value; Error = '' } }
+        function New-C15StaleRaw { param($Records = @(), [bool]$Ok = $true, [string]$ErrorText = '', [string]$ErrorType = '', [bool]$Capped = $false)
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = $ErrorType; Records = @($Records); Capped = $Capped; Filter = '(x)'; Properties = @('sAMAccountName') } }
+        function New-C15Population { param([bool]$Ok = $true, [int]$Count = 10, [string]$ErrorText = '')
+            [pscustomobject]@{ Ok = $Ok; Count = $Count; Capped = $false; Error = $ErrorText; ErrorType = ''; Filter = '(x)' } }
+        function New-C15Account { param([string]$Name, $LastLogonUtc = $null, $WhenCreatedUtc = $null)
+            [pscustomobject]@{ Name = $Name; HasLastLogon = ($null -ne $LastLogonUtc); LastLogonUtc = $LastLogonUtc; WhenCreatedUtc = $WhenCreatedUtc; PwdLastSetRaw = $null; UserAccountControl = 514 } }
+        function New-C15Event { param([int]$Id, [int]$Level = 2, [string]$Provider = 'Microsoft-Windows-ActiveDirectory_DomainService', [int]$DaysAgo = 1)
+            [pscustomobject]@{ Id = $Id; Level = $Level; ProviderName = $Provider; TimeCreated = $script:C15Now.AddDays(-1 * $DaysAgo) } }
+        function New-C15EventRaw { param($Events = @(), [bool]$Ok = $true, [bool]$NoEvents = $false, [bool]$LogAbsent = $false, [string]$ErrorText = '', [string]$ErrorCode = '', [bool]$Truncated = $false)
+            [pscustomobject]@{ Ok = $Ok; NoEvents = $NoEvents; LogAbsent = $LogAbsent; Events = @($Events); Truncated = $Truncated; Error = $ErrorText; ErrorId = ''; ErrorCode = $ErrorCode } }
+        function New-C15Coverage { param([string]$Coverage = 'Covered') [pscustomobject]@{ Coverage = $Coverage; OldestRecord = $script:C15Now.AddDays(-60); RecordCount = 100; Reason = '' } }
+        function New-C15RegValue { param([string]$Id, $ReturnValue = 0, $Value = $null, [bool]$Answered = $true, [string]$ErrorText = '', [string]$ErrorCode = '')
+            [pscustomobject]@{ Id = $Id; Key = 'k'; ValueName = $Id; Answered = $Answered; ReturnValue = $ReturnValue; Value = $Value; Method = 'GetStringValue'; Error = $ErrorText; ErrorCode = $ErrorCode } }
+        function New-C15TimeRead { param($Values = @(), [bool]$Ok = $true, [bool]$Denied = $false, [string]$ErrorText = '')
+            [pscustomobject]@{ Raw = [pscustomobject]@{ Ok = $Ok; Protocol = 'Wsman'; Error = $ErrorText; ErrorCode = ''; Values = @($Values) }; Denied = $Denied; Attempts = @() } }
+        $script:C15Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C15Main = @($script:C15Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C15Function { param([string]$Name) @($script:C15Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true)) }
+        function Get-C15Branch { param([string]$Condition)
+            @($script:C15Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq $Condition }, $true)) }
+        function Get-C15Call { param($Ast, [string]$Name)
+            @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq $Name }, $true)) }
+        function Get-C15Parameter { param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        # The read-only guard of C15 over a parsed script. Anywhere: an event log write or clear
+        # (Clear-, Limit-, Remove-, Write-, New-EventLog, wevtutil cl/sl/im as a command or as a string
+        # of a command that names wevtutil), a GroupPolicy write (New-, Set-, Remove-, Copy-, Import-,
+        # Restore-, Backup-GP*, Rename-GPO), a .SaveChanges() call, and an StdRegProv method outside the
+        # three Get* names. Inside the C15 functions only: any Set-/New-/Remove- command that is not this
+        # script's own, a w32tm string, Invoke-CimMethod at all, and a -Properties argument that holds '*'.
+        # What it cannot see: a command or a switch assembled at run time from pieces.
+        function Get-C15WriteHit { param($Ast, [string[]]$C15Names = @())
+            $hits = @()
+            $logRx = '(?i)^(Clear|Limit|Remove|Write|New)-EventLog$'
+            $gpRx = '(?i)^((New|Set|Remove|Copy|Import|Restore|Backup)-GP|Rename-GPO$)'
+            $wevRx = '(?i)^(cl|sl|im|clear-log|set-log|import-log)$'
+            $strings = { param($node) @($node.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true) | ForEach-Object { [string]$_.Value }) }
+            foreach ($c in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+                $name = [string]$c.GetCommandName()
+                if ($name -match $logRx) { $hits += ("event log write: {0}" -f $c.Extent.Text) }
+                if ($name -match $gpRx) { $hits += ("group policy write: {0}" -f $c.Extent.Text) }
+                $words = @($name) + @(& $strings $c)
+                if (@($words | Where-Object { $_ -match '(?i)(^|\\)wevtutil(\.exe)?$' }).Count -gt 0 -and @($words | ForEach-Object { $_ -split '\s+' } | Where-Object { $_ -match $wevRx }).Count -gt 0) { $hits += ("wevtutil write: {0}" -f $c.Extent.Text) }
+                if ($name -eq 'Invoke-CimMethod' -and @(& $strings $c | Where-Object { $_ -match '(?i)^(Set|Create|Delete|Enum)\w*$' }).Count -gt 0) { $hits += ("registry method: {0}" -f $c.Extent.Text) }
+            }
+            foreach ($m in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -match '(?i)^SaveChanges$' }, $true))) { $hits += ("save changes: {0}" -f $m.Extent.Text) }
+            foreach ($fn in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $C15Names -contains $n.Name }, $true))) {
+                foreach ($c in @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+                    $cn = [string]$c.GetCommandName()
+                    if ($cn -match '(?i)^(Set|New|Remove)-' -and $cn -notmatch '(?i)^New-(Adfa\w*|Object|CimSession|CimSessionOption)$' -and $cn -ne 'Remove-CimSession') { $hits += ("write in {0}: {1}" -f $fn.Name, $c.Extent.Text) }
+                    if ($cn -eq 'Invoke-CimMethod') { $hits += ("cim method in {0}: {1}" -f $fn.Name, $c.Extent.Text) }
+                }
+                foreach ($s in @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))) {
+                    if ([string]$s.Value -match '(?i)\bw32tm\b') { $hits += ("w32tm in {0}: {1}" -f $fn.Name, $s.Extent.Text) }
+                    if ([string]$s.Value -eq '*') {
+                        $p = $s.Parent
+                        $asProperties = $false
+                        while ($null -ne $p -and -not $asProperties) {
+                            if ($p -is [System.Management.Automation.Language.AssignmentStatementAst] -and $p.Left.Extent.Text -match '(?i)\.Properties$') { $asProperties = $true }
+                            elseif ($p -is [System.Management.Automation.Language.HashtableAst]) {
+                                foreach ($pair in @($p.KeyValuePairs)) { if ([string]$pair.Item1.Extent.Text -match '(?i)^[''"]?Properties[''"]?$' -and $pair.Item2.Extent.Text -match '\*') { $asProperties = $true } }
+                            }
+                            elseif ($p -is [System.Management.Automation.Language.CommandAst]) {
+                                $el = @($p.CommandElements)
+                                for ($i = 1; $i -lt $el.Count; $i++) {
+                                    if ($el[$i - 1] -is [System.Management.Automation.Language.CommandParameterAst] -and $el[$i - 1].ParameterName -eq 'Properties' -and $el[$i].Extent.Text -match '\*') { $asProperties = $true }
+                                }
+                                break
+                            }
+                            $p = $p.Parent
+                        }
+                        if ($asProperties) { $hits += ("every property in {0}: {1}" -f $fn.Name, $s.Parent.Extent.Text) }
+                    }
+                }
+            }
+            return , @($hits)
+        }
+    }
+    BeforeEach {
+        Clear-AdfaDcPortCache
+    }
+
+    Context 'Config table (Learn, read 2026-11-17)' {
+        It 'declares the Inventory table with its read date, its sources and its caps labelled as tool defaults' {
+            $script:Config.ContainsKey('Inventory') | Should -BeTrue
+            [string]$script:C15Cfg['ReadDate'] | Should -Be '2026-11-17'
+            [string]$script:C15Cfg['SourceUrl'] | Should -Match '^https://learn\.microsoft\.com/'
+            [string]$script:C15Cfg['ThresholdSource'] | Should -Match 'tool defaults, not Microsoft values'
+            @([int]$script:C15Cfg['MaxObjects'], [int]$script:C15Cfg['NameListCap'], [int]$script:C15Cfg['EventMaxEvents'], [int]$script:C15Cfg['EventGroupCap'], [int]$script:C15Cfg['MemberCountCeiling']) -join ',' | Should -Be '100000,20,2000,50,1500'
+        }
+        It 'carries the thirteen trustAttributes bits of MS-ADTS 6.1.6.7.9 (declared population: 13 bits)' {
+            $flags = @($script:C15Cfg['TrustAttributeFlags'])
+            $flags.Count | Should -Be 13
+            (@($flags | ForEach-Object { '{0}={1}' -f [int]$_.Bit, [string]$_.Name }) -join ',') | Should -Be '1=NON_TRANSITIVE,2=UPLEVEL_ONLY,4=QUARANTINED_DOMAIN,8=FOREST_TRANSITIVE,16=CROSS_ORGANIZATION,32=WITHIN_FOREST,64=TREAT_AS_EXTERNAL,128=USES_RC4_ENCRYPTION,256=TRUST_USES_AES_KEYS,512=CROSS_ORGANIZATION_NO_TGT_DELEGATION,1024=PIM_TRUST,2048=CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION,4096=DISABLE_AUTH_TARGET_VALIDATION'
+        }
+        It 'carries the functional level names of MS-ADTS (declared population: 0 to 7 and 10, no 8 or 9)' {
+            (@($script:C15Cfg['BehaviorVersionLabels'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,1,2,3,4,5,6,7,10'
+            [string]$script:C15Cfg['BehaviorVersionLabels']['10'] | Should -Be 'DS_BEHAVIOR_WIN2025'
+        }
+        It 'carries the five logs, the three levels and the W32Time values with their documented keys' {
+            (@($script:C15Cfg['EventLogs']) -join ',') | Should -Be 'System,Directory Service,DFS Replication,DNS Server,File Replication Service'
+            (@($script:C15Cfg['EventLevels']) -join ',') | Should -Be '1,2,3'
+            $w = @($script:C15Cfg['W32TimeValues'])
+            $w.Count | Should -Be 3
+            (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
+            (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
+        }
+        It 'carries version 1.32.0 in the script and the manifest (bumped by PORT-PLAN C15)' {
+            [string]$script:Config.Version | Should -Be '1.32.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        }
+    }
+
+    Context 'Config override: the Inventory section (Merge-AdfaSpecConfig)' {
+        It 'registers Inventory last, with the generic validator, used by every section it feeds' {
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
+            [string]$script:ConfigOverrideSections['Inventory']['Merge'] | Should -Be 'Merge-AdfaSpecConfig'
+            [string]$script:ConfigOverrideSections['Inventory']['Section'] | Should -Be 'Identity'
+            (@($script:ConfigOverrideSections['Inventory']['AlsoUsedBy']) -join ',') | Should -Be 'Forest,Trusts,Gpo,DsEvents,TimeHierarchy'
+        }
+        It 'merges a valid override and cites the file only for what it supplied' {
+            $m = Merge-AdfaSpecConfig -BaseConfig $script:C15Cfg -Override ([pscustomobject]@{ MaxObjects = 5000; EventGroupCap = 10 }) -OverrideSource 'C:\Scripts\inv.json'
+            [int]$m['MaxObjects'] | Should -Be 5000
+            [int]$m['EventGroupCap'] | Should -Be 10
+            [int]$m['EventMaxEvents'] | Should -Be 2000
+            [string]$m['ThresholdSource'] | Should -Match 'inv\.json .*for MaxObjects, EventGroupCap'
+            [string]$m['ThresholdSource'] | Should -Match 'tool defaults, not Microsoft values .*for NameListCap, EventMaxEvents'
+        }
+        It 'refuses a malformed override: <Name>' -ForEach @(
+            @{ Name = 'not an object'; Override = @(1, 2); Pattern = 'single object' }
+            @{ Name = 'an empty object'; Override = [pscustomobject]@{}; Pattern = 'empty object' }
+            @{ Name = 'an unknown key'; Override = [pscustomobject]@{ MaxObject = 5 }; Pattern = "unknown key 'MaxObject'" }
+            @{ Name = 'a refused key (the logs)'; Override = [pscustomobject]@{ EventLogs = @('Security') }; Pattern = "unknown key 'EventLogs'" }
+            @{ Name = 'a refused key (the flag table)'; Override = [pscustomobject]@{ TrustAttributeFlags = @() }; Pattern = "unknown key 'TrustAttributeFlags'" }
+            @{ Name = 'a null'; Override = [pscustomobject]@{ MaxObjects = $null }; Pattern = 'to null' }
+            @{ Name = 'a number written as text'; Override = [pscustomobject]@{ MaxObjects = '5000' }; Pattern = 'JSON number' }
+            @{ Name = 'a fraction'; Override = [pscustomobject]@{ EventMaxEvents = 10.5 }; Pattern = 'whole number' }
+            @{ Name = 'zero events'; Override = [pscustomobject]@{ EventMaxEvents = 0 }; Pattern = 'from 1 to 100000' }
+            @{ Name = 'above the maximum'; Override = [pscustomobject]@{ MaxObjects = 1000001 }; Pattern = 'from 1 to 1000000' }
+            @{ Name = 'a negative name cap'; Override = [pscustomobject]@{ NameListCap = -1 }; Pattern = 'from 0 to 1000' }
+        ) {
+            { Merge-AdfaSpecConfig -BaseConfig $script:C15Cfg -Override $Override -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage ("*{0}*" -f $Pattern)
+        }
+        It 'loads the key from a file, and a file with a malformed Inventory value stops the run' {
+            $good = Join-Path $TestDrive 'c15-good.json'
+            Set-Content -LiteralPath $good -Value '{ "Inventory": { "EventMaxEvents": 500 } }' -Encoding ASCII
+            $r = Import-AdfaConfigOverride -Path $good -BaseConfig $script:Config -Sections $script:ConfigOverrideSections
+            [int]$r['Inventory']['EventMaxEvents'] | Should -Be 500
+            $bad = Join-Path $TestDrive 'c15-bad.json'
+            Set-Content -LiteralPath $bad -Value '{ "Inventory": { "EventLevels": [ 4 ] } }' -Encoding ASCII
+            { Import-AdfaConfigOverride -Path $bad -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*section 'Inventory'*unknown key 'EventLevels'*"
+        }
+    }
+
+    Context 'INV-001 functional levels, FSMO holders, runner DC' {
+        It 'names a forest level read from CN=Partitions (Info, never Pass)' {
+            $r = Get-AdfaLevelRow -Kind 'Forest' -Scope $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ 'msDS-Behavior-Version' = 7 }))) -Config $script:C15Cfg
+            $r.Item | Should -Be ('Forest functional level: {0}' -f $script:C15Forest)
+            $r.Status | Should -Be 'Info'
+            [string]$r.Level | Should -Be '7'
+            $r.LevelName | Should -Be 'DS_BEHAVIOR_WIN2016'
+        }
+        It 'names a domain level 10 as DS_BEHAVIOR_WIN2025' {
+            $r = Get-AdfaLevelRow -Kind 'Domain' -Scope $script:C15North -Raw (New-C15Read -Records @((New-C15Object @{ 'msDS-Behavior-Version' = '10' }))) -Config $script:C15Cfg
+            $r.Item | Should -Be ('Domain functional level: {0}' -f $script:C15North)
+            $r.Status | Should -Be 'Info'
+            $r.LevelName | Should -Be 'DS_BEHAVIOR_WIN2025'
+        }
+        It 'keeps a level with no published name raw and Not Assessed: <Value>' -ForEach @(@{ Value = 8 }, @{ Value = 9 }, @{ Value = 11 }) {
+            $r = Get-AdfaLevelRow -Kind 'Forest' -Scope $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ 'msDS-Behavior-Version' = $Value }))) -Config $script:C15Cfg
+            $r.Status | Should -Be 'Not Assessed'
+            [string]$r.Level | Should -Be ([string]$Value)
+            $r.Detail | Should -Match 'no name'
+        }
+        It 'does not read an attribute not returned as level 0, and does not read text as a level' {
+            $absent = Get-AdfaLevelRow -Kind 'Domain' -Scope $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ Name = 'contoso' }))) -Config $script:C15Cfg
+            $absent.Status | Should -Be 'Not Assessed'
+            [string]$absent.Level | Should -Be ''
+            $absent.Detail | Should -Match 'equivalent to'
+            $text = Get-AdfaLevelRow -Kind 'Domain' -Scope $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ 'msDS-Behavior-Version' = 'seven' }))) -Config $script:C15Cfg
+            $text.Status | Should -Be 'Not Assessed'
+        }
+        It 'tells unreachable from access denied when the level read failed' {
+            $u = Get-AdfaLevelRow -Kind 'Forest' -Scope $script:C15Forest -Raw (New-C15Read -Ok $false -ErrorText 'Unable to contact the server.') -Config $script:C15Cfg
+            $d = Get-AdfaLevelRow -Kind 'Forest' -Scope $script:C15Forest -Raw (New-C15Read -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException') -Config $script:C15Cfg
+            $u.Status | Should -Be 'Not Assessed'
+            $d.Status | Should -Be 'Not Assessed'
+            $u.Detail | Should -Match '\(unreachable\)'
+            $d.Detail | Should -Match '\(access denied\)'
+            $n = Get-AdfaLevelRow -Kind 'Forest' -Scope $script:C15Forest -Raw $null -Config $script:C15Cfg
+            $n.Status | Should -Be 'Not Assessed'
+        }
+        It 'takes the holder from the NTDS Settings DN, and refuses a deleted or malformed one' {
+            $ok = Get-AdfaFsmoHolderName -Value $script:C15Ntds
+            $ok.Valid | Should -BeTrue
+            $ok.Server | Should -Be 'DC1'
+            $del = Get-AdfaFsmoHolderName -Value ("CN=NTDS Settings`nDEL:5c2e3c4a-0000-4000-8000-000000000001,CN=DC9,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com")
+            $del.Valid | Should -BeFalse
+            $del.Reason | Should -Match 'deleted'
+            (Get-AdfaFsmoHolderName -Value 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com').Valid | Should -BeFalse
+            (Get-AdfaFsmoHolderName -Value '').Valid | Should -BeFalse
+        }
+        It 'gives a FSMO row per role: Info with the holder in a column, Not Assessed when unread or invalid' {
+            $r = Get-AdfaFsmoRow -Role 'PDC emulator' -Scope $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ fSMORoleOwner = $script:C15Ntds }))) -Config $script:C15Cfg
+            $r.Item | Should -Be ('FSMO role holder: PDC emulator {0}' -f $script:C15Forest)
+            $r.Status | Should -Be 'Info'
+            $r.Holder | Should -Be 'DC1'
+            $r.Detail | Should -Not -Match 'DC1'
+            (Get-AdfaFsmoRow -Role 'RID master' -Scope $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ Name = 'x' }))) -Config $script:C15Cfg).Status | Should -Be 'Not Assessed'
+            (Get-AdfaFsmoRow -Role 'RID master' -Scope $script:C15Forest -Raw (New-C15Read -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException') -Config $script:C15Cfg).Detail | Should -Match 'access denied'
+            (Get-AdfaFsmoRow -Role 'Schema master' -Scope $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ fSMORoleOwner = 'CN=NTDS Settings\0ADEL:x,CN=DC9' }))) -Config $script:C15Cfg).Status | Should -Be 'Not Assessed'
+        }
+        It 'states the runner DC from rootDSE, Not Assessed when rootDSE could not be read' {
+            $ok = Get-AdfaRunnerRow -ForestName $script:C15Forest -RootDse ([pscustomobject]@{ Ok = $true; DnsHostName = $script:C15Dc2; Error = ''; ErrorType = '' }) -ComputerName $script:C15Runner
+            $ok.Item | Should -Be ('Runner DC: {0}' -f $script:C15Forest)
+            $ok.Status | Should -Be 'Info'
+            $ok.RunnerDc | Should -Be $script:C15Dc2
+            $ok.RunnerComputer | Should -Be $script:C15Runner
+            $bad = Get-AdfaRunnerRow -ForestName $script:C15Forest -RootDse ([pscustomobject]@{ Ok = $false; DnsHostName = ''; Error = 'Unable to contact the server.'; ErrorType = '' }) -ComputerName $script:C15Runner
+            $bad.Status | Should -Be 'Not Assessed'
+            $bad.Detail | Should -Match 'unreachable'
+        }
+        It 'collects the five roles, both levels and the runner per scoped domain (mixed: one domain unreadable)' {
+            Mock Get-AdfaInventoryDomainDn { param($DomainName) if ($DomainName -eq $script:C15North) { return [pscustomobject]@{ Ok = $false; Dn = ''; Error = 'Unable to contact the server.'; ErrorType = '' } }
+                return [pscustomobject]@{ Ok = $true; Dn = 'DC=contoso,DC=com'; Error = ''; ErrorType = '' } }
+            Mock Get-AdfaInventoryDirectoryRaw { New-C15Read -Records @((New-C15Object @{ 'msDS-Behavior-Version' = 7; fSMORoleOwner = $script:C15Ntds; uPNSuffixes = @('contoso.net') })) }
+            Mock Get-AdfaRootDseRaw { [pscustomobject]@{ Ok = $true; DnsHostName = $script:C15Dc1; Error = ''; ErrorType = '' } }
+            $rows = @(Get-AdfaTopologyInventory -ForestName $script:C15Forest -RootDomain $script:C15Forest -Domains @($script:C15Forest, $script:C15North) `
+                    -DomainControllers @((New-C15Target $script:C15Dc1 $script:C15Forest), (New-C15Target $script:C15Dc3 $script:C15North)) -ScopedDomains @($script:C15Forest, $script:C15North) -Config $script:C15Cfg)
+            # Declared population: the five roles - two of the forest, three per scoped domain.
+            @(Get-C15Like $rows 'FSMO role holder: *').Count | Should -Be 8
+            (Get-C15Row $rows ('FSMO role holder: PDC emulator {0}' -f $script:C15Forest))[0].Status | Should -Be 'Info'
+            (Get-C15Row $rows ('FSMO role holder: PDC emulator {0}' -f $script:C15North))[0].Status | Should -Be 'Not Assessed'
+            (Get-C15Row $rows ('Domain functional level: {0}' -f $script:C15North))[0].Status | Should -Be 'Not Assessed'
+            (Get-C15Row $rows ('Domain functional level: {0}' -f $script:C15Forest))[0].Status | Should -Be 'Info'
+            (Get-C15Row $rows ('Forest functional level: {0}' -f $script:C15Forest))[0].Status | Should -Be 'Info'
+            (Get-C15Row $rows ('UPN suffixes: {0}' -f $script:C15Forest)).Count | Should -Be 1
+            (Get-C15Row $rows ('Runner DC: {0}' -f $script:C15Forest)).Count | Should -Be 1
+            @($rows | Where-Object { $_.Status -notin @('Info', 'Not Assessed') }).Count | Should -Be 0
+        }
+        It 'says once that nothing was read when the forest itself could not be read' {
+            $rows = @(Get-AdfaTopologyInventory -ForestName '(forest unreadable)' -RootDomain '' -Domains @() -ForestError 'Unable to contact the server.' -Config $script:C15Cfg)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match 'forest could not be read'
+        }
+    }
+
+    Context 'INV-007 UPN suffixes, allowed DNS suffixes, DC DNS suffix and disjoint namespace' {
+        It 'lists the UPN suffixes in a column and counts them' {
+            $r = Get-AdfaUpnSuffixRow -ForestName $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ uPNSuffixes = @('contoso.net', 'fabrikam.com') }))) -Config $script:C15Cfg
+            $r.Status | Should -Be 'Info'
+            [string]$r.Count | Should -Be '2'
+            $r.Suffixes | Should -Be 'contoso.net; fabrikam.com'
+            $r.Detail | Should -Not -Match 'fabrikam'
+        }
+        It 'reports an absent attribute after a read that succeeded as 0, and a failed read as Not Assessed, never 0' {
+            $absent = Get-AdfaUpnSuffixRow -ForestName $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ Name = 'Partitions' }))) -Config $script:C15Cfg
+            $absent.Status | Should -Be 'Info'
+            [string]$absent.Count | Should -Be '0'
+            $absent.Detail | Should -Match 'attribute absent'
+            $failed = Get-AdfaUpnSuffixRow -ForestName $script:C15Forest -Raw (New-C15Read -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException') -Config $script:C15Cfg
+            $failed.Status | Should -Be 'Not Assessed'
+            [string]$failed.Count | Should -Be ''
+            $none = Get-AdfaUpnSuffixRow -ForestName $script:C15Forest -Raw (New-C15Read -Records @()) -Config $script:C15Cfg
+            $none.Status | Should -Be 'Not Assessed'
+        }
+        It 'lists msDS-AllowedDNSSuffixes per domain' {
+            $r = Get-AdfaAllowedDnsSuffixRow -DomainName $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ 'msDS-AllowedDNSSuffixes' = @('corp.fabrikam.com') }))) -Config $script:C15Cfg
+            $r.Item | Should -Be ('Allowed DNS suffixes: {0}' -f $script:C15Forest)
+            $r.Status | Should -Be 'Info'
+            $r.Suffixes | Should -Be 'corp.fabrikam.com'
+            (Get-AdfaAllowedDnsSuffixRow -DomainName $script:C15Forest -Raw (New-C15Read -Ok $false -ErrorText 'Unable to contact the server.') -Config $script:C15Cfg).Status | Should -Be 'Not Assessed'
+        }
+        It 'compares every DC''s DNS suffix with its domain (two DCs, one disjoint), Info only' {
+            $rows = @(Get-AdfaDnsSuffixRows -DomainControllers @((New-C15Target $script:C15Dc1 $script:C15Forest), (New-C15Target $script:C15Disjoint $script:C15Forest)) -ScopedDomains @($script:C15Forest) -Config $script:C15Cfg)
+            # Declared population: the two DCs of the one scoped domain.
+            $rows.Count | Should -Be 2
+            $match = (Get-C15Row $rows ('DNS suffix: {0}' -f $script:C15Dc1))[0]
+            $match.Disjoint | Should -Be 'No'
+            $match.Status | Should -Be 'Info'
+            $dis = (Get-C15Row $rows ('DNS suffix: {0}' -f $script:C15Disjoint))[0]
+            $dis.Disjoint | Should -Be 'Yes'
+            $dis.DnsSuffix | Should -Be 'corp.fabrikam.com'
+            $dis.Status | Should -Be 'Info'
+        }
+        It 'does not decide disjoint for a DC with no domain or no suffix, and gives a population row to a domain with no DC' {
+            $rows = @(Get-AdfaDnsSuffixRows -DomainControllers @('dc9', (New-C15Target $script:C15Dc1 '')) -InventoryFailures @([pscustomobject]@{ Domain = $script:C15North; Error = 'Unable to contact the server.' }) `
+                    -ScopedDomains @($script:C15Forest, $script:C15North) -Config $script:C15Cfg)
+            @($rows | Where-Object { $_.Status -eq 'Info' }).Count | Should -Be 0
+            (Get-C15Row $rows ('DNS suffix (population): {0}' -f $script:C15North))[0].Detail | Should -Match 'could not be enumerated'
+            (Get-C15Row $rows ('DNS suffix (population): {0}' -f $script:C15Forest)).Count | Should -Be 1
+            (Get-C15Row $rows ('DNS suffix: {0}' -f $script:C15Dc1))[0].Disjoint | Should -Be 'Unknown'
+        }
+    }
+
+    Context 'INV-006 trusts from trustedDomain objects' {
+        It 'decodes trustAttributes by name, keeps unknown bits, and reads the high bit as unsigned' {
+            $d = Get-AdfaTrustAttributeDecode -Value 0x24 -Config $script:C15Cfg
+            $d.Measured | Should -BeTrue
+            (@($d.Flags) -join ',') | Should -Be 'QUARANTINED_DOMAIN,WITHIN_FOREST'
+            @($d.Unknown).Count | Should -Be 0
+            $u = Get-AdfaTrustAttributeDecode -Value 0x2008 -Config $script:C15Cfg
+            (@($u.Flags) -join ',') | Should -Be 'FOREST_TRANSITIVE'
+            (@($u.Unknown) -join ',') | Should -Be 'unknown 0x2000'
+            $h = Get-AdfaTrustAttributeDecode -Value '-2147483640' -Config $script:C15Cfg
+            [int64]$h.Value | Should -Be 2147483656
+            (@($h.Unknown) -join ',') | Should -Be 'unknown 0x80000000'
+            (Get-AdfaTrustAttributeDecode -Value 0 -Config $script:C15Cfg).Measured | Should -BeTrue
+        }
+        It 'does not read a missing or non-integer trustAttributes as no flags: <Name>' -ForEach @(@{ Name = 'null'; Value = $null }, @{ Name = 'text'; Value = 'forest' }, @{ Name = 'empty'; Value = '' }) {
+            $d = Get-AdfaTrustAttributeDecode -Value $Value -Config $script:C15Cfg
+            $d.Measured | Should -BeFalse
+            $d.Reason | Should -Not -BeNullOrEmpty
+        }
+        It 'gives each trust a row with type, direction, transitivity, SID filtering, cross-organisation and TGT delegation (normal data, two trusts)' {
+            $raw = New-C15Read -Records @(
+                (New-C15Object @{ cn = 'fabrikam.com'; trustPartner = 'fabrikam.com'; flatName = 'FABRIKAM'; trustAttributes = 0x8; trustDirection = 3; trustType = 2 })
+                (New-C15Object @{ cn = 'north.contoso.com'; trustPartner = 'north.contoso.com'; trustAttributes = 0x20; trustDirection = 3; trustType = 2 })
+                (New-C15Object @{ cn = 'legacy.fabrikam.com'; trustPartner = 'legacy.fabrikam.com'; trustAttributes = 0x205; trustDirection = 2; trustType = 1 }))
+            $rows = @(Get-AdfaTrustInventoryRows -DomainName $script:C15Forest -Raw $raw -Config $script:C15Cfg)
+            # Declared population: three trusts and the population row.
+            $rows.Count | Should -Be 4
+            $forest = (Get-C15Row $rows ('Trust: {0} -> fabrikam.com' -f $script:C15Forest))[0]
+            $forest.Status | Should -Be 'Info'
+            $forest.TrustAttributeFlags | Should -Be 'FOREST_TRANSITIVE'
+            $forest.TrustDirection | Should -Be '3 Bidirectional'
+            $forest.TrustType | Should -Be '2 UPLEVEL'
+            $forest.Transitive | Should -Be 'NON_TRANSITIVE clear'
+            $forest.TgtDelegation | Should -Match 'not enabled'
+            $intra = (Get-C15Row $rows ('Trust: {0} -> north.contoso.com' -f $script:C15Forest))[0]
+            $intra.TgtDelegation | Should -Match '^Enabled'
+            $ext = (Get-C15Row $rows ('Trust: {0} -> legacy.fabrikam.com' -f $script:C15Forest))[0]
+            $ext.Transitive | Should -Be 'No (NON_TRANSITIVE set)'
+            $ext.SidFiltering | Should -Match 'QUARANTINED_DOMAIN'
+            $ext.TgtDelegation | Should -Match '^Disabled'
+            $ext.TrustDirection | Should -Be '2 Outbound'
+            $ext.TrustType | Should -Be '1 DOWNLEVEL'
+            $pop = (Get-C15Row $rows ('Trusts (population): {0}' -f $script:C15Forest))[0]
+            $pop.Status | Should -Be 'Info'
+            [string]$pop.Count | Should -Be '3'
+            @($rows | Where-Object { $_.Status -notin @('Info', 'Not Assessed') }).Count | Should -Be 0
+        }
+        It 'labels a disabled direction, an AAD type and a type with no published name' {
+            $raw = New-C15Read -Records @((New-C15Object @{ trustPartner = 'cloud.fabrikam.com'; trustAttributes = 0; trustDirection = 0; trustType = 5 }), (New-C15Object @{ trustPartner = 'odd.fabrikam.com'; trustAttributes = 0; trustDirection = 7; trustType = 9 }))
+            $rows = @(Get-AdfaTrustInventoryRows -DomainName $script:C15Forest -Raw $raw -Config $script:C15Cfg)
+            $c = (Get-C15Row $rows ('Trust: {0} -> cloud.fabrikam.com' -f $script:C15Forest))[0]
+            $c.TrustDirection | Should -Be '0 Disabled'
+            $c.TrustType | Should -Be '5 AAD'
+            $o = (Get-C15Row $rows ('Trust: {0} -> odd.fabrikam.com' -f $script:C15Forest))[0]
+            $o.TrustType | Should -Be '9 (no published name)'
+            $o.TrustDirection | Should -Be '7 (no published name)'
+        }
+        It 'makes a trust with no readable trustAttributes Not Assessed' {
+            $rows = @(Get-AdfaTrustInventoryRows -DomainName $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ trustPartner = 'fabrikam.com'; trustDirection = 3; trustType = 2 }))) -Config $script:C15Cfg)
+            (Get-C15Row $rows ('Trust: {0} -> fabrikam.com' -f $script:C15Forest))[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'states 0 trusts from a complete read as Info (empty data)' {
+            $rows = @(Get-AdfaTrustInventoryRows -DomainName $script:C15Forest -Raw (New-C15Read -Records @()) -Config $script:C15Cfg)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Info'
+            [string]$rows[0].Count | Should -Be '0'
+        }
+        # The -ForEach data is built at discovery, before BeforeAll defines the helpers: plain values only.
+        It 'never says 0 trusts when the read failed or was capped: <Name>' -ForEach @(
+            @{ Name = 'unreachable'; Capped = $false; ErrorText = 'Unable to contact the server.'; ErrorType = ''; Pattern = 'unreachable' }
+            @{ Name = 'access denied'; Capped = $false; ErrorText = 'Access is denied'; ErrorType = 'System.UnauthorizedAccessException'; Pattern = 'access denied' }
+            @{ Name = 'timed out'; Capped = $false; ErrorText = 'The operation timed out'; ErrorType = 'System.TimeoutException'; Pattern = 'timed out' }
+            @{ Name = 'capped'; Capped = $true; ErrorText = ''; ErrorType = ''; Pattern = 'cap' }
+        ) {
+            $Raw = New-C15Read -Ok $false -ErrorText $ErrorText -ErrorType $ErrorType
+            if ($Capped) { $Raw = New-C15Read -Capped $true -Records @((New-C15Object @{ trustPartner = 'a'; trustAttributes = 8; trustDirection = 3; trustType = 2 })) }
+            $rows = @(Get-AdfaTrustInventoryRows -DomainName $script:C15Forest -Raw $Raw -Config $script:C15Cfg)
+            $pop = (Get-C15Row $rows ('Trusts (population): {0}' -f $script:C15Forest))[0]
+            $pop.Status | Should -Be 'Not Assessed'
+            [string]$pop.Count | Should -Be ''
+            $pop.Detail | Should -Match $Pattern
+        }
+        It 'reads every scoped domain under its own CN=System with the listed attributes only (two domains)' {
+            Mock Get-AdfaInventoryDomainDn { param($DomainName) [pscustomobject]@{ Ok = $true; Dn = ('DC={0}' -f ($DomainName -replace '\.', ',DC=')); Error = ''; ErrorType = '' } }
+            Mock Get-AdfaInventoryDirectoryRaw { New-C15Read -Records @() }
+            $rows = @(Get-AdfaTrustInventory -Domains @($script:C15Forest, $script:C15North) -Config $script:C15Cfg)
+            @(Get-C15Like $rows 'Trusts (population): *').Count | Should -Be 2
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 1 -Exactly -ParameterFilter { $Server -eq 'north.contoso.com' -and $SearchBase -eq 'CN=System,DC=north,DC=contoso,DC=com' -and $LDAPFilter -eq '(objectClass=trustedDomain)' -and (@($Properties) -join ',') -eq 'cn,trustPartner,flatName,trustAttributes,trustDirection,trustType' }
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 1 -Exactly -ParameterFilter { $Server -eq 'contoso.com' }
+        }
+    }
+
+    Context 'INV-008 object counts and the identity summary' {
+        It 'counts each kind per domain, disabled from ACCOUNTDISABLE (normal data)' {
+            $reads = @{
+                Users = New-C15Read -Records @((New-C15Object @{ userAccountControl = 512 }), (New-C15Object @{ userAccountControl = 514 }), (New-C15Object @{ userAccountControl = 66050 }))
+                Computers = New-C15Read -Records @((New-C15Object @{ userAccountControl = 4096 }), (New-C15Object @{ userAccountControl = 4098 }))
+                Groups = New-C15Read -Records @((New-C15Object @{ groupType = -2147483646 }), (New-C15Object @{ groupType = 2 }))
+                Contacts = New-C15Read -Records @((New-C15Object @{ Name = 'c' }))
+                OUs = New-C15Read -Records @()
+                gMSA = New-C15Read -Records @((New-C15Object @{ Name = 'g' }))
+                sMSA = New-C15Read -Records @()
+            }
+            $rows = @(Get-AdfaObjectCountRows -DomainName $script:C15Forest -Reads $reads -Config $script:C15Cfg)
+            # Declared population: the thirteen counts of a domain.
+            $rows.Count | Should -Be 13
+            $want = @{ 'Users' = '3'; 'Enabled users' = '1'; 'Disabled users' = '2'; 'Computers' = '2'; 'Enabled computers' = '1'; 'Disabled computers' = '1'; 'Groups' = '2'; 'Security groups' = '1'; 'Distribution groups' = '1'; 'Contacts' = '1'; 'OUs' = '0'; 'gMSA' = '1'; 'sMSA' = '0' }
+            foreach ($k in $want.Keys) {
+                $r = (Get-C15Row $rows ('Object count: {0} {1}' -f $k, $script:C15Forest))[0]
+                [string]$r.Count | Should -Be $want[$k] -Because $k
+                $r.Status | Should -Be 'Info' -Because $k
+            }
+        }
+        It 'never counts 0 for a read that failed, was capped, or a split it could not make' {
+            $reads = @{
+                Users = New-C15Read -Records @((New-C15Object @{ userAccountControl = 512 }), (New-C15Object @{ Name = 'no-uac' }))
+                Computers = New-C15Read -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException'
+                Groups = New-C15Read -Capped $true -Records @((New-C15Object @{ groupType = 2 }))
+                Contacts = New-C15Read -Ok $false -ErrorText 'Unable to contact the server.'
+                OUs = $null
+                gMSA = New-C15Read -Records @()
+                sMSA = New-C15Read -Records @()
+            }
+            $rows = @(Get-AdfaObjectCountRows -DomainName $script:C15Forest -Reads $reads -Config $script:C15Cfg)
+            (Get-C15Row $rows ('Object count: Users {0}' -f $script:C15Forest))[0].Status | Should -Be 'Info'
+            foreach ($k in @('Enabled users', 'Disabled users', 'Computers', 'Enabled computers', 'Disabled computers', 'Groups', 'Security groups', 'Distribution groups', 'Contacts', 'OUs')) {
+                $r = (Get-C15Row $rows ('Object count: {0} {1}' -f $k, $script:C15Forest))[0]
+                $r.Status | Should -Be 'Not Assessed' -Because $k
+                [string]$r.Count | Should -Be '' -Because $k
+            }
+            (Get-C15Row $rows ('Object count: Computers {0}' -f $script:C15Forest))[0].Detail | Should -Match 'access denied'
+            (Get-C15Row $rows ('Object count: Contacts {0}' -f $script:C15Forest))[0].Detail | Should -Match 'unreachable'
+            (Get-C15Row $rows ('Object count: Groups {0}' -f $script:C15Forest))[0].Detail | Should -Match 'cap of 100000'
+        }
+        It 'counts computers with a filter that leaves out gMSA and sMSA' {
+            [string]$script:C15Cfg['CountFilters']['Computers'] | Should -Match '\(!\(objectClass=msDS-GroupManagedServiceAccount\)\)'
+            [string]$script:C15Cfg['CountFilters']['Computers'] | Should -Match '\(!\(objectClass=msDS-ManagedServiceAccount\)\)'
+        }
+        It 'makes the identity summary Not Assessed, not 0, when an export failed' {
+            $sum = @(Get-AdfaIdentitySummary -DomainName $script:C15Forest -Users @() -Computers @() -UsersError 'Access is denied' -ComputersError '')
+            $u = @($sum | Where-Object { $_.Object -eq 'Users' })[0]
+            $u.Status | Should -Be 'Not Assessed'
+            [string]$u.Total | Should -Be ''
+            $u.Detail | Should -Match 'Access is denied'
+            (@($sum | Where-Object { $_.Object -eq 'Computers' })[0]).Status | Should -Be 'Info'
+        }
+    }
+
+    Context 'INV-010 group inventory' {
+        It 'counts groups by scope and type and lists empty groups in a column, never in Detail (normal data)' {
+            $raw = New-C15Read -Records @(
+                (New-C15Object @{ sAMAccountName = 'Sales'; groupType = -2147483646; memberCount = 3 })
+                (New-C15Object @{ sAMAccountName = 'Empty-Delegation-Group'; groupType = -2147483644; memberCount = 0 })
+                (New-C15Object @{ sAMAccountName = 'All-Staff'; groupType = 8; memberCount = 1500 })
+                (New-C15Object @{ sAMAccountName = 'NoType'; memberCount = 1 }))
+            $rows = @(Get-AdfaGroupInventoryRows -DomainName $script:C15Forest -Raw $raw -Config $script:C15Cfg)
+            $t = (Get-C15Row $rows ('Groups by type and scope: {0}' -f $script:C15Forest))[0]
+            $t.Status | Should -Be 'Info'
+            [string]$t.GlobalSecurity | Should -Be '1'
+            [string]$t.DomainLocalSecurity | Should -Be '1'
+            [string]$t.UniversalDistribution | Should -Be '1'
+            [string]$t.TypeNotRead | Should -Be '1'
+            $e = (Get-C15Row $rows ('Empty groups: {0}' -f $script:C15Forest))[0]
+            $e.Status | Should -Be 'Info'
+            [string]$e.Count | Should -Be '1'
+            $e.Groups | Should -Be 'Empty-Delegation-Group'
+            $e.Detail | Should -Not -Match 'Empty-Delegation-Group'
+            $e.Detail | Should -Match 'primaryGroupID'
+            $m = (Get-C15Row $rows ('Group member counts: {0}' -f $script:C15Forest))[0]
+            [string]$m.NotCountedExactly | Should -Be '1'
+            $m.Detail | Should -Match '1500'
+        }
+        It 'exports one row per group with the member count, "1500 or more" at the ceiling' {
+            $raw = New-C15Read -Records @((New-C15Object @{ sAMAccountName = 'All-Staff'; groupType = 8; memberCount = 1500 }), (New-C15Object @{ sAMAccountName = 'Sales'; groupType = -2147483646; memberCount = 3 }))
+            $x = @(ConvertTo-AdfaGroupExportRow -DomainName $script:C15Forest -Raw $raw -Config $script:C15Cfg)
+            $x.Count | Should -Be 2
+            (@($x | Where-Object { $_.Name -eq 'All-Staff' })[0]).DirectMembers | Should -Be '1500 or more (not counted exactly)'
+            (@($x | Where-Object { $_.Name -eq 'Sales' })[0]).Scope | Should -Be 'Global'
+            (@($x | Where-Object { $_.Name -eq 'Sales' })[0]).Type | Should -Be 'Security'
+        }
+        It 'states 0 groups from a complete empty read as Info and a failed read as Not Assessed' {
+            $empty = @(Get-AdfaGroupInventoryRows -DomainName $script:C15Forest -Raw (New-C15Read -Records @()) -Config $script:C15Cfg)
+            (Get-C15Row $empty ('Empty groups: {0}' -f $script:C15Forest))[0].Status | Should -Be 'Info'
+            $failed = @(Get-AdfaGroupInventoryRows -DomainName $script:C15Forest -Raw (New-C15Read -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException') -Config $script:C15Cfg)
+            $failed.Count | Should -Be 3
+            @($failed | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            @($failed | Where-Object { [string]$_.Detail -notmatch 'access denied' }).Count | Should -Be 0
+        }
+        It 'reads every scoped domain with its own counts and groups (two domains, one refused)' {
+            Mock Get-AdfaInventoryDomainDn { [pscustomobject]@{ Ok = $true; Dn = 'DC=contoso,DC=com'; Error = ''; ErrorType = '' } }
+            Mock Get-AdfaInventoryDirectoryRaw { param($Server) if ($Server -eq 'north.contoso.com') { return (New-C15Read -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException') }
+                New-C15Read -Records @((New-C15Object @{ userAccountControl = 512; groupType = 2; memberCount = 1; sAMAccountName = 'g1' })) }
+            $out = Get-AdfaIdentityInventoryDepth -Domains @($script:C15Forest, $script:C15North) -Config $script:C15Cfg
+            @(Get-C15Like @($out.Counts) ('Object count: * {0}' -f $script:C15Forest)).Count | Should -Be 13
+            @(Get-C15Like @($out.Counts) ('Object count: * {0}' -f $script:C15North)).Count | Should -Be 13
+            @(Get-C15Like @($out.Counts) ('Object count: * {0}' -f $script:C15North) | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            @(Get-C15Like @($out.Groups) ('Empty groups: {0}' -f $script:C15North)).Count | Should -Be 1
+            $out.GroupExport.ContainsKey($script:C15Forest) | Should -BeTrue
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 7 -Exactly -ParameterFilter { $Server -eq 'north.contoso.com' }
+        }
+    }
+
+    Context 'INV-009 stale disabled objects' {
+        It 'filters disabled accounts with ACCOUNTDISABLE set, and the populations without the time term' {
+            $f = Get-AdfaStaleLdapFilter -Kind 'DisabledUser' -CutoffUtc $script:C15Now
+            $f | Should -Match '\(userAccountControl:1\.2\.840\.113556\.1\.4\.803:=2\)'
+            $f | Should -Not -Match '!\(userAccountControl'
+            $f | Should -Match 'lastLogonTimestamp<='
+            $c = Get-AdfaStaleLdapFilter -Kind 'DisabledComputer' -CutoffUtc $script:C15Now
+            $c | Should -Match 'msDS-GroupManagedServiceAccount'
+            (Get-AdfaStaleLdapFilter -Kind 'AllDisabledUser' -CutoffUtc $script:C15Now) | Should -Not -Match 'lastLogonTimestamp'
+        }
+        It 'counts stale disabled users as Info, never as a grade, and names them only in a column' {
+            $raw = New-C15StaleRaw -Records @((New-C15Account -Name 'left.user' -LastLogonUtc ($script:C15Now.AddDays(-400))), (New-C15Account -Name 'never.user' -WhenCreatedUtc ($script:C15Now.AddDays(-500))))
+            $r = Get-AdfaStaleDisabledVerdict -DomainName $script:C15Forest -Kind 'User' -Raw $raw -Interval (New-C15Interval) -StaleDays 90 -Now $script:C15Now -Population (New-C15Population -Count 12) -Config $script:Config.Stale
+            $r.Item | Should -Be 'Stale disabled users'
+            $r.Status | Should -Be 'Info'
+            [string]$r.Count | Should -Be '2'
+            [string]$r.NeverLoggedOn | Should -Be '1'
+            $r.Accounts | Should -Be 'left.user; never.user'
+            $r.Detail | Should -Not -Match 'left\.user'
+            $r.Detail | Should -Match 'msDS-LogonTimeSyncInterval'
+        }
+        It 'counts an account exactly at the cutoff, not one newer, and a never-used account only once it is older (boundary)' {
+            $at = New-C15Account -Name 'at.cutoff' -LastLogonUtc ($script:C15Now.AddDays(-90))
+            $newer = New-C15Account -Name 'newer' -LastLogonUtc ($script:C15Now.AddDays(-89))
+            $newNever = New-C15Account -Name 'new.never' -WhenCreatedUtc ($script:C15Now.AddDays(-10))
+            $r = Get-AdfaStaleDisabledVerdict -DomainName $script:C15Forest -Kind 'Computer' -Raw (New-C15StaleRaw -Records @($at, $newer, $newNever)) -Interval (New-C15Interval) -StaleDays 90 -Now $script:C15Now -Population (New-C15Population) -Config $script:Config.Stale
+            $r.Item | Should -Be 'Stale disabled computers'
+            [string]$r.Count | Should -Be '1'
+            $r.Accounts | Should -Be 'at.cutoff'
+        }
+        It 'is Not Assessed, never 0, when: <Name>' -ForEach @(
+            @{ Name = 'the read failed (access denied)'; RawOk = $false; RawError = 'Access is denied'; RawType = 'System.UnauthorizedAccessException'; RawCapped = $false; PopOk = $true; Days = 90; Pattern = 'access denied' }
+            @{ Name = 'the read failed (unreachable)'; RawOk = $false; RawError = 'Unable to contact the server.'; RawType = ''; RawCapped = $false; PopOk = $true; Days = 90; Pattern = 'unreachable' }
+            @{ Name = 'the read was capped'; RawOk = $true; RawError = ''; RawType = ''; RawCapped = $true; PopOk = $true; Days = 90; Pattern = 'cap' }
+            @{ Name = 'nothing found and the disabled population failed'; RawOk = $true; RawError = ''; RawType = ''; RawCapped = $false; PopOk = $false; Days = 90; Pattern = 'not be told' }
+            @{ Name = 'StaleDays not longer than the sync interval'; RawOk = $true; RawError = ''; RawType = ''; RawCapped = $false; PopOk = $true; Days = 14; Pattern = 'not longer than the logon-sync interval' }
+        ) {
+            $Raw = New-C15StaleRaw -Ok $RawOk -ErrorText $RawError -ErrorType $RawType -Capped $RawCapped
+            $Population = New-C15Population
+            if (-not $PopOk) { $Population = New-C15Population -Ok $false -ErrorText 'Access is denied' }
+            $r = Get-AdfaStaleDisabledVerdict -DomainName $script:C15Forest -Kind 'User' -Raw $Raw -Interval (New-C15Interval) -StaleDays $Days -Now $script:C15Now -Population $Population -Config $script:Config.Stale
+            $r.Status | Should -Be 'Not Assessed'
+            [string]$r.Count | Should -Be ''
+            $r.Detail | Should -Match $Pattern
+        }
+        It 'states 0 stale disabled accounts as Info when the disabled population was counted (empty data)' {
+            $r = Get-AdfaStaleDisabledVerdict -DomainName $script:C15Forest -Kind 'User' -Raw (New-C15StaleRaw) -Interval (New-C15Interval) -StaleDays 90 -Now $script:C15Now -Population (New-C15Population -Count 0) -Config $script:Config.Stale
+            $r.Status | Should -Be 'Info'
+            [string]$r.Count | Should -Be '0'
+        }
+        It 'adds both rows to every domain the stale section reads' {
+            Mock Get-AdfaLogonSyncIntervalRaw { New-C15Interval }
+            Mock Get-AdfaStalePopulationRaw { New-C15Population }
+            Mock Get-AdfaStaleRaw { New-C15StaleRaw }
+            # The CI runner has no ActiveDirectory module: the PasswordNeverExpires read gets a stub.
+            function Get-ADUser { param([Parameter(ValueFromRemainingArguments)]$a) @() }
+            $rows = @(Get-AdfaStaleObject -DomainName $script:C15Forest -StaleDays 90 -Config $script:Config.Stale -Now $script:C15Now)
+            (Get-C15Row $rows 'Stale disabled users').Count | Should -Be 1
+            (Get-C15Row $rows 'Stale disabled computers').Count | Should -Be 1
+            Should -Invoke Get-AdfaStaleRaw -Times 1 -Exactly -ParameterFilter { $Kind -eq 'DisabledUser' -and $DomainName -eq 'contoso.com' }
+            Should -Invoke Get-AdfaStalePopulationRaw -Times 1 -Exactly -ParameterFilter { $Kind -eq 'DisabledComputer' }
+        }
+    }
+
+    Context 'INV-011 GPO inventory from the directory' {
+        It 'parses gPLink entries with their options, with or without the LDAP:// prefix' {
+            $v = ('[LDAP://cn={0},cn=policies,cn=system,DC=contoso,DC=com;0][cn={1},cn=policies,cn=system,DC=contoso,DC=com;2][LDAP://cn={0},cn=policies,cn=system,DC=contoso,DC=com;1]' -f $script:C15Gpo1, $script:C15Gpo2)
+            $e = @(ConvertFrom-AdfaGpLink -Value $v -Config $script:C15Cfg)
+            $e.Count | Should -Be 3
+            $e[0].Guid | Should -Be $script:C15Gpo1
+            $e[0].Disabled | Should -BeFalse
+            $e[1].Enforced | Should -BeTrue
+            $e[2].Disabled | Should -BeTrue
+            @($e | Where-Object { -not $_.Parsed }).Count | Should -Be 0
+            $bad = @(ConvertFrom-AdfaGpLink -Value '[garbage]' -Config $script:C15Cfg)
+            $bad.Count | Should -Be 1
+            $bad[0].Parsed | Should -BeFalse
+            @(ConvertFrom-AdfaGpLink -Value '' -Config $script:C15Cfg).Count | Should -Be 0
+            @(ConvertFrom-AdfaGpLink -Value ' ' -Config $script:C15Cfg).Count | Should -Be 0
+        }
+        It 'gives each GPO its flags, WMI filter and link counts, and lists links per SOM (normal data)' {
+            $gpc = New-C15Read -Records @(
+                (New-C15Object @{ Name = $script:C15Gpo1; displayName = 'Default Domain Policy'; flags = 0; versionNumber = 65537 })
+                (New-C15Object @{ Name = $script:C15Gpo2; displayName = '<script>alert(1)</script>'; flags = 3; gPCWQLFilter = ('[contoso.com;{0};0]' -f $script:C15Wmi); versionNumber = 1 }))
+            $som = New-C15Read -Records @((New-C15Object @{ DistinguishedName = 'DC=contoso,DC=com'; objectClass = @('top', 'domain', 'domainDNS'); gPLink = ('[LDAP://cn={0},cn=policies,cn=system,DC=contoso,DC=com;2]' -f $script:C15Gpo1); gPOptions = 0 }))
+            $site = New-C15Read -Records @()
+            $wmi = New-C15Read -Records @((New-C15Object @{ Name = $script:C15Wmi; 'msWMI-Name' = 'Servers only' }))
+            # A one-domain forest: every SOM that could link these GPOs is read (C15 review: without
+            # -ForestDomains no GPO is called unlinked).
+            $rows = @(Get-AdfaGpoDirectoryRows -DomainName $script:C15Forest -Gpc $gpc -Som $som -Site $site -Wmi $wmi -ForestDomains @($script:C15Forest) -Config $script:C15Cfg -GpoConfig $script:Config.Gpo)
+            $g1 = (Get-C15Row $rows ('GPO: {0}' -f $script:C15Gpo1))[0]
+            $g1.Status | Should -Be 'Info'
+            [string]$g1.Links | Should -Be '1'
+            [string]$g1.EnforcedLinks | Should -Be '1'
+            $g1.FlagsLabel | Should -Be 'enabled'
+            $g2 = (Get-C15Row $rows ('GPO: {0}' -f $script:C15Gpo2))[0]
+            [string]$g2.Links | Should -Be '0'
+            $g2.FlagsLabel | Should -Be 'all settings disabled'
+            $g2.WmiFilter | Should -Be $script:C15Wmi
+            $g2.WmiFilterName | Should -Be 'Servers only'
+            $g2.DisplayName | Should -Be '<script>alert(1)</script>'
+            $g2.Detail | Should -Not -Match 'script'
+            $s = (Get-C15Row $rows ('GPO links on a SOM: {0}' -f $script:C15Forest))[0]
+            $s.Som | Should -Be 'DC=contoso,DC=com'
+            [string]$s.Links | Should -Be '1'
+            $sum = (Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            $sum.Status | Should -Be 'Info'
+            [string]$sum.Gpos | Should -Be '2'
+            [string]$sum.Unlinked | Should -Be '1'
+            @($rows | Where-Object { $_.Status -notin @('Info', 'Not Assessed') }).Count | Should -Be 0
+        }
+        It 'states 0 GPOs from a complete empty read as Info (empty data)' {
+            $rows = @(Get-AdfaGpoDirectoryRows -DomainName $script:C15Forest -Gpc (New-C15Read -Records @()) -Som (New-C15Read -Records @()) -Site (New-C15Read -Records @()) -Wmi (New-C15Read -Records @()) -Config $script:C15Cfg -GpoConfig $script:Config.Gpo)
+            $sum = (Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            $sum.Status | Should -Be 'Info'
+            [string]$sum.Gpos | Should -Be '0'
+        }
+        It 'never calls a GPO unlinked when the links could not be read, and never 0 GPOs when the containers could not' {
+            $gpc = New-C15Read -Records @((New-C15Object @{ Name = $script:C15Gpo1; displayName = 'x'; flags = 7 }))
+            $rows = @(Get-AdfaGpoDirectoryRows -DomainName $script:C15Forest -Gpc $gpc -Som (New-C15Read -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException') -Site (New-C15Read -Records @()) -Wmi (New-C15Read -Records @()) -Config $script:C15Cfg -GpoConfig $script:Config.Gpo)
+            $g = (Get-C15Row $rows ('GPO: {0}' -f $script:C15Gpo1))[0]
+            [string]$g.Links | Should -Be ''
+            $g.FlagsLabel | Should -Be 'unknown'
+            $sum = (Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            $sum.Status | Should -Be 'Not Assessed'
+            [string]$sum.Unlinked | Should -Be ''
+            $sum.Detail | Should -Match 'access denied'
+            $none = @(Get-AdfaGpoDirectoryRows -DomainName $script:C15Forest -Gpc (New-C15Read -Ok $false -ErrorText 'Unable to contact the server.') -Som (New-C15Read -Records @()) -Site (New-C15Read -Records @()) -Wmi (New-C15Read -Records @()) -Config $script:C15Cfg -GpoConfig $script:Config.Gpo)
+            $none.Count | Should -Be 1
+            $none[0].Status | Should -Be 'Not Assessed'
+            [string]$none[0].Gpos | Should -Be ''
+            $none[0].Detail | Should -Match 'unreachable'
+        }
+        It 'reads every scoped domain and the sites once (two domains)' {
+            Mock Get-AdfaInventoryDomainDn { param($DomainName) [pscustomobject]@{ Ok = $true; Dn = ('DC={0}' -f ($DomainName -replace '\.', ',DC=')); Error = ''; ErrorType = '' } }
+            Mock Get-AdfaInventoryDirectoryRaw { New-C15Read -Records @() }
+            Mock Get-AdfaRootDseRaw { [pscustomobject]@{ Ok = $true; DnsHostName = $script:C15Dc1; ConfigurationNamingContext = 'CN=Configuration,DC=contoso,DC=com'; Error = ''; ErrorType = '' } }
+            $rows = @(Get-AdfaGpoDirectoryInventory -Domains @($script:C15Forest, $script:C15North) -RootDomain $script:C15Forest -Config $script:C15Cfg -GpoConfig $script:Config.Gpo)
+            @(Get-C15Like $rows 'GPO directory inventory: *').Count | Should -Be 2
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 1 -Exactly -ParameterFilter { $SearchBase -eq 'CN=Sites,CN=Configuration,DC=contoso,DC=com' }
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 1 -Exactly -ParameterFilter { $SearchBase -eq 'CN=Policies,CN=System,DC=north,DC=contoso,DC=com' -and $SearchScope -eq 'OneLevel' }
+        }
+    }
+
+    Context 'INV-012 events by level, per log and DC' {
+        It 'groups the events of a log by ID, worst level first, capped at EventGroupCap (normal data)' {
+            $ev = @((New-C15Event -Id 1311 -Level 2), (New-C15Event -Id 1311 -Level 2 -DaysAgo 3), (New-C15Event -Id 2042 -Level 1), (New-C15Event -Id 1925 -Level 3), (New-C15Event -Id 1925 -Level 3), (New-C15Event -Id 1925 -Level 3))
+            $rows = @(Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'Directory Service' -Raw (New-C15EventRaw -Events $ev) -Coverage (New-C15Coverage) -LookbackDays 14 -Config $script:C15Cfg)
+            $log = (Get-C15Row $rows ('Event log: Directory Service on {0}' -f $script:C15Dc1))[0]
+            $log.Status | Should -Be 'Info'
+            [string]$log.Events | Should -Be '6'
+            [string]$log.DistinctIds | Should -Be '3'
+            $groups = @(Get-C15Like $rows 'Event group: *')
+            $groups.Count | Should -Be 3
+            $groups[0].Item | Should -Be ('Event group: Directory Service 2042 on {0}' -f $script:C15Dc1)
+            $groups[0].Level | Should -Be 'Critical'
+            $groups[1].Item | Should -Match ' 1311 on '
+            [string]$groups[2].Count | Should -Be '3'
+            @($rows | Where-Object { $_.Status -ne 'Info' }).Count | Should -Be 0
+            $capped = @(Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'Directory Service' -Raw (New-C15EventRaw -Events $ev) -Coverage (New-C15Coverage) -LookbackDays 14 -Config (Merge-AdfaSpecConfig -BaseConfig $script:C15Cfg -Override @{ EventGroupCap = 1 }))
+            @(Get-C15Like $capped 'Event group: *').Count | Should -Be 1
+            (Get-C15Row $capped ('Event log: Directory Service on {0}' -f $script:C15Dc1))[0].Detail | Should -Match '2 more'
+        }
+        It 'says a count reached at MaxEvents or over a log that does not reach back is a floor' {
+            $rows = @(Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'System' -Raw (New-C15EventRaw -Events @((New-C15Event -Id 7 -Level 2)) -Truncated $true) -Coverage (New-C15Coverage -Coverage 'Truncated') -LookbackDays 14 -Config $script:C15Cfg)
+            $log = (Get-C15Row $rows ('Event log: System on {0}' -f $script:C15Dc1))[0]
+            $log.Status | Should -Be 'Info'
+            $log.Truncated | Should -Be 'Yes'
+            $log.Detail | Should -Match 'at least'
+        }
+        It 'states none found over a covered window as Info 0, and as Not Assessed over a log that does not reach back (empty data)' {
+            $ok = (Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'System' -Raw (New-C15EventRaw -NoEvents $true) -Coverage (New-C15Coverage) -LookbackDays 14 -Config $script:C15Cfg)[0]
+            $ok.Status | Should -Be 'Info'
+            [string]$ok.Events | Should -Be '0'
+            $short = (Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'System' -Raw (New-C15EventRaw -NoEvents $true) -Coverage (New-C15Coverage -Coverage 'Truncated') -LookbackDays 14 -Config $script:C15Cfg)[0]
+            $short.Status | Should -Be 'Not Assessed'
+            [string]$short.Events | Should -Be ''
+        }
+        It 'reports a log that does not exist as Info "log absent", and a refusal, an unreachable DC and an unknown error as Not Assessed, each its own cause' {
+            $absent = (Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'DNS Server' -Raw (New-C15EventRaw -Ok $false -LogAbsent $true) -Coverage $null -LookbackDays 14 -Config $script:C15Cfg)[0]
+            $absent.Status | Should -Be 'Info'
+            $absent.Detail | Should -Match 'log absent'
+            $denied = (Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'System' -Raw (New-C15EventRaw -Ok $false -ErrorText 'Attempted to perform an unauthorized operation.' -ErrorCode 'AccessDenied') -Coverage $null -LookbackDays 14 -Config $script:C15Cfg)[0]
+            $denied.Status | Should -Be 'Not Assessed'
+            $denied.Detail | Should -Match 'Access denied'
+            $other = (Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'System' -Raw (New-C15EventRaw -Ok $false -ErrorText 'The RPC server is unavailable') -Coverage $null -LookbackDays 14 -Config $script:C15Cfg)[0]
+            $other.Status | Should -Be 'Not Assessed'
+            $other.Detail | Should -Not -Match 'Access denied'
+            $other.Detail | Should -Match 'RPC server is unavailable'
+            $unread = (Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'System' -Raw $null -Coverage $null -Unreachable 'Unreachable: RPC (135) did not answer.' -LookbackDays 14 -Config $script:C15Cfg)[0]
+            $unread.Status | Should -Be 'Not Assessed'
+            $unread.Detail | Should -Match 'Unreachable'
+        }
+        It 'reads every log of every DC with a bounded query, and gives a domain with no DC a population row (per-DC loop, two DCs)' {
+            Mock Test-AdfaDcPort { $true }
+            Mock Get-AdfaDcReachCause { '' }
+            Mock Get-AdfaEventLogCoverageForLog { New-C15Coverage }
+            Mock Get-AdfaEventInventoryRaw { New-C15EventRaw -NoEvents $true }
+            $rows = @(Get-AdfaEventInventory -DomainControllers @((New-C15Target $script:C15Dc1 $script:C15Forest), (New-C15Target $script:C15Dc2 $script:C15Forest)) -ScopedDomains @($script:C15Forest, $script:C15North) -LookbackDays 14 -Config $script:C15Cfg)
+            # Declared population: five logs on each of the two DCs, and the domain with no DC.
+            @(Get-C15Like $rows 'Event log: *').Count | Should -Be 10
+            @(Get-C15Like $rows ('Event log: * on {0}' -f $script:C15Dc2)).Count | Should -Be 5
+            (Get-C15Row $rows ('Events (population): {0}' -f $script:C15North))[0].Status | Should -Be 'Not Assessed'
+            Should -Invoke Get-AdfaEventInventoryRaw -Times 5 -Exactly -ParameterFilter { $ComputerName -eq 'dc2.contoso.com' -and $MaxEvents -eq 2000 -and (@($Levels) -join ',') -eq '1,2,3' }
+        }
+        It 'does not read a DC that is unreachable or classified unreachable (two DCs)' {
+            Mock Test-AdfaDcPort { param($ComputerName) $ComputerName -ne 'dc2.contoso.com' }
+            Mock Get-AdfaDcReachCause { param($HostName) if ($HostName -eq 'dc1.contoso.com') { return 'Unreachable, classified once for this run by the reachability probe: refused' } '' }
+            Mock Get-AdfaEventInventoryRaw { New-C15EventRaw -NoEvents $true }
+            Mock Get-AdfaEventLogCoverageForLog { New-C15Coverage }
+            $rows = @(Get-AdfaEventInventory -DomainControllers @((New-C15Target $script:C15Dc1 $script:C15Forest), (New-C15Target $script:C15Dc2 $script:C15Forest)) -ScopedDomains @($script:C15Forest) -LookbackDays 14 -Config $script:C15Cfg)
+            @(Get-C15Like $rows 'Event log: *' | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            (Get-C15Row $rows ('Event log: System on {0}' -f $script:C15Dc1))[0].Detail | Should -Match 'classified once'
+            (Get-C15Row $rows ('Event log: System on {0}' -f $script:C15Dc2))[0].Detail | Should -Match 'RPC \(135\)'
+            Should -Invoke Get-AdfaEventInventoryRaw -Times 0 -Exactly
+        }
+    }
+
+    Context 'INV-015 W32Time configuration per DC' {
+        It 'reports Type, NtpServer and AnnounceFlags as read, NtpServer not set as the documented default (normal data)' {
+            $read = New-C15TimeRead -Values @((New-C15RegValue -Id 'Type' -Value 'NT5DS'), (New-C15RegValue -Id 'NtpServer' -ReturnValue 1 -Value ''), (New-C15RegValue -Id 'AnnounceFlags' -Value 10))
+            $r = Get-AdfaW32TimeConfigRow -ComputerName $script:C15Dc1 -Scope $script:C15Forest -Read $read -Config $script:C15Cfg
+            $r.Item | Should -Be ('W32Time configuration: {0}' -f $script:C15Dc1)
+            $r.Status | Should -Be 'Info'
+            $r.Type | Should -Be 'NT5DS'
+            $r.NtpServer | Should -Be '(not set)'
+            [string]$r.AnnounceFlags | Should -Be '10'
+            $r.Detail | Should -Match 'Group Policy'
+            $r.Detail | Should -Not -Match 'NoSync'
+        }
+        It 'is Not Assessed with its own cause when: <Name>' -ForEach @(
+            @{ Name = 'the DC is unreachable'; Shape = 'Unreachable'; Pattern = 'Unreachable' }
+            @{ Name = 'access is denied'; Shape = 'Denied'; Pattern = 'Access denied' }
+            @{ Name = 'the session failed otherwise'; Shape = 'Failed'; Pattern = 'Read failed' }
+            @{ Name = 'a value is of another type'; Shape = 'Type'; Pattern = 'type' }
+            @{ Name = 'one value read was refused'; Shape = 'Refused'; Pattern = 'access denied' }
+            @{ Name = 'a value was not returned'; Shape = 'Missing'; Pattern = 'not read' }
+        ) {
+            $Read = $null
+            $Unreachable = ''
+            switch ($Shape) {
+                'Unreachable' { $Unreachable = 'Unreachable: neither WinRM (5985) nor RPC (135) answered.' }
+                'Denied' { $Read = New-C15TimeRead -Ok $false -Denied $true -ErrorText 'Access is denied.' }
+                'Failed' { $Read = New-C15TimeRead -Ok $false -ErrorText 'The WinRM client cannot process the request.' }
+                'Type' { $Read = New-C15TimeRead -Values @((New-C15RegValue -Id 'Type' -ReturnValue 2147749893), (New-C15RegValue -Id 'NtpServer' -ReturnValue 1), (New-C15RegValue -Id 'AnnounceFlags' -Value 10)) }
+                'Refused' { $Read = New-C15TimeRead -Values @((New-C15RegValue -Id 'Type' -Value 'NTP'), (New-C15RegValue -Id 'NtpServer' -ReturnValue 5), (New-C15RegValue -Id 'AnnounceFlags' -Value 5)) }
+                'Missing' { $Read = New-C15TimeRead -Values @((New-C15RegValue -Id 'Type' -Value 'NTP')) }
+            }
+            $r = Get-AdfaW32TimeConfigRow -ComputerName $script:C15Dc1 -Scope $script:C15Forest -Read $Read -Unreachable $Unreachable -Config $script:C15Cfg
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match $Pattern
+        }
+        It 'reads every DC through the shared transport loop and gives a domain with no DC a population row (per-DC loop, two DCs)' {
+            Mock Test-AdfaDcPort { $true }
+            Mock Get-AdfaDcReachCause { '' }
+            Mock Invoke-AdfaDcRemoteRead { New-C15TimeRead -Values @((New-C15RegValue -Id 'Type' -Value 'NT5DS'), (New-C15RegValue -Id 'NtpServer' -ReturnValue 1), (New-C15RegValue -Id 'AnnounceFlags' -Value 10)) }
+            $rows = @(Get-AdfaW32TimeInventory -DomainControllers @((New-C15Target $script:C15Dc1 $script:C15Forest), (New-C15Target $script:C15Dc2 $script:C15Forest)) -ScopedDomains @($script:C15Forest, $script:C15North) -Config $script:C15Cfg)
+            (Get-C15Row $rows ('W32Time configuration: {0}' -f $script:C15Dc1))[0].Status | Should -Be 'Info'
+            (Get-C15Row $rows ('W32Time configuration: {0}' -f $script:C15Dc2))[0].Status | Should -Be 'Info'
+            (Get-C15Row $rows ('W32Time configuration (population): {0}' -f $script:C15North))[0].Status | Should -Be 'Not Assessed'
+            Should -Invoke Invoke-AdfaDcRemoteRead -Times 1 -Exactly -ParameterFilter { $ComputerName -eq 'dc2.contoso.com' -and $ReadCommand -eq 'Get-AdfaDcW32TimeRaw' }
+        }
+        It 'does not read a DC that no transport answers, and says unreachable, not access denied (two DCs)' {
+            Mock Test-AdfaDcPort { param($ComputerName) $ComputerName -eq 'dc1.contoso.com' }
+            Mock Get-AdfaDcReachCause { '' }
+            Mock Invoke-AdfaDcRemoteRead { New-C15TimeRead -Ok $false -Denied $true -ErrorText 'Access is denied.' }
+            $rows = @(Get-AdfaW32TimeInventory -DomainControllers @((New-C15Target $script:C15Dc1 $script:C15Forest), (New-C15Target $script:C15Dc2 $script:C15Forest)) -ScopedDomains @($script:C15Forest) -Config $script:C15Cfg)
+            (Get-C15Row $rows ('W32Time configuration: {0}' -f $script:C15Dc1))[0].Detail | Should -Match 'Access denied'
+            (Get-C15Row $rows ('W32Time configuration: {0}' -f $script:C15Dc2))[0].Detail | Should -Match 'Unreachable'
+            (Get-C15Row $rows ('W32Time configuration: {0}' -f $script:C15Dc2))[0].Detail | Should -Not -Match 'Access denied'
+            Should -Invoke Invoke-AdfaDcRemoteRead -Times 0 -Exactly -ParameterFilter { $ComputerName -eq 'dc2.contoso.com' }
+        }
+        It 'reads the three values with the two StdRegProv Get methods only' {
+            # The CI runner has no CIM cmdlets: stubs in the shape the real ones take.
+            $script:C15Closed = 0
+            function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction) [pscustomobject]@{ ComputerName = $ComputerName } }
+            function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) $script:C15Closed++ }
+            Mock Get-AdfaStdRegStringValue { [pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 'NT5DS'; Method = 'GetStringValue'; Error = ''; ErrorCode = '' } }
+            Mock Get-AdfaStdRegDwordValue { [pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 10; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' } }
+            $raw = Get-AdfaDcW32TimeRaw -ComputerName $script:C15Dc1 -Protocol 'Wsman' -Values $script:C15Cfg['W32TimeValues']
+            $raw.Ok | Should -BeTrue
+            @($raw.Values).Count | Should -Be 3
+            Should -Invoke Get-AdfaStdRegStringValue -Times 2 -Exactly
+            Should -Invoke Get-AdfaStdRegDwordValue -Times 1 -Exactly -ParameterFilter { $ValueName -eq 'AnnounceFlags' -and $Key -eq 'SYSTEM\CurrentControlSet\Services\W32Time\Config' }
+            $script:C15Closed | Should -Be 1
+        }
+    }
+
+    Context 'The directory and event seams (stubs in the shape the cmdlets take and return)' {
+        BeforeAll {
+            if ($null -eq ('Fabrikam.Stub.ADIdentityNotFoundException' -as [type])) {
+                Add-Type -TypeDefinition 'namespace Fabrikam.Stub { public class ADIdentityNotFoundException : System.Exception { public ADIdentityNotFoundException(string m) : base(m) { } } }' -WarningAction SilentlyContinue
+            }
+        }
+        It 'sends -Server, the listed properties and the cap, keeps only the number of a counted property''s values' {
+            $script:C15Sent = @()
+            function Get-ADObject { param([string]$Server, [string]$Identity, [string]$LDAPFilter, [string]$SearchBase, [string]$SearchScope, [string[]]$Properties, [int]$ResultSetSize, $ErrorAction)
+                $script:C15Sent += [pscustomobject]@{ Server = $Server; Properties = (@($Properties) -join ','); ResultSetSize = $ResultSetSize; Bound = (@($PSBoundParameters.Keys | Sort-Object) -join ',') }
+                [pscustomobject]@{ DistinguishedName = 'CN=Sales,CN=Users,DC=contoso,DC=com'; Name = 'Sales'; groupType = -2147483646; member = @('CN=a', 'CN=b', 'CN=c') } }
+            $raw = Get-AdfaInventoryDirectoryRaw -Server $script:C15Forest -LDAPFilter '(objectClass=group)' -Properties @('groupType') -CountProperties @('member') -MaxObjects 5
+            $raw.Ok | Should -BeTrue
+            $raw.Capped | Should -BeFalse
+            @($raw.Records).Count | Should -Be 1
+            [int]$raw.Records[0].memberCount | Should -Be 3
+            $null -eq $raw.Records[0].PSObject.Properties['member'] | Should -BeTrue
+            $script:C15Sent.Count | Should -Be 1
+            $script:C15Sent[0].Server | Should -Be 'contoso.com'
+            $script:C15Sent[0].Properties | Should -Be 'groupType,member'
+            $script:C15Sent[0].ResultSetSize | Should -Be 6
+        }
+        It 'refuses a wildcard property before anything is sent' {
+            $script:C15Sent = @()
+            function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a) $script:C15Sent += 'called' }
+            $raw = Get-AdfaInventoryDirectoryRaw -Server $script:C15Forest -LDAPFilter '(objectClass=user)' -Properties @('*')
+            $raw.Ok | Should -BeFalse
+            $raw.Error | Should -Match 'wildcard'
+            @($script:C15Sent).Count | Should -Be 0
+        }
+        It 'is Capped above MaxObjects, not Ok when the read throws part-way, and NotFound for an identity that does not exist' {
+            function Get-ADObject { param([string]$Server, [string]$Identity, [string]$LDAPFilter, [string[]]$Properties, [int]$ResultSetSize, $ErrorAction) foreach ($i in 1..6) { [pscustomobject]@{ DistinguishedName = "CN=u$i"; Name = "u$i" } } }
+            (Get-AdfaInventoryDirectoryRaw -Server $script:C15Forest -LDAPFilter '(x)' -MaxObjects 5).Capped | Should -BeTrue
+            (Get-AdfaInventoryDirectoryRaw -Server $script:C15Forest -LDAPFilter '(x)' -MaxObjects 6).Capped | Should -BeFalse
+            function Get-ADObject { param([string]$Server, [string]$Identity, [string]$LDAPFilter, [string[]]$Properties, [int]$ResultSetSize, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'CN=u1'; Name = 'u1' }; throw [System.TimeoutException]'The operation timed out' }
+            $partial = Get-AdfaInventoryDirectoryRaw -Server $script:C15Forest -LDAPFilter '(x)'
+            $partial.Ok | Should -BeFalse
+            $partial.ErrorType | Should -Be 'System.TimeoutException'
+            function Get-ADObject { param([string]$Server, [string]$Identity, [string[]]$Properties, $ErrorAction) throw (New-Object Fabrikam.Stub.ADIdentityNotFoundException ("Cannot find an object with identity: '{0}'" -f $Identity)) }
+            $missing = Get-AdfaInventoryDirectoryRaw -Server $script:C15Forest -Identity 'CN=RID Manager$,CN=System,DC=contoso,DC=com' -Properties @('fSMORoleOwner')
+            $missing.NotFound | Should -BeTrue
+            (Get-AdfaInventoryReadCause -Raw $missing -What 'the role object') | Should -Match '\(not found\)'
+        }
+        It 'reads events with -MaxEvents, a level filter and a start time, and tells no events, no log, a refusal and the bound apart' {
+            $script:C15Gwe = @()
+            # C15 review: a filtered read that finds nothing is followed by one -LogName -MaxEvents 1 read that
+            # confirms the log can be read; here it returns one event, as a readable log does.
+            function Get-WinEvent { param([string]$ComputerName, $FilterHashtable, [long]$MaxEvents, [string]$LogName, $ErrorAction)
+                if ($null -eq $FilterHashtable) { return [pscustomobject]@{ Id = 1000; Level = [byte]4; ProviderName = 'Contoso'; TimeCreated = $script:C15Now.AddDays(-40) } }
+                $script:C15Gwe += [pscustomobject]@{ Computer = $ComputerName; MaxEvents = $MaxEvents; Levels = (@($FilterHashtable['Level']) -join ','); HasStart = $FilterHashtable.ContainsKey('StartTime'); Log = [string]$FilterHashtable['LogName'] }
+                switch ([string]$FilterHashtable['LogName']) {
+                    'System' { foreach ($i in 1..3) { [pscustomobject]@{ Id = 7; Level = [byte]2; ProviderName = 'Disk'; TimeCreated = $script:C15Now } } }
+                    'Directory Service' { throw 'No events were found that match the specified selection criteria.' }
+                    'DNS Server' { throw 'There is not an event log on the dc1.contoso.com computer that matches "DNS Server".' }
+                    default { throw [System.UnauthorizedAccessException]'Attempted to perform an unauthorized operation.' }
+                }
+            }
+            $start = $script:C15Now.AddDays(-14)
+            $sys = Get-AdfaEventInventoryRaw -ComputerName $script:C15Dc1 -LogName 'System' -StartTime $start -Levels @(1, 2, 3) -MaxEvents 3 -Config $script:C15Cfg
+            $sys.Ok | Should -BeTrue
+            $sys.Truncated | Should -BeTrue
+            @($sys.Events).Count | Should -Be 3
+            (Get-AdfaEventInventoryRaw -ComputerName $script:C15Dc1 -LogName 'System' -StartTime $start -Levels @(1, 2, 3) -MaxEvents 4 -Config $script:C15Cfg).Truncated | Should -BeFalse
+            $none = Get-AdfaEventInventoryRaw -ComputerName $script:C15Dc1 -LogName 'Directory Service' -StartTime $start -Levels @(1, 2, 3) -MaxEvents 10 -Config $script:C15Cfg
+            $none.Ok | Should -BeTrue
+            $none.NoEvents | Should -BeTrue
+            $absent = Get-AdfaEventInventoryRaw -ComputerName $script:C15Dc1 -LogName 'DNS Server' -StartTime $start -Levels @(1, 2, 3) -MaxEvents 10 -Config $script:C15Cfg
+            $absent.Ok | Should -BeFalse
+            $absent.LogAbsent | Should -BeTrue
+            $denied = Get-AdfaEventInventoryRaw -ComputerName $script:C15Dc1 -LogName 'File Replication Service' -StartTime $start -Levels @(1, 2, 3) -MaxEvents 10 -Config $script:C15Cfg
+            $denied.Ok | Should -BeFalse
+            $denied.LogAbsent | Should -BeFalse
+            $denied.ErrorCode | Should -Be 'AccessDenied'
+            @($script:C15Gwe | Where-Object { $_.MaxEvents -lt 1 -or -not $_.HasStart -or $_.Levels -ne '1,2,3' }).Count | Should -Be 0
+        }
+    }
+    Context 'Found by the independent review before commit' {
+        BeforeAll {
+            $script:C15Fab = 'fabrikam.local'
+            $script:C15GpoX = '{AAAAAAAA-0000-4000-8000-000000000001}'
+            $script:C15Empty = New-C15Read -Records @()
+            # One GPO of contoso.com, 'Branch Policy', whose links are read from the SOMs given.
+            function Invoke-C15GpoRows { param($Som = $script:C15Empty, $Site = $script:C15Empty, [string[]]$ForestDomains = @('contoso.com'), $OtherSom = @(), $Gpc = $null)
+                if ($null -eq $Gpc) { $Gpc = New-C15Read -Records @((New-C15Object @{ Name = $script:C15GpoX; displayName = 'Branch Policy'; flags = 0 })) }
+                return , @(Get-AdfaGpoDirectoryRows -DomainName 'contoso.com' -Gpc $Gpc -Som $Som -Site $Site -Wmi $script:C15Empty -ForestDomains $ForestDomains -OtherSom $OtherSom -Config $script:C15Cfg -GpoConfig $script:Config.Gpo) }
+            function New-C15GpLink { param([string]$Guid, [string]$DomainDn = 'DC=contoso,DC=com', [int]$Option = 0) ('[LDAP://cn={0},cn=policies,cn=system,{1};{2}]' -f $Guid, $DomainDn, $Option) }
+            function New-C15Som { param([string]$Dn, [string]$GpLink, [string[]]$Class = @('top', 'organizationalUnit')) New-C15Object @{ DistinguishedName = $Dn; objectClass = $Class; gPLink = $GpLink } }
+        }
+        It 'keeps a gPLink entry whose options do not fit Int64, or are not ASCII digits, as unparsed and does not throw (finding 1)' {
+            $dn = 'cn={AAAAAAAA-0000-0000-0000-000000000001},cn=policies,cn=system,DC=fabrikam,DC=local'
+            $big = @(ConvertFrom-AdfaGpLink -Value ('[LDAP://{0};99999999999999999999]' -f $dn) -Config $script:C15Cfg)
+            $big.Count | Should -Be 1
+            $big[0].Parsed | Should -BeFalse
+            $arabic = @(ConvertFrom-AdfaGpLink -Value ('[LDAP://{0};{1}]' -f $dn, [string][char]0x0663) -Config $script:C15Cfg)
+            $arabic.Count | Should -Be 1
+            $arabic[0].Parsed | Should -BeFalse
+            $noDomain = @(ConvertFrom-AdfaGpLink -Value '[LDAP://cn={AAAAAAAA-0000-0000-0000-000000000001},cn=policies,cn=system;0]' -Config $script:C15Cfg)
+            $noDomain[0].Parsed | Should -BeFalse
+            # Through the rows: the run goes on, the entry is counted as unparsed, the GPO is not linked by it.
+            $gpc = New-C15Read -Records @((New-C15Object @{ Name = '{AAAAAAAA-0000-0000-0000-000000000001}'; displayName = 'Fabrikam Policy'; flags = 0 }))
+            $som = New-C15Read -Records @((New-C15Som -Dn 'OU=A,DC=fabrikam,DC=local' -GpLink ('[LDAP://{0};99999999999999999999][LDAP://{0};{1}]' -f $dn, [string][char]0x0663)))
+            $rows = @(Get-AdfaGpoDirectoryRows -DomainName $script:C15Fab -Gpc $gpc -Som $som -Site $script:C15Empty -Wmi $script:C15Empty -ForestDomains @($script:C15Fab) -Config $script:C15Cfg -GpoConfig $script:Config.Gpo)
+            $sum = (Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Fab))[0]
+            [string]$sum.UnparsedLinks | Should -Be '2'
+            [string]$sum.Links | Should -Be '0'
+        }
+        It 'does not call a GPO unlinked when the forest has domains whose SOMs were not read: single-domain scope (findings 2, 5, 15)' {
+            $rows = Invoke-C15GpoRows -ForestDomains @($script:C15Forest, $script:C15North)
+            $g = (Get-C15Row $rows ('GPO: {0}' -f $script:C15GpoX))[0]
+            [string]$g.Links | Should -Be ''
+            $g.Detail | Should -Match 'not known'
+            $sum = (Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            $sum.Status | Should -Be 'Not Assessed'
+            [string]$sum.Unlinked | Should -Be ''
+            [string]$sum.UnlinkedGpos | Should -Be ''
+            [string]$sum.NoLinkFound | Should -Be '1'
+            $sum.NoLinkFoundGpos | Should -Be 'Branch Policy'
+            $sum.OtherDomainSoms | Should -Be 'Not all read'
+            $sum.OtherDomainsNotRead | Should -Be $script:C15North
+            $sum.Detail | Should -Match "not in this run's scope"
+            $sum.Detail | Should -Not -Match 'north'
+        }
+        It 'does not call a GPO unlinked when the forest''s domain list is not known' {
+            $sum = (Get-C15Row (Invoke-C15GpoRows -ForestDomains @()) ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            $sum.Status | Should -Be 'Not Assessed'
+            [string]$sum.Unlinked | Should -Be ''
+            $sum.Detail | Should -Match 'domain list was not read'
+        }
+        It 'credits a link from another scoped domain''s OU to this domain''s GPO, and lists that OU (findings 2, 5, 15)' {
+            $north = New-C15Read -Records @((New-C15Som -Dn 'OU=Branch,DC=north,DC=contoso,DC=com' -GpLink (New-C15GpLink -Guid $script:C15GpoX)))
+            $rows = Invoke-C15GpoRows -ForestDomains @($script:C15Forest, $script:C15North) -OtherSom @([pscustomobject]@{ Domain = $script:C15North; Raw = $north })
+            [string](Get-C15Row $rows ('GPO: {0}' -f $script:C15GpoX))[0].Links | Should -Be '1'
+            $sum = (Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            $sum.Status | Should -Be 'Info'
+            [string]$sum.Linked | Should -Be '1'
+            [string]$sum.Unlinked | Should -Be '0'
+            $sum.OtherDomainSoms | Should -Be 'All read'
+            $somRows = (Get-C15Row $rows ('GPO links on a SOM: {0}' -f $script:C15Forest))
+            # Declared population: the one OU of the other domain that links this domain's GPO.
+            $somRows.Count | Should -Be 1
+            $somRows[0].Som | Should -Be 'OU=Branch,DC=north,DC=contoso,DC=com'
+        }
+        It 'credits a link by the domain in its DN, not by GUID: the default GPOs share a GUID in every domain' {
+            # north.contoso.com's domain head links north's own Default Domain Policy; contoso's GPO of the same GUID is not linked by it.
+            $gpc = New-C15Read -Records @((New-C15Object @{ Name = $script:C15Gpo1; displayName = 'Default Domain Policy'; flags = 0 }))
+            $north = New-C15Read -Records @((New-C15Som -Dn 'DC=north,DC=contoso,DC=com' -Class @('top', 'domain', 'domainDNS') -GpLink (New-C15GpLink -Guid $script:C15Gpo1 -DomainDn 'DC=north,DC=contoso,DC=com')))
+            $rows = Invoke-C15GpoRows -Gpc $gpc -ForestDomains @($script:C15Forest, $script:C15North) -OtherSom @([pscustomobject]@{ Domain = $script:C15North; Raw = $north })
+            [string](Get-C15Row $rows ('GPO: {0}' -f $script:C15Gpo1))[0].Links | Should -Be '0'
+            [string](Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Forest))[0].Unlinked | Should -Be '1'
+            (Get-C15Row $rows ('GPO links on a SOM: {0}' -f $script:C15Forest)).Count | Should -Be 0
+            # And this domain's own head linking another domain's GPO of the same GUID counts as a link to another domain's GPO.
+            $own = New-C15Read -Records @((New-C15Som -Dn 'DC=contoso,DC=com' -Class @('top', 'domain', 'domainDNS') -GpLink (New-C15GpLink -Guid $script:C15Gpo1 -DomainDn 'DC=north,DC=contoso,DC=com')))
+            $sum = (Get-C15Row (Invoke-C15GpoRows -Gpc $gpc -Som $own) ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            [string]$sum.LinksToOtherGpos | Should -Be '1'
+            [string]$sum.Linked | Should -Be '0'
+        }
+        It 'takes the domain of the GPOs from their own DNs, before -DomainDn' {
+            $gpc = New-C15Read -Records @((New-C15Object @{ Name = $script:C15GpoX; DistinguishedName = ('CN={0},CN=Policies,CN=System,DC=north,DC=contoso,DC=com' -f $script:C15GpoX); displayName = 'North Policy'; flags = 0 }))
+            $som = New-C15Read -Records @((New-C15Som -Dn 'OU=A,DC=north,DC=contoso,DC=com' -GpLink (New-C15GpLink -Guid $script:C15GpoX -DomainDn 'DC=north,DC=contoso,DC=com')))
+            $rows = @(Get-AdfaGpoDirectoryRows -DomainName $script:C15North -DomainDn 'DC=contoso,DC=com' -Gpc $gpc -Som $som -Site $script:C15Empty -Wmi $script:C15Empty -ForestDomains @($script:C15North) -Config $script:C15Cfg -GpoConfig $script:Config.Gpo)
+            [string](Get-C15Row $rows ('GPO: {0}' -f $script:C15GpoX))[0].Links | Should -Be '1'
+        }
+        It 'does not call a GPO unlinked when another domain''s SOM read failed, and names the cause' {
+            $failed = New-C15Read -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException'
+            $rows = Invoke-C15GpoRows -ForestDomains @($script:C15Forest, $script:C15North) -OtherSom @([pscustomobject]@{ Domain = $script:C15North; Raw = $failed })
+            $sum = (Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            $sum.Status | Should -Be 'Not Assessed'
+            [string]$sum.Unlinked | Should -Be ''
+            $sum.Detail | Should -Match 'access denied'
+            $sum.OtherDomainsNotRead | Should -Be $script:C15North
+        }
+        It 'reads every scoped domain before matching, so a GPO linked only from the other scoped domain is linked (collector, two domains)' {
+            Mock Get-AdfaInventoryDomainDn { param($DomainName) [pscustomobject]@{ Ok = $true; Dn = ('DC={0}' -f ($DomainName -replace '\.', ',DC=')); Error = ''; ErrorType = '' } }
+            Mock Get-AdfaRootDseRaw { [pscustomobject]@{ Ok = $true; DnsHostName = $script:C15Dc1; ConfigurationNamingContext = 'CN=Configuration,DC=contoso,DC=com'; Error = ''; ErrorType = '' } }
+            Mock Get-AdfaInventoryDirectoryRaw {
+                param($Server, $SearchBase, $LDAPFilter)
+                if ($LDAPFilter -eq '(objectClass=groupPolicyContainer)' -and $Server -eq 'contoso.com') { return (New-C15Read -Records @((New-C15Object @{ Name = '{AAAAAAAA-0000-4000-8000-000000000001}'; displayName = 'Branch Policy'; flags = 0 }))) }
+                if ($LDAPFilter -eq '(gPLink=*)' -and $Server -eq 'north.contoso.com') { return (New-C15Read -Records @((New-C15Object @{ DistinguishedName = 'OU=Branch,DC=north,DC=contoso,DC=com'; objectClass = @('top', 'organizationalUnit'); gPLink = '[LDAP://cn={AAAAAAAA-0000-4000-8000-000000000001},cn=policies,cn=system,DC=contoso,DC=com;0]' }))) }
+                New-C15Read -Records @()
+            }
+            $rows = @(Get-AdfaGpoDirectoryInventory -Domains @($script:C15Forest, $script:C15North) -ForestDomains @($script:C15Forest, $script:C15North) -RootDomain $script:C15Forest -Config $script:C15Cfg -GpoConfig $script:Config.Gpo)
+            $sum = (Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            $sum.Status | Should -Be 'Info'
+            [string]$sum.Linked | Should -Be '1'
+            [string]$sum.Unlinked | Should -Be '0'
+            # The SOM of north is read once, and used for both domains.
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 1 -Exactly -ParameterFilter { $Server -eq 'north.contoso.com' -and $LDAPFilter -eq '(gPLink=*)' }
+        }
+        It 'counts as linking only a SOM with a link that was read (finding 3)' {
+            $som = New-C15Read -Records @((New-C15Som -Dn 'DC=contoso,DC=com' -Class @('top', 'domain', 'domainDNS') -GpLink ' '), (New-C15Som -Dn 'OU=A,DC=contoso,DC=com' -GpLink (New-C15GpLink -Guid $script:C15GpoX)))
+            $sum = (Get-C15Row (Invoke-C15GpoRows -Som $som) ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            [string]$sum.Soms | Should -Be '1'
+            [string]$sum.SomsWithNoLink | Should -Be '1'
+            $sum.Detail | Should -Match '1 site\(s\), domain or OU\(s\) with at least one link read; 1 more hold a gPLink with no link'
+            $blank = (Get-C15Row (Invoke-C15GpoRows -Som (New-C15Read -Records @((New-C15Som -Dn 'DC=contoso,DC=com' -GpLink ' ')))) ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            [string]$blank.Soms | Should -Be '0'
+            $blank.Detail | Should -Match 'from 0 site\(s\)'
+        }
+        It 'never calls a GPO linked only at a site unlinked when the site read failed (finding 8)' {
+            $site = New-C15Read -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException'
+            $rows = Invoke-C15GpoRows -Site $site
+            [string](Get-C15Row $rows ('GPO: {0}' -f $script:C15GpoX))[0].Links | Should -Be ''
+            $sum = (Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Forest))[0]
+            $sum.Status | Should -Be 'Not Assessed'
+            [string]$sum.Unlinked | Should -Be ''
+            [string]$sum.UnlinkedGpos | Should -Be ''
+            $sum.Detail | Should -Match 'gPLink of the sites'
+            # The control: the same GPO linked at a site that was read is linked.
+            $read = New-C15Read -Records @((New-C15Som -Dn 'CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com' -Class @('top', 'site') -GpLink (New-C15GpLink -Guid $script:C15GpoX)))
+            [string](Get-C15Row (Invoke-C15GpoRows -Site $read) ('GPO: {0}' -f $script:C15GpoX))[0].Links | Should -Be '1'
+        }
+        It 'counts a disabled link as disabled and an enabled one as enabled (finding 10)' {
+            $som = New-C15Read -Records @((New-C15Som -Dn 'OU=A,DC=contoso,DC=com' -GpLink (New-C15GpLink -Guid $script:C15GpoX -Option 1)), (New-C15Som -Dn 'OU=B,DC=contoso,DC=com' -GpLink (New-C15GpLink -Guid $script:C15GpoX -Option 3)), (New-C15Som -Dn 'OU=C,DC=contoso,DC=com' -GpLink (New-C15GpLink -Guid $script:C15GpoX -Option 0)))
+            $g = (Get-C15Row (Invoke-C15GpoRows -Som $som) ('GPO: {0}' -f $script:C15GpoX))[0]
+            # Declared population: three links - two disabled (0x1, 0x3), one enabled, one enforced (0x3).
+            [string]$g.Links | Should -Be '3'
+            [string]$g.DisabledLinks | Should -Be '2'
+            [string]$g.EnabledLinks | Should -Be '1'
+            [string]$g.EnforcedLinks | Should -Be '1'
+        }
+        It 'lists a site under a domain only when it links one of that domain''s GPOs (finding 11)' {
+            $sites = New-C15Read -Records @(
+                (New-C15Som -Dn 'CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com' -Class @('top', 'site') -GpLink (New-C15GpLink -Guid $script:C15GpoX))
+                (New-C15Som -Dn 'CN=Branch,CN=Sites,CN=Configuration,DC=contoso,DC=com' -Class @('top', 'site') -GpLink (New-C15GpLink -Guid $script:C15GpoX -DomainDn 'DC=north,DC=contoso,DC=com')))
+            $rows = Invoke-C15GpoRows -Site $sites
+            $somRows = (Get-C15Row $rows ('GPO links on a SOM: {0}' -f $script:C15Forest))
+            # Declared population: the one site that links this domain's GPO.
+            $somRows.Count | Should -Be 1
+            $somRows[0].Som | Should -Be 'CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com'
+            $somRows[0].SomClass | Should -Be 'site'
+            [string](Get-C15Row $rows ('GPO directory inventory: {0}' -f $script:C15Forest))[0].Soms | Should -Be '1'
+        }
+        It 'decides TGT delegation Disabled from QUARANTINED_DOMAIN alone (finding 9, MS-KILE 3.3.5.7.5)' {
+            $raw = New-C15Read -Records @((New-C15Object @{ trustPartner = 'quarantined.fabrikam.com'; trustAttributes = 0x24; trustDirection = 3; trustType = 2 }))
+            $r = (Get-C15Row (Get-AdfaTrustInventoryRows -DomainName $script:C15Forest -Raw $raw -Config $script:C15Cfg) ('Trust: {0} -> quarantined.fabrikam.com' -f $script:C15Forest))[0]
+            $r.TgtDelegation | Should -Match '^Disabled by trustAttributes \(QUARANTINED_DOMAIN\)$'
+        }
+        It 'compares a DC''s DNS suffix with its domain without regard to case (finding 12)' {
+            $mixed = 'DC1.Contoso.com'
+            $rows = @(Get-AdfaDnsSuffixRows -DomainControllers @((New-C15Target $mixed $script:C15Forest)) -ScopedDomains @($script:C15Forest) -Config $script:C15Cfg)
+            (Get-C15Row $rows ('DNS suffix: {0}' -f $mixed))[0].Disjoint | Should -Be 'No'
+        }
+        It 'reports a W32Time value whose key is absent (StdRegProv 2) as not set (finding 13)' {
+            $read = New-C15TimeRead -Values @((New-C15RegValue -Id 'Type' -Value 'NT5DS'), (New-C15RegValue -Id 'NtpServer' -ReturnValue 1), (New-C15RegValue -Id 'AnnounceFlags' -ReturnValue 2))
+            $r = Get-AdfaW32TimeConfigRow -ComputerName $script:C15Dc1 -Scope $script:C15Forest -Read $read -Config $script:C15Cfg
+            $r.Status | Should -Be 'Info'
+            $r.AnnounceFlags | Should -Be '(not set)'
+        }
+        It 'tells a refusal from no events: the filtered read answers NoMatchingEventsFound and the access check is refused (finding 4)' {
+            function Get-WinEvent { param([string]$ComputerName, $FilterHashtable, [long]$MaxEvents, [string]$LogName, $ErrorAction)
+                if ($null -ne $FilterHashtable) { throw 'No events were found that match the specified selection criteria.' }
+                throw [System.UnauthorizedAccessException]'Attempted to perform an unauthorized operation.' }
+            $raw = Get-AdfaEventInventoryRaw -ComputerName $script:C15Dc1 -LogName 'Security' -StartTime $script:C15Now.AddDays(-14) -Levels @(1, 2, 3) -MaxEvents 10 -Config $script:C15Cfg
+            $raw.Ok | Should -BeFalse
+            $raw.NoEvents | Should -BeFalse
+            $raw.ErrorCode | Should -Be 'AccessDenied'
+            $row = (Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'Security' -Raw $raw -Coverage (New-C15Coverage) -LookbackDays 14 -Config $script:C15Cfg)[0]
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match '^Access denied'
+        }
+        It 'sets NoEvents only when the access check reads the log: <Name>' -ForEach @(
+            @{ Name = 'the check returns an event'; Probe = 'Event'; Ok = $true; NoEvents = $true; Pattern = '' }
+            @{ Name = 'the check finds the log empty'; Probe = 'Empty'; Ok = $true; NoEvents = $true; Pattern = '' }
+            @{ Name = 'the check fails otherwise'; Probe = 'Rpc'; Ok = $false; NoEvents = $false; Pattern = 'confirm the log can be read failed: The RPC server is unavailable' }
+            @{ Name = 'the filtered read returns nothing without an error'; Probe = 'Silent'; Ok = $true; NoEvents = $true; Pattern = '' }
+        ) {
+            $script:C15ProbeShape = $Probe
+            $script:C15ProbeCalls = 0
+            function Get-WinEvent { param([string]$ComputerName, $FilterHashtable, [long]$MaxEvents, [string]$LogName, $ErrorAction)
+                if ($null -ne $FilterHashtable) {
+                    if ($script:C15ProbeShape -eq 'Silent') { return }
+                    throw 'No events were found that match the specified selection criteria.'
+                }
+                $script:C15ProbeCalls++
+                switch ($script:C15ProbeShape) {
+                    'Event' { return [pscustomobject]@{ Id = 1000; Level = [byte]4; ProviderName = 'Contoso'; TimeCreated = $script:C15Now.AddDays(-40) } }
+                    'Rpc' { throw 'The RPC server is unavailable.' }
+                    default { throw 'No events were found that match the specified selection criteria.' }
+                }
+            }
+            $raw = Get-AdfaEventInventoryRaw -ComputerName $script:C15Dc1 -LogName 'System' -StartTime $script:C15Now.AddDays(-14) -Levels @(1, 2, 3) -MaxEvents 10 -Config $script:C15Cfg
+            $script:C15ProbeCalls | Should -Be 1
+            $raw.Ok | Should -Be $Ok
+            $raw.NoEvents | Should -Be $NoEvents
+            $raw.ErrorCode | Should -Be ''
+            if ($Pattern -ne '') { $raw.Error | Should -Match $Pattern }
+        }
+        It 'finds a refusal wrapped as the InnerException of another exception (finding 14)' {
+            function Get-WinEvent { param([string]$ComputerName, $FilterHashtable, [long]$MaxEvents, [string]$LogName, $ErrorAction)
+                throw (New-Object System.InvalidOperationException -ArgumentList 'Der Vorgang konnte nicht abgeschlossen werden.', (New-Object System.UnauthorizedAccessException -ArgumentList 'inner')) }
+            $raw = Get-AdfaEventInventoryRaw -ComputerName $script:C15Dc1 -LogName 'System' -StartTime $script:C15Now.AddDays(-14) -Levels @(1, 2, 3) -MaxEvents 10 -Config $script:C15Cfg
+            $raw.Ok | Should -BeFalse
+            $raw.ErrorCode | Should -Be 'AccessDenied'
+            # And on the access check, after a filtered read that found nothing.
+            function Get-WinEvent { param([string]$ComputerName, $FilterHashtable, [long]$MaxEvents, [string]$LogName, $ErrorAction)
+                if ($null -ne $FilterHashtable) { throw 'No events were found that match the specified selection criteria.' }
+                throw (New-Object System.InvalidOperationException -ArgumentList 'Der Vorgang konnte nicht abgeschlossen werden.', (New-Object System.UnauthorizedAccessException -ArgumentList 'inner')) }
+            (Get-AdfaEventInventoryRaw -ComputerName $script:C15Dc1 -LogName 'System' -StartTime $script:C15Now.AddDays(-14) -Levels @(1, 2, 3) -MaxEvents 10 -Config $script:C15Cfg).ErrorCode | Should -Be 'AccessDenied'
+        }
+        It 'marks every group row of a partial read: Count is a floor and First may be late (finding 6): <Name>' -ForEach @(
+            @{ Name = 'the read stopped at MaxEvents'; Truncated = $true; Coverage = 'Covered'; Why = 'MaxEvents' }
+            @{ Name = 'the log does not reach back'; Truncated = $false; Coverage = 'Truncated'; Why = 'reach back' }
+        ) {
+            $ev = @((New-C15Event -Id 1311 -Level 2), (New-C15Event -Id 1311 -Level 2 -DaysAgo 3), (New-C15Event -Id 2042 -Level 1))
+            $rows = @(Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'Directory Service' -Raw (New-C15EventRaw -Events $ev -Truncated $Truncated) -Coverage (New-C15Coverage -Coverage $Coverage) -LookbackDays 14 -Config $script:C15Cfg)
+            $groups = @(Get-C15Like $rows 'Event group: *')
+            # Declared population: the two event IDs read.
+            $groups.Count | Should -Be 2
+            foreach ($g in $groups) {
+                $g.PartialRead | Should -Be 'Yes'
+                $g.Count | Should -Match '^at least \d+$'
+                $g.Detail | Should -Match 'floor'
+                $g.Detail | Should -Match $Why
+            }
+            (Get-C15Row $rows ('Event group: Directory Service 1311 on {0}' -f $script:C15Dc1))[0].Count | Should -Be 'at least 2'
+        }
+        It 'leaves the group rows of a complete read unmarked' {
+            $rows = @(Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'Directory Service' -Raw (New-C15EventRaw -Events @((New-C15Event -Id 1311 -Level 2))) -Coverage (New-C15Coverage) -LookbackDays 14 -Config $script:C15Cfg)
+            $g = (Get-C15Row $rows ('Event group: Directory Service 1311 on {0}' -f $script:C15Dc1))[0]
+            $g.PartialRead | Should -Be 'No'
+            [string]$g.Count | Should -Be '1'
+            $g.Detail | Should -Not -Match 'floor'
+        }
+        It 'marks every row of the per-domain groups CSV from a read that reached its cap, and keeps at most MaxObjects rows (finding 7)' {
+            $cfg = Merge-AdfaSpecConfig -BaseConfig $script:C15Cfg -Override @{ MaxObjects = 2 }
+            $three = @((New-C15Object @{ sAMAccountName = 'G1'; groupType = 2; memberCount = 1 }), (New-C15Object @{ sAMAccountName = 'G2'; groupType = 2; memberCount = 1 }), (New-C15Object @{ sAMAccountName = 'G3'; groupType = 2; memberCount = 1 }))
+            $capped = @(ConvertTo-AdfaGroupExportRow -DomainName $script:C15Forest -Raw (New-C15Read -Capped $true -Records $three) -Config $cfg)
+            # Declared population: MaxObjects (2) rows, each marked incomplete.
+            $capped.Count | Should -Be 2
+            @($capped | Where-Object { [string]$_.ListComplete -notmatch '^No: the read reached its cap of 2 objects' }).Count | Should -Be 0
+            $whole = @(ConvertTo-AdfaGroupExportRow -DomainName $script:C15Forest -Raw (New-C15Read -Records $three) -Config $script:C15Cfg)
+            $whole.Count | Should -Be 3
+            @($whole | Where-Object { $_.ListComplete -ne 'Yes' }).Count | Should -Be 0
+        }
+        It 'passes the forest''s domain list to the GPO directory inventory in Invoke-Main (wiring, AST)' {
+            $call = @(Get-C15Call $script:C15Main[0] 'Get-AdfaGpoDirectoryInventory')
+            $call.Count | Should -Be 1
+            $arg = Get-C15Parameter $call[0] 'ForestDomains'
+            $null -eq $arg | Should -BeFalse
+            $arg.Extent.Text | Should -Match '\$forest\.Domains'
+        }
+    }
+
+    Context 'Every C15 row is inventory: no grade, no recommendation' {
+        It 'never gives a C15 row a status other than Info or Not Assessed, so no advice is attached' {
+            $rows = @()
+            $rows += Get-AdfaLevelRow -Kind 'Forest' -Scope $script:C15Forest -Raw (New-C15Read -Ok $false -ErrorText 'replication stale delegation w32tm pdc emulator') -Config $script:C15Cfg
+            $rows += Get-AdfaTrustInventoryRows -DomainName $script:C15Forest -Raw (New-C15Read -Records @((New-C15Object @{ trustPartner = 'delegation.fabrikam.com'; trustAttributes = 0x800; trustDirection = 3; trustType = 2 }))) -Config $script:C15Cfg
+            $rows += Get-AdfaEventInventoryRows -ComputerName $script:C15Dc1 -Scope $script:C15Forest -LogName 'DFS Replication' -Raw (New-C15EventRaw -Events @((New-C15Event -Id 4012 -Level 2))) -Coverage (New-C15Coverage) -LookbackDays 14 -Config $script:C15Cfg
+            foreach ($r in $rows) {
+                $r.Status | Should -BeIn @('Info', 'Not Assessed')
+                (ConvertTo-AdfaConsolidatedFinding -Section 'Trust Inventory' -Row $r -StatusColumn 'Status').Recommendation | Should -Be ''
+            }
+        }
+    }
+
+    Context 'Wiring and read-only guards (AST)' {
+        It 'declares every C15 function (declared population: 29 functions)' {
+            $script:C15Functions.Count | Should -Be 29
+            foreach ($n in $script:C15Functions) { @(Get-C15Function $n).Count | Should -Be 1 -Because $n }
+        }
+        It 'wires each family into its section with the Inventory table, override included: <Section>' -ForEach @(
+            @{ Section = 'Forest'; Call = 'Get-AdfaTopologyInventory'; Key = 'Topology Inventory' }
+            @{ Section = 'Trusts'; Call = 'Get-AdfaTrustInventory'; Key = 'Trust Inventory' }
+            @{ Section = 'Identity'; Call = 'Get-AdfaIdentityInventoryDepth'; Key = 'Object Counts' }
+            @{ Section = 'Gpo'; Call = 'Get-AdfaGpoDirectoryInventory'; Key = 'GPO Directory Inventory' }
+            @{ Section = 'DsEvents'; Call = 'Get-AdfaEventInventory'; Key = 'Event Inventory' }
+            @{ Section = 'TimeHierarchy'; Call = 'Get-AdfaW32TimeInventory'; Key = 'Time Configuration' }
+        ) {
+            $branches = @(Get-C15Branch ("Test-SectionSelected '{0}' `$Sections" -f $Section))
+            $withCall = @($branches | Where-Object { @(Get-C15Call $_ $Call).Count -gt 0 })
+            $withCall.Count | Should -Be 1
+            $call = @(Get-C15Call $withCall[0] $Call)
+            $call.Count | Should -Be 1
+            (Get-C15Parameter $call[0] 'Config').Extent.Text | Should -Be '$inventoryConfig'
+            $withCall[0].Extent.Text | Should -Match ("sectionData\['{0}'\]" -f [regex]::Escape($Key))
+            $script:C15Main[0].Extent.Text | Should -Match "configOverrides\['Inventory'\]"
+        }
+        It 'hands the per-DC families the DCs of every scoped domain with their domains' {
+            foreach ($pair in @(@('DsEvents', 'Get-AdfaEventInventory'), @('TimeHierarchy', 'Get-AdfaW32TimeInventory'), @('Forest', 'Get-AdfaTopologyInventory'))) {
+                $b = @(Get-C15Branch ("Test-SectionSelected '{0}' `$Sections" -f $pair[0]) | Where-Object { @(Get-C15Call $_ $pair[1]).Count -gt 0 })
+                $call = @(Get-C15Call $b[0] $pair[1])[0]
+                (Get-C15Parameter $call 'DomainControllers').Extent.Text | Should -Be '$c15Targets' -Because $pair[1]
+                (Get-C15Parameter $call 'ScopedDomains').Extent.Text | Should -Be '$targetDomains' -Because $pair[1]
+            }
+        }
+        It 'adds the W32Time read to the shared transport loop''s fixed list' {
+            $fn = @(Get-C15Function 'Invoke-AdfaDcRemoteRead')[0]
+            $fn.Extent.Text | Should -Match "'Get-AdfaDcW32TimeRaw'"
+        }
+        It 'probes through the shared cache only: no C15 function calls Test-TcpPort' {
+            foreach ($n in $script:C15Functions) { @(Get-C15Call (Get-C15Function $n)[0] 'Test-TcpPort').Count | Should -Be 0 -Because $n }
+        }
+        It 'bounds every event read: Get-WinEvent in the C15 seam always passes MaxEvents and a StartTime' {
+            $fn = @(Get-C15Function 'Get-AdfaEventInventoryRaw')[0]
+            $calls = @(Get-C15Call $fn 'Get-WinEvent')
+            # Declared population (C15 review): two calls - the filtered read and the one-event access check.
+            $calls.Count | Should -Be 2
+            $fn.Extent.Text | Should -Match 'MaxEvents\s*=\s*\$MaxEvents'
+            $fn.Extent.Text | Should -Match 'StartTime\s*=\s*\$StartTime'
+            # Every call is splatted from a hashtable that holds MaxEvents: the access check reads one event.
+            foreach ($c in $calls) {
+                $splat = @($c.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.VariableExpressionAst] -and $_.Splatted })
+                $splat.Count | Should -Be 1 -Because $c.Extent.Text
+                $name = $splat[0].VariablePath.UserPath
+                $tables = @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('${0}' -f $name) }, $true) | ForEach-Object { @($_.Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)) })
+                $tables.Count | Should -Be 1 -Because $name
+                @($tables[0].KeyValuePairs | Where-Object { $_.Item1.Extent.Text -eq 'MaxEvents' }).Count | Should -Be 1 -Because $name
+            }
+            $fn.Extent.Text | Should -Match 'LogName = \$LogName; MaxEvents = 1;'
+        }
+        It 'the whole script passes the C15 read-only guard' {
+            $cmds = @($script:C15Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+            # Non-vacuity: the reads the guard must see are there.
+            @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Get-WinEvent' }).Count | Should -BeGreaterThan 0
+            @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Invoke-CimMethod' }).Count | Should -BeGreaterThan 0
+            $hits = Get-C15WriteHit -Ast $script:C15Ast -C15Names $script:C15Functions
+            ($hits -join ' | ') | Should -Be ''
+        }
+        It 'the read-only guard fails on: <Name>' -ForEach @(
+            @{ Name = 'Clear-EventLog'; Code = "function Invoke-C15Injected { Clear-EventLog -LogName 'System' }" }
+            @{ Name = 'Limit-EventLog'; Code = "function Invoke-C15Injected { Limit-EventLog -LogName 'System' -MaximumSize 1MB }" }
+            @{ Name = 'Write-EventLog'; Code = "function Invoke-C15Injected { Write-EventLog -LogName 'System' -Source 'x' -EventId 1 -Message 'm' }" }
+            @{ Name = 'wevtutil cl'; Code = "function Invoke-C15Injected { Invoke-ExternalCommand -FilePath 'wevtutil.exe' -Arguments 'cl System' }" }
+            @{ Name = 'wevtutil sl'; Code = "function Invoke-C15Injected { & 'wevtutil.exe' 'sl' 'System' '/ca:O:BAG:SY' }" }
+            @{ Name = 'New-GPLink'; Code = "function Invoke-C15Injected { New-GPLink -Name 'x' -Target 'DC=contoso,DC=com' }" }
+            @{ Name = 'Set-GPLink'; Code = "function Invoke-C15Injected { Set-GPLink -Guid 'x' -Target 'DC=contoso,DC=com' -Enforced Yes }" }
+            @{ Name = 'Remove-GPLink'; Code = "function Invoke-C15Injected { Remove-GPLink -Name 'x' -Target 'DC=contoso,DC=com' }" }
+            @{ Name = 'Import-GPO'; Code = "function Invoke-C15Injected { Import-GPO -BackupGpoName 'x' -TargetName 'y' -Path 'C:\b' }" }
+            @{ Name = 'SaveChanges on a log configuration'; Code = "function Invoke-C15Injected { `$l = Get-WinEvent -ListLog System; `$l.SaveChanges() }" }
+            @{ Name = 'an StdRegProv EnumValues call'; Code = "function Invoke-C15Injected { Invoke-CimMethod -ClassName StdRegProv -MethodName EnumValues -Arguments @{} }" }
+            @{ Name = 'Set-ItemProperty in a C15 function'; Code = "function Get-AdfaDcW32TimeRaw { Set-ItemProperty -Path 'HKLM:\SYSTEM' -Name 'Type' -Value 'NTP' }" }
+            @{ Name = 'New-ADObject in a C15 function'; Code = "function Get-AdfaTrustInventory { New-ADObject -Name 'x' -Type 'container' }" }
+            @{ Name = 'Invoke-CimMethod in a C15 function'; Code = "function Get-AdfaDcW32TimeRaw { Invoke-CimMethod -ClassName StdRegProv -MethodName GetStringValue -Arguments @{} }" }
+            @{ Name = 'w32tm in a C15 function'; Code = "function Get-AdfaW32TimeInventory { Invoke-ExternalCommand -FilePath 'w32tm.exe' -Arguments '/query /configuration' }" }
+            @{ Name = 'every property in a C15 function'; Code = "function Get-AdfaInventoryDirectoryRaw { Get-ADObject -LDAPFilter '(x)' -Properties '*' }" }
+            @{ Name = 'every property assigned in a C15 function'; Code = "function Get-AdfaInventoryDirectoryRaw { `$q = @{}; `$q.Properties = @('*'); Get-ADObject @q }" }
+        ) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($Code, [ref]$null, [ref]$null)
+            $hits = Get-C15WriteHit -Ast $ast -C15Names @('Get-AdfaInventoryDirectoryRaw', 'Get-AdfaDcW32TimeRaw', 'Get-AdfaTrustInventory', 'Get-AdfaW32TimeInventory')
+            $hits.Count | Should -BeGreaterThan 0
+        }
+        It 'does not take a read for a write: Get-WinEvent, a wevtutil query and the Get* registry methods outside C15' {
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput("function Invoke-C15Read { Get-WinEvent -ListLog System; Invoke-ExternalCommand -FilePath 'wevtutil.exe' -Arguments 'gl System'; Invoke-CimMethod -ClassName StdRegProv -MethodName GetDWORDValue -Arguments @{} }", [ref]$null, [ref]$null)
+            $none = Get-C15WriteHit -Ast $ast -C15Names @('Get-AdfaDcW32TimeRaw')
+            $none.Count | Should -Be 0
+        }
+        It 'documents the C15 rows and the Inventory override key in the help and the README' {
+            $help = $script:C15Ast.GetHelpContent()
+            $cfgHelp = ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ')
+            $cfgHelp | Should -Match 'Seventeen sections can be named'
+            $cfgHelp | Should -Match 'And Inventory, '
+            $sec = ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ')
+            foreach ($p in @('Topology Inventory', 'Trust Inventory', 'Object Counts', 'Group Inventory', 'Stale disabled', 'GPO Directory Inventory', 'Event Inventory', 'Time Configuration')) { $sec | Should -Match $p -Because $p }
+            $readme = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md') -Raw)
+            foreach ($p in @('Topology Inventory', 'Trust Inventory', 'Object Counts', 'Group Inventory', 'Stale disabled', 'GPO Directory Inventory', 'Event Inventory', 'Time Configuration')) { $readme | Should -Match $p -Because $p }
         }
     }
 }

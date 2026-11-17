@@ -346,6 +346,18 @@ function Get-ADComputer {
         $certObject | Add-Member -NotePropertyName 'userCertificate' -NotePropertyValue @($script:SmokeCertValid.RawData, $script:SmokeCertExpired.RawData)
         return $certObject
     }
+    # C15 (INV-009): the stale DISABLED computer read and its population, told apart by ACCOUNTDISABLE set.
+    # One disabled computer, with no logon for 300 days.
+    if ($LDAPFilter -match '\(userAccountControl:1\.2\.840\.113556\.1\.4\.803:=2\)' -and $LDAPFilter -notmatch '!\(userAccountControl') {
+        $script:SmokeDisabledCalls += ("computer {0}" -f $Server)
+        if ($script:SmokeStaleFail) { throw [System.UnauthorizedAccessException]'STUB: disabled read refused' }
+        if ($LDAPFilter -notmatch '<=') {
+            if ($PSBoundParameters.ContainsKey('Properties')) { throw 'STUB: the disabled population read asked for a property list' }
+            return @([pscustomobject]@{ SamAccountName = 'WS-RETIRED$'; Name = 'WS-RETIRED'; Enabled = $false; ObjectClass = 'computer' })
+        }
+        if (@($Properties) -contains '*' -or @($Properties).Count -eq 0) { throw 'STUB: the disabled read asked for every property' }
+        return [pscustomobject]@{ SamAccountName = 'WS-RETIRED$'; lastLogonTimestamp = [int64]$now.AddDays(-300).ToFileTimeUtc(); whenCreated = $now.AddDays(-900); userAccountControl = 4098 }
+    }
     # C14 (STALE-001, review): the declared population, the enabled computers, told apart by the stale
     # filter without its time term. The default property set (no -Properties); three computers.
     if ($LDAPFilter -match '^\(&\(objectCategory=computer\)' -and $LDAPFilter -notmatch '<=') {
@@ -484,11 +496,15 @@ function Invoke-CimMethod {
         'SYSTEM\CurrentControlSet\Services\NTDS\Parameters|DSA Database File'       = 'C:\Windows\NTDS\ntds.dit'
         'SYSTEM\CurrentControlSet\Services\NTDS\Parameters|Database Log Files Path' = 'E:\NTDS-Logs'
         'SYSTEM\CurrentControlSet\Services\Netlogon\Parameters|SysVol'              = 'C:\Windows\SYSVOL\sysvol'
+        # C15 (INV-015): W32Time Type, as a domain member has it; NtpServer is not set under the same key.
+        'SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type'                 = 'NT5DS'
     }
     $stubDwords = @{
         'SYSTEM\CurrentControlSet\Services\NTDS\Parameters|LDAPServerIntegrity'              = [uint32]2
         'SYSTEM\CurrentControlSet\Services\LanManServer\Parameters|RequireSecuritySignature' = [uint32]1
         'SYSTEM\CurrentControlSet\Control\Lsa|LmCompatibilityLevel'                         = [uint32]5
+        # C15 (INV-015): AnnounceFlags 10, the documented default for domain members.
+        'SYSTEM\CurrentControlSet\Services\W32Time\Config|AnnounceFlags'                    = [uint32]10
     }
     # Keys that exist although the stub holds no value under them.
     $stubEmptyKeys = @('SYSTEM\CurrentControlSet\Services\LanManWorkstation\Parameters')
@@ -544,6 +560,21 @@ function Get-ADGroupMember { param([Parameter(ValueFromRemainingArguments)]$a) t
 function Get-ADUser { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubUserNamed = ConvertTo-StubArgument -Given $a
     if ($script:SmokePrivFail -and [string]$stubUserNamed['LDAPFilter'] -match 'servicePrincipalName|4194304') { throw [System.UnauthorizedAccessException]'STUB: roast read refused' }
+    # C15 (INV-009): the stale DISABLED user read and its declared population, told apart by ACCOUNTDISABLE
+    # set (no '!' in front of it). Two disabled users in all; one with no logon for 400 days. Listed
+    # properties for the stale read, the default set for the population; both must name the domain.
+    if ([string]$stubUserNamed['LDAPFilter'] -match '\(userAccountControl:1\.2\.840\.113556\.1\.4\.803:=2\)' -and [string]$stubUserNamed['LDAPFilter'] -notmatch '!\(userAccountControl') {
+        if ([string]::IsNullOrWhiteSpace([string]$stubUserNamed['Server'])) { throw 'STUB: a disabled read must name its domain' }
+        $script:SmokeDisabledCalls += ("user {0}" -f [string]$stubUserNamed['Server'])
+        if ($script:SmokeStaleFail) { throw [System.UnauthorizedAccessException]'STUB: disabled read refused' }
+        if ([string]$stubUserNamed['LDAPFilter'] -notmatch '<=') {
+            if ($stubUserNamed.ContainsKey('Properties')) { throw 'STUB: the disabled population read asked for a property list' }
+            return @([pscustomobject]@{ SamAccountName = 'left.user'; Name = 'left.user'; Enabled = $false; ObjectClass = 'user' }, [pscustomobject]@{ SamAccountName = 'paused.user'; Name = 'paused.user'; Enabled = $false; ObjectClass = 'user' })
+        }
+        $disabledAsked = @(@($stubUserNamed['Properties']) | ForEach-Object { [string]$_ })
+        if ($disabledAsked -contains '*' -or $disabledAsked.Count -eq 0) { throw 'STUB: the disabled read asked for every property' }
+        return [pscustomobject]@{ SamAccountName = 'left.user'; lastLogonTimestamp = [int64]$now.AddDays(-400).ToFileTimeUtc(); whenCreated = $now.AddDays(-900); userAccountControl = 514 }
+    }
     # C14 (STALE-001/002, review): the declared population, the enabled users, told apart by the stale
     # filter without its time term. The default property set (no -Properties); five users.
     if ([string]$stubUserNamed['LDAPFilter'] -match '^\(&\(objectCategory=person\)' -and [string]$stubUserNamed['LDAPFilter'] -notmatch '<=') {
@@ -670,7 +701,9 @@ function Get-StubPrivAnswer {
 function Get-ADOptionalFeature { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ Name='Recycle Bin Feature'; EnabledScopes=@('CN=Partitions') } }
 function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a)
-    [pscustomobject]@{ configurationNamingContext='CN=Configuration,DC=contoso,DC=com'; schemaNamingContext='CN=Schema,CN=Configuration,DC=contoso,DC=com' } }
+    [pscustomobject]@{ configurationNamingContext='CN=Configuration,DC=contoso,DC=com'; schemaNamingContext='CN=Schema,CN=Configuration,DC=contoso,DC=com'
+        # C15 (INV-001): the DC that answered the run.
+        dnsHostName='dc1.contoso.com' } }
 # C4 (Laps): one more behaviour, selected by the filter. A search for attributeSchema objects by
 # lDAPDisplayName - which only the Laps schema read sends - is answered with one object per name
 # that is both asked for and in $script:SmokeLapsSchema, in the shape the cmdlet returns. Every
@@ -678,6 +711,84 @@ function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a)
 function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubAsked = (@($a | ForEach-Object { [string]$_ }) -join ' ')
     $stubNamed = ConvertTo-StubArgument -Given $a
+    # C15 (INV-001, 006, 008, 010, 011): the inventory reads, told apart by what they ask for - fSMORoleOwner
+    # (topology), trustAttributes (trusts), a count filter of the Inventory table, gPCWQLFilter (GPOs), a
+    # gPLink search (domain, OUs and sites) and msWMI-Som (WMI filters). Each must name its domain and list
+    # its properties; the answers carry what was asked for, in the shape the cmdlet returns (member as a
+    # list of DNs, groupType as a signed Int32). $script:SmokeInventoryFail refuses them all (access denied).
+    $stubInvAsked = @(@($stubNamed['Properties']) | ForEach-Object { [string]$_ })
+    $stubInvFilter = [string]$stubNamed['LDAPFilter']
+    $stubInvIdentity = [string]$stubNamed['Identity']
+    $stubInvCountKind = ''
+    foreach ($k in @($script:Config.Inventory['CountFilters'].Keys)) { if ([string]$script:Config.Inventory['CountFilters'][$k] -eq $stubInvFilter) { $stubInvCountKind = [string]$k } }
+    $stubInvTopology = ($stubInvAsked -contains 'fSMORoleOwner')
+    $stubInvTrust = ($stubInvFilter -eq '(objectClass=trustedDomain)' -and $stubInvAsked -contains 'trustAttributes')
+    $stubInvGpo = ($stubInvFilter -eq '(objectClass=groupPolicyContainer)' -and $stubInvAsked -contains 'gPCWQLFilter')
+    $stubInvSom = ($stubInvFilter -eq '(gPLink=*)' -or $stubInvFilter -eq '(&(objectClass=site)(gPLink=*))')
+    $stubInvWmi = ($stubInvFilter -eq '(objectClass=msWMI-Som)')
+    if ($stubInvTopology -or $stubInvTrust -or $stubInvCountKind -ne '' -or $stubInvGpo -or $stubInvSom -or $stubInvWmi) {
+        foreach ($p in $stubInvAsked) { if ($p -match '[*?]') { throw 'STUB: an inventory read asked for every attribute' } }
+        if ([string]::IsNullOrWhiteSpace([string]$stubNamed['Server'])) { throw 'STUB: an inventory read must name its domain' }
+        $stubInvWhat = $stubInvIdentity
+        if ($stubInvWhat -eq '') { $stubInvWhat = $stubInvFilter }
+        $script:SmokeInventoryCalls += ("{0}@{1}" -f $stubInvWhat, [string]$stubNamed['Server'])
+        if ($script:SmokeInventoryFail) { throw [System.UnauthorizedAccessException]'STUB: inventory read refused' }
+        $stubGpo0 = $script:SmokeGpoGuids[0]
+        $stubGpo1 = $script:SmokeGpoGuids[1]
+        if ($stubInvTopology) {
+            $stubTopo = [pscustomobject]@{ DistinguishedName = $stubInvIdentity; Name = ($stubInvIdentity -replace '^(?:CN|DC)=([^,]+),?.*$', '$1'); ObjectClass = 'container'
+                fSMORoleOwner = 'CN=NTDS Settings,CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,CN=Configuration,DC=contoso,DC=com' }
+            if ($stubInvAsked -contains 'msDS-Behavior-Version') { $stubTopo | Add-Member -NotePropertyName 'msDS-Behavior-Version' -NotePropertyValue 7 }
+            if ($stubInvAsked -contains 'uPNSuffixes') { $stubTopo | Add-Member -NotePropertyName 'uPNSuffixes' -NotePropertyValue @('contoso.net') }
+            return $stubTopo
+        }
+        if ($stubInvTrust) {
+            if ([string]$stubNamed['Server'] -ne 'contoso.com') { return }
+            return [pscustomobject]@{ DistinguishedName = 'CN=fabrikam.com,CN=System,DC=contoso,DC=com'; Name = 'fabrikam.com'; ObjectClass = 'trustedDomain'; cn = 'fabrikam.com'
+                trustPartner = 'fabrikam.com'; flatName = 'FABRIKAM'; trustAttributes = 8; trustDirection = 3; trustType = 2 }
+        }
+        if ($stubInvCountKind -ne '') {
+            switch ($stubInvCountKind) {
+                'Users' { return @(foreach ($u in @(@('smoke.one', 512), @('smoke.two', 514), @('smoke.three', 66048))) { [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Users,DC=contoso,DC=com" -f $u[0]); Name = $u[0]; ObjectClass = 'user'; userAccountControl = $u[1] } }) }
+                'Computers' { return @(foreach ($c in @(@('DC1', 532480), @('WS-RETIRED', 4098))) { [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Computers,DC=contoso,DC=com" -f $c[0]); Name = $c[0]; ObjectClass = 'computer'; userAccountControl = $c[1] } }) }
+                'Groups' {
+                    return @(
+                        [pscustomobject]@{ DistinguishedName = 'CN=Smoke-Staff,CN=Users,DC=contoso,DC=com'; Name = 'Smoke-Staff'; ObjectClass = 'group'; sAMAccountName = 'Smoke-Staff'; groupType = -2147483646; member = @('CN=smoke.one,CN=Users,DC=contoso,DC=com', 'CN=smoke.two,CN=Users,DC=contoso,DC=com') }
+                        [pscustomobject]@{ DistinguishedName = 'CN=Smoke-Empty,CN=Users,DC=contoso,DC=com'; Name = 'Smoke-Empty'; ObjectClass = 'group'; sAMAccountName = 'Smoke-Empty'; groupType = -2147483644 }
+                        [pscustomobject]@{ DistinguishedName = 'CN=Smoke-List,CN=Users,DC=contoso,DC=com'; Name = 'Smoke-List'; ObjectClass = 'group'; sAMAccountName = 'Smoke-List'; groupType = 8; member = @('CN=smoke.one,CN=Users,DC=contoso,DC=com') }
+                    )
+                }
+                'Contacts' { return [pscustomobject]@{ DistinguishedName = 'CN=Ext Contact,CN=Users,DC=contoso,DC=com'; Name = 'Ext Contact'; ObjectClass = 'contact' } }
+                'OUs' { return @([pscustomobject]@{ DistinguishedName = 'OU=Domain Controllers,DC=contoso,DC=com'; Name = 'Domain Controllers'; ObjectClass = 'organizationalUnit' }, [pscustomobject]@{ DistinguishedName = 'OU=Staff,DC=contoso,DC=com'; Name = 'Staff'; ObjectClass = 'organizationalUnit' }) }
+            }
+            return
+        }
+        # C15 review: each domain's GPOs and SOMs carry that domain's DN, as the directory does; the two
+        # default GPOs have the same GUID in every domain. In the three-domain pass north.contoso.com links
+        # its Default Domain Controllers Policy from nowhere of its own: an OU of south.contoso.com links
+        # it (disabled link), which only a read of the other domains' SOMs can see.
+        $stubInvServer = [string]$stubNamed['Server']
+        $stubInvDn = 'DC=' + ($stubInvServer -replace '\.', ',DC=')
+        if ($stubInvGpo) {
+            return @(
+                [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Policies,CN=System,{1}" -f $stubGpo0, $stubInvDn); Name = $stubGpo0; ObjectClass = 'groupPolicyContainer'; displayName = 'Default Domain Policy'; flags = 0; versionNumber = 65537 }
+                [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Policies,CN=System,{1}" -f $stubGpo1, $stubInvDn); Name = $stubGpo1; ObjectClass = 'groupPolicyContainer'; displayName = 'Default Domain Controllers Policy'; flags = 1; versionNumber = 65537; gPCWQLFilter = ('[{0};{{A1B2C3D4-0000-4000-8000-0000000000AA}};0]' -f $stubInvServer) }
+            )
+        }
+        if ($stubInvFilter -eq '(gPLink=*)') {
+            $stubSoms = @([pscustomobject]@{ DistinguishedName = $stubInvDn; Name = ($stubInvServer -split '\.')[0]; objectClass = @('top', 'domain', 'domainDNS'); gPLink = ("[LDAP://cn={0},cn=policies,cn=system,{1};0]" -f $stubGpo0, $stubInvDn); gPOptions = 0 })
+            if ($stubInvServer -ne 'north.contoso.com') {
+                $stubSoms += [pscustomobject]@{ DistinguishedName = ("OU=Domain Controllers,{0}" -f $stubInvDn); Name = 'Domain Controllers'; objectClass = @('top', 'organizationalUnit'); gPLink = ("[LDAP://cn={0},cn=policies,cn=system,{1};2]" -f $stubGpo1, $stubInvDn) }
+            }
+            if ($stubInvServer -eq 'south.contoso.com') {
+                $stubSoms += [pscustomobject]@{ DistinguishedName = ("OU=Branch,{0}" -f $stubInvDn); Name = 'Branch'; objectClass = @('top', 'organizationalUnit'); gPLink = ("[LDAP://cn={0},cn=policies,cn=system,DC=north,DC=contoso,DC=com;1]" -f $stubGpo1) }
+            }
+            return $stubSoms
+        }
+        if ($stubInvWmi) { return [pscustomobject]@{ DistinguishedName = 'CN={A1B2C3D4-0000-4000-8000-0000000000AA},CN=SOM,CN=WMIPolicy,CN=System,DC=contoso,DC=com'; Name = '{A1B2C3D4-0000-4000-8000-0000000000AA}'; ObjectClass = 'msWMI-Som'; 'msWMI-Name' = 'Smoke servers only' } }
+        # The sites: no site links a GPO.
+        return
+    }
     # C13 (the DNS scenario only, $script:SmokeDnsDsa): DC1's NTDS Settings object under the configuration
     # partition, as Get-AdfaDsaInventory searches for it, and its server object with dNSHostName. Every
     # other pass keeps the answer it had.
@@ -982,6 +1093,45 @@ function Get-AdfaNetlogonLogRaw { param([string]$Path, [int]$MaxBytes)
 # that a DFSR-only DC does not have.
 if ($null -eq ('SmokeStub.ADIdentityNotFoundException' -as [type])) {
     Add-Type -TypeDefinition 'namespace SmokeStub { public class ADIdentityNotFoundException : System.Exception { public ADIdentityNotFoundException(string m) : base(m) { } } }' -WarningAction SilentlyContinue
+}
+# C15: the inventory directory reads, the disabled-account reads and the event reads, each recorded; the
+# failing-collectors pass refuses them.
+$script:SmokeInventoryFail = $false
+$script:SmokeInventoryCalls = @()
+$script:SmokeDisabledCalls = @()
+$script:SmokeEventsFail = $false
+$script:SmokeEventCalls = @()
+# C15 (INV-012): Get-WinEvent, so no pass reaches a real host. The event inventory read - a FilterHashtable
+# with a Level key, a StartTime and -MaxEvents - is answered per log in the shape the cmdlet returns
+# (EventLogRecord: Id, Level, ProviderName, TimeCreated): two System events, none in the other logs (the
+# text this script reads as "no events"), and no DNS Server log (the text it reads as "log absent").
+# $script:SmokeEventsFail refuses it as the cmdlet does (UnauthorizedAccessException). Every other call -
+# the DsEvents and DFSR scans and the coverage reads - throws the message the real cmdlet gave against
+# the stub host name before this stub existed, "The RPC server is unavailable.", so those sections keep
+# the results they had.
+function Get-WinEvent {
+    param([string]$ComputerName, $FilterHashtable, [long]$MaxEvents, [string]$ListLog, [string]$LogName, [switch]$Oldest, [pscredential]$Credential, $ErrorAction)
+    if ($null -ne $FilterHashtable -and $FilterHashtable -is [System.Collections.IDictionary] -and $FilterHashtable.Contains('Level')) {
+        if (-not $PSBoundParameters.ContainsKey('MaxEvents') -or $MaxEvents -lt 1) { throw 'STUB: an event read without -MaxEvents' }
+        if (-not $FilterHashtable.Contains('StartTime')) { throw 'STUB: an event read without a StartTime' }
+        $stubLog = [string]$FilterHashtable['LogName']
+        $script:SmokeEventCalls += ("{0}|{1}" -f $ComputerName, $stubLog)
+        if ($script:SmokeEventsFail) { throw [System.UnauthorizedAccessException]'Attempted to perform an unauthorized operation.' }
+        if ($stubLog -eq 'System') {
+            return @([pscustomobject]@{ Id = 7; Level = [byte]2; ProviderName = 'Disk'; TimeCreated = $now.AddDays(-2) }, [pscustomobject]@{ Id = 41; Level = [byte]1; ProviderName = 'Microsoft-Windows-Kernel-Power'; TimeCreated = $now.AddDays(-1) })
+        }
+        if ($stubLog -eq 'DNS Server') { throw ('There is not an event log on the {0} computer that matches "DNS Server".' -f $ComputerName) }
+        throw 'No events were found that match the specified selection criteria.'
+    }
+    # C15 review: the one-event access check that follows a filtered read which found nothing
+    # (-LogName -MaxEvents 1, no -Oldest). It returns one Information event, as a readable log does;
+    # in the failing pass the log refuses it as the cmdlet does.
+    if ($PSBoundParameters.ContainsKey('LogName') -and -not $Oldest -and $null -eq $FilterHashtable -and $MaxEvents -eq 1) {
+        $script:SmokeEventCalls += ("{0}|{1}|access check" -f $ComputerName, $LogName)
+        if ($script:SmokeEventsFail) { throw [System.UnauthorizedAccessException]'Attempted to perform an unauthorized operation.' }
+        return @([pscustomobject]@{ Id = 1000; Level = [byte]4; ProviderName = 'Smoke'; TimeCreated = $now.AddDays(-30) })
+    }
+    throw 'The RPC server is unavailable.'
 }
 # C14 (STALE-001/002): the stale reads refused, for the failing-collectors pass.
 $script:SmokeStaleFail = $false
@@ -1436,6 +1586,72 @@ $c14Sysvol = @($smokeFindings | Where-Object { $_.Section -eq 'SYSVOL / DFSR' })
 Check (@($c14Sysvol | Where-Object { $_.Item -eq 'SYSVOL replication engine: contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match 'Eliminated' }).Count -eq 1) 'C14 SYSVOL: the stub domain replicates SYSVOL with DFSR, corroborated by msDFSR-Flags 48'
 Check (@($c14Sysvol | Where-Object { $_.Item -eq 'SYSVOL engine: dc1.contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'C14 SYSVOL: the stub DC has its engine row'
 
+# C15: the inventory families, each in its own report section of an existing -Sections value, every row
+# Info or Not Assessed (the catalogue grades none), scoped to the domain, read from it.
+$c15Sections = @('Topology Inventory', 'Trust Inventory', 'Object Counts', 'Group Inventory', 'GPO Directory Inventory', 'Event Inventory', 'Time Configuration')
+foreach ($c15s in $c15Sections) { Check (@($smokeFindings | Where-Object { $_.Section -eq $c15s }).Count -gt 0) ("C15: the '{0}' section is wired and reported" -f $c15s) }
+Check (@($smokeFindings | Where-Object { ($c15Sections -contains $_.Section -or $_.Item -like 'Stale disabled *') -and @('Info', 'Not Assessed') -notcontains $_.Status }).Count -eq 0) 'C15: no inventory row is Pass, Warning or Fail'
+$c15Topo = @($smokeFindings | Where-Object { $_.Section -eq 'Topology Inventory' })
+Check (@($c15Topo | Where-Object { $_.Item -eq 'Forest functional level: contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1 -and @($c15Topo | Where-Object { $_.Item -eq 'Domain functional level: contoso.com' -and $_.Status -eq 'Info' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'C15 INV-001: the forest and domain levels are read and named'
+Check (@($c15Topo | Where-Object { $_.Item -like 'FSMO role holder: *' -and $_.Status -eq 'Info' }).Count -eq 5) 'C15 INV-001: the five FSMO holders are read from fSMORoleOwner (declared population: five roles)'
+Check (@($c15Topo | Where-Object { $_.Item -eq 'Runner DC: contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1 -and @($c15Topo | Where-Object { $_.Item -eq 'UPN suffixes: contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'C15 INV-001/007: the runner DC and the UPN suffixes'
+Check (@($c15Topo | Where-Object { $_.Item -eq 'DNS suffix: dc1.contoso.com' -and $_.Status -eq 'Info' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'C15 INV-007: the DC DNS suffix row carries its domain'
+$c15TopoCsv = Join-Path $result.CsvPath 'Topology Inventory.csv'
+if (Test-Path $c15TopoCsv) { Check (@(Import-Csv $c15TopoCsv | Where-Object { $_.Item -eq 'FSMO role holder: PDC emulator contoso.com' -and $_.Holder -eq 'DC1' }).Count -eq 1 -and @(Import-Csv $c15TopoCsv | Where-Object { $_.Item -eq 'DNS suffix: dc1.contoso.com' -and $_.Disjoint -eq 'No' }).Count -eq 1) 'C15 INV-001/007: the holder and the disjoint flag are in their columns' }
+else { Check $false 'C15: Topology Inventory CSV exists' }
+Check (@($smokeFindings | Where-Object { $_.Section -eq 'Trust Inventory' -and $_.Item -eq 'Trust: contoso.com -> fabrikam.com' -and $_.Status -eq 'Info' }).Count -eq 1 -and @($smokeFindings | Where-Object { $_.Section -eq 'Trust Inventory' -and $_.Item -eq 'Trusts (population): contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'C15 INV-006: the trust is read from the trustedDomain object, with its population row'
+$c15TrustCsv = Join-Path $result.CsvPath 'Trust Inventory.csv'
+if (Test-Path $c15TrustCsv) { Check (@(Import-Csv $c15TrustCsv | Where-Object { $_.TrustAttributeFlags -eq 'FOREST_TRANSITIVE' -and $_.TrustDirection -eq '3 Bidirectional' -and $_.TrustType -eq '2 UPLEVEL' }).Count -eq 1) 'C15 INV-006: trustAttributes, direction and type decoded by name' }
+else { Check $false 'C15: Trust Inventory CSV exists' }
+$c15Counts = @($smokeFindings | Where-Object { $_.Section -eq 'Object Counts' -and $_.Scope -eq 'contoso.com' })
+Check ($c15Counts.Count -eq 13) ("C15 INV-008: thirteen object counts for the domain (declared population; {0})" -f $c15Counts.Count)
+$c15CountCsv = Join-Path $result.CsvPath 'Object Counts.csv'
+if (Test-Path $c15CountCsv) {
+    $c15CountRows = @(Import-Csv $c15CountCsv)
+    $c15Got = (@('Users', 'Disabled users', 'Computers', 'Disabled computers', 'Groups', 'Security groups', 'Contacts', 'OUs', 'gMSA') | ForEach-Object { $k = $_; [string](@($c15CountRows | Where-Object { $_.Item -eq ("Object count: {0} contoso.com" -f $k) })[0].Count) }) -join ','
+    Check ($c15Got -eq '3,1,2,1,3,2,1,2,0') ("C15 INV-008: the counts are taken from the capped reads ({0})" -f $c15Got)
+}
+else { Check $false 'C15: Object Counts CSV exists' }
+Check (@($smokeFindings | Where-Object { $_.Section -eq 'Group Inventory' -and $_.Item -eq 'Empty groups: contoso.com' -and $_.Status -eq 'Info' -and $_.Detail -notmatch 'Smoke-Empty' }).Count -eq 1) 'C15 INV-010: the empty groups row names no group in its Detail'
+$c15GroupCsv = Join-Path $result.CsvPath 'Groups_contoso_com.csv'
+Check ((Test-Path $c15GroupCsv) -and @(Import-Csv $c15GroupCsv).Count -eq 3 -and @(Import-Csv $c15GroupCsv | Where-Object { $_.Name -eq 'Smoke-Staff' -and $_.DirectMembers -eq '2' -and $_.Scope -eq 'Global' -and $_.Type -eq 'Security' }).Count -eq 1) 'C15 INV-010: one row per group in csv\Groups_<domain>.csv, with its direct member count'
+$c15Disabled = @($smokeFindings | Where-Object { $_.Section -eq 'Stale Objects' -and $_.Item -like 'Stale disabled *' })
+Check (@($c15Disabled | Where-Object { $_.Item -eq 'Stale disabled users' -and $_.Status -eq 'Info' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match '^1 disabled user' -and $_.Detail -notmatch 'left\.user' }).Count -eq 1 -and @($c15Disabled | Where-Object { $_.Item -eq 'Stale disabled computers' -and $_.Status -eq 'Info' }).Count -eq 1) 'C15 INV-009: one stale disabled user and the computer row, Info, no name in Detail'
+Check ((@($script:SmokeDisabledCalls) -join ',') -eq 'user contoso.com,user contoso.com,computer contoso.com,computer contoso.com') ("C15 INV-009: the disabled population and the stale disabled read, users then computers, each from the domain ({0})" -f (@($script:SmokeDisabledCalls) -join ', '))
+$c15Gpo = @($smokeFindings | Where-Object { $_.Section -eq 'GPO Directory Inventory' })
+Check (@($c15Gpo | Where-Object { $_.Item -eq 'GPO directory inventory: contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1 -and @($c15Gpo | Where-Object { $_.Item -like 'GPO: *' }).Count -eq 2 -and @($c15Gpo | Where-Object { $_.Item -like 'GPO links on a SOM: *' }).Count -eq 2) 'C15 INV-011: two GPOs and two linking SOMs, with the summary row'
+$c15GpoCsv = Join-Path $result.CsvPath 'GPO Directory Inventory.csv'
+if (Test-Path $c15GpoCsv) { Check (@(Import-Csv $c15GpoCsv | Where-Object { $_.WmiFilterName -eq 'Smoke servers only' -and $_.EnforcedLinks -eq '1' -and $_.FlagsLabel -eq 'user settings disabled' }).Count -eq 1) 'C15 INV-011: the WMI filter is matched, the enforced link and the status flags are in their columns' }
+else { Check $false 'C15: GPO Directory Inventory CSV exists' }
+Check (@($script:SmokeInventoryCalls | Where-Object { $_ -notmatch '@contoso\.com$' }).Count -eq 0 -and @($script:SmokeInventoryCalls).Count -gt 0) ("C15: every inventory read names the domain ({0} reads)" -f @($script:SmokeInventoryCalls).Count)
+$c15Ev = @($smokeFindings | Where-Object { $_.Section -eq 'Event Inventory' })
+Check (@($c15Ev | Where-Object { $_.Item -like 'Event log: * on dc1.contoso.com' }).Count -eq 5) 'C15 INV-012: the five logs of the DC each have a row (declared population: five logs)'
+Check (@($c15Ev | Where-Object { $_.Item -eq 'Event log: System on dc1.contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1 -and @($c15Ev | Where-Object { $_.Item -eq 'Event log: DNS Server on dc1.contoso.com' -and $_.Status -eq 'Info' -and $_.Detail -match 'log absent' }).Count -eq 1) 'C15 INV-012: System events read, the DNS Server log absent'
+Check (@($c15Ev | Where-Object { $_.Item -eq 'Event log: Directory Service on dc1.contoso.com' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'C15 INV-012: none found over a log whose reach was not measured is Not Assessed, never 0'
+Check (@($c15Ev | Where-Object { $_.Item -like 'Event group: System * on dc1.contoso.com' }).Count -eq 2) 'C15 INV-012: the two System event IDs are grouped'
+Check (@($script:SmokeEventCalls | Where-Object { $_ -notmatch '\|access check$' }).Count -eq 5) ("C15 INV-012: one bounded read per log of the DC ({0})" -f (@($script:SmokeEventCalls) -join ', '))
+# C15 review: a filtered read that found nothing is followed by one access check of that log - the three
+# logs answered "no events" (Directory Service, DFS Replication, File Replication Service), not System
+# (events found) nor DNS Server (log absent).
+Check ((@($script:SmokeEventCalls | Where-Object { $_ -match '\|access check$' } | Sort-Object) -join ',') -eq 'dc1.contoso.com|DFS Replication|access check,dc1.contoso.com|Directory Service|access check,dc1.contoso.com|File Replication Service|access check') ("C15 review INV-012: one access check for each log the filtered read found empty ({0})" -f (@($script:SmokeEventCalls) -join ', '))
+$c15EvCsv = Join-Path $result.CsvPath 'Event Inventory.csv'
+if (Test-Path $c15EvCsv) {
+    # The System log's reach back is not measured in this pass (the coverage read is not answered), so its
+    # groups come from a partial read: every group row says so, and its Count is a floor.
+    $c15EvGroups = @(Import-Csv $c15EvCsv | Where-Object { $_.Item -like 'Event group: System * on dc1.contoso.com' })
+    Check ($c15EvGroups.Count -eq 2 -and @($c15EvGroups | Where-Object { $_.PartialRead -eq 'Yes' -and $_.Count -eq 'at least 1' -and $_.Detail -match 'floor' }).Count -eq 2) 'C15 review INV-012: group rows from a read whose reach back is not measured say the count is a floor (declared population: the two System groups)'
+}
+else { Check $false 'C15: Event Inventory CSV exists' }
+if (Test-Path $c15GpoCsv) {
+    $c15GpoSum = @(Import-Csv $c15GpoCsv | Where-Object { $_.Item -eq 'GPO directory inventory: contoso.com' })
+    Check ($c15GpoSum.Count -eq 1 -and $c15GpoSum[0].OtherDomainSoms -eq 'All read' -and $c15GpoSum[0].Unlinked -eq '0' -and $c15GpoSum[0].Linked -eq '2' -and $c15GpoSum[0].Soms -eq '2' -and $c15GpoSum[0].SomsWithNoLink -eq '0') 'C15 review INV-011: a one-domain forest has every SOM read, so its summary states linked and unlinked'
+}
+Check ((Test-Path $c15GroupCsv) -and @(Import-Csv $c15GroupCsv | Where-Object { $_.ListComplete -ne 'Yes' }).Count -eq 0) 'C15 review INV-010: a group list from a read under its cap is marked complete on every row'
+Check (@($smokeFindings | Where-Object { $_.Section -eq 'Time Configuration' -and $_.Item -eq 'W32Time configuration: dc1.contoso.com' -and $_.Status -eq 'Info' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'C15 INV-015: the W32Time configuration of the DC is read'
+$c15TimeCsv = Join-Path $result.CsvPath 'Time Configuration.csv'
+if (Test-Path $c15TimeCsv) { Check (@(Import-Csv $c15TimeCsv | Where-Object { $_.Type -eq 'NT5DS' -and $_.NtpServer -eq '(not set)' -and $_.AnnounceFlags -eq '10' }).Count -eq 1) 'C15 INV-015: Type, NtpServer and AnnounceFlags are in their columns' }
+else { Check $false 'C15: Time Configuration CSV exists' }
+
 Write-Host ""
 Write-Host ("Output bundle: {0}" -f $result.OutputRoot)
 Get-ChildItem -Recurse $result.OutputRoot | Select-Object -First 30 FullName | ForEach-Object { Write-Host ("   {0}" -f $_.FullName) }
@@ -1845,6 +2061,37 @@ foreach ($d in $multiDomains) {
     Check (@($c14Stale2 | Where-Object { $_.Scope -eq $d -and $_.Detail -match 'The read saw 5 enabled user account' }).Count -eq 1) ("Multi-domain C14 review: the inactive users row of '{0}' states its own population" -f $d)
 }
 Check (@($c14Reach2).Count -eq 3 -and @($c14Sys2).Count -eq 3) ("Multi-domain C14: three reachability rows and three domain SYSVOL rows ({0}, {1})" -f @($c14Reach2).Count, @($c14Sys2).Count)
+
+# C15, per scoped domain: each family has its own rows for each of the three domains, read from that domain.
+foreach ($d in $multiDomains) {
+    Check (@($findings2 | Where-Object { $_.Section -eq 'Object Counts' -and $_.Scope -eq $d }).Count -eq 13) ("Multi-domain C15: '{0}' has its own thirteen object counts" -f $d)
+    Check (@($findings2 | Where-Object { $_.Section -eq 'Topology Inventory' -and $_.Item -eq ("Domain functional level: {0}" -f $d) -and $_.Status -eq 'Info' }).Count -eq 1) ("Multi-domain C15: '{0}' has its own domain level" -f $d)
+    Check (@($findings2 | Where-Object { $_.Section -eq 'Trust Inventory' -and $_.Item -eq ("Trusts (population): {0}" -f $d) -and $_.Status -eq 'Info' }).Count -eq 1) ("Multi-domain C15: '{0}' has its own trust population row" -f $d)
+    Check (@($findings2 | Where-Object { $_.Section -eq 'Group Inventory' -and $_.Item -eq ("Empty groups: {0}" -f $d) }).Count -eq 1) ("Multi-domain C15: '{0}' has its own group inventory" -f $d)
+    Check (@($findings2 | Where-Object { $_.Section -eq 'GPO Directory Inventory' -and $_.Item -eq ("GPO directory inventory: {0}" -f $d) -and $_.Status -eq 'Info' }).Count -eq 1) ("Multi-domain C15: '{0}' has its own GPO directory inventory, Info with every forest domain read" -f $d)
+    Check (@($findings2 | Where-Object { $_.Section -eq 'Stale Objects' -and $_.Item -eq 'Stale disabled users' -and $_.Scope -eq $d -and $_.Status -eq 'Info' }).Count -eq 1) ("Multi-domain C15: '{0}' has its own stale disabled users row" -f $d)
+    Check (@($findings2 | Where-Object { $_.Section -eq 'Time Configuration' -and $_.Item -like 'W32Time configuration: *' -and $_.Scope -eq $d }).Count -eq 1) ("Multi-domain C15: the DC of '{0}' has its W32Time row" -f $d)
+    Check (@($findings2 | Where-Object { $_.Section -eq 'Event Inventory' -and $_.Item -like 'Event log: *' -and $_.Scope -eq $d }).Count -eq 5) ("Multi-domain C15: the DC of '{0}' has its five event log rows" -f $d)
+    Check (@($script:SmokeInventoryCalls | Where-Object { $_ -match ("@{0}$" -f [regex]::Escape($d)) }).Count -gt 0) ("Multi-domain C15: the inventory reads of '{0}' went to that domain" -f $d)
+}
+Check (@($findings2 | Where-Object { $_.Section -eq 'Topology Inventory' -and $_.Item -like 'FSMO role holder: *' }).Count -eq 11) 'Multi-domain C15: two forest roles and three roles per domain (declared population: eleven rows)'
+# C15 review (INV-011): north.contoso.com's Default Domain Controllers Policy is linked only from an OU of
+# south.contoso.com (a disabled link). Read across every scoped domain, it is linked - never "unlinked" -
+# and the link is credited to north's GPO by the domain in its DN, not to contoso's or south's GPO with the
+# same GUID.
+$c15GpoCsv2 = Join-Path $result2.CsvPath 'GPO Directory Inventory.csv'
+if (Test-Path $c15GpoCsv2) {
+    $c15Gpo2 = @(Import-Csv $c15GpoCsv2)
+    $c15North = @($c15Gpo2 | Where-Object { $_.Item -eq 'GPO directory inventory: north.contoso.com' })
+    Check ($c15North.Count -eq 1 -and $c15North[0].Status -eq 'Info' -and $c15North[0].Linked -eq '2' -and $c15North[0].Unlinked -eq '0' -and $c15North[0].OtherDomainSoms -eq 'All read') 'Multi-domain C15 review: a GPO linked only from another domain''s OU is counted as linked'
+    $c15NorthDcp = @($c15Gpo2 | Where-Object { $_.Scope -eq 'north.contoso.com' -and $_.Item -eq ('GPO: {0}' -f $script:SmokeGpoGuids[1]) })
+    Check ($c15NorthDcp.Count -eq 1 -and $c15NorthDcp[0].Links -eq '1' -and $c15NorthDcp[0].DisabledLinks -eq '1' -and $c15NorthDcp[0].EnabledLinks -eq '0') 'Multi-domain C15 review: the cross-domain link is credited to the GPO of the domain its DN names, with its disabled option'
+    Check (@($c15Gpo2 | Where-Object { $_.Scope -eq 'north.contoso.com' -and $_.Item -eq 'GPO links on a SOM: north.contoso.com' -and $_.Som -eq 'OU=Branch,DC=south,DC=contoso,DC=com' -and $_.LinksToThisDomain -eq '1' }).Count -eq 1) 'Multi-domain C15 review: the other domain''s OU is listed under the domain whose GPO it links'
+    $c15South = @($c15Gpo2 | Where-Object { $_.Item -eq 'GPO directory inventory: south.contoso.com' })
+    Check ($c15South.Count -eq 1 -and $c15South[0].LinksToOtherGpos -eq '1' -and $c15South[0].Links -eq '2') 'Multi-domain C15 review: south counts the link to north''s GPO as a link to another domain''s GPO, not its own'
+}
+else { Check $false 'Multi-domain C15: GPO Directory Inventory CSV exists' }
+Check (@($findings2 | Where-Object { ($_.Section -in @('Topology Inventory', 'Trust Inventory', 'Object Counts', 'Group Inventory', 'GPO Directory Inventory', 'Event Inventory', 'Time Configuration') -or $_.Item -like 'Stale disabled *') -and @('Info', 'Not Assessed') -notcontains $_.Status }).Count -eq 0) 'Multi-domain C15: no inventory row is Pass, Warning or Fail'
 Check (@($findings2 | Where-Object { $_.Section -eq 'Site Health' -and $_.Item -eq 'Subnets without a site: contoso.com' }).Count -eq 1) 'Multi-domain C14: one subnet row for the forest'
 
 # C14 (TIME-001): TimeHierarchy with w32tm answering, for two DCs of the forest root domain - dc1, the
@@ -2227,6 +2474,11 @@ $script:SmokeAclFail = $true
 $script:SmokePrivFail = $true
 # C14: the stale reads do not use Get-ADDomainController either, so they are refused (access denied).
 $script:SmokeStaleFail = $true
+# C15: the inventory directory reads and the event reads are refused (access denied); the disabled reads
+# are refused with the stale reads above.
+$script:SmokeInventoryFail = $true
+$script:SmokeEventsFail = $true
+$script:SmokeEventCalls = @()
 $script:SmokePopulationCalls = @()
 $script:SmokeReachCalls = @()
 $script:SmokeNetlogonCalls = @()
@@ -2377,6 +2629,21 @@ Check (@($stale3).Count -eq 3 -and @($stale3 | Where-Object { $_.Status -eq 'Not
 Check (@($script:SmokePopulationCalls).Count -eq 2 -and @($stale3 | Where-Object { $_.Status -eq 'Pass' -or $_.Detail -match 'The read saw' }).Count -eq 0) ("Failure mode C14 review: the two population counts were refused, no stale row passes and none states a population ({0} counts)" -f @($script:SmokePopulationCalls).Count)
 $sys3 = @($findings3 | Where-Object { $_.Section -eq 'SYSVOL / DFSR' -and $_.Item -like 'SYSVOL replication engine*' })
 Check (@($sys3).Count -eq 1 -and $sys3[0].Status -eq 'Not Assessed' -and $sys3[0].Detail -match 'ADWS unreachable') ("Failure mode C14: the SYSVOL engine of the domain is Not Assessed with the cause ({0} rows)" -f @($sys3).Count)
+# C15: no DC enumerated and every inventory read refused. Each family says so, per domain where it reads
+# per domain, and nothing is Info 0 or Pass.
+$c15Fail = @($findings3 | Where-Object { $_.Section -in @('Topology Inventory', 'Trust Inventory', 'Object Counts', 'Group Inventory', 'GPO Directory Inventory', 'Event Inventory', 'Time Configuration') })
+Check (@($c15Fail | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'Warning' -or $_.Status -eq 'Fail' }).Count -eq 0 -and $c15Fail.Count -gt 0) ("Failure mode C15: no inventory row is graded ({0} rows)" -f $c15Fail.Count)
+Check (@($c15Fail | Where-Object { $_.Section -eq 'Topology Inventory' -and ($_.Item -like '* functional level: *' -or $_.Item -like 'FSMO role holder: *') -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '\(access denied\)' }).Count -eq 7) 'Failure mode C15: the two levels and five FSMO holders are Not Assessed, access denied'
+Check (@($c15Fail | Where-Object { $_.Item -eq 'DNS suffix (population): contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode C15: the DNS suffix population row names why no DC was compared'
+Check (@($c15Fail | Where-Object { $_.Section -eq 'Object Counts' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'access denied' -and $_.Detail -match 'not zero' }).Count -eq 13) 'Failure mode C15: the thirteen object counts are Not Assessed, never 0'
+Check (@($c15Fail | Where-Object { $_.Item -eq 'Trusts (population): contoso.com' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode C15: the trust population is Not Assessed, never 0 trusts'
+Check (@($c15Fail | Where-Object { $_.Item -eq 'GPO directory inventory: contoso.com' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode C15: the GPO directory inventory is Not Assessed, never 0 GPOs'
+Check (@($c15Fail | Where-Object { $_.Section -eq 'Event Inventory' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' -and $_.Item -eq 'Events (population): contoso.com' }).Count -eq 1 -and @($script:SmokeEventCalls).Count -eq 0) 'Failure mode C15: with no DC enumerated no event log is read, and the domain says why'
+Check (@($c15Fail | Where-Object { $_.Section -eq 'Time Configuration' -and $_.Item -eq 'W32Time configuration (population): contoso.com' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode C15: with no DC enumerated no W32Time value is read, and the domain says why'
+$c15Dis3 = @($findings3 | Where-Object { $_.Section -eq 'Stale Objects' -and $_.Item -like 'Stale disabled *' })
+Check (@($c15Dis3).Count -eq 2 -and @($c15Dis3 | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match '\(access denied\)' }).Count -eq 2) 'Failure mode C15: the stale disabled rows are Not Assessed, access denied'
+$script:SmokeInventoryFail = $false
+$script:SmokeEventsFail = $false
 $script:SmokeStaleFail = $false
 $script:SmokePrivFail = $false
 # The same reads unreachable, and then answered without a DACL, with Acl selected alone: each is its
@@ -2495,6 +2762,11 @@ if ($null -ne $result4) {
         Check ($scope[0].Detail -match 'NOTHING in this report was assessed') 'No forest: the finding refuses to imply anything was assessed'
     }
 
+    # C15: with no forest each directory inventory family asks nothing and says so in one row.
+    foreach ($c15Pair in @(@('Topology Inventory', 'Topology inventory: *'), @('Trust Inventory', 'Trusts (population): *'), @('Object Counts', 'Object count: *'), @('GPO Directory Inventory', 'GPO directory inventory: *'))) {
+        $c15Rows4 = @($findings4 | Where-Object { $_.Section -eq $c15Pair[0] })
+        Check (@($c15Rows4).Count -eq 1 -and $c15Rows4[0].Status -eq 'Not Assessed' -and $c15Rows4[0].Item -like $c15Pair[1] -and $c15Rows4[0].Detail -match 'not contactable') ("No forest: {0} is one Not Assessed row carrying the cause" -f $c15Pair[0])
+    }
     # C4: with no forest the Laps section asks nothing and says so in one row.
     $laps4 = @($findings4 | Where-Object { $_.Section -eq 'Windows LAPS' })
     Check (@($laps4).Count -eq 1 -and $laps4[0].Status -eq 'Not Assessed' -and $laps4[0].Detail -match 'The forest could not be read' -and $laps4[0].Detail -match 'not contactable') 'No forest: Windows LAPS is one Not Assessed row carrying the cause'

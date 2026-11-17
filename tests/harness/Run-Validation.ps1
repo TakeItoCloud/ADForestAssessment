@@ -2128,7 +2128,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the sixteen sections the file can carry (Reach, SiteCoverage, ClockSkew, Stale and SysvolEngine since v1.31.0, Dns since v1.30.0, DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the seventeen sections the file can carry (Inventory since v1.32.0, Reach, SiteCoverage, ClockSkew, Stale and SysvolEngine since v1.31.0, Dns since v1.30.0, DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -3075,7 +3075,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.31.0' ([string]$script:Config.Version) 'C14: version 1.31.0 in the script'
+Assert-Equal '1.32.0' ([string]$script:Config.Version) 'C14: version 1.32.0 in the script (bumped by PORT-PLAN C15)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3167,6 +3167,106 @@ $c14Advice = @(
     Get-AdfaRecommendation -Section 'SYSVOL / DFSR' -Item 'SYSVOL replication engine: contoso.com' -Detail $c14Hostile
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
+Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
+Assert-Equal '1.32.0' ([string]$script:Config.Version) 'C15: version 1.32.0 in the script'
+$c15Cfg = $script:Config.Inventory
+$c15Dc = 'dc1.contoso.com'
+$c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
+$c15Levels = @(foreach ($v in @(7, 10, 8, 'x')) { $lr = Get-AdfaLevelRow -Kind 'Forest' -Scope 'contoso.com' -Raw (& $c15Read @([pscustomobject]@{ 'msDS-Behavior-Version' = $v })) -Config $c15Cfg; "{0}/{1}" -f $lr.Status, $lr.LevelName })
+Assert-Equal 'Info/DS_BEHAVIOR_WIN2016,Info/DS_BEHAVIOR_WIN2025,Not Assessed/,Not Assessed/' ($c15Levels -join ',') 'C15 INV-001: levels 7 and 10 named, 8 and text Not Assessed (declared population: four values)'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaLevelRow -Kind 'Domain' -Scope 'contoso.com' -Raw (& $c15Read @([pscustomobject]@{ Name = 'x' })) -Config $c15Cfg).Status) 'C15 INV-001: an msDS-Behavior-Version not returned is not level 0'
+$c15Fsmo = @(foreach ($v in @('CN=NTDS Settings,CN=DC1,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com', 'CN=NTDS Settings\0ADEL:1,CN=DC9,CN=Servers', 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com')) { $h = Get-AdfaFsmoHolderName -Value $v; "{0}/{1}" -f $h.Valid, $h.Server })
+Assert-Equal 'True/DC1,False/,False/' ($c15Fsmo -join ',') 'C15 INV-001: the FSMO holder from an NTDS Settings DN; a deleted or malformed value is not a holder (declared population: three values)'
+$c15Upn = @(
+    [string](Get-AdfaUpnSuffixRow -ForestName 'contoso.com' -Raw (& $c15Read @([pscustomobject]@{ uPNSuffixes = @('contoso.net') })) -Config $c15Cfg).Count
+    [string](Get-AdfaUpnSuffixRow -ForestName 'contoso.com' -Raw (& $c15Read @([pscustomobject]@{ Name = 'Partitions' })) -Config $c15Cfg).Count
+    [string](Get-AdfaUpnSuffixRow -ForestName 'contoso.com' -Raw (& $c15Read @() $false 'Access is denied') -Config $c15Cfg).Count
+)
+Assert-Equal '1,0,' ($c15Upn -join ',') 'C15 INV-007: one suffix, an absent attribute 0, a failed read no count (declared population: three reads)'
+$c15Dns = @(Get-AdfaDnsSuffixRows -DomainControllers @([pscustomobject]@{ HostName = 'dc1.contoso.com'; Scope = 'contoso.com' }, [pscustomobject]@{ HostName = 'dc4.corp.fabrikam.com'; Scope = 'contoso.com' }) -ScopedDomains @('contoso.com', 'north.contoso.com') -Config $c15Cfg)
+Assert-Equal 'No,Yes,Unknown' ((@($c15Dns | Where-Object { $_.Item -like 'DNS suffix: *' }) + @($c15Dns | Where-Object { $_.Item -like 'DNS suffix (population)*' }) | ForEach-Object { $_.Disjoint }) -join ',') 'C15 INV-007: a matching DC, a disjoint DC, and a population row for the domain with no DC (declared population: three rows)'
+$c15Dec = @(foreach ($v in @(0x24, '-2147483640', $null, 'forest')) { $d = Get-AdfaTrustAttributeDecode -Value $v -Config $c15Cfg; "{0}:{1}" -f $d.Measured, (@(@($d.Flags) + @($d.Unknown)) -join '+') })
+Assert-Equal 'True:QUARANTINED_DOMAIN+WITHIN_FOREST,True:FOREST_TRANSITIVE+unknown 0x80000000,False:,False:' ($c15Dec -join ',') 'C15 INV-006: trustAttributes decoded by name, the high bit unsigned and kept, a missing or text value not measured (declared population: four values)'
+$c15Trust = @(Get-AdfaTrustInventoryRows -DomainName 'contoso.com' -Raw (& $c15Read @([pscustomobject]@{ trustPartner = 'fabrikam.com'; trustAttributes = 0x205; trustDirection = 2; trustType = 1 })) -Config $c15Cfg)
+$c15T = @($c15Trust | Where-Object { $_.Item -eq 'Trust: contoso.com -> fabrikam.com' })[0]
+Assert-True ($c15T.Status -eq 'Info' -and $c15T.Transitive -eq 'No (NON_TRANSITIVE set)' -and $c15T.TgtDelegation -match '^Disabled' -and $c15T.TrustDirection -eq '2 Outbound' -and $c15T.TrustType -eq '1 DOWNLEVEL') 'C15 INV-006: a trust row carries transitivity, TGT delegation, direction and type by name'
+$c15TrustFail = @(Get-AdfaTrustInventoryRows -DomainName 'contoso.com' -Raw (& $c15Read @() $false 'Unable to contact the server.') -Config $c15Cfg)
+Assert-True ($c15TrustFail.Count -eq 1 -and $c15TrustFail[0].Status -eq 'Not Assessed' -and [string]$c15TrustFail[0].Count -eq '' -and $c15TrustFail[0].Detail -match 'unreachable') 'C15 INV-006: a failed trust read is Not Assessed, never 0 trusts'
+$c15Reads = @{ Users = (& $c15Read @([pscustomobject]@{ userAccountControl = 512 }, [pscustomobject]@{ userAccountControl = 514 })); Computers = (& $c15Read @() $false 'Access is denied' 'System.UnauthorizedAccessException'); Groups = (& $c15Read @() $true '' '' $true); Contacts = (& $c15Read @()); OUs = (& $c15Read @([pscustomobject]@{ Name = 'o' })); gMSA = (& $c15Read @()); sMSA = $null }
+$c15Counts = @(Get-AdfaObjectCountRows -DomainName 'contoso.com' -Reads $c15Reads -Config $c15Cfg)
+Assert-Equal 13 $c15Counts.Count 'C15 INV-008: thirteen count rows per domain (declared population)'
+Assert-Equal '2,1,1,,,,,0,1,' ((@('Users', 'Enabled users', 'Disabled users', 'Computers', 'Disabled computers', 'Groups', 'Security groups', 'Contacts', 'OUs', 'sMSA') | ForEach-Object { $k = $_; [string](@($c15Counts | Where-Object { $_.Item -eq ("Object count: {0} contoso.com" -f $k) })[0].Count) }) -join ',') 'C15 INV-008: counts read, a refused, capped or unread read never 0 (declared population: ten kinds)'
+$c15Groups = @(Get-AdfaGroupInventoryRows -DomainName 'contoso.com' -Raw (& $c15Read @([pscustomobject]@{ sAMAccountName = 'Empty1'; groupType = -2147483646; memberCount = 0 }, [pscustomobject]@{ sAMAccountName = 'Big'; groupType = 8; memberCount = 1500 })) -Config $c15Cfg)
+$c15Empty = @($c15Groups | Where-Object { $_.Item -eq 'Empty groups: contoso.com' })[0]
+$c15Member = @($c15Groups | Where-Object { $_.Item -eq 'Group member counts: contoso.com' })[0]
+Assert-True ($c15Empty.Groups -eq 'Empty1' -and $c15Empty.Detail -notmatch 'Empty1' -and [string]$c15Member.NotCountedExactly -eq '1') 'C15 INV-010: an empty group named in its column only; 1500 member values not counted exactly'
+$c15Now = [datetime]::SpecifyKind([datetime]'2026-11-17 12:00:00', [System.DateTimeKind]::Utc)
+$c15Acc = { param([string]$N, $L, $C) [pscustomobject]@{ Name = $N; HasLastLogon = ($null -ne $L); LastLogonUtc = $L; WhenCreatedUtc = $C; PwdLastSetRaw = $null } }
+$c15Int = [pscustomobject]@{ Ok = $true; Present = $false; Value = $null; Error = '' }
+$c15Pop = { param([bool]$Ok = $true, [int]$N = 5) [pscustomobject]@{ Ok = $Ok; Count = $N; Capped = $false; Error = 'Insufficient access rights'; ErrorType = ''; Filter = '(x)' } }
+$c15StaleRaw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Records = @((& $c15Acc 'at.cutoff' $c15Now.AddDays(-90) $null), (& $c15Acc 'inside' $c15Now.AddDays(-89) $null)) }
+$c15EmptyRaw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Records = @() }
+$c15Dis = @(
+    (Get-AdfaStaleDisabledVerdict -DomainName 'contoso.com' -Kind 'User' -Raw $c15StaleRaw -Interval $c15Int -StaleDays 90 -Now $c15Now -Population (& $c15Pop))
+    (Get-AdfaStaleDisabledVerdict -DomainName 'contoso.com' -Kind 'User' -Raw $c15EmptyRaw -Interval $c15Int -StaleDays 90 -Now $c15Now -Population (& $c15Pop))
+    (Get-AdfaStaleDisabledVerdict -DomainName 'contoso.com' -Kind 'User' -Raw $c15EmptyRaw -Interval $c15Int -StaleDays 90 -Now $c15Now -Population (& $c15Pop $false))
+    (Get-AdfaStaleDisabledVerdict -DomainName 'contoso.com' -Kind 'Computer' -Raw ([pscustomobject]@{ Ok = $false; Error = 'Insufficient access rights'; ErrorType = ''; Capped = $false; Records = @() }) -Interval $c15Int -StaleDays 90 -Now $c15Now -Population (& $c15Pop))
+)
+Assert-Equal 'Info/1,Info/0,Not Assessed/,Not Assessed/' ((@($c15Dis | ForEach-Object { "{0}/{1}" -f $_.Status, $_.Count })) -join ',') 'C15 INV-009: stale disabled counted at the cutoff only; none found Info 0 against a counted population, Not Assessed against an uncounted one or a failed read (declared population: four cases)'
+$c15Links = @(ConvertFrom-AdfaGpLink -Value '[LDAP://cn={31B2F340-016D-11D2-945F-00C04FB984F9},cn=policies,cn=system,DC=contoso,DC=com;2][cn={6AC1786C-016F-11D2-945F-00C04FB984F9},cn=policies,cn=system,DC=contoso,DC=com;1][junk]' -Config $c15Cfg)
+Assert-Equal 'True/False/True,True/True/False,False/False/False' (@($c15Links | ForEach-Object { "{0}/{1}/{2}" -f $_.Parsed, $_.Disabled, $_.Enforced }) -join ',') 'C15 INV-011: gPLink parsed with options 0x1 disabled and 0x2 enforced, an unparsed entry kept (declared population: three entries)'
+$c15Gpo = @(Get-AdfaGpoDirectoryRows -DomainName 'contoso.com' -Gpc (& $c15Read @([pscustomobject]@{ Name = '{31B2F340-016D-11D2-945F-00C04FB984F9}'; displayName = 'Default Domain Policy'; flags = 0 })) -Som (& $c15Read @() $false 'Access is denied' 'System.UnauthorizedAccessException') -Site (& $c15Read @()) -Wmi (& $c15Read @()) -Config $c15Cfg -GpoConfig $script:Config.Gpo)
+$c15GpoSum = @($c15Gpo | Where-Object { $_.Item -eq 'GPO directory inventory: contoso.com' })[0]
+Assert-True ($c15GpoSum.Status -eq 'Not Assessed' -and [string]$c15GpoSum.Unlinked -eq '' -and [string](@($c15Gpo | Where-Object { $_.Item -like 'GPO: *' })[0].Links) -eq '') 'C15 INV-011: links not read - no GPO is called unlinked and no link count is 0'
+$c15Ev = { param([int]$Id, [int]$L) [pscustomobject]@{ Id = $Id; Level = $L; ProviderName = 'p'; TimeCreated = $c15Now } }
+$c15EvRaw = { param($E = @(), [bool]$Ok = $true, [bool]$None = $false, [bool]$Absent = $false, [string]$Err = '', [string]$Code = '') [pscustomobject]@{ Ok = $Ok; NoEvents = $None; LogAbsent = $Absent; Events = @($E); Truncated = $false; Error = $Err; ErrorId = ''; ErrorCode = $Code } }
+$c15Cov = { param([string]$C) [pscustomobject]@{ Coverage = $C; OldestRecord = $c15Now; RecordCount = 5; Reason = '' } }
+$c15EvRows = @(
+    @(Get-AdfaEventInventoryRows -ComputerName $c15Dc -LogName 'System' -Raw (& $c15EvRaw @((& $c15Ev 7 2), (& $c15Ev 41 1))) -Coverage (& $c15Cov 'Covered') -Config $c15Cfg)[0]
+    @(Get-AdfaEventInventoryRows -ComputerName $c15Dc -LogName 'System' -Raw (& $c15EvRaw @() $true $true) -Coverage (& $c15Cov 'Covered') -Config $c15Cfg)[0]
+    @(Get-AdfaEventInventoryRows -ComputerName $c15Dc -LogName 'System' -Raw (& $c15EvRaw @() $true $true) -Coverage (& $c15Cov 'Truncated') -Config $c15Cfg)[0]
+    @(Get-AdfaEventInventoryRows -ComputerName $c15Dc -LogName 'DNS Server' -Raw (& $c15EvRaw @() $false $false $true) -Coverage $null -Config $c15Cfg)[0]
+    @(Get-AdfaEventInventoryRows -ComputerName $c15Dc -LogName 'System' -Raw (& $c15EvRaw @() $false $false $false 'denied' 'AccessDenied') -Coverage $null -Config $c15Cfg)[0]
+)
+Assert-Equal 'Info/2,Info/0,Not Assessed/,Info/,Not Assessed/' (@($c15EvRows | ForEach-Object { "{0}/{1}" -f $_.Status, $_.Events }) -join ',') 'C15 INV-012: events counted, none over a covered log 0, none over a short log not a measurement, a log absent Info, a refusal Not Assessed (declared population: five reads)'
+$c15Groups2 = @(Get-AdfaEventInventoryRows -ComputerName $c15Dc -LogName 'System' -Raw (& $c15EvRaw @((& $c15Ev 7 2), (& $c15Ev 41 1))) -Coverage (& $c15Cov 'Covered') -Config $c15Cfg | Where-Object { $_.Item -like 'Event group: *' })
+Assert-Equal 'Event group: System 41 on dc1.contoso.com' ([string]$c15Groups2[0].Item) 'C15 INV-012: the Critical group is listed first'
+$c15Reg = { param([string]$Id, $Rv, $V) [pscustomobject]@{ Id = $Id; Key = 'k'; ValueName = $Id; Answered = $true; ReturnValue = $Rv; Value = $V; Method = 'm'; Error = ''; ErrorCode = '' } }
+$c15TimeRead = { param($Values, [bool]$Ok = $true, [bool]$Denied = $false) [pscustomobject]@{ Raw = [pscustomobject]@{ Ok = $Ok; Protocol = 'Wsman'; Error = 'x'; ErrorCode = ''; Values = @($Values) }; Denied = $Denied; Attempts = @() } }
+$c15Time = @(
+    (Get-AdfaW32TimeConfigRow -ComputerName $c15Dc -Read (& $c15TimeRead @((& $c15Reg 'Type' 0 'NT5DS'), (& $c15Reg 'NtpServer' 1 ''), (& $c15Reg 'AnnounceFlags' 0 10))) -Config $c15Cfg)
+    (Get-AdfaW32TimeConfigRow -ComputerName $c15Dc -Read (& $c15TimeRead @() $false $true) -Config $c15Cfg)
+    (Get-AdfaW32TimeConfigRow -ComputerName $c15Dc -Read $null -Unreachable 'Unreachable: no port answered.' -Config $c15Cfg)
+    (Get-AdfaW32TimeConfigRow -ComputerName $c15Dc -Read (& $c15TimeRead @((& $c15Reg 'Type' 2147749893 $null), (& $c15Reg 'NtpServer' 1 ''), (& $c15Reg 'AnnounceFlags' 0 10))) -Config $c15Cfg)
+)
+Assert-Equal 'Info/(not set),Not Assessed/,Not Assessed/,Not Assessed/(not set)' (@($c15Time | ForEach-Object { "{0}/{1}" -f $_.Status, $_.NtpServer }) -join ',') 'C15 INV-015: values read Info (NtpServer not set is the documented default); access denied, unreachable and a value of another type Not Assessed, the values that were read kept in their columns (declared population: four reads)'
+Assert-True ($c15Time[1].Detail -match 'Access denied' -and $c15Time[2].Detail -match 'Unreachable' -and $c15Time[1].Detail -notmatch 'Unreachable') 'C15 INV-015: access denied and unreachable are worded apart'
+Assert-Throws { Merge-AdfaSpecConfig -BaseConfig $c15Cfg -Override @{ EventLogs = @('Security') } } "unknown key 'EventLogs'" 'C15 override: the logs can never be set from a file'
+Assert-Throws { Merge-AdfaSpecConfig -BaseConfig $c15Cfg -Override @{ EventMaxEvents = 0 } } '1 to 100000' 'C15 override: zero events per log is refused'
+Assert-Throws { Merge-AdfaSpecConfig -BaseConfig $c15Cfg -Override @{ MaxObjects = '5' } } 'JSON number' 'C15 override: a number written as text is refused'
+$c15Merged = Merge-AdfaSpecConfig -BaseConfig $c15Cfg -Override @{ EventGroupCap = 10 } -OverrideSource 'C:\cfg\c15.json'
+Assert-True ($c15Merged['EventGroupCap'] -eq 10 -and $script:Config.Inventory['EventGroupCap'] -eq 50 -and [string]$c15Merged['ThresholdSource'] -match 'c15\.json') 'C15 override: a valid value merges, cites the file, and leaves the built-in table unchanged'
+# C15 review (found by an independent review before commit).
+$c15Quar = @(Get-AdfaTrustInventoryRows -DomainName 'contoso.com' -Raw (& $c15Read @([pscustomobject]@{ trustPartner = 'q.fabrikam.com'; trustAttributes = 0x24; trustDirection = 3; trustType = 2 })) -Config $c15Cfg | Where-Object { $_.Item -eq 'Trust: contoso.com -> q.fabrikam.com' })[0]
+Assert-Equal 'Disabled by trustAttributes (QUARANTINED_DOMAIN)' ([string]$c15Quar.TgtDelegation) 'C15 review INV-006: QUARANTINED_DOMAIN alone disables TGT delegation (MS-KILE 3.3.5.7.5)'
+Assert-Equal 'No' ([string]@(Get-AdfaDnsSuffixRows -DomainControllers @([pscustomobject]@{ HostName = 'DC1.Contoso.com'; Scope = 'contoso.com' }) -ScopedDomains @('contoso.com') -Config $c15Cfg | Where-Object { $_.Item -like 'DNS suffix: *' })[0].Disjoint) 'C15 review INV-007: the DNS suffix is compared without regard to case'
+$c15BadLinks = @(ConvertFrom-AdfaGpLink -Value ('[LDAP://cn={{AAAAAAAA-0000-0000-0000-000000000001}},cn=policies,cn=system,DC=fabrikam,DC=local;99999999999999999999][LDAP://cn={{AAAAAAAA-0000-0000-0000-000000000001}},cn=policies,cn=system,DC=fabrikam,DC=local;{0}][LDAP://cn={{AAAAAAAA-0000-0000-0000-000000000001}},cn=policies,cn=system;0]' -f [string][char]0x0663) -Config $c15Cfg)
+Assert-Equal 'False,False,False' (@($c15BadLinks | ForEach-Object { [string]$_.Parsed }) -join ',') 'C15 review INV-011: options beyond Int64, a non-ASCII digit and a DN with no domain are kept unparsed, never thrown (declared population: three entries)'
+$c15GpcX = & $c15Read @([pscustomobject]@{ Name = '{AAAAAAAA-0000-4000-8000-000000000001}'; displayName = 'Branch Policy'; flags = 0 })
+$c15NorthSom = & $c15Read @([pscustomobject]@{ DistinguishedName = 'OU=Branch,DC=north,DC=contoso,DC=com'; objectClass = @('top', 'organizationalUnit'); gPLink = '[LDAP://cn={AAAAAAAA-0000-4000-8000-000000000001},cn=policies,cn=system,DC=contoso,DC=com;1]' })
+$c15Cross = @(
+    @(Get-AdfaGpoDirectoryRows -DomainName 'contoso.com' -Gpc $c15GpcX -Som (& $c15Read @()) -Site (& $c15Read @()) -Wmi (& $c15Read @()) -ForestDomains @('contoso.com', 'north.contoso.com') -Config $c15Cfg -GpoConfig $script:Config.Gpo | Where-Object { $_.Item -eq 'GPO directory inventory: contoso.com' })[0]
+    @(Get-AdfaGpoDirectoryRows -DomainName 'contoso.com' -Gpc $c15GpcX -Som (& $c15Read @()) -Site (& $c15Read @()) -Wmi (& $c15Read @()) -ForestDomains @('contoso.com', 'north.contoso.com') -OtherSom @([pscustomobject]@{ Domain = 'north.contoso.com'; Raw = $c15NorthSom }) -Config $c15Cfg -GpoConfig $script:Config.Gpo | Where-Object { $_.Item -eq 'GPO directory inventory: contoso.com' })[0]
+    @(Get-AdfaGpoDirectoryRows -DomainName 'contoso.com' -Gpc $c15GpcX -Som (& $c15Read @()) -Site (& $c15Read @() $false 'Access is denied' 'System.UnauthorizedAccessException') -Wmi (& $c15Read @()) -ForestDomains @('contoso.com') -Config $c15Cfg -GpoConfig $script:Config.Gpo | Where-Object { $_.Item -eq 'GPO directory inventory: contoso.com' })[0]
+)
+Assert-Equal 'Not Assessed//1,Info/0/0,Not Assessed//' (@($c15Cross | ForEach-Object { "{0}/{1}/{2}" -f $_.Status, $_.Unlinked, $_.NoLinkFound }) -join ',') 'C15 review INV-011: no link found with another forest domain unread is not "unlinked"; a link from that domain''s OU, once read, counts; a failed site read leaves links unknown (declared population: three cases)'
+$c15GroupCap = @(ConvertTo-AdfaGroupExportRow -DomainName 'contoso.com' -Raw (& $c15Read @([pscustomobject]@{ sAMAccountName = 'G1'; groupType = 2 }, [pscustomobject]@{ sAMAccountName = 'G2'; groupType = 2 }) $true '' '' $true) -Config (Merge-AdfaSpecConfig -BaseConfig $c15Cfg -Override @{ MaxObjects = 1 }))
+Assert-True ($c15GroupCap.Count -eq 1 -and [string]$c15GroupCap[0].ListComplete -match '^No') 'C15 review INV-010: a capped group read gives MaxObjects CSV rows, each marked incomplete'
+$c15Partial = @(Get-AdfaEventInventoryRows -ComputerName $c15Dc -LogName 'System' -Raw ([pscustomobject]@{ Ok = $true; NoEvents = $false; LogAbsent = $false; Events = @((& $c15Ev 7 2), (& $c15Ev 7 2)); Truncated = $true; Error = ''; ErrorId = ''; ErrorCode = '' }) -Coverage (& $c15Cov 'Covered') -Config $c15Cfg | Where-Object { $_.Item -like 'Event group: *' })
+Assert-True ($c15Partial.Count -eq 1 -and $c15Partial[0].Count -eq 'at least 2' -and $c15Partial[0].PartialRead -eq 'Yes') 'C15 review INV-012: a group from a read cut at MaxEvents says its count is a floor'
+Assert-Equal '(not set)' ([string](Get-AdfaW32TimeConfigRow -ComputerName $c15Dc -Read (& $c15TimeRead @((& $c15Reg 'Type' 0 'NT5DS'), (& $c15Reg 'NtpServer' 1 ''), (& $c15Reg 'AnnounceFlags' 2 $null))) -Config $c15Cfg).AnnounceFlags) 'C15 review INV-015: a value whose key is absent (StdRegProv 2) is not set'
+$c15AllRows = @($c15Trust) + @($c15Counts) + @($c15Groups) + @($c15Dis) + @($c15Gpo) + @($c15EvRows) + @($c15Time) + @($c15Cross)
+Assert-Equal 0 @($c15AllRows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Status'] -and @('Info', 'Not Assessed') -notcontains [string]$_.Status }).Count 'C15: no inventory row is Pass, Warning or Fail'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
