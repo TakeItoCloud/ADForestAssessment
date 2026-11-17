@@ -17,7 +17,10 @@
     and adds full-forest coverage:
 
         - Forest / domain functional levels and FSMO roles
-        - Domain controller inventory (OS / GC / site / IP)
+        - Domain controller inventory (OS / GC / site / IP), and each DC's DNS client settings:
+          the DNS server list of its enabled adapters (Win32_NetworkAdapterConfiguration, remote
+          CIM, needs local admin on the DC), with a single DNS server flagged where more than one
+          DC is known (Microsoft: a single point of failure); the rest is inventory
         - Replication health (partner metadata, failures, queue) and topology
           (sites, subnets, site links, connection objects)
         - FOREST & DOMAIN TRUSTS with verified TWO-WAY trust health
@@ -28,7 +31,11 @@
           forest, and Intersite per site (opt-in); a partition's or the enterprise's result is
           never counted as a DC's. With the opt-in, the DNS test's summary table graded per test
           group (Auth, Basc, Forw, Del, Dyn, RReg, Ext), per DC and per domain
-        - DNS health (zones, scavenging, forwarders, zone transfer)         [DnsServer optional]
+        - DNS health, per DNS server and per zone over the DNS servers of each domain: zone
+          dynamic update (Nonsecure and secure on an AD-integrated zone fails; Microsoft
+          recommends Secure only), zone aging and server scavenging (tool defaults; Microsoft
+          publishes no requirement), a zone configuration inventory, forwarders and zone
+          transfer. Get-DnsServer* reads only                              [DnsServer optional]
         - SYSVOL / DFSR replication migration state                          [DFSR optional]
         - GPO inventory (linked / unlinked)                                  [GroupPolicy optional]
         - GPO version consistency, per scoped domain: each GPO's version in the directory
@@ -119,12 +126,15 @@
           Kerberos Authentication templates do not publish to the directory. The DC's own
           certificate stores are not read (PORT-PLAN C5a)
         - Directory backup status (repadmin /showbackup), time synchronization (w32tm)
-        - DNS depth: critical SRV records, secure dynamic updates
+        - DNS depth: critical SRV records (secure dynamic updates moved to DNS health in v1.30.0)
         - Redundancy: DC count, GPO central store, duplicate SPNs
         - RECOVERY & CONSISTENCY (post-incident, e.g. after a restore-from-backup):
             * DNS vs AD divergence - DC locator SRV records compared against the DCs the
               directory actually contains (stale entries for removed DCs, live DCs not
-              advertised)
+              advertised), and per DC: whether each writable DC is named by its DC locator SRV
+              records on every DNS server, by two instruments (the server's zone and a query to
+              it), whether its A records are the addresses its adapters hold, and the locator
+              records that name no DC
             * DSA GUID CNAME records in _msdcs - the usual cause of RPC 1722 replication
               failures after metadata cleanup or restore
             * Global Catalog flag vs _gc._tcp DNS advertisement
@@ -362,9 +372,37 @@
     covers the DCs of every scoped domain; the site and read-only flag of each DC come from the DC
     inventory, so name DomainControllers with it for the per-site rows.
 
+    Dns asks every DC of every scoped domain as a DNS server, through the DnsServer module of the
+    host running the assessment (Get-DnsServerZone, Get-DnsServerScavenging, Get-DnsServerZoneAging,
+    Get-DnsServerForwarder; reads only). Per DC, one "DNS server" row and one "Zone configuration"
+    row per zone (inventory). Per domain and primary zone, over every DNS server of the domain:
+    "Zone dynamic update" (Nonsecure and secure on an AD-integrated zone is a Fail - Microsoft
+    recommends Secure only; a zone that is not AD-integrated is Info) and "Zone scavenging" (zone
+    aging off, or no hosting server scavenging, is a Warning - tool defaults, Microsoft publishes no
+    requirement). A DC that could not be read keeps every zone of its domain from passing.
+    Unreachable, access denied, DNS provider missing, timed out and the DnsServer module missing are
+    each their own Not Assessed cause.
+
+    DnsAdConsistency also gives every DC of each scoped domain a "DC locator records" row (named by
+    _ldap._tcp.dc._msdcs and _kerberos._tcp.dc._msdcs on every DNS server; a Fail only when both
+    instruments - the server's own zone and Resolve-DnsName against it - agree it is missing, a
+    Warning when only one could say so; an RODC is Info) and a "DC A record" row (its A records
+    against the IPv4 addresses of its enabled adapters), and lists each locator record that names no
+    DC ("Stale DC record", Warning) with a population row per domain.
+
+    DomainControllers also gives each DC a "DNS client" row in its own report section, DC DNS
+    Client: the DNS server list of its enabled adapters (Win32_NetworkAdapterConfiguration over
+    remote CIM, local Administrators rights on the DC), a Warning for a single DNS server where more
+    than one DC is known, otherwise inventory.
+
+    DnsRecordExport is opt-in: it is not part of All and runs only when named. It exports every
+    record of every zone of every DC's DNS server to csv\DnsRecords_<server>_<zone>.csv, capped per
+    zone at RecordExportCap (50000, a tool default), with one row per zone saying how many records
+    were exported of how many, and whether the cap was reached.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Ten sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Eleven sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -456,6 +494,14 @@
     can never add a dcdiag test:
 
         { "DcDiag": { "TestTimeoutSeconds": 180 } }
+
+    And Dns, whose keys are the grades NonsecureStatus (Fail or Warning), ScavengingOffStatus,
+    AgingOffStatus, ARecordStatus, StaleRecordStatus and SingleServerStatus (each Warning or Info),
+    OneInstrumentStatus (Warning or Not Assessed: a missing record seen by one instrument only) and
+    RecordExportCap (records per zone for DnsRecordExport, 1 to 1000000). All are tool defaults, not
+    Microsoft values. The record names, zone types, patterns, error codes and ports are refused:
+
+        { "Dns": { "NonsecureStatus": "Warning", "RecordExportCap": 10000 } }
 
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
@@ -603,7 +649,7 @@ param(
         'DnsDepth', 'Redundancy', 'ExchangeSchema', 'ExchangeSeReadiness',
         'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'PortMatrix', 'DcSecureChannel',
         'DsEvents', 'RestoreIntegrity', 'MsdcsDelegation', 'TimeHierarchy', 'SiteGc',
-        'DcSystem', 'DcDisk', 'Laps', 'DcCertificates', 'RidPool')]
+        'DcSystem', 'DcDisk', 'Laps', 'DcCertificates', 'RidPool', 'DnsRecordExport')]
     [string[]]$Sections = @('All'),
 
     [switch]$IncludeDcdiag,
@@ -659,7 +705,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl", "Privileged" and "DcDiag" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl", "Privileged", "DcDiag" and "Dns" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -693,7 +739,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.29.0'
+    Version                 = '1.30.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -2593,6 +2639,146 @@ $script:Config = @{
         # Samples per DC. More is steadier but every sample costs a poll interval; the default
         # /period is 2 seconds, so 3 samples is a few seconds per DC.
         Samples             = 3
+    }
+    # --- DNS: zone dynamic update, aging and scavenging, DC locator SRV records, DC A records,
+    #     records that name no DC, zone and record inventory, DC DNS client settings (PORT-PLAN C13;
+    #     sections Dns, DnsAdConsistency, DomainControllers and the opt-in DnsRecordExport) ---
+    # Reads only: Get-DnsServerZone, Get-DnsServerScavenging, Get-DnsServerZoneAging,
+    # Get-DnsServerForwarder and Get-DnsServerResourceRecord with -ComputerName (the DnsServer module
+    # of the host running the assessment), Resolve-DnsName -DnsOnly -Server <dc> as the second
+    # instrument, and Win32_NetworkAdapterConfiguration through the shared CIM seam. No Set-, Add-,
+    # Remove- or Start-DnsServer cmdlet, no CIM method, no ipconfig /registerdns, no nltest /dsregdns.
+    # Every URL below was read on 2026-11-17.
+    #
+    # Dynamic update (DNS-001):
+    #   "Secure only is recommended for AD-integrated zones." The three options are None, Nonsecure and
+    #   secure, Secure only; "The last option is available only for AD-integrated DNS zones."
+    #     https://learn.microsoft.com/troubleshoot/windows-client/networking/troubleshooting-dns-dynamic-update-issues
+    #   "After a zone becomes Active Directory-integrated, DNS servers running Windows Server default to
+    #   allowing only secure dynamic updates"; without secure dynamic update "any computer on the network
+    #   can modify the existing A record".
+    #     https://learn.microsoft.com/windows-server/networking/dns/dynamic-update
+    #   The strings None, Secure, NonsecureAndSecure are the accepted values of -DynamicUpdate, and
+    #   ReplicationScope takes Forest, Domain, Legacy, Custom, on Set-DnsServerPrimaryZone.
+    #     https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserverprimaryzone
+    #   NOT PUBLISHED: the OUTPUT property names of Get-DnsServerZone (ZoneName, ZoneType, IsAutoCreated,
+    #   IsDsIntegrated, IsReverseLookupZone, DynamicUpdate, ReplicationScope, SecureSecondaries) - Learn
+    #   gives "Outputs: CimInstance" only. They are read by name and a property not returned is Not
+    #   Assessed, never Pass. MicrosoftDNS_Zone.AllowUpdate's numeric values are not published either,
+    #   so the WMI class is not used.
+    #     https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverzone
+    #     https://learn.microsoft.com/windows/win32/dns/microsoftdns-zone
+    # Aging and scavenging (DNS-002):
+    #   "Aging and scavenging are two independent but complementary mechanisms. You must enable both";
+    #   scavenging "skips any zone that has aging disabled"; "Enable server-level scavenging on only one
+    #   DNS server per zone"; defaults 7 days.
+    #     https://learn.microsoft.com/windows-server/networking/dns/aging-scavenging
+    #     https://learn.microsoft.com/windows-server/networking/dns/configure-aging-scavenging
+    #   "ScavengingInterval determines whether the scavenging feature for the DNS server is enabled ...
+    #   The default setting is 0, which disables scavenging"; ScavengingState is only the default for
+    #   NEW zones, so it is not what this tool grades.
+    #     https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserverscavenging
+    #   Zone aging: Aging, alias AgingEnabled; "relevant only for DNS primary zones".
+    #     https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserverzoneaging
+    #     https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverzoneaging
+    #   NOT PUBLISHED: the output property names of Get-DnsServerScavenging and Get-DnsServerZoneAging
+    #   (ScavengingInterval, AgingEnabled, NoRefreshInterval, RefreshInterval, ScavengeServers). Read by
+    #   name; provisional until the first real run (PORT-PLAN C13a).
+    # DC locator records (DNS-003, DNS-005): the Netlogon mnemonic table - Dc SRV
+    #   _ldap._tcp.dc._msdcs.<DnsDomainName>, Kdc SRV _kerberos._tcp.dc._msdcs.<DnsDomainName>, DsaCname
+    #   CNAME <DsaGuid>._msdcs.<DnsForestName>; "Read-only DCs default to registering DNS records
+    #   specific to their site"; DnsAvoidRegisterRecords can suppress records legitimately.
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/problems-with-dc-ad-integrated-dns-zones
+    #   The graded set is the reference repository's decision 61 (Dc and Kdc); the DsaCname record is
+    #   graded per DNS server by the existing DsaCname section and is not graded twice. A record that
+    #   names no DC: Microsoft publishes no grade, only "Remove references to stale domain controllers".
+    #     https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-dns-event-id-4013
+    # Record reads: Get-DnsServerResourceRecord returns HostName, RecordType, RecordClass, TimeToLive,
+    #   Timestamp, RecordData; -RRType takes A, CName, Srv, ...; -ZoneName with no -Name gets every record.
+    #     https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverresourcerecord
+    #   NOT PUBLISHED: the property names inside RecordData. The target is read from DomainName (SRV),
+    #   IPv4Address (A) and HostNameAlias (CNAME) - the PARAMETER names of Add-DnsServerResourceRecord,
+    #   provisional as output names.
+    #     https://learn.microsoft.com/powershell/module/dnsserver/add-dnsserverresourcerecord
+    #   NOT PUBLISHED: the error a record that does not exist raises. NoRecordPattern reads only the two
+    #   Win32 codes for "no such record": DNS_ERROR_RECORD_DOES_NOT_EXIST 9701 "DNS record does not
+    #   exist." and DNS_ERROR_NAME_DOES_NOT_EXIST 9714 "DNS name does not exist.", by number or by that
+    #   exact text, in the message or the error id. Anything else - a bare "was not found" or "does not
+    #   exist" (WIN32 53 "The network path was not found.", 1355 "The specified domain either does not
+    #   exist ..."), a CIM NotFound code (it does not say what was not found) - is a failed read, never
+    #   an absence.
+    #     https://learn.microsoft.com/windows/win32/debug/system-error-codes--9000-11999-
+    #     https://learn.microsoft.com/dotnet/api/microsoft.management.infrastructure.nativeerrorcode
+    #   Zones whose records the server read is allowed to judge: "A stub zone only contains information
+    #   about the authoritative name servers for the zone"; a primary zone is "the primary source", a
+    #   secondary zone "a read-only copy of a primary zone". A name in a stub zone, a conditional
+    #   forwarder zone ('Forwarder', provisional), or below a delegation (an NS record below the apex of
+    #   the zone read) is not held by that server's zone, so that server read is Unread, never Absent.
+    #     https://learn.microsoft.com/windows-server/networking/dns/zone-types
+    #   ReplicationScope: "Domain. The domain directory partition. Forest. The ForestDnsZone directory
+    #   partition. Legacy. A legacy directory partition. Custom." Only a Domain-scope zone is known to be
+    #   hosted by the DCs of one domain; a Forest or Custom zone is graded once over every DNS server of
+    #   the run; any other scope (Legacy, none, not returned) leaves the hosting set unknown, so "no
+    #   hosting server scavenges" is not asserted for it.
+    #     https://learn.microsoft.com/powershell/module/dnsserver/add-dnsserverprimaryzone
+    # DC DNS client (INV-016): Win32_NetworkAdapterConfiguration, IPEnabled, IPAddress (IPv4 and IPv6),
+    #   DNSServerSearchOrder "Array of server IP addresses to be used in querying for DNS servers". The
+    #   class has methods that change the adapter; none is called.
+    #     https://learn.microsoft.com/windows/win32/cimwin32prov/win32-networkadapterconfiguration
+    #   "Configuring domain controllers to point to a single DNS server's IP address, including the
+    #   127.0.0.1 loopback address, represents a single point of failure. This setting is tolerable in
+    #   a forest with only one domain controller" (KB 4013 article above). "Don't configure the DNS
+    #   client settings on the domain controllers to point to DNS servers of your Internet Service
+    #   Provider (ISP)"; a DC may use itself as preferred server once replication is verified.
+    #     https://learn.microsoft.com/troubleshoot/windows-server/networking/best-practices-for-dns-client-settings
+    #   NOT PUBLISHED: "loopback must not be first". Reported as information only.
+    #
+    # TOOL DEFAULTS, not Microsoft values (Microsoft publishes no grade for any of them; the defaults are
+    # the AdAssessment26 catalogue's rules ADA-DNS-001..005): NonsecureStatus Fail, ScavengingOffStatus
+    # Warning, AgingOffStatus Warning, ARecordStatus Warning, StaleRecordStatus Warning,
+    # OneInstrumentStatus Warning (a missing record seen by only one of the two instruments),
+    # SingleServerStatus Warning, RecordExportCap 50000 per zone (the reference's -DnsRecordCap).
+    #
+    # Replaceable from a file via -ConfigOverridePath, under the key "Dns": the seven statuses, each
+    # within its own allowed set, and RecordExportCap (1 to 1000000). Nothing else - not the record
+    # names, the patterns, the zone types, the ports or the sources.
+    Dns                     = @{
+        SourceUrl              = 'https://learn.microsoft.com/troubleshoot/windows-client/networking/troubleshooting-dns-dynamic-update-issues and https://learn.microsoft.com/windows-server/networking/dns/aging-scavenging and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/problems-with-dc-ad-integrated-dns-zones and https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-dns-event-id-4013'
+        ReadDate               = '2026-11-17'
+        ThresholdSource        = 'tool defaults, not Microsoft values (the AdAssessment26 catalogue rules ADA-DNS-001..005); Microsoft publishes no grade for these settings'
+        DynamicUpdateValues    = @('None', 'Secure', 'NonsecureAndSecure')
+        NonsecureDynamicUpdate = 'NonsecureAndSecure'
+        # Zone types whose dynamic update and aging are graded. Aging "is relevant only for DNS primary
+        # zones"; an AD-integrated zone reports ZoneType Primary (provisional, not published).
+        GradedZoneTypes        = @('Primary')
+        NonsecureStatus        = 'Fail'
+        ScavengingOffStatus    = 'Warning'
+        AgingOffStatus         = 'Warning'
+        ARecordStatus          = 'Warning'
+        StaleRecordStatus      = 'Warning'
+        OneInstrumentStatus    = 'Warning'
+        SingleServerStatus     = 'Warning'
+        RecordExportCap        = 50000
+        LocatorRecords         = @(
+            @{ Mnemonic = 'Dc'; Name = '_ldap._tcp.dc._msdcs.{0}' }
+            @{ Mnemonic = 'Kdc'; Name = '_kerberos._tcp.dc._msdcs.{0}' }
+        )
+        WsmanPort              = 5985
+        RpcPort                = 135
+        # A record that does not exist: only the Win32 codes 9701 and 9714 or their exact text (see
+        # above). Anything else is a failed read.
+        NoRecordPattern        = '(?i)\bWIN32 (9701|9714)\b|\bDNS (record|name) does not exist\b'
+        # Zone types whose records a server read may judge (see above); any other type, or none
+        # returned, makes that server read Unread for a name in the zone.
+        RecordZoneTypes        = @('Primary', 'Secondary')
+        # The replication scopes whose hosting servers this tool can name: Domain (the DCs of one
+        # domain that run DNS) and the forest-wide ones, pooled over every DNS server of the run.
+        DomainScopes           = @('Domain')
+        ForestScopes           = @('Forest', 'Custom')
+        TimeoutPattern         = '(?i)timed out|timeout'
+        # The DNS CIM provider is not there (reference decision 60): InvalidNamespace (3), InvalidClass (5).
+        NoProviderErrorCodes   = @('InvalidNamespace', 'InvalidClass')
+        LoopbackAddresses      = @('127.0.0.1', '::1')
     }
     # The forest-wide locator zone. Held as data because it is used to build a zone name, and a
     # typo there would produce a confident false negative.
@@ -5062,71 +5248,1825 @@ function Get-AdfaForwarderAddress {
     return @($ips | Select-Object -Unique)
 }
 
+# ---------------------------------------------------------------------------
+# DNS (PORT-PLAN C13): zone dynamic update and aging/scavenging per zone (DNS-001, DNS-002), zone
+# inventory (INV-013), DC locator SRV records, DC A records and records that name no DC per DC
+# (DNS-003..005, rows of DNS vs AD Consistency), each DC's DNS client settings (INV-016, rows of the
+# DomainControllers section) and the opt-in record export (INV-014). Sources, read dates and the
+# tool defaults are beside $script:Config.Dns. Every read here is a Get- cmdlet, Resolve-DnsName or
+# a CIM instance query; nothing is written and no method is invoked.
+# ---------------------------------------------------------------------------
+
+function New-AdfaDnsRow {
+    <#
+    .SYNOPSIS
+        Pure: one row of the DNS sections. Every row has the same columns, so a consumer never has
+        to test whether a column exists.
+    .DESCRIPTION
+        Names, addresses and record data go in their own columns, never in Detail: the consolidated
+        findings choose a recommendation from Detail, and none of these columns is read there. A
+        value that was not measured is an empty string.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [string]$Area = 'DNS',
+        [AllowEmptyString()][string]$NotRun = '',
+        [AllowEmptyString()][string]$Evidence = '',
+        [AllowEmptyString()][string]$Server = '',
+        [AllowEmptyString()][string]$Zone = '',
+        [AllowEmptyString()][string]$HostName = '',
+        [AllowEmptyString()][string]$RecordName = '',
+        [AllowEmptyString()][string]$RecordType = '',
+        [AllowEmptyString()][string]$RecordData = '',
+        [AllowEmptyString()][string]$ZoneType = '',
+        [AllowEmptyString()][string]$ReplicationScope = '',
+        [AllowEmptyString()][string]$DsIntegrated = '',
+        [AllowEmptyString()][string]$DynamicUpdate = '',
+        [AllowEmptyString()][string]$Aging = '',
+        [AllowEmptyString()][string]$ConfiguredIPv4 = '',
+        [AllowEmptyString()][string]$DnsServers = ''
+    )
+    $row = New-Finding -Scope $Scope -Area $Area -Item $Item -Status $Status -Detail $Detail
+    $columns = [ordered]@{
+        NotRun = $NotRun; Evidence = $Evidence; Server = $Server; Zone = $Zone; HostName = $HostName; RecordName = $RecordName
+        RecordType = $RecordType; RecordData = $RecordData; ZoneType = $ZoneType; ReplicationScope = $ReplicationScope
+        DsIntegrated = $DsIntegrated; DynamicUpdate = $DynamicUpdate; Aging = $Aging; ConfiguredIPv4 = $ConfiguredIPv4; DnsServers = $DnsServers
+    }
+    foreach ($k in @($columns.Keys)) { $row | Add-Member -NotePropertyName $k -NotePropertyValue ([string]$columns[$k]) }
+    return $row
+}
+
+function ConvertTo-AdfaDnsBool {
+    <#
+    .SYNOPSIS
+        Pure: $true or $false from a boolean or its text, $null for anything else - an absent or
+        unreadable value is never read as $false.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [bool]) { return [bool]$Value }
+    $text = ([string]$Value).Trim()
+    if ($text -match '^(?i)true$') { return $true }
+    if ($text -match '^(?i)false$') { return $false }
+    return $null
+}
+
+function Test-AdfaDnsServerScavenges {
+    <#
+    .SYNOPSIS
+        Pure: whether a DNS server's scavenging interval enables scavenging. $true above zero,
+        $false at zero, $null when the value is not a time span this tool can read.
+    .DESCRIPTION
+        "ScavengingInterval determines whether the scavenging feature for the DNS server is enabled
+        ... The default setting is 0, which disables scavenging" (Set-DnsServerScavenging, read
+        2026-11-17). The parameter is a TimeSpan; text is read as a TimeSpan in the invariant
+        culture. A bare number is NOT read: its unit is not published for the cmdlet's output (the
+        WMI class counts hours), so guessing one could turn "off" into "on".
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Interval)
+    if ($null -eq $Interval) { return $null }
+    $span = $null
+    if ($Interval -is [timespan]) { $span = [timespan]$Interval }
+    elseif ($Interval -is [string]) {
+        $parsed = [timespan]::Zero
+        if ([timespan]::TryParse($Interval.Trim(), [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) { $span = $parsed }
+    }
+    if ($null -eq $span) { return $null }
+    return ($span -gt [timespan]::Zero)
+}
+
+function Get-AdfaDnsReadErrorClass {
+    <#
+    .SYNOPSIS
+        Pure: the class of a DNS read failure - AccessDenied, NoProvider, Timeout, NotFound or Error.
+    .DESCRIPTION
+        Refusal first, by the CIM error code and then the text (Get-AdfaRemoteReadErrorClass). Then
+        the DNS CIM provider missing (InvalidNamespace, InvalidClass - reference decision 60), a
+        time-out (text only: NativeErrorCode has no time-out value, read 2026-11-17), and "no such
+        record" (the config's NoRecordPattern: Win32 9701 or 9714, by number or exact text, provisional).
+        Anything else is Error and is quoted, never interpreted - in particular it is never an
+        absence: a CIM NotFound code does not say WHAT was not found, and a bare "was not found" is
+        also how a transport failure reads ("The network path was not found.").
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Message,
+        [AllowNull()][AllowEmptyString()][string]$ErrorCode,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    if ((Get-AdfaRemoteReadErrorClass -Message $Message -ErrorCode $ErrorCode) -eq 'AccessDenied') { return 'AccessDenied' }
+    $code = ([string]$ErrorCode).Trim()
+    if ($code -ne '' -and @($Config['NoProviderErrorCodes']) -contains $code) { return 'NoProvider' }
+    $text = [string]$Message
+    if ($text -match [string]$Config['TimeoutPattern']) { return 'Timeout' }
+    if ($text -match [string]$Config['NoRecordPattern']) { return 'NotFound' }
+    return 'Error'
+}
+
+function Get-AdfaDnsReadCause {
+    <#
+    .SYNOPSIS
+        Pure: the fixed lead of a Not Assessed cause for one failed DNS read, then what was reported.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Class, [AllowNull()][AllowEmptyString()][string]$Message)
+    $lead = switch ($Class) {
+        'AccessDenied' { 'Access denied: the account running the assessment was refused by the DNS server.'; break }
+        'NoProvider' { 'DNS provider did not answer: the DNS server management provider is not there (the DNS Server role may not be installed on this DC).'; break }
+        'Timeout' { 'Timed out: the DNS server did not answer in time.'; break }
+        'NotFound' { 'Not found: the DNS server reports no such object.'; break }
+        default { 'Read failed: the DNS server answered with an error this tool does not interpret.' }
+    }
+    $said = ([string]$Message).Trim()
+    if ($said -eq '') { return $lead }
+    return ("{0} Reported: {1}" -f $lead, $said)
+}
+
+function Get-AdfaDnsServerRaw {
+    <#
+    .SYNOPSIS
+        The one place DNS Health touches a DNS server: Get-DnsServerZone, Get-DnsServerScavenging,
+        Get-DnsServerZoneAging per primary zone and Get-DnsServerForwarder, all with -ComputerName.
+    .DESCRIPTION
+        Read-only: Learn documents no side effect for any Get-DnsServer* cmdlet (absence of a
+        statement, not a guarantee). The output property names are not published (config table),
+        so every one is read by name and a property not returned is $null, never $false.
+
+        Never throws. Ok is $false only when the zone list could not be read; a failed scavenging,
+        aging or forwarder read is kept beside the zones so one half is not thrown away. Zone aging
+        is read only for primary zones that were not auto-created (Learn: aging "is relevant only
+        for DNS primary zones").
+    .OUTPUTS
+        [pscustomobject] Ok, Error, ErrorCode, Zones (ZoneName, ZoneType, IsAutoCreated,
+        IsDsIntegrated, IsReverseLookupZone, DynamicUpdate, ReplicationScope, SecureSecondaries),
+        ScavengingOk, ScavengingInterval, ScavengingState, ScavengingError, Aging (lower-case zone
+        name -> Ok, AgingEnabled, NoRefreshInterval, RefreshInterval, ScavengeServers, Error),
+        ForwardersOk, Forwarders, ForwarderError.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$ComputerName)
+    $out = [pscustomobject]@{
+        Ok = $false; Error = ''; ErrorCode = ''; Zones = @(); ScavengingOk = $false; ScavengingInterval = $null; ScavengingState = $null
+        ScavengingError = ''; Aging = @{}; ForwardersOk = $false; Forwarders = @(); ForwarderError = ''
+    }
+    try {
+        $list = New-Object System.Collections.ArrayList
+        foreach ($z in @(Get-DnsServerZone -ComputerName $ComputerName -ErrorAction Stop)) {
+            if ($null -eq $z) { continue }
+            $text = { param($Name) $v = Get-AdfaCimRawValue -Instance $z -Name $Name; if ($null -eq $v) { return '' } return ([string]$v).Trim() }
+            [void]$list.Add([pscustomobject]@{
+                    ZoneName            = (& $text 'ZoneName')
+                    ZoneType            = (& $text 'ZoneType')
+                    IsAutoCreated       = (ConvertTo-AdfaDnsBool -Value (Get-AdfaCimRawValue -Instance $z -Name 'IsAutoCreated'))
+                    IsDsIntegrated      = (ConvertTo-AdfaDnsBool -Value (Get-AdfaCimRawValue -Instance $z -Name 'IsDsIntegrated'))
+                    IsReverseLookupZone = (ConvertTo-AdfaDnsBool -Value (Get-AdfaCimRawValue -Instance $z -Name 'IsReverseLookupZone'))
+                    DynamicUpdate       = (& $text 'DynamicUpdate')
+                    ReplicationScope    = (& $text 'ReplicationScope')
+                    SecureSecondaries   = (& $text 'SecureSecondaries')
+                })
+        }
+        $out.Zones = $list.ToArray()
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $codeProp = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $out.ErrorCode = [string]$codeProp.Value }
+        return $out
+    }
+    try {
+        $s = Get-DnsServerScavenging -ComputerName $ComputerName -ErrorAction Stop
+        $out.ScavengingInterval = Get-AdfaCimRawValue -Instance $s -Name 'ScavengingInterval'
+        $out.ScavengingState = ConvertTo-AdfaDnsBool -Value (Get-AdfaCimRawValue -Instance $s -Name 'ScavengingState')
+        $out.ScavengingOk = $true
+    }
+    catch {
+        $out.ScavengingError = [string]$_.Exception.Message
+        if ($out.ScavengingError -eq '') { $out.ScavengingError = 'The scavenging read failed without an error message.' }
+    }
+    $aging = @{}
+    foreach ($z in @($out.Zones)) {
+        if ([string]$z.ZoneName -eq '' -or [string]$z.ZoneType -ne 'Primary' -or $z.IsAutoCreated -eq $true) { continue }
+        $entry = [pscustomobject]@{ Ok = $false; AgingEnabled = $null; NoRefreshInterval = $null; RefreshInterval = $null; ScavengeServers = @(); Error = '' }
+        try {
+            $a = Get-DnsServerZoneAging -Name ([string]$z.ZoneName) -ComputerName $ComputerName -ErrorAction Stop
+            $entry.AgingEnabled = ConvertTo-AdfaDnsBool -Value (Get-AdfaCimRawValue -Instance $a -Name 'AgingEnabled')
+            $entry.NoRefreshInterval = Get-AdfaCimRawValue -Instance $a -Name 'NoRefreshInterval'
+            $entry.RefreshInterval = Get-AdfaCimRawValue -Instance $a -Name 'RefreshInterval'
+            $entry.ScavengeServers = @(@(Get-AdfaCimRawValue -Instance $a -Name 'ScavengeServers') | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+            $entry.Ok = $true
+        }
+        catch { $entry.Error = [string]$_.Exception.Message }
+        $aging[([string]$z.ZoneName).ToLowerInvariant()] = $entry
+    }
+    $out.Aging = $aging
+    try {
+        $out.Forwarders = @(Get-AdfaForwarderAddress -Forwarder (Get-DnsServerForwarder -ComputerName $ComputerName -ErrorAction Stop))
+        $out.ForwardersOk = $true
+    }
+    catch { $out.ForwarderError = [string]$_.Exception.Message }
+    return $out
+}
+
+function ConvertTo-AdfaDnsRecordDataText {
+    <#
+    .SYNOPSIS
+        Pure: the RecordData of one resource record as "Name=Value; ..." text, for display and the
+        export. The property names inside RecordData are not published; every one present is shown.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Data)
+    if ($null -eq $Data) { return '' }
+    if ($Data -is [string]) { return $Data }
+    $pairs = @()
+    $store = $Data.PSObject.Properties['CimInstanceProperties']
+    $props = @()
+    if ($null -ne $store -and $null -ne $store.Value) { $props = @($store.Value | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Value = $_.Value } }) }
+    else { $props = @($Data.PSObject.Properties | Where-Object { $_.MemberType -match 'Property' } | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Value = $_.Value } }) }
+    foreach ($p in $props) {
+        if ($null -eq $p.Value -or $p.Name -match '^(PSComputerName|CimClass|CimInstanceProperties|CimSystemProperties)$') { continue }
+        $v = (@($p.Value) | ForEach-Object { ([string]$_).TrimEnd('.') }) -join ','
+        $pairs += ("{0}={1}" -f $p.Name, $v)
+    }
+    return ($pairs -join '; ')
+}
+
+function Get-AdfaDnsRecordTarget {
+    <#
+    .SYNOPSIS
+        Pure: what one record points at - the SRV target host (DomainName), the A address
+        (IPv4Address) or the CNAME alias (HostNameAlias); '' for any other type. Names are
+        provisional: they are the parameter names of Add-DnsServerResourceRecord.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Data, [AllowNull()][AllowEmptyString()][string]$RecordType)
+    if ($null -eq $Data) { return '' }
+    $name = switch -Regex ([string]$RecordType) {
+        '^(?i)srv$' { 'DomainName'; break }
+        '^(?i)a$' { 'IPv4Address'; break }
+        '^(?i)cname$' { 'HostNameAlias'; break }
+        default { '' }
+    }
+    if ($name -eq '') { return '' }
+    $v = Get-AdfaCimRawValue -Instance $Data -Name $name
+    if ($null -eq $v) { return '' }
+    return ([string]$v).Trim().TrimEnd('.')
+}
+
+function Get-AdfaDnsRecordSetRaw {
+    <#
+    .SYNOPSIS
+        Reads resource records from one zone of one DNS server with Get-DnsServerResourceRecord, up
+        to a cap, keeping the real count.
+    .DESCRIPTION
+        With no -Name every record of the zone is read (Learn, Example 1). A cap of 0 keeps every
+        record. Never throws. A failure the config reads as "no such record" (Win32 9701 or 9714, in
+        the message or the error id) is Outcome NoRecord with Ok $true - a measured absence; any other
+        failure is Outcome Error with Ok $false, never an absence.
+    .OUTPUTS
+        [pscustomobject] Ok, Outcome (Resolved|NoRecord|Error), Records (HostName, RecordType,
+        TimeToLive, Timestamp, RecordData, Target), RealCount, Truncated, Error, ErrorCode, ErrorId.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][string]$ZoneName,
+        [AllowEmptyString()][string]$Name = '',
+        [AllowEmptyString()][string]$RRType = '',
+        [ValidateRange(0, 1000000)][int]$Cap = 0,
+        [hashtable]$Config = $script:Config.Dns
+    )
+    $out = [pscustomobject]@{ Ok = $false; Outcome = 'Error'; Records = @(); RealCount = 0; Truncated = $false; Error = ''; ErrorCode = ''; ErrorId = '' }
+    try {
+        $rrArgs = @{ ComputerName = $ComputerName; ZoneName = $ZoneName; ErrorAction = 'Stop' }
+        if ($Name -ne '') { $rrArgs.Name = $Name }
+        if ($RRType -ne '') { $rrArgs.RRType = $RRType }
+        $list = New-Object System.Collections.ArrayList
+        $count = 0
+        foreach ($r in @(Get-DnsServerResourceRecord @rrArgs)) {
+            if ($null -eq $r) { continue }
+            $count++
+            if ($Cap -gt 0 -and $list.Count -ge $Cap) { continue }
+            $type = [string](Get-AdfaCimRawValue -Instance $r -Name 'RecordType')
+            $data = Get-AdfaCimRawValue -Instance $r -Name 'RecordData'
+            $ttl = Get-AdfaCimRawValue -Instance $r -Name 'TimeToLive'
+            $stamp = Get-AdfaCimRawValue -Instance $r -Name 'Timestamp'
+            $stampText = ''
+            if ($stamp -is [datetime]) { $stampText = ([datetime]$stamp).ToString('yyyy-MM-dd HH:mm', [System.Globalization.CultureInfo]::InvariantCulture) }
+            elseif ($null -ne $stamp) { $stampText = [string]$stamp }
+            [void]$list.Add([pscustomobject]@{
+                    HostName = [string](Get-AdfaCimRawValue -Instance $r -Name 'HostName'); RecordType = $type
+                    TimeToLive = $(if ($null -eq $ttl) { '' } else { [string]$ttl }); Timestamp = $stampText
+                    RecordData = (ConvertTo-AdfaDnsRecordDataText -Data $data); Target = (Get-AdfaDnsRecordTarget -Data $data -RecordType $type)
+                })
+        }
+        $out.Records = $list.ToArray()
+        $out.RealCount = $count
+        $out.Truncated = ($Cap -gt 0 -and $count -gt $Cap)
+        $out.Ok = $true
+        if ($count -gt 0) { $out.Outcome = 'Resolved' } else { $out.Outcome = 'NoRecord' }
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $codeProp = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $out.ErrorCode = [string]$codeProp.Value }
+        # The error id is read with the message: a CIM cmdlet's error id can carry the Win32 code
+        # ("WIN32 9714,...") when the message does not (provisional, PORT-PLAN C13a).
+        $idProp = $_.PSObject.Properties['FullyQualifiedErrorId']
+        if ($null -ne $idProp -and $null -ne $idProp.Value) { $out.ErrorId = [string]$idProp.Value }
+        $classText = ("{0} {1}" -f $out.Error, $out.ErrorId).Trim()
+        if ((Get-AdfaDnsReadErrorClass -Message $classText -ErrorCode $out.ErrorCode -Config $Config) -eq 'NotFound') {
+            $out.Ok = $true
+            $out.Outcome = 'NoRecord'
+        }
+    }
+    return $out
+}
+
+function Get-AdfaDnsServerZoneNames {
+    <#
+    .SYNOPSIS
+        The zone names one DNS server holds, read once per run (Get-DnsServerZone) and shared by the
+        DNS vs AD and record export sections, with each zone's type (ZoneType, '' when not returned).
+        Never throws.
+    .OUTPUTS
+        [pscustomobject] Ok, Names, Types (lower-case zone name -> ZoneType), Error, ErrorCode.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$ComputerName)
+    $key = $ComputerName.ToLowerInvariant()
+    if ($script:DnsZoneListCache.ContainsKey($key)) { return $script:DnsZoneListCache[$key] }
+    $out = [pscustomobject]@{ Ok = $false; Names = @(); Types = @{}; Error = ''; ErrorCode = '' }
+    try {
+        $names = @(); $types = @{}
+        foreach ($z in @(@(Get-DnsServerZone -ComputerName $ComputerName -ErrorAction Stop) | Where-Object { $null -ne $_ })) {
+            $n = [string](Get-AdfaCimRawValue -Instance $z -Name 'ZoneName')
+            if ($n -eq '') { continue }
+            $t = Get-AdfaCimRawValue -Instance $z -Name 'ZoneType'
+            $names += $n
+            $types[$n.Trim().TrimEnd('.').ToLowerInvariant()] = $(if ($null -eq $t) { '' } else { ([string]$t).Trim() })
+        }
+        $out.Names = @($names)
+        $out.Types = $types
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $codeProp = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $out.ErrorCode = [string]$codeProp.Value }
+    }
+    $script:DnsZoneListCache[$key] = $out
+    return $out
+}
+
+function Resolve-AdfaDnsZoneForName {
+    <#
+    .SYNOPSIS
+        Pure: the zone, of the ones a server holds, that holds a name - the longest zone name the
+        name ends with on a label boundary - and the name relative to it ('@' for the apex).
+        $null when no zone holds it.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name, [AllowEmptyCollection()][string[]]$ZoneNames = @())
+    $n = $Name.Trim().TrimEnd('.').ToLowerInvariant()
+    $best = ''
+    foreach ($z in @($ZoneNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $zl = $z.Trim().TrimEnd('.').ToLowerInvariant()
+        if (($n -eq $zl -or $n.EndsWith('.' + $zl)) -and $zl.Length -gt $best.Length) { $best = $zl }
+    }
+    if ($best -eq '') { return $null }
+    $relative = '@'
+    if ($n -ne $best) { $relative = $n.Substring(0, $n.Length - $best.Length - 1) }
+    return [pscustomobject]@{ Zone = $best; Relative = $relative }
+}
+
+function Get-AdfaDnsDelegationPoint {
+    <#
+    .SYNOPSIS
+        Pure: the delegation, of a zone's delegation points (owner names of NS records below its
+        apex, relative to the zone), at or above a relative name - '' when the name is not below
+        any. Such a name is held by the delegated zone, not by the zone that was read.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Relative, [AllowNull()][AllowEmptyCollection()][string[]]$Delegations = @())
+    $r = $Relative.Trim().TrimEnd('.').ToLowerInvariant()
+    if ($r -eq '@' -or $r -eq '') { return '' }
+    foreach ($d in @($Delegations | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $dl = $d.Trim().TrimEnd('.').ToLowerInvariant()
+        if ($dl -eq '@') { continue }
+        if ($r -eq $dl -or $r.EndsWith('.' + $dl)) { return $dl }
+    }
+    return ''
+}
+
+function Get-AdfaDnsZoneDelegation {
+    <#
+    .SYNOPSIS
+        The delegation points of one zone on one DNS server: the owner names of its NS records below
+        the apex (Get-DnsServerResourceRecord -ZoneName <zone> -RRType Ns), read once per run. Never
+        throws.
+    .DESCRIPTION
+        A zone always carries NS records at its apex, so a read that returns none, or fails, leaves
+        the delegations unknown (Ok $false), never "none". The owner name of a record is its HostName,
+        relative to the zone, '@' for the apex (Learn, Get-DnsServerResourceRecord: HostName; Example 6
+        reads the apex NS records with -Node).
+    .OUTPUTS
+        [pscustomobject] Ok, Names (relative, lower-case), Cause.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$ComputerName, [Parameter(Mandatory)][string]$ZoneName, [Parameter(Mandatory)][hashtable]$Config)
+    $key = ("{0}|{1}" -f $ComputerName, $ZoneName).ToLowerInvariant()
+    if ($script:DnsDelegationCache.ContainsKey($key)) { return $script:DnsDelegationCache[$key] }
+    $out = [pscustomobject]@{ Ok = $false; Names = @(); Cause = '' }
+    $read = Get-AdfaDnsRecordSetRaw -ComputerName $ComputerName -ZoneName $ZoneName -RRType 'Ns' -Config $Config
+    if ($read.Outcome -eq 'Resolved') {
+        $out.Names = @(@($read.Records) | ForEach-Object { ([string]$_.HostName).Trim().TrimEnd('.').ToLowerInvariant() } | Where-Object { $_ -ne '' -and $_ -ne '@' } | Sort-Object -Unique)
+        $out.Ok = $true
+    }
+    elseif ($read.Outcome -eq 'NoRecord') {
+        $out.Cause = 'the NS records of the zone it holds came back empty, so whether the name sits below a delegation is not known'
+    }
+    else {
+        $class = Get-AdfaDnsReadErrorClass -Message $read.Error -ErrorCode $read.ErrorCode -Config $Config
+        $out.Cause = ("the NS records of the zone it holds, which show its delegations, could not be read ({0})" -f (Get-AdfaDnsReadCause -Class $class -Message $read.Error).TrimEnd('.'))
+    }
+    $script:DnsDelegationCache[$key] = $out
+    return $out
+}
+
+function Resolve-AdfaDnsServerZone {
+    <#
+    .SYNOPSIS
+        The zone of one DNS server whose own records can say whether a name exists there: the
+        longest zone the server holds that ends with the name, of a type that holds records, with the
+        name not below a delegation in it. Otherwise the cause, and the server read is not made.
+    .DESCRIPTION
+        A server that holds only a parent zone (contoso.com, with child.contoso.com delegated), a stub
+        zone, or a conditional forwarder zone answers "no such name" for a name it does not hold - a
+        read of that zone is not a measurement of the record, so it must never be graded as an
+        absence. Learn: "A stub zone only contains information about the authoritative name servers
+        for the zone" (zone-types, read 2026-11-17).
+    .OUTPUTS
+        [pscustomobject] Ok, Zone, Relative, Cause.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$ComputerName, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][hashtable]$Config)
+    $fail = { param([string]$Cause) [pscustomobject]@{ Ok = $false; Zone = ''; Relative = ''; Cause = $Cause } }
+    $zones = Get-AdfaDnsServerZoneNames -ComputerName $ComputerName
+    if (-not $zones.Ok) {
+        $class = Get-AdfaDnsReadErrorClass -Message $zones.Error -ErrorCode $zones.ErrorCode -Config $Config
+        return (& $fail (Get-AdfaDnsReadCause -Class $class -Message $zones.Error))
+    }
+    $where = Resolve-AdfaDnsZoneForName -Name $Name -ZoneNames @($zones.Names)
+    if ($null -eq $where) { return (& $fail 'this DNS server holds no zone for the name, so its zone was not read.') }
+    $typeText = ''
+    $typesProp = $zones.PSObject.Properties['Types']
+    if ($null -ne $typesProp -and $typesProp.Value -is [hashtable] -and $typesProp.Value.ContainsKey([string]$where.Zone)) { $typeText = [string]$typesProp.Value[[string]$where.Zone] }
+    $holds = @(@($Config['RecordZoneTypes']) | Where-Object { [string]$_ -eq $typeText })
+    if ($holds.Count -eq 0) {
+        $shown = $typeText
+        if ($shown -eq '') { $shown = 'not returned' }
+        return (& $fail ("the zone this DNS server holds for the name is of type '{0}', which does not hold its records, so its zone was not read." -f $shown))
+    }
+    if ([string]$where.Relative -ne '@') {
+        $del = Get-AdfaDnsZoneDelegation -ComputerName $ComputerName -ZoneName ([string]$where.Zone) -Config $Config
+        if (-not $del.Ok) { return (& $fail ("{0}, so its zone was not read for the name." -f [string]$del.Cause)) }
+        $point = Get-AdfaDnsDelegationPoint -Relative ([string]$where.Relative) -Delegations @($del.Names)
+        if ($point -ne '') { return (& $fail 'the name sits below a delegation in the zone this DNS server holds, so that zone does not hold the record and was not read for it.') }
+    }
+    return [pscustomobject]@{ Ok = $true; Zone = [string]$where.Zone; Relative = [string]$where.Relative; Cause = '' }
+}
+
+function Get-AdfaDnsServerRecord {
+    <#
+    .SYNOPSIS
+        Instrument one: the record as the DNS server's own zone holds it (Get-DnsServerResourceRecord
+        on the zone that holds the name).
+    .DESCRIPTION
+        Present (with its targets), Absent (the zone that holds the name was read and holds no such
+        record), or Unread with the cause: the DnsServer module is missing, the server did not answer
+        on RPC, its zone list could not be read, it holds no zone for the name, the zone it holds is
+        a stub or forwarder zone, the name sits below a delegation in that zone (or its delegations
+        could not be read), or the record read failed (Resolve-AdfaDnsServerZone). What this
+        instrument cannot see: a record a client would get from another server or a delegation - so
+        a name it does not hold is never Absent here.
+    .OUTPUTS
+        [pscustomobject] Outcome (Present|Absent|Unread), Targets, Cause.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][ValidateSet('SRV', 'A', 'CNAME')][string]$Type,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [bool]$ModuleAvailable = $true,
+        [int]$PortTimeoutMs = 1200
+    )
+    $unread = { param([string]$Cause) [pscustomobject]@{ Outcome = 'Unread'; Targets = @(); Cause = $Cause } }
+    if (-not $ModuleAvailable) { return (& $unread 'Server read: the DnsServer PowerShell module is not installed on the host running the assessment.') }
+    $rpcPort = [int]$Config['RpcPort']
+    if (-not (Test-AdfaDcPort -ComputerName $ComputerName -Port $rpcPort -TimeoutMs $PortTimeoutMs)) {
+        return (& $unread ("Server read: Unreachable: RPC ({0}) did not answer within {1} ms." -f $rpcPort, $PortTimeoutMs))
+    }
+    $where = Resolve-AdfaDnsServerZone -ComputerName $ComputerName -Name $Name -Config $Config
+    if (-not $where.Ok) { return (& $unread ("Server read: {0}" -f [string]$where.Cause)) }
+    $rr = switch ($Type) { 'SRV' { 'Srv' } 'A' { 'A' } default { 'CName' } }
+    $read = Get-AdfaDnsRecordSetRaw -ComputerName $ComputerName -ZoneName ([string]$where.Zone) -Name ([string]$where.Relative) -RRType $rr -Config $Config
+    if ($read.Outcome -eq 'Resolved') {
+        $targets = @(@($read.Records) | ForEach-Object { ([string]$_.Target).Trim().TrimEnd('.') } | Where-Object { $_ -ne '' } | Sort-Object -Unique)
+        return [pscustomobject]@{ Outcome = 'Present'; Targets = $targets; Cause = '' }
+    }
+    if ($read.Outcome -eq 'NoRecord') { return [pscustomobject]@{ Outcome = 'Absent'; Targets = @(); Cause = '' } }
+    $class = Get-AdfaDnsReadErrorClass -Message $read.Error -ErrorCode $read.ErrorCode -Config $Config
+    return (& $unread ("Server read: {0}" -f (Get-AdfaDnsReadCause -Class $class -Message $read.Error)))
+}
+
+function Get-AdfaDnsResolverRecord {
+    <#
+    .SYNOPSIS
+        Instrument two: the record as the DNS server answers a query for it (Resolve-AdfaDnsRecord,
+        Resolve-DnsName -DnsOnly -Server, nslookup where the DnsClient module is absent).
+    .DESCRIPTION
+        Present, Absent (an authoritative "no such record") or Unread (no query tool on this host, or
+        the server did not answer). What it cannot see: whether the answer came from the zone or
+        from the server's cache or a forwarder; Learn does not say whether the query fills the local
+        client cache.
+    .OUTPUTS
+        [pscustomobject] Outcome (Present|Absent|Unread), Targets, Cause.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][ValidateSet('SRV', 'A', 'CNAME')][string]$Type, [Parameter(Mandatory)][string]$Server)
+    $r = Resolve-AdfaDnsRecord -Name $Name -Type $Type -Server $Server
+    switch ([string]$r.Outcome) {
+        'Resolved' { return [pscustomobject]@{ Outcome = 'Present'; Targets = @(@($r.Targets) | ForEach-Object { ([string]$_).Trim().TrimEnd('.') }); Cause = '' } }
+        'NoRecord' { return [pscustomobject]@{ Outcome = 'Absent'; Targets = @(); Cause = '' } }
+        'NoTool' { return [pscustomobject]@{ Outcome = 'Unread'; Targets = @(); Cause = ("Resolver query: no query tool on this host ({0})." -f ([string]$r.Error).Trim().TrimEnd('.')) } }
+        default { return [pscustomobject]@{ Outcome = 'Unread'; Targets = @(); Cause = 'Resolver query: the DNS server did not answer.' } }
+    }
+}
+
+function Get-AdfaDnsEvidenceState {
+    <#
+    .SYNOPSIS
+        Pure: one record on one DNS server, from the two instruments. Present when either sees it,
+        AbsentBoth when both say it is absent, AbsentOne when one says absent and the other could not
+        be read, Unread when neither could.
+    .DESCRIPTION
+        A negative conclusion needs two instruments: only AbsentBoth may be graded as a measured
+        absence. A server read and a query that disagree (one present, one absent) are Present: a
+        record seen by either exists somewhere the DC locator can reach.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][ValidateSet('Present', 'Absent', 'Unread')][string]$ServerOutcome, [Parameter(Mandatory)][ValidateSet('Present', 'Absent', 'Unread')][string]$ResolverOutcome)
+    if ($ServerOutcome -eq 'Present' -or $ResolverOutcome -eq 'Present') { return 'Present' }
+    if ($ServerOutcome -eq 'Absent' -and $ResolverOutcome -eq 'Absent') { return 'AbsentBoth' }
+    if ($ServerOutcome -eq 'Absent' -or $ResolverOutcome -eq 'Absent') { return 'AbsentOne' }
+    return 'Unread'
+}
+
+function Get-AdfaDnsGradeText {
+    <#
+    .SYNOPSIS
+        Pure: where a DNS grade came from - "Graded <status>: <ThresholdSource>." The built-in source
+        says tool defaults, not Microsoft values; after -ConfigOverridePath it names the file for the
+        keys the file supplied (Merge-AdfaDnsConfig), so a grade set by a file is never called a tool
+        default. Every row that carries this text is matched by a section-scoped recommendation entry
+        anchored on its Item, so a file path here cannot choose advice.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Status, [Parameter(Mandatory)][hashtable]$Config)
+    $source = ([string]$Config['ThresholdSource']).Trim().TrimEnd('.')
+    if ($source -eq '') { $source = 'source not recorded' }
+    return ("Graded {0}: {1}." -f $Status, $source)
+}
+
+function Get-AdfaDnsDynamicUpdateVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict for ADA-DNS-001: one zone's dynamic update setting over the DNS servers that
+        host it.
+    .DESCRIPTION
+        Observations: one per hosting server - Server, Read, Cause, IsDsIntegrated ($true, $false or
+        $null), DynamicUpdate (text). NonsecureStatus (Fail by default) when a server that was read
+        reports the config's NonsecureDynamicUpdate on an AD-integrated zone: "Secure only is
+        recommended for AD-integrated zones" (Learn). That measured finding stands even when another
+        server was not read. Otherwise Not Assessed when any hosting server was not read, did not
+        return the property, or returned a value outside DynamicUpdateValues; Info when the zone is
+        not AD-integrated ("The last option is available only for AD-integrated DNS zones"); Pass
+        only when every hosting server was read.
+    .OUTPUTS
+        [pscustomobject] Status, Detail, Evidence.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][AllowEmptyCollection()]$Observations = @(), [Parameter(Mandatory)][hashtable]$Config)
+    $obs = @($Observations | Where-Object { $null -ne $_ })
+    $known = @($Config['DynamicUpdateValues'] | ForEach-Object { [string]$_ })
+    $nonsecure = [string]$Config['NonsecureDynamicUpdate']
+    $failing = @(); $unmeasured = @(); $notDs = @(); $values = @()
+    foreach ($o in $obs) {
+        if (-not [bool]$o.Read) { $unmeasured += ("{0}: {1}" -f [string]$o.Server, [string]$o.Cause); continue }
+        $value = ([string]$o.DynamicUpdate).Trim()
+        $match = @($known | Where-Object { $_ -eq $value })
+        if ($null -eq $o.IsDsIntegrated -or $o.IsDsIntegrated -isnot [bool] -or $match.Count -eq 0) {
+            $unmeasured += ("{0}: value not recognised or not returned (DynamicUpdate '{1}', IsDsIntegrated '{2}')" -f [string]$o.Server, $value, [string]$o.IsDsIntegrated)
+            continue
+        }
+        $values += ("{0}: {1}" -f [string]$o.Server, [string]$match[0])
+        if (-not [bool]$o.IsDsIntegrated) { $notDs += [string]$o.Server; continue }
+        if ([string]$match[0] -eq $nonsecure) { $failing += [string]$o.Server }
+    }
+    $evidence = (@($values) + @($unmeasured)) -join '; '
+    $n = $obs.Count
+    if ($failing.Count -gt 0) {
+        return [pscustomobject]@{ Status = [string]$Config['NonsecureStatus']; Evidence = $evidence
+            Detail = ("Dynamic update is Nonsecure and secure on this AD-integrated zone on {0} of {1} hosting DNS server(s): any computer on the network can then modify an existing record. Microsoft recommends Secure only for AD-integrated zones. {2}" -f $failing.Count, $n, (Get-AdfaDnsGradeText -Status ([string]$Config['NonsecureStatus']) -Config $Config)) }
+    }
+    if ($n -eq 0) { return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = ''; Detail = 'No DNS server reported this zone, so its dynamic update setting was not read.' } }
+    if ($unmeasured.Count -gt 0) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = $evidence
+            Detail = ("The dynamic update setting was not measured on {0} of {1} hosting DNS server(s) (not read, or a value not recognised); the servers that were read do not allow nonsecure updates. This is not a clean result." -f $unmeasured.Count, $n) }
+    }
+    if ($notDs.Count -gt 0) {
+        return [pscustomobject]@{ Status = $script:Status.Info; Evidence = $evidence
+            Detail = ("This zone is not AD-integrated on {0} of {1} hosting DNS server(s). Microsoft documents secure dynamic update as available only for AD-integrated zones, so it is not graded here." -f $notDs.Count, $n) }
+    }
+    return [pscustomobject]@{ Status = $script:Status.Pass; Evidence = $evidence
+        Detail = ("Every one of the {0} hosting DNS server(s) was read, and none allows nonsecure dynamic updates on this AD-integrated zone." -f $n) }
+}
+
+function Get-AdfaDnsScavengingVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict for ADA-DNS-002: whether stale records of one zone can be cleaned up - zone aging
+        on, and at least one hosting server scavenging.
+    .DESCRIPTION
+        Observations: Server, Read, Cause, ServerScavenging ($true/$false/$null, from
+        Test-AdfaDnsServerScavenges), AgingEnabled ($true/$false/$null). Learn: "You must enable both"
+        and scavenging "skips any zone that has aging disabled".
+          - AgingOffStatus (Warning) when a server that was read reports aging off - a measured fact
+            that stands even if another server was not read.
+          - ScavengingOffStatus (Warning) only when EVERY hosting server was read and none scavenges
+            (catalogue: "Warning only when every hosting server was read"), and only when the
+            observations are the zone's whole hosting set (-HostSetComplete): a zone replicated
+            beyond the servers this run read (Forest or Custom scope in a run that did not cover the
+            forest, or a scope this tool cannot map to servers) may be scavenged by a server it did
+            not read - Microsoft recommends exactly one scavenging server per zone - so that is Not
+            Assessed with -HostSetCause, never a Warning.
+          - Not Assessed when any hosting server was not read, or a value was not returned; Pass
+            only when every value was read, aging is on and at least one server scavenges.
+        Both grades are tool defaults: Microsoft publishes no requirement to enable either.
+    .OUTPUTS
+        [pscustomobject] Status, Detail, Evidence.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$Observations = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [bool]$HostSetComplete = $true,
+        [AllowNull()][AllowEmptyString()][string]$HostSetCause = ''
+    )
+    $obs = @($Observations | Where-Object { $null -ne $_ })
+    $n = $obs.Count
+    if ($n -eq 0) { return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = ''; Detail = 'No DNS server reported this zone, so its aging and scavenging were not read.' } }
+    $unmeasured = @(); $scavenging = @(); $notScavenging = @(); $agingOff = @(); $parts = @()
+    foreach ($o in $obs) {
+        if (-not [bool]$o.Read) { $unmeasured += ("{0}: {1}" -f [string]$o.Server, [string]$o.Cause); continue }
+        $s = $o.ServerScavenging
+        $a = $o.AgingEnabled
+        if ($a -is [bool] -and -not $a) { $agingOff += [string]$o.Server }
+        if ($null -eq $s -or $s -isnot [bool] -or $null -eq $a -or $a -isnot [bool]) {
+            $unmeasured += ("{0}: server scavenging '{1}', zone aging '{2}' (not returned or not read)" -f [string]$o.Server, [string]$s, [string]$a)
+            continue
+        }
+        if ($s) { $scavenging += [string]$o.Server } else { $notScavenging += [string]$o.Server }
+        $parts += ("{0}: server scavenging {1}, zone aging {2}" -f [string]$o.Server, $(if ($s) { 'on' } else { 'off' }), $(if ($a) { 'on' } else { 'off' }))
+    }
+    $evidence = (@($parts) + @($unmeasured)) -join '; '
+    $rank = @{ 'Fail' = 0; 'Warning' = 1; 'Info' = 2 }
+    $issues = @()
+    if ($agingOff.Count -gt 0) {
+        $issues += [pscustomobject]@{ Status = [string]$Config['AgingOffStatus']
+            Text = ("Zone aging is not enabled for this zone on {0} of {1} hosting DNS server(s); Microsoft documents that scavenging skips a zone with aging disabled, so its stale records are never removed." -f $agingOff.Count, $n) }
+    }
+    if ($HostSetComplete -and $unmeasured.Count -eq 0 -and $scavenging.Count -eq 0) {
+        $issues += [pscustomobject]@{ Status = [string]$Config['ScavengingOffStatus']
+            Text = ("Every one of the {0} hosting DNS server(s) was read and no hosting DNS server has scavenging enabled, so stale records in this zone are never removed (Microsoft: aging and scavenging must both be enabled)." -f $n) }
+    }
+    if ($issues.Count -gt 0) {
+        $worst = @($issues | Sort-Object { $r = $rank[[string]$_.Status]; if ($null -eq $r) { 9 } else { $r } })[0]
+        return [pscustomobject]@{ Status = [string]$worst.Status; Evidence = $evidence
+            Detail = ("{0} {1}" -f ((@($issues | ForEach-Object { $_.Text })) -join ' '), (Get-AdfaDnsGradeText -Status ([string]$worst.Status) -Config $Config)) }
+    }
+    if ($unmeasured.Count -gt 0) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = $evidence
+            Detail = ("Aging or scavenging was not measured on {0} of {1} hosting DNS server(s), so whether stale records of this zone are cleaned up is not known. This is not a clean result." -f $unmeasured.Count, $n) }
+    }
+    if (-not $HostSetComplete -and $scavenging.Count -eq 0) {
+        $why = ([string]$HostSetCause).Trim().TrimEnd('.')
+        if ($why -eq '') { $why = 'this zone is replicated to DNS servers this run did not read' }
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = $evidence
+            Detail = ("None of the {0} DNS server(s) of this run that host this zone has scavenging enabled, but {1}, so whether any hosting server scavenges it is not known. This is not a clean result." -f $n, $why) }
+    }
+    return [pscustomobject]@{ Status = $script:Status.Pass; Evidence = $evidence
+        Detail = ("Zone aging is on, and {0} of {1} hosting DNS server(s) scavenge (Microsoft recommends one scavenging server per zone)." -f $scavenging.Count, $n) }
+}
+
+function Get-AdfaDcLocatorVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict for ADA-DNS-003: whether one writable DC is a target of each graded DC locator
+        SRV record on every DNS server asked.
+    .DESCRIPTION
+        Checks: one per graded record per DNS server - Record, Server, State (from
+        Get-AdfaDnsEvidenceState), Cause. Fail only when both instruments agree a record does not
+        name the DC (AbsentBoth); OneInstrumentStatus (Warning by default) when only one instrument
+        could say so; Not Assessed when a server could not be read by either instrument, or there is
+        nothing to check; Pass only when every check is Present. A read-only DC is Info: Microsoft
+        documents that RODCs register site-specific records by default (reference SPEC: excluded).
+    .OUTPUTS
+        [pscustomobject] Status, Detail, Evidence.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$IsReadOnly, [AllowNull()][AllowEmptyCollection()]$Checks = @(), [Parameter(Mandatory)][hashtable]$Config)
+    if ($IsReadOnly -eq $true) {
+        return [pscustomobject]@{ Status = $script:Status.Info; Evidence = ''
+            Detail = 'Excluded: a read-only domain controller. Microsoft documents that read-only DCs register site-specific records by default, so the generic records are not expected of it.' }
+    }
+    $c = @($Checks | Where-Object { $null -ne $_ })
+    if ($c.Count -eq 0) { return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = ''; Detail = 'No DNS server was asked, so the DC locator records of this DC were not checked. This is not a clean result.' } }
+    $both = @($c | Where-Object { $_.State -eq 'AbsentBoth' })
+    $one = @($c | Where-Object { $_.State -eq 'AbsentOne' })
+    $unread = @($c | Where-Object { $_.State -ne 'Present' -and $_.State -ne 'AbsentBoth' -and $_.State -ne 'AbsentOne' })
+    $evidence = (@($c | ForEach-Object { $t = ("{0} on {1}: {2}" -f [string]$_.Record, [string]$_.Server, [string]$_.State); if ([string]$_.Cause -ne '') { $t = ("{0} ({1})" -f $t, [string]$_.Cause) }; $t })) -join '; '
+    if ($both.Count -gt 0) {
+        return [pscustomobject]@{ Status = $script:Status.Fail; Evidence = $evidence
+            Detail = ("This DC is not named by a graded DC locator record in {0} of {1} check(s), and both instruments (the server's own zone and a query to that server) agree. Clients and other DCs cannot find it through that record." -f $both.Count, $c.Count) }
+    }
+    if ($one.Count -gt 0) {
+        return [pscustomobject]@{ Status = [string]$Config['OneInstrumentStatus']; Evidence = $evidence
+            Detail = ("This DC is not named by a graded DC locator record in {0} of {1} check(s), seen by one instrument only - the other could not be read - so the absence is not confirmed. {2}" -f $one.Count, $c.Count, (Get-AdfaDnsGradeText -Status ([string]$Config['OneInstrumentStatus']) -Config $Config)) }
+    }
+    if ($unread.Count -gt 0) {
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = $evidence
+            Detail = ("{0} of {1} check(s) could not be read by either instrument. This is not a clean result." -f $unread.Count, $c.Count) }
+    }
+    return [pscustomobject]@{ Status = $script:Status.Pass; Evidence = $evidence
+        Detail = ("This DC is named by every graded DC locator record on every DNS server asked ({0} check(s))." -f $c.Count) }
+}
+
+function Get-AdfaDcARecordVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict for ADA-DNS-004: whether every A record for a DC's host name is one of the IPv4
+        addresses its adapters hold, and at least one exists.
+    .DESCRIPTION
+        Answers: one per DNS server - Server, State (Get-AdfaDnsEvidenceState), Addresses. ARecordStatus
+        (Warning by default) for an A record whose address is not configured on the DC, or no A
+        record on both instruments; the absence on one instrument only is OneInstrumentStatus when
+        that is Not Assessed, otherwise ARecordStatus. Not Assessed when the adapters were not read
+        ($null), hold no IPv4 address, a server could not be read, or a server returned a record
+        from which no address could be read (nothing was compared). IPv4 only: Learn does not
+        publish how IPv6 is handled for this purpose.
+    .OUTPUTS
+        [pscustomobject] Status, Detail, Evidence.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][string[]]$ConfiguredIPv4,
+        [AllowNull()][AllowEmptyString()][string]$ConfiguredCause = '',
+        [AllowNull()][AllowEmptyCollection()]$Answers = @(),
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $a = @($Answers | Where-Object { $null -ne $_ })
+    $evidence = (@($a | ForEach-Object { ("{0}: {1} {2}" -f [string]$_.Server, [string]$_.State, ((@($_.Addresses) | ForEach-Object { [string]$_ }) -join ',')).Trim() })) -join '; '
+    if ($null -eq $ConfiguredIPv4) {
+        $why = ([string]$ConfiguredCause).Trim()
+        if ($why -eq '') { $why = 'The adapters of this DC were not read.' }
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = $evidence; Detail = ("The DC's configured addresses are not known, so its A records were not compared. {0}" -f $why) }
+    }
+    $configured = @($ConfiguredIPv4 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+    if ($configured.Count -eq 0) { return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = $evidence; Detail = 'The adapters of this DC hold no IPv4 address, so its A records were not compared.' } }
+    if ($a.Count -eq 0) { return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = ''; Detail = 'No DNS server was asked, so the A records of this DC were not checked. This is not a clean result.' } }
+    $extra = @(); $both = 0; $one = 0; $unread = 0; $noAddress = 0
+    foreach ($ans in $a) {
+        switch ([string]$ans.State) {
+            'Present' {
+                $seen = @(@($ans.Addresses) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+                # A record was returned but no address could be read from it (the RecordData property
+                # names are provisional): nothing was compared, so it is not a match.
+                if ($seen.Count -eq 0) { $noAddress++; break }
+                foreach ($t in $seen) { if ($configured -notcontains $t -and $extra -notcontains $t) { $extra += $t } }
+            }
+            'AbsentBoth' { $both++ }
+            'AbsentOne' { $one++ }
+            default { $unread++ }
+        }
+    }
+    $status = [string]$Config['ARecordStatus']
+    if ($extra.Count -gt 0 -or $both -gt 0) {
+        $bits = @()
+        if ($extra.Count -gt 0) { $bits += ("{0} address(es) in A records for this DC are not configured on its adapters" -f $extra.Count) }
+        if ($both -gt 0) { $bits += ("{0} DNS server(s) hold no A record for it, by both instruments" -f $both) }
+        return [pscustomobject]@{ Status = $status; Evidence = $evidence; Detail = ("{0}. {1}" -f ($bits -join '; '), (Get-AdfaDnsGradeText -Status $status -Config $Config)) }
+    }
+    if ($one -gt 0) {
+        $oneStatus = [string]$Config['OneInstrumentStatus']
+        if ($oneStatus -ne $script:Status.NotAssessed) { $oneStatus = $status }
+        return [pscustomobject]@{ Status = $oneStatus; Evidence = $evidence
+            Detail = ("{0} DNS server(s) hold no A record for this DC by one instrument only; the other could not be read, so the absence is not confirmed. {1}" -f $one, (Get-AdfaDnsGradeText -Status $oneStatus -Config $Config)) }
+    }
+    if ($unread -gt 0 -or $noAddress -gt 0) {
+        $bits = @()
+        if ($unread -gt 0) { $bits += ("{0} of {1} DNS server(s) could not be read by either instrument" -f $unread, $a.Count) }
+        if ($noAddress -gt 0) { $bits += ("{0} of {1} DNS server(s) returned an A record whose address this tool could not read, so it was not compared" -f $noAddress, $a.Count) }
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; Evidence = $evidence; Detail = ("{0}. This is not a clean result." -f ($bits -join '; ')) }
+    }
+    return [pscustomobject]@{ Status = $script:Status.Pass; Evidence = $evidence; Detail = ("Every A record for this DC on the {0} DNS server(s) asked is an address configured on its adapters." -f $a.Count) }
+}
+
+function Get-AdfaStaleDnsRecordVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict for ADA-DNS-005: the DC locator SRV targets and <guid>._msdcs CNAMEs that match
+        no domain controller the directory holds.
+    .DESCRIPTION
+        Candidates: Name, Type (SRV or CNAME), Target, Server. An SRV target is stale when its host
+        is in no -KnownDcHosts entry (read-only DCs are known, so their records are never stale). A
+        CNAME is stale when its GUID label is in no -KnownDsaGuids entry; with -DsaError set the DSA
+        GUIDs were not read and no CNAME is judged, and an empty -KnownDsaGuids is read the same way
+        when there is a CNAME to judge. Not Assessed, with nothing listed, when no DC is known (checked
+        first: every SRV target would otherwise be listed as stale). StaleRecordStatus (Warning by
+        default) when any is stale; Not Assessed when nothing is stale but a server or the DSA list
+        was not read; Pass otherwise. Microsoft publishes no grade, only "Remove references to stale
+        domain controllers".
+    .OUTPUTS
+        [pscustomobject] Stale (Name, Type, Target, Servers), Status, Detail.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$Candidates = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$KnownDcHosts = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$KnownDsaGuids = @(),
+        [AllowNull()][AllowEmptyString()][string]$DsaError = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$Unread = @(),
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $hosts = @{}
+    foreach ($h in @($KnownDcHosts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) { $hosts[$h.Trim().TrimEnd('.').ToLowerInvariant()] = $true }
+    # No DC known: every SRV target would look stale, so nothing is judged. This guard comes before
+    # any record is listed, so an empty DC list can never turn live DCs' records into findings.
+    if ($hosts.Count -eq 0) { return [pscustomobject]@{ Stale = @(); Status = $script:Status.NotAssessed; Detail = 'No domain controller is known to this run, so no record could be judged. This is not a clean result.' } }
+    $guids = @{}
+    foreach ($g in @($KnownDsaGuids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) { $guids[$g.Trim().Trim('{', '}').ToLowerInvariant()] = $true }
+    $dsaMissing = -not [string]::IsNullOrWhiteSpace($DsaError)
+    # No DSA GUID known and no error given: a forest always has an NTDS Settings object, so an empty
+    # list is a read that saw nothing, and every <guid>._msdcs CNAME would look stale.
+    if (-not $dsaMissing -and $guids.Count -eq 0 -and @(@($Candidates | Where-Object { $null -ne $_ -and ([string]$_.Type).ToUpperInvariant() -eq 'CNAME' })).Count -gt 0) {
+        $dsaMissing = $true
+        $DsaError = 'no DSA GUID is known to this run'
+    }
+    $stale = [ordered]@{}
+    foreach ($c in @($Candidates | Where-Object { $null -ne $_ })) {
+        $type = ([string]$c.Type).ToUpperInvariant()
+        $key = ''
+        if ($type -eq 'SRV') {
+            $t = ([string]$c.Target).Trim().TrimEnd('.').ToLowerInvariant()
+            if ($t -eq '' -or $hosts.ContainsKey($t)) { continue }
+            $key = ("SRV|{0}|{1}" -f ([string]$c.Name).ToLowerInvariant(), $t)
+        }
+        elseif ($type -eq 'CNAME') {
+            if ($dsaMissing) { continue }
+            $label = (([string]$c.Name).Trim().TrimEnd('.').Split('.'))[0].ToLowerInvariant()
+            if ($label -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -or $guids.ContainsKey($label)) { continue }
+            $key = ("CNAME|{0}" -f ([string]$c.Name).Trim().TrimEnd('.').ToLowerInvariant())
+        }
+        else { continue }
+        if (-not $stale.Contains($key)) {
+            $stale[$key] = [pscustomobject]@{ Name = ([string]$c.Name).Trim().TrimEnd('.'); Type = $type; Target = ([string]$c.Target).Trim().TrimEnd('.'); Servers = @() }
+        }
+        $srv = [string]$c.Server
+        if ($srv -ne '' -and @($stale[$key].Servers) -notcontains $srv) { $stale[$key].Servers = @(@($stale[$key].Servers) + $srv) }
+    }
+    $list = @($stale.Values)
+    $gaps = @($Unread | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($list.Count -gt 0) {
+        return [pscustomobject]@{ Stale = $list; Status = [string]$Config['StaleRecordStatus']
+            Detail = ("{0} DC locator record(s) name a host or a DSA GUID that matches no domain controller in the directory. Microsoft: remove references to stale domain controllers. {1}" -f $list.Count, (Get-AdfaDnsGradeText -Status ([string]$Config['StaleRecordStatus']) -Config $Config)) }
+    }
+    if ($dsaMissing -or $gaps.Count -gt 0) {
+        $bits = @()
+        if ($dsaMissing) { $bits += ("the DSA GUIDs could not be read, so no <guid>._msdcs CNAME was judged ({0})" -f $DsaError.Trim().TrimEnd('.')) }
+        if ($gaps.Count -gt 0) { $bits += ("{0} read(s) did not answer" -f $gaps.Count) }
+        return [pscustomobject]@{ Stale = @(); Status = $script:Status.NotAssessed; Detail = ("No record that names no DC was found, but {0}. This is not a clean result." -f ($bits -join '; ')) }
+    }
+    return [pscustomobject]@{ Stale = @(); Status = $script:Status.Pass; Detail = 'Every DC locator record read names a domain controller in the directory.' }
+}
+
+function Get-AdfaDcDnsClientVerdict {
+    <#
+    .SYNOPSIS
+        Pure verdict for one DC's DNS client settings (ADA-INV-016, inventory, with one graded flag).
+    .DESCRIPTION
+        -DnsServers: the DC's DNS server list in order across its enabled adapters, or $null when the
+        list was not measured - the adapters not read, or no adapter returned DNSServerSearchOrder
+        (then Not Assessed with -Cause). SingleServerStatus (Warning by default) for a list that was
+        returned empty, or a single DNS server while more than one DC is known to this run:
+        Microsoft calls a single server, loopback included, "a single point of failure ... tolerable
+        in a forest with only one domain controller" (KB 4013 article). A single server with one DC
+        known is Info only when -DcCountIsForest says the count covers every DC of the forest;
+        otherwise the premise is not measured and the row is Not Assessed. Everything else is Info:
+        itself or loopback first (Learn allows a DC to use itself as preferred once replication is
+        verified; its hub-and-branch guidance lists itself last), no other known DC in the list, and
+        addresses that are no DC known to this run (Learn: do not point DCs at ISP DNS servers; an
+        address alone cannot tell an ISP resolver from an internal one). Addresses stay in the
+        DnsServers column, never in Detail.
+    .OUTPUTS
+        [pscustomobject] Status, Detail.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][string[]]$DnsServers,
+        [AllowNull()][AllowEmptyString()][string]$Cause = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$SelfAddresses = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$KnownDcAddresses = @(),
+        [int]$DcCount = 0,
+        [bool]$DcCountIsForest = $false,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    if ($null -eq $DnsServers) {
+        $why = ([string]$Cause).Trim()
+        if ($why -eq '') { $why = 'The adapters of this DC were not read.' }
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed; Detail = $why }
+    }
+    $list = New-Object System.Collections.ArrayList
+    foreach ($s in @($DnsServers)) { $t = ([string]$s).Trim(); if ($t -ne '' -and -not $list.Contains($t)) { [void]$list.Add($t) } }
+    $loop = @($Config['LoopbackAddresses'] | ForEach-Object { [string]$_ })
+    $self = @(@($SelfAddresses) + $loop | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+    $dcs = @($KnownDcAddresses | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+    $single = [string]$Config['SingleServerStatus']
+    if ($list.Count -eq 0) {
+        return [pscustomobject]@{ Status = $single; Detail = ("The DNS server list returned for the enabled adapters of this DC is empty, so it cannot resolve the locator records it depends on. {0}" -f (Get-AdfaDnsGradeText -Status $single -Config $Config)) }
+    }
+    $notes = @()
+    if ($self -contains [string]$list[0]) { $notes += 'It lists itself or loopback first (Microsoft allows this once replication is verified; its hub-and-branch guidance lists the DC itself last).' }
+    $others = @($list | Where-Object { $self -notcontains $_ -and $dcs -contains $_ })
+    if ($others.Count -eq 0 -and $DcCount -gt 1) { $notes += 'It lists no other domain controller known to this run.' }
+    $unknown = @($list | Where-Object { $self -notcontains $_ -and $dcs -notcontains $_ })
+    if ($unknown.Count -gt 0) { $notes += ("{0} address(es) are not an address of any domain controller known to this run; Microsoft says not to point DCs at ISP DNS servers, and an address alone cannot show whether one is." -f $unknown.Count) }
+    $noteText = ''
+    if ($notes.Count -gt 0) { $noteText = (' ' + ($notes -join ' ')) }
+    if ($list.Count -eq 1) {
+        if ($DcCount -gt 1) {
+            return [pscustomobject]@{ Status = $single
+                Detail = ("This DC points to a single DNS server while {0} domain controllers are known to this run. Microsoft: a single DNS server, loopback included, is a single point of failure, tolerable only in a forest with one domain controller. {2}{1}" -f $DcCount, $noteText, (Get-AdfaDnsGradeText -Status $single -Config $Config)) }
+        }
+        if ($DcCountIsForest -and $DcCount -eq 1) {
+            return [pscustomobject]@{ Status = $script:Status.Info
+                Detail = ("This DC points to a single DNS server, and it is the only domain controller of the forest (every domain of the forest was read); Microsoft calls that tolerable in a forest with one domain controller.{0}" -f $noteText) }
+        }
+        return [pscustomobject]@{ Status = $script:Status.NotAssessed
+            Detail = ("This DC points to a single DNS server. Microsoft calls that a single point of failure, tolerable only in a forest with one domain controller, and this run did not count the domain controllers of the whole forest (it did not cover every domain, or a domain's DC list could not be read), so whether that holds here is not known. This is not a clean result.{0}" -f $noteText) }
+    }
+    return [pscustomobject]@{ Status = $script:Status.Info; Detail = ("This DC lists {0} DNS servers (inventory).{1}" -f $list.Count, $noteText) }
+}
+
+function Get-AdfaDcNetworkRaw {
+    <#
+    .SYNOPSIS
+        The one place C13 reads a DC's adapters: Win32_NetworkAdapterConfiguration where IPEnabled,
+        five properties, in one bounded CIM session.
+    .DESCRIPTION
+        IPEnabled, IPAddress, DNSServerSearchOrder, Description and InterfaceIndex, read raw
+        (Get-AdfaCimRawValue). The class has methods that change an adapter (SetDNSServerSearchOrder,
+        EnableStatic, ...); none is called - instances are enumerated, properties read. Never throws;
+        the session is always closed with -WhatIf and -Confirm forced off (see Get-AdfaDcDiskRaw).
+          https://learn.microsoft.com/windows/win32/cimwin32prov/win32-networkadapterconfiguration
+          Read: 2026-11-17.
+    .OUTPUTS
+        [pscustomobject] Ok, Protocol, Error, ErrorCode, Adapters (IPEnabled, IPAddress,
+        DNSServerSearchOrder - $null when absent, Description, InterfaceIndex).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [ValidateSet('Wsman', 'Dcom')][string]$Protocol = 'Wsman',
+        [pscredential]$Credential,
+        [int]$OperationTimeoutSec = 90
+    )
+    $out = [pscustomobject]@{ Ok = $false; Protocol = $Protocol; Error = ''; ErrorCode = ''; Adapters = @() }
+    $session = $null
+    try {
+        $sessionArgs = @{ ComputerName = $ComputerName; OperationTimeoutSec = [uint32]$OperationTimeoutSec; ErrorAction = 'Stop' }
+        if ($Protocol -eq 'Dcom') { $sessionArgs.SessionOption = New-CimSessionOption -Protocol Dcom }
+        if ($Credential) { $sessionArgs.Credential = $Credential }
+        $session = New-CimSession @sessionArgs
+        $instances = @(Get-CimInstance -CimSession $session -Namespace 'root/cimv2' -ClassName 'Win32_NetworkAdapterConfiguration' -Filter 'IPEnabled = TRUE' `
+                -Property 'IPEnabled', 'IPAddress', 'DNSServerSearchOrder', 'Description', 'InterfaceIndex' -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -ErrorAction Stop)
+        $list = New-Object System.Collections.ArrayList
+        foreach ($i in $instances) {
+            if ($null -eq $i) { continue }
+            $dns = Get-AdfaCimRawValue -Instance $i -Name 'DNSServerSearchOrder'
+            $dnsList = $null
+            if ($null -ne $dns) { $dnsList = @(@($dns) | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' }) }
+            [void]$list.Add([pscustomobject]@{
+                    IPEnabled = ConvertTo-AdfaDnsBool -Value (Get-AdfaCimRawValue -Instance $i -Name 'IPEnabled')
+                    IPAddress = @(@(Get-AdfaCimRawValue -Instance $i -Name 'IPAddress') | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+                    DNSServerSearchOrder = $dnsList
+                    Description = [string](Get-AdfaCimRawValue -Instance $i -Name 'Description')
+                    InterfaceIndex = Get-AdfaCimRawValue -Instance $i -Name 'InterfaceIndex'
+                })
+        }
+        $out.Adapters = $list.ToArray()
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $codeProp = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $out.ErrorCode = [string]$codeProp.Value }
+    }
+    finally {
+        if ($null -ne $session) {
+            try { Remove-CimSession -CimSession $session -WhatIf:$false -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+    return $out
+}
+
+function Get-AdfaDcNetworkState {
+    <#
+    .SYNOPSIS
+        One DC's adapters, read once per run and shared by the DC DNS Client rows and the DC A
+        record check: its configured IPv4 addresses and its DNS server list.
+    .DESCRIPTION
+        Probes WinRM and RPC through the shared cache (Test-AdfaDcPort), reads over the first
+        transport that answers (Invoke-AdfaDcRemoteRead), and keeps unreachable, access denied and
+        any other failure apart. A query that answered with no IP-enabled adapter is Error ("Read
+        returned no adapter"), not a DC with no address and no DNS server. Never throws.
+    .OUTPUTS
+        [pscustomobject] Status (Read|Unreachable|AccessDenied|Error), Cause, IPv4 (string[]),
+        DnsServers (string[] in adapter order, $null when no adapter returned the property),
+        DnsCause (why DnsServers is $null after a read), Adapters.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90
+    )
+    $key = $ComputerName.ToLowerInvariant()
+    if ($script:DcNetworkCache.ContainsKey($key)) { return $script:DcNetworkCache[$key] }
+    $state = [pscustomobject]@{ Status = 'Error'; Cause = ''; IPv4 = @(); DnsServers = $null; DnsCause = ''; Adapters = @() }
+    $wsmanPort = [int]$Config['WsmanPort']
+    $rpcPort = [int]$Config['RpcPort']
+    $protocols = @()
+    if (Test-AdfaDcPort -ComputerName $ComputerName -Port $wsmanPort -TimeoutMs $PortTimeoutMs) { $protocols += 'Wsman' }
+    if (Test-AdfaDcPort -ComputerName $ComputerName -Port $rpcPort -TimeoutMs $PortTimeoutMs) { $protocols += 'Dcom' }
+    if ($protocols.Count -eq 0) {
+        $state.Status = 'Unreachable'
+        $state.Cause = ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so the adapters were not read." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
+    }
+    else {
+        $readArguments = @{ OperationTimeoutSec = $OperationTimeoutSec }
+        if ($Credential) { $readArguments.Credential = $Credential }
+        $read = Invoke-AdfaDcRemoteRead -ComputerName $ComputerName -Protocols $protocols -ReadCommand 'Get-AdfaDcNetworkRaw' -ReadArguments $readArguments
+        if ($null -eq $read.Raw -or -not $read.Raw.Ok) {
+            if ($read.Denied) {
+                $state.Status = 'AccessDenied'
+                $state.Cause = ("Access denied: the account running the assessment could not read the adapters of this DC (local Administrators rights are needed for remote WMI). Reported by the DC - {0}" -f (@($read.Attempts) -join ' | '))
+            }
+            else {
+                $state.Status = 'Error'
+                $state.Cause = ("Read failed: a port answered, but the adapters could not be read. Reported by the DC - {0}" -f (@($read.Attempts) -join ' | '))
+            }
+        }
+        elseif (@(@($read.Raw.Adapters) | Where-Object { $null -ne $_ }).Count -eq 0) {
+            # The query answered but listed no IP-enabled adapter. A DC that answers over the network
+            # has one, so this is a read that saw nothing (a damaged WMI repository, a filter the
+            # provider did not honour), not a measured configuration: neither the addresses nor the
+            # DNS servers are known.
+            $state.Status = 'Error'
+            $state.Cause = 'Read returned no adapter: the adapter query answered but listed no IP-enabled adapter, so the addresses and the DNS server list of this DC are not known.'
+        }
+        else {
+            $state.Status = 'Read'
+            $state.Adapters = @($read.Raw.Adapters)
+            $ipv4 = @(); $dns = $null
+            foreach ($ad in @($read.Raw.Adapters)) {
+                foreach ($ip in @($ad.IPAddress)) {
+                    $parsed = $null
+                    if ([System.Net.IPAddress]::TryParse([string]$ip, [ref]$parsed) -and $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and $ipv4 -notcontains [string]$ip) { $ipv4 += [string]$ip }
+                }
+                if ($null -ne $ad.DNSServerSearchOrder) {
+                    if ($null -eq $dns) { $dns = @() }
+                    foreach ($s in @($ad.DNSServerSearchOrder)) { if ($dns -notcontains [string]$s) { $dns += [string]$s } }
+                }
+            }
+            $state.IPv4 = @($ipv4)
+            # $null stays $null: no adapter returned DNSServerSearchOrder, so the list is not
+            # measured (Win32_NetworkAdapterConfiguration gives no other way to tell "no DNS server
+            # configured" from "property not returned"); the DNS client row is then Not Assessed.
+            if ($null -ne $dns) { $state.DnsServers = @($dns) }
+            else {
+                $state.DnsServers = $null
+                $state.DnsCause = 'Not returned: the adapters of this DC were read, but none returned a DNS server list (DNSServerSearchOrder), so whether a DNS server is configured is not known.'
+            }
+        }
+    }
+    $script:DcNetworkCache[$key] = $state
+    return $state
+}
+
 function Get-AdfaDnsHealth {
     <#
     .SYNOPSIS
-        DNS zone/scavenging/forwarder posture per DC (DnsServer module; degrades if absent).
+        DNS Health: per DNS server read, per zone dynamic update (DNS-001) and aging/scavenging
+        (DNS-002) over the DNS servers of each domain, and the zone inventory (INV-013).
+    .DESCRIPTION
+        Every DC of every scoped domain is asked as a DNS server, through the DnsServer module of
+        the host running the assessment (Get-DnsServerZone, Get-DnsServerScavenging,
+        Get-DnsServerZoneAging, Get-DnsServerForwarder with -ComputerName; Get-AdfaDnsServerRaw).
+        RPC is probed once per DC (Test-AdfaDcPort). Unreachable, access denied, DNS provider
+        missing, timed out, any other failure and the DnsServer module missing are separate Not
+        Assessed causes, never Pass.
+
+        DECLARED POPULATION: the domains named in -ScopedDomains (each one either has DC rows or
+        its own "DNS server - <domain>" Not Assessed row), every DC of each (one "DNS server: <dc>"
+        row), and every primary zone a read DC of the domain reports (one "Zone dynamic update" and
+        one "Zone scavenging" row per zone and domain - per zone for a forest-wide zone, see below -
+        a "Zone configuration" row per zone and server,
+        and a "DNS zones (population)" row per domain). A DC that was not read counts as a hosting
+        server of every zone of its domain, so no zone of that domain can Pass.
+
+        Hosting set by replication scope (ReplicationScope, read on every server that reports the
+        zone): a Domain zone is graded per domain over that domain's DNS servers. A Forest or Custom
+        zone is graded once, under the first domain that holds it, over every DNS server of the run
+        (a DC of any domain that was not read counts as a host); "no hosting server scavenges" is
+        asserted for it only with -ForestComplete (every domain of the forest scoped, Invoke-Main)
+        and no inventory failure. Any other scope - Legacy, none, not returned, or servers that
+        disagree - never gets that Warning, because the servers that host it are not known.
+
+        The forwarder and zone transfer rows of earlier versions are kept as they were; the
+        "<dc>: zones" and "<dc>: scavenging" rows are replaced by the zone rows (the old scavenging
+        row passed a zone whose aging property was not returned).
     .OUTPUTS
         [pscustomobject[]]
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers, [pscredential]$Credential, [int]$RpcPortTimeoutMs = 1200)
-    if (@($DomainControllers).Count -eq 0) {
-        return @(New-Finding -Area 'DNS' -Item 'DNS health' -Status $script:Status.NotAssessed `
-                -Detail 'No domain controllers were enumerated, so no DNS server could be queried. This is not a clean result.')
-    }
-    if (-not (Test-ModuleAvailable -Name 'DnsServer')) {
-        return @(New-Finding -Area 'DNS' -Item 'DnsServer module' -Status $script:Status.NotAssessed -Detail 'RSAT DnsServer module not installed on this host.')
-    }
-    Import-Module DnsServer -ErrorAction SilentlyContinue -Verbose:$false
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [hashtable]$Config = $script:Config.Dns,
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [bool]$ForestComplete = $false
+    )
     $rows = @()
-    foreach ($dc in $DomainControllers) {
-        if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
-            $rows += New-Finding -Area 'DNS' -Item $dc -Status $script:Status.NotAssessed -Detail 'DC not reachable (RPC/135).'
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaDnsRow -Scope ([string]$gap.Domain) -Item ("DNS server - {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No DNS server of it was read.')
+    }
+    if ($targets.Count -eq 0) {
+        $why = ''
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = (" Domain controller enumeration failed: {0}." -f $EnumerationError.Trim().TrimEnd('.')) }
+        $rows += New-AdfaDnsRow -Item 'DNS health' -Status $script:Status.NotAssessed -Detail ("No domain controllers were enumerated, so no DNS server could be queried.{0} This is not a clean result." -f $why)
+        return @($rows)
+    }
+    $module = [bool](Test-ModuleAvailable -Name 'DnsServer')
+    if ($module) { Import-Module DnsServer -ErrorAction SilentlyContinue -Verbose:$false }
+    $rpcPort = [int]$Config['RpcPort']
+    $graded = @($Config['GradedZoneTypes'] | ForEach-Object { [string]$_ })
+    # Per domain, in the order the DCs came: each DC with its read, or the cause it was not read.
+    $byDomain = [ordered]@{}
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        $domainKey = $scope.ToLowerInvariant()
+        if (-not $byDomain.Contains($domainKey)) { $byDomain[$domainKey] = [pscustomobject]@{ Scope = $scope; Servers = (New-Object System.Collections.ArrayList) } }
+        $label = $dc
+        if ([string]::IsNullOrWhiteSpace($dc)) { $label = '(unnamed)' }
+        $entry = [pscustomobject]@{ Server = $label; Read = $false; Cause = ''; Raw = $null }
+        $item = ("DNS server: {0}" -f $label)
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $entry.Cause = 'The inventory holds a domain controller with no host name, so there was nothing to connect to.'
+        }
+        elseif (-not $module) {
+            $entry.Cause = 'The DnsServer PowerShell module is not installed on the host running the assessment (it comes with the DNS Server role or RSAT), so no DNS server was read.'
+        }
+        elseif (-not (Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs)) {
+            $entry.Cause = ("Unreachable: RPC ({0}) did not answer within {1} ms, so no DNS server read was attempted." -f $rpcPort, $PortTimeoutMs)
+        }
+        else {
+            $raw = Get-AdfaDnsServerRaw -ComputerName $dc
+            if ($null -eq $raw -or -not $raw.Ok) {
+                $message = ''; $code = ''
+                if ($null -ne $raw) { $message = [string]$raw.Error; $code = [string]$raw.ErrorCode }
+                $entry.Cause = Get-AdfaDnsReadCause -Class (Get-AdfaDnsReadErrorClass -Message $message -ErrorCode $code -Config $Config) -Message $message
+            }
+            else { $entry.Read = $true; $entry.Raw = $raw }
+        }
+        [void]$byDomain[$domainKey].Servers.Add($entry)
+        if (-not $entry.Read) {
+            $rows += New-AdfaDnsRow -Scope $scope -Item $item -Status $script:Status.NotAssessed -Detail $entry.Cause -Server $label
             continue
         }
-        try {
-            $zones = @(Get-DnsServerZone -ComputerName $dc -ErrorAction Stop | Where-Object { -not $_.IsAutoCreated })
-            $noScav = @($zones | Where-Object { $_.IsDsIntegrated -and -not $_.IsReverseLookupZone -and ($_.PSObject.Properties.Name -contains 'AgingEnabled') -and -not $_.AgingEnabled })
-            $rows += New-Finding -Area 'DNS' -Item ("{0}: zones" -f $dc) -Status $script:Status.Info -Detail ("{0} zones; {1} AD-integrated" -f $zones.Count, @($zones | Where-Object IsDsIntegrated).Count)
-            if ($noScav.Count -gt 0) {
-                $rows += New-Finding -Area 'DNS' -Item ("{0}: scavenging" -f $dc) -Status $script:Status.Warning -Detail ("{0} AD-integrated forward zones without aging/scavenging: {1}" -f $noScav.Count, (($noScav.ZoneName | Select-Object -First 8) -join ', '))
+        $raw = $entry.Raw
+        $zones = @($raw.Zones | Where-Object { $_.IsAutoCreated -ne $true -and [string]$_.ZoneName -ne '' })
+        $scavText = 'not read'
+        if ($raw.ScavengingOk) {
+            $on = Test-AdfaDnsServerScavenges -Interval $raw.ScavengingInterval
+            if ($null -eq $on) { $scavText = 'not recognised' } elseif ($on) { $scavText = 'enabled' } else { $scavText = 'disabled' }
+        }
+        $rows += New-AdfaDnsRow -Scope $scope -Item $item -Status $script:Status.Info -Server $label -Evidence ([string]$raw.ScavengingError) `
+            -Detail ("Read: {0} zone(s) not auto-created, {1} AD-integrated; server scavenging {2}." -f $zones.Count, @($zones | Where-Object { $_.IsDsIntegrated -eq $true }).Count, $scavText)
+        foreach ($z in $zones) {
+            $agingText = ''
+            $agingEntry = $raw.Aging[([string]$z.ZoneName).ToLowerInvariant()]
+            if ($null -ne $agingEntry) {
+                if ($agingEntry.Ok) { $agingText = ("AgingEnabled={0}; NoRefresh={1}; Refresh={2}; ScavengeServers={3}" -f [string]$agingEntry.AgingEnabled, [string]$agingEntry.NoRefreshInterval, [string]$agingEntry.RefreshInterval, (@($agingEntry.ScavengeServers) -join ',')) }
+                else { $agingText = ("not read: {0}" -f [string]$agingEntry.Error) }
+            }
+            $rows += New-AdfaDnsRow -Scope $scope -Item ("Zone configuration: {0} on {1}" -f [string]$z.ZoneName, $label) -Status $script:Status.Info `
+                -Detail 'Zone configuration as this DNS server reports it (inventory, not graded).' -Server $label -Zone ([string]$z.ZoneName) `
+                -ZoneType ([string]$z.ZoneType) -ReplicationScope ([string]$z.ReplicationScope) -DsIntegrated ([string]$z.IsDsIntegrated) `
+                -DynamicUpdate ([string]$z.DynamicUpdate) -Aging $agingText
+        }
+        # Kept from earlier versions, unchanged.
+        if ($raw.ForwardersOk) {
+            $fwdIps = @($raw.Forwarders)
+            if ($fwdIps.Count -eq 0) {
+                $rows += New-AdfaDnsRow -Scope $scope -Item ("{0}: forwarders" -f $label) -Status $script:Status.Info -Server $label `
+                    -Detail 'No conditional or global forwarders are configured on this DNS server. It resolves names outside its own zones through root hints, or not at all. That is a valid design - confirm it is the intended one, because a DC that cannot resolve external names is a common post-recovery state.'
             }
             else {
-                $rows += New-Finding -Area 'DNS' -Item ("{0}: scavenging" -f $dc) -Status $script:Status.Pass -Detail 'Aging/scavenging configured on AD-integrated forward zones.'
-            }
-            try {
-                $fwd = Get-DnsServerForwarder -ComputerName $dc -ErrorAction Stop
-                $fwdIps = @(Get-AdfaForwarderAddress -Forwarder $fwd)
-                if ($fwdIps.Count -eq 0) {
-                    # A MEASURED absence, and it must not read as a failed measurement. Before
-                    # v1.12.0 this case threw (see Get-AdfaForwarderAddress) and was caught
-                    # below, so a DC with no forwarders was reported as "could not be read".
-                    $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.Info `
-                        -Detail 'No conditional or global forwarders are configured on this DNS server. It resolves names outside its own zones through root hints, or not at all. That is a valid design - confirm it is the intended one, because a DC that cannot resolve external names is a common post-recovery state.'
-                }
-                else {
-                    $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.Info `
-                        -Detail ("{0} forwarder(s): {1}" -f $fwdIps.Count, ($fwdIps -join ', '))
-                }
-            }
-            catch {
-                # Previously silent: the forwarders row simply vanished, so a reader could not
-                # tell "no forwarders configured" from "the query failed". Those two are now
-                # genuinely distinguished - this branch is a failed READ only.
-                $rows += New-Finding -Area 'DNS' -Item ("{0}: forwarders" -f $dc) -Status $script:Status.NotAssessed -Detail ("Forwarder list could not be read: {0}" -f $_.Exception.Message)
-            }
-            $insecureXfer = @($zones | Where-Object { $_.PSObject.Properties.Name -contains 'SecureSecondaries' -and $_.SecureSecondaries -eq 'TransferAnyServer' })
-            if ($insecureXfer.Count -gt 0) {
-                $rows += New-Finding -Area 'DNS' -Item ("{0}: zone transfer" -f $dc) -Status $script:Status.Warning -Detail ("Zones allowing transfer to ANY server: {0}" -f (($insecureXfer.ZoneName | Select-Object -First 8) -join ', '))
+                $rows += New-AdfaDnsRow -Scope $scope -Item ("{0}: forwarders" -f $label) -Status $script:Status.Info -Server $label -Detail ("{0} forwarder(s): {1}" -f $fwdIps.Count, ($fwdIps -join ', '))
             }
         }
-        catch {
-            $rows += New-Finding -Area 'DNS' -Item $dc -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+        else {
+            $rows += New-AdfaDnsRow -Scope $scope -Item ("{0}: forwarders" -f $label) -Status $script:Status.NotAssessed -Server $label -Detail ("Forwarder list could not be read: {0}" -f [string]$raw.ForwarderError)
+        }
+        $insecureXfer = @($zones | Where-Object { [string]$_.SecureSecondaries -eq 'TransferAnyServer' })
+        if ($insecureXfer.Count -gt 0) {
+            $rows += New-AdfaDnsRow -Scope $scope -Item ("{0}: zone transfer" -f $label) -Status $script:Status.Warning -Server $label `
+                -Detail ("Zones allowing transfer to ANY server: {0}" -f ((@($insecureXfer | ForEach-Object { [string]$_.ZoneName }) | Select-Object -First 8) -join ', '))
         }
     }
+    # Each graded zone's replication scope, over every server of the run that reported it. Domain:
+    # hosted by the DNS servers of one domain. Forest (or Custom): hosted beyond one domain, graded
+    # once over every server of the run. Anything else (Legacy, none, not returned, or servers that
+    # disagree): the hosting set is not known, so "no hosting server scavenges" is not asserted.
+    $domainScopes = @($Config['DomainScopes'] | ForEach-Object { [string]$_ })
+    $forestScopes = @($Config['ForestScopes'] | ForEach-Object { [string]$_ })
+    $scopeSeen = @{}
+    foreach ($domainKey in @($byDomain.Keys)) {
+        foreach ($s in @($byDomain[$domainKey].Servers | Where-Object { $_.Read })) {
+            foreach ($z in @($s.Raw.Zones)) {
+                if ($z.IsAutoCreated -eq $true -or [string]$z.ZoneName -eq '' -or $graded -notcontains [string]$z.ZoneType) { continue }
+                $k = ([string]$z.ZoneName).ToLowerInvariant()
+                if (-not $scopeSeen.ContainsKey($k)) { $scopeSeen[$k] = @() }
+                $v = ([string]$z.ReplicationScope).Trim()
+                if (@($scopeSeen[$k]) -notcontains $v) { $scopeSeen[$k] = @(@($scopeSeen[$k]) + $v) }
+            }
+        }
+    }
+    $scopeClass = @{}
+    foreach ($k in @($scopeSeen.Keys)) {
+        $values = @($scopeSeen[$k])
+        $class = 'Unknown'
+        if ($values.Count -gt 0 -and @($values | Where-Object { $domainScopes -notcontains $_ }).Count -eq 0) { $class = 'Domain' }
+        elseif ($values.Count -gt 0 -and @($values | Where-Object { $forestScopes -notcontains $_ }).Count -eq 0) { $class = 'Forest' }
+        $scopeClass[$k] = [pscustomobject]@{ Class = $class; Values = (@($values | ForEach-Object { if ($_ -eq '') { '(not returned)' } else { $_ } }) -join ', ') }
+    }
+    # The run read every DNS server a forest-wide zone can have only when every domain of the forest
+    # was in scope and every domain's DC list was read.
+    $forestHostSet = ($ForestComplete -and @($InventoryFailures | Where-Object { $null -ne $_ }).Count -eq 0 -and [string]::IsNullOrWhiteSpace($EnumerationError))
+    $allServers = @(foreach ($domainKey in @($byDomain.Keys)) { @($byDomain[$domainKey].Servers) })
+    $observe = {
+        param($ServerList, [string]$ZoneKey)
+        $out = @()
+        foreach ($s in @($ServerList)) {
+            if (-not $s.Read) { $out += [pscustomobject]@{ Server = $s.Server; Read = $false; Cause = $s.Cause; IsDsIntegrated = $null; DynamicUpdate = ''; ServerScavenging = $null; AgingEnabled = $null }; continue }
+            $z = @($s.Raw.Zones | Where-Object { ([string]$_.ZoneName).ToLowerInvariant() -eq $ZoneKey })
+            if ($z.Count -eq 0) { continue }
+            $scav = $null
+            if ($s.Raw.ScavengingOk) { $scav = Test-AdfaDnsServerScavenges -Interval $s.Raw.ScavengingInterval }
+            $agingEntry = $s.Raw.Aging[$ZoneKey]
+            $aging = $null
+            if ($null -ne $agingEntry -and $agingEntry.Ok) { $aging = $agingEntry.AgingEnabled }
+            $out += [pscustomobject]@{ Server = $s.Server; Read = $true; Cause = ''; IsDsIntegrated = $z[0].IsDsIntegrated; DynamicUpdate = [string]$z[0].DynamicUpdate; ServerScavenging = $scav; AgingEnabled = $aging }
+        }
+        return $out
+    }
+    $forestGraded = @{}
+    # Per domain and zone: every hosting server of the domain, read or not (of the run, for a
+    # forest-wide zone).
+    foreach ($domainKey in @($byDomain.Keys)) {
+        $group = $byDomain[$domainKey]
+        $scope = [string]$group.Scope
+        $domainLabel = $scope
+        if ($domainLabel -eq '') { $domainLabel = '(domain not known)' }
+        $servers = @($group.Servers)
+        $readServers = @($servers | Where-Object { $_.Read })
+        $zoneNames = [ordered]@{}
+        foreach ($s in $readServers) {
+            foreach ($z in @($s.Raw.Zones)) {
+                if ($z.IsAutoCreated -eq $true -or [string]$z.ZoneName -eq '' -or $graded -notcontains [string]$z.ZoneType) { continue }
+                $k = ([string]$z.ZoneName).ToLowerInvariant()
+                if (-not $zoneNames.Contains($k)) { $zoneNames[$k] = [string]$z.ZoneName }
+            }
+        }
+        foreach ($k in @($zoneNames.Keys)) {
+            $zoneName = [string]$zoneNames[$k]
+            $class = $scopeClass[$k]
+            $hostList = $servers
+            $complete = $true
+            $hostCause = ''
+            if ($class.Class -eq 'Forest') {
+                # Graded once, under the first domain that holds it, over every server of the run.
+                if ($forestGraded.ContainsKey($k)) { continue }
+                $forestGraded[$k] = $true
+                $hostList = $allServers
+                $complete = $forestHostSet
+                $hostCause = ("its replication scope ({0}) reaches DNS servers in every domain of the forest, and this run did not read every domain's DNS servers" -f $class.Values)
+            }
+            elseif ($class.Class -ne 'Domain') {
+                $complete = $false
+                $hostCause = ("its replication scope ({0}) does not tell this tool which DNS servers host it, so a server this run did not read may host and scavenge it" -f $class.Values)
+            }
+            $obs = @(& $observe $hostList $k)
+            $dyn = Get-AdfaDnsDynamicUpdateVerdict -Observations $obs -Config $Config
+            $rows += New-AdfaDnsRow -Scope $scope -Item ("Zone dynamic update: {0}" -f $zoneName) -Status ([string]$dyn.Status) -Detail ([string]$dyn.Detail) -Evidence ([string]$dyn.Evidence) -Zone $zoneName -ReplicationScope ([string]$class.Values)
+            $scavVerdict = Get-AdfaDnsScavengingVerdict -Observations $obs -Config $Config -HostSetComplete $complete -HostSetCause $hostCause
+            $rows += New-AdfaDnsRow -Scope $scope -Item ("Zone scavenging: {0}" -f $zoneName) -Status ([string]$scavVerdict.Status) -Detail ([string]$scavVerdict.Detail) -Evidence ([string]$scavVerdict.Evidence) -Zone $zoneName -ReplicationScope ([string]$class.Values)
+        }
+        $popStatus = $script:Status.Info
+        if ($readServers.Count -eq 0) { $popStatus = $script:Status.NotAssessed }
+        $rows += New-AdfaDnsRow -Scope $scope -Item ("DNS zones (population): {0}" -f $domainLabel) -Status $popStatus `
+            -Detail ("{0} primary zone(s) found; {1} of {2} DNS server(s) of this domain read. A zone replicated forest-wide is graded once, under the first domain that holds it, over every DNS server of the run." -f $zoneNames.Count, $readServers.Count, $servers.Count)
+    }
     return @($rows)
+}
+
+function Get-AdfaDnsLocatorFinding {
+    <#
+    .SYNOPSIS
+        The per-DC rows of DNS vs AD Consistency for one domain: DC locator records (DNS-003), DC A
+        records (DNS-004) and the records that name no DC (DNS-005).
+    .DESCRIPTION
+        Two instruments per record and DNS server: the server's own zone (Get-AdfaDnsServerRecord)
+        and a query to that server (Get-AdfaDnsResolverRecord). The configured IPv4 addresses come
+        from each DC's adapters (Get-AdfaDcNetworkState, shared with the DC DNS Client rows). In the
+        forest root domain the <guid>._msdcs CNAMEs of every DNS server's zone are read too, so a
+        CNAME left by a removed DC is found.
+
+        DECLARED POPULATION: every DC -Dcs names (one "DC locator records" and one "DC A record" row
+        each), one "Stale DC record" row per record that names no DC, and one "Stale DC records
+        (population)" row for the domain.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [AllowNull()][AllowEmptyCollection()]$Dcs = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$DnsServers = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [AllowNull()][AllowEmptyCollection()]$DsaInventory = @(),
+        [AllowNull()][AllowEmptyString()][string]$DsaError = '',
+        [AllowNull()][AllowEmptyString()][string]$ForestRoot = '',
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90
+    )
+    $rows = @()
+    $area = 'DnsAdConsistency'
+    $servers = @($DnsServers | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $module = [bool](Test-ModuleAvailable -Name 'DnsServer')
+    if ($module) { Import-Module DnsServer -ErrorAction SilentlyContinue -Verbose:$false }
+    $dcList = @($Dcs | Where-Object { $null -ne $_ })
+    $dcHosts = @($dcList | ForEach-Object { $p = $_.PSObject.Properties['HostName']; if ($null -ne $p -and $null -ne $p.Value) { ([string]$p.Value).Trim() } } | Where-Object { $_ -ne '' })
+    $unread = @()
+    $candidates = @()
+    # The graded SRV records, once per server and instrument.
+    $srvEvidence = @{}
+    foreach ($definition in @($Config['LocatorRecords'])) {
+        $recordName = ([string](Get-AdfaConfigValue -Entry $definition -Name 'Name')) -f $DomainName
+        $mnemonic = [string](Get-AdfaConfigValue -Entry $definition -Name 'Mnemonic')
+        foreach ($srv in $servers) {
+            $a = Get-AdfaDnsServerRecord -ComputerName $srv -Name $recordName -Type 'SRV' -Config $Config -ModuleAvailable $module -PortTimeoutMs $PortTimeoutMs
+            $b = Get-AdfaDnsResolverRecord -Name $recordName -Type 'SRV' -Server $srv
+            $srvEvidence[("{0}|{1}" -f $mnemonic, $srv)] = [pscustomobject]@{ Mnemonic = $mnemonic; Record = $recordName; Server = $srv; A = $a; B = $b }
+            foreach ($t in @(@($a.Targets) + @($b.Targets))) { $candidates += [pscustomobject]@{ Name = $recordName; Type = 'SRV'; Target = [string]$t; Server = $srv } }
+            if ($a.Outcome -eq 'Unread' -and $b.Outcome -eq 'Unread') { $unread += ("{0} on {1}" -f $mnemonic, $srv) }
+        }
+    }
+    foreach ($dc in $dcList) {
+        $hostProp = $dc.PSObject.Properties['HostName']
+        $dcHost = ''
+        if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $dcHost = ([string]$hostProp.Value).Trim() }
+        if ($dcHost -eq '') { continue }
+        $roProp = $dc.PSObject.Properties['IsReadOnly']
+        $readOnly = $null
+        if ($null -ne $roProp) { $readOnly = ConvertTo-AdfaDnsBool -Value $roProp.Value }
+        $hostKey = $dcHost.TrimEnd('.').ToLowerInvariant()
+        # DNS-003: is this DC a target of each graded record, per server and instrument.
+        $checks = @()
+        foreach ($k in @($srvEvidence.Keys | Sort-Object)) {
+            $e = $srvEvidence[$k]
+            $forDc = { param($Answer)
+                if ($Answer.Outcome -eq 'Unread') { return 'Unread' }
+                if ($Answer.Outcome -eq 'Present' -and @(@($Answer.Targets) | ForEach-Object { ([string]$_).TrimEnd('.').ToLowerInvariant() }) -contains $hostKey) { return 'Present' }
+                return 'Absent' }
+            $state = Get-AdfaDnsEvidenceState -ServerOutcome (& $forDc $e.A) -ResolverOutcome (& $forDc $e.B)
+            $cause = (@(@($e.A.Cause, $e.B.Cause) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) -join ' '
+            $checks += [pscustomobject]@{ Record = $e.Mnemonic; Server = $e.Server; State = $state; Cause = $cause }
+        }
+        $loc = Get-AdfaDcLocatorVerdict -IsReadOnly $readOnly -Checks $checks -Config $Config
+        $rows += New-AdfaDnsRow -Area $area -Scope $DomainName -Item ("DC locator records: {0}" -f $dcHost) -Status ([string]$loc.Status) -Detail ([string]$loc.Detail) `
+            -Evidence ([string]$loc.Evidence) -HostName $dcHost -RecordType 'SRV' -RecordName ((@($Config['LocatorRecords'] | ForEach-Object { ([string](Get-AdfaConfigValue -Entry $_ -Name 'Name')) -f $DomainName })) -join ', ')
+        # DNS-004: the A records for the DC's host name against its adapters.
+        $net = Get-AdfaDcNetworkState -ComputerName $dcHost -Config $Config -Credential $Credential -PortTimeoutMs $PortTimeoutMs -OperationTimeoutSec $OperationTimeoutSec
+        $configured = $null
+        $configuredCause = ''
+        if ($net.Status -eq 'Read') { $configured = @($net.IPv4) } else { $configuredCause = [string]$net.Cause }
+        $answers = @()
+        foreach ($srv in $servers) {
+            $a = Get-AdfaDnsServerRecord -ComputerName $srv -Name $dcHost -Type 'A' -Config $Config -ModuleAvailable $module -PortTimeoutMs $PortTimeoutMs
+            $b = Get-AdfaDnsResolverRecord -Name $dcHost -Type 'A' -Server $srv
+            $addresses = @(@(@($a.Targets) + @($b.Targets)) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+            $answers += [pscustomobject]@{ Server = $srv; State = (Get-AdfaDnsEvidenceState -ServerOutcome ([string]$a.Outcome) -ResolverOutcome ([string]$b.Outcome)); Addresses = $addresses }
+        }
+        $aVerdict = Get-AdfaDcARecordVerdict -ConfiguredIPv4 $configured -ConfiguredCause $configuredCause -Answers $answers -Config $Config
+        $rows += New-AdfaDnsRow -Area $area -Scope $DomainName -Item ("DC A record: {0}" -f $dcHost) -Status ([string]$aVerdict.Status) -Detail ([string]$aVerdict.Detail) `
+            -Evidence ([string]$aVerdict.Evidence) -HostName $dcHost -RecordType 'A' -RecordName $dcHost -ConfiguredIPv4 ((@($configured) | Where-Object { $null -ne $_ }) -join ', ')
+    }
+    # DNS-005: SRV targets that name no DC, and, in the forest root, <guid>._msdcs CNAMEs of no DSA.
+    $known = @(@($dcHosts) + @(@($DsaInventory | Where-Object { $null -ne $_ }) | ForEach-Object { $p = $_.PSObject.Properties['DnsHostName']; if ($null -ne $p -and $null -ne $p.Value) { [string]$p.Value } }) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $guids = @(@($DsaInventory | Where-Object { $null -ne $_ }) | ForEach-Object { $p = $_.PSObject.Properties['DsaGuid']; if ($null -ne $p -and $null -ne $p.Value) { [string]$p.Value } } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $isRoot = (-not [string]::IsNullOrWhiteSpace($ForestRoot) -and $ForestRoot.Trim().TrimEnd('.').ToLowerInvariant() -eq $DomainName.Trim().TrimEnd('.').ToLowerInvariant())
+    # A forest has at least one NTDS Settings object; an empty answer is a read that saw nothing, and
+    # judging CNAMEs against it would call every DSA CNAME stale.
+    $dsaProblem = [string]$DsaError
+    if ($isRoot -and [string]::IsNullOrWhiteSpace($dsaProblem) -and $guids.Count -eq 0) { $dsaProblem = 'no NTDS Settings object was returned, so no DSA GUID is known' }
+    if ($isRoot -and [string]::IsNullOrWhiteSpace($dsaProblem)) {
+        $msdcs = ("{0}.{1}" -f [string]$script:Config.MsdcsZoneLabel, $ForestRoot.Trim().TrimEnd('.')).ToLowerInvariant()
+        foreach ($srv in $servers) {
+            if (-not $module) { $unread += ("CNAME on {0}: the DnsServer module is not installed" -f $srv); continue }
+            if (-not (Test-AdfaDcPort -ComputerName $srv -Port ([int]$Config['RpcPort']) -TimeoutMs $PortTimeoutMs)) { $unread += ("CNAME on {0}: unreachable" -f $srv); continue }
+            # The zone that holds <guid>._msdcs.<forest> on this server, or why none can be read: no
+            # zone, a stub or forwarder zone, or a delegation of _msdcs out of the zone it holds.
+            $where = Resolve-AdfaDnsServerZone -ComputerName $srv -Name ("00000000-0000-0000-0000-000000000000.{0}" -f $msdcs) -Config $Config
+            if (-not $where.Ok) { $unread += ("CNAME on {0}: {1}" -f $srv, ([string]$where.Cause).TrimEnd('.')); continue }
+            $read = Get-AdfaDnsRecordSetRaw -ComputerName $srv -ZoneName ([string]$where.Zone) -RRType 'CName' -Config $Config
+            if ($read.Outcome -eq 'Error') { $unread += ("CNAME on {0}: {1}" -f $srv, (Get-AdfaDnsReadErrorClass -Message $read.Error -ErrorCode $read.ErrorCode -Config $Config)); continue }
+            foreach ($r in @($read.Records)) {
+                $fqdn = [string]$where.Zone
+                if ([string]$r.HostName -ne '@' -and [string]$r.HostName -ne '') { $fqdn = ("{0}.{1}" -f [string]$r.HostName, [string]$where.Zone) }
+                if ($fqdn.ToLowerInvariant().EndsWith('.' + $msdcs)) { $candidates += [pscustomobject]@{ Name = $fqdn; Type = 'CNAME'; Target = [string]$r.Target; Server = $srv } }
+            }
+        }
+    }
+    $staleDsaError = ''
+    if ($isRoot) { $staleDsaError = $dsaProblem }
+    $stale = Get-AdfaStaleDnsRecordVerdict -Candidates $candidates -KnownDcHosts $known -KnownDsaGuids $guids -DsaError $staleDsaError -Unread $unread -Config $Config
+    foreach ($s in @($stale.Stale)) {
+        $label = [string]$s.Target
+        if ([string]$s.Type -eq 'CNAME') { $label = [string]$s.Name }
+        $rows += New-AdfaDnsRow -Area $area -Scope $DomainName -Item ("Stale DC record: {0}" -f $label) -Status ([string]$Config['StaleRecordStatus']) `
+            -Detail ("This {0} record names a host or DSA GUID that matches no domain controller in the directory (read-only DCs included). Microsoft: remove references to stale domain controllers. {1}" -f [string]$s.Type, (Get-AdfaDnsGradeText -Status ([string]$Config['StaleRecordStatus']) -Config $Config)) `
+            -RecordName ([string]$s.Name) -RecordType ([string]$s.Type) -RecordData ([string]$s.Target) -Server ((@($s.Servers)) -join ', ')
+    }
+    $rows += New-AdfaDnsRow -Area $area -Scope $DomainName -Item ("Stale DC records (population): {0}" -f $DomainName) -Status ([string]$stale.Status) -Detail ([string]$stale.Detail) `
+        -Evidence ((@($unread)) -join '; ')
+    return @($rows)
+}
+
+function Get-AdfaDcDnsClient {
+    <#
+    .SYNOPSIS
+        DC DNS Client (rows of the DomainControllers section, ADA-INV-016): each DC's DNS server list
+        from its enabled adapters, with the single-server flag Microsoft documents.
+    .DESCRIPTION
+        One read per DC (Get-AdfaDcNetworkState, shared with the DC A record check). Unreachable,
+        access denied and any other failure are separate Not Assessed causes. -ForestComplete: every
+        domain of the forest is in -ScopedDomains (Invoke-Main); only then, with no inventory failure,
+        is the run's DC count the forest's, which the single-server grade needs. DECLARED POPULATION:
+        the domains named in -ScopedDomains (DC rows, or a "DNS client - <domain>" Not Assessed row)
+        and every DC (one "DNS client: <dc>" row), plus a "DNS client (population)" row per domain.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [hashtable]$Config = $script:Config.Dns,
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90,
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [bool]$ForestComplete = $false
+    )
+    $rows = @()
+    $area = 'DnsClient'
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaDnsRow -Area $area -Scope ([string]$gap.Domain) -Item ("DNS client - {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No adapter of its DCs was read.')
+    }
+    if ($targets.Count -eq 0) {
+        $why = ''
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = (" Domain controller enumeration failed: {0}." -f $EnumerationError.Trim().TrimEnd('.')) }
+        $rows += New-AdfaDnsRow -Area $area -Item 'DNS client' -Status $script:Status.NotAssessed -Detail ("No domain controllers were enumerated, so no adapter was read.{0} This is not a clean result." -f $why)
+        return @($rows)
+    }
+    # First every read, so each DC is judged against every DC address known to the run.
+    $reads = @()
+    $knownDc = @()
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dirIp = ''
+        if ($target -isnot [string]) { $ipProp = $target.PSObject.Properties['IPv4Address']; if ($null -ne $ipProp -and $null -ne $ipProp.Value) { $dirIp = ([string]$ipProp.Value).Trim() } }
+        $state = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$named.HostName)) {
+            $state = Get-AdfaDcNetworkState -ComputerName ([string]$named.HostName) -Config $Config -Credential $Credential -PortTimeoutMs $PortTimeoutMs -OperationTimeoutSec $OperationTimeoutSec
+        }
+        if ($dirIp -ne '' -and $knownDc -notcontains $dirIp) { $knownDc += $dirIp }
+        if ($null -ne $state -and $state.Status -eq 'Read') { foreach ($ip in @($state.IPv4)) { if ($knownDc -notcontains [string]$ip) { $knownDc += [string]$ip } } }
+        $reads += [pscustomobject]@{ HostName = [string]$named.HostName; Scope = [string]$named.Scope; DirIp = $dirIp; State = $state }
+    }
+    $dcCount = $reads.Count
+    # The run's DC count is the forest's only when every domain of the forest was in scope and every
+    # scoped domain's DC list was read; otherwise "the only DC" is not measured (KB 4013's
+    # "tolerable in a forest with only one domain controller" is about the forest).
+    $dcCountIsForest = ($ForestComplete -and @($InventoryFailures | Where-Object { $null -ne $_ }).Count -eq 0 -and [string]::IsNullOrWhiteSpace($EnumerationError))
+    $byDomain = [ordered]@{}
+    foreach ($r in $reads) {
+        $label = $r.HostName
+        if ([string]::IsNullOrWhiteSpace($label)) { $label = '(unnamed)' }
+        $key = $r.Scope.ToLowerInvariant()
+        if (-not $byDomain.Contains($key)) { $byDomain[$key] = [pscustomobject]@{ Scope = $r.Scope; Total = 0; Read = 0 } }
+        $byDomain[$key].Total++
+        if ($null -eq $r.State) {
+            $rows += New-AdfaDnsRow -Area $area -Scope $r.Scope -Item ("DNS client: {0}" -f $label) -Status $script:Status.NotAssessed -HostName $label `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no adapter was read.'
+            continue
+        }
+        if ($r.State.Status -ne 'Read') {
+            $rows += New-AdfaDnsRow -Area $area -Scope $r.Scope -Item ("DNS client: {0}" -f $label) -Status $script:Status.NotAssessed -HostName $label -Detail ([string]$r.State.Cause)
+            continue
+        }
+        $byDomain[$key].Read++
+        $self = @(@($r.State.IPv4) + @($r.DirIp) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        # Not wrapped in @(): a list that was not returned stays $null, so the verdict reports it
+        # Not Assessed instead of grading an empty list it never saw.
+        $v = Get-AdfaDcDnsClientVerdict -DnsServers $r.State.DnsServers -Cause ([string]$r.State.DnsCause) -SelfAddresses $self -KnownDcAddresses $knownDc `
+            -DcCount $dcCount -DcCountIsForest $dcCountIsForest -Config $Config
+        $rows += New-AdfaDnsRow -Area $area -Scope $r.Scope -Item ("DNS client: {0}" -f $label) -Status ([string]$v.Status) -Detail ([string]$v.Detail) -HostName $label `
+            -ConfiguredIPv4 ((@($r.State.IPv4)) -join ', ') -DnsServers ((@($r.State.DnsServers)) -join ', ')
+    }
+    foreach ($key in @($byDomain.Keys)) {
+        $g = $byDomain[$key]
+        $domainLabel = [string]$g.Scope
+        if ($domainLabel -eq '') { $domainLabel = '(domain not known)' }
+        $status = $script:Status.Info
+        if ($g.Read -lt $g.Total) { $status = $script:Status.NotAssessed }
+        $rows += New-AdfaDnsRow -Area $area -Scope ([string]$g.Scope) -Item ("DNS client (population): {0}" -f $domainLabel) -Status $status `
+            -Detail ("{0} of {1} domain controller(s) of this domain had their adapters read." -f $g.Read, $g.Total)
+    }
+    return @($rows)
+}
+
+function Export-AdfaDnsRecord {
+    <#
+    .SYNOPSIS
+        DNS Record Export (opt-in, ADA-INV-014): every zone of every DC's DNS server to one CSV per
+        zone and server under the run's csv folder, capped per zone, with a row saying how many
+        records were exported and whether the cap was hit.
+    .DESCRIPTION
+        Get-DnsServerResourceRecord -ZoneName per zone (Learn: "gets all DNS server resource records
+        in a zone"). The cap is RecordExportCap (50000 per zone, a tool default; Microsoft publishes
+        none). Files: csv\DnsRecords_<server>_<zone>.csv. Opt-in because a zone can hold many records.
+    .OUTPUTS
+        [pscustomobject[]] summary rows.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [hashtable]$Config = $script:Config.Dns,
+        [Parameter(Mandatory)][string]$CsvPath,
+        [int]$PortTimeoutMs = 1200,
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+    )
+    $rows = @()
+    $area = 'DnsRecordExport'
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaDnsRow -Area $area -Scope ([string]$gap.Domain) -Item ("Record export - {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No zone of it was exported.')
+    }
+    if ($targets.Count -eq 0) {
+        $rows += New-AdfaDnsRow -Area $area -Item 'Record export' -Status $script:Status.NotAssessed -Detail 'No domain controllers were enumerated, so no DNS server was exported. This is not a clean result.'
+        return @($rows)
+    }
+    $cap = [int]$Config['RecordExportCap']
+    $module = [bool](Test-ModuleAvailable -Name 'DnsServer')
+    if ($module) { Import-Module DnsServer -ErrorAction SilentlyContinue -Verbose:$false }
+    $rpcPort = [int]$Config['RpcPort']
+    $total = 0; $zonesDone = 0; $capped = 0; $serversDone = 0
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        $label = $dc
+        if ([string]::IsNullOrWhiteSpace($dc)) { $label = '(unnamed)' }
+        $item = ("Record export (population): {0}" -f $label)
+        $cause = ''
+        if ([string]::IsNullOrWhiteSpace($dc)) { $cause = 'The inventory holds a domain controller with no host name, so nothing was exported.' }
+        elseif (-not $module) { $cause = 'The DnsServer PowerShell module is not installed on the host running the assessment, so nothing was exported.' }
+        elseif (-not (Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs)) { $cause = ("Unreachable: RPC ({0}) did not answer within {1} ms, so nothing was exported." -f $rpcPort, $PortTimeoutMs) }
+        $zones = $null
+        if ($cause -eq '') {
+            $zones = Get-AdfaDnsServerZoneNames -ComputerName $dc
+            if (-not $zones.Ok) { $cause = Get-AdfaDnsReadCause -Class (Get-AdfaDnsReadErrorClass -Message $zones.Error -ErrorCode $zones.ErrorCode -Config $Config) -Message $zones.Error }
+        }
+        if ($cause -ne '') {
+            $rows += New-AdfaDnsRow -Area $area -Scope $scope -Item $item -Status $script:Status.NotAssessed -Detail $cause -Server $label
+            continue
+        }
+        $serversDone++
+        $ok = 0; $failed = 0
+        foreach ($zoneName in @($zones.Names)) {
+            $read = Get-AdfaDnsRecordSetRaw -ComputerName $dc -ZoneName ([string]$zoneName) -Cap $cap -Config $Config
+            $zoneItem = ("Record export: {0} on {1}" -f [string]$zoneName, $label)
+            if ($read.Outcome -eq 'Error') {
+                $failed++
+                $rows += New-AdfaDnsRow -Area $area -Scope $scope -Item $zoneItem -Status $script:Status.NotAssessed -Server $label -Zone ([string]$zoneName) `
+                    -Detail (Get-AdfaDnsReadCause -Class (Get-AdfaDnsReadErrorClass -Message $read.Error -ErrorCode $read.ErrorCode -Config $Config) -Message $read.Error)
+                continue
+            }
+            $records = @($read.Records)
+            if ($records.Count -gt 0) {
+                $file = Join-Path $CsvPath ("DnsRecords_{0}_{1}.csv" -f (New-SafeFileName $label), (New-SafeFileName ([string]$zoneName)))
+                Save-Csv -InputObject @($records | ForEach-Object { [pscustomobject]@{ Server = $label; Zone = [string]$zoneName; HostName = $_.HostName; RecordType = $_.RecordType; TimeToLive = $_.TimeToLive; Timestamp = $_.Timestamp; RecordData = $_.RecordData } }) -Path $file
+            }
+            $ok++
+            $zonesDone++
+            $total += $records.Count
+            if ($read.Truncated) { $capped++ }
+            $hit = 'no'
+            if ($read.Truncated) { $hit = 'yes' }
+            $rows += New-AdfaDnsRow -Area $area -Scope $scope -Item $zoneItem -Status $script:Status.Info -Server $label -Zone ([string]$zoneName) `
+                -Detail ("Exported {0} of {1} record(s); cap {2} per zone (a tool default, not a Microsoft value); cap reached: {3}." -f $records.Count, [int]$read.RealCount, $cap, $hit)
+        }
+        $popStatus = $script:Status.Info
+        if ($failed -gt 0) { $popStatus = $script:Status.NotAssessed }
+        $rows += New-AdfaDnsRow -Area $area -Scope $scope -Item $item -Status $popStatus -Server $label `
+            -Detail ("{0} zone(s) listed; {1} exported, {2} not read." -f @($zones.Names).Count, $ok, $failed)
+    }
+    # Nothing exported from any server is not a clean total.
+    $totalStatus = $script:Status.Info
+    if ($serversDone -eq 0) { $totalStatus = $script:Status.NotAssessed }
+    $rows += New-AdfaDnsRow -Area $area -Item 'Record export: total' -Status $totalStatus `
+        -Detail ("{0} record(s) exported from {1} zone(s) on {2} DNS server(s); cap reached in {3} zone(s)." -f $total, $zonesDone, $serversDone, $capped)
+    return @($rows)
+}
+
+function Merge-AdfaDnsConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over the built-in DNS table, with validation. The Dns validator for
+        -ConfigOverridePath.
+    .DESCRIPTION
+        What a file can change: the seven statuses, each within its own set, and RecordExportCap:
+
+            { "Dns": { "NonsecureStatus": "Warning", "RecordExportCap": 10000 } }
+
+          NonsecureStatus      Fail | Warning
+          ScavengingOffStatus, AgingOffStatus, ARecordStatus, StaleRecordStatus, SingleServerStatus
+                               Warning | Info
+          OneInstrumentStatus  Warning | Not Assessed
+          RecordExportCap      a whole number from 1 to 1000000
+
+        What it cannot: the record names, the zone types, the patterns, the error codes, the ports and
+        the sources. Every such key is refused as unknown, so a file can never make a status Pass,
+        read another record or turn a failed read into an absence.
+
+        Refused with the reason: an override that is not one object, an empty object, an unknown key,
+        a key named twice, a null, a status that is not a string or not in its set, a cap that is not
+        a JSON number or not a whole number in range. Provenance follows the keys.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) {
+        throw ("DNS config override must be a single object with named keys (for example {{ ""NonsecureStatus"": ""Warning"" }}), not a {0}." -f $Override.GetType().Name)
+    }
+    if ($table.Count -eq 0) { throw 'DNS config override is an empty object. It names no key, so it would change nothing while appearing to be in force.' }
+    $statusSets = [ordered]@{
+        NonsecureStatus     = @('Fail', 'Warning')
+        ScavengingOffStatus = @('Warning', 'Info')
+        AgingOffStatus      = @('Warning', 'Info')
+        ARecordStatus       = @('Warning', 'Info')
+        StaleRecordStatus   = @('Warning', 'Info')
+        OneInstrumentStatus = @('Warning', 'Not Assessed')
+        SingleServerStatus  = @('Warning', 'Info')
+    }
+    $known = @(@($statusSets.Keys) + 'RecordExportCap')
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $supplied = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("DNS config override names an unknown key '{0}'. Known keys: {1}. The record names, the zone types, the patterns, the error codes, the ports and the sources cannot be set from a file." -f $given, ($known -join ', '))
+        }
+        $name = [string]$match[0]
+        if ($supplied -contains $name) { throw ("DNS config override names '{0}' more than once." -f $name) }
+        $value = $table[$k]
+        if ($null -eq $value) { throw ("DNS config override sets '{0}' to null. Remove the key to keep the built-in value." -f $name) }
+        if ($name -eq 'RecordExportCap') {
+            if ($value -is [array] -or $numericTypes -notcontains $value.GetType()) {
+                throw ("DNS config override sets '{0}' to a {1}. It must be a JSON number, written without quotes." -f $name, $value.GetType().Name)
+            }
+            $number = [double]$value
+            if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or $number -ne [math]::Floor($number) -or $number -lt 1 -or $number -gt 1000000) {
+                throw ("DNS config override sets '{0}' to {1}. It must be a whole number from 1 to 1000000 (records per zone)." -f $name, $number.ToString('0.####', $inv))
+            }
+            $merged[$name] = [int]$number
+        }
+        else {
+            if ($value -isnot [string]) { throw ("DNS config override sets '{0}' to a {1}. It must be a string: one of {2}." -f $name, $value.GetType().Name, (@($statusSets[$name]) -join ', ')) }
+            $allowed = @($statusSets[$name] | Where-Object { $_ -eq $value.Trim() })
+            if ($allowed.Count -eq 0) { throw ("DNS config override sets '{0}' to '{1}'. It must be one of {2}." -f $name, $value, (@($statusSets[$name]) -join ', ')) }
+            $merged[$name] = [string]$allowed[0]
+        }
+        $supplied += $name
+    }
+    $from = 'an override whose source was not recorded'
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+    $fromOverride = @($known | Where-Object { $supplied -contains $_ })
+    $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+    $builtIn = @($known | Where-Object { $supplied -notcontains $_ })
+    if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
+    $merged['ThresholdSource'] = $text
+    return $merged
 }
 
 # ===========================================================================
@@ -10016,6 +11956,9 @@ function Merge-AdfaPrivilegedConfig {
 # One reachability answer per DC and port for the whole run. Every per-DC section before C1
 # probed for itself; a section that uses Test-AdfaDcPort shares the answer instead.
 $script:DcPortCache = @{}
+$script:DnsZoneListCache = @{}
+$script:DnsDelegationCache = @{}
+$script:DcNetworkCache = @{}
 
 function Clear-AdfaDcPortCache {
     <#
@@ -10025,6 +11968,11 @@ function Clear-AdfaDcPortCache {
     [CmdletBinding()]
     param()
     $script:DcPortCache = @{}
+    # PORT-PLAN C13: the zone list of each DNS server and the adapter read of each DC are shared by
+    # the DNS sections in the same way, and forgotten at the start of a run with the probes.
+    $script:DnsZoneListCache = @{}
+    $script:DnsDelegationCache = @{}
+    $script:DcNetworkCache = @{}
 }
 
 function Test-AdfaDcPort {
@@ -11831,7 +13779,7 @@ function Invoke-AdfaDcRemoteRead {
     param(
         [Parameter(Mandatory)][string]$ComputerName,
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Protocols,
-        [Parameter(Mandatory)][ValidateSet('Get-AdfaDcDiskRaw', 'Get-AdfaDcHardeningRaw')][string]$ReadCommand,
+        [Parameter(Mandatory)][ValidateSet('Get-AdfaDcDiskRaw', 'Get-AdfaDcHardeningRaw', 'Get-AdfaDcNetworkRaw')][string]$ReadCommand,
         [hashtable]$ReadArguments = @{}
     )
     $raw = $null
@@ -17841,6 +19789,8 @@ $script:ConfigOverrideSections = [ordered]@{
     Privileged     = @{ ConfigKey = 'Privileged'; Section = 'PrivilegedAccounts'; AlsoUsedBy = @('PrivilegedHygiene', 'Kerberos'); Merge = 'Merge-AdfaPrivilegedConfig' }
     # PORT-PLAN C11: the time-out and retries of one dcdiag invocation only; no test list.
     DcDiag         = @{ ConfigKey = 'DcDiag'; Section = 'DcDiagnostics'; Merge = 'Merge-AdfaDcDiagConfig' }
+    # PORT-PLAN C13: the statuses and the record export cap only; no record name, pattern or port.
+    Dns            = @{ ConfigKey = 'Dns'; Section = 'Dns'; AlsoUsedBy = @('DnsAdConsistency', 'DomainControllers', 'DnsRecordExport'); Merge = 'Merge-AdfaDnsConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -18660,7 +20610,8 @@ function Get-AdfaTimeSync {
 function Get-AdfaDnsDepth {
     <#
     .SYNOPSIS
-        DNS depth: critical SRV records resolvable, secure dynamic updates, root hints.
+        DNS depth: critical SRV records resolvable, root hints (the secure dynamic updates check
+        moved to DNS Health in v1.30.0, PORT-PLAN C13; one Info row says so).
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -18681,17 +20632,13 @@ function Get-AdfaDnsDepth {
     else {
         $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item 'SRV record resolution' -Status $script:Status.NotAssessed -Detail 'Resolve-DnsName not available on this host.'
     }
-    # Secure dynamic updates on the AD zone
-    if ((Test-ModuleAvailable -Name 'DnsServer') -and $DomainControllers -and @($DomainControllers).Count -gt 0) {
-        Import-Module DnsServer -ErrorAction SilentlyContinue -Verbose:$false
-        $dc = @($DomainControllers)[0]
-        try {
-            $zone = Get-DnsServerZone -Name $DomainName -ComputerName $dc -ErrorAction Stop
-            $secure = ("$($zone.DynamicUpdate)" -eq 'Secure')
-            $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item 'Secure dynamic updates' -Status $(if ($secure) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("DynamicUpdate = {0} (Secure recommended)" -f $zone.DynamicUpdate)
-        }
-        catch { $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item 'Secure dynamic updates' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-    }
+    # Secure dynamic updates: retired here by PORT-PLAN C13. This row read the domain zone on the
+    # FIRST DC only and graded anything but 'Secure' a Warning; DNS Health now grades every primary
+    # zone on every DNS server of each domain ("Zone dynamic update" rows), so a zone is never graded
+    # twice with two different rules. The row stays, as Info, so a reader of an older report finds
+    # where the check went.
+    $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item 'Secure dynamic updates' -Status $script:Status.Info `
+        -Detail 'Graded in the DNS Health section since v1.30.0, per zone and over every DNS server of the domain, in its "Zone dynamic update" rows; not read here.'
     return @($rows)
 }
 
@@ -19522,6 +21469,11 @@ function Get-AdfaDnsAdConsistency {
         as intermittent RPC 1722 and logon failures after a restore; in a forest with
         broken replication different DNS servers hold different zone content, so each
         server's view is assessed and a divergence summary is reported.
+
+        PORT-PLAN C13 adds, after these rows, the per-DC rows of Get-AdfaDnsLocatorFinding: whether
+        each writable DC is named by the graded DC locator SRV records on every DNS server, by two
+        instruments (DNS-003); whether its A records are its configured addresses (DNS-004); and
+        the locator records that name no DC (DNS-005). The per-server rows above are unchanged.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -19530,13 +21482,22 @@ function Get-AdfaDnsAdConsistency {
     param(
         [Parameter(Mandatory)][string]$DomainName,
         [hashtable]$AdParams = @{},
-        [AllowEmptyCollection()][string[]]$DnsServers = @()
+        [AllowEmptyCollection()][string[]]$DnsServers = @(),
+        [hashtable]$Config = $script:Config.Dns,
+        [AllowNull()][AllowEmptyString()][string]$ForestRoot = '',
+        [AllowNull()][AllowEmptyCollection()]$DsaInventory = @(),
+        [AllowNull()][AllowEmptyString()][string]$DsaError = '',
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90
     )
     $rows = @()
     $p = @{} + $AdParams; $p.Server = $DomainName
     $adHosts = @()
+    $adDcs = @()
     try {
-        $adHosts = @(Get-ADDomainController -Filter * @p | Select-Object -ExpandProperty HostName)
+        $adDcs = @(Get-ADDomainController -Filter * @p | Where-Object { $null -ne $_ })
+        $adHosts = @($adDcs | ForEach-Object { $hp = $_.PSObject.Properties['HostName']; if ($null -ne $hp -and $null -ne $hp.Value) { [string]$hp.Value } })
     }
     catch {
         $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item 'DC list from AD' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
@@ -19605,6 +21566,9 @@ function Get-AdfaDnsAdConsistency {
         $rows += New-Finding -Scope $DomainName -Area 'DnsAdConsistency' -Item 'PDC locator record' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
     }
 
+    # PORT-PLAN C13: the per-DC rows, from the same DC list.
+    $rows += @(Get-AdfaDnsLocatorFinding -DomainName $DomainName -Dcs $adDcs -DnsServers $DnsServers -Config $Config -DsaInventory $DsaInventory -DsaError $DsaError `
+            -ForestRoot $ForestRoot -Credential $Credential -PortTimeoutMs $PortTimeoutMs -OperationTimeoutSec $OperationTimeoutSec)
     return @($rows)
 }
 
@@ -21950,6 +23914,44 @@ $script:RecommendationMap = @(
        Text  = 'dcdiag''s DNS test reported a problem in its Ext test group. Learn does not name this column; it is taken to be the external name resolution test, /DnsResolveExtName, which resolves www.microsoft.com or the name given with /DnsInternetName, and which /DnsAll does not run. Microsoft notes that this test cannot resolve external Internet names in an environment where a proxy server is being used, so a failure may only mean that the domain controller has no direct internet access. Decide whether this domain controller is meant to resolve internet names; if it is, check its forwarders or root hints. This tool changes nothing.' }
     @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag (Topology|CheckSDRefDom|CrossRefValidation|Intersite|LocatorCheck|coverage|grid|DNS)\b'
        Text  = '' }
+    # --- Section-scoped: the DNS rows of PORT-PLAN C13, in DNS Health, DNS vs AD Consistency, DC DNS
+    #     Client and DNS Record Export. Anchored on the Item prefixes this tool writes, ahead of the
+    #     unscoped entries: a zone or host name in an Item ("replication", "stale", "backup") or a
+    #     Detail that says "aging", "secure dynamic" or "stale" must not pull a row to the unscoped
+    #     'replication', 'scavenging|aging', 'secure dynamic' or 'stale' advice. NOT section-wide in
+    #     DNS Health and DNS vs AD: the forwarder, zone transfer and per-server SRV rows of those
+    #     sections keep the unscoped entries they had. The catch-alls give the inventory and
+    #     population rows no advice. Sources, all read 2026-11-17:
+    #       https://learn.microsoft.com/troubleshoot/windows-client/networking/troubleshooting-dns-dynamic-update-issues
+    #       https://learn.microsoft.com/windows-server/networking/dns/dynamic-update
+    #       https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserverprimaryzone
+    #       https://learn.microsoft.com/windows-server/networking/dns/aging-scavenging
+    #       https://learn.microsoft.com/windows-server/networking/dns/configure-aging-scavenging
+    #       https://learn.microsoft.com/troubleshoot/windows-server/networking/dns-scavenging-setup
+    #       https://learn.microsoft.com/troubleshoot/windows-server/networking/enable-disable-dns-dynamic-registration
+    #       https://learn.microsoft.com/troubleshoot/windows-server/active-directory/problems-with-dc-ad-integrated-dns-zones
+    #       https://learn.microsoft.com/troubleshoot/windows-server/networking/best-practices-for-dns-client-settings
+    #       https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-dns-event-id-4013
+    @{ Section = '(?i)^dns health'; Match = '(?i)^DNS Health :: Zone dynamic update: '
+       Text  = 'Set this AD-integrated zone to Secure only. Microsoft recommends Secure only for AD-integrated zones and documents that DNS servers default to it once a zone becomes AD-integrated; without secure dynamic update any computer on the network can modify an existing record, while a zone configured for secure dynamic update allows only authorized users to modify it. The setting is the zone''s Dynamic updates option in DNS Manager, or the -DynamicUpdate parameter of Set-DnsServerPrimaryZone, whose accepted values are None, Secure and NonsecureAndSecure. Clients that cannot authenticate to the domain will no longer be able to update their own records once it is set, so find them first. This tool changes nothing.' }
+    @{ Section = '(?i)^dns health'; Match = '(?i)^DNS Health :: Zone scavenging: '
+       Text  = 'Enable aging on this zone and scavenging on one DNS server that hosts it. Microsoft documents aging and scavenging as two independent but complementary mechanisms that must both be enabled for stale records to be removed, and scavenging skips a zone that has aging disabled. It recommends enabling server-level scavenging on only one DNS server per zone - ideally a DC without FSMO roles, and not the PDC emulator - and gives 7 days as the default no-refresh, refresh and scavenging intervals; align the combined no-refresh and refresh intervals with your DHCP lease duration. Records added by hand have a timestamp of zero and are not scavenged; Microsoft warns that dnscmd /ageallrecords sets a timestamp on every record of a zone, static ones included. This tool changes nothing.' }
+    @{ Section = '(?i)^dns health'; Match = '(?i)^DNS Health :: (DNS server( -|:) |Zone configuration: |DNS zones \(population\): |DNS health :: )'
+       Text  = '' }
+    @{ Section = '(?i)^dns vs ad'; Match = '(?i)^DNS vs AD Consistency :: DC locator records: '
+       Text  = 'Find out why this domain controller is not named by its DC locator SRV records on the DNS servers in the Evidence column. The Net Logon service on the DC registers its SRV, CNAME and A records every hour and lists the records it must register in %systemroot%\System32\Config\Netlogon.dns: compare that file with the zone on each of those servers. Check that the DC''s DNS client points to DNS servers that host the zone, and that the zone accepts the DC''s dynamic updates. Microsoft documents that DnsAvoidRegisterRecords, in the registry or in Group Policy, stops a DC registering the records it names on purpose, so confirm it is not set for these records before treating the absence as a fault. This tool changes nothing.' }
+    @{ Section = '(?i)^dns vs ad'; Match = '(?i)^DNS vs AD Consistency :: DC A record: '
+       Text  = 'Compare the A records for this domain controller''s name (Evidence column) with the addresses on its enabled adapters (ConfiguredIPv4 column). Microsoft''s DNS client guidance says there should be a host record for the computer name, and documents that the DNS Server service registers A records for the addresses it listens on, which PublishAddresses can restrict: on a multihomed DC, check which adapters register. Remove an A record for an address the DC no longer holds once you have confirmed nothing else uses it. This tool changes nothing.' }
+    @{ Section = '(?i)^dns vs ad'; Match = '(?i)^DNS vs AD Consistency :: Stale DC record: '
+       Text  = 'This record names a host or a DSA GUID that matches no domain controller in the directory (read-only DCs included). Confirm that the DC it names was removed and that its metadata cleanup completed, then delete the record; Microsoft''s guidance is to remove references to stale domain controllers. This tool changes nothing.' }
+    @{ Section = '(?i)^dns vs ad'; Match = '(?i)^DNS vs AD Consistency :: Stale DC records \(population\): '
+       Text  = '' }
+    @{ Section = '(?i)^dc dns client'; Match = '(?i)^DC DNS Client :: DNS client: '
+       Text  = 'Give this domain controller more than one DNS server. Microsoft documents that pointing a domain controller at a single DNS server''s address, including the 127.0.0.1 loopback address, is a single point of failure that is tolerable only in a forest with one domain controller. Once replication is verified, a DC may use itself or a central DNS server as preferred server with another DC as alternate, and Microsoft''s hub-and-branch guidance lists the DC itself last. Microsoft also says not to point domain controllers at the DNS servers of an Internet service provider. This tool changes nothing.' }
+    @{ Section = '(?i)^dc dns client'; Match = '.'
+       Text  = '' }
+    @{ Section = '(?i)^dns record export'; Match = '.'
+       Text  = '' }
     # --- Section-scoped: SID history rows of Security Posture (PORT-PLAN C7). Anchored on the Item
     #     prefix this tool writes ("SID history...: <domain>"), NOT on the section: the section's
     #     older rows (krbtgt password age, AD Recycle Bin, Machine account quota, ...) rely on the
@@ -22692,6 +24694,13 @@ function Invoke-Main {
         $scopeRows += New-Finding -Area 'ForestScope' -Item 'Domain scope' -Status $script:Status.Fail `
             -Detail 'The forest was readable but reported no domains to assess. Every per-domain section is therefore unassessed, not clean.'
     }
+    # Whether the scoped domains are every domain of the forest (PORT-PLAN C13): only then is a DC
+    # count, or the set of DNS servers that can host a forest-wide zone, one over the forest.
+    $forestDomainsProp = $forest.PSObject.Properties['Domains']
+    $forestDomainList = @()
+    if ($null -ne $forestDomainsProp) { $forestDomainList = @(@($forestDomainsProp.Value) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim().TrimEnd('.').ToLowerInvariant() }) }
+    $scopedDomainList = @(@($targetDomains) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim().TrimEnd('.').ToLowerInvariant() })
+    $scopeCoversForest = ($forestDomainList.Count -gt 0 -and @($forestDomainList | Where-Object { $scopedDomainList -notcontains $_ }).Count -eq 0)
     Write-Stage ("Forest: {0}; assessing domains: {1}" -f $forest.Name, ($targetDomains -join ', '))
 
     $sectionData = [ordered]@{}
@@ -22714,6 +24723,10 @@ function Invoke-Main {
     # Whether the inventory was asked for at all. A per-DC section that needs every scoped
     # domain's DCs (DcDisk, DcHardening) enumerates them itself when it was not.
     $dcInventoryCollected = $false
+    # The DNS table (PORT-PLAN C13), shared by Dns, DnsAdConsistency, DomainControllers and the opt-in
+    # DnsRecordExport: the file's table where it supplied one, validated before any section ran.
+    $dnsConfig = $script:Config.Dns
+    if ($configOverrides.ContainsKey('Dns')) { $dnsConfig = $configOverrides['Dns'] }
     if (Test-SectionSelected 'DomainControllers' $Sections) {
         $dcInventoryCollected = $true
         $inv = @()
@@ -22726,6 +24739,12 @@ function Invoke-Main {
         }
         $allDcInventory = $inv
         $sectionData['Domain Controllers'] = $inv
+        # ADA-INV-016: each DC's DNS server list from its enabled adapters (read-only CIM). Its own
+        # key, so the inventory rows keep the columns they had.
+        Write-Stage 'DC DNS client settings (enabled adapters, per DC)'
+        $sectionData['DC DNS Client'] = @(Get-AdfaDcDnsClient -DomainControllers $inv -Config $dnsConfig -Credential $Credential `
+                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
+                -InventoryFailures $dcInventoryFailures -ScopedDomains $targetDomains -ForestComplete $scopeCoversForest)
     }
     $dcNames = @($allDcInventory | Select-Object -ExpandProperty HostName -ErrorAction SilentlyContinue)
     # Every per-DC section downstream reads $dcNames. When this fallback threw silently, all of
@@ -22836,8 +24855,22 @@ function Invoke-Main {
                 -Config $dcDiagConfig -InventoryFailures $dcDiagFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains -ForestRoot $rootDomain)
     }
     if (Test-SectionSelected 'Dns' $Sections) {
-        Write-Stage 'DNS health'
-        $sectionData['DNS Health'] = Get-AdfaDnsHealth -DomainControllers $dcNames -Credential $Credential -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        Write-Stage 'DNS health (zone dynamic update, aging and scavenging, zone inventory; per DNS server)'
+        # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk takes them: the
+        # DC inventory where the DomainControllers section ran; otherwise the section's own
+        # enumeration of each scoped domain; last resort, the fallback host names.
+        $dnsTargets = @($allDcInventory)
+        $dnsFailures = @($dcInventoryFailures)
+        if (-not $dcInventoryCollected) {
+            $dnsEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+            $dnsTargets = @($dnsEnumeration.Targets)
+            $dnsFailures = @($dnsEnumeration.Failures)
+        }
+        # The fallback host names carry no domain, so a run on them never claims the forest's servers.
+        $dnsForestComplete = $scopeCoversForest
+        if ($dnsTargets.Count -eq 0) { $dnsTargets = @($dcNames); $dnsForestComplete = $false }
+        $sectionData['DNS Health'] = @(Get-AdfaDnsHealth -DomainControllers $dnsTargets -Config $dnsConfig -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                -InventoryFailures $dnsFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains -ForestComplete $dnsForestComplete)
     }
     if (Test-SectionSelected 'Sysvol' $Sections) {
         Write-Stage 'SYSVOL/DFSR'
@@ -23177,8 +25210,20 @@ function Invoke-Main {
 
     # ---- Recovery & consistency (post-incident) ----
     if (Test-SectionSelected 'DnsAdConsistency' $Sections) {
-        Write-Stage 'DNS vs AD consistency (per DNS server)'
-        $dacRows = foreach ($d in $targetDomains) { Get-AdfaDnsAdConsistency -DomainName $d -AdParams $adParams -DnsServers $dcNames }
+        Write-Stage 'DNS vs AD consistency (per DNS server; per DC: locator records, A records, records naming no DC)'
+        # The NTDS Settings objects of the forest, read once: the DCs a locator record may name and
+        # the DSA GUIDs a <guid>._msdcs CNAME may carry (PORT-PLAN C13).
+        $dnsDsa = @()
+        $dnsDsaError = ''
+        try { $dnsDsa = @(Get-AdfaDsaInventory -AdParams $adParams) }
+        catch {
+            $dnsDsaError = [string]$_.Exception.Message
+            Write-Log -Level ERROR -Section 'DnsAdConsistency' -Message ("DSA inventory failed, so no <guid>._msdcs CNAME can be judged: {0}" -f $dnsDsaError)
+        }
+        $dacRows = foreach ($d in $targetDomains) {
+            Get-AdfaDnsAdConsistency -DomainName $d -AdParams $adParams -DnsServers $dcNames -Config $dnsConfig -ForestRoot $rootDomain -DsaInventory $dnsDsa -DsaError $dnsDsaError `
+                -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec
+        }
         $sectionData['DNS vs AD Consistency'] = @($dacRows)
     }
     if (Test-SectionSelected 'DsaCname' $Sections) {
@@ -23337,6 +25382,23 @@ function Invoke-Main {
             $identitySummary += Get-AdfaIdentitySummary -DomainName $d -Users $users -Computers $computers -StaleDays $script:Config.StaleDays
         }
         $sectionData['Identity Inventory'] = @($identitySummary)
+    }
+
+    # ---- DNS record export (PORT-PLAN C13, ADA-INV-014) -> one CSV per zone and server ----
+    # Opt-in: NOT part of 'All', because a zone can hold many records. Test-SectionSelected is not
+    # used for that reason - it is true for 'All'. The cap per zone is RecordExportCap.
+    if ($Sections -contains 'DnsRecordExport') {
+        Write-Stage 'DNS record export (every zone of every DC''s DNS server, capped per zone)'
+        $dnsExportTargets = @($allDcInventory)
+        $dnsExportFailures = @($dcInventoryFailures)
+        if (-not $dcInventoryCollected) {
+            $dnsExportEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+            $dnsExportTargets = @($dnsExportEnumeration.Targets)
+            $dnsExportFailures = @($dnsExportEnumeration.Failures)
+        }
+        if ($dnsExportTargets.Count -eq 0) { $dnsExportTargets = @($dcNames) }
+        $sectionData['DNS Record Export'] = @(Export-AdfaDnsRecord -DomainControllers $dnsExportTargets -Config $dnsConfig -CsvPath $csvPath `
+                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $dnsExportFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
     }
 
     # ---- Raw diagnostics ----
