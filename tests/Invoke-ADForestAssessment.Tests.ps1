@@ -7545,9 +7545,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
-            [string]$script:Config.Version | Should -Be '1.28.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
+        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
+            [string]$script:Config.Version | Should -Be '1.29.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
         }
     }
 
@@ -9217,9 +9217,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
-            [string]$script:Config.Version | Should -Be '1.28.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
+        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
+            [string]$script:Config.Version | Should -Be '1.29.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
         }
     }
 
@@ -10207,9 +10207,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
-            [string]$script:Config.Version | Should -Be '1.28.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
+        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
+            [string]$script:Config.Version | Should -Be '1.29.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
         }
     }
 
@@ -11146,9 +11146,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
-            [string]$script:Config.Version | Should -Be '1.28.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
+        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
+            [string]$script:Config.Version | Should -Be '1.29.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
         }
     }
 
@@ -12137,9 +12137,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
-            [string]$script:Config.Version | Should -Be '1.28.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
+        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
+            [string]$script:Config.Version | Should -Be '1.29.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
         }
     }
 
@@ -13377,9 +13377,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
-            [string]$script:Config.Version | Should -Be '1.28.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
+        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
+            [string]$script:Config.Version | Should -Be '1.29.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
         }
     }
 
@@ -14595,9 +14595,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
-            [string]$script:Config.Version | Should -Be '1.28.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
+        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
+            [string]$script:Config.Version | Should -Be '1.29.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
         }
     }
 
@@ -15682,7 +15682,8 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
                 $entry['InLearnTable'] | Should -BeTrue -Because $t
                 @($script:C11LearnTests | Where-Object { $_ -eq $t }).Count | Should -Be 1 -Because "$t must be in Learn's table"
             }
-            [string]$script:C11Cfg['Version'] | Should -Be '1.28.0'
+            # 1.29.0 since PORT-PLAN C12 added the DNS summary table to this config table.
+            [string]$script:C11Cfg['Version'] | Should -Be '1.29.0'
             [string]$script:C11Cfg['SourceUrl'] | Should -Be $script:C11Url
             [string]$script:C11Cfg['ReadDate'] | Should -Be '2026-11-16'
             [string]$script:C11Cfg['ThresholdSource'] | Should -Be 'tool default, not a Microsoft value'
@@ -16385,8 +16386,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $firstUnscoped = -1
             for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $firstUnscoped = $i; break } }
             $ours = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Section -eq '(?i)^dc diagnostics') { $i } })
-            # Declared population: four families and the catch-all.
-            $ours.Count | Should -Be 5
+            # Declared population: four families, the seven DNS test groups (since PORT-PLAN C12) and
+            # the catch-all.
+            $ours.Count | Should -Be 12
             @($ours | Where-Object { $_ -gt $firstUnscoped }).Count | Should -Be 0
             $firstUnscoped | Should -BeGreaterThan 0
         }
@@ -16459,9 +16461,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.28.0 (bumped by PORT-PLAN C11)' {
-            [string]$script:Config.Version | Should -Be '1.28.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.28.0'
+        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
+            [string]$script:Config.Version | Should -Be '1.29.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -16473,6 +16475,675 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $row = @($readme | Where-Object { $_ -match '^\| Diagnostics \|' })
             $row.Count | Should -Be 1
             foreach ($word in @('Topology', 'CheckSDRefDom', 'CrossRefValidation', 'LocatorCheck', 'SystemLog', 'per partition')) { $row[0] | Should -Match $word }
+        }
+    }
+}
+
+Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, Ext per DC and per domain (C12)' {
+    # PORT-PLAN C12 (closes H15). The DNS test's summary table, which Microsoft shows once on Learn
+    # (KB 2102154, "Active Directory replication error 1722", read 2026-11-16): a header row
+    # "Auth Basc Forw Del  Dyn  RReg Ext" with uneven spacing, "Domain: <fqdn>" lines, one row per DC
+    # with its short name and one cell per column (PASS, FAIL, n/a), then "Enterprise DNS
+    # infrastructure test results:" and the overall verdict. The header is found by its tokens, the
+    # cells are mapped to the columns by order, and every test group is graded on its own.
+    BeforeAll {
+        $script:C12Cfg = $script:Config.DcDiag
+        $script:C12Tokens = @('Auth', 'Basc', 'Forw', 'Del', 'Dyn', 'RReg', 'Ext')
+        $script:C12Six = @('Auth', 'Basc', 'Forw', 'Del', 'Dyn', 'RReg')
+        $script:C12Dc1 = 'dc1.contoso.com'
+        $script:C12Dc2 = 'dc2.contoso.com'
+        $script:C12Dc3 = 'dc3.north.contoso.com'
+        $script:C12Header = 'Auth Basc Forw Del  Dyn  RReg Ext'
+        $script:C12LearnUrl = 'https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-1722-rpc-server-unavailable'
+        # Learn's sample, line for line, with the domain names replaced by fictional ones.
+        $script:C12LearnSample = @('Auth Basc Forw Del  Dyn  RReg Ext', '', 'Domain: contoso.com', 'DC1 PASS PASS FAIL PASS PASS PASS n/a  ', 'Domain: child.contoso.com  ',
+            'DC2 PASS PASS n/a  n/a  n/a  PASS n/a  ', '', 'Enterprise DNS infrastructure test results:  ', 'For parent domain contoso.com and subordinate domain child:  ',
+            'Forwarders or root hints are not misconfigured from parent domain to subordinate domain  ',
+            'Error: Forwarders are configured from subordinate to parent domain but some of them failed DNS server tests  ', '',
+            '(See DNS servers section for error details)  ', 'Delegation is configured properly from parent to subordinate domain  ',
+            '......................... contoso.com failed test DNS') -join "`r`n"
+        function New-C12Target { param([string]$HostName, [string]$Scope, [string]$Site = 'HQ')
+            [pscustomobject]@{ HostName = $HostName; Scope = $Scope; Site = $Site; IsReadOnly = $false } }
+        function Get-C12Short { param([string]$HostName) $HostName.Split('.')[0].ToUpperInvariant() }
+        # One "dcdiag /test:DNS /DnsAll /s:<dc>" answer: banner, Connectivity, the server block's verdict,
+        # then the enterprise block with Learn's summary table in it and the overall verdict.
+        function New-C12DnsOutput {
+            param([string]$Dc, [string]$Cells = 'PASS PASS PASS PASS PASS PASS n/a', [string]$Domain = 'contoso.com', [string]$Header = $script:C12Header,
+                [string]$RowName = '', [switch]$NoTable, [string[]]$ExtraRows = @())
+            if ($RowName -eq '') { $RowName = $Dc }
+            $verdict = 'passed'
+            if ($Cells -match '(?i)FAIL') { $verdict = 'failed' }
+            $b = New-Object System.Collections.Generic.List[string]
+            foreach ($l in @('Directory Server Diagnosis', '', 'Performing initial setup:', ("   Home Server = {0}" -f $Dc), '', 'Doing initial required tests', '',
+                    ("   Testing server: Default-First-Site-Name\{0}" -f $Dc), '      Starting test: Connectivity', ("         ......................... {0} passed test Connectivity" -f $Dc),
+                    '', 'Doing primary tests', '', ("   Testing server: Default-First-Site-Name\{0}" -f $Dc), '      Starting test: DNS',
+                    '         DNS Tests are running and not hung. Please wait a few minutes...', ("         ......................... {0} passed test DNS" -f $Dc),
+                    '', '   Running enterprise tests on : contoso.com', '      Starting test: DNS', '         Test results for domain controllers:', ("            DC: {0}" -f $Dc))) { $b.Add($l) }
+            if (-not $NoTable) {
+                foreach ($l in @('', '         Summary of DNS test results:', '', ("                                            {0}" -f $Header), '', ("            Domain: {0}" -f $Domain), ("               {0,-25} {1}  " -f $RowName, $Cells))) { $b.Add($l) }
+                foreach ($r in $ExtraRows) { $b.Add(("               {0}" -f $r)) }
+                foreach ($l in @('', '         Enterprise DNS infrastructure test results:')) { $b.Add($l) }
+            }
+            $b.Add(("         ......................... contoso.com {0} test DNS" -f $verdict))
+            return ($b -join "`r`n")
+        }
+        function New-C12Result { param([string]$StdOut, [bool]$Success = $true, $ExitCode = 0, $ErrorText = $null)
+            [pscustomobject]@{ Success = $Success; ExitCode = $ExitCode; Attempt = 1; Error = $ErrorText; StdOut = $StdOut; OutFile = $null } }
+        function Get-C12DefaultAnswer { param([string]$Server, [string]$Test)
+            $short = Get-C12Short $Server
+            if ($Test -eq 'DNS') { return (New-C12Result (New-C12DnsOutput -Dc $short)) }
+            return (New-C12Result ("Directory Server Diagnosis`r`n   Testing server: Default-First-Site-Name\{0}`r`n      Starting test: {1}`r`n         ......................... {0} passed test {1}" -f $short, $Test))
+        }
+        function Invoke-C12Collector {
+            param([object[]]$Targets, [switch]$Active, [string[]]$Scoped = @('contoso.com', 'north.contoso.com'), [string[]]$Down = @(), [bool]$HaveDcdiag = $true,
+                [hashtable]$Config = $script:Config.DcDiag)
+            $script:C12Calls = @()
+            $script:C12Down = @($Down)
+            $script:C12Have = $HaveDcdiag
+            Clear-AdfaDcPortCache
+            Mock Test-CommandAvailable { [bool]$script:C12Have }
+            Mock Test-TcpPort { $script:C12Down -notcontains [string]$ComputerName }
+            Mock Invoke-ExternalCommand {
+                $script:C12Calls += [string]$Arguments
+                $t = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
+                $s = ([regex]::Match([string]$Arguments, '/s:(\S+)')).Groups[1].Value
+                & $script:C12Answer $s $t
+            }
+            return @(Get-AdfaDcDiagnostic -DomainControllers $Targets -IncludeActiveTests:$Active -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 `
+                    -Config $Config -ScopedDomains $Scoped -ForestRoot 'contoso.com')
+        }
+        # The comma keeps a one-row answer an array, so .Count works under StrictMode on Windows PowerShell 5.1.
+        function Get-C12Row { param($Rows, [string]$Item) return , @($Rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -eq $Item }) }
+        function Get-C12DnsRows { param($Rows) return , @($Rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like 'dcdiag DNS *' }) }
+        function Get-C12DcRows { param($Rows, [string]$HostName)
+            return , @($Rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -match ('^dcdiag DNS (Auth|Basc|Forw|Del|Dyn|RReg|Ext): {0}$' -f [regex]::Escape($HostName)) }) }
+        function Resolve-C12 {
+            param([string]$Out, [string]$Token, [string]$HostName = $script:C12Dc1, [string]$NotRunCause = '', [string]$RunCause = '', [string]$OverallStatus = '', [string]$OverallEvidence = '')
+            $s = ConvertFrom-AdfaDcdiagDnsSummary -StdOut $Out -Config $script:C12Cfg
+            Resolve-AdfaDcdiagDnsCategory -Summary $s -HostName $HostName -Token $Token -Config $script:C12Cfg -NotRunCause $NotRunCause -RunCause $RunCause `
+                -OverallStatus $OverallStatus -OverallEvidence $OverallEvidence
+        }
+        $script:C12ThreeDcs = @((New-C12Target $script:C12Dc1 'contoso.com' 'HQ'), (New-C12Target $script:C12Dc2 'contoso.com' 'Branch'), (New-C12Target $script:C12Dc3 'north.contoso.com' 'HQ'))
+        $script:C12Hostile = 'replication stale delegation secure dynamic zone transfer scavenging aging no a record does not resolve port 389 not reachable time sync w32tm dcdiag NOT a pass log coverage C:\Backup\stale.json'
+    }
+    BeforeEach {
+        $script:C12Answer = { param($Server, $Test) Get-C12DefaultAnswer -Server $Server -Test $Test }
+    }
+
+    Context 'Config table (Learn, read 2026-11-16)' {
+        It 'declares the seven test groups in Learn''s column order, each with its Learn name, and flags Ext as not named on Learn' {
+            $ds = $script:C12Cfg['DnsSummary']
+            $ds | Should -Not -BeNullOrEmpty
+            $cats = @($ds['Categories'])
+            # Declared population: the seven columns of Learn's sample header.
+            (@($cats | ForEach-Object { [string]$_['Token'] }) -join ',') | Should -Be ($script:C12Tokens -join ',')
+            foreach ($c in $cats) { [string]$c['Name'] | Should -Not -BeNullOrEmpty -Because ([string]$c['Token']) }
+            (@($cats | Where-Object { -not $_['InLearn'] } | ForEach-Object { [string]$_['Token'] }) -join ',') | Should -Be 'Ext'
+            [string]$ds['SourceUrl'] | Should -Be $script:C12LearnUrl
+            [string]$ds['ReadDate'] | Should -Be '2026-11-16'
+            [string]$script:C12Cfg['Version'] | Should -Be '1.29.0'
+        }
+        It 'maps PASS, FAIL and n/a as Learn shows them, and WARN from Learn''s prose, marked provisional' {
+            $cells = @($script:C12Cfg['DnsSummary']['Cells'])
+            # Declared population: the four cell values this build reads.
+            (@($cells | ForEach-Object { "{0}={1}" -f $_['Token'], $_['Status'] }) -join ',') | Should -Be 'PASS=Pass,FAIL=Fail,WARN=Warning,n/a=Not Assessed'
+            @($cells | Where-Object { $_['Provisional'] } | ForEach-Object { [string]$_['Token'] }) | Should -Be @('WARN')
+        }
+        It 'grades n/a Info only under Ext, and Not Assessed under the other six (the catalogue''s fail-closed rule)' {
+            $cats = @($script:C12Cfg['DnsSummary']['Cells'])
+            $cats.Count | Should -Be 4
+            $byToken = @{}
+            foreach ($c in @($script:C12Cfg['DnsSummary']['Categories'])) { $byToken[[string]$c['Token']] = $c }
+            [string]$byToken['Ext']['NaStatus'] | Should -Be 'Info'
+            foreach ($t in $script:C12Six) { $byToken[$t].ContainsKey('NaStatus') | Should -BeFalse -Because $t }
+        }
+        It 'needs at least four header tokens, a tool default it says is not a Microsoft value' {
+            [int]$script:C12Cfg['DnsSummary']['HeaderMinTokens'] | Should -Be 4
+            [string]$script:C12Cfg['DnsSummary']['HeaderMinTokensSource'] | Should -Match 'tool default, not a Microsoft value'
+        }
+        It 'adds no dcdiag switch: the DNS test is still asked with /DnsAll and /s: only, never /x, /v, /e, /fix or /DnsResolveExtName' {
+            $a = Get-AdfaDcdiagArgument -TestName 'DNS' -DomainController $script:C12Dc1
+            $a | Should -Be ('/test:DNS /DnsAll /s:{0}' -f $script:C12Dc1)
+            $a | Should -Not -Match '(?i)/(x|v|e|fix|DnsResolveExtName)(:|\s|$)'
+            # And it stays opt-in.
+            @($script:Config.DcdiagActiveTests | Where-Object { $_.Test -eq 'DNS' }).Count | Should -Be 1
+        }
+    }
+
+    Context 'Parser: ConvertFrom-AdfaDcdiagDnsSummary' {
+        It 'reads Learn''s sample: the header by its tokens, two rows under their Domain lines, cells mapped by order' {
+            $s = ConvertFrom-AdfaDcdiagDnsSummary -StdOut $script:C12LearnSample -Config $script:C12Cfg
+            $s.HeaderFound | Should -BeTrue
+            (@($s.Columns) -join ',') | Should -Be ($script:C12Tokens -join ',')
+            $rows = @($s.Rows)
+            # Declared population: the two DC rows of the sample.
+            $rows.Count | Should -Be 2
+            $rows[0].Name | Should -Be 'DC1'
+            $rows[0].Domain | Should -Be 'contoso.com'
+            (@($rows[0].Cells) -join ',') | Should -Be 'PASS,PASS,FAIL,PASS,PASS,PASS,n/a'
+            $rows[0].Recognised | Should -BeTrue
+            $rows[1].Name | Should -Be 'DC2'
+            $rows[1].Domain | Should -Be 'child.contoso.com'
+            (@($rows[1].Cells) -join ',') | Should -Be 'PASS,PASS,n/a,n/a,n/a,PASS,n/a'
+        }
+        It 'reads the same table from LF and CRLF output' {
+            $lf = ConvertFrom-AdfaDcdiagDnsSummary -StdOut ($script:C12LearnSample -replace "`r`n", "`n") -Config $script:C12Cfg
+            $crlf = ConvertFrom-AdfaDcdiagDnsSummary -StdOut $script:C12LearnSample -Config $script:C12Cfg
+            @($lf.Rows).Count | Should -Be 2
+            (@($lf.Rows | ForEach-Object { @($_.Cells) -join ' ' }) -join '|') | Should -Be (@($crlf.Rows | ForEach-Object { @($_.Cells) -join ' ' }) -join '|')
+        }
+        It 'finds a header with four of the tokens, in any case, but not one with three, nor one with an unknown token' {
+            (ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw Del`r`nDC1 PASS PASS PASS PASS" -Config $script:C12Cfg).HeaderFound | Should -BeTrue
+            (ConvertFrom-AdfaDcdiagDnsSummary -StdOut "auth BASC forw del dyn rreg ext`r`nDC1 PASS PASS PASS PASS PASS PASS n/a" -Config $script:C12Cfg).HeaderFound | Should -BeTrue
+            (ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw`r`nDC1 PASS PASS PASS" -Config $script:C12Cfg).HeaderFound | Should -BeFalse
+            (ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw Del Dyn RReg Dele`r`nDC1 PASS PASS PASS PASS PASS PASS n/a" -Config $script:C12Cfg).HeaderFound | Should -BeFalse
+            (ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Auth Basc`r`nDC1 PASS PASS PASS PASS" -Config $script:C12Cfg).HeaderFound | Should -BeFalse
+        }
+        It 'stops at the enterprise block and at the verdict line, and skips separator lines' {
+            $out = "Auth Basc Forw Del Dyn RReg Ext`r`n_______________________________`r`nDomain: contoso.com`r`nDC1 PASS PASS PASS PASS PASS PASS n/a`r`nEnterprise DNS infrastructure test results:`r`nDC2 FAIL FAIL FAIL FAIL FAIL FAIL FAIL"
+            $s = ConvertFrom-AdfaDcdiagDnsSummary -StdOut $out -Config $script:C12Cfg
+            (@($s.Rows | ForEach-Object { $_.Name }) -join ',') | Should -Be 'DC1'
+            $v = ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw Del Dyn RReg Ext`r`nDC1 PASS PASS PASS PASS PASS PASS n/a`r`n......................... contoso.com passed test DNS`r`nDC2 FAIL FAIL FAIL FAIL FAIL FAIL FAIL" -Config $script:C12Cfg
+            (@($v.Rows | ForEach-Object { $_.Name }) -join ',') | Should -Be 'DC1'
+        }
+        It 'reads the LAST header in the output, so a later table replaces an earlier one' {
+            # Found by an independent review of the diff: no test had two header lines.
+            $out = "Auth Basc Forw Del Dyn RReg Ext`r`nDC1 FAIL FAIL FAIL FAIL FAIL FAIL FAIL`r`nEnterprise DNS infrastructure test results:`r`nAuth Basc Forw Del Dyn RReg Ext`r`nDC1 PASS PASS PASS PASS PASS PASS n/a"
+            $s = ConvertFrom-AdfaDcdiagDnsSummary -StdOut $out -Config $script:C12Cfg
+            $s.HeaderCount | Should -Be 2
+            # Declared population: the one DC row of the second table.
+            @($s.Rows).Count | Should -Be 1
+            (@(@($s.Rows)[0].Cells) -join ',') | Should -Be 'PASS,PASS,PASS,PASS,PASS,PASS,n/a'
+            (Resolve-C12 $out 'Auth').Status | Should -Be 'Pass'
+        }
+        It 'stops at a block header: <Name>' -ForEach @(
+            @{ Name = 'server'; Line = 'Testing server: Default-First-Site-Name\DC2' }
+            @{ Name = 'partition'; Line = 'Running partition tests on : DomainDnsZones' }
+            @{ Name = 'enterprise'; Line = 'Running enterprise tests on : contoso.com' }
+        ) {
+            # Found by an independent review of the diff: only the enterprise end-marker and a verdict
+            # line were pinned. A row from the next block must never be read as this table's.
+            $s = ConvertFrom-AdfaDcdiagDnsSummary -StdOut ("Auth Basc Forw Del Dyn RReg Ext`r`nDC1 PASS PASS PASS PASS PASS PASS n/a`r`n{0}`r`nDC2 FAIL FAIL FAIL FAIL FAIL FAIL FAIL" -f $Line) -Config $script:C12Cfg
+            # Declared population: DC1, the one row above the block header.
+            (@($s.Rows | ForEach-Object { $_.Name }) -join ',') | Should -Be 'DC1'
+        }
+        It 'marks a row whose cell count is not the header''s as not recognised' {
+            $s = ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw Del Dyn RReg Ext`r`nDC1 PASS PASS PASS PASS PASS PASS`r`nDC2 PASS PASS PASS PASS PASS PASS n/a extra" -Config $script:C12Cfg
+            @($s.Rows).Count | Should -Be 2
+            @($s.Rows | Where-Object { $_.Recognised }).Count | Should -Be 0
+        }
+        It 'finds nothing in empty, banner-only or localised output' {
+            foreach ($o in @('', "Directory Server Diagnosis`r`nPerforming initial setup:", "Resumo dos resultados do teste de DNS:`r`nAutent Basico Reencam Deleg Din RReg Ext`r`nDC1 APROV APROV APROV APROV APROV APROV n/d")) {
+                $s = ConvertFrom-AdfaDcdiagDnsSummary -StdOut $o -Config $script:C12Cfg
+                $s.HeaderFound | Should -BeFalse
+                @($s.Rows).Count | Should -Be 0
+            }
+        }
+    }
+
+    Context 'Verdict: Resolve-AdfaDcdiagDnsCategory (pure)' {
+        It 'grades PASS as Pass, FAIL as Fail and WARN as Warning, each in its own column' {
+            $out = New-C12DnsOutput -Dc 'DC1' -Cells 'PASS FAIL WARN Warn fail pass n/a'
+            $expect = @('Pass', 'Fail', 'Warning', 'Warning', 'Fail', 'Pass')
+            for ($i = 0; $i -lt 6; $i++) {
+                $r = Resolve-C12 $out $script:C12Six[$i]
+                [string]$r.Status | Should -Be $expect[$i] -Because $script:C12Six[$i]
+                [string]$r.Evidence | Should -Match 'Auth Basc Forw Del Dyn RReg Ext'
+                [string]$r.Evidence | Should -Match 'DC1 PASS FAIL WARN Warn fail pass n/a'
+            }
+            (Resolve-C12 $out 'Basc').Detail | Should -Match 'Forwarders|network connectivity'
+        }
+        It 'grades n/a under Ext as Info, not requested by /DnsAll - never Pass' {
+            $r = Resolve-C12 (New-C12DnsOutput -Dc 'DC1') 'Ext'
+            $r.Status | Should -Be 'Info'
+            $r.Detail | Should -Match 'DnsResolveExtName'
+            $r.Detail | Should -Match 'not requested'
+        }
+        It 'grades n/a under each of the six other groups Not Assessed, saying Microsoft does not publish what n/a means' {
+            $out = New-C12DnsOutput -Dc 'DC1' -Cells 'n/a n/a n/a n/a n/a n/a n/a'
+            # Declared population: the six groups other than Ext.
+            $graded = @(foreach ($t in $script:C12Six) { Resolve-C12 $out $t })
+            $graded.Count | Should -Be 6
+            @($graded | Where-Object { [string]$_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            foreach ($g in $graded) { [string]$g.Detail | Should -Match 'does not publish what n/a means' }
+        }
+        It 'grades the DC''s own row only, by its short name or its 15-character NetBIOS form' {
+            $out = New-C12DnsOutput -Dc 'DC2' -Cells 'PASS PASS PASS FAIL PASS PASS n/a'
+            (Resolve-C12 $out 'Del' $script:C12Dc2).Status | Should -Be 'Fail'
+            $other = Resolve-C12 $out 'Del' $script:C12Dc1
+            $other.Status | Should -Be 'Not Assessed'
+            $other.Detail | Should -Match 'no row for this domain controller'
+            $long = 'maplewaffle-ws22.contoso.com'
+            (Resolve-C12 (New-C12DnsOutput -Dc 'MAPLEWAFFLE-WS2' -Cells 'PASS PASS PASS PASS FAIL PASS n/a') 'Dyn' $long).Status | Should -Be 'Fail'
+        }
+        It 'reads Not Assessed, never Pass, for a missing row, two rows for one DC, an absent column, a short row or an unknown cell' {
+            $two = Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -ExtraRows @('DC1 PASS PASS PASS PASS PASS PASS n/a')) 'Auth'
+            $two.Status | Should -Be 'Not Assessed'
+            $two.Detail | Should -Match '2 rows'
+            $noExt = Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -Header 'Auth Basc Forw Del Dyn RReg' -Cells 'PASS PASS PASS PASS PASS PASS') 'Ext'
+            $noExt.Status | Should -Be 'Not Assessed'
+            $noExt.Detail | Should -Match 'no Ext column'
+            (Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -Header 'Auth Basc Forw Del Dyn RReg' -Cells 'PASS PASS PASS PASS PASS PASS') 'RReg').Status | Should -Be 'Pass'
+            $short = Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -Cells 'PASS PASS PASS PASS PASS PASS') 'Auth'
+            $short.Status | Should -Be 'Not Assessed'
+            $short.Detail | Should -Match 'row not recognised'
+            $odd = Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -Cells 'PASS OK PASS PASS PASS PASS n/a') 'Basc'
+            $odd.Status | Should -Be 'Not Assessed'
+            $odd.Detail | Should -Match "cell value 'OK'"
+            (Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -Cells 'PASS OK PASS PASS PASS PASS n/a') 'Auth').Status | Should -Be 'Pass'
+        }
+        It 'puts a cause that stopped the test ahead of any table, and passes no table it was not given' {
+            $r = Resolve-C12 (New-C12DnsOutput -Dc 'DC1') 'Auth' -NotRunCause 'DC not reachable on RPC/135, so the DNS test was not run.'
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'RPC/135'
+            $none = Resolve-AdfaDcdiagDnsCategory -Summary $null -HostName $script:C12Dc1 -Token 'Auth' -Config $script:C12Cfg
+            $none.Status | Should -Be 'Not Assessed'
+        }
+        It 'without a table, carries the run''s own cause, or says the overall verdict grades no group' {
+            $cause = Resolve-C12 'Diagnostico do Servidor de Diretorio' 'Dyn' -RunCause 'DNS: NOT ASSESSED - the dcdiag output was not recognised (possibly a localised, non-English Windows)'
+            $cause.Status | Should -Be 'Not Assessed'
+            $cause.Detail | Should -Match 'no DNS summary table'
+            $cause.Detail | Should -Match 'localised'
+            $overall = Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -NoTable) 'Del' -OverallStatus 'Pass' -OverallEvidence 'DC1 passed test DNS'
+            $overall.Status | Should -Be 'Not Assessed'
+            $overall.Detail | Should -Match 'overall verdict'
+            $overall.Detail | Should -Match 'DC1 passed test DNS'
+        }
+        It 'keeps every group Not Assessed when the overall verdict is Fail and there is no table' {
+            # Found by an independent review of the diff: only an overall Pass was pinned.
+            $graded = @(foreach ($t in $script:C12Tokens) { Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -NoTable) $t -OverallStatus 'Fail' -OverallEvidence 'contoso.com failed test DNS' })
+            # Declared population: the seven groups.
+            $graded.Count | Should -Be 7
+            @($graded | Where-Object { [string]$_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            foreach ($g in $graded) { [string]$g.Detail | Should -Match 'overall verdict for its DNS test on this domain controller was Fail' }
+        }
+        It 'grades Ext PASS, WARN and FAIL as catalogue DNSDIAG-007 says, with the proxy caveat on WARN and FAIL only' {
+            # Found by an independent review of the diff: only n/a was ever fed under Ext.
+            $fail = Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -Cells 'PASS PASS PASS PASS PASS PASS FAIL') 'Ext'
+            $fail.Status | Should -Be 'Fail'
+            $fail.Detail | Should -Match 'proxy server'
+            $warn = Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -Cells 'PASS PASS PASS PASS PASS PASS WARN') 'Ext'
+            $warn.Status | Should -Be 'Warning'
+            $warn.Detail | Should -Match 'proxy server'
+            $warn.Detail | Should -Match 'currently functional'
+            $pass = Resolve-C12 (New-C12DnsOutput -Dc 'DC1' -Cells 'PASS PASS PASS PASS PASS PASS PASS') 'Ext'
+            $pass.Status | Should -Be 'Pass'
+            $pass.Detail | Should -Not -Match 'proxy server'
+        }
+        It 'adds the functional-warnings caveat to a WARN in any group, and the proxy caveat to no group but Ext' {
+            $out = New-C12DnsOutput -Dc 'DC1' -Cells 'WARN FAIL PASS PASS PASS PASS n/a'
+            $authWarn = Resolve-C12 $out 'Auth'
+            $authWarn.Status | Should -Be 'Warning'
+            $authWarn.Detail | Should -Match 'currently functional'
+            $authWarn.Detail | Should -Not -Match 'proxy server'
+            $bascFail = Resolve-C12 $out 'Basc'
+            $bascFail.Status | Should -Be 'Fail'
+            $bascFail.Detail | Should -Not -Match 'proxy server|currently functional'
+        }
+        It 'refuses a config cell map to a status this tool does not report: Not Assessed, never passed through' {
+            # Found by an independent review of the diff: the allow-list was never exercised.
+            $cfg = @{}
+            foreach ($k in $script:C12Cfg.Keys) { $cfg[$k] = $script:C12Cfg[$k] }
+            $ds = @{}
+            foreach ($k in $script:C12Cfg['DnsSummary'].Keys) { $ds[$k] = $script:C12Cfg['DnsSummary'][$k] }
+            $ds['Cells'] = @(@{ Token = 'PASS'; Status = 'Healthy'; Provisional = $false })
+            $cfg['DnsSummary'] = $ds
+            $s = ConvertFrom-AdfaDcdiagDnsSummary -StdOut (New-C12DnsOutput -Dc 'DC1') -Config $cfg
+            $r = Resolve-AdfaDcdiagDnsCategory -Summary $s -HostName $script:C12Dc1 -Token 'Auth' -Config $cfg
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'not a status this tool reports'
+        }
+    }
+
+    Context 'Roll-up: Resolve-AdfaDcdiagDnsRollup (pure)' {
+        BeforeAll {
+            function New-C12Cell { param([string]$HostName, [string]$Status) [pscustomobject]@{ HostName = $HostName; Status = $Status } }
+        }
+        It 'is Fail when any DC failed, then Warning, then Not Assessed, then Pass, then Info' {
+            $p = New-C12Cell $script:C12Dc1 'Pass'
+            $w = New-C12Cell $script:C12Dc2 'Warning'
+            $f = New-C12Cell 'dc4.contoso.com' 'Fail'
+            $n = New-C12Cell 'dc5.contoso.com' 'Not Assessed'
+            $i = New-C12Cell 'dc6.contoso.com' 'Info'
+            (Resolve-AdfaDcdiagDnsRollup -Cells @($p, $w, $f, $n, $i) -Token 'Del').Status | Should -Be 'Fail'
+            (Resolve-AdfaDcdiagDnsRollup -Cells @($p, $w, $n, $i) -Token 'Del').Status | Should -Be 'Warning'
+            (Resolve-AdfaDcdiagDnsRollup -Cells @($p, $n, $i) -Token 'Del').Status | Should -Be 'Not Assessed'
+            (Resolve-AdfaDcdiagDnsRollup -Cells @($p, $i) -Token 'Del').Status | Should -Be 'Pass'
+            (Resolve-AdfaDcdiagDnsRollup -Cells @($i, (New-C12Cell 'dc7.contoso.com' 'Info')) -Token 'Ext').Status | Should -Be 'Info'
+        }
+        It 'counts every DC of the declared population, names the ones not assessed, and is Not Assessed with none' {
+            $r = Resolve-AdfaDcdiagDnsRollup -Cells @((New-C12Cell $script:C12Dc1 'Pass'), (New-C12Cell $script:C12Dc2 'Not Assessed')) -Token 'Auth'
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match '^2 domain controller\(s\) of this domain'
+            $r.Detail | Should -Match '1 Pass, 0 Warning, 0 Fail, 1 Not Assessed, 0 Info'
+            $r.Detail | Should -Match ([regex]::Escape($script:C12Dc2))
+            $empty = Resolve-AdfaDcdiagDnsRollup -Cells @() -Token 'Auth'
+            $empty.Status | Should -Be 'Not Assessed'
+        }
+        It 'is Not Assessed, never Info or Pass, when a DC''s status is one it does not read: <Name>' -ForEach @(
+            @{ Name = 'an unknown status'; Value = 'Bogus' }
+            @{ Name = 'an empty status'; Value = '' }
+            @{ Name = 'a null status'; Value = $null }
+        ) {
+            # Found by an independent review of the diff: such a cell was counted nowhere and the
+            # roll-up fell through to Info.
+            $odd = [pscustomobject]@{ HostName = 'dc8.contoso.com'; Status = $Value }
+            $alone = Resolve-AdfaDcdiagDnsRollup -Cells @($odd) -Token 'Auth'
+            $alone.Status | Should -Be 'Not Assessed'
+            $alone.Detail | Should -Match '^1 domain controller\(s\)'
+            $alone.Detail | Should -Match '1 with a status this roll-up does not read'
+            $alone.Detail | Should -Match 'dc8\.contoso\.com'
+            (Resolve-AdfaDcdiagDnsRollup -Cells @((New-C12Cell $script:C12Dc1 'Pass'), $odd) -Token 'Auth').Status | Should -Be 'Not Assessed'
+            (Resolve-AdfaDcdiagDnsRollup -Cells @((New-C12Cell $script:C12Dc1 'Info'), $odd) -Token 'Ext').Status | Should -Be 'Not Assessed'
+            # A measured failure still outranks it.
+            (Resolve-AdfaDcdiagDnsRollup -Cells @((New-C12Cell $script:C12Dc1 'Fail'), $odd) -Token 'Auth').Status | Should -Be 'Fail'
+        }
+    }
+
+    Context 'Collector: with -IncludeDcdiagActiveTests' {
+        It 'gives every DC seven rows from its own table, and every domain seven roll-ups (declared population: three DCs, two domains)' {
+            $script:C12Answer = { param($Server, $Test)
+                if ($Test -eq 'DNS') {
+                    $short = Get-C12Short $Server
+                    $cells = 'PASS PASS PASS PASS PASS PASS n/a'
+                    if ($Server -eq $script:C12Dc2) { $cells = 'PASS PASS PASS FAIL PASS PASS n/a' }
+                    if ($Server -eq $script:C12Dc3) { $cells = 'PASS PASS PASS PASS WARN PASS n/a' }
+                    return (New-C12Result (New-C12DnsOutput -Dc $short -Cells $cells))
+                }
+                Get-C12DefaultAnswer -Server $Server -Test $Test }
+            $rows = Invoke-C12Collector -Targets $script:C12ThreeDcs -Active
+            # No new dcdiag invocation: one DNS run per DC, with the C11 arguments.
+            $dnsCalls = @($script:C12Calls | Where-Object { $_ -match '/test:DNS' })
+            $dnsCalls.Count | Should -Be 3
+            foreach ($t in $script:C12ThreeDcs) {
+                @($dnsCalls | Where-Object { $_ -eq ('/test:DNS /DnsAll /s:{0}' -f $t.HostName) }).Count | Should -Be 1 -Because $t.HostName
+                $mine = Get-C12DcRows $rows $t.HostName
+                $mine.Count | Should -Be 7 -Because $t.HostName
+                @($mine | Where-Object { [string]$_.Scope -ne $t.Scope -or [string]$_.Target -ne $t.HostName -or [string]$_.Area -ne 'DcDiagnostics' }).Count | Should -Be 0 -Because $t.HostName
+                [string](Get-C12Row $rows ("dcdiag DNS Ext: {0}" -f $t.HostName))[0].Status | Should -Be 'Info' -Because $t.HostName
+            }
+            [string](Get-C12Row $rows ("dcdiag DNS Del: {0}" -f $script:C12Dc2))[0].Status | Should -Be 'Fail'
+            [string](Get-C12Row $rows ("dcdiag DNS Dyn: {0}" -f $script:C12Dc3))[0].Status | Should -Be 'Warning'
+            [string](Get-C12Row $rows ("dcdiag DNS Del: {0}" -f $script:C12Dc1))[0].Status | Should -Be 'Pass'
+            [string](Get-C12Row $rows ("dcdiag DNS Dyn: {0}" -f $script:C12Dc1))[0].Status | Should -Be 'Pass'
+            [string](Get-C12Row $rows ("dcdiag DNS Del: {0}" -f $script:C12Dc3))[0].Status | Should -Be 'Pass'
+            # Roll-ups: seven per domain.
+            foreach ($d in @('contoso.com', 'north.contoso.com')) {
+                $roll = @($rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -match ('^dcdiag DNS (Auth|Basc|Forw|Del|Dyn|RReg|Ext): domain {0}$' -f [regex]::Escape($d)) })
+                $roll.Count | Should -Be 7 -Because $d
+                @($roll | Where-Object { [string]$_.Scope -ne $d }).Count | Should -Be 0 -Because $d
+            }
+            [string](Get-C12Row $rows 'dcdiag DNS Del: domain contoso.com')[0].Status | Should -Be 'Fail'
+            [string](Get-C12Row $rows 'dcdiag DNS Del: domain contoso.com')[0].Detail | Should -Match '^2 domain controller\(s\)'
+            [string](Get-C12Row $rows 'dcdiag DNS Dyn: domain contoso.com')[0].Status | Should -Be 'Pass'
+            [string](Get-C12Row $rows 'dcdiag DNS Dyn: domain north.contoso.com')[0].Status | Should -Be 'Warning'
+            [string](Get-C12Row $rows 'dcdiag DNS Del: domain north.contoso.com')[0].Status | Should -Be 'Pass'
+            [string](Get-C12Row $rows 'dcdiag DNS Ext: domain contoso.com')[0].Status | Should -Be 'Info'
+            (Get-C12Row $rows 'dcdiag DNS not run: contoso.com').Count | Should -Be 0
+            # The grid's DNS cell is still C11's overall verdict.
+            [string]@($rows | Where-Object { $null -ne $_.PSObject.Properties['DomainController'] -and $_.DomainController -eq $script:C12Dc2 })[0].DCDIAG_DNS | Should -Be 'Fail'
+        }
+        It 'reads a DC closed on RPC/135 as unreachable in all seven rows, and its domain''s roll-ups Not Assessed' {
+            $rows = Invoke-C12Collector -Targets $script:C12ThreeDcs -Active -Down @($script:C12Dc3)
+            $three = Get-C12DcRows $rows $script:C12Dc3
+            $three.Count | Should -Be 7
+            @($three | Where-Object { [string]$_.Status -ne 'Not Assessed' -or [string]$_.Detail -notmatch 'RPC/135' }).Count | Should -Be 0
+            @($script:C12Calls | Where-Object { $_ -match ('/s:{0}$' -f [regex]::Escape($script:C12Dc3)) }).Count | Should -Be 0
+            foreach ($t in $script:C12Six) { [string](Get-C12Row $rows ("dcdiag DNS {0}: domain north.contoso.com" -f $t))[0].Status | Should -Be 'Not Assessed' -Because $t }
+            foreach ($t in $script:C12Six) { [string](Get-C12Row $rows ("dcdiag DNS {0}: {1}" -f $t, $script:C12Dc1))[0].Status | Should -Be 'Pass' -Because $t }
+        }
+        It 'reports access denied as its own cause, not as unreachable' {
+            $script:C12Answer = { param($Server, $Test)
+                if ($Server -eq $script:C12Dc2 -and $Test -eq 'DNS') { return (New-C12Result ("Directory Server Diagnosis`r`nPerforming initial setup:`r`n[DC2] LDAP bind failed with error 5,`r`nAccess is denied.") -Success $false -ExitCode 1) }
+                Get-C12DefaultAnswer -Server $Server -Test $Test }
+            $rows = Invoke-C12Collector -Targets $script:C12ThreeDcs -Active
+            $two = Get-C12DcRows $rows $script:C12Dc2
+            $two.Count | Should -Be 7
+            foreach ($r in $two) {
+                [string]$r.Status | Should -Be 'Not Assessed'
+                [string]$r.Detail | Should -Match 'access denied'
+                [string]$r.Detail | Should -Not -Match 'RPC/135|could not reach'
+            }
+            [string](Get-C12Row $rows 'dcdiag DNS Auth: domain contoso.com')[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'names a time-out, a localised output and a failed Connectivity as three more causes' {
+            $script:C12Answer = { param($Server, $Test)
+                if ($Server -eq $script:C12Dc1 -and $Test -eq 'DNS') { return (New-C12Result '' -Success $false -ExitCode $null -ErrorText 'Timeout after 5s') }
+                if ($Server -eq $script:C12Dc2 -and $Test -eq 'DNS') { return (New-C12Result "Diagnostico do Servidor de Diretorio`r`n......................... DC2 passou no teste DNS") }
+                if ($Server -eq $script:C12Dc3 -and $Test -eq 'Connectivity') { return (New-C12Result "   Testing server: Default-First-Site-Name\DC3`r`n      Starting test: Connectivity`r`n         ......................... DC3 failed test Connectivity" -Success $false -ExitCode 1) }
+                Get-C12DefaultAnswer -Server $Server -Test $Test }
+            $rows = Invoke-C12Collector -Targets $script:C12ThreeDcs -Active
+            $one = Get-C12DcRows $rows $script:C12Dc1
+            @($one | Where-Object { [string]$_.Status -ne 'Not Assessed' -or [string]$_.Detail -notmatch 'did not complete' -or [string]$_.Detail -notmatch 'time-out' }).Count | Should -Be 0
+            $two = Get-C12DcRows $rows $script:C12Dc2
+            @($two | Where-Object { [string]$_.Status -ne 'Not Assessed' -or [string]$_.Detail -notmatch 'not recognised' }).Count | Should -Be 0
+            $three = Get-C12DcRows $rows $script:C12Dc3
+            @($three | Where-Object { [string]$_.Status -ne 'Not Assessed' -or [string]$_.Detail -notmatch 'Connectivity' }).Count | Should -Be 0
+            @($script:C12Calls | Where-Object { $_ -match ('^/test:DNS .*/s:{0}$' -f [regex]::Escape($script:C12Dc3)) }).Count | Should -Be 0
+            # Declared population: 21 rows, three DCs, none Pass.
+            @($one + $two + $three).Count | Should -Be 21
+        }
+        It 'reports dcdiag.exe missing in every row and runs nothing' {
+            $rows = Invoke-C12Collector -Targets $script:C12ThreeDcs -Active -HaveDcdiag $false
+            @($script:C12Calls).Count | Should -Be 0
+            $dns = Get-C12DnsRows $rows
+            # Declared population: 3 DCs x 7 + 2 domains x 7.
+            $dns.Count | Should -Be 35
+            @($dns | Where-Object { [string]$_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            $one = Get-C12DcRows $rows $script:C12Dc1
+            $one.Count | Should -Be 7
+            @($one | Where-Object { [string]$_.Detail -notmatch 'dcdiag\.exe' }).Count | Should -Be 0
+        }
+        It 'with no DC at all reports each domain''s seven roll-ups Not Assessed and nothing else' {
+            $rows = Invoke-C12Collector -Targets @() -Active
+            $dns = Get-C12DnsRows $rows
+            $dns.Count | Should -Be 14
+            @($dns | Where-Object { [string]$_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            @($script:C12Calls).Count | Should -Be 0
+        }
+        It 'grades a DC whose summary table is missing Not Assessed with the overall verdict, never Pass' {
+            $script:C12Answer = { param($Server, $Test)
+                if ($Test -eq 'DNS') { return (New-C12Result (New-C12DnsOutput -Dc (Get-C12Short $Server) -NoTable)) }
+                Get-C12DefaultAnswer -Server $Server -Test $Test }
+            $rows = Invoke-C12Collector -Targets $script:C12ThreeDcs -Active
+            $dns = Get-C12DnsRows $rows
+            $dns.Count | Should -Be 35
+            @($dns | Where-Object { [string]$_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            [string](Get-C12Row $rows ("dcdiag DNS Auth: {0}" -f $script:C12Dc1))[0].Detail | Should -Match 'overall verdict'
+        }
+        It 'rolls a DC whose domain is not known up under "(domain not known)", never dropping it' {
+            # Found by an independent review of the diff: no test had a target with an empty Scope.
+            $orphan = 'dc9.contoso.com'
+            $script:C12Answer = { param($Server, $Test)
+                if ($Test -eq 'DNS' -and $Server -eq 'dc9.contoso.com') { return (New-C12Result (New-C12DnsOutput -Dc 'DC9' -Cells 'PASS PASS PASS FAIL PASS PASS n/a')) }
+                Get-C12DefaultAnswer -Server $Server -Test $Test }
+            $rows = Invoke-C12Collector -Targets @($script:C12ThreeDcs + @(New-C12Target $orphan '')) -Active
+            (Get-C12DcRows $rows $orphan).Count | Should -Be 7
+            $roll = @($rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -match '^dcdiag DNS (Auth|Basc|Forw|Del|Dyn|RReg|Ext): domain \(domain not known\)$' })
+            # Declared population: seven groups for the one DC whose domain is not known.
+            $roll.Count | Should -Be 7
+            @($roll | Where-Object { [string]$_.Scope -ne '' -or [string]$_.Detail -notmatch '^1 domain controller\(s\)' }).Count | Should -Be 0
+            $del = Get-C12Row $rows 'dcdiag DNS Del: domain (domain not known)'
+            [string]$del[0].Status | Should -Be 'Fail'
+            [string]$del[0].Detail | Should -Match ([regex]::Escape($orphan))
+            # It is not counted in a known domain either.
+            [string](Get-C12Row $rows 'dcdiag DNS Del: domain contoso.com')[0].Detail | Should -Match '^2 domain controller\(s\)'
+        }
+        It 'names a DC with no host name in all seven rows, runs nothing against it, and counts it in its domain' {
+            # Found by an independent review of the diff: the named cause of an unnamed DC was not pinned.
+            $rows = Invoke-C12Collector -Targets @($script:C12ThreeDcs + @(New-C12Target '' 'contoso.com')) -Active
+            $unnamed = Get-C12DcRows $rows '(unnamed)'
+            # Declared population: the seven groups of the one DC with no host name.
+            $unnamed.Count | Should -Be 7
+            @($unnamed | Where-Object { [string]$_.Status -ne 'Not Assessed' -or [string]$_.Detail -notmatch 'no host name' }).Count | Should -Be 0
+            @($script:C12Calls | Where-Object { $_ -match '/s:(\s|$)' }).Count | Should -Be 0
+            $auth = Get-C12Row $rows 'dcdiag DNS Auth: domain contoso.com'
+            [string]$auth[0].Status | Should -Be 'Not Assessed'
+            [string]$auth[0].Detail | Should -Match '^3 domain controller\(s\)'
+        }
+        It 'keeps the DNS summary when the DcDiag key of the file sets the time-out' {
+            $cfg = Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ('{ "TestTimeoutSeconds": 240 }' | ConvertFrom-Json) -OverrideSource 'C:\cfg\dcdiag.json'
+            $rows = Invoke-C12Collector -Targets $script:C12ThreeDcs -Active -Config $cfg
+            (Get-C12DnsRows $rows).Count | Should -Be 35
+            [string](Get-C12Row $rows ("dcdiag DNS RReg: {0}" -f $script:C12Dc3))[0].Status | Should -Be 'Pass'
+        }
+    }
+
+    Context 'Collector: default run, without the opt-in' {
+        It 'runs no DNS test and reports one Not Assessed "not run" row per domain, the reason in NotRun' {
+            $rows = Invoke-C12Collector -Targets $script:C12ThreeDcs
+            @($script:C12Calls | Where-Object { $_ -match '/test:DNS' }).Count | Should -Be 0
+            $dns = Get-C12DnsRows $rows
+            # Declared population: the two scoped domains.
+            $dns.Count | Should -Be 2
+            foreach ($d in @('contoso.com', 'north.contoso.com')) {
+                $r = Get-C12Row $rows ("dcdiag DNS not run: {0}" -f $d)
+                $r.Count | Should -Be 1 -Because $d
+                [string]$r[0].Status | Should -Be 'Not Assessed'
+                [string]$r[0].Scope | Should -Be $d
+                [string]$r[0].NotRun | Should -Match 'IncludeDcdiagActiveTests'
+                [string]$r[0].NotRun | Should -Match 'test record'
+                [string]$r[0].Detail | Should -BeNullOrEmpty
+            }
+        }
+        It 'says the same for a scoped domain with no DC, and for no DC at all' {
+            $rows = Invoke-C12Collector -Targets @() -Scoped @('contoso.com', 'north.contoso.com', 'south.contoso.com')
+            $dns = Get-C12DnsRows $rows
+            $dns.Count | Should -Be 3
+            @($dns | Where-Object { [string]$_.Status -ne 'Not Assessed' -or [string]$_.Item -notlike 'dcdiag DNS not run: *' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Config override: the DcDiag key is not widened' {
+        It 'refuses <Name>' -ForEach @(
+            @{ Name = 'the DNS summary table'; Json = '{ "DnsSummary": {} }'; Expect = "unknown key 'DnsSummary'" }
+            @{ Name = 'a category list'; Json = '{ "Categories": [ "Auth" ] }'; Expect = "unknown key 'Categories'" }
+            @{ Name = 'a cell map'; Json = '{ "Cells": [] }'; Expect = "unknown key 'Cells'" }
+            @{ Name = 'the header threshold'; Json = '{ "HeaderMinTokens": 3 }'; Expect = "unknown key 'HeaderMinTokens'" }
+            @{ Name = 'a test list'; Json = '{ "PerDcTests": [ "DNS" ] }'; Expect = "unknown key 'PerDcTests'" }
+        ) {
+            { Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ($Json | ConvertFrom-Json) -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage ("*{0}*" -f $Expect)
+        }
+        It 'names the DNS summary table among what a file cannot set' {
+            { Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ('{ "DnsSummary": {} }' | ConvertFrom-Json) } | Should -Throw -ExpectedMessage '*DNS summary table*'
+        }
+        It 'passes the built-in DNS summary table through a valid override unchanged' {
+            $m = Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ('{ "Retries": 3 }' | ConvertFrom-Json) -OverrideSource 'C:\cfg\dcdiag.json'
+            [object]::ReferenceEquals($m['DnsSummary'], $script:Config.DcDiag['DnsSummary']) | Should -BeTrue
+        }
+    }
+
+    Context 'Recommendations' {
+        BeforeAll {
+            $script:C12Expect = @{ Auth = 'Enterprise Admins'; Basc = 'service availability, and zone existence'; Forw = 'configuration of forwarders'; Del = 'proper delegations'
+                Dyn = 'secure dynamic updates'; RReg = 'well-known service \(SRV\)'; Ext = 'proxy server' }
+        }
+        It 'gives each test group its own advice, per DC and per domain, whatever its Detail says' {
+            # Non-vacuity: the hostile Detail does reach unscoped advice on a row with no scoped entry.
+            $baseline = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:C12Dc1 -Detail $script:C12Hostile
+            $baseline | Should -Not -BeNullOrEmpty
+            # Declared population: seven groups, two Item forms each.
+            $n = 0
+            foreach ($t in $script:C12Tokens) {
+                foreach ($item in @(("dcdiag DNS {0}: {1}" -f $t, $script:C12Dc1), ("dcdiag DNS {0}: domain contoso.com" -f $t))) {
+                    $rec = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $item -Detail $script:C12Hostile
+                    $rec | Should -Match $script:C12Expect[$t] -Because $item
+                    $rec | Should -Not -Be $baseline -Because $item
+                    $rec | Should -Match 'changes nothing' -Because $item
+                    $n++
+                }
+            }
+            $n | Should -Be 14
+        }
+        It 'puts the AAAA caveat under Dyn, where Learn gives it, and not under RReg, where it does not' {
+            # Found by an independent review of the diff. Learn's "Verify DNS functionality" page (re-read
+            # 2026-11-16) gives the AAAA caveat in the /DnsDynamicUpdate step and after reruns of the
+            # whole DNS test; its /DnsRecordRegistration section lists CNAME, A, LDAP SRV, GC SRV and
+            # PDC SRV with no AAAA caveat.
+            $dyn = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item ("dcdiag DNS Dyn: {0}" -f $script:C12Dc1) -Detail 'x'
+            $rreg = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item ("dcdiag DNS RReg: {0}" -f $script:C12Dc1) -Detail 'x'
+            $dyn | Should -Match 'AAAA'
+            $dyn | Should -Match 'IPv6'
+            $rreg | Should -Not -Match 'AAAA|IPv6'
+            $rreg | Should -Match 'DNSAvoidRegisterRecord'
+        }
+        It 'gives the not-run and no-domain rows no advice' {
+            foreach ($item in @('dcdiag DNS not run: contoso.com', 'dcdiag DNS not run: (no domain known)')) {
+                Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $item -Detail $script:C12Hostile | Should -Be '' -Because $item
+            }
+        }
+        It 'sits ahead of the first unscoped entry, with DNS in the section''s catch-all' {
+            $map = @($script:RecommendationMap)
+            $firstUnscoped = -1
+            for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $firstUnscoped = $i; break } }
+            $dns = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Match -match 'dcdiag DNS ') { $i } })
+            # Declared population: the seven test groups.
+            $dns.Count | Should -Be 7
+            @($dns | Where-Object { $_ -gt $firstUnscoped }).Count | Should -Be 0
+            $catch = @($map | Where-Object { $_.ContainsKey('Section') -and [string]$_.Section -eq '(?i)^dc diagnostics' -and [string]$_.Text -eq '' })
+            $catch.Count | Should -Be 1
+            [string]$catch[0].Match | Should -Match '\|DNS\)'
+        }
+        It 'gives a failed group the advice of that group, and a Not Assessed row none, through the consolidated finding' {
+            $script:C12Answer = { param($Server, $Test)
+                if ($Test -eq 'DNS' -and $Server -eq $script:C12Dc2) { return (New-C12Result (New-C12DnsOutput -Dc 'DC2' -Cells 'PASS PASS PASS FAIL PASS PASS n/a')) }
+                Get-C12DefaultAnswer -Server $Server -Test $Test }
+            $rows = Invoke-C12Collector -Targets $script:C12ThreeDcs -Active -Down @($script:C12Dc3)
+            $dnsRows = Get-C12DnsRows $rows
+            # Declared population: 3 DCs x 7 + 2 domains x 7.
+            $dnsRows.Count | Should -Be 35
+            $findings = @(foreach ($r in $dnsRows) { ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $r -StatusColumn 'Status' })
+            $fails = @($findings | Where-Object { $_.Status -eq 'Fail' })
+            # Declared population: DC2's Del row and the contoso.com Del roll-up.
+            $fails.Count | Should -Be 2
+            @($fails | Where-Object { $_.Recommendation -notmatch 'proper delegations' }).Count | Should -Be 0
+            @($findings | Where-Object { $_.Status -match '^(Pass|Info|Not Assessed)$' -and $_.Recommendation }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Wiring' {
+        BeforeAll {
+            $script:C12Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+            function Get-C12Function { param([string]$Name) @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true)) }
+        }
+        It 'parses and grades in the collector, with no dcdiag invocation of its own' {
+            $collector = @(Get-C12Function 'Get-AdfaDcDiagnostic')
+            $collector.Count | Should -Be 1
+            $names = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+            foreach ($f in @('ConvertFrom-AdfaDcdiagDnsSummary', 'Resolve-AdfaDcdiagDnsCategory', 'Resolve-AdfaDcdiagDnsRollup')) {
+                @($names | Where-Object { $_ -eq $f }).Count | Should -Be 1 -Because $f
+                @(Get-C12Function $f).Count | Should -Be 1 -Because $f
+            }
+            # Declared population: the one per-DC invocation C11 already makes.
+            @($names | Where-Object { $_ -eq 'Invoke-AdfaDcdiagTest' }).Count | Should -Be 1
+            foreach ($f in @('ConvertFrom-AdfaDcdiagDnsSummary', 'Resolve-AdfaDcdiagDnsCategory', 'Resolve-AdfaDcdiagDnsRollup')) {
+                $inner = @((Get-C12Function $f)[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+                @($inner | Where-Object { $_ -match '^(Invoke-ExternalCommand|Invoke-AdfaDcdiagTest|Test-TcpPort|Test-AdfaDcPort)$' }).Count | Should -Be 0 -Because "$f is pure"
+            }
+        }
+        It 'adds no -Sections value and no /x switch' {
+            $p = @($script:C12Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $p.Count | Should -Be 1
+            $vs = @($p[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+            $vs.Count | Should -Be 1
+            $values = @($vs[0].PositionalArguments | ForEach-Object { [string]$_.Value })
+            $values | Should -Contain 'DcDiagnostics'
+            @($values | Where-Object { $_ -match '(?i)dns.*diag|diag.*dns' }).Count | Should -Be 0
+            $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
+            @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
+        }
+        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
+            [string]$script:Config.Version | Should -Be '1.29.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
+        }
+        It 'documents the per-group rows in the help and the README' {
+            $help = $script:C12Ast.GetHelpContent()
+            ([string]$help.Parameters['INCLUDEDCDIAGACTIVETESTS'] -replace '\s+', ' ') | Should -Match 'Auth, Basc, Forw, Del, Dyn, RReg, Ext'
+            ([string]$help.Description -replace '\s+', ' ') | Should -Match 'summary table'
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($readme | Where-Object { $_ -match '^\| Diagnostics \|' })
+            $row.Count | Should -Be 1
+            $row[0] | Should -Match 'Auth, Basc, Forw, Del, Dyn, RReg, Ext'
         }
     }
 }

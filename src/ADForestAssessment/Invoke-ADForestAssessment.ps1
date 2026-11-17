@@ -26,7 +26,8 @@
         - Parsed DC diagnostics (dcdiag key tests + core service state) as PASS/FAIL per DC,
           with Topology per domain, CheckSDRefDom and CrossRefValidation per partition of the
           forest, and Intersite per site (opt-in); a partition's or the enterprise's result is
-          never counted as a DC's
+          never counted as a DC's. With the opt-in, the DNS test's summary table graded per test
+          group (Auth, Basc, Forw, Del, Dyn, RReg, Ext), per DC and per domain
         - DNS health (zones, scavenging, forwarders, zone transfer)         [DnsServer optional]
         - SYSVOL / DFSR replication migration state                          [DFSR optional]
         - GPO inventory (linked / unlinked)                                  [GroupPolicy optional]
@@ -349,7 +350,14 @@
     Topology" row and one "dcdiag coverage" row. Per forest, CheckSDRefDom and CrossRefValidation
     once each, with one row per partition and a roll-up. Per site that holds a DC, Intersite with
     -IncludeDcdiagActiveTests. LocatorCheck is never run: it is not in Microsoft's table of dcdiag
-    tests. Unreachable, access denied, output not recognised (possibly localised) and an event log
+    tests. With -IncludeDcdiagActiveTests the DNS test's summary table is read from the same output
+    (no further invocation): one row per DC and test group (Auth, Basc, Forw, Del, Dyn, RReg, Ext),
+    PASS Pass, FAIL Fail, WARN Warning, n/a Not Assessed except under Ext, where /DnsAll does not
+    ask for it (Info), and one roll-up per domain and test group over every DC of the domain. The
+    header is found by its tokens and the cells mapped by order (one Learn sample, KB 2102154); a
+    missing table, row, column or cell is Not Assessed. Without the switch, one "dcdiag DNS not
+    run" row per domain says why. dcdiag's /x (XML) output is not used: Microsoft publishes no
+    schema for it. Unreachable, access denied, output not recognised (possibly localised) and an event log
     that could not be queried are each their own Not Assessed cause, never Pass. Like DcDisk it
     covers the DCs of every scoped domain; the site and read-only flag of each DC come from the DC
     inventory, so name DomainControllers with it for the per-site rows.
@@ -483,7 +491,11 @@
     failures after triggering a replication", run once per site that holds a DC rather than once
     per DC. NOT read-only. Without this switch the DNS and SystemLog cells of the DC Diagnostics
     grid read Not Assessed, each DC's row says why, the row's status is taken from the other 19
-    tests, and one "dcdiag Intersite: not run" row says Intersite was not run.
+    tests, one "dcdiag Intersite: not run" row says Intersite was not run, and one "dcdiag DNS not
+    run" row per domain says the same of the DNS summary. With it, the DNS test's summary table is
+    graded per test group - Auth, Basc, Forw, Del, Dyn, RReg, Ext - for each DC and each domain.
+    Microsoft documents that membership in Enterprise Admins, or equivalent, is the minimum
+    requirement to complete the DNS tests.
 
 .PARAMETER IncludeLdapsHandshake
     In the DcCertificates section, also read the certificate each DC presents on LDAPS, port
@@ -615,8 +627,9 @@ param(
     # whose dynamic update test registers and then deletes a DNS test record; /test:SystemLog,
     # which Microsoft describes as reading and writing System log entries; and /test:Intersite /a,
     # which triggers a replication and runs once per site. Opt-in because they are not read-only.
-    # Without it the DNS and SystemLog grid cells read Not Assessed, the row says why, and one
-    # "dcdiag Intersite: not run" row says the same.
+    # Without it the DNS and SystemLog grid cells read Not Assessed, the row says why, one
+    # "dcdiag Intersite: not run" row says the same, and so does one "dcdiag DNS not run" row per
+    # domain. With it the DNS summary table is graded per test group, per DC and per domain.
     [switch]$IncludeDcdiagActiveTests,
 
     # Read the certificate each DC presents on LDAPS (port 636) with a TLS handshake that sends
@@ -680,7 +693,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.28.0'
+    Version                 = '1.29.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -879,7 +892,7 @@ $script:Config = @{
     # -IncludeDcdiagActiveTests. /fix, /c, /e, /u, /p, /skip and the MachineAccount repair options
     # are never passed.
     DcDiag                  = @{
-        Version            = '1.28.0'
+        Version            = '1.29.0'
         SourceUrl          = 'https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag'
         ReadDate           = '2026-11-16'
         ThresholdSource    = 'tool default, not a Microsoft value'
@@ -1020,6 +1033,82 @@ $script:Config = @{
             @{ Pattern = '(?i)\bAccess is denied\b'; Provisional = $false
                Source = 'https://learn.microsoft.com/windows/win32/debug/system-error-codes--0-499-'; ReadDate = '2026-11-16' }
         )
+        # --- The DNS test's summary table, one row per test group (PORT-PLAN C12, closes H15) ---
+        # Read from the output of the DNS test C11 already runs ("/DnsAll /s:<DC>", opt-in): no new
+        # invocation, no new switch. The only Learn page that shows the table is KB 2102154 (below):
+        # a header "Auth Basc Forw Del  Dyn  RReg Ext" with uneven spacing, "Domain: <fqdn>" lines,
+        # one row per DC with its short name and one cell per column (PASS, FAIL, n/a), then
+        # "Enterprise DNS infrastructure test results:" and the overall verdict. The sample was
+        # taken with /v /e; whether a "/s:<DC>" run prints the same table, only that DC's row, the
+        # "Domain:" lines, the WARN token and what n/a means are NOT published and are confirmed in
+        # the first real capture (PORT-PLAN C12a, with C17). The header is found by its tokens, never
+        # by column position; cells are split on whitespace and mapped to the columns by order; a
+        # row whose cell count is not the header's is not graded. /x (XML) is not used: Microsoft
+        # documents it only as "Redirects all output to xmllog.xml" and publishes no schema (H15).
+        # This table cannot be set from a file: the DcDiag key of -ConfigOverridePath refuses it.
+        DnsSummary         = @{
+            SourceUrl             = 'https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-1722-rpc-server-unavailable'
+            ReadDate              = '2026-11-16'
+            LayoutSource          = 'one sample on Learn (KB 2102154, from the DNS test run with /v /e): header tokens and order, Domain lines, cell values PASS, FAIL and n/a; spacing, a separator line and the layout under /s: from field captures, to be confirmed in the first real capture (PORT-PLAN C12a)'
+            # A header is a line whose whitespace-separated tokens are all column tokens below, none
+            # twice, and at least this many. Microsoft publishes no such rule.
+            HeaderMinTokens       = 4
+            HeaderMinTokensSource = 'tool default, not a Microsoft value: more than half the seven columns, so a line of prose that happens to hold one or two of the words is never read as the header'
+            # "Domain: contoso.com" in Learn's sample; the name is kept with the row.
+            DomainLine            = '(?i)^Domain:\s*(?<name>\S+)'
+            # The table ends at the enterprise block (Learn's sample), at a verdict line or at a block
+            # header of the OutputMarkers above, whichever comes first.
+            EndMarkers            = @('(?i)^Enterprise DNS infrastructure test results', '(?i)\b(passed|failed)\s+test\b')
+            # A line of underscores, dashes or equals signs under the header: not in Learn's sample;
+            # field captures show one. Skipped, never read as a row.
+            SeparatorLine         = '^[_=\-\s]+$'
+            # Column order and names: Learn KB 2102154 ("There are seven test groups for this command",
+            # of which it lists six). What each test checks: the dcdiag reference, "DNS syntax",
+            #   https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag
+            # The Enterprise Admins minimum for the DNS tests:
+            #   https://learn.microsoft.com/troubleshoot/windows-server/active-directory/active-directory-replication-event-id-2087
+            #   Read: 2026-11-16 (all).
+            # NaStatus: what n/a in this column grades to, when it is not the Cells default below.
+            Categories            = @(
+                @{ Token = 'Auth'; Name = 'Authentication'; InLearn = $true; Switch = ''
+                   Learn = 'Authentication (Auth) is the first of the DNS test groups; Microsoft documents that membership in Enterprise Admins, or equivalent, is the minimum requirement to complete the DNS tests (KB event 2087 page)' }
+                @{ Token = 'Basc'; Name = 'Basic'; InLearn = $true; Switch = '/DnsBasic'
+                   Learn = 'Performs basic DNS tests, including network connectivity, DNS client configuration, service availability, and zone existence' }
+                @{ Token = 'Forw'; Name = 'Forwarders/Root hints'; InLearn = $true; Switch = '/DnsForwarders'
+                   Learn = 'Performs the /DnsBasic tests and also checks the configuration of forwarders' }
+                @{ Token = 'Del'; Name = 'Delegations'; InLearn = $true; Switch = '/DnsDelegation'
+                   Learn = 'Performs the /DnsBasic tests and also checks for proper delegations' }
+                @{ Token = 'Dyn'; Name = 'Dynamic update'; InLearn = $true; Switch = '/DnsDynamicUpdate'
+                   Learn = 'Performs /DnsBasic tests and also determines if dynamic update is enabled in the Active Directory zone' }
+                @{ Token = 'RReg'; Name = 'Records registration'; InLearn = $true; Switch = '/DnsRecordRegistration'
+                   Learn = 'Performs the /DnsBasic tests and also checks if the address (A), canonical name (CNAME) and well-known service (SRV) resource records are registered' }
+                # Ext: Learn never names this column. That it is the external name resolution test is
+                # an INFERENCE: /DnsAll "Performs all tests, except for the /DnsResolveExtName test",
+                # and Learn's /DnsAll sample prints n/a under Ext on every DC. Under the /DnsAll this
+                # tool runs, n/a here is "not requested", graded Info as catalogue DNSDIAG-007 says.
+                @{ Token = 'Ext'; Name = 'External name resolution (inferred: Learn does not name this column)'; InLearn = $false; Switch = '/DnsResolveExtName'
+                   Learn = 'Resolves <www.microsoft.com> (or /DnsInternetName); /DnsAll performs all tests except this one'
+                   NaStatus = 'Info'
+                   # Graded as catalogue DNSDIAG-007 says (PASS Pass, WARN Warning, FAIL Fail), with
+                   # Microsoft's caveat (archived Windows Server 2003 SP1 dcdiag page, cc776854, read
+                   # 2026-11-16). Under /DnsAll only n/a is expected here.
+                   ResultNote = 'Microsoft notes that the external name resolution test cannot resolve external Internet names in an environment where a proxy server is being used (archived Windows Server 2003 SP1 dcdiag page), so this result depends on whether the domain controller can reach the internet.'
+                   NaMeaning = 'not requested: /DnsAll performs all tests except /DnsResolveExtName (Microsoft, dcdiag reference), and /DnsAll is what this tool runs. Not applicable to this run; this is not a pass' }
+            )
+            # Cell values, compared without regard to case. PASS, FAIL and n/a are in Learn's sample.
+            # WARN is not: two Learn pages say only, in prose, to note the DCs that report "Warn" or
+            # "Fail" in the summary table (event 2087 page; Verify DNS functionality page). Any other
+            # value is "cell value not recognised", Not Assessed, never Pass.
+            # n/a: Microsoft does not publish what it means. Not Assessed under every column except
+            # one with its own NaStatus (Ext), as catalogue DNSDIAG-001..006 say ("n/a -> Not
+            # Assessed"); operator to confirm (PORT-PLAN C12b).
+            Cells                 = @(
+                @{ Token = 'PASS'; Status = 'Pass'; Provisional = $false }
+                @{ Token = 'FAIL'; Status = 'Fail'; Provisional = $false }
+                @{ Token = 'WARN'; Status = 'Warning'; Provisional = $true }
+                @{ Token = 'n/a'; Status = 'Not Assessed'; Provisional = $false }
+            )
+        }
     }
     # --- DC system: OS lifecycle, and patch-level inventory (PORT-PLAN C1) ------------------
     # Volatile vendor facts, replaceable from a file via -DcSystemConfigPath.
@@ -3612,10 +3701,13 @@ function Get-AdfaDcdiagArgument {
         /DnsAll, but the default is spelled out here so a change to it cannot silently narrow
         what this tool checks. /DnsAll runs basic, forwarders, delegation, dynamic update and
         record registration - everything except the external-name resolution test, which needs
-        internet egress and is not a directory-health question.
+        internet egress and is not a directory-health question. Learn: /DnsAll "Performs all tests,
+        except for the /DnsResolveExtName test". The summary table of this run is graded per test
+        group (PORT-PLAN C12) without adding any switch: no /v, no /e, and never /x, whose XML
+        Microsoft documents only as "Redirects all output to xmllog.xml", with no schema.
 
         https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag
-        Read: 2026-09-22.
+        Read: 2026-11-16.
     .OUTPUTS
         [string]
     #>
@@ -4107,6 +4199,308 @@ function New-AdfaDcDiagRow {
     }
 }
 
+function ConvertFrom-AdfaDcdiagDnsSummary {
+    <#
+    .SYNOPSIS
+        Pure parser for the summary table of dcdiag's DNS test: the header, and one row per DC with
+        its "Domain:" line and its cells.
+    .DESCRIPTION
+        The table is in the output of the DNS test C11 already runs; nothing is invoked here. Its
+        only published form is one sample on Learn (KB 2102154, read 2026-11-16, DnsSummary in the
+        DcDiag config table): a header "Auth Basc Forw Del  Dyn  RReg Ext" with uneven spacing,
+        "Domain: <fqdn>" lines, rows "<DC> PASS PASS FAIL PASS PASS PASS n/a", then "Enterprise DNS
+        infrastructure test results:".
+
+        The header is the LAST line (Learn: the summary table is at the end of the report) whose
+        whitespace-separated tokens are all column tokens of the config table, compared without
+        regard to case, none twice, and at least HeaderMinTokens of them (a tool default). It is
+        never found by column position. Rows run from the header to the first end marker, verdict
+        line or block header; blank lines and separator lines are skipped, a "Domain:" line sets the
+        domain of the rows under it. Each row is split on runs of whitespace: the first token is the
+        DC's name, the rest are its cells, mapped to the header's columns by order by the caller. A
+        row whose cell count is not the header's column count is kept with Recognised = $false, so
+        it can never be graded. CRLF and LF are both read.
+
+        Nothing is graded here.
+    .OUTPUTS
+        [pscustomobject] HeaderFound, HeaderLine, HeaderCount (header lines seen), Columns (tokens in
+        header order, spelled as in the config table), Rows (Name, Domain, Cells, CellCount,
+        Recognised, Line).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$StdOut = '',
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $out = [pscustomobject]@{ HeaderFound = $false; HeaderLine = ''; HeaderCount = 0; Columns = @(); Rows = @() }
+    $ds = Get-AdfaConfigValue -Entry $Config -Name 'DnsSummary'
+    if ($null -eq $ds) { return $out }
+    $known = @(@(Get-AdfaConfigValue -Entry $ds -Name 'Categories') | Where-Object { $null -ne $_ } | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Token') } | Where-Object { $_ -ne '' })
+    if ($known.Count -eq 0) { return $out }
+    # Fail closed: with no threshold configured, every column must be in the header.
+    $min = $known.Count
+    $configuredMin = Get-AdfaConfigValue -Entry $ds -Name 'HeaderMinTokens'
+    if ($null -ne $configuredMin) { $min = [int]$configuredMin }
+    if ($min -lt 1) { $min = 1 }
+    $lines = @(("$StdOut") -split "`r?`n" | ForEach-Object { $_.Trim() })
+
+    $headerAt = -1
+    $columns = @()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $tokens = @($lines[$i] -split '\s+' | Where-Object { $_ -ne '' })
+        if ($tokens.Count -eq 0 -or $tokens.Count -lt $min) { continue }
+        $canon = @()
+        $isHeader = $true
+        foreach ($tk in $tokens) {
+            $hit = @($known | Where-Object { $_ -eq $tk })
+            if ($hit.Count -ne 1 -or $canon -contains $hit[0]) { $isHeader = $false; break }
+            $canon += [string]$hit[0]
+        }
+        if (-not $isHeader) { continue }
+        $headerAt = $i
+        $columns = $canon
+        $out.HeaderCount = $out.HeaderCount + 1
+    }
+    if ($headerAt -lt 0) { return $out }
+
+    $stops = New-Object System.Collections.Generic.List[string]
+    foreach ($p in @(Get-AdfaConfigValue -Entry $ds -Name 'EndMarkers')) { if (-not [string]::IsNullOrEmpty([string]$p)) { $stops.Add([string]$p) } }
+    $markers = Get-AdfaConfigValue -Entry $Config -Name 'OutputMarkers'
+    foreach ($k in @('ServerBlock', 'PartitionBlock', 'EnterpriseBlock')) {
+        $p = [string](Get-AdfaConfigValue -Entry $markers -Name $k)
+        if ($p -ne '') { $stops.Add($p) }
+    }
+    $domainPattern = [string](Get-AdfaConfigValue -Entry $ds -Name 'DomainLine')
+    $separator = [string](Get-AdfaConfigValue -Entry $ds -Name 'SeparatorLine')
+    $rows = New-Object System.Collections.ArrayList
+    $domain = ''
+    for ($j = $headerAt + 1; $j -lt $lines.Count; $j++) {
+        $line = $lines[$j]
+        if ($line -eq '') { continue }
+        $stop = $false
+        foreach ($p in $stops) { if ($line -match $p) { $stop = $true; break } }
+        if ($stop) { break }
+        if ($separator -ne '' -and $line -match $separator) { continue }
+        if ($domainPattern -ne '') {
+            $dm = [regex]::Match($line, $domainPattern)
+            if ($dm.Success) { $domain = [string]$dm.Groups['name'].Value; continue }
+        }
+        $tokens = @($line -split '\s+' | Where-Object { $_ -ne '' })
+        $cells = @()
+        if ($tokens.Count -gt 1) { $cells = @($tokens[1..($tokens.Count - 1)]) }
+        [void]$rows.Add([pscustomobject]@{
+                Name       = [string]$tokens[0]
+                Domain     = $domain
+                Cells      = $cells
+                CellCount  = $cells.Count
+                Recognised = ($cells.Count -eq $columns.Count)
+                Line       = ($tokens -join ' ')
+            })
+    }
+    $out.HeaderFound = $true
+    $out.HeaderLine = (@($lines[$headerAt] -split '\s+' | Where-Object { $_ -ne '' }) -join ' ')
+    $out.Columns = $columns
+    $out.Rows = $rows.ToArray()
+    return $out
+}
+
+function Resolve-AdfaDcdiagDnsCategory {
+    <#
+    .SYNOPSIS
+        Pure verdict for one test group (Auth, Basc, Forw, Del, Dyn, RReg or Ext) of dcdiag's DNS
+        summary table, for one DC: Status, Detail, the cell and the evidence lines.
+    .DESCRIPTION
+        In this order, the first that applies:
+          -NotRunCause (the DC was unreachable on RPC/135, dcdiag.exe is absent, the test was not
+            started after Connectivity failed, the DC has no host name) -> Not Assessed with it.
+          No table in the output -> Not Assessed: with -RunCause (C11's cause for a test that
+            printed no verdict: access denied, unreachable, did not complete or timed out, no
+            output, not recognised) when there is one, otherwise saying that the overall verdict
+            (-OverallStatus, -OverallEvidence) grades no test group.
+          No row for this DC (Test-AdfaDcdiagSubject: host name, first label, 15-character NetBIOS
+            form), or more than one -> Not Assessed.
+          No column for the group in the header -> Not Assessed.
+          The DC's row has a cell count other than the header's -> Not Assessed ("row not
+            recognised").
+          A cell value outside the config table's Cells -> Not Assessed ("cell value not
+            recognised").
+          Otherwise the Cells map: PASS Pass, FAIL Fail, WARN Warning (provisional: Learn shows
+          "Warn" only in prose), n/a Not Assessed - except in a column with its own NaStatus (Ext:
+          Info, "not requested by /DnsAll"). Microsoft does not publish what n/a means, so the
+          Detail says no more than that.
+        A missing value is never a Pass.
+    .OUTPUTS
+        [pscustomobject] Status, Detail, Cell, Evidence.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$Summary,
+        [AllowNull()][AllowEmptyString()][string]$HostName = '',
+        [Parameter(Mandatory)][string]$Token,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [AllowNull()][AllowEmptyString()][string]$NotRunCause = '',
+        [AllowNull()][AllowEmptyString()][string]$RunCause = '',
+        [AllowNull()][AllowEmptyString()][string]$OverallStatus = '',
+        [AllowNull()][AllowEmptyString()][string]$OverallEvidence = ''
+    )
+    $na = $script:Status.NotAssessed
+    $out = [pscustomobject]@{ Status = $na; Detail = ''; Cell = ''; Evidence = '' }
+    $ds = Get-AdfaConfigValue -Entry $Config -Name 'DnsSummary'
+    $cat = @(@(Get-AdfaConfigValue -Entry $ds -Name 'Categories') | Where-Object { $null -ne $_ -and [string](Get-AdfaConfigValue -Entry $_ -Name 'Token') -eq $Token })
+    if ($cat.Count -ne 1) {
+        $out.Detail = ("{0}: NOT ASSESSED - the DNS summary table of this build has no test group {0}." -f $Token)
+        return $out
+    }
+    $entry = $cat[0]
+    $tok = [string](Get-AdfaConfigValue -Entry $entry -Name 'Token')
+    $label = ("{0} ({1})" -f $tok, [string](Get-AdfaConfigValue -Entry $entry -Name 'Name'))
+    $learn = ([string](Get-AdfaConfigValue -Entry $entry -Name 'Learn')).TrimEnd('.')
+    if (-not [string]::IsNullOrWhiteSpace($NotRunCause)) {
+        $out.Detail = ("{0}: NOT ASSESSED - {1}" -f $label, $NotRunCause.Trim())
+        return $out
+    }
+    $found = $false
+    if ($null -ne $Summary) {
+        $hp = $Summary.PSObject.Properties['HeaderFound']
+        if ($null -ne $hp -and [bool]$hp.Value) { $found = $true }
+    }
+    if (-not $found) {
+        if (-not [string]::IsNullOrWhiteSpace($RunCause)) {
+            $out.Detail = ("{0}: NOT ASSESSED - no DNS summary table was found in dcdiag's output, so this test group was not graded. {1}" -f $label, $RunCause.Trim())
+        }
+        elseif ($OverallStatus -eq $script:Status.Pass -or $OverallStatus -eq $script:Status.Fail) {
+            $out.Detail = ("{0}: NOT ASSESSED - dcdiag's overall verdict for its DNS test on this domain controller was {1} ('{2}'), but no DNS summary table (a header made of the column tokens Auth Basc Forw Del Dyn RReg Ext) was found in the output, so this test group was not graded. The overall verdict is the grid's DCDIAG_DNS cell." -f $label, $OverallStatus, $OverallEvidence.Trim())
+        }
+        else {
+            $out.Detail = ("{0}: NOT ASSESSED - no DNS summary table was read for this domain controller, and no cause was recorded, so this test group was not graded." -f $label)
+        }
+        return $out
+    }
+    $headerLine = [string]$Summary.HeaderLine
+    $out.Evidence = $headerLine
+    $tail = ''
+    if (-not [string]::IsNullOrWhiteSpace($RunCause)) { $tail = (" {0}" -f $RunCause.Trim()) }
+    $allRows = @(@($Summary.Rows) | Where-Object { $null -ne $_ })
+    $mine = @($allRows | Where-Object { Test-AdfaDcdiagSubject -Subject ([string]$_.Name) -HostName $HostName })
+    if ($mine.Count -eq 0) {
+        $names = @($allRows | ForEach-Object { [string]$_.Name } | Select-Object -Unique)
+        $list = '(none)'
+        if ($names.Count -gt 0) { $list = $names -join ', ' }
+        $out.Detail = ("{0}: NOT ASSESSED - the DNS summary table dcdiag printed has no row for this domain controller (looked for its host name, its first label and its 15-character NetBIOS form). Rows found: {1}.{2}" -f $label, $list, $tail)
+        return $out
+    }
+    if ($mine.Count -gt 1) {
+        $out.Evidence = ("{0} / {1}" -f $headerLine, (@($mine | ForEach-Object { [string]$_.Line }) -join ' / '))
+        $out.Detail = ("{0}: NOT ASSESSED - the DNS summary table has {1} rows naming this domain controller, so which one is its own is not known." -f $label, $mine.Count)
+        return $out
+    }
+    $row = $mine[0]
+    $out.Evidence = ("{0} / {1}" -f $headerLine, [string]$row.Line)
+    $columns = @($Summary.Columns)
+    $col = -1
+    for ($c = 0; $c -lt $columns.Count; $c++) { if ([string]$columns[$c] -eq $tok) { $col = $c; break } }
+    if ($col -lt 0) {
+        $out.Detail = ("{0}: NOT ASSESSED - the summary table's header ('{1}') has no {2} column, so this test group was not reported." -f $label, $headerLine, $tok)
+        return $out
+    }
+    if (-not [bool]$row.Recognised) {
+        $out.Detail = ("{0}: NOT ASSESSED - row not recognised: the row for this domain controller has {1} cell(s) and the header {2} column(s), so its cells cannot be matched to the columns." -f $label, [int]$row.CellCount, $columns.Count)
+        return $out
+    }
+    $cell = [string]@($row.Cells)[$col]
+    $out.Cell = $cell
+    $map = @(@(Get-AdfaConfigValue -Entry $ds -Name 'Cells') | Where-Object { $null -ne $_ -and [string](Get-AdfaConfigValue -Entry $_ -Name 'Token') -eq $cell })
+    $read = @(@(Get-AdfaConfigValue -Entry $ds -Name 'Cells') | Where-Object { $null -ne $_ } | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Token') })
+    if ($map.Count -ne 1) {
+        $out.Detail = ("{0}: NOT ASSESSED - cell value '{1}' under {2} is not one this build reads ({3}), so this test group was not graded. A localised dcdiag would print other values." -f $label, $cell, $tok, ($read -join ', '))
+        return $out
+    }
+    $status = [string](Get-AdfaConfigValue -Entry $map[0] -Name 'Status')
+    $isNa = ([string](Get-AdfaConfigValue -Entry $map[0] -Name 'Token') -eq 'n/a')
+    $naStatus = [string](Get-AdfaConfigValue -Entry $entry -Name 'NaStatus')
+    if ($isNa -and $naStatus -ne '') { $status = $naStatus }
+    $allowed = @($script:Status.Pass, $script:Status.Warning, $script:Status.Fail, $na, $script:Status.Info)
+    if ($allowed -notcontains $status) {
+        $out.Detail = ("{0}: NOT ASSESSED - the config table maps '{1}' to '{2}', which is not a status this tool reports." -f $label, $cell, $status)
+        return $out
+    }
+    $resultNote = [string](Get-AdfaConfigValue -Entry $entry -Name 'ResultNote')
+    $who = $HostName
+    if ([string]::IsNullOrWhiteSpace($who)) { $who = 'this domain controller' }
+    if ($isNa) {
+        if ($status -eq $na) {
+            $out.Detail = ("{0}: NOT ASSESSED - dcdiag printed n/a, and Microsoft does not publish what n/a means in this table, so nothing is known about this test group on this domain controller." -f $label)
+        }
+        else {
+            $out.Detail = ("{0}: dcdiag printed n/a - {1}." -f $label, ([string](Get-AdfaConfigValue -Entry $entry -Name 'NaMeaning')).TrimEnd('.'))
+        }
+        $out.Status = $status
+        return $out
+    }
+    $out.Status = $status
+    $out.Detail = ("{0}: dcdiag's DNS test against {1} printed {2} for this test group. Microsoft: {3}." -f $label, $who, $cell, $learn)
+    if ($status -eq $script:Status.Warning) {
+        $out.Detail = ("{0} Microsoft notes that the summary and detailed sections of dcdiag may report warnings for DNS configurations that are currently functional (archived Windows Server 2003 SP1 dcdiag page). The WARN value is read from Learn's prose; no published sample shows it." -f $out.Detail)
+    }
+    if (($status -eq $script:Status.Fail -or $status -eq $script:Status.Warning) -and $resultNote -ne '') {
+        $out.Detail = ("{0} {1}" -f $out.Detail, $resultNote)
+    }
+    return $out
+}
+
+function Resolve-AdfaDcdiagDnsRollup {
+    <#
+    .SYNOPSIS
+        Pure roll-up of one test group of dcdiag's DNS summary over the DCs of one domain.
+    .DESCRIPTION
+        The declared population is every DC of the domain in the section's list: each one is passed
+        in, with the status its own row got (Resolve-AdfaDcdiagDnsCategory), and counted. Fail if any
+        DC failed; otherwise Warning if any warned; otherwise Not Assessed if any DC was not assessed
+        or carries a status this roll-up does not read (empty, null or anything outside Pass,
+        Warning, Fail, Not Assessed and Info: counted and named, never dropped, because one unread
+        DC means the domain is not known to be clean); otherwise Pass if any passed; otherwise Info
+        (every cell was Info). No DC at all is Not Assessed.
+    .OUTPUTS
+        [pscustomobject] Status, Detail.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        # One object per DC of the domain: HostName, Status.
+        [AllowNull()][AllowEmptyCollection()]$Cells = @(),
+        [Parameter(Mandatory)][string]$Token
+    )
+    $na = $script:Status.NotAssessed
+    $all = @(@($Cells) | Where-Object { $null -ne $_ })
+    if ($all.Count -eq 0) {
+        return [pscustomobject]@{ Status = $na
+            Detail = ("No domain controller of this domain is in this section's list, so no {0} result of dcdiag's DNS summary was read for it. This is not a clean result." -f $Token) }
+    }
+    $pick = { param([string]$S) @($all | Where-Object { [string]$_.Status -eq $S }) }
+    $p = @(& $pick $script:Status.Pass)
+    $w = @(& $pick $script:Status.Warning)
+    $f = @(& $pick $script:Status.Fail)
+    $n = @(& $pick $na)
+    $i = @(& $pick $script:Status.Info)
+    # Fail closed: a cell whose status is none of the five above is counted here, never dropped.
+    $known = @($script:Status.Pass, $script:Status.Warning, $script:Status.Fail, $na, $script:Status.Info)
+    $u = @($all | Where-Object { $known -notcontains [string]$_.Status })
+    $status = $script:Status.Info
+    if ($f.Count -gt 0) { $status = $script:Status.Fail }
+    elseif ($w.Count -gt 0) { $status = $script:Status.Warning }
+    elseif ($n.Count -gt 0 -or $u.Count -gt 0) { $status = $na }
+    elseif ($p.Count -gt 0) { $status = $script:Status.Pass }
+    $detail = ("{0} domain controller(s) of this domain (every one in this section's list), {1} column: {2} Pass, {3} Warning, {4} Fail, {5} Not Assessed, {6} Info." -f $all.Count, $Token, $p.Count, $w.Count, $f.Count, $n.Count, $i.Count)
+    $names = { param($Set) (@($Set | ForEach-Object { [string]$_.HostName }) -join ', ') }
+    if ($u.Count -gt 0) { $detail = ("{0} {1} with a status this roll-up does not read, so not assessed: {2}." -f $detail, $u.Count, (& $names $u)) }
+    if ($f.Count -gt 0) { $detail = ("{0} Failed on: {1}." -f $detail, (& $names $f)) }
+    if ($w.Count -gt 0) { $detail = ("{0} Warned on: {1}." -f $detail, (& $names $w)) }
+    if ($n.Count -gt 0) { $detail = ("{0} Not assessed on: {1}; see each one's row for why." -f $detail, (& $names $n)) }
+    return [pscustomobject]@{ Status = $status; Detail = $detail }
+}
+
 function Select-AdfaDcdiagTarget {
     <#
     .SYNOPSIS
@@ -4229,11 +4623,21 @@ function Get-AdfaDcDiagnostic {
         -IncludeActiveTests: Intersite /a; a DC whose site is not known gets a "site unknown" row.
         LocatorCheck is never run (not in Learn's known-tests table) and has a row saying so.
 
-        DECLARED POPULATIONS. DCs: every target gets exactly one grid row. Domains: every name in
+        DNS summary (PORT-PLAN C12), with -IncludeActiveTests: the summary table of each DC's DNS
+        run is parsed from the same output (ConvertFrom-AdfaDcdiagDnsSummary) and graded per test
+        group (Resolve-AdfaDcdiagDnsCategory), and each domain is rolled up per group
+        (Resolve-AdfaDcdiagDnsRollup). A DC that was unreachable, had no dcdiag, failed
+        Connectivity or has no host name gets that cause in every group; a run that printed no
+        table gets C11's cause (access denied, did not complete or timed out, not recognised, ...).
+
+        DECLARED POPULATIONS. DCs: every target gets exactly one grid row and, with the opt-in, one
+        "dcdiag DNS <group>: <host>" row per DNS test group (seven). Domains: every name in
         -ScopedDomains gets one "dcdiag Topology: <domain>" row and one "dcdiag coverage: <domain>"
         row - Info with the counts of its DCs' grid rows, or Not Assessed when no DC row accounts
-        for the domain (Get-AdfaDcPopulationGap). Forest: one roll-up row per forest test. Sites:
-        one row per site holding a DC, with the opt-in; one "not run" row without it.
+        for the domain (Get-AdfaDcPopulationGap) - and, with the opt-in, one "dcdiag DNS <group>:
+        domain <domain>" row per group over every DC of the domain, or one "dcdiag DNS not run:
+        <domain>" row without it. Forest: one roll-up row per forest test. Sites: one row per site
+        holding a DC, with the opt-in; one "not run" row without it.
     .OUTPUTS
         [pscustomobject[]] Grid rows and scoped rows (New-AdfaDcDiagRow).
     #>
@@ -4316,7 +4720,10 @@ function Get-AdfaDcDiagnostic {
             $readOnlyProp = $target.PSObject.Properties['IsReadOnly']
             if ($null -ne $readOnlyProp -and $readOnlyProp.Value -is [bool]) { $readOnly = [bool]$readOnlyProp.Value }
         }
-        $state = [pscustomobject]@{ HostName = $dc; Scope = $scope; Site = $site; IsReadOnly = $readOnly; Usable = $false; Connectivity = $na; Status = $na }
+        # Dns*: what the DNS summary rows of this DC are graded from (PORT-PLAN C12): a cause that
+        # stopped the test, or the run's own cause, overall verdict and parsed summary table.
+        $state = [pscustomobject]@{ HostName = $dc; Scope = $scope; Site = $site; IsReadOnly = $readOnly; Usable = $false; Connectivity = $na; Status = $na
+            DnsCause = ''; DnsRunCause = ''; DnsOverall = ''; DnsOverallLine = ''; DnsSummary = $null }
         [void]$states.Add($state)
         $row = [ordered]@{ DomainController = $dc; Scope = $scope; Status = $null; Ping = $null }
         foreach ($t in $testNames) { $row["DCDIAG_$t"] = $na }
@@ -4331,6 +4738,7 @@ function Get-AdfaDcDiagnostic {
             $row.Ping = $na
             $row.Status = $na
             $row.Failures = 'The inventory holds a domain controller with no host name, so dcdiag could not be run against it.'
+            $state.DnsCause = 'the inventory holds this domain controller with no host name, so dcdiag could not be run against it.'
             [void]$rows.Add([pscustomobject]$row)
             continue
         }
@@ -4340,12 +4748,14 @@ function Get-AdfaDcDiagnostic {
             $row.Status = $script:Status.Fail
             $row.Failures = 'DC not reachable (RPC/135) - no dcdiag tests run.'
             $state.Status = $row.Status
+            $state.DnsCause = 'unreachable: the domain controller did not answer on RPC/135, so dcdiag was not run against it.'
             [void]$rows.Add([pscustomobject]$row)
             continue
         }
         if (-not $haveDcdiag) {
             $row.Status = $na
             $row.Failures = 'dcdiag.exe not available on this host.'
+            $state.DnsCause = 'dcdiag.exe is not available on this host, so the DNS test was not run.'
             [void]$rows.Add([pscustomobject]$row)
             continue
         }
@@ -4368,6 +4778,13 @@ function Get-AdfaDcDiagnostic {
             if ([string]$verdict.Status -eq $na -and -not [bool]$run.Success -and [string]$run.Error -match '(?i)time.?out') {
                 $detail = ("{0} The time-out for one dcdiag invocation was {1} s ({2})." -f $detail, $timeout, $timeoutSource)
             }
+            if ($t -eq 'DNS') {
+                # PORT-PLAN C12: the summary table is read from this same output; no new invocation.
+                $state.DnsSummary = ConvertFrom-AdfaDcdiagDnsSummary -StdOut ([string]$run.StdOut) -Config $Config
+                $state.DnsOverall = [string]$verdict.Status
+                $state.DnsOverallLine = (@($verdict.Parts | ForEach-Object { [string]$_.Line }) -join ' / ')
+                if ([string]$verdict.Status -eq $na) { $state.DnsRunCause = $detail }
+            }
             if ($t -eq 'Connectivity') {
                 $state.Connectivity = [string]$verdict.Status
                 if ([string]$verdict.Status -eq $script:Status.Fail) {
@@ -4383,6 +4800,9 @@ function Get-AdfaDcDiagnostic {
         $notRunNotes = New-Object System.Collections.Generic.List[string]
         if ($skipped.Count -gt 0) {
             $notRunNotes.Add(("Not run after Connectivity failed: {0}. dcdiag runs its Connectivity test first in every invocation and Microsoft documents that it can't be skipped, so no further dcdiag test was started on this DC; nothing is known about these tests here." -f ($skipped -join ', ')))
+        }
+        if ($skipped -contains 'DNS') {
+            $state.DnsCause = "not run after dcdiag's Connectivity test failed on this domain controller: no further dcdiag test was started on it."
         }
         if ($heldBackNote -ne '') { $notRunNotes.Add($heldBackNote) }
 
@@ -4517,6 +4937,58 @@ function Get-AdfaDcDiagnostic {
         $t = [string](Get-AdfaConfigValue -Entry $entry -Name 'Test')
         [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: not run" -f $t) -Status $na `
                     -NotRun ("Not run: {0} is {1}. This tool runs only dcdiag tests Microsoft documents. Not run is not a clean result." -f $t, [string](Get-AdfaConfigValue -Entry $entry -Name 'Why'))))
+    }
+
+    # ---- The DNS test's summary table: per DC and per domain, one row per test group (C12) ----
+    # Read from the output of the DNS test the grid already ran; nothing more is invoked. Without the
+    # opt-in, one "not run" row per domain says why (the C11 Intersite wording, in NotRun).
+    if ($testNames -contains 'DNS') {
+        $dnsSummaryConfig = Get-AdfaConfigValue -Entry $Config -Name 'DnsSummary'
+        $dnsTokens = @(@(Get-AdfaConfigValue -Entry $dnsSummaryConfig -Name 'Categories') | Where-Object { $null -ne $_ } | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Token') })
+        if ($heldBack -contains 'DNS') {
+            $dnsActive = @($active | Where-Object { [string]$_.Test -eq 'DNS' })
+            $dnsEffect = ''
+            if ($dnsActive.Count -gt 0) { $dnsEffect = (" ({0})" -f [string]$dnsActive[0].Effect) }
+            $dnsNotRun = ("Not run by default, so not assessed: DNS{0}. Microsoft documents this dcdiag test as changing state. -IncludeDcdiagActiveTests runs it on every domain controller, and its summary table is then graded per test group ({1}) for each domain controller and each domain." -f $dnsEffect, ($dnsTokens -join ', '))
+            $dnsLabels = @($domains)
+            if ($dnsLabels.Count -eq 0) { $dnsLabels = @('(no domain known)') }
+            foreach ($d in $dnsLabels) {
+                $dScope = $d
+                if ($d -eq '(no domain known)') { $dScope = '' }
+                [void]$rows.Add((New-AdfaDcDiagRow -Scope $dScope -Item ("dcdiag DNS not run: {0}" -f $d) -Status $na -NotRun $dnsNotRun))
+            }
+        }
+        else {
+            $dnsCells = New-Object System.Collections.ArrayList
+            foreach ($st in $allStates) {
+                $dnsHost = [string]$st.HostName
+                if ([string]::IsNullOrWhiteSpace($dnsHost)) { $dnsHost = '(unnamed)' }
+                foreach ($tok in $dnsTokens) {
+                    $res = Resolve-AdfaDcdiagDnsCategory -Summary $st.DnsSummary -HostName ([string]$st.HostName) -Token $tok -Config $Config -NotRunCause ([string]$st.DnsCause) `
+                        -RunCause ([string]$st.DnsRunCause) -OverallStatus ([string]$st.DnsOverall) -OverallEvidence ([string]$st.DnsOverallLine)
+                    [void]$rows.Add((New-AdfaDcDiagRow -Scope ([string]$st.Scope) -Item ("dcdiag DNS {0}: {1}" -f $tok, $dnsHost) -Status ([string]$res.Status) `
+                                -Detail ([string]$res.Detail) -Evidence ([string]$res.Evidence) -Target ([string]$st.HostName)))
+                    [void]$dnsCells.Add([pscustomobject]@{ HostName = $dnsHost; Scope = ([string]$st.Scope).Trim(); Token = $tok; Status = [string]$res.Status })
+                }
+            }
+            # Declared population of each roll-up: every DC of the domain in this section's list. A DC
+            # whose domain is not known is rolled up under "(domain not known)", never dropped.
+            $dnsGroups = @($domains)
+            if (@($allStates | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Scope) }).Count -gt 0) { $dnsGroups += '(domain not known)' }
+            if ($dnsGroups.Count -eq 0) {
+                [void]$rows.Add((New-AdfaDcDiagRow -Item 'dcdiag DNS: (no domain known)' -Status $na `
+                            -Detail 'No scoped domain was given to this section and no domain controller was enumerated, so no DNS summary table was read. This is not a clean result.'))
+            }
+            foreach ($d in $dnsGroups) {
+                $dScope = $d
+                if ($d -eq '(domain not known)') { $dScope = '' }
+                foreach ($tok in $dnsTokens) {
+                    $inGroup = @($dnsCells | Where-Object { $_.Scope -eq $dScope -and $_.Token -eq $tok })
+                    $roll = Resolve-AdfaDcdiagDnsRollup -Cells $inGroup -Token $tok
+                    [void]$rows.Add((New-AdfaDcDiagRow -Scope $dScope -Item ("dcdiag DNS {0}: domain {1}" -f $tok, $d) -Status ([string]$roll.Status) -Detail ([string]$roll.Detail)))
+                }
+            }
+        }
     }
 
     # ---- Per scoped domain: coverage ----
@@ -16204,9 +16676,10 @@ function Merge-AdfaDcDiagConfig {
             { "DcDiag": { "TestTimeoutSeconds": 180 } }
 
         What it cannot: the test lists (per DC, per domain, per forest, per site, not added), the
-        opt-in list, the output markers and the evidence patterns. Every such key is refused as
-        unknown, so a file can never make the tool run a dcdiag test that changes state, or read a
-        verdict from a line Microsoft does not print.
+        opt-in list, the output markers, the evidence patterns and the DNS summary table (its
+        columns, cell values, grades and header threshold; PORT-PLAN C12). Every such key is refused
+        as unknown, so a file can never make the tool run a dcdiag test that changes state, read a
+        verdict from a line Microsoft does not print, or turn a DNS test group's result into a Pass.
 
         Refused with the reason: an override that is not one object, an empty object, an unknown
         key, a null, a value that is not a JSON number, a number outside its range or not whole.
@@ -16247,7 +16720,7 @@ function Merge-AdfaDcDiagConfig {
         $given = [string]$k
         $match = @($known | Where-Object { $_ -eq $given })
         if ($match.Count -eq 0) {
-            throw ("dcdiag config override names an unknown key '{0}'. Known keys: {1}. The test lists, the opt-in list, the output markers and the evidence patterns cannot be set from a file." -f $given, ($known -join ', '))
+            throw ("dcdiag config override names an unknown key '{0}'. Known keys: {1}. The test lists, the opt-in list, the output markers, the evidence patterns and the DNS summary table cannot be set from a file." -f $given, ($known -join ', '))
         }
         $name = [string]$match[0]
         if ($supplied -contains $name) { throw ("dcdiag config override names '{0}' more than once." -f $name) }
@@ -21445,7 +21918,37 @@ $script:RecommendationMap = @(
        Text  = 'dcdiag CrossRefValidation reported a cross-reference that is not valid. Microsoft documents that this test reads the nCName, dnsRoot, nETBIOSName and systemFlags attributes of the crossRef objects in CN=Partitions,CN=Configuration to find names that are invalid or null, names altered by CNF or 0ADEL (a name conflict or a deleted object), wrong systemFlags, and empty (orphaned) replica sets. Run "dcdiag /test:CrossRefValidation /s:<dc> /v" to see which partition, then read those four attributes on its crossRef object. This tool changes nothing.' }
     @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag Intersite: (?!(not run|site unknown|no site) :: )'
        Text  = 'dcdiag Intersite reported a failure that would prevent or hold up intersite replication for this site. Microsoft documents that this test locates and connects to the Intersite Topology Generator and the bridgehead servers, reports replication failures, and validates that the DCs in sites with inbound connections to this site are available. Run dcdiag''s Intersite test by hand against the DC named in this row, with /a and /v, to see the servers it names, and check their availability and the site links between the sites. Microsoft documents that this test triggers a replication; this tool ran it only because -IncludeDcdiagActiveTests was given.' }
-    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag (Topology|CheckSDRefDom|CrossRefValidation|Intersite|LocatorCheck|coverage|grid)\b'
+    # --- Section-scoped: the DNS summary rows of DC Diagnostics, one per test group, per DC and per
+    #     domain (PORT-PLAN C12). Anchored on the Item prefix this tool writes ("dcdiag DNS <group>: "),
+    #     so the words of a Detail ("delegation", "secure dynamic", "replication", "dcdiag") cannot
+    #     pull a row to the unscoped entries below. Each text restates what Microsoft documents the
+    #     group checks and dcdiag's own advice to use /v when the summary table reports errors or
+    #     warnings, and to read the "DC: <name>" section of the report:
+    #       https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag
+    #       https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-1722-rpc-server-unavailable
+    #       https://learn.microsoft.com/troubleshoot/windows-server/active-directory/active-directory-replication-event-id-2087
+    #       https://learn.microsoft.com/windows-server/identity/ad-ds/manage/troubleshoot/verify-dns-functionality-to-support-directory-replication
+    #         (its AAAA caveat is given for /DnsDynamicUpdate and for reruns of the whole DNS test,
+    #         never for /DnsRecordRegistration: so it is in the Dyn text, not the RReg text)
+    #       https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2003/cc776854(v=ws.10)
+    #         (archived, labelled for Windows Server 2003 SP1: the only Learn page that describes
+    #         each test group's warnings)
+    #     Read: 2026-11-16 (all).
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag DNS Auth: '
+       Text  = 'dcdiag''s DNS test reported a problem in its Authentication (Auth) test group. Microsoft lists Authentication as the first of the DNS test groups and documents that membership in Enterprise Admins, or equivalent, is the minimum requirement to complete the DNS tests, and that dcdiag must be run with administrative rights from an elevated prompt: check the account and the session that ran this assessment first. Then rerun dcdiag''s DNS test against this domain controller with /DnsAll and /v (Microsoft: use /v when errors or warnings are reported in the summary table) and read the section for "DC: <name>". This tool changes nothing.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag DNS Basc: '
+       Text  = 'dcdiag''s DNS test reported a problem in its Basic (Basc) test group. Microsoft documents that this test performs basic DNS tests, including network connectivity, DNS client configuration, service availability, and zone existence: check that the DNS servers this domain controller''s network adapters point to answer, that the Netlogon, KDC, DNS Client and (where installed) DNS Server services run, that the domain controller''s A record is registered, and that the Active Directory zone and its SOA record exist. Rerun dcdiag''s DNS test against this domain controller with /DnsAll and /v (Microsoft: use /v when errors or warnings are reported in the summary table) and read the section for "DC: <name>". This tool changes nothing.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag DNS Forw: '
+       Text  = 'dcdiag''s DNS test reported a problem in its Forwarders/Root hints (Forw) test group. Microsoft documents that this test performs the Basic tests and also checks the configuration of forwarders: check the forwarders and root hints of the DNS server on this domain controller, and that each forwarder answers. Rerun dcdiag''s DNS test against this domain controller with /DnsAll and /v (Microsoft: use /v when errors or warnings are reported in the summary table) and read the section for "DC: <name>". This tool changes nothing.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag DNS Del: '
+       Text  = 'dcdiag''s DNS test reported a problem in its Delegations (Del) test group. Microsoft documents that this test performs the Basic tests and also checks for proper delegations: check the delegations of the zones this domain controller''s DNS server holds, and that the name servers they name answer. Rerun dcdiag''s DNS test against this domain controller with /DnsAll and /v (Microsoft: use /v when errors or warnings are reported in the summary table) and read the section for "DC: <name>". This tool changes nothing.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag DNS Dyn: '
+       Text  = 'dcdiag''s DNS test reported a problem in its Dynamic update (Dyn) test group. Microsoft documents that this test performs the Basic tests and also determines if dynamic update is enabled in the Active Directory zone; it reports dynamic update that is enabled but not secure as a warning, and recommends secure dynamic updates. The test registers a test record, _dcdiag_test_record, and deletes it, and Microsoft documents a warning when the delete fails: check the zone for a record left behind. Microsoft notes that if IPv6 is not enabled on the domain controller, the host (AAAA) resource record portion of this test is expected to fail, which is a normal condition when IPv6 is not enabled. Rerun dcdiag''s DNS test against this domain controller with /DnsAll and /v (Microsoft: use /v when errors or warnings are reported in the summary table) and read the section for "DC: <name>". This tool changes nothing.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag DNS RReg: '
+       Text  = 'dcdiag''s DNS test reported a problem in its Records registration (RReg) test group. Microsoft documents that this test performs the Basic tests and also checks if the address (A), canonical name (CNAME) and well-known service (SRV) resource records are registered: check those records for this domain controller. Microsoft lists the alias (CNAME), host (A), LDAP SRV, GC SRV and PDC SRV records as the ones this test verifies, and notes that a missing SRV record can be ignored where DNSAvoidRegisterRecord, in the registry or in Group Policy, prevents its registration. Rerun dcdiag''s DNS test against this domain controller with /DnsAll and /v (Microsoft: use /v when errors or warnings are reported in the summary table) and read the section for "DC: <name>". This tool changes nothing.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag DNS Ext: '
+       Text  = 'dcdiag''s DNS test reported a problem in its Ext test group. Learn does not name this column; it is taken to be the external name resolution test, /DnsResolveExtName, which resolves www.microsoft.com or the name given with /DnsInternetName, and which /DnsAll does not run. Microsoft notes that this test cannot resolve external Internet names in an environment where a proxy server is being used, so a failure may only mean that the domain controller has no direct internet access. Decide whether this domain controller is meant to resolve internet names; if it is, check its forwarders or root hints. This tool changes nothing.' }
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag (Topology|CheckSDRefDom|CrossRefValidation|Intersite|LocatorCheck|coverage|grid|DNS)\b'
        Text  = '' }
     # --- Section-scoped: SID history rows of Security Posture (PORT-PLAN C7). Anchored on the Item
     #     prefix this tool writes ("SID history...: <domain>"), NOT on the section: the section's

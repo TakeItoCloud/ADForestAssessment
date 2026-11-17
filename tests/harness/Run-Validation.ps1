@@ -1456,6 +1456,11 @@ $h20Active = @(Get-ValGrid $h20ActiveRows)[0]
 Assert-Equal 21 (@($script:h20Args | Where-Object { $_ -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation|Intersite)\b' }).Count) 'H20/C11: with the opt-in all 21 per-DC tests are invoked'
 Assert-Equal 1 (@($script:h20Args | Where-Object { $_ -match '^/test:Intersite /s:dc1\.contoso\.com /a$' }).Count) 'C11: with the opt-in Intersite runs once for the DC''s site, with /a'
 Assert-Equal 'Pass' ([string]$h20Active.DCDIAG_DNS) 'H20: with the opt-in the DNS cell is read'
+# C12: this stub prints a bare verdict and no summary table, so every DNS test group of the DC is Not
+# Assessed - an overall passed verdict is never a Pass for a group it does not report.
+$h20DnsGroups = @($h20ActiveRows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and $_.Item -match '^dcdiag DNS (Auth|Basc|Forw|Del|Dyn|RReg|Ext): dc1\.contoso\.com$' })
+Assert-True (@($h20DnsGroups).Count -eq 7 -and @($h20DnsGroups | Where-Object { $_.Status -ne 'Not Assessed' -or $_.Detail -notmatch 'overall verdict' }).Count -eq 0) 'C12: with no summary table each of the seven DNS test groups is Not Assessed, quoting the overall verdict (declared population: seven groups of one DC)'
+Assert-Equal 0 (@($h20Rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and $_.Item -match '^dcdiag DNS (Auth|Basc|Forw|Del|Dyn|RReg|Ext): ' }).Count) 'C12: a default run has no DNS test-group rows'
 # Restore the stub the assertions below were written against.
 function Invoke-ExternalCommand {
     param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
@@ -2923,6 +2928,64 @@ $ddNaStates = @(
     [pscustomobject]@{ HostName = 'dc7.contoso.com'; IsReadOnly = $false; Usable = $true; Connectivity = 'Not Assessed' }
 )
 Assert-Equal 'dc7.contoso.com|dc6.contoso.com' (([string](Select-AdfaDcdiagTarget -States $ddNaStates).HostName, [string](Select-AdfaDcdiagTarget -States @($ddNaStates[0], $ddNaStates[1])).HostName) -join '|') 'C11 target: with no Connectivity passed, a usable DC whose Connectivity was not assessed is tried, writable first'
+
+Write-Host ""
+Write-Host "== C12. dcdiag DNS summary per test group (pure logic) ==" -ForegroundColor Cyan
+# Learn shows the DNS test's summary table once (KB 2102154, read 2026-11-16): a header
+# "Auth Basc Forw Del  Dyn  RReg Ext", "Domain:" lines, one row per DC, then the enterprise block.
+# The header is found by its tokens, the cells mapped by order, each group graded on its own.
+$dnsSample = "Auth Basc Forw Del  Dyn  RReg Ext`r`n`r`nDomain: contoso.com`r`nDC1 PASS PASS FAIL PASS PASS PASS n/a  `r`nDomain: child.contoso.com  `r`nDC2 PASS PASS n/a  n/a  n/a  PASS n/a  `r`n`r`nEnterprise DNS infrastructure test results:  `r`nDC9 FAIL FAIL FAIL FAIL FAIL FAIL FAIL`r`n......................... contoso.com failed test DNS"
+$dnsSum = ConvertFrom-AdfaDcdiagDnsSummary -StdOut $dnsSample -Config $dd
+Assert-Equal 'Auth,Basc,Forw,Del,Dyn,RReg,Ext' (@($dnsSum.Columns) -join ',') 'C12 parser: the header is found by its tokens, in Learn''s column order (declared population: seven columns)'
+Assert-Equal 'DC1@contoso.com|DC2@child.contoso.com' ((@($dnsSum.Rows) | ForEach-Object { "{0}@{1}" -f $_.Name, $_.Domain }) -join '|') 'C12 parser: two rows under their Domain lines, nothing read after the enterprise block (declared population: two DCs)'
+Assert-Equal 'PASS,PASS,n/a,n/a,n/a,PASS,n/a' (@(@($dnsSum.Rows)[1].Cells) -join ',') 'C12 parser: cells split on runs of whitespace and kept in order'
+Assert-Equal 2 (@((ConvertFrom-AdfaDcdiagDnsSummary -StdOut ($dnsSample -replace "`r`n", "`n") -Config $dd).Rows).Count) 'C12 parser: LF output reads the same as CRLF'
+Assert-True (-not (ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw`r`nDC1 PASS PASS PASS" -Config $dd).HeaderFound -and (ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw Del`r`nDC1 PASS PASS PASS PASS" -Config $dd).HeaderFound) 'C12 parser: four header tokens make a header, three do not (tool default, not a Microsoft value)'
+$dnsGrades = @(foreach ($t in @('Auth', 'Basc', 'Forw', 'Del', 'Dyn', 'RReg', 'Ext')) { [string](Resolve-AdfaDcdiagDnsCategory -Summary $dnsSum -HostName 'dc1.contoso.com' -Token $t -Config $dd).Status })
+Assert-Equal 'Pass,Pass,Fail,Pass,Pass,Pass,Info' ($dnsGrades -join ',') 'C12 verdict: DC1 of Learn''s sample - FAIL under Forw is Fail, n/a under Ext is Info (declared population: seven groups)'
+$dnsGrades2 = @(foreach ($t in @('Forw', 'Del', 'Dyn')) { [string](Resolve-AdfaDcdiagDnsCategory -Summary $dnsSum -HostName 'dc2.child.contoso.com' -Token $t -Config $dd).Status })
+Assert-Equal 'Not Assessed,Not Assessed,Not Assessed' ($dnsGrades2 -join ',') 'C12 verdict: n/a under Forw, Del and Dyn is Not Assessed, never Not Applicable or Pass (catalogue DNSDIAG-003..005)'
+$dnsWarn = ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw Del Dyn RReg Ext`r`nDC1 PASS WARN PASS PASS PASS PASS n/a" -Config $dd
+Assert-Equal 'Warning' ([string](Resolve-AdfaDcdiagDnsCategory -Summary $dnsWarn -HostName 'dc1.contoso.com' -Token 'Basc' -Config $dd).Status) 'C12 verdict: WARN is Warning'
+$dnsMissing = Resolve-AdfaDcdiagDnsCategory -Summary $dnsSum -HostName 'dc3.contoso.com' -Token 'Auth' -Config $dd
+Assert-True ($dnsMissing.Status -eq 'Not Assessed' -and $dnsMissing.Detail -match 'no row for this domain controller') 'C12 verdict: a DC with no row is Not Assessed, never Pass'
+$dnsShort = ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw Del Dyn RReg Ext`r`nDC1 PASS PASS PASS PASS PASS PASS" -Config $dd
+Assert-True ((Resolve-AdfaDcdiagDnsCategory -Summary $dnsShort -HostName 'dc1.contoso.com' -Token 'Auth' -Config $dd).Detail -match 'row not recognised') 'C12 verdict: a row whose cell count is not the header''s is not recognised, not graded'
+$dnsUnreach = Resolve-AdfaDcdiagDnsCategory -Summary $dnsSum -HostName 'dc1.contoso.com' -Token 'Auth' -Config $dd -NotRunCause 'unreachable: the domain controller did not answer on RPC/135'
+Assert-True ($dnsUnreach.Status -eq 'Not Assessed' -and $dnsUnreach.Detail -match 'RPC/135') 'C12 verdict: a cause that stopped the test wins over any table'
+$dnsDenied = Resolve-AdfaDcdiagDnsCategory -Summary (ConvertFrom-AdfaDcdiagDnsSummary -StdOut 'Access is denied.' -Config $dd) -HostName 'dc1.contoso.com' -Token 'Dyn' -Config $dd -RunCause 'DNS: NOT ASSESSED - access denied: dcdiag printed no verdict'
+Assert-True ($dnsDenied.Status -eq 'Not Assessed' -and $dnsDenied.Detail -match 'access denied' -and $dnsDenied.Detail -notmatch 'RPC/135') 'C12 verdict: with no table, the run''s own cause (access denied) is carried, not unreachable'
+$dnsOverall = Resolve-AdfaDcdiagDnsCategory -Summary (ConvertFrom-AdfaDcdiagDnsSummary -StdOut '......................... DC1 passed test DNS' -Config $dd) -HostName 'dc1.contoso.com' -Token 'Del' -Config $dd -OverallStatus 'Pass' -OverallEvidence 'DC1 passed test DNS'
+Assert-True ($dnsOverall.Status -eq 'Not Assessed' -and $dnsOverall.Detail -match 'overall verdict') 'C12 verdict: an overall Pass with no summary table grades no test group as Pass'
+$dnsCellsFor = { param([string[]]$S) @(for ($k = 0; $k -lt $S.Count; $k++) { [pscustomobject]@{ HostName = ("dc{0}.contoso.com" -f ($k + 1)); Status = $S[$k] } }) }
+$dnsRolls = @(
+    [string](Resolve-AdfaDcdiagDnsRollup -Cells (& $dnsCellsFor @('Pass', 'Fail', 'Not Assessed')) -Token 'Del').Status
+    [string](Resolve-AdfaDcdiagDnsRollup -Cells (& $dnsCellsFor @('Pass', 'Warning')) -Token 'Del').Status
+    [string](Resolve-AdfaDcdiagDnsRollup -Cells (& $dnsCellsFor @('Pass', 'Not Assessed')) -Token 'Del').Status
+    [string](Resolve-AdfaDcdiagDnsRollup -Cells (& $dnsCellsFor @('Pass', 'Pass')) -Token 'Del').Status
+    [string](Resolve-AdfaDcdiagDnsRollup -Cells (& $dnsCellsFor @('Info', 'Info')) -Token 'Ext').Status
+    [string](Resolve-AdfaDcdiagDnsRollup -Cells @() -Token 'Del').Status
+)
+Assert-Equal 'Fail,Warning,Not Assessed,Pass,Info,Not Assessed' ($dnsRolls -join ',') 'C12 roll-up: Fail, then Warning, then Not Assessed, then Pass, then Info; no DC is Not Assessed (declared population: six cases)'
+Assert-Throws { Merge-AdfaDcDiagConfig -BaseConfig $dd -Override @{ DnsSummary = @{} } } "unknown key 'DnsSummary'" 'C12 override: the DNS summary table can never be set from a file'
+Assert-Throws { Merge-AdfaDcDiagConfig -BaseConfig $dd -Override @{ HeaderMinTokens = 1 } } "unknown key 'HeaderMinTokens'" 'C12 override: the header threshold can never be set from a file'
+$dnsRecs = @(foreach ($t in @('Auth', 'Basc', 'Forw', 'Del', 'Dyn', 'RReg', 'Ext')) { Get-AdfaRecommendation -Section 'DC Diagnostics' -Item ("dcdiag DNS {0}: dc1.contoso.com" -f $t) -Detail $ddHostile })
+Assert-True ($dnsRecs[0] -match 'Enterprise Admins' -and $dnsRecs[1] -match 'zone existence' -and $dnsRecs[2] -match 'configuration of forwarders' -and $dnsRecs[3] -match 'proper delegations' -and $dnsRecs[4] -match 'secure dynamic updates' -and $dnsRecs[5] -match '\(SRV\)' -and $dnsRecs[6] -match 'proxy server') 'C12 advice: each DNS test group gets its own advice, whatever the Detail says (declared population: seven groups)'
+Assert-Equal '' (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dcdiag DNS not run: contoso.com' -Detail $ddHostile) 'C12 advice: the not-run row gets no advice, not the unscoped delegation or dcdiag advice'
+# Found by an independent review of the C12 diff, before commit.
+$dnsOdd = @(foreach ($v in @('Bogus', '', $null)) { [string](Resolve-AdfaDcdiagDnsRollup -Cells @([pscustomobject]@{ HostName = 'dc8.contoso.com'; Status = $v }) -Token 'Auth').Status })
+Assert-Equal 'Not Assessed,Not Assessed,Not Assessed' ($dnsOdd -join ',') 'C12 roll-up: a status it does not read (unknown, empty, null) is Not Assessed, never Info (declared population: three cases)'
+$dnsExtFail = Resolve-AdfaDcdiagDnsCategory -Summary (ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw Del Dyn RReg Ext`r`nDC1 PASS PASS PASS PASS PASS PASS FAIL" -Config $dd) -HostName 'dc1.contoso.com' -Token 'Ext' -Config $dd
+Assert-True ($dnsExtFail.Status -eq 'Fail' -and $dnsExtFail.Detail -match 'proxy server') 'C12 verdict: FAIL under Ext is Fail with Microsoft''s proxy caveat (catalogue DNSDIAG-007), not Info'
+$dnsOverallFail = Resolve-AdfaDcdiagDnsCategory -Summary (ConvertFrom-AdfaDcdiagDnsSummary -StdOut '......................... contoso.com failed test DNS' -Config $dd) -HostName 'dc1.contoso.com' -Token 'Auth' -Config $dd -OverallStatus 'Fail' -OverallEvidence 'contoso.com failed test DNS'
+Assert-Equal 'Not Assessed' ([string]$dnsOverallFail.Status) 'C12 verdict: an overall Fail with no summary table grades no test group as Fail'
+$dnsTwo = ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw Del Dyn RReg Ext`r`nDC1 FAIL FAIL FAIL FAIL FAIL FAIL FAIL`r`nEnterprise DNS infrastructure test results:`r`nAuth Basc Forw Del Dyn RReg Ext`r`nDC1 PASS PASS PASS PASS PASS PASS n/a" -Config $dd
+Assert-Equal '2|PASS' (("{0}|{1}" -f $dnsTwo.HeaderCount, @(@($dnsTwo.Rows)[0].Cells)[0])) 'C12 parser: the last header in the output is the one read'
+$dnsBlock = ConvertFrom-AdfaDcdiagDnsSummary -StdOut "Auth Basc Forw Del Dyn RReg Ext`r`nDC1 PASS PASS PASS PASS PASS PASS n/a`r`n   Testing server: Default-First-Site-Name\DC2`r`nDC2 FAIL FAIL FAIL FAIL FAIL FAIL FAIL" -Config $dd
+Assert-Equal 'DC1' ((@($dnsBlock.Rows) | ForEach-Object { $_.Name }) -join ',') 'C12 parser: a server block header ends the table (declared population: one row above it)'
+$dnsRecDyn = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dcdiag DNS Dyn: dc1.contoso.com' -Detail 'x'
+$dnsRecRReg = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dcdiag DNS RReg: dc1.contoso.com' -Detail 'x'
+Assert-True ($dnsRecDyn -match 'AAAA' -and $dnsRecRReg -notmatch 'AAAA') 'C12 advice: the AAAA caveat is under Dyn, where Learn gives it, not under RReg'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
