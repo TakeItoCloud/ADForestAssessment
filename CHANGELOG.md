@@ -10,6 +10,148 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-17 (Declared property lists: no read of every attribute, no secret attribute in any list, tool v1.33.0)
+
+**PORT-PLAN C4b. A security fix, and a BREAKING change of the `AllUsers_<domain>.csv` and
+`AllComputers_<domain>.csv` exports and of the `Replication Connections` section.** No new
+`-Sections` value: the reads stay in `Identity`, `Trusts` and `Topology`. **Run against stubs only** -
+nothing in this entry has been run against a real directory (PORT-PLAN C4b2, with C17).
+
+- **What was wrong.** Five reads asked the directory for every attribute (`-Properties *`): the user and
+  computer export (`Get-ADUser`, `Get-ADComputer`), the trust health rows (`Get-ADTrust`), the site links
+  (`Get-ADReplicationSiteLink`) and the connection objects (`Get-ADReplicationConnection`). Microsoft
+  documents `*` as "all of the attributes that are set on the object". For an account with the rights -
+  a Domain Admin, the usual way this tool is run - that includes confidential attributes ("only
+  Administrators can read confidential attributes"), among them the LAPS passwords, the legacy one in
+  clear text; C4 (v1.21.0) stopped writing those to the CSV but they were still requested and held in
+  memory. A Windows Server 2025 DC logs Directory Service event 3079 for a search of confidential
+  attributes over an unencrypted LDAP session and silently leaves them out ("User error: None"), so the
+  old column set also changed with the DC that answered.
+- **What it does now.** Every one of those reads names its attributes in a new versioned table,
+  `DirectoryRead` (read date 2026-11-17), which no override file can change: `UserExportProperties` (21
+  attributes), `ComputerExportProperties` (18), `TrustHealthProperties` (the 14 the trust rows read),
+  `SiteLinkProperties` (5) and `ConnectionProperties` (5, LDAP names). A new pure guard,
+  `Get-AdfaRefusedPropertyName`, refuses a list with a wildcard (`*` or `?`), a blank name, no name at all,
+  a name that is not a plain name (a letter, then letters, digits and hyphens only - a tool rule, so that
+  an attribute option such as `;binary`, a range or an OID cannot carry a secret name past the compare),
+  or a name of the secret set (`Get-AdfaSecretAttributeName`: the seven LAPS names of `Laps.NeverRead` and
+  the seventeen of `DirectoryRead.SecretNames` - password hashes and history, `supplementalCredentials`,
+  the gMSA password, the TPM owner information, the BitLocker recovery password and key package, the
+  trust secrets, the secret object values, `userPassword` and `unixUserPassword`), compared without
+  regard to case; with no secret list it refuses everything. It runs in every seam before anything is
+  sent, and a refused read is `Not Assessed` naming the names, with nothing sent. The list is
+  name-based, not the confidential bit: `msDS-ManagedPassword`, `unicodePwd`, `supplementalCredentials`
+  and `trustAuthIncoming` all carry searchFlags 0.
+- **The export.** Each domain's users and computers are read through the C15 seam
+  (`Get-AdfaIdentityExportRaw` -> `Get-AdfaInventoryDirectoryRaw`, `Get-ADObject -Server <domain>`,
+  `-ResultSetSize MaxObjects + 1`), with the filter `(&(objectCategory=person)(objectClass=user))` or
+  `(objectClass=computer)` (which, as `Get-ADComputer -Filter *` did, keeps managed service accounts: a
+  gMSA is a "Subclass of Computer"). `ConvertTo-AdfaIdentityExport` (pure) writes the declared columns in
+  order, then `Enabled` (from ACCOUNTDISABLE in `userAccountControl`; empty when it was not returned) and
+  `ListComplete`. A capped read writes at most `MaxObjects` rows, each "No: ..."; a refused, failed
+  (unreachable, access denied and timed out worded apart), capped or empty read makes the
+  `Identity Inventory` row `Not Assessed` with its cause, never 0. The summary now counts Enabled and
+  Disabled each from a value that was read; an object with no readable `userAccountControl` was counted
+  disabled and is now counted in neither, and the row says how many.
+- **BREAKING - the export's columns.** They were the union of every attribute any object had, with the
+  module's names (`Enabled`, `PasswordLastSet`, `LastLogonDate`, ...); they are now the declared list
+  with raw LDAP names and values (`objectSid`, `pwdLastSet`, `lastLogonTimestamp`, `accountExpires` as the
+  directory stores them; multi-valued joined with `;`), then `Enabled` and `ListComplete`. The two LAPS
+  expiry attributes are no longer export columns (the `Laps` section reads them; an attribute the schema
+  lacks would make the read fail). A script that reads these files by column name must be changed.
+- **Trusts.** `Get-AdfaTrustHealth` asks for `TrustHealthProperties` and stops the pipeline after
+  `MaxObjects + 1` trusts (Learn shows no `-ResultSetSize` for `Get-ADTrust`): a refused read is
+  `(enumeration refused)`, more than the cap `(enumeration capped)`, and a failed read
+  `(enumeration failed)` now names unreachable or access denied - each one `Not Assessed` row. `Created`
+  and `Modified` are read through `Get-AdfaConfigValue`, so an object without them no longer stops the
+  section under StrictMode. Verdicts and advice are unchanged.
+- **Site links and connections.** One never-throwing seam, `Get-AdfaTopologyObjectRaw`, per cmdlet, with
+  the declared list and the same post-read cap, and `ConvertTo-AdfaTopologyListRow` (pure). A failed,
+  refused or capped read is ONE `Not Assessed` row (Item `Site links` / `Replication connections`, with the
+  cause; "not an empty list") and no longer takes the sites and subnets down with it - before, one throw
+  lost the whole topology. **BREAKING - `Replication Connections` columns:** the old ones (FromServer,
+  ToServer, Enabled, AutoGenerated) are property names Microsoft does not publish; the connection is now
+  read by the NTDS-Connection class's own LDAP names and shows Name, FromServer (`fromServer`, "The
+  distinguished name of the replication source server"), DistinguishedName (its parent is the NTDS
+  Settings object of the DC holding it), Enabled (`enabledConnection`) and Options (`options`, raw: "the
+  meaning of the bits varies from objectClass to objectClass"). ToServer and AutoGenerated are gone
+  (PORT-PLAN C4b3).
+- **Override.** `MaxObjects` of the `Inventory` key of `-ConfigOverridePath` now also caps these reads; the
+  key's `AlsoUsedBy` gained `Topology`. Every list and the secret set are refused from a file as unknown
+  keys, and `DirectoryRead` is not a section of the file.
+- **Tests.** A new Describe (C4b): an AST guard over the whole script that fails on any argument of
+  `-Properties`, of its documented alias `-Property` or of an abbreviation of either down to two letters
+  (also `-Name:<x>`), on any command, any `.Properties`/`.Property`/`['Properties']`/`['Property']`
+  assignment and any hashtable key named `Property`, `Properties` or ending in `Properties` that holds a
+  `*` or a whole name of a secret set declared in the test (24 names, so a name taken out of the script's
+  table is still caught), shown red on twenty-two injected cases; a check that every one of the 87
+  ActiveDirectory module calls spells `-Properties` in full, so the argument count is the whole population; a check that every non-LAPS secret name appears in the script only inside `DirectoryRead`; a
+  walk of every `*Properties` list of the loaded config; the guard; each read with stub cmdlets (exact
+  list sent, per domain, refusal sends nothing, a secret the stub hands back reaches no row); normal,
+  empty, unreachable, access denied, capped, refused and mixed results; the override; and the wiring by
+  AST. Smoke and validation harnesses extended; the stubs now throw on a wildcard, a secret name or a
+  list other than the declared one. **Existing tests changed because behaviour changed:** the C4
+  `-Properties` argument count 38 -> 37; the C4 context that tested the export mitigation (it stubbed
+  `-Properties *` and called the removed `Get-AdfaComputerInventory`) now asserts the declared list sent
+  and the declared columns kept; the C15 pin of the `Inventory` key's `AlsoUsedBy` gained `Topology`; the
+  version pins; the validation harness's two mitigation asserts and the smoke test's
+  "kept the non-secret expiry time" check were rewritten the same way.
+- **Not verified** (PORT-PLAN C4b2, owner operator, with C17): that `Get-ADTrust` accepts the 14 ADTrust
+  names in `-Properties` (Learn publishes none of them; a name it refuses makes every trust row
+  `Not Assessed`), that `Get-ADReplicationConnection` returns `fromServer`, `enabledConnection` and
+  `options` under those names when asked by them, that `Select-Object -First` stops a real ADWS search,
+  the default property sets of any of these cmdlets, that `-ResultSetSize` caps a `Get-ADObject` search as
+  it caps `Get-ADUser`, and the cost of the export on a domain near the 100000 cap. The column lists
+  themselves are this tool's choice, for the operator to confirm (PORT-PLAN C4b1). Also not measured:
+  whether the ActiveDirectory module would accept a name with an attribute option (`;binary`) in
+  `-Properties` - the guard refuses such a name without sending it.
+- **Found by an independent review of the diff before commit, and fixed in it.** (1) A capped trust,
+  site link, connection or export read said its cap was "Inventory.MaxObjects, a tool default" even when
+  the `-ConfigOverridePath` file had set it; a new pure `Get-AdfaCapSource` reads the provenance
+  `Merge-AdfaSpecConfig` records and the row now says "set in the -ConfigOverridePath file" when it was.
+  The same wording in the C15 inventory rows is not changed here (PORT-PLAN C4b4). (2) The guard compared
+  whole names only, so `ms-Mcs-AdmPwd;binary` passed it (no declared list held such a name); it now
+  refuses any name that is not a plain name. (3) The AST guard read only a parameter named exactly
+  `Properties`, so `Get-ADUser -Filter * -Property *` (Learn: `-Properties` "Aliases: Property") passed
+  every test; it now reads the alias and every abbreviation, and a new test pins that the 87
+  ActiveDirectory calls spell `-Properties` in full. (4) No test pinned that the trust, site link and
+  connection reads stop after `MaxObjects + 1` objects: the stubs now count what they emit and a read of 50
+  with a cap of 2 must take 3. (5) Classing a failed topology read by exception type was untested: a
+  `TimeoutException` must read "timed out" and the seam must keep `ErrorType`. (6) A refused topology read
+  must read "was refused", not "failed". (7) The Pester wiring test now checks each export conversion's
+  `-Columns` (its own kind's list), `-AccountDisableBit` (a key the `Inventory` table holds) and
+  `-CapSource`, not only the smoke harness. Each fix has a test shown to fail on the reviewer's mutation.
+  Existing test changed: the title of "lets the ordinary ... names through" now says the guard has no rule
+  on the *beginning* of a name, because it now has a rule on its shape.
+- **Vendor sources, all read 2026-11-17:**
+  https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationconnection (`-Properties`,
+  "Aliases: Property"),
+  https://learn.microsoft.com/powershell/module/activedirectory/get-aduser,
+  https://learn.microsoft.com/powershell/module/activedirectory/get-adcomputer,
+  https://learn.microsoft.com/powershell/module/activedirectory/get-adtrust,
+  https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationsitelink,
+  https://learn.microsoft.com/powershell/module/activedirectory/new-adreplicationsitelink,
+  https://learn.microsoft.com/powershell/module/activedirectory/set-adreplicationconnection,
+  https://learn.microsoft.com/windows/win32/adschema/a-searchflags,
+  https://learn.microsoft.com/troubleshoot/windows-server/windows-security/mark-attribute-as-confidential,
+  https://learn.microsoft.com/troubleshoot/windows-server/windows-security/confidential-attributes-unexpected-behavior-using-windows-server-2025-dc,
+  https://learn.microsoft.com/windows-server/get-started/whats-new-windows-server-2025,
+  https://learn.microsoft.com/windows-server/identity/laps/laps-technical-reference,
+  https://learn.microsoft.com/windows/win32/adschema/a-msds-managedpassword,
+  https://learn.microsoft.com/windows-server/security/kerberos/passwords-technical-overview,
+  https://learn.microsoft.com/windows/win32/adschema/a-dbcspwd,
+  https://learn.microsoft.com/windows/win32/adschema/a-mstpm-ownerinformation,
+  https://learn.microsoft.com/windows/win32/adschema/a-msfve-recoverypassword,
+  https://learn.microsoft.com/windows/win32/adschema/a-trustauthincoming,
+  https://learn.microsoft.com/windows/win32/adschema/a-trustauthoutgoing,
+  https://learn.microsoft.com/windows/win32/adschema/a-initialauthoutgoing,
+  https://learn.microsoft.com/windows/win32/adschema/c-ntdsconnection,
+  https://learn.microsoft.com/windows/win32/adschema/a-fromserver,
+  https://learn.microsoft.com/windows/win32/adschema/a-options,
+  https://learn.microsoft.com/windows/win32/adschema/c-msds-groupmanagedserviceaccount.
+  `initialAuthIncoming`, `msFVE-KeyPackage`, `userPassword` and `unixUserPassword` are in the secret set
+  by analogy and were not read this session; refusing them is harmless.
+
 ### Added - 2026-11-17 (Inventory depth: topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration, tool v1.32.0)
 
 **PORT-PLAN C15.** The AdAssessment26 catalogue rows INV-001, INV-006..INV-012 and INV-015, built into the

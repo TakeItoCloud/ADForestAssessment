@@ -2351,23 +2351,68 @@ $lapsBoth = Get-LapsRow (Get-LapsRows -Computers @((New-LapsRecord -Name 'ws-bot
 Assert-True ([string]$lapsBoth.Detail -match 'Windows LAPS expiry time visible 1; legacy Microsoft LAPS expiry time only 1;') 'LAPS coverage row: a computer with both expiry times counts as Windows LAPS, once'
 Assert-Throws { Merge-AdfaLapsConfig -BaseConfig $lapsCfg -Override @{ ExpiredGraceDays = 366 } } 'whole number of days from 0 to 365' 'LAPS override: a grace period over a year is refused'
 
-# The Identity export no longer writes a LAPS password attribute (the full fix is PORT-PLAN C4b).
-function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a)
-    $o = [pscustomobject]@{ Name = 'WS1'; OperatingSystem = 'Windows 11 Enterprise' }
-    $o | Add-Member -NotePropertyName 'ms-Mcs-AdmPwd' -NotePropertyValue 'STUB-VALUE'
-    $o | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue 'STUB-VALUE'
-    $o | Add-Member -NotePropertyName 'msLAPS-PasswordExpirationTime' -NotePropertyValue 134000000000000000
-    $o }
-$lapsExport = @(Get-AdfaComputerInventory -DomainName 'contoso.com')
-$lapsExportColumns = @($lapsExport[0].PSObject.Properties | ForEach-Object { $_.Name })
-Assert-True ($lapsExportColumns -notcontains 'ms-Mcs-AdmPwd' -and $lapsExportColumns -notcontains 'msLAPS-Password' -and $lapsExportColumns -contains 'msLAPS-PasswordExpirationTime' -and (($lapsExport | ConvertTo-Csv -NoTypeInformation) -join ' ') -notmatch 'STUB-VALUE') 'Identity export: the LAPS password attributes are left out of the computer export, and the non-secret expiry time stays'
-function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a)
-    $o = [pscustomobject]@{ Name = 'WS2'; OperatingSystem = 'Windows 11 Enterprise' }
-    $o | Add-Member -NotePropertyName 'MS-MCS-ADMPWD' -NotePropertyValue 'STUB-ODD-CASE'
-    $o | Add-Member -NotePropertyName 'mslaps-encryptedpassword' -NotePropertyValue 'STUB-ODD-CASE'
-    $o }
-$lapsOddExport = @(Get-AdfaComputerInventory -DomainName 'contoso.com')
-Assert-True ((($lapsOddExport | ConvertTo-Csv -NoTypeInformation) -join ' ') -notmatch 'STUB-ODD-CASE' -and @($lapsOddExport[0].PSObject.Properties | Where-Object { $_.Name -eq 'OperatingSystem' }).Count -eq 1) 'Identity export: a secret attribute is left out whatever case the answer spells its name in'
+# PORT-PLAN C4b (v1.33.0) replaced the C4 mitigation: the Identity export asks for a declared list and
+# keeps only those columns, so nothing the directory hands back beyond the list reaches the CSV. Pure
+# logic only; the read itself is exercised by the Pester tests and the smoke test.
+$c4bOdd = [pscustomobject]@{ DistinguishedName = 'CN=WS2,CN=Computers,DC=contoso,DC=com'; Name = 'WS2'; operatingSystem = 'Windows 11 Enterprise'; userAccountControl = 4096 }
+$c4bOdd | Add-Member -NotePropertyName 'MS-MCS-ADMPWD' -NotePropertyValue 'STUB-ODD-CASE'
+$c4bOdd | Add-Member -NotePropertyName 'mslaps-encryptedpassword' -NotePropertyValue 'STUB-ODD-CASE'
+$c4bRaw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Records = @($c4bOdd); Count = 1; Capped = $false; Filter = '(objectClass=computer)'; Identity = ''; Refused = $false }
+$c4bExport = ConvertTo-AdfaIdentityExport -Kind Computer -Raw $c4bRaw -Columns @($script:Config.DirectoryRead['ComputerExportProperties'])
+$c4bColumns = @($c4bExport.Rows[0].PSObject.Properties | ForEach-Object { $_.Name })
+Assert-True ((($c4bExport.Rows | ConvertTo-Csv -NoTypeInformation) -join ' ') -notmatch 'STUB-ODD-CASE' -and $c4bColumns -notcontains 'ms-Mcs-AdmPwd' -and $c4bColumns -contains 'operatingSystem') 'C4b: the computer export keeps the declared columns only; a LAPS password the answer carried, in any case, is in no row'
+Assert-Equal ((@($script:Config.DirectoryRead['ComputerExportProperties']) + @('Enabled', 'ListComplete')) -join ',') ($c4bColumns -join ',') 'C4b: the export columns are the declared list, in order, then Enabled and ListComplete'
+Assert-Equal $true $c4bExport.Rows[0].Enabled 'C4b: Enabled from userAccountControl 4096 (ACCOUNTDISABLE clear) is True'
+$c4bSecret = @(Get-AdfaSecretAttributeName)
+Assert-Equal 24 $c4bSecret.Count 'C4b: the secret list is the seven LAPS names and the seventeen of DirectoryRead.SecretNames (declared population: 24)'
+foreach ($c4bName in @('ms-Mcs-AdmPwd', 'msLAPS-Password', 'unicodePwd', 'supplementalCredentials', 'msDS-ManagedPassword', 'trustAuthIncoming', 'trustAuthOutgoing', 'msTPM-OwnerInformation', 'msFVE-RecoveryPassword')) {
+    Assert-Equal $c4bName.ToUpperInvariant() (@(Get-AdfaRefusedPropertyName -PropertyNames @('name', $c4bName.ToUpperInvariant()) -SecretNames $c4bSecret) -join ',') ("C4b: the guard refuses {0}, whatever its case, and only it" -f $c4bName)
+}
+Assert-Equal 1 @(Get-AdfaRefusedPropertyName -PropertyNames @('name', '*') -SecretNames $c4bSecret).Count 'C4b: the guard refuses a wildcard'
+Assert-Equal 1 @(Get-AdfaRefusedPropertyName -PropertyNames @('name', 'msLAPS-*') -SecretNames $c4bSecret).Count 'C4b: the guard refuses a partial wildcard'
+Assert-Equal 1 @(Get-AdfaRefusedPropertyName -PropertyNames @() -SecretNames $c4bSecret).Count 'C4b: the guard refuses an empty list'
+Assert-Equal 2 @(Get-AdfaRefusedPropertyName -PropertyNames @('name', 'cn') -SecretNames @()).Count 'C4b: with no secret list to check against, every name is refused'
+Assert-Equal 0 @(Get-AdfaRefusedPropertyName -PropertyNames @('pwdLastSet', 'lastLogonTimestamp', 'msLAPS-PasswordExpirationTime') -SecretNames $c4bSecret).Count 'C4b: the guard has no shape rule - pwdLastSet and the LAPS expiry time are allowed'
+foreach ($c4bList in @('UserExportProperties', 'ComputerExportProperties', 'TrustHealthProperties', 'SiteLinkProperties', 'ConnectionProperties')) {
+    Assert-Equal 0 @(Get-AdfaRefusedPropertyName -PropertyNames @($script:Config.DirectoryRead[$c4bList]) -SecretNames $c4bSecret).Count ("C4b: DirectoryRead.{0} passes the guard" -f $c4bList)
+}
+$c4bBad = @{} + $script:Config.DirectoryRead
+$c4bBad['UserExportProperties'] = @('name', 'unicodePwd')
+$c4bRefused = Get-AdfaIdentityExportRaw -DomainName 'contoso.com' -Kind User -Config $c4bBad
+Assert-True ($c4bRefused.Refused -and -not $c4bRefused.Ok -and [string]$c4bRefused.Error -match 'unicodePwd') 'C4b: an export list naming unicodePwd is refused before anything is sent'
+$c4bRefusedCause = (ConvertTo-AdfaIdentityExport -Kind User -Raw $c4bRefused -Columns @('name')).Cause
+$c4bSum = @(Get-AdfaIdentitySummary -DomainName 'contoso.com' -Users @() -Computers @() -UsersError $c4bRefusedCause -ComputersError 'x')
+Assert-True (@($c4bSum | Where-Object { $_.Object -eq 'Users' -and $_.Status -eq 'Not Assessed' -and [string]$_.Total -eq '' -and $_.Detail -match 'refused' }).Count -eq 1) 'C4b: a refused export is Not Assessed in the summary, never 0'
+$c4bEmpty = ConvertTo-AdfaIdentityExport -Kind User -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Records = @(); Count = 0; Capped = $false; Refused = $false }) -Columns @('name')
+Assert-True ($c4bEmpty.Cause -match 'returned no object' -and @($c4bEmpty.Rows).Count -eq 0) 'C4b: an export that returned nothing is a cause, never 0'
+$c4bDenied = ConvertTo-AdfaIdentityExport -Kind User -Raw ([pscustomobject]@{ Ok = $false; Error = 'Access is denied'; ErrorType = 'System.UnauthorizedAccessException'; NotFound = $false; Records = @(); Count = 0; Capped = $false; Refused = $false }) -Columns @('name')
+Assert-True ($c4bDenied.Cause -match '\(access denied\)' -and $c4bDenied.Cause -notmatch 'unreachable') 'C4b: access denied is worded as access denied'
+$c4bDown = ConvertTo-AdfaIdentityExport -Kind User -Raw ([pscustomobject]@{ Ok = $false; Error = 'Unable to contact the server.'; ErrorType = 'Microsoft.ActiveDirectory.Management.ADServerDownException'; NotFound = $false; Records = @(); Count = 0; Capped = $false; Refused = $false }) -Columns @('name')
+Assert-True ($c4bDown.Cause -match '\(unreachable\)' -and $c4bDown.Cause -notmatch 'access denied') 'C4b: an unreachable domain is worded as unreachable'
+$c4bCapped = ConvertTo-AdfaIdentityExport -Kind User -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Records = @($c4bOdd, $c4bOdd, $c4bOdd); Count = 3; Capped = $true; Refused = $false }) -Columns @('name') -MaxObjects 2
+Assert-True (@($c4bCapped.Rows).Count -eq 2 -and @($c4bCapped.Rows | Where-Object { $_.ListComplete -like 'No:*' }).Count -eq 2 -and $c4bCapped.Cause -match 'cap of 2') 'C4b: a capped export keeps at most MaxObjects rows, each ListComplete No, with the cap as its cause'
+$c4bLinks = @(ConvertTo-AdfaTopologyListRow -Kind SiteLink -Raw ([pscustomobject]@{ Ok = $false; Error = 'Access is denied'; ErrorType = 'System.UnauthorizedAccessException'; NotFound = $false; Refused = $false; Records = @(); Count = 0; Capped = $false }))
+Assert-True ($c4bLinks.Count -eq 1 -and $c4bLinks[0].Status -eq 'Not Assessed' -and $c4bLinks[0].Detail -match '\(access denied\)') 'C4b: a site link read refused by the directory is one Not Assessed row, not an empty list'
+$c4bConn = @(ConvertTo-AdfaTopologyListRow -Kind Connection -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Refused = $false; Records = @([pscustomobject]@{ name = 'c1'; distinguishedName = 'CN=c1,CN=NTDS Settings,CN=DC1'; fromServer = 'CN=NTDS Settings,CN=DC2'; enabledConnection = $true; options = 1 }); Count = 1; Capped = $false }))
+Assert-True ($c4bConn.Count -eq 1 -and $c4bConn[0].FromServer -eq 'CN=NTDS Settings,CN=DC2' -and $c4bConn[0].Enabled -eq $true -and $c4bConn[0].Options -eq 1) 'C4b: a connection row carries fromServer, enabledConnection and options raw'
+# Found by the independent review of C4b, before commit.
+foreach ($c4bName in $c4bSecret) {
+    Assert-Equal ("{0};binary" -f $c4bName) (@(Get-AdfaRefusedPropertyName -PropertyNames @('name', ("{0};binary" -f $c4bName)) -SecretNames $c4bSecret) -join ',') ("C4b: the guard refuses {0} with an attribute option" -f $c4bName)
+}
+Assert-Equal 1 @(Get-AdfaRefusedPropertyName -PropertyNames @('name', 'member;range=0-1') -SecretNames $c4bSecret).Count 'C4b: the guard refuses a name that is not a plain name (a range)'
+Assert-Equal 1 @(Get-AdfaRefusedPropertyName -PropertyNames @('name', '1.2.3.4') -SecretNames $c4bSecret).Count 'C4b: the guard refuses a name that is not a plain name (an OID shape)'
+$c4bInv = $script:Config.Inventory
+Assert-Equal 'Inventory.MaxObjects, a tool default' (Get-AdfaCapSource -Config $c4bInv -BaseConfig $c4bInv -Key 'MaxObjects' -Label 'Inventory') 'C4b: the built-in cap is called a tool default'
+$c4bFileInv = Merge-AdfaSpecConfig -BaseConfig $c4bInv -Override @{ MaxObjects = 2 } -OverrideSource 'C:\cfg\c4b.json'
+$c4bCapSource = Get-AdfaCapSource -Config $c4bFileInv -BaseConfig $c4bInv -Key 'MaxObjects' -Label 'Inventory'
+Assert-Equal 'Inventory.MaxObjects, set in the -ConfigOverridePath file' $c4bCapSource 'C4b: a cap the file set is said to come from the file'
+Assert-Equal 'Inventory.MaxObjects, a tool default' (Get-AdfaCapSource -Config (Merge-AdfaSpecConfig -BaseConfig $c4bInv -Override @{ NameListCap = 5 } -OverrideSource 'C:\cfg\c4b.json') -BaseConfig $c4bInv -Key 'MaxObjects' -Label 'Inventory') 'C4b: a file that sets another key leaves the cap a tool default'
+$c4bFileCapped = ConvertTo-AdfaIdentityExport -Kind User -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Records = @($c4bOdd, $c4bOdd, $c4bOdd); Count = 3; Capped = $true; Refused = $false }) -Columns @('name') -MaxObjects 2 -CapSource $c4bCapSource
+Assert-True (@($c4bFileCapped.Rows | Where-Object { $_.ListComplete -match 'set in the -ConfigOverridePath file' -and $_.ListComplete -notmatch 'a tool default' }).Count -eq 2 -and $c4bFileCapped.Cause -match 'set in the -ConfigOverridePath file') 'C4b: an export capped by the file says so, not "a tool default"'
+$c4bTimed = @(ConvertTo-AdfaTopologyListRow -Kind SiteLink -Raw ([pscustomobject]@{ Ok = $false; Error = 'The operation took longer than allowed.'; ErrorType = 'System.TimeoutException'; NotFound = $false; Refused = $false; Records = @(); Count = 0; Capped = $false }))
+Assert-True ($c4bTimed.Count -eq 1 -and $c4bTimed[0].Detail -match '\(timed out\)') 'C4b: a timed-out topology read is classed from its exception type'
+$c4bRefusedRow = @(ConvertTo-AdfaTopologyListRow -Kind Connection -Raw ([pscustomobject]@{ Ok = $false; Error = 'the property list was refused before anything was sent, because it names *'; ErrorType = ''; NotFound = $false; Refused = $true; Records = @(); Count = 0; Capped = $false }))
+Assert-True ($c4bRefusedRow[0].Detail -match '^Reading the replication connection objects was refused:' -and $c4bRefusedRow[0].Detail -notmatch 'failed \(') 'C4b: a refused topology read is worded as refused, not as a failed read'
 
 Write-Host "== DC certificates (C5): pure logic ==" -ForegroundColor Cyan
 $certCfg = $script:Config.DcCertificates
@@ -3075,7 +3120,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.32.0' ([string]$script:Config.Version) 'C14: version 1.32.0 in the script (bumped by PORT-PLAN C15)'
+Assert-Equal '1.33.0' ([string]$script:Config.Version) 'C14: version 1.33.0 in the script (bumped by PORT-PLAN C4b)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3168,7 +3213,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.32.0' ([string]$script:Config.Version) 'C15: version 1.32.0 in the script'
+Assert-Equal '1.33.0' ([string]$script:Config.Version) 'C15: version 1.33.0 in the script (bumped by PORT-PLAN C4b)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
