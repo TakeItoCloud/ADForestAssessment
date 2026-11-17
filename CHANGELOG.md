@@ -10,6 +10,138 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-11-16 (dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, Ext, per DC and per domain, tool v1.29.0)
+
+**PORT-PLAN C12, and H15 closed.** In the existing `DcDiagnostics` section (report section `DC
+Diagnostics`, no new `-Sections` value), the summary table of dcdiag's DNS test is graded per test
+group instead of one overall verdict. It addresses the AdAssessment26 catalogue rows DNSDIAG-001 to
+-007; the differences from the catalogue rules are listed below.
+
+**This has run only against stubs.** No dcdiag process has been started by it against a real domain
+controller: every table it was tested on is a fixture written from the one sample Microsoft shows on
+Learn. The first run against a real forest is PORT-PLAN C17, owned by the operator, and PORT-PLAN
+C12a lists what that run must confirm for this row.
+
+**What it runs: nothing new.** The table is read from the output of the one
+`dcdiag /test:DNS /DnsAll /s:<DC>` invocation C11 already makes per DC. No new invocation and no new
+switch: no `/v`, no `/e`, no `/fix`, no `/DnsResolveExtName`, and never `/x`. The DNS test stays
+opt-in behind `-IncludeDcdiagActiveTests`, because its dynamic update test registers and deletes a
+test record (H20); a test asserts the argument string is unchanged.
+
+| Scope | Rows |
+| --- | --- |
+| Per DC, with `-IncludeDcdiagActiveTests` | `dcdiag DNS <group>: <host>` for each of Auth, Basc, Forw, Del, Dyn, RReg, Ext (seven per DC), Scope = the DC's domain, Target = the host, Evidence = the header line and the DC's row |
+| Per domain, with the switch | `dcdiag DNS <group>: domain <domain>` for each group, over every DC of the domain in the section's list (Fail, then Warning, then Not Assessed - which includes a DC whose status the roll-up does not read - then Pass, then Info), with the counts and the DCs that failed, warned or were not assessed |
+| Per domain, without the switch | `dcdiag DNS not run: <domain>`, `Not Assessed`, the reason in `NotRun` (the C11 Intersite wording) |
+
+**How the table is read.** Learn shows it once (KB 2102154): a header "Auth Basc Forw Del  Dyn  RReg
+Ext" with uneven spacing, "Domain: <fqdn>" lines, rows "DC1 PASS PASS FAIL PASS PASS PASS n/a", then
+"Enterprise DNS infrastructure test results:" and the overall verdict. The header is the last line
+whose whitespace-separated tokens are all column tokens, none twice, at least four of them - a tool
+default, not a Microsoft value - never a fixed column position. Rows run to the enterprise block, a
+verdict line or a block header; cells are split on runs of whitespace and mapped to the columns by
+order; CRLF and LF are both read.
+
+**The grades.** PASS `Pass`; FAIL `Fail`; WARN `Warning` - provisional, because no Learn sample shows
+a WARN cell and two Learn pages say only, in prose, to note the DCs that report "Warn" or "Fail";
+`n/a` `Not Assessed`, "Microsoft does not publish what n/a means", under Auth, Basc, Forw, Del, Dyn
+and RReg; `n/a` under **Ext** `Info`, "not requested": `/DnsAll` "performs all tests, except for the
+/DnsResolveExtName test", and `/DnsAll` is what this tool runs. Ext's PASS/WARN/FAIL are graded as
+the other columns, with Microsoft's caveat that the external name resolution test cannot resolve
+internet names where a proxy server is used.
+
+**Not Assessed, each with its own cause, never Pass.** The DC was unreachable on RPC/135; dcdiag.exe
+is not available; the DNS test was not started after Connectivity failed; access denied, did not
+complete or timed out (with the time-out and its source), no output, or output not recognised
+(possibly localised) - C11's own causes when no table was printed; no summary table although an
+overall verdict was printed (quoted); no row for the DC (host name, first label, 15-character NetBIOS
+form); two rows for it; no column for the group; a row whose cell count is not the header's ("row
+not recognised"); a cell value outside PASS, FAIL, WARN, n/a.
+
+**Config.** A `DnsSummary` sub-table of the `DcDiag` table, now versioned 1.29.0, with its source
+and read date: the seven column tokens with Learn's names and descriptions (Ext flagged as not named
+on Learn), the cell map, the n/a grade per column, the header threshold with its "tool default"
+label, the Domain-line, end and separator patterns. The `DcDiag` key of `-ConfigOverridePath` is not
+widened: `DnsSummary` and every key in it are refused as unknown, so a file can never turn a group's
+result into a Pass.
+
+**Recommendations.** Seven section-scoped entries, one per test group, anchored on the Item prefix
+"dcdiag DNS <group>: " and placed ahead of the unscoped entries; each restates what Microsoft
+documents the group checks and dcdiag's own advice to use `/v` when the summary table reports errors
+or warnings. `DNS` joins the section's catch-all, so the not-run rows get no advice instead of the
+unscoped delegation or dcdiag advice.
+
+**/x stays out (H15).** The dcdiag reference documents `/x:<XMLLog.xml>` only as "Redirects all
+output to xmllog.xml"; no Learn page publishes its schema. The request for a real `/x:` sample moves
+to C12a.
+
+**Where this differs from the catalogue rules.**
+
+- "missing row -> Assessment Error" and "unrecognised table": `Not Assessed` with the cause; this
+  repo has no Assessment Error status (C12b).
+- DNSDIAG-007 "n/a -> Not Applicable": `Info` "not requested"; this repo has no Not Applicable status
+  (C12b).
+- The catalogue's PROPOSED severity (Fail Medium, Warning Low) is not carried: the finding shape has
+  no severity column (C12b).
+- The C12 brief said n/a -> Info "not applicable" for every column; the catalogue's fail-closed rule
+  was followed instead, and the reversal is a one-line config edit (C12b).
+
+**Not verified.** Whether a `/s:<DC>` run prints the table at all, only that DC's row, the "Domain:"
+lines and the "Summary of DNS test results:" line; the WARN token; what n/a means; the DC-name form in
+a row; that Ext is external name resolution; spacing and separator lines; localised output; that
+Enterprise Admins is needed and what dcdiag prints without it (C12a).
+
+**Vendor sources, all read 2026-11-16.**
+
+- dcdiag command reference (the DNS sub-tests, /DnsAll excluding /DnsResolveExtName, /v, /x, the DNS
+  test not run by default): https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag
+- KB 2102154, Active Directory replication error 1722 (the only summary-table sample, the test-group
+  names and abbreviations): https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-1722-rpc-server-unavailable
+- Active Directory replication event ID 2087 (Enterprise Admins minimum for the DNS tests; "Warn" in
+  prose): https://learn.microsoft.com/troubleshoot/windows-server/active-directory/active-directory-replication-event-id-2087
+- Verify DNS functionality to support directory replication (the dynamic update test record; "Warn"
+  in prose; the host (AAAA) portion of the dynamic update test expected to fail when IPv6 is not
+  enabled - given for /DnsDynamicUpdate and for reruns of the whole DNS test, never for
+  /DnsRecordRegistration, whose record list is CNAME, A, LDAP SRV, GC SRV and PDC SRV; re-read
+  2026-11-16): https://learn.microsoft.com/windows-server/identity/ad-ds/manage/troubleshoot/verify-dns-functionality-to-support-directory-replication
+- Archived dcdiag page, labelled Windows Server 2003 SP1 (warnings for functional configurations,
+  the proxy caveat of the external name test, secure dynamic updates recommended, the failed-delete
+  warning of the test record, DNSAvoidRegisterRecord): https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2003/cc776854(v=ws.10)
+
+**The guards were shown able to fail.** An earlier run of this claim was stopped after six of its
+twenty mutations and left the seventh in the script (see the review paragraph below), so the run was
+redone. This time it ran on four scratch copies of the repository, and the working-tree script was
+never written: its SHA-256 was the same before and after. There were 32 single mutations, each run
+against the C12 `Describe` under PowerShell 7, with that copy restored byte for byte after each and
+its SHA-256 checked. All 32 were killed: 20 of the original set (M5 now anchored on the
+`dcdiag config override` message, which is unique), the ten the review showed surviving (R1-R10),
+and one for each of the two code fixes below. No mutation was skipped.
+
+**Found by an independent review of the diff before commit, and fixed in it.**
+
+- The working tree still held one mutation, `HeaderMinTokens = 3`, left by a mutation run that was
+  stopped part way. It is restored to 4. The script's SHA-256 then matched the intended version,
+  F03186B6...5EF9C4, before any of the fixes below were made.
+- `Resolve-AdfaDcdiagDnsRollup` failed open. A DC whose status was empty, null or not one of the
+  five it counts fell through to `Info`, with counts that did not add up to the population. Such a
+  DC is now counted and named, and makes the roll-up `Not Assessed`, unless another DC failed or
+  warned. The collector never passed such a status, but the pure function now fails closed by itself.
+- The RReg advice credited Microsoft with the AAAA caveat. The "Verify DNS functionality" page,
+  re-read 2026-11-16, gives that caveat for /DnsDynamicUpdate and for reruns of the whole DNS test,
+  never for /DnsRecordRegistration. The caveat now sits in the Dyn advice. The RReg advice lists the
+  records Microsoft says that test verifies.
+- New tests pin behaviour that the review showed was stated but never tested: Ext PASS, WARN and
+  FAIL; the proxy and functional-warnings notes; an overall Fail with no table; the last header
+  being read; server, partition and enterprise block headers ending the table; the
+  "(domain not known)" roll-up; the unnamed-DC cause; and the status allow-list. Run-Validation
+  gained the matching pure-logic checks. No existing test was changed or removed.
+
+**Existing tests changed, because behaviour legitimately changed.** The eight version tests now
+expect 1.29.0, and the C11 config test expects the `DcDiag` table at 1.29.0. The C11 recommendation
+test that counts the section's scoped entries now declares twelve (four families, seven DNS groups,
+the catch-all; it was five). The smoke harness's count of unusable override files went from 16 to
+17 (a `DnsSummary` override is refused).
+
 ### Changed — 2026-11-16 (dcdiag per DC, per partition and per scope: Topology, CheckSDRefDom, CrossRefValidation, Intersite per site, SystemLog held back, tool v1.28.0)
 
 **PORT-PLAN C11, and C6e closed.** The existing `DcDiagnostics` section (report section `DC

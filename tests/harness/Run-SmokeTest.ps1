@@ -772,11 +772,27 @@ function New-StubDcdiagOutput { param([string]$Dc, [string]$Test, [string]$Mode)
         # same for LocatorCheck and Intersite), and it counts for the DC asked.
         $b.Add('   Running enterprise tests on : contoso.com'); $b.Add(("      Starting test: {0}" -f $Test)); $b.Add('         ......................... contoso.com passed test '); $b.Add(("         {0}" -f $Test))
     }
+    elseif ($Test -eq 'DNS') {
+        # C12: the DNS test answers in the server block and then the enterprise block, with the
+        # summary table in the layout of Learn's only sample (KB 2102154, read 2026-11-16): the
+        # header "Auth Basc Forw Del  Dyn  RReg Ext", a "Domain:" line, the DC's row of
+        # $script:SmokeDnsCells, then "Enterprise DNS infrastructure test results:" and the verdict.
+        $dnsVerdict = 'passed'
+        if ($script:SmokeDnsCells -match 'FAIL') { $dnsVerdict = 'failed' }
+        foreach ($l in @(("   Testing server: Default-First-Site-Name\{0}" -f $Dc), '      Starting test: DNS', '         DNS Tests are running and not hung. Please wait a few minutes...',
+                ("         ......................... {0} passed test DNS" -f $Dc), '', '   Running enterprise tests on : contoso.com', '      Starting test: DNS',
+                '         Test results for domain controllers:', ("            DC: {0}" -f $Dc), '', '         Summary of DNS test results:', '',
+                '                                            Auth Basc Forw Del  Dyn  RReg Ext', '', '            Domain: contoso.com',
+                ("               {0,-25} {1}  " -f $Dc, $script:SmokeDnsCells), '', '         Enterprise DNS infrastructure test results:',
+                ("         ......................... contoso.com {0} test DNS" -f $dnsVerdict))) { $b.Add($l) }
+    }
     elseif ($Test -ne 'Connectivity') {
         $b.Add(("   Testing server: Default-First-Site-Name\{0}" -f $Dc)); $b.Add(("      Starting test: {0}" -f $Test)); $b.Add(("         ......................... {0} passed test {1}" -f $Dc, $Test))
     }
     return ($b -join "`r`n")
 }
+# C12: the cells of the stub DC's row in the DNS summary table, in the column order of Learn's sample.
+$script:SmokeDnsCells = 'PASS PASS PASS PASS PASS PASS n/a'
 function Invoke-ExternalCommand {
     param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
     if ($FilePath -ne 'dcdiag.exe') { throw ("STUB: only dcdiag.exe is answered by this harness, not {0}" -f $FilePath) }
@@ -949,6 +965,11 @@ Check (@($ddRows | Where-Object { $_.Item -eq 'dcdiag Intersite: not run' -and $
 Check (@($ddRows | Where-Object { $_.Item -eq 'dcdiag LocatorCheck: not run' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'DC Diagnostics: LocatorCheck is not run, and a row says so'
 Check (@($ddRows | Where-Object { $_.Item -eq 'dcdiag coverage: contoso.com' -and $_.Status -eq 'Info' -and $_.Detail -match '^1 domain controller\(s\) of this domain have a grid row: 1 Pass' }).Count -eq 1) 'DC Diagnostics: a coverage row counts the stub domain''s DC'
 Check (@($ddRows | Where-Object { $_.Recommendation }).Count -eq 0) 'DC Diagnostics: no row that is not a Warning or a Fail carries advice'
+# C12: without -IncludeDcdiagActiveTests the DNS summary is not read; one Not Assessed row for the
+# stub domain says why, and no test-group row exists.
+$ddDnsNotRun = @($ddRows | Where-Object { $_.Item -like 'dcdiag DNS not run: *' })
+Check (@($ddDnsNotRun).Count -eq 1 -and $ddDnsNotRun[0].Item -eq 'dcdiag DNS not run: contoso.com' -and $ddDnsNotRun[0].Scope -eq 'contoso.com' -and $ddDnsNotRun[0].Status -eq 'Not Assessed' -and $ddDnsNotRun[0].Detail -match 'IncludeDcdiagActiveTests') 'C12: a default run reports one "dcdiag DNS not run" row for the stub domain, Not Assessed, naming the switch'
+Check (@($ddRows | Where-Object { $_.Item -match '^dcdiag DNS (Auth|Basc|Forw|Del|Dyn|RReg|Ext): ' }).Count -eq 0) 'C12: a default run has no DNS test-group row'
 # C1: the DcSystem section must be wired, must judge the stub DC's OS from the inventory, and
 # must report the patch-level inventory read through the CIM stubs - as Info, never as Pass.
 $dcsRows = @($smokeFindings | Where-Object { $_.Section -eq 'DC System' })
@@ -1246,6 +1267,9 @@ Check (@($dd2Calls | Where-Object { $_.Arguments -notmatch '/test:(Topology|Chec
 Check (@($dd2 | Where-Object { $_.Item -eq 'dcdiag CrossRefValidation: Configuration' -and $_.Status -eq 'Fail' -and $_.Recommendation -match 'nETBIOSName' }).Count -eq 1) 'Multi-domain: the failed Configuration partition fails its own row, with the CrossRefValidation advice'
 Check (@($dd2 | Where-Object { $_.Item -eq 'dcdiag CrossRefValidation: forest contoso.com' -and $_.Status -eq 'Fail' }).Count -eq 1) 'Multi-domain: the forest roll-up fails on that one partition'
 Check (@($dd2 | Where-Object { $_.Item -like 'dcdiag CrossRefValidation: *' -and $_.Item -ne 'dcdiag CrossRefValidation: Configuration' -and $_.Item -ne 'dcdiag CrossRefValidation: forest contoso.com' -and $_.Status -ne 'Pass' }).Count -eq 0) 'Multi-domain: the other four partitions still pass'
+# C12: one "dcdiag DNS not run" row per scoped domain, each scoped to its own domain, never Pass.
+$dd2DnsNotRun = @($dd2 | Where-Object { $_.Item -like 'dcdiag DNS not run: *' })
+Check (@($dd2DnsNotRun).Count -eq 3 -and @($dd2DnsNotRun | Where-Object { $_.Status -ne 'Not Assessed' -or $_.Item -ne ("dcdiag DNS not run: {0}" -f $_.Scope) -or $multiDomains -notcontains $_.Scope }).Count -eq 0) 'Multi-domain: one Not Assessed "dcdiag DNS not run" row per scoped domain, each scoped to it (declared population: three domains)'
 # C1: one lifecycle row per DC per domain, each carrying its own domain - not three copies of
 # the first domain, and not one row for the forest.
 $life2 = @($findings2 | Where-Object { $_.Section -eq 'DC System' -and $_.Item -like 'OS lifecycle:*' })
@@ -1780,6 +1804,8 @@ $badFiles = @(
     @{ Name = 'a DcDiag test list'; Text = '{ "DcDiag": { "PerDcTests": [ { "Test": "CutoffServers" } ] } }'; Expect = "unknown key 'PerDcTests'" }
     # C11: a dcdiag time-out outside the range -ExternalToolTimeoutSeconds allows.
     @{ Name = 'a DcDiag time-out of 0'; Text = '{ "DcDiag": { "TestTimeoutSeconds": 0 } }'; Expect = 'whole number from 5 to 600' }
+    # C12: a file that tries to change how the DNS summary table is graded (n/a or FAIL read as Pass).
+    @{ Name = 'a DcDiag DNS summary table'; Text = '{ "DcDiag": { "DnsSummary": { "Cells": [ { "Token": "FAIL", "Status": "Pass" } ] } } }'; Expect = "unknown key 'DnsSummary'" }
 )
 $script:Sections = @('All')
 foreach ($bad in $badFiles) {
@@ -1794,13 +1820,39 @@ foreach ($bad in $badFiles) {
     Check ($written.Count -eq 0) ("Override: with {0}, nothing was collected before the run stopped ({1} CSV files)" -f $bad.Name, $written.Count)
     Remove-Item -Recurse -Force $outB -ErrorAction SilentlyContinue
 }
-Check (@($badFiles).Count -eq 16) 'Override: non-vacuity - sixteen declared unusable files were tried'
+Check (@($badFiles).Count -eq 17) 'Override: non-vacuity - seventeen declared unusable files were tried'
 Remove-Item -LiteralPath $overrideFile -Force -ErrorAction SilentlyContinue
 # The parameter carries [ValidateNotNullOrEmpty()], and the attribute stays on the variable, so
 # it cannot simply be set back to empty: the variable is removed and re-created without it.
 Remove-Variable -Name ConfigOverridePath -Scope Script
 $script:ConfigOverridePath = ''
 $script:Sections = @('All')
+
+# C12: with -IncludeDcdiagActiveTests the DNS test's summary table is graded per test group, from the
+# one DNS invocation the grid makes, for the stub DC and for its domain.
+Write-Host "== Running Invoke-Main with -IncludeDcdiagActiveTests (C12: DNS summary per test group) ==" -ForegroundColor Cyan
+$outDns = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_dns_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outDns
+$script:Sections = @('DomainControllers', 'DcDiagnostics')
+$script:IncludeDcdiagActiveTests = $true
+$script:SmokeDnsCells = 'PASS PASS PASS FAIL PASS PASS n/a'
+$script:SmokeDcdiagCalls = @()
+$resultDns = Invoke-Main
+$script:SmokeDnsCells = 'PASS PASS PASS PASS PASS PASS n/a'
+$script:IncludeDcdiagActiveTests = $false
+$script:Sections = @('All')
+$ddDns = @(@(Import-Csv $resultDns.FindingsFile) | Where-Object { $_.Section -eq 'DC Diagnostics' })
+$ddDnsCalls = @($script:SmokeDcdiagCalls | Where-Object { $_.Arguments -match '/test:DNS' })
+Check (@($ddDnsCalls).Count -eq 1 -and $ddDnsCalls[0].Arguments -eq '/test:DNS /DnsAll /s:dc1.contoso.com') ("C12: the DNS test is invoked once, for the stub DC, with the C11 arguments only ({0} calls)" -f @($ddDnsCalls).Count)
+$ddDnsDc = @($ddDns | Where-Object { $_.Item -match '^dcdiag DNS (Auth|Basc|Forw|Del|Dyn|RReg|Ext): dc1\.contoso\.com$' })
+Check (@($ddDnsDc).Count -eq 7 -and @($ddDnsDc | Where-Object { $_.Scope -ne 'contoso.com' }).Count -eq 0) ("C12: the stub DC has one row per DNS test group, scoped to its domain (declared population: seven; got {0})" -f @($ddDnsDc).Count)
+Check (@($ddDnsDc | Where-Object { $_.Item -eq 'dcdiag DNS Del: dc1.contoso.com' -and $_.Status -eq 'Fail' -and $_.Recommendation -match 'proper delegations' }).Count -eq 1) 'C12: FAIL under Del fails the Del row, with the Delegations advice'
+Check (@($ddDnsDc | Where-Object { $_.Item -eq 'dcdiag DNS Ext: dc1.contoso.com' -and $_.Status -eq 'Info' -and $_.Detail -match 'DnsResolveExtName' }).Count -eq 1) 'C12: n/a under Ext is Info, not requested by /DnsAll'
+Check (@($ddDnsDc | Where-Object { $_.Item -match ': dc1\.contoso\.com$' -and $_.Item -notmatch '^dcdiag DNS (Del|Ext):' -and $_.Status -ne 'Pass' }).Count -eq 0) 'C12: the five PASS groups pass'
+$ddDnsDom = @($ddDns | Where-Object { $_.Item -match '^dcdiag DNS (Auth|Basc|Forw|Del|Dyn|RReg|Ext): domain contoso\.com$' })
+Check (@($ddDnsDom).Count -eq 7 -and @($ddDnsDom | Where-Object { $_.Scope -ne 'contoso.com' }).Count -eq 0 -and @($ddDnsDom | Where-Object { $_.Item -eq 'dcdiag DNS Del: domain contoso.com' -and $_.Status -eq 'Fail' }).Count -eq 1) 'C12: the stub domain has one roll-up per test group, and Del fails there too (declared population: seven)'
+Check (@($ddDns | Where-Object { $_.Item -like 'dcdiag DNS not run: *' }).Count -eq 0) 'C12: with the opt-in no "not run" row is written'
+Remove-Item -Recurse -Force $outDns -ErrorAction SilentlyContinue
 
 # ---- Scenario 3: collection failures must be reported, never swallowed -------
 # Regression guard for the empty-catch fixes. The failure mode being pinned is the one this
@@ -1925,6 +1977,8 @@ $dd3 = @($findings3 | Where-Object { $_.Section -eq 'DC Diagnostics' })
 Check (@($dd3).Count -gt 0 -and @($dd3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC Diagnostics reports nothing but Not Assessed, and never Pass ({0} rows)" -f @($dd3).Count)
 Check (@($dd3 | Where-Object { $_.Item -eq 'dcdiag grid' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode: DC Diagnostics says no DC was enumerated, and why'
 Check (@($dd3 | Where-Object { $_.Item -eq 'dcdiag coverage: contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode: DC Diagnostics names the scoped domain whose DCs could not be enumerated'
+# C12: the DNS summary is not read; one Not Assessed row for the scoped domain, and no test-group row.
+Check (@($dd3 | Where-Object { $_.Item -eq 'dcdiag DNS not run: contoso.com' -and $_.Scope -eq 'contoso.com' -and $_.Status -eq 'Not Assessed' }).Count -eq 1 -and @($dd3 | Where-Object { $_.Item -match '^dcdiag DNS (Auth|Basc|Forw|Del|Dyn|RReg|Ext): ' }).Count -eq 0) 'Failure mode: DC Diagnostics has one Not Assessed "dcdiag DNS not run" row for the scoped domain and no DNS test-group row'
 Check (@($dd3 | Where-Object { $_.Item -eq 'dcdiag Topology: contoso.com' }).Count -eq 1) 'Failure mode: the scoped domain still has its Topology row, Not Assessed'
 Check (@($script:SmokeDcdiagCalls).Count -eq 0) 'Failure mode: dcdiag was never invoked'
 # C7: the principal query refused. All four SID history rows of the domain are Not Assessed, say
