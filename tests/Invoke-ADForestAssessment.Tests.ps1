@@ -5314,7 +5314,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
             # DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -7313,7 +7313,10 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # 28 since v1.27.0: PORT-PLAN C10 removed three literal lists (the old unconstrained-delegation,
         # RBCD and adminCount reads) and added eight -Properties arguments to its own two seams
         # (Get-AdfaPrivSearchRaw x6, Get-AdfaPrivObjectRaw x2), each a list from the Privileged config table.
-        $script:C4PropertiesArgumentCount = 28
+        # 27 since v1.31.0: PORT-PLAN C14 removed the two literal "-Properties LastLogonTimestamp" of the old
+        # Get-AdfaStaleObject and added one, -Properties @('msDFSR-Flags') to Get-AdfaDirectoryObjectState in
+        # Get-AdfaSysvolEngineRaw.
+        $script:C4PropertiesArgumentCount = 27
         # 7 since v1.22.0: PORT-PLAN C5 added $computerArgs.Properties = @('userCertificate') in
         # Get-AdfaDcCertificateDirectoryRaw.
         # 12 since v1.23.0: PORT-PLAN C6 added five splatted property lists, two in Get-AdfaRidManagerRaw and
@@ -7326,7 +7329,10 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # Get-AdfaAclGpoRaw, each nTSecurityDescriptor alone from the Acl config table.
         # 19 since v1.27.0: PORT-PLAN C10 added two splatted property lists, in Get-AdfaPrivSearchRaw and
         # Get-AdfaPrivObjectRaw, each a guarded list from the Privileged config table.
-        $script:C4PropertiesAssignmentCount = 19
+        # 22 since v1.31.0: PORT-PLAN C14 added three splatted property lists, in Get-AdfaStaleRaw (the listed
+        # stale attributes), Get-AdfaLogonSyncIntervalRaw (msDS-LogonTimeSyncInterval) and
+        # Get-AdfaDirectoryObjectState (the caller's list, msDFSR-Flags or none).
+        $script:C4PropertiesAssignmentCount = 22
         $script:C4SectionFunctionCount = 20
 
         function New-C4Schema {
@@ -7494,7 +7500,7 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7546,9 +7552,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
-            [string]$script:Config.Version | Should -Be '1.30.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
         }
     }
 
@@ -9137,7 +9143,7 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
             $entry = $script:ConfigOverrideSections['DcCertificates']
             [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
             [string]$entry['Section'] | Should -Be 'DcCertificates'
@@ -9218,9 +9224,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
-            [string]$script:Config.Version | Should -Be '1.30.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
         }
     }
 
@@ -10137,7 +10143,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
             $entry = $script:ConfigOverrideSections['RidPool']
             [string]$entry['ConfigKey'] | Should -Be 'RidPool'
             [string]$entry['Section'] | Should -Be 'RidPool'
@@ -10197,7 +10203,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'rIDAvailablePool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'RidPool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnAtPercentUsed'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
         }
         It 'has one row in the README Coverage table, and the README says what the row cannot see' {
             $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
@@ -10208,9 +10214,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
-            [string]$script:Config.Version | Should -Be '1.30.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
         }
     }
 
@@ -11092,7 +11098,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
         }
         It 'is registered for -ConfigOverridePath under SidHistory, used by SecurityPosture, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
             $entry = $script:ConfigOverrideSections['SidHistory']
             [string]$entry['ConfigKey'] | Should -Be 'SidHistory'
             [string]$entry['Section'] | Should -Be 'SecurityPosture'
@@ -11134,7 +11140,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             $help = $script:C7Ast.GetHelpContent()
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'SID history'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'sIDHistory'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'SidHistory'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'PresentStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'NameListCap'
@@ -11147,9 +11153,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
-            [string]$script:Config.Version | Should -Be '1.30.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
         }
     }
 
@@ -12030,7 +12036,7 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
         }
         It 'is registered for -ConfigOverridePath under Gpo, used by the Gpo section, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
             $entry = $script:ConfigOverrideSections['Gpo']
             [string]$entry['ConfigKey'] | Should -Be 'Gpo'
             [string]$entry['Section'] | Should -Be 'Gpo'
@@ -12125,7 +12131,7 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'PDC emulator'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Gpo"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'MismatchStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'OrphanFolderStatus'
@@ -12138,9 +12144,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
-            [string]$script:Config.Version | Should -Be '1.30.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
         }
     }
 
@@ -13305,7 +13311,7 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
         }
         It 'is registered for -ConfigOverridePath under Acl, used by the Acl section, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
             $entry = $script:ConfigOverrideSections['Acl']
             [string]$entry['ConfigKey'] | Should -Be 'Acl'
             [string]$entry['Section'] | Should -Be 'Acl'
@@ -13364,7 +13370,7 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'matched by SID'
             ([string]$help.Description -replace '\s+', ' ') | Should -Not -Match 'Dangerous ACLs: non-default principals holding DCSync rights on the domain head'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'nTSecurityDescriptor'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Acl"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'FlaggedStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'AdditionalAllowed'
@@ -13378,9 +13384,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
-            [string]$script:Config.Version | Should -Be '1.30.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
         }
     }
 
@@ -14520,7 +14526,7 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
         }
         It 'is registered for -ConfigOverridePath under Privileged, used by PrivilegedAccounts and also by PrivilegedHygiene and Kerberos, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
             $entry = $script:ConfigOverrideSections['Privileged']
             [string]$entry['ConfigKey'] | Should -Be 'Privileged'
             [string]$entry['Section'] | Should -Be 'PrivilegedAccounts'
@@ -14581,7 +14587,7 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'protocol transition'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'primaryGroupID'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'serverReference'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Privileged"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'EnterpriseAdminsExemptRootAdministrator'
         }
@@ -14596,9 +14602,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
-            [string]$script:Config.Version | Should -Be '1.30.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
         }
     }
 
@@ -16462,13 +16468,13 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
-            [string]$script:Config.Version | Should -Be '1.30.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'TestTimeoutSeconds'
             ([string]$help.Parameters['INCLUDEDCDIAGACTIVETESTS'] -replace '\s+', ' ') | Should -Match 'SystemLog'
             ([string]$help.Parameters['INCLUDEDCDIAGACTIVETESTS'] -replace '\s+', ' ') | Should -Match 'once per site'
@@ -17133,9 +17139,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
-            [string]$script:Config.Version | Should -Be '1.30.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        It 'carries the same version in the script and the manifest: 1.31.0 (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17286,9 +17292,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.30.0 in the script and the manifest (bumped by PORT-PLAN C13)' {
-            [string]$script:Config.Version | Should -Be '1.30.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        It 'carries version 1.31.0 in the script and the manifest (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
         }
     }
 
@@ -18426,11 +18432,1175 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
         It 'documents the new section, the override key and the four DNS reads in the help and the README' {
             $help = $script:C13Ast.GetHelpContent()
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'DnsRecordExport'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Sixteen sections can be named'
             ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Dns, whose keys are'
             $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
             @($readme | Where-Object { $_ -match '^\| DNS record export \|' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -match '^\| DNS \|' -and $_ -match 'Secure only' -and $_ -match 'scavenging' }).Count | Should -Be 1
+        }
+    }
+}
+
+Describe 'Reachability classes, subnets and clients without a site, clock offset against the forest root PDC, stale enabled objects, SYSVOL replication engine (C14)' {
+    # PORT-PLAN C14: catalogue REACH-001..002, SITE-001, TIME-001, STALE-001..002, SYSVOL-004, built into
+    # the existing sections PortMatrix ('Port Reachability'), Topology ('Site Health'), TimeHierarchy
+    # ('Time Hierarchy'), StaleObjects ('Stale Objects') and Sysvol ('SYSVOL / DFSR'). Every name and
+    # address below is fictional (contoso, fabrikam, 192.0.2.0/24, 198.51.100.0/24) and held in a variable
+    # (PSAvoidUsingComputerNameHardcoded).
+    BeforeAll {
+        $script:C14Dc1 = 'dc1.contoso.com'
+        $script:C14Dc2 = 'dc2.contoso.com'
+        $script:C14Dc3 = 'dc3.north.contoso.com'
+        $script:C14Pdc = 'dc1.contoso.com'
+        $script:C14Ip1 = '192.0.2.21'
+        $script:C14Ip2 = '192.0.2.22'
+        $script:C14Ip3 = '198.51.100.23'
+        $script:C14Client = '198.51.100.77'
+        $script:C14Now = [datetime]::SpecifyKind([datetime]'2026-11-17 12:00:00', [System.DateTimeKind]::Utc)
+        $script:C14Hostile = 'replication stale delegation secure dynamic zone transfer scavenging aging no a record does not resolve port 389 not reachable global catalog backup dcdiag NOT a pass log coverage pdc emulator missing from dns time sync clock skew w32tm sysvol dfsr inactive C:\Backup\stale.json'
+        $script:C14Functions = @('Merge-AdfaSpecConfig', 'Resolve-AdfaHostAddress', 'Test-AdfaTcpAddress', 'Get-AdfaProbeClass', 'Resolve-AdfaDcReachClass',
+            'Get-AdfaDcReachability', 'Get-AdfaDcReachRecord', 'Get-AdfaDcReachCause', 'Get-AdfaDcReachVerdict', 'Get-AdfaDcReachabilityRows',
+            'Get-AdfaSubnetSiteVerdict', 'Get-AdfaNetlogonLogRaw', 'ConvertFrom-AdfaNetlogonNoClientSite', 'Get-AdfaNoClientSiteVerdict', 'Get-AdfaClientSiteRows',
+            'Get-AdfaStripchartSample', 'Get-AdfaPdcClockOffsetVerdict', 'Get-AdfaStaleLdapFilter', 'Get-AdfaStaleRaw', 'Get-AdfaLogonSyncIntervalRaw',
+            'Get-AdfaStaleCountVerdict', 'Get-AdfaPasswordAgeVerdict', 'Get-AdfaDirectoryObjectState', 'Get-AdfaSysvolEngineRaw',
+            'Resolve-AdfaSysvolEngineDc', 'Get-AdfaSysvolEngineVerdict', 'New-AdfaC14Row', 'Get-AdfaStalePopulationRaw', 'Get-AdfaC14PopulationText')
+        function New-C14Resolve { param([bool]$Ok = $true, [string[]]$Addresses = @('192.0.2.21'), [string]$SocketError = '', [bool]$TimedOut = $false, [string]$ErrorText = '')
+            [pscustomobject]@{ Ok = $Ok; Addresses = @($Addresses); SocketError = $SocketError; TimedOut = $TimedOut; Error = $ErrorText } }
+        function New-C14Probe { param([string]$Outcome = 'Open', [string]$SocketError = '', [bool]$TimedOut = $false)
+            [pscustomobject]@{ Outcome = $Outcome; SocketError = $SocketError; TimedOut = $TimedOut; Error = '' } }
+        function New-C14Target { param([string]$HostName, [string]$Scope)
+            [pscustomobject]@{ HostName = $HostName; Scope = $Scope; Site = 'HQ'; IsReadOnly = $false } }
+        # The comma keeps a one-row answer an array, so .Count works under StrictMode on Windows PowerShell 5.1.
+        function Get-C14Row { param($Rows, [string]$Item) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -eq $Item }) }
+        function New-C14Sample { param([double[]]$Offsets = @(), [double[]]$Delays = @(), [bool]$Queried = $true, [string]$ErrorText = '')
+            [pscustomobject]@{ Queried = $Queried; Offsets = @($Offsets); Delays = @($Delays); Error = $ErrorText } }
+        function New-C14Account { param([string]$Name, $LastLogonUtc = $null, $WhenCreatedUtc = $null)
+            [pscustomobject]@{ Name = $Name; HasLastLogon = ($null -ne $LastLogonUtc); LastLogonUtc = $LastLogonUtc; WhenCreatedUtc = $WhenCreatedUtc; PwdLastSetRaw = $null } }
+        function New-C14StaleRaw { param($Records = @(), [bool]$Ok = $true, [string]$ErrorText = '', [string]$ErrorType = '', [bool]$Capped = $false)
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = $ErrorType; Records = @($Records); Capped = $Capped; Filter = '(x)'; Properties = @('sAMAccountName') } }
+        # The declared population of a stale row, in the shape Get-AdfaStalePopulationRaw returns.
+        function New-C14Population { param([bool]$Ok = $true, [int]$Count = 50, [bool]$Capped = $false, [string]$ErrorText = '', [string]$ErrorType = '')
+            [pscustomobject]@{ Ok = $Ok; Count = $Count; Capped = $Capped; Error = $ErrorText; ErrorType = $ErrorType; Filter = '(x)' } }
+        # One password record, in the shape Get-AdfaStaleRaw returns for -Kind Password.
+        function New-C14PwdRecord { param([string]$Name, $PwdLastSetRaw, $UserAccountControl = 512)
+            [pscustomobject]@{ Name = $Name; HasLastLogon = $false; LastLogonUtc = $null; WhenCreatedUtc = $null; PwdLastSetRaw = $PwdLastSetRaw; UserAccountControl = $UserAccountControl } }
+        function New-C14Interval { param([bool]$Ok = $true, [bool]$Present = $false, $Value = $null, [string]$ErrorText = '')
+            [pscustomobject]@{ Ok = $Ok; Present = $Present; Value = $Value; Error = $ErrorText } }
+        function New-C14EngineDc { param([string]$HostName, [string]$Dfsr = 'Present', [string]$Frs = 'Absent', $IsReadOnly = $false, [string]$DfsrError = '', [string]$FrsError = '')
+            [pscustomobject]@{ HostName = $HostName; IsReadOnly = $IsReadOnly; ComputerDn = ("CN={0},OU=Domain Controllers,DC=contoso,DC=com" -f $HostName.Split('.')[0]); Dfsr = $Dfsr; DfsrError = $DfsrError; Frs = $Frs; FrsError = $FrsError } }
+        function New-C14EngineRaw { param($Dcs = @(), [bool]$Ok = $true, [string]$ErrorText = '', [string]$ErrorType = '', [string]$Global = 'Present', $Flags = 48, [string]$GlobalError = '')
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = $ErrorType; DomainDn = 'DC=contoso,DC=com'; GlobalState = $Global; GlobalFlags = $Flags; GlobalError = $GlobalError; Dcs = @($Dcs) } }
+        if ($null -eq ('Contoso.Stub.ADIdentityNotFoundException' -as [type])) {
+            Add-Type -TypeDefinition 'namespace Contoso.Stub { public class ADIdentityNotFoundException : System.Exception { public ADIdentityNotFoundException(string m) : base(m) { } } }' -WarningAction SilentlyContinue
+        }
+        $script:C14Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C14Main = @($script:C14Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C14Function { param([string]$Name) @($script:C14Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true)) }
+        function Get-C14Branch { param([string]$Condition)
+            @($script:C14Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq $Condition }, $true)) }
+        function Get-C14Call { param($Ast, [string]$Name)
+            @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq $Name }, $true)) }
+        function Get-C14Parameter { param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        # The read-only guard of C14 over a parsed script. Anywhere: a cmdlet that writes the directory
+        # (Set-, New-, Remove-, Disable-, Enable-, Move-, Rename-, Clear-, Add-, Reset-, Restore-, Unlock-,
+        # Install-, Uninstall-AD*), a registry value write (Set-, New-, Remove-, Rename-, Clear-ItemProperty),
+        # an StdRegProv Set*/Create*/Delete* method named in an Invoke-CimMethod call, a w32tm write switch
+        # (/resync, /register, /unregister, /config, /debug) in any string of a command that names w32tm or in
+        # any string literal outside the recommendation map, and a dfsrmig write switch (/setglobalstate,
+        # /createglobalobjects, /deleterontfrsmember, /deleterodfsrmember) in any string literal outside the map.
+        # Inside the C14 functions only: any Remove-* command and a -Properties argument that holds '*'.
+        # What it cannot see: a switch or a cmdlet name assembled at run time from pieces.
+        function Get-C14WriteHit { param($Ast, [string[]]$C14Names = @())
+            $hits = @()
+            $cmdletRx = '(?i)^(Set|New|Remove|Disable|Enable|Move|Rename|Clear|Add|Reset|Restore|Unlock|Install|Uninstall)-AD'
+            $regRx = '(?i)^(Set|New|Remove|Rename|Clear)-ItemProperty$'
+            $w32Rx = '(?i)(^|[\s"''])/(resync|register|unregister|config|debug)\b'
+            $dfsRx = '(?i)(^|[\s"''])/(setglobalstate|createglobalobjects|deleterontfrsmember|deleterodfsrmember)\b'
+            $strings = { param($node) @($node.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true) | ForEach-Object { [string]$_.Value }) }
+            foreach ($c in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+                $name = [string]$c.GetCommandName()
+                # This script's own functions carry the Adfa prefix (New-AdfaC14Row) and are not ActiveDirectory cmdlets.
+                if ($name -match $cmdletRx -and $name -notmatch '(?i)^\w+-Adfa') { $hits += ("directory write: {0}" -f $c.Extent.Text) }
+                if ($name -match $regRx) { $hits += ("registry write: {0}" -f $c.Extent.Text) }
+                $words = @($name) + @(& $strings $c)
+                if ($name -eq 'Invoke-CimMethod' -and @($words | Where-Object { $_ -match '(?i)^(Set|Create|Delete)\w*$' }).Count -gt 0) { $hits += ("registry method: {0}" -f $c.Extent.Text) }
+                if (@($words | Where-Object { $_ -match '(?i)(^|\\)w32tm(\.exe)?$' }).Count -gt 0 -and @($words | Where-Object { $_ -match $w32Rx }).Count -gt 0) { $hits += ("w32tm write: {0}" -f $c.Extent.Text) }
+            }
+            $map = @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:RecommendationMap' }, $true))
+            foreach ($s in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))) {
+                $v = [string]$s.Value
+                if ($v -notmatch $dfsRx -and -not ($v -match $w32Rx -and $v -match '(?i)w32tm|/(resync|register|unregister)\b')) { continue }
+                # Advice text: inside the recommendation map, or the Detail of a finding row (New-Finding,
+                # New-Adfa*Row), which tells the operator what to run and runs nothing.
+                $inMap = $false
+                $p = $s.Parent
+                while ($null -ne $p) {
+                    if ($map -contains $p) { $inMap = $true; break }
+                    if ($p -is [System.Management.Automation.Language.CommandAst] -and [string]$p.GetCommandName() -match '(?i)^New-(Finding|Adfa\w*Row)$') { $inMap = $true; break }
+                    $p = $p.Parent
+                }
+                if (-not $inMap) { $hits += ("switch: {0}" -f $s.Extent.Text) }
+            }
+            foreach ($fn in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $C14Names -contains $n.Name }, $true))) {
+                foreach ($c in @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+                    if ([string]$c.GetCommandName() -match '(?i)^Remove-') { $hits += ("remove in {0}: {1}" -f $fn.Name, $c.Extent.Text) }
+                }
+                # A '*' given as a property list: after -Properties, assigned to .Properties, or as the
+                # value of a Properties key. A '*' filter (Get-ADDomainController -Filter *) is not one.
+                foreach ($s in @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -and [string]$n.Value -eq '*' }, $true))) {
+                    $asProperties = $false
+                    $p = $s.Parent
+                    while ($null -ne $p -and -not $asProperties) {
+                        if ($p -is [System.Management.Automation.Language.AssignmentStatementAst] -and $p.Left.Extent.Text -match '(?i)\.Properties$') { $asProperties = $true }
+                        elseif ($p -is [System.Management.Automation.Language.HashtableAst]) {
+                            foreach ($pair in @($p.KeyValuePairs)) { if ([string]$pair.Item1.Extent.Text -match '(?i)^[''"]?Properties[''"]?$' -and $pair.Item2.Extent.Text -match '\*') { $asProperties = $true } }
+                        }
+                        elseif ($p -is [System.Management.Automation.Language.CommandAst]) {
+                            $el = @($p.CommandElements)
+                            for ($i = 1; $i -lt $el.Count; $i++) {
+                                if ($el[$i - 1] -is [System.Management.Automation.Language.CommandParameterAst] -and $el[$i - 1].ParameterName -eq 'Properties' -and $el[$i].Extent.Text -match '\*') { $asProperties = $true }
+                            }
+                            break
+                        }
+                        $p = $p.Parent
+                    }
+                    if ($asProperties) { $hits += ("every property in {0}: {1}" -f $fn.Name, $s.Parent.Extent.Text) }
+                }
+            }
+            return , @($hits)
+        }
+    }
+    BeforeEach {
+        Clear-AdfaDcPortCache
+    }
+
+    Context 'Config tables (Learn, read 2026-11-17)' {
+        It 'declares the five C14 tables, each with its read date, its sources and its tool defaults labelled as such' {
+            # Declared population: the five tables C14 reads.
+            $names = @('Reach', 'SiteCoverage', 'ClockSkew', 'Stale', 'SysvolEngine')
+            @($names | Where-Object { $script:Config.ContainsKey($_) -and $script:Config[$_] -is [hashtable] }).Count | Should -Be 5
+            foreach ($n in @('Reach', 'SiteCoverage', 'Stale', 'SysvolEngine')) {
+                [string]$script:Config[$n]['ReadDate'] | Should -Be '2026-11-17' -Because $n
+                [string]$script:Config[$n]['SourceUrl'] | Should -Match '^https://learn\.microsoft\.com/' -Because $n
+                [string]$script:Config[$n]['ThresholdSource'] | Should -Match 'tool default' -Because $n
+            }
+            [string]$script:Config.ClockSkew['PdcReadDate'] | Should -Be '2026-11-17'
+            [string]$script:Config.ClockSkew['SkewTimeUrl'] | Should -Match '^https://learn\.microsoft\.com/'
+        }
+        It 'carries the defaults the catalogue and Learn give, and the tool defaults the brief chose' {
+            $r = $script:Config.Reach
+            @([int]$r['LdapPort'], [int]$r['WinRmPort'], [int]$r['RpcPort'], [int]$r['ProbeTimeoutMs']) -join ',' | Should -Be '389,5985,135,3000'
+            [string]$r['UnreachableStatus'] | Should -Be 'Fail'
+            [string]$r['NotManageableStatus'] | Should -Be 'Warning'
+            (@($r['UnresolvedSocketErrors']) -join ',') | Should -Be 'HostNotFound,TryAgain,NoRecovery,NoData'
+            $s = $script:Config.SiteCoverage
+            [string]$s['UnassignedStatus'] | Should -Be 'Warning'
+            [string]$s['NoClientSiteStatus'] | Should -Be 'Warning'
+            [string]$s['NoClientSiteMarker'] | Should -Be 'NO_CLIENT_SITE:'
+            [string]$s['NetlogonLogPath'] | Should -Be '\\{0}\ADMIN$\debug\netlogon.log'
+            $t = $script:Config.Stale
+            [int]$t['SyncIntervalDefaultDays'] | Should -Be 14
+            [int]$t['SyncRandomisationDays'] | Should -Be 5
+            [int]$t['PasswordAgeDays'] | Should -Be 365
+            [int]$t['MaxObjects'] | Should -Be 100000
+            $e = $script:Config.SysvolEngine
+            [string]$e['FrsStatus'] | Should -Be 'Warning'
+            [string]$e['DfsrSubscriptionDn'] | Should -Be 'CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,{0}'
+            [string]$e['FrsSubscriberDn'] | Should -Be 'CN=Domain System Volume (SYSVOL share),CN=NTFRS Subscriptions,{0}'
+            [string]$e['GlobalSettingsDn'] | Should -Be 'CN=DFSR-GlobalSettings,CN=System,{0}'
+            # Declared population: the four global states of dd639789.
+            (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
+            [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
+        }
+        It 'carries version 1.31.0 in the script and the manifest (bumped by PORT-PLAN C14)' {
+            [string]$script:Config.Version | Should -Be '1.31.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.31.0'
+        }
+    }
+
+    Context 'Config override: the five C14 sections (Merge-AdfaSpecConfig)' {
+        It 'registers the five sections, each with the generic validator' {
+            foreach ($k in @('Reach', 'SiteCoverage', 'ClockSkew', 'Stale', 'SysvolEngine')) {
+                @($script:ConfigOverrideSections.Keys) | Should -Contain $k
+                [string]$script:ConfigOverrideSections[$k]['Merge'] | Should -Be 'Merge-AdfaSpecConfig'
+                [string]$script:ConfigOverrideSections[$k]['ConfigKey'] | Should -Be $k
+            }
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine'
+        }
+        It 'merges a valid override for each section and cites the file only for what it supplied: <Section>' -ForEach @(
+            @{ Section = 'Reach'; Override = @{ ProbeTimeoutMs = 5000; UnreachableStatus = 'Warning' }; Key = 'ProbeTimeoutMs'; Value = 5000 }
+            @{ Section = 'SiteCoverage'; Override = @{ UnassignedStatus = 'Info'; NameListCap = 5 }; Key = 'NameListCap'; Value = 5 }
+            @{ Section = 'ClockSkew'; Override = @{ WarnSeconds = 30; Samples = 5 }; Key = 'WarnSeconds'; Value = 30 }
+            @{ Section = 'Stale'; Override = @{ PasswordAgeDays = 180; StaleStatus = 'Info' }; Key = 'PasswordAgeDays'; Value = 180 }
+            @{ Section = 'SysvolEngine'; Override = @{ FrsStatus = 'Fail' }; Key = 'FrsStatus'; Value = 'Fail' }
+        ) {
+            $base = $script:Config[$Section]
+            $merged = Merge-AdfaSpecConfig -BaseConfig $base -Override $Override -OverrideSource 'C:\cfg\c14.json'
+            $merged[$Key] | Should -Be $Value
+            [string]$merged['ThresholdSource'] | Should -Match ([regex]::Escape('C:\cfg\c14.json'))
+            # The built-in table is not changed.
+            $base[$Key] | Should -Not -Be $Value
+        }
+        It 'refuses a malformed override: <Case>' -ForEach @(
+            @{ Case = 'not an object'; Section = 'Reach'; Override = 'Fail'; Message = 'single object' }
+            @{ Case = 'an empty object'; Section = 'Stale'; Override = @{}; Message = 'empty object' }
+            @{ Case = 'an unknown key'; Section = 'SiteCoverage'; Override = @{ Bogus = 1 }; Message = "unknown key 'Bogus'" }
+            @{ Case = 'a port'; Section = 'Reach'; Override = @{ LdapPort = 636 }; Message = "unknown key 'LdapPort'" }
+            @{ Case = 'the Kerberos maximum'; Section = 'ClockSkew'; Override = @{ KerberosMaxSeconds = 600 }; Message = "unknown key 'KerberosMaxSeconds'" }
+            @{ Case = 'a DN template'; Section = 'SysvolEngine'; Override = @{ DfsrSubscriptionDn = 'x' }; Message = "unknown key 'DfsrSubscriptionDn'" }
+            @{ Case = 'a null'; Section = 'Stale'; Override = @{ StaleStatus = $null }; Message = 'null' }
+            @{ Case = 'a status outside its set'; Section = 'SysvolEngine'; Override = @{ FrsStatus = 'Pass' }; Message = 'Warning, Fail' }
+            @{ Case = 'a status that is not a string'; Section = 'Reach'; Override = @{ NotManageableStatus = 1 }; Message = 'must be a string' }
+            @{ Case = 'a number written as text'; Section = 'Reach'; Override = @{ ProbeTimeoutMs = '5000' }; Message = 'JSON number' }
+            @{ Case = 'a number below its range'; Section = 'Reach'; Override = @{ ProbeTimeoutMs = 99 }; Message = '100 to 60000' }
+            @{ Case = 'a number above its range'; Section = 'ClockSkew'; Override = @{ WarnSeconds = 300 }; Message = '1 to 299' }
+            @{ Case = 'a fraction'; Section = 'Stale'; Override = @{ MaxObjects = 10.5 }; Message = 'whole number' }
+        ) {
+            $thrown = ''
+            try { Merge-AdfaSpecConfig -BaseConfig $script:Config[$Section] -Override $Override -OverrideSource 'C:\cfg\c14.json' | Out-Null } catch { $thrown = $_.Exception.Message }
+            $thrown | Should -Match $Message
+        }
+        It 'refuses an override through the whole loader, prefixed with the section' {
+            $thrown = ''
+            try { Resolve-AdfaConfigOverride -Override @{ SysvolEngine = @{ FrsStatus = 'Pass' } } -BaseConfig $script:Config -Sections $script:ConfigOverrideSections | Out-Null } catch { $thrown = $_.Exception.Message }
+            $thrown | Should -Match "section 'SysvolEngine'"
+            $ok = Resolve-AdfaConfigOverride -Override @{ Stale = @{ StaleStatus = 'Info' } } -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\c14.json'
+            [string]$ok['Stale']['StaleStatus'] | Should -Be 'Info'
+        }
+    }
+
+    Context 'REACH-001/002: the pure classifier' {
+        It 'classifies a name that does not resolve as Unreachable by name resolution: <SocketError>' -ForEach @(
+            @{ SocketError = 'HostNotFound' }, @{ SocketError = 'TryAgain' }, @{ SocketError = 'NoRecovery' }, @{ SocketError = 'NoData' }
+        ) {
+            $c = Resolve-AdfaDcReachClass -Resolve (New-C14Resolve -Ok $false -Addresses @() -SocketError $SocketError) -LdapProbes @() -Config $script:Config.Reach
+            $c.Class | Should -Be 'Unreachable'
+            $c.Cause | Should -Be 'Unresolved'
+        }
+        It 'tells a resolution that timed out, a name with no address and a resolver fault apart' {
+            $t = Resolve-AdfaDcReachClass -Resolve (New-C14Resolve -Ok $false -Addresses @() -TimedOut $true) -LdapProbes @() -Config $script:Config.Reach
+            "$($t.Class)/$($t.Cause)" | Should -Be 'Unreachable/ResolveTimedOut'
+            $n = Resolve-AdfaDcReachClass -Resolve (New-C14Resolve -Addresses @()) -LdapProbes @() -Config $script:Config.Reach
+            "$($n.Class)/$($n.Cause)" | Should -Be 'Unreachable/NoAddress'
+            # Not a socket error: a fault of the tool or the input, never a Fail of the DC.
+            $f = Resolve-AdfaDcReachClass -Resolve (New-C14Resolve -Ok $false -Addresses @() -ErrorText 'ArgumentException') -LdapProbes @() -Config $script:Config.Reach
+            "$($f.Class)/$($f.Cause)" | Should -Be 'NotAssessed/ResolveFailed'
+        }
+        It 'classifies a DC whose LDAP port answers on no address by the reason: <Case>' -ForEach @(
+            @{ Case = 'refused everywhere'; Probes = @(@{ O = 'Failed'; S = 'ConnectionRefused'; T = $false }, @{ O = 'Failed'; S = 'ConnectionRefused'; T = $false }); Cause = 'Refused' }
+            @{ Case = 'one timed out'; Probes = @(@{ O = 'Failed'; S = 'ConnectionRefused'; T = $false }, @{ O = 'Failed'; S = ''; T = $true }); Cause = 'TimedOut' }
+            @{ Case = 'socket TimedOut'; Probes = @(@{ O = 'Failed'; S = 'TimedOut'; T = $false }); Cause = 'TimedOut' }
+            @{ Case = 'no route'; Probes = @(@{ O = 'Failed'; S = 'HostUnreachable'; T = $false }); Cause = 'NetworkUnreachable' }
+            @{ Case = 'another socket error'; Probes = @(@{ O = 'Failed'; S = 'ConnectionReset'; T = $false }); Cause = 'ConnectFailed' }
+        ) {
+            $probes = @($Probes | ForEach-Object { New-C14Probe -Outcome $_.O -SocketError $_.S -TimedOut $_.T })
+            $c = Resolve-AdfaDcReachClass -Resolve (New-C14Resolve -Addresses @($script:C14Ip1, $script:C14Ip2)) -LdapProbes $probes -Config $script:Config.Reach
+            $c.Class | Should -Be 'Unreachable'
+            $c.Cause | Should -Be $Cause
+        }
+        It 'classifies a DC whose LDAP port answers by its management ports: <Case>' -ForEach @(
+            @{ Case = 'WinRM answers'; WinRm = 'Open'; Rpc = 'Open'; Class = 'Reachable' }
+            @{ Case = 'WinRM answers, RPC silent'; WinRm = 'Open'; Rpc = 'Failed'; Class = 'Reachable' }
+            @{ Case = 'WinRM silent, RPC answers'; WinRm = 'Failed'; Rpc = 'Open'; Class = 'WinRmUnavailable' }
+            @{ Case = 'both silent'; WinRm = 'Failed'; Rpc = 'Failed'; Class = 'NotManageable' }
+        ) {
+            $ldap = @((New-C14Probe -Outcome 'Failed' -SocketError 'ConnectionRefused'), (New-C14Probe -Outcome 'Open'))
+            $c = Resolve-AdfaDcReachClass -Resolve (New-C14Resolve -Addresses @($script:C14Ip1, $script:C14Ip2)) -LdapProbes $ldap `
+                -WinRm (New-C14Probe -Outcome $WinRm -SocketError 'TimedOut') -Rpc (New-C14Probe -Outcome $Rpc -SocketError 'TimedOut') -Config $script:Config.Reach
+            $c.Class | Should -Be $Class
+        }
+        It 'is NotAssessed, never Reachable, when LDAP answered but a management port was not probed' {
+            $c = Resolve-AdfaDcReachClass -Resolve (New-C14Resolve) -LdapProbes @((New-C14Probe)) -WinRm $null -Rpc $null -Config $script:Config.Reach
+            $c.Class | Should -Be 'NotAssessed'
+        }
+    }
+
+    Context 'REACH-001/002: the verdict row' {
+        It 'grades each class: <Class>/<Cause>' -ForEach @(
+            @{ Class = 'Unreachable'; Cause = 'Unresolved'; Status = 'Fail'; Text = 'name resolution' }
+            @{ Class = 'Unreachable'; Cause = 'ResolveTimedOut'; Status = 'Fail'; Text = 'name resolution' }
+            @{ Class = 'Unreachable'; Cause = 'Refused'; Status = 'Fail'; Text = 'refused' }
+            @{ Class = 'Unreachable'; Cause = 'TimedOut'; Status = 'Fail'; Text = 'no answer within' }
+            @{ Class = 'Unreachable'; Cause = 'NetworkUnreachable'; Status = 'Fail'; Text = 'no route' }
+            @{ Class = 'NotManageable'; Cause = 'ManagementPortsSilent'; Status = 'Warning'; Text = 'default management ports' }
+            @{ Class = 'Reachable'; Cause = ''; Status = 'Pass'; Text = 'WinRM' }
+            @{ Class = 'WinRmUnavailable'; Cause = ''; Status = 'Pass'; Text = 'DCOM' }
+            @{ Class = 'NotAssessed'; Cause = 'ResolveFailed'; Status = 'Not Assessed'; Text = 'not a clean result' }
+        ) {
+            $record = [pscustomobject]@{ HostName = $script:C14Dc1; Class = $Class; Cause = $Cause; Addresses = @($script:C14Ip1); PortText = '389=Open'; Error = '' }
+            $row = Get-AdfaDcReachVerdict -HostName $script:C14Dc1 -Scope 'contoso.com' -Record $record -Config $script:Config.Reach
+            $row.Item | Should -Be ("DC reachability: {0}" -f $script:C14Dc1)
+            $row.Status | Should -Be $Status
+            $row.Detail | Should -Match $Text
+            # Access denied is never a probe class: it is reported by the read that met it.
+            $row.Detail | Should -Not -Match '(?i)access denied'
+            # Addresses are display columns, never in the text the advice is chosen from.
+            $row.Detail | Should -Not -Match ([regex]::Escape($script:C14Ip1))
+            [string]$row.Addresses | Should -Match ([regex]::Escape($script:C14Ip1))
+        }
+        It 'says which sections reuse an Unreachable class, and never that every check of the DC is Not Assessed (review finding 1)' {
+            # The port matrix of the same section re-resolves the DC and grades it Fail, so a promise that
+            # every check is Not Assessed would be contradicted by the report itself.
+            $record = [pscustomobject]@{ HostName = $script:C14Dc2; Class = 'Unreachable'; Cause = 'Unresolved'; Addresses = @(); PortText = ''; Error = ''; SocketError = 'HostNotFound' }
+            $row = Get-AdfaDcReachVerdict -HostName $script:C14Dc2 -Scope 'contoso.com' -Record $record -Config $script:Config.Reach
+            $row.Detail | Should -Not -Match '(?i)every check'
+            $row.Detail | Should -Match 'Time Hierarchy and Site Health rows of this domain controller reuse this result'
+            $row.Detail | Should -Match 'port matrix rows and the other per-DC sections probe on their own'
+        }
+        It 'honours the statuses a file set' {
+            $cfg = Merge-AdfaSpecConfig -BaseConfig $script:Config.Reach -Override @{ UnreachableStatus = 'Warning'; NotManageableStatus = 'Info' } -OverrideSource 'C:\cfg\c14.json'
+            (Get-AdfaDcReachVerdict -HostName $script:C14Dc1 -Record ([pscustomobject]@{ Class = 'Unreachable'; Cause = 'Refused'; Addresses = @(); PortText = ''; Error = '' }) -Config $cfg).Status | Should -Be 'Warning'
+            (Get-AdfaDcReachVerdict -HostName $script:C14Dc1 -Record ([pscustomobject]@{ Class = 'NotManageable'; Cause = 'ManagementPortsSilent'; Addresses = @(); PortText = ''; Error = '' }) -Config $cfg).Status | Should -Be 'Info'
+        }
+        It 'is Not Assessed with no record and with no host name' {
+            (Get-AdfaDcReachVerdict -HostName $script:C14Dc1 -Record $null -Config $script:Config.Reach).Status | Should -Be 'Not Assessed'
+            (Get-AdfaDcReachVerdict -HostName '' -Record $null -Config $script:Config.Reach).Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'REACH: the probe, run once per DC and reused' {
+        It 'probes each DC once, seeds the shared port cache, and never probes the management ports of an unreachable DC' {
+            Mock Resolve-AdfaHostAddress {
+                if ($HostName -eq $script:C14Dc3) { return (New-C14Resolve -Ok $false -Addresses @() -SocketError 'HostNotFound') }
+                if ($HostName -eq $script:C14Dc2) { return (New-C14Resolve -Addresses @($script:C14Ip2)) }
+                return (New-C14Resolve -Addresses @($script:C14Ip1))
+            }
+            Mock Test-AdfaTcpAddress {
+                if ($Address -eq $script:C14Ip2) { return (New-C14Probe -Outcome 'Failed' -SocketError 'ConnectionRefused') }
+                return (New-C14Probe -Outcome 'Open')
+            }
+            Mock Test-TcpPort { throw 'the port cache was not seeded' }
+            $a = Get-AdfaDcReachability -HostName $script:C14Dc1 -Config $script:Config.Reach
+            $b = Get-AdfaDcReachability -HostName $script:C14Dc1 -Config $script:Config.Reach
+            $a.Class | Should -Be 'Reachable'
+            $b.Class | Should -Be 'Reachable'
+            Should -Invoke Resolve-AdfaHostAddress -Times 1 -Exactly -ParameterFilter { $HostName -eq $script:C14Dc1 }
+            # Declared population: the three ports probed for a reachable DC, 389, 5985 and 135.
+            Should -Invoke Test-AdfaTcpAddress -Times 3 -Exactly
+            (Test-AdfaDcPort -ComputerName $script:C14Dc1 -Port 389) | Should -BeTrue
+            (Test-AdfaDcPort -ComputerName $script:C14Dc1 -Port 5985) | Should -BeTrue
+            (Test-AdfaDcPort -ComputerName $script:C14Dc1 -Port 135) | Should -BeTrue
+            $r2 = Get-AdfaDcReachability -HostName $script:C14Dc2 -Config $script:Config.Reach
+            "$($r2.Class)/$($r2.Cause)" | Should -Be 'Unreachable/Refused'
+            Should -Invoke Test-AdfaTcpAddress -Times 0 -Exactly -ParameterFilter { $Address -eq $script:C14Ip2 -and $Port -ne 389 }
+            (Test-AdfaDcPort -ComputerName $script:C14Dc2 -Port 389) | Should -BeFalse
+            $r3 = Get-AdfaDcReachability -HostName $script:C14Dc3 -Config $script:Config.Reach
+            "$($r3.Class)/$($r3.Cause)" | Should -Be 'Unreachable/Unresolved'
+            (Get-AdfaDcReachCause -HostName $script:C14Dc2) | Should -Match 'refused'
+            (Get-AdfaDcReachCause -HostName $script:C14Dc3) | Should -Match 'name resolution'
+            (Get-AdfaDcReachCause -HostName $script:C14Dc1) | Should -Be ''
+        }
+        It 'probes LDAP address by address until one answers, then WinRM and RPC at that address only (review finding 11)' {
+            Mock Resolve-AdfaHostAddress {
+                if ($HostName -eq $script:C14Dc2) { return (New-C14Resolve -Addresses @($script:C14Ip3, $script:C14Ip2)) }
+                return (New-C14Resolve -Addresses @($script:C14Ip1, $script:C14Ip2))
+            }
+            Mock Test-AdfaTcpAddress {
+                if ($Address -eq $script:C14Ip3) { return (New-C14Probe -Outcome 'Failed' -SocketError 'TimedOut' -TimedOut $true) }
+                return (New-C14Probe -Outcome 'Open')
+            }
+            # Two DCs, each with two addresses: dc1 answers on its first, dc2 only on its second.
+            $a = Get-AdfaDcReachability -HostName $script:C14Dc1 -Config $script:Config.Reach
+            $a.Class | Should -Be 'Reachable'
+            $a.LdapAddress | Should -Be $script:C14Ip1
+            # The second address of dc1 is never probed: the first answered.
+            Should -Invoke Test-AdfaTcpAddress -Times 0 -Exactly -ParameterFilter { $Address -eq $script:C14Ip2 }
+            Should -Invoke Test-AdfaTcpAddress -Times 1 -Exactly -ParameterFilter { $Address -eq $script:C14Ip1 -and $Port -eq 5985 }
+            Should -Invoke Test-AdfaTcpAddress -Times 1 -Exactly -ParameterFilter { $Address -eq $script:C14Ip1 -and $Port -eq 135 }
+            $b = Get-AdfaDcReachability -HostName $script:C14Dc2 -Config $script:Config.Reach
+            $b.Class | Should -Be 'Reachable'
+            $b.LdapAddress | Should -Be $script:C14Ip2
+            Should -Invoke Test-AdfaTcpAddress -Times 1 -Exactly -ParameterFilter { $Address -eq $script:C14Ip3 -and $Port -eq 389 }
+            Should -Invoke Test-AdfaTcpAddress -Times 0 -Exactly -ParameterFilter { $Address -eq $script:C14Ip3 -and $Port -ne 389 }
+            Should -Invoke Test-AdfaTcpAddress -Times 1 -Exactly -ParameterFilter { $Address -eq $script:C14Ip2 -and $Port -eq 5985 }
+        }
+        It 'seeds a silent WinRM as closed, never as open (review finding 12)' {
+            Mock Resolve-AdfaHostAddress { New-C14Resolve -Addresses @($script:C14Ip1) }
+            Mock Test-AdfaTcpAddress {
+                if ($Port -eq 5985) { return (New-C14Probe -Outcome 'Failed' -SocketError 'TimedOut' -TimedOut $true) }
+                return (New-C14Probe -Outcome 'Open')
+            }
+            Mock Test-TcpPort { throw 'the port cache was not seeded' }
+            $r = Get-AdfaDcReachability -HostName $script:C14Dc1 -Config $script:Config.Reach
+            $r.Class | Should -Be 'WinRmUnavailable'
+            (Test-AdfaDcPort -ComputerName $script:C14Dc1 -Port 5985) | Should -BeFalse
+            (Test-AdfaDcPort -ComputerName $script:C14Dc1 -Port 135) | Should -BeTrue
+            (Test-AdfaDcPort -ComputerName $script:C14Dc1 -Port 389) | Should -BeTrue
+            Should -Invoke Test-TcpPort -Times 0 -Exactly
+        }
+        It 'forgets every classification at the start of a run' {
+            Mock Resolve-AdfaHostAddress { New-C14Resolve }
+            Mock Test-AdfaTcpAddress { New-C14Probe }
+            Get-AdfaDcReachability -HostName $script:C14Dc1 -Config $script:Config.Reach | Out-Null
+            $null -ne (Get-AdfaDcReachRecord -HostName $script:C14Dc1) | Should -BeTrue
+            Clear-AdfaDcPortCache
+            Get-AdfaDcReachRecord -HostName $script:C14Dc1 | Should -BeNullOrEmpty
+        }
+        It 'gives every DC of every scoped domain a row, and a domain with no DC a population row' {
+            Mock Resolve-AdfaHostAddress {
+                if ($HostName -eq $script:C14Dc3) { return (New-C14Resolve -Ok $false -Addresses @() -SocketError 'HostNotFound') }
+                if ($HostName -eq $script:C14Dc2) { return (New-C14Resolve -Addresses @($script:C14Ip2)) }
+                return (New-C14Resolve -Addresses @($script:C14Ip1))
+            }
+            Mock Test-AdfaTcpAddress {
+                if ($Address -eq $script:C14Ip2) { return (New-C14Probe -Outcome 'Failed' -SocketError 'TimedOut') }
+                if ($Port -eq 5985 -or $Port -eq 135) { return (New-C14Probe -Outcome 'Failed' -SocketError 'TimedOut') }
+                return (New-C14Probe -Outcome 'Open')
+            }
+            $targets = @((New-C14Target $script:C14Dc1 'contoso.com'), (New-C14Target $script:C14Dc2 'contoso.com'), (New-C14Target $script:C14Dc3 'north.contoso.com'))
+            $rows = @(Get-AdfaDcReachabilityRows -DomainControllers $targets -Config $script:Config.Reach -InventoryFailures @([pscustomobject]@{ Domain = 'south.contoso.com'; Error = 'STUB: ADWS unreachable' }) `
+                    -ScopedDomains @('contoso.com', 'north.contoso.com', 'south.contoso.com'))
+            # Declared population: three DCs, one row each.
+            (Get-C14Row $rows ("DC reachability: {0}" -f $script:C14Dc1))[0].Status | Should -Be 'Warning'
+            (Get-C14Row $rows ("DC reachability: {0}" -f $script:C14Dc2))[0].Status | Should -Be 'Fail'
+            (Get-C14Row $rows ("DC reachability: {0}" -f $script:C14Dc3))[0].Status | Should -Be 'Fail'
+            (Get-C14Row $rows ("DC reachability: {0}" -f $script:C14Dc3))[0].Scope | Should -Be 'north.contoso.com'
+            $gap = Get-C14Row $rows 'DC reachability (population): south.contoso.com'
+            $gap.Count | Should -Be 1
+            $gap[0].Status | Should -Be 'Not Assessed'
+            $gap[0].Detail | Should -Match 'ADWS unreachable'
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'is Not Assessed, never Pass, with no DC at all' {
+            $rows = @(Get-AdfaDcReachabilityRows -DomainControllers @() -Config $script:Config.Reach -ScopedDomains @())
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'SITE-001: subnets without a site (pure)' {
+        It 'warns when a subnet has no site, naming it in a column and never in the text' {
+            $subnets = @([pscustomobject]@{ Name = '192.0.2.0/24'; Site = 'CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com' }, [pscustomobject]@{ Name = '198.51.100.0/24'; Site = $null })
+            $row = Get-AdfaSubnetSiteVerdict -Subnets $subnets -ReadError '' -ForestName 'contoso.com' -Config $script:Config.SiteCoverage
+            $row.Item | Should -Be 'Subnets without a site: contoso.com'
+            $row.Status | Should -Be 'Warning'
+            $row.Detail | Should -Match '1 of 2'
+            $row.Detail | Should -Not -Match '198\.51\.100'
+            [string]$row.Subnets | Should -Match '198\.51\.100\.0/24'
+            $row.Evidence | Should -Match 'reasoning'
+        }
+        It 'passes when every subnet read has a site' {
+            $subnets = @([pscustomobject]@{ Name = '192.0.2.0/24'; Site = 'CN=HQ' }, [pscustomobject]@{ Name = '198.51.100.0/24'; Site = 'CN=Branch' })
+            (Get-AdfaSubnetSiteVerdict -Subnets $subnets -ReadError '' -ForestName 'contoso.com' -Config $script:Config.SiteCoverage).Status | Should -Be 'Pass'
+        }
+        It 'is Not Assessed, never Pass, when the read failed or returned nothing' {
+            $f = Get-AdfaSubnetSiteVerdict -Subnets @() -ReadError 'STUB: access denied' -ForestName 'contoso.com' -Config $script:Config.SiteCoverage
+            $f.Status | Should -Be 'Not Assessed'
+            $f.Detail | Should -Match 'STUB: access denied'
+            (Get-AdfaSubnetSiteVerdict -Subnets @() -ReadError '' -ForestName 'contoso.com' -Config $script:Config.SiteCoverage).Status | Should -Be 'Not Assessed'
+        }
+        It 'honours UnassignedStatus from a file' {
+            $cfg = Merge-AdfaSpecConfig -BaseConfig $script:Config.SiteCoverage -Override @{ UnassignedStatus = 'Info' } -OverrideSource 'C:\cfg\c14.json'
+            (Get-AdfaSubnetSiteVerdict -Subnets @([pscustomobject]@{ Name = '192.0.2.0/24'; Site = '' }) -ReadError '' -ForestName 'contoso.com' -Config $cfg).Status | Should -Be 'Info'
+        }
+    }
+
+    Context 'SITE-001: clients without a site, from netlogon.log' {
+        It 'parses NO_CLIENT_SITE lines: the first word after the marker is the name, the second the address (event 5807)' {
+            $text = @(
+                '11/17 10:00:01 [MISC] [1234] CONTOSO: NO_CLIENT_SITE: WS01 198.51.100.77'
+                '11/17 10:00:02 [SESSION] [1234] CONTOSO: NlSessionSetup: Try Session setup'
+                '11/17 10:05:01 [MISC] [1234] CONTOSO: NO_CLIENT_SITE: WS01 198.51.100.77'
+                '11/17 10:06:01 [MISC] [1234] CONTOSO: NO_CLIENT_SITE: WS02 198.51.100.78'
+                '11/17 10:07:01 [MISC] [1234] CONTOSO: NO_CLIENT_SITE:'
+            ) -join "`r`n"
+            $p = ConvertFrom-AdfaNetlogonNoClientSite -Text $text -Marker 'NO_CLIENT_SITE:'
+            $p.Lines | Should -Be 4
+            $p.Unparsed | Should -Be 1
+            # Declared population: two distinct clients.
+            @($p.Entries).Count | Should -Be 2
+            (@($p.Entries | ForEach-Object { "{0} {1}" -f $_.Name, $_.Address }) -join ',') | Should -Be 'WS01 198.51.100.77,WS02 198.51.100.78'
+        }
+        It 'grades a read log: entries Warning, none Info and never Pass' {
+            $raw = [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = ("x NO_CLIENT_SITE: WS01 {0}" -f $script:C14Client); Error = ''; Path = '\\dc1.contoso.com\ADMIN$\debug\netlogon.log'; Partial = $false; BytesRead = 40 }
+            $w = Get-AdfaNoClientSiteVerdict -HostName $script:C14Dc1 -Scope 'contoso.com' -Raw $raw -PortOpen $true -Config $script:Config.SiteCoverage
+            $w.Item | Should -Be ("Clients without a site: {0}" -f $script:C14Dc1)
+            $w.Status | Should -Be 'Warning'
+            $w.Detail | Should -Not -Match ([regex]::Escape($script:C14Client))
+            [string]$w.Clients | Should -Match ([regex]::Escape($script:C14Client))
+            $raw.Text = 'nothing to see'
+            $i = Get-AdfaNoClientSiteVerdict -HostName $script:C14Dc1 -Scope 'contoso.com' -Raw $raw -PortOpen $true -Config $script:Config.SiteCoverage
+            $i.Status | Should -Be 'Info'
+            $i.Detail | Should -Match 'not a clean result|not proof'
+        }
+        It 'tells the failures apart, each Not Assessed: <Case>' -ForEach @(
+            @{ Case = 'access denied'; Class = 'AccessDenied'; Port = $true; Reach = ''; Text = 'access denied'; Not = 'unreachable' }
+            @{ Case = 'unreachable path'; Class = 'Unreachable'; Port = $true; Reach = ''; Text = 'unreachable'; Not = 'access denied' }
+            @{ Case = 'log not found'; Class = 'NotFound'; Port = $true; Reach = ''; Text = 'not found'; Not = 'access denied' }
+            @{ Case = 'timed out'; Class = 'TimedOut'; Port = $true; Reach = ''; Text = 'timed out'; Not = 'access denied' }
+            @{ Case = 'SMB silent'; Class = ''; Port = $false; Reach = ''; Text = 'SMB \(445\)'; Not = 'access denied' }
+            @{ Case = 'DC classified unreachable'; Class = ''; Port = $true; Reach = 'Unreachable (refused): every address refused LDAP (389)'; Text = 'refused'; Not = 'access denied' }
+        ) {
+            $raw = $null
+            if ($Class -ne '') { $raw = [pscustomobject]@{ Ok = $false; Class = $Class; Text = ''; Error = 'STUB'; Path = 'x'; Partial = $false; BytesRead = 0 } }
+            $row = Get-AdfaNoClientSiteVerdict -HostName $script:C14Dc2 -Scope 'contoso.com' -Raw $raw -PortOpen $Port -ReachCause $Reach -Config $script:Config.SiteCoverage
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match ("(?i){0}" -f $Text)
+            $row.Detail | Should -Not -Match ("(?i){0}" -f $Not)
+        }
+        It 'reads only the tail of the log, read-only, and drops the partial first line' {
+            $path = Join-Path $TestDrive 'netlogon.log'
+            $lines = @(1..200 | ForEach-Object { ("11/17 10:{0:00}:00 [MISC] CONTOSO: NO_CLIENT_SITE: WS{0:000} 198.51.100.{1}" -f ($_ % 60), ($_ % 250)) })
+            [System.IO.File]::WriteAllText($path, ($lines -join "`r`n"))
+            $raw = Get-AdfaNetlogonLogRaw -Path $path -MaxBytes 1000
+            $raw.Ok | Should -BeTrue
+            $raw.Partial | Should -BeTrue
+            $raw.BytesRead | Should -BeLessOrEqual 1000
+            $first = @($raw.Text -split "`r?`n")[0]
+            $first | Should -Match '^11/17 '
+            $missing = Get-AdfaNetlogonLogRaw -Path (Join-Path $TestDrive 'absent.log') -MaxBytes 1000
+            $missing.Ok | Should -BeFalse
+            $missing.Class | Should -Be 'NotFound'
+        }
+        It 'gives every DC its row, and probes SMB through the shared cache' {
+            Mock Test-TcpPort { $ComputerName -ne $script:C14Dc3 }
+            Mock Get-AdfaNetlogonLogRaw {
+                if ($Path -like ("*{0}*" -f $script:C14Dc2)) { return [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Text = ''; Error = 'Access is denied.'; Path = $Path; Partial = $false; BytesRead = 0 } }
+                return [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = ("x NO_CLIENT_SITE: WS01 {0}" -f $script:C14Client); Error = ''; Path = $Path; Partial = $false; BytesRead = 50 }
+            }
+            $targets = @((New-C14Target $script:C14Dc1 'contoso.com'), (New-C14Target $script:C14Dc2 'contoso.com'), (New-C14Target $script:C14Dc3 'north.contoso.com'))
+            $rows = @(Get-AdfaClientSiteRows -DomainControllers $targets -Config $script:Config.SiteCoverage -PortTimeoutMs 100 -ScopedDomains @('contoso.com', 'north.contoso.com'))
+            (Get-C14Row $rows ("Clients without a site: {0}" -f $script:C14Dc1))[0].Status | Should -Be 'Warning'
+            (Get-C14Row $rows ("Clients without a site: {0}" -f $script:C14Dc2))[0].Detail | Should -Match 'access denied'
+            (Get-C14Row $rows ("Clients without a site: {0}" -f $script:C14Dc3))[0].Detail | Should -Match 'SMB \(445\)'
+            Should -Invoke Get-AdfaNetlogonLogRaw -Times 2 -Exactly
+            Should -Invoke Get-AdfaNetlogonLogRaw -Times 1 -Exactly -ParameterFilter { $Path -eq ('\\{0}\ADMIN$\debug\netlogon.log' -f $script:C14Dc1) }
+        }
+    }
+
+    Context 'TIME-001: clock offset against the forest root PDC emulator (pure)' {
+        It 'grades the offset difference against the reference: <Case>' -ForEach @(
+            @{ Case = 'in step'; Dc = @(10.5, 10.6, 10.4); Ref = @(0.2, 0.1, 0.3); Status = 'Pass' }
+            @{ Case = 'just below the warning level'; Dc = @(59.9); Ref = @(0.0); Status = 'Pass' }
+            @{ Case = 'at the warning level'; Dc = @(60.0); Ref = @(0.0); Status = 'Warning' }
+            @{ Case = 'behind by more than a minute'; Dc = @(-70.0); Ref = @(0.0); Status = 'Warning' }
+            @{ Case = 'just below the Kerberos maximum'; Dc = @(299.0); Ref = @(0.0); Status = 'Warning' }
+            @{ Case = 'at the Kerberos maximum, the PDC ahead'; Dc = @(-200.0); Ref = @(100.0); Status = 'Fail' }
+            @{ Case = 'far ahead'; Dc = @(400.0); Ref = @(0.0); Status = 'Fail' }
+            @{ Case = 'both off by the same, so in step with the reference'; Dc = @(500.0); Ref = @(500.0); Status = 'Pass' }
+        ) {
+            $row = Get-AdfaPdcClockOffsetVerdict -DomainController $script:C14Dc2 -Scope 'contoso.com' -ReferencePdc $script:C14Pdc `
+                -Sample (New-C14Sample -Offsets $Dc -Delays @(0.02)) -ReferenceSample (New-C14Sample -Offsets $Ref -Delays @(0.02)) -WarnSeconds 60 -FailSeconds 300
+            $row.Item | Should -Be ("Clock offset vs forest root PDC: {0}" -f $script:C14Dc2)
+            $row.Status | Should -Be $Status
+        }
+        It 'labels the warning level a tool default, the 300 s a Microsoft value, and the error bound as reasoning' {
+            $row = Get-AdfaPdcClockOffsetVerdict -DomainController $script:C14Dc2 -ReferencePdc $script:C14Pdc -Sample (New-C14Sample -Offsets @(90.0) -Delays @(0.04)) -ReferenceSample (New-C14Sample -Offsets @(0.0) -Delays @(0.02)) -WarnSeconds 60 -FailSeconds 300
+            $row.Detail | Should -Match 'tool default, not a Microsoft value'
+            $row.Detail | Should -Match 'Kerberos'
+            $row.Evidence | Should -Match 'tool reasoning'
+            [double]$row.ErrorBoundSeconds | Should -BeGreaterThan 0
+        }
+        It 'states the error bound it documents: half the DC''s largest round trip plus half the reference''s median (review finding 14)' {
+            # DC round trips 0.04 and 0.06 (largest 0.06); reference 0.02, 0.04, 0.10 (median 0.04): (0.06 + 0.04) / 2 = 0.05.
+            $row = Get-AdfaPdcClockOffsetVerdict -DomainController $script:C14Dc2 -ReferencePdc $script:C14Pdc -Sample (New-C14Sample -Offsets @(1.0, 1.1) -Delays @(0.04, 0.06)) `
+                -ReferenceSample (New-C14Sample -Offsets @(0.0, 0.1, 0.2) -Delays @(0.02, 0.04, 0.10)) -WarnSeconds 60 -FailSeconds 300
+            [double]::Parse([string]$row.ErrorBoundSeconds, [System.Globalization.CultureInfo]::InvariantCulture) | Should -Be 0.05
+            $row.Detail | Should -Match 'error bound about 0\.05 s'
+        }
+        It 'reports the reference DC itself as Info' {
+            (Get-AdfaPdcClockOffsetVerdict -DomainController $script:C14Pdc -ReferencePdc $script:C14Pdc -IsReference $true -Sample (New-C14Sample -Offsets @(0.1)) -ReferenceSample (New-C14Sample -Offsets @(0.1))).Status | Should -Be 'Info'
+        }
+        It 'is Not Assessed, never Pass, when anything was not measured: <Case>' -ForEach @(
+            @{ Case = 'no reference identified'; Ref = ''; Sample = @{ Q = $true; O = @(1.0) }; RefSample = @{ Q = $true; O = @(1.0) }; Reach = ''; Text = 'not identified' }
+            @{ Case = 'reference not measured'; Ref = 'dc1.contoso.com'; Sample = @{ Q = $true; O = @(1.0) }; RefSample = @{ Q = $false; O = @() }; Reach = ''; Text = 'reference' }
+            @{ Case = 'reference with no sample'; Ref = 'dc1.contoso.com'; Sample = @{ Q = $true; O = @(1.0) }; RefSample = @{ Q = $true; O = @() }; Reach = ''; Text = 'reference' }
+            @{ Case = 'DC not measured'; Ref = 'dc1.contoso.com'; Sample = @{ Q = $false; O = @() }; RefSample = @{ Q = $true; O = @(1.0) }; Reach = ''; Text = 'could not be measured' }
+            @{ Case = 'DC classified unreachable'; Ref = 'dc1.contoso.com'; Sample = @{ Q = $true; O = @(1.0) }; RefSample = @{ Q = $true; O = @(1.0) }; Reach = 'Unreachable (timed out)'; Text = 'timed out' }
+        ) {
+            $row = Get-AdfaPdcClockOffsetVerdict -DomainController $script:C14Dc2 -ReferencePdc $Ref -ReachCause $Reach `
+                -Sample (New-C14Sample -Queried $Sample.Q -Offsets $Sample.O -ErrorText 'every NTP sample timed out') -ReferenceSample (New-C14Sample -Queried $RefSample.Q -Offsets $RefSample.O -ErrorText 'Access is denied.')
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match $Text
+            $row.Detail | Should -Match 'unmeasured offset is not a small one'
+        }
+    }
+
+    Context 'TIME-001: the stripchart reading and the time hierarchy collector' {
+        BeforeEach {
+            $script:C14W32Calls = @()
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { $ComputerName -ne $script:C14Dc3 }
+            Mock Invoke-ExternalCommand {
+                $script:C14W32Calls += $Arguments
+                $out = ''
+                if ($Arguments -match '/stripchart /computer:(\S+)') {
+                    $target = $Matches[1]
+                    $off = '0.100'
+                    if ($target -eq $script:C14Dc2) { $off = '400.000' }
+                    $out = ("Tracking {0} [{1}].`r`nRdtscStart,RdtscEnd,FileTime,RoundtripDelay,NtpOffset`r`n1,2,3,0.020,{2}`r`n1,2,3,0.020,{2}" -f $target, $script:C14Ip1, $off)
+                }
+                elseif ($Arguments -match '/source') { $out = 'dc1.contoso.com' }
+                elseif ($Arguments -match '/configuration') { $out = "Type: NTP (Local)`r`nNtpServer: time.contoso.com,0x8 (Local)" }
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = $out; OutFile = '' }
+            }
+        }
+        It 'reads a stripchart sample through one bounded w32tm call that changes nothing' {
+            $s = Get-AdfaStripchartSample -ComputerName $script:C14Dc1 -Samples 2 -TimeoutSeconds 30
+            $s.Queried | Should -BeTrue
+            @($s.Offsets).Count | Should -Be 2
+            @($script:C14W32Calls).Count | Should -Be 1
+            $script:C14W32Calls[0] | Should -Match '^/stripchart /computer:\S+ /dataonly /samples:2 /rdtsc$'
+        }
+        It 'names an access denied, a timed-out and an unreadable stripchart differently' {
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $false; ExitCode = 5; Attempt = 1; Error = $null; StdOut = 'The following error occurred: Access is denied. (0x80070005)'; OutFile = '' } }
+            (Get-AdfaStripchartSample -ComputerName $script:C14Dc1 -Samples 2 -TimeoutSeconds 30).Error | Should -Match 'access denied'
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = "RdtscStart,RdtscEnd,FileTime,RoundtripDelay,NtpOffset`r`nRequest timed out."; OutFile = '' } }
+            (Get-AdfaStripchartSample -ComputerName $script:C14Dc1 -Samples 2 -TimeoutSeconds 30).Error | Should -Match 'timed out'
+        }
+        It 'gives every DC a forest-root-PDC offset row, measured against the root PDC, not the host running the assessment' {
+            $rows = @(Get-AdfaTimeHierarchyHealth -DomainControllers @($script:C14Dc1, $script:C14Dc2, $script:C14Dc3) -PdcEmulators @{ $script:C14Pdc = 'contoso.com' } `
+                    -ForestRootPdc $script:C14Pdc -RpcPortTimeoutMs 100 -TimeoutSeconds 30 -SkewSamples 2 -WarnSeconds 60 -FailSeconds 300)
+            # Declared population: three DCs, one PDC-offset row each.
+            (Get-C14Row $rows ("Clock offset vs forest root PDC: {0}" -f $script:C14Dc1))[0].Status | Should -Be 'Info'
+            (Get-C14Row $rows ("Clock offset vs forest root PDC: {0}" -f $script:C14Dc2))[0].Status | Should -Be 'Fail'
+            (Get-C14Row $rows ("Clock offset vs forest root PDC: {0}" -f $script:C14Dc3))[0].Status | Should -Be 'Not Assessed'
+            # The existing runner-relative rows are kept.
+            (Get-C14Row $rows ("Clock offset on {0}" -f $script:C14Dc2)).Count | Should -Be 1
+        }
+        It 'does not probe again a DC classified Unreachable: its time source and offset rows carry the class, not a silent RPC port (review finding 4)' {
+            Mock Resolve-AdfaHostAddress {
+                if ($HostName -eq $script:C14Dc2) { return (New-C14Resolve -Ok $false -Addresses @() -SocketError 'HostNotFound') }
+                return (New-C14Resolve -Addresses @($script:C14Ip1))
+            }
+            Mock Test-AdfaTcpAddress { New-C14Probe -Outcome 'Open' }
+            # Two DCs classified first, as Invoke-Main does: dc1 Reachable, dc2 Unreachable by name resolution.
+            (Get-AdfaDcReachability -HostName $script:C14Dc1 -Config $script:Config.Reach).Class | Should -Be 'Reachable'
+            "$((Get-AdfaDcReachability -HostName $script:C14Dc2 -Config $script:Config.Reach).Cause)" | Should -Be 'Unresolved'
+            Mock Test-TcpPort { $true }
+            $rows = @(Get-AdfaTimeHierarchyHealth -DomainControllers @($script:C14Dc1, $script:C14Dc2) -PdcEmulators @{ $script:C14Pdc = 'contoso.com' } `
+                    -ForestRootPdc $script:C14Pdc -RpcPortTimeoutMs 100 -TimeoutSeconds 30 -SkewSamples 2 -WarnSeconds 60 -FailSeconds 300)
+            # No probe of dc2, on any port, and no w32tm call against it.
+            Should -Invoke Test-TcpPort -Times 0 -Exactly -ParameterFilter { $ComputerName -eq $script:C14Dc2 }
+            @($script:C14W32Calls | Where-Object { $_ -match ("/computer:{0}( |$)" -f [regex]::Escape($script:C14Dc2)) }).Count | Should -Be 0
+            # Declared population: dc2's three rows, time source, runner offset and PDC offset.
+            $src = @($rows | Where-Object { [string]$_.Item -like ("Time source on {0} *" -f $script:C14Dc2) })
+            $src.Count | Should -Be 1
+            $src[0].Status | Should -Be 'Not Assessed'
+            $src[0].Detail | Should -Match 'does not resolve'
+            $src[0].Detail | Should -Not -Match 'RPC \(135\) was not reachable'
+            $off = Get-C14Row $rows ("Clock offset on {0}" -f $script:C14Dc2)
+            $off.Count | Should -Be 1
+            $off[0].Status | Should -Be 'Not Assessed'
+            $off[0].Detail | Should -Match 'does not resolve'
+            $off[0].Detail | Should -Not -Match 'RPC \(135\) was not reachable'
+            (Get-C14Row $rows ("Clock offset vs forest root PDC: {0}" -f $script:C14Dc2))[0].Detail | Should -Match 'does not resolve'
+            # dc1 is still read: its RPC answer came from the shared cache the probe seeded.
+            @($script:C14W32Calls | Where-Object { $_ -match ("/source" ) -and $_ -match [regex]::Escape($script:C14Dc1) }).Count | Should -Be 1
+            Should -Invoke Test-TcpPort -Times 0 -Exactly -ParameterFilter { $ComputerName -eq $script:C14Dc1 }
+        }
+        It 'measures the root PDC on its own when it is not among the DCs asked, and every DC is Not Assessed when it cannot be measured' {
+            $rows = @(Get-AdfaTimeHierarchyHealth -DomainControllers @($script:C14Dc2) -PdcEmulators @{} -ForestRootPdc $script:C14Pdc -RpcPortTimeoutMs 100 -TimeoutSeconds 30 -SkewSamples 2)
+            @($script:C14W32Calls | Where-Object { $_ -match ("/stripchart /computer:{0} " -f [regex]::Escape($script:C14Pdc)) }).Count | Should -Be 1
+            (Get-C14Row $rows ("Clock offset vs forest root PDC: {0}" -f $script:C14Dc2))[0].Status | Should -Be 'Fail'
+            Mock Invoke-ExternalCommand {
+                $out = 'dc1.contoso.com'
+                if ($Arguments -match ("/stripchart /computer:{0} " -f [regex]::Escape($script:C14Pdc))) { $out = 'error: 0x800705B4' }
+                elseif ($Arguments -match '/stripchart') { $out = "RdtscStart,RdtscEnd,FileTime,RoundtripDelay,NtpOffset`r`n1,2,3,0.020,0.5" }
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = $out; OutFile = '' }
+            }
+            $none = @(Get-AdfaTimeHierarchyHealth -DomainControllers @($script:C14Dc2) -PdcEmulators @{} -ForestRootPdc $script:C14Pdc -RpcPortTimeoutMs 100 -TimeoutSeconds 30 -SkewSamples 2)
+            $row = (Get-C14Row $none ("Clock offset vs forest root PDC: {0}" -f $script:C14Dc2))[0]
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match 'reference'
+        }
+    }
+
+    Context 'STALE-001/002: the directory read' {
+        It 'builds the LDAP filters: enabled only, lastLogonTimestamp at or before the cutoff, or never logged on and created before it' {
+            $cut = [datetime]::SpecifyKind([datetime]'2026-08-19 12:00:00', [System.DateTimeKind]::Utc)
+            $ft = $cut.ToFileTimeUtc()
+            $u = Get-AdfaStaleLdapFilter -Kind 'User' -CutoffUtc $cut
+            $u | Should -Match ([regex]::Escape('(objectCategory=person)(objectClass=user)'))
+            $u | Should -Match ([regex]::Escape('(!(userAccountControl:1.2.840.113556.1.4.803:=2))'))
+            $u | Should -Match ([regex]::Escape(("(lastLogonTimestamp<={0})" -f $ft)))
+            $u | Should -Match ([regex]::Escape('(&(!(lastLogonTimestamp=*))(whenCreated<=20260819120000.0Z))'))
+            $c = Get-AdfaStaleLdapFilter -Kind 'Computer' -CutoffUtc $cut
+            $c | Should -Match ([regex]::Escape('(objectCategory=computer)'))
+            $c | Should -Match ([regex]::Escape('(!(objectClass=msDS-GroupManagedServiceAccount))'))
+            $c | Should -Match ([regex]::Escape('(!(objectClass=msDS-ManagedServiceAccount))'))
+            (Get-AdfaStaleLdapFilter -Kind 'Password' -CutoffUtc $cut) | Should -Match ([regex]::Escape(("(pwdLastSet<={0})" -f $ft)))
+        }
+        It 'asks the named domain for a listed property set, never every property, with a result cap one above MaxObjects' {
+            $script:C14UserCalls = @()
+            function Get-ADUser { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, [int]$ResultSetSize, $ErrorAction)
+                $script:C14UserCalls += [pscustomobject]@{ Server = $Server; LDAPFilter = $LDAPFilter; Properties = @($Properties); ResultSetSize = $ResultSetSize }
+                [pscustomobject]@{ SamAccountName = 'old.user'; lastLogonTimestamp = [int64]([datetime]'2025-01-01').ToFileTimeUtc(); whenCreated = [datetime]'2020-01-01'; userAccountControl = 512 }
+                [pscustomobject]@{ SamAccountName = 'never.user'; whenCreated = [datetime]'2020-01-01'; userAccountControl = 512 }
+            }
+            $raw = Get-AdfaStaleRaw -DomainName 'north.contoso.com' -Kind 'User' -CutoffUtc ([datetime]'2026-08-19') -MaxObjects 10
+            $raw.Ok | Should -BeTrue
+            $raw.Capped | Should -BeFalse
+            @($raw.Records).Count | Should -Be 2
+            $script:C14UserCalls[0].Server | Should -Be 'north.contoso.com'
+            $script:C14UserCalls[0].ResultSetSize | Should -Be 11
+            @($script:C14UserCalls[0].Properties) | Should -Not -Contain '*'
+            (@($script:C14UserCalls[0].Properties) -join ',') | Should -Be 'sAMAccountName,lastLogonTimestamp,whenCreated,userAccountControl'
+            $never = @($raw.Records | Where-Object { $_.Name -eq 'never.user' })[0]
+            $never.HasLastLogon | Should -BeFalse
+            $capped = Get-AdfaStaleRaw -DomainName 'north.contoso.com' -Kind 'User' -CutoffUtc ([datetime]'2026-08-19') -MaxObjects 1
+            $capped.Capped | Should -BeTrue
+            # Exactly MaxObjects objects is a complete read, not a capped one (review finding 13a).
+            $exact = Get-AdfaStaleRaw -DomainName 'north.contoso.com' -Kind 'User' -CutoffUtc ([datetime]'2026-08-19') -MaxObjects 2
+            @($exact.Records).Count | Should -Be 2
+            $exact.Capped | Should -BeFalse
+        }
+        It 'asks the password read for pwdLastSet and userAccountControl, and keeps both raw in the record (review findings 3 and 7)' {
+            $script:C14PwdCalls = @()
+            # Get-ADUser returns pwdLastSet only when it is asked for: it is not in the default property set.
+            function Get-ADUser { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, [int]$ResultSetSize, $ErrorAction)
+                $script:C14PwdCalls += [pscustomobject]@{ Server = $Server; LDAPFilter = $LDAPFilter; Properties = @($Properties) }
+                $o = [pscustomobject]@{ SamAccountName = 'svc.never'; userAccountControl = 66048 }
+                if (@($Properties) -contains 'pwdLastSet') { $o | Add-Member -NotePropertyName 'pwdLastSet' -NotePropertyValue ([int64]0) }
+                $o
+            }
+            $raw = Get-AdfaStaleRaw -DomainName 'north.contoso.com' -Kind 'Password' -CutoffUtc ([datetime]'2025-11-17') -MaxObjects 10
+            $raw.Ok | Should -BeTrue
+            (@($script:C14PwdCalls[0].Properties) -join ',') | Should -Be 'sAMAccountName,pwdLastSet,userAccountControl'
+            $script:C14PwdCalls[0].LDAPFilter | Should -Match 'pwdLastSet<='
+            $rec = @($raw.Records)[0]
+            $rec.PwdLastSetRaw | Should -Be 0
+            $rec.UserAccountControl | Should -Be 66048
+        }
+        It 'counts the declared population with the stale filter less its time term, the default property set and a cap (review finding 2)' {
+            $script:C14PopCalls = @()
+            function Get-ADUser { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, [int]$ResultSetSize, $ErrorAction)
+                $script:C14PopCalls += [pscustomobject]@{ Kind = 'user'; Server = $Server; LDAPFilter = $LDAPFilter; AskedProperties = $PSBoundParameters.ContainsKey('Properties'); ResultSetSize = $ResultSetSize }
+                [pscustomobject]@{ SamAccountName = 'a.user' }
+                [pscustomobject]@{ SamAccountName = 'b.user' }
+                [pscustomobject]@{ SamAccountName = 'c.user' }
+            }
+            function Get-ADComputer { param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, [int]$ResultSetSize, $ErrorAction)
+                $script:C14PopCalls += [pscustomobject]@{ Kind = 'computer'; Server = $Server; LDAPFilter = $LDAPFilter; AskedProperties = $PSBoundParameters.ContainsKey('Properties'); ResultSetSize = $ResultSetSize }
+                [pscustomobject]@{ SamAccountName = 'WS1$' }
+            }
+            $u = Get-AdfaStalePopulationRaw -DomainName 'north.contoso.com' -Kind 'User' -MaxObjects 10
+            $u.Ok | Should -BeTrue
+            $u.Count | Should -Be 3
+            $u.Capped | Should -BeFalse
+            $script:C14PopCalls[0].Server | Should -Be 'north.contoso.com'
+            $script:C14PopCalls[0].ResultSetSize | Should -Be 11
+            # The default property set: no -Properties at all, so never every property.
+            $script:C14PopCalls[0].AskedProperties | Should -BeFalse
+            $script:C14PopCalls[0].LDAPFilter | Should -Be '(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))'
+            $c = Get-AdfaStalePopulationRaw -DomainName 'north.contoso.com' -Kind 'Computer' -MaxObjects 10
+            $c.Count | Should -Be 1
+            $script:C14PopCalls[1].AskedProperties | Should -BeFalse
+            $script:C14PopCalls[1].LDAPFilter | Should -Match ([regex]::Escape('(!(objectClass=msDS-ManagedServiceAccount))(!(userAccountControl:1.2.840.113556.1.4.803:=2)))'))
+            $script:C14PopCalls[1].LDAPFilter | Should -Not -Match 'lastLogonTimestamp'
+            (Get-AdfaStalePopulationRaw -DomainName 'north.contoso.com' -Kind 'User' -MaxObjects 3).Capped | Should -BeFalse
+            (Get-AdfaStalePopulationRaw -DomainName 'north.contoso.com' -Kind 'User' -MaxObjects 2).Capped | Should -BeTrue
+            function Get-ADUser { param([Parameter(ValueFromRemainingArguments)]$a) throw [System.UnauthorizedAccessException]'STUB: population read refused' }
+            $denied = Get-AdfaStalePopulationRaw -DomainName 'north.contoso.com' -Kind 'User' -MaxObjects 10
+            $denied.Ok | Should -BeFalse
+            $denied.ErrorType | Should -Match 'UnauthorizedAccessException'
+        }
+        It 'never throws: a refused read comes back with its exception type' {
+            function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a) throw [System.UnauthorizedAccessException]'STUB: computer query refused' }
+            $raw = Get-AdfaStaleRaw -DomainName 'contoso.com' -Kind 'Computer' -CutoffUtc ([datetime]'2026-08-19') -MaxObjects 10
+            $raw.Ok | Should -BeFalse
+            $raw.ErrorType | Should -Match 'UnauthorizedAccessException'
+        }
+    }
+
+    Context 'STALE-001/002: the verdict (pure)' {
+        It 'counts stale enabled users, never-logged-on ones separately, and states the logon-sync caveat' {
+            $records = @(
+                (New-C14Account 'old.user' -LastLogonUtc $script:C14Now.AddDays(-200) -WhenCreatedUtc $script:C14Now.AddDays(-900))
+                (New-C14Account 'never.user' -WhenCreatedUtc $script:C14Now.AddDays(-400))
+            )
+            $row = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw $records) -Interval (New-C14Interval) -StaleDays 90 -Now $script:C14Now -Config $script:Config.Stale
+            $row.Item | Should -Be 'Inactive enabled users'
+            $row.Scope | Should -Be 'contoso.com'
+            $row.Status | Should -Be 'Warning'
+            $row.Detail | Should -Match '^2 enabled user'
+            $row.Detail | Should -Match '1 of them never logged on'
+            $row.Detail | Should -Match 'msDS-LogonTimeSyncInterval'
+            $row.Detail | Should -Match '14 day'
+            $row.Detail | Should -Not -Match 'old\.user|never\.user'
+            [string]$row.Accounts | Should -Match 'old\.user'
+        }
+        It 'counts at the cutoff, not one day after it, and a never-logged-on account only once it is older than the cutoff' {
+            $records = @(
+                (New-C14Account 'at.cutoff' -LastLogonUtc $script:C14Now.AddDays(-90) -WhenCreatedUtc $script:C14Now.AddDays(-900))
+                (New-C14Account 'inside' -LastLogonUtc $script:C14Now.AddDays(-89) -WhenCreatedUtc $script:C14Now.AddDays(-900))
+                (New-C14Account 'never.new' -WhenCreatedUtc $script:C14Now.AddDays(-10))
+                (New-C14Account 'never.old' -WhenCreatedUtc $script:C14Now.AddDays(-91))
+            )
+            $row = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'Computer' -Raw (New-C14StaleRaw $records) -Interval (New-C14Interval) -StaleDays 90 -Now $script:C14Now -Config $script:Config.Stale
+            $row.Item | Should -Be 'Inactive enabled computers'
+            $row.Detail | Should -Match '^2 enabled computer'
+            [string]$row.Accounts | Should -Match 'at\.cutoff'
+            [string]$row.Accounts | Should -Match 'never\.old'
+            [string]$row.Accounts | Should -Not -Match 'inside|never\.new'
+        }
+        It 'passes a complete read that found none, against a declared population it could see' {
+            $row = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw @()) -Interval (New-C14Interval) -StaleDays 90 -Now $script:C14Now -Population (New-C14Population -Count 40) -Config $script:Config.Stale
+            $row.Status | Should -Be 'Pass'
+            $row.Detail | Should -Match '40 enabled user account'
+            $row.Population | Should -Be '40'
+        }
+        It 'is Not Assessed, never Pass, when nothing was found and the declared population is not known: <Case> (review finding 2)' -ForEach @(
+            @{ Case = 'not counted'; Pop = $null; Text = 'not counted' }
+            @{ Case = 'count refused'; Pop = @{ Ok = $false; Count = 0; E = 'Insufficient access rights'; T = 'System.UnauthorizedAccessException' }; Text = 'access denied' }
+            @{ Case = 'count unreachable'; Pop = @{ Ok = $false; Count = 0; E = 'Unable to contact the server.'; T = 'Microsoft.ActiveDirectory.Management.ADServerDownException' }; Text = 'unreachable' }
+            @{ Case = 'empty population'; Pop = @{ Ok = $true; Count = 0; E = ''; T = '' }; Text = 'declared population is empty' }
+        ) {
+            $population = $null
+            if ($null -ne $Pop) { $population = New-C14Population -Ok $Pop.Ok -Count $Pop.Count -ErrorText $Pop.E -ErrorType $Pop.T }
+            # Declared population: both stale kinds and the password row, each with an empty read.
+            foreach ($kind in @('User', 'Computer')) {
+                $row = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind $kind -Raw (New-C14StaleRaw @()) -Interval (New-C14Interval) -StaleDays 90 -Now $script:C14Now -Population $population -Config $script:Config.Stale
+                $row.Status | Should -Be 'Not Assessed' -Because $kind
+                $row.Detail | Should -Match ("(?i){0}" -f $Text)
+            }
+            $pwdRow = Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw (New-C14StaleRaw @()) -Now $script:C14Now -Population $population -Config $script:Config.Stale
+            $pwdRow.Status | Should -Be 'Not Assessed'
+            $pwdRow.Detail | Should -Match ("(?i){0}" -f $Text)
+        }
+        It 'still grades stale accounts it found when the population count failed, and says so' {
+            $row = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw @((New-C14Account 'old.user' -LastLogonUtc $script:C14Now.AddDays(-200)))) -Interval (New-C14Interval) -StaleDays 90 -Now $script:C14Now `
+                -Population (New-C14Population -Ok $false -ErrorText 'Insufficient access rights' -ErrorType 'System.UnauthorizedAccessException') -Config $script:Config.Stale
+            $row.Status | Should -Be 'Warning'
+            $row.Detail | Should -Match 'Counting the enabled user accounts of this domain failed'
+        }
+        It 'is Not Assessed when a returned object cannot be classified: <Case> (review finding 5)' -ForEach @(
+            @{ Case = 'a lastLogonTimestamp that is not a time'; Has = $true; Last = 'not-a-date'; Created = 'old' }
+            @{ Case = 'no lastLogonTimestamp and no whenCreated'; Has = $false; Last = $null; Created = $null }
+        ) {
+            $created = $null
+            if ($Created -eq 'old') { $created = $script:C14Now.AddDays(-900) }
+            $odd = [pscustomobject]@{ Name = 'odd.user'; HasLastLogon = $Has; LastLogonUtc = $Last; WhenCreatedUtc = $created; PwdLastSetRaw = $null }
+            # With one ordinary stale account beside it, so the row would otherwise be a Warning.
+            $records = @((New-C14Account 'old.user' -LastLogonUtc $script:C14Now.AddDays(-200) -WhenCreatedUtc $script:C14Now.AddDays(-900)), $odd)
+            $row = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw $records) -Interval (New-C14Interval) -StaleDays 90 -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match '^1 returned object\(s\) carried no readable lastLogonTimestamp'
+            # Alone, it must not leave a clean Pass either.
+            $alone = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw @($odd)) -Interval (New-C14Interval) -StaleDays 90 -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale
+            $alone.Status | Should -Be 'Not Assessed'
+        }
+        It 'is Not Assessed, never Pass or zero, when the count is not complete: <Case>' -ForEach @(
+            @{ Case = 'access denied'; Raw = @{ Ok = $false; E = 'Insufficient access rights'; T = 'System.UnauthorizedAccessException'; C = $false }; Interval = @{ Ok = $true; P = $false; V = $null }; Days = 90; Text = 'access denied' }
+            @{ Case = 'unreachable'; Raw = @{ Ok = $false; E = 'Unable to contact the server.'; T = 'Microsoft.ActiveDirectory.Management.ADServerDownException'; C = $false }; Interval = @{ Ok = $true; P = $false; V = $null }; Days = 90; Text = 'unreachable' }
+            @{ Case = 'timed out'; Raw = @{ Ok = $false; E = 'The operation has timed out'; T = 'System.TimeoutException'; C = $false }; Interval = @{ Ok = $true; P = $false; V = $null }; Days = 90; Text = 'timed out' }
+            @{ Case = 'the cap reached'; Raw = @{ Ok = $true; E = ''; T = ''; C = $true }; Interval = @{ Ok = $true; P = $false; V = $null }; Days = 90; Text = 'cap' }
+            @{ Case = 'updates disabled'; Raw = @{ Ok = $true; E = ''; T = ''; C = $false }; Interval = @{ Ok = $true; P = $true; V = 0 }; Days = 90; Text = 'disabled' }
+            @{ Case = 'a threshold inside the logon-sync window'; Raw = @{ Ok = $true; E = ''; T = ''; C = $false }; Interval = @{ Ok = $true; P = $false; V = $null }; Days = 14; Text = 'StaleDays' }
+        ) {
+            $raw = New-C14StaleRaw -Records @() -Ok $Raw.Ok -ErrorText $Raw.E -ErrorType $Raw.T -Capped $Raw.C
+            $row = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw $raw -Interval (New-C14Interval -Ok $Interval.Ok -Present $Interval.P -Value $Interval.V) -StaleDays $Days -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match ("(?i){0}" -f $Text)
+        }
+        It 'grades a -StaleDays one day longer than the sync interval: the lag is at most the interval, not the interval plus 5 days (review finding 8)' {
+            # Default interval 14: 15 to 19 were Not Assessed before the fix.
+            foreach ($days in @(15, 19)) {
+                $row = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw @((New-C14Account 'old.user' -LastLogonUtc $script:C14Now.AddDays(-200)))) -Interval (New-C14Interval) -StaleDays $days -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale
+                $row.Status | Should -Be 'Warning' -Because ("StaleDays {0}" -f $days)
+                $row.Detail | Should -Match 'up to the interval more recent than the value read, never more'
+                $row.Detail | Should -Not -Match '(?i)plus up to'
+            }
+            # A set interval of 30 days moves the window with it.
+            (Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw @()) -Interval (New-C14Interval -Present $true -Value 30) -StaleDays 30 -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale).Status | Should -Be 'Not Assessed'
+            (Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw @()) -Interval (New-C14Interval -Present $true -Value 30) -StaleDays 31 -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale).Status | Should -Be 'Pass'
+        }
+        It 'keeps the verdict when the interval could not be read, and says it assumed the default' {
+            $row = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw @((New-C14Account 'old.user' -LastLogonUtc $script:C14Now.AddDays(-200)))) -Interval (New-C14Interval -Ok $false -ErrorText 'STUB: refused') -StaleDays 90 -Now $script:C14Now -Config $script:Config.Stale
+            $row.Status | Should -Be 'Warning'
+            $row.Detail | Should -Match 'could not be read'
+        }
+        It 'reads a set interval and widens the caveat with it' {
+            $row = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw @()) -Interval (New-C14Interval -Present $true -Value 30) -StaleDays 90 -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale
+            $row.Detail | Should -Match '30 day'
+            $row.SyncIntervalDays | Should -Be 30
+        }
+        It 'honours StaleStatus from a file' {
+            $cfg = Merge-AdfaSpecConfig -BaseConfig $script:Config.Stale -Override @{ StaleStatus = 'Info' } -OverrideSource 'C:\cfg\c14.json'
+            (Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw (New-C14StaleRaw @((New-C14Account 'old.user' -LastLogonUtc $script:C14Now.AddDays(-200)))) -Interval (New-C14Interval) -StaleDays 90 -Now $script:C14Now -Config $cfg).Status | Should -Be 'Info'
+        }
+        It 'grades old passwords, and names pwdLastSet 0 as must-change-at-next-logon, not never set' {
+            $records = @((New-C14PwdRecord 'old.pwd' ([int64]$script:C14Now.AddDays(-400).ToFileTimeUtc())), (New-C14PwdRecord 'must.change' ([int64]0)), (New-C14PwdRecord 'recent' ([int64]$script:C14Now.AddDays(-10).ToFileTimeUtc())))
+            $row = Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw (New-C14StaleRaw $records) -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale
+            $row.Item | Should -Be 'Enabled users with an old password'
+            $row.Status | Should -Be 'Warning'
+            $row.Detail | Should -Match '^1 enabled user'
+            $row.Detail | Should -Match 'must change'
+            $row.Detail | Should -Not -Match '(?i)never set'
+            $none = Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw (New-C14StaleRaw @((New-C14PwdRecord 'must.change' ([int64]0)))) -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale
+            $none.Status | Should -Be 'Pass'
+            $none.MustChangeAtNextLogon | Should -Be '1'
+            (Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw (New-C14StaleRaw -Ok $false -ErrorText 'Insufficient access rights') -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale).Status | Should -Be 'Not Assessed'
+        }
+        It 'counts a password set exactly PasswordAgeDays ago, as the filter and Evidence say (review finding 13b)' {
+            $records = @((New-C14PwdRecord 'at.cutoff' ([int64]$script:C14Now.AddDays(-365).ToFileTimeUtc())), (New-C14PwdRecord 'inside' ([int64]$script:C14Now.AddDays(-364).ToFileTimeUtc())))
+            $row = Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw (New-C14StaleRaw $records) -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale
+            $row.Status | Should -Be 'Warning'
+            $row.Detail | Should -Match '^1 enabled user'
+            [string]$row.Accounts | Should -Match 'at\.cutoff'
+            [string]$row.Accounts | Should -Not -Match 'inside'
+        }
+        It 'is Not Assessed when a returned object carries no pwdLastSet (review finding 6)' {
+            # Beside an account with a recent password, so the row would otherwise Pass.
+            $records = @((New-C14PwdRecord 'recent' ([int64]$script:C14Now.AddDays(-10).ToFileTimeUtc())), (New-C14PwdRecord 'no.value' $null))
+            $row = Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw (New-C14StaleRaw $records) -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match '^1 returned object\(s\) carried no readable pwdLastSet'
+        }
+        It 'reads pwdLastSet 0 as must-change only where UF_DONT_EXPIRE_PASSWD is clear: <Case> (review finding 3)' -ForEach @(
+            @{ Case = 'flag set, alone'; Uac = 66048; Old = $false; Status = 'Not Assessed'; Text = 'UF_DONT_EXPIRE_PASSWD set'; Must = '0' }
+            @{ Case = 'flag set, beside an old password'; Uac = 66048; Old = $true; Status = 'Warning'; Text = 'age of their password is not known'; Must = '0' }
+            @{ Case = 'flag clear'; Uac = 512; Old = $false; Status = 'Pass'; Text = '1 more must change'; Must = '1' }
+            @{ Case = 'userAccountControl not readable'; Uac = $null; Old = $false; Status = 'Not Assessed'; Text = 'no readable userAccountControl'; Must = '' }
+        ) {
+            $records = @((New-C14PwdRecord 'svc.zero' ([int64]0) -UserAccountControl $Uac), (New-C14PwdRecord 'recent' ([int64]$script:C14Now.AddDays(-10).ToFileTimeUtc())))
+            if ($Old) { $records += (New-C14PwdRecord 'old.pwd' ([int64]$script:C14Now.AddDays(-400).ToFileTimeUtc())) }
+            $row = Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw (New-C14StaleRaw $records) -Now $script:C14Now -Population (New-C14Population) -Config $script:Config.Stale
+            $row.Status | Should -Be $Status
+            $row.Detail | Should -Match $Text
+            [string]$row.MustChangeAtNextLogon | Should -Be $Must
+            if ($Uac -eq 66048) {
+                [string]$row.AgeNotKnown | Should -Be '1'
+                [string]$row.AgeNotKnownAccounts | Should -Match 'svc\.zero'
+                $row.Detail | Should -Not -Match 'svc\.zero'
+            }
+        }
+    }
+
+    Context 'SYSVOL-004: replication engine per DC and per domain' {
+        It 'resolves the engine of one DC from its two subscription objects: <Dfsr>/<Frs>' -ForEach @(
+            @{ Dfsr = 'Present'; Frs = 'Absent'; Engine = 'DFSR' }
+            @{ Dfsr = 'Absent'; Frs = 'Present'; Engine = 'FRS' }
+            @{ Dfsr = 'Present'; Frs = 'Present'; Engine = 'Transitional' }
+            @{ Dfsr = 'Absent'; Frs = 'Absent'; Engine = 'Unknown' }
+            @{ Dfsr = 'Unread'; Frs = 'Absent'; Engine = 'Unknown' }
+            @{ Dfsr = 'Present'; Frs = 'Unread'; Engine = 'Unknown' }
+        ) {
+            (Resolve-AdfaSysvolEngineDc -Dfsr $Dfsr -Frs $Frs) | Should -Be $Engine
+        }
+        It 'passes a domain whose every writable DC uses DFSR, quoting msDFSR-Flags as corroboration' {
+            $raw = New-C14EngineRaw -Dcs @((New-C14EngineDc $script:C14Dc1), (New-C14EngineDc $script:C14Dc2), (New-C14EngineDc 'rodc1.contoso.com' -Dfsr 'Absent' -Frs 'Present' -IsReadOnly $true))
+            $rows = @(Get-AdfaSysvolEngineVerdict -DomainName 'contoso.com' -Raw $raw -Config $script:Config.SysvolEngine)
+            $d = (Get-C14Row $rows 'SYSVOL replication engine: contoso.com')[0]
+            $d.Status | Should -Be 'Pass'
+            $d.Detail | Should -Match 'Eliminated'
+            # Declared population: three DCs, one row each.
+            (Get-C14Row $rows ("SYSVOL engine: {0}" -f $script:C14Dc1))[0].Engine | Should -Be 'DFSR'
+            (Get-C14Row $rows ("SYSVOL engine: {0}" -f $script:C14Dc2))[0].Engine | Should -Be 'DFSR'
+            (Get-C14Row $rows 'SYSVOL engine: rodc1.contoso.com')[0].Engine | Should -Be 'FRS'
+        }
+        It 'warns when a writable DC still uses FRS or is between the two, also with another DC unread: <Case>' -ForEach @(
+            @{ Case = 'second DC FRS'; Second = @{ D = 'Absent'; F = 'Present' } }
+            @{ Case = 'second DC transitional'; Second = @{ D = 'Present'; F = 'Present' } }
+        ) {
+            $raw = New-C14EngineRaw -Flags 16 -Dcs @((New-C14EngineDc $script:C14Dc1), (New-C14EngineDc $script:C14Dc2 -Dfsr $Second.D -Frs $Second.F), (New-C14EngineDc $script:C14Dc3 -Dfsr 'Unread' -DfsrError 'STUB: refused'))
+            $d = (Get-C14Row @(Get-AdfaSysvolEngineVerdict -DomainName 'contoso.com' -Raw $raw -Config $script:Config.SysvolEngine) 'SYSVOL replication engine: contoso.com')[0]
+            $d.Status | Should -Be 'Warning'
+            $d.Detail | Should -Match 'FRS'
+            $d.Detail | Should -Match 'Windows Server 2019'
+        }
+        It 'is Not Assessed, never Pass, when the engine is not known for every writable DC: <Case>' -ForEach @(
+            @{ Case = 'one DC unread'; Raw = @{ Ok = $true; Dcs = 'unread' }; Text = 'could not be read|not known' }
+            @{ Case = 'neither object'; Raw = @{ Ok = $true; Dcs = 'neither' }; Text = 'neither' }
+            @{ Case = 'no writable DC'; Raw = @{ Ok = $true; Dcs = 'rodc' }; Text = 'no writable' }
+            @{ Case = 'no DC at all'; Raw = @{ Ok = $true; Dcs = 'none' }; Text = 'no writable' }
+            @{ Case = 'DC list refused'; Raw = @{ Ok = $false; Dcs = 'none' }; Text = 'access denied' }
+        ) {
+            $dcs = @()
+            switch ($Raw.Dcs) {
+                'unread' { $dcs = @((New-C14EngineDc $script:C14Dc1), (New-C14EngineDc $script:C14Dc2 -Frs 'Unread' -FrsError 'Insufficient access rights')) }
+                'neither' { $dcs = @((New-C14EngineDc $script:C14Dc1), (New-C14EngineDc $script:C14Dc2 -Dfsr 'Absent' -Frs 'Absent')) }
+                'rodc' { $dcs = @((New-C14EngineDc 'rodc1.contoso.com' -IsReadOnly $true)) }
+            }
+            $raw = New-C14EngineRaw -Dcs $dcs -Ok $Raw.Ok -ErrorText 'Insufficient access rights' -ErrorType 'System.UnauthorizedAccessException'
+            $d = (Get-C14Row @(Get-AdfaSysvolEngineVerdict -DomainName 'contoso.com' -Raw $raw -Config $script:Config.SysvolEngine) 'SYSVOL replication engine: contoso.com')[0]
+            $d.Status | Should -Be 'Not Assessed'
+            $d.Detail | Should -Match ("(?i){0}" -f $Text)
+        }
+        It 'counts a DC whose read-only flag could not be read as writable, so its FRS is graded (review finding 10)' {
+            # Declared population: two DCs, one with IsReadOnly unread ($null) on FRS, one RODC on DFSR.
+            $raw = New-C14EngineRaw -Dcs @((New-C14EngineDc $script:C14Dc1 -Dfsr 'Absent' -Frs 'Present' -IsReadOnly $null), (New-C14EngineDc 'rodc1.contoso.com' -IsReadOnly $true))
+            $d = (Get-C14Row @(Get-AdfaSysvolEngineVerdict -DomainName 'contoso.com' -Raw $raw -Config $script:Config.SysvolEngine) 'SYSVOL replication engine: contoso.com')[0]
+            $d.Status | Should -Be 'Warning'
+            $d.Detail | Should -Match '^1 of 1 writable'
+            [string]$d.Writable | Should -Be '1'
+        }
+        It 'honours FrsStatus from a file' {
+            $cfg = Merge-AdfaSpecConfig -BaseConfig $script:Config.SysvolEngine -Override @{ FrsStatus = 'Fail' } -OverrideSource 'C:\cfg\c14.json'
+            $raw = New-C14EngineRaw -Dcs @((New-C14EngineDc $script:C14Dc1 -Dfsr 'Absent' -Frs 'Present'))
+            (Get-C14Row @(Get-AdfaSysvolEngineVerdict -DomainName 'contoso.com' -Raw $raw -Config $cfg) 'SYSVOL replication engine: contoso.com')[0].Status | Should -Be 'Fail'
+        }
+        It 'reads the two objects of each DC from its own domain, telling not found from refused' {
+            $script:C14ObjCalls = @()
+            function Get-ADDomainController { param([string]$Server, [string]$Filter, $ErrorAction)
+                [pscustomobject]@{ HostName = 'dc1.north.contoso.com'; IsReadOnly = $false; ComputerObjectDN = 'CN=DC1,OU=Domain Controllers,DC=north,DC=contoso,DC=com' }
+                [pscustomobject]@{ HostName = 'dc2.north.contoso.com'; IsReadOnly = $false; ComputerObjectDN = 'CN=DC2,OU=Domain Controllers,DC=north,DC=contoso,DC=com' }
+            }
+            function Get-ADDomain { param([string]$Identity, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'DC=north,DC=contoso,DC=com'; DNSRoot = $Identity } }
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, $ErrorAction)
+                $script:C14ObjCalls += ("{0}@{1}" -f $Identity, $Server)
+                if ($Identity -like 'CN=DFSR-GlobalSettings,*') { return [pscustomobject]@{ DistinguishedName = $Identity; 'msDFSR-Flags' = 48 } }
+                if ($Identity -like 'CN=SYSVOL Subscription,*CN=DC2,*') { throw [System.UnauthorizedAccessException]'STUB: refused' }
+                if ($Identity -like 'CN=SYSVOL Subscription,*') { return [pscustomobject]@{ DistinguishedName = $Identity } }
+                throw (New-Object Contoso.Stub.ADIdentityNotFoundException 'Cannot find an object with identity')
+            }
+            $raw = Get-AdfaSysvolEngineRaw -DomainName 'north.contoso.com' -Config $script:Config.SysvolEngine
+            $raw.Ok | Should -BeTrue
+            $raw.GlobalFlags | Should -Be 48
+            # Declared population: two DCs, two objects each, plus the global settings object.
+            @($script:C14ObjCalls).Count | Should -Be 5
+            @($script:C14ObjCalls | Where-Object { $_ -notmatch '@north\.contoso\.com$' }).Count | Should -Be 0
+            $dc1 = @($raw.Dcs | Where-Object { $_.HostName -eq 'dc1.north.contoso.com' })[0]
+            "$($dc1.Dfsr)/$($dc1.Frs)" | Should -Be 'Present/Absent'
+            $dc2 = @($raw.Dcs | Where-Object { $_.HostName -eq 'dc2.north.contoso.com' })[0]
+            $dc2.Dfsr | Should -Be 'Unread'
+            $dc2.DfsrError | Should -Match 'refused'
+        }
+    }
+
+    Context 'Advice: section-scoped, anchored on the tool-written Item prefixes, ahead of the unscoped entries' {
+        It 'chooses its own advice whatever the Detail says: <Section> / <Item>' -ForEach @(
+            @{ Section = 'Port Reachability'; Item = 'DC reachability: dc2.contoso.com'; Expect = 'metadata cleanup' }
+            @{ Section = 'Site Health'; Item = 'Subnets without a site: contoso.com'; Expect = 'subnet' }
+            @{ Section = 'Site Health'; Item = 'Clients without a site: dc1.contoso.com'; Expect = 'subnet object' }
+            @{ Section = 'Time Hierarchy'; Item = 'Clock offset vs forest root PDC: dc2.contoso.com'; Expect = 'forest root PDC emulator' }
+            @{ Section = 'Stale Objects'; Item = 'Inactive enabled users'; Expect = 'lastLogonTimestamp' }
+            @{ Section = 'Stale Objects'; Item = 'Enabled users with an old password'; Expect = 'pwdLastSet' }
+            @{ Section = 'SYSVOL / DFSR'; Item = 'SYSVOL replication engine: contoso.com'; Expect = 'dfsrmig' }
+        ) {
+            $advice = Get-AdfaRecommendation -Section $Section -Item $Item -Detail $script:C14Hostile
+            $advice | Should -Match $Expect
+            # Not the unscoped AD replication, DNS or time-sync advice.
+            $advice | Should -Not -Match '(?i)most post-restore RPC 1722'
+            $advice | Should -Not -Match '(?i)w32tm /resync'
+        }
+        It 'says what dfsrmig says: rollback is possible until Eliminated, which is irreversible (review finding 9)' {
+            $advice = Get-AdfaRecommendation -Section 'SYSVOL / DFSR' -Item 'SYSVOL replication engine: contoso.com' -Detail 'x'
+            $advice | Should -Not -Match '(?i)one-way'
+            $advice | Should -Match 'rolled back \("dfsrmig /setglobalstate 0"\)'
+            $advice | Should -Match 'reaching Eliminated is irreversible'
+        }
+        It 'leaves an Item outside the C14 families to the map it had' {
+            (Get-AdfaRecommendation -Section 'Stale Objects' -Item 'PasswordNeverExpires users' -Detail '3 enabled users') | Should -Match 'Disable first'
+        }
+    }
+
+    Context 'Wiring and read-only guards (AST)' {
+        It 'declares every C14 function (declared population: 29 functions)' {
+            $script:C14Functions.Count | Should -Be 29
+            foreach ($n in $script:C14Functions) { @(Get-C14Function $n).Count | Should -Be 1 -Because $n }
+        }
+        It 'classifies reachability once, before the first per-DC section, and reports it in Port Reachability' {
+            $calls = @(Get-C14Call $script:C14Main[0] 'Get-AdfaDcReachabilityRows')
+            $calls.Count | Should -Be 1
+            $repl = @(Get-C14Branch "Test-SectionSelected 'Replication' `$Sections")
+            $repl.Count | Should -Be 1
+            $calls[0].Extent.StartOffset | Should -BeLessThan $repl[0].Extent.StartOffset
+            $port = @(Get-C14Branch "Test-SectionSelected 'PortMatrix' `$Sections")
+            $port.Count | Should -Be 2
+            # The later PortMatrix branch puts the rows in its section, next to the port matrix.
+            $last = $port | Sort-Object { $_.Extent.StartOffset } | Select-Object -Last 1
+            $last.Extent.Text | Should -Match '\$reachRows'
+            @(Get-C14Call $last 'Get-AdfaPortMatrix').Count | Should -Be 1
+        }
+        It 'grades subnets and clients without a site in the Topology branch, outside the DC inventory gate' {
+            $topo = @(Get-C14Branch "Test-SectionSelected 'Topology' `$Sections")
+            $topo.Count | Should -Be 1
+            @(Get-C14Call $topo[0] 'Get-AdfaSubnetSiteVerdict').Count | Should -Be 1
+            @(Get-C14Call $topo[0] 'Get-AdfaClientSiteRows').Count | Should -Be 1
+            $gate = @($topo[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match 'allDcInventory\.Count' }, $true))
+            foreach ($g in $gate) { @(Get-C14Call $g 'Get-AdfaSubnetSiteVerdict').Count | Should -Be 0 }
+        }
+        It 'reads the SYSVOL engine once per scoped domain' {
+            $sys = @(Get-C14Branch "Test-SectionSelected 'Sysvol' `$Sections")
+            $loops = @($sys[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.ForEachStatementAst] -and $n.Condition.Extent.Text -eq '$targetDomains' -and @(Get-C14Call $n 'Get-AdfaSysvolEngineRaw').Count -gt 0 }, $true))
+            $loops.Count | Should -Be 1
+            @(Get-C14Call $loops[0] 'Get-AdfaSysvolEngineVerdict').Count | Should -Be 1
+        }
+        It 'grades stale objects per scoped domain with the Stale table' {
+            $st = @(Get-C14Branch "Test-SectionSelected 'StaleObjects' `$Sections")
+            $call = @(Get-C14Call $st[0] 'Get-AdfaStaleObject')
+            $call.Count | Should -Be 1
+            (Get-C14Parameter $call[0] 'Config').Extent.Text | Should -Be '$staleConfig'
+            (Get-C14Parameter $call[0] 'DomainName').Extent.Text | Should -Be '$d'
+        }
+        It 'passes the ClockSkew table, override included, to the time hierarchy' {
+            $th = @(Get-C14Branch "Test-SectionSelected 'TimeHierarchy' `$Sections")
+            $call = @(Get-C14Call $th[0] 'Get-AdfaTimeHierarchyHealth')
+            (Get-C14Parameter $call[0] 'WarnSeconds').Extent.Text | Should -Be '$clockConfig.WarnSeconds'
+            (Get-C14Parameter $call[0] 'SkewSamples').Extent.Text | Should -Be '$clockConfig.Samples'
+            $th[0].Extent.Text | Should -Match "configOverrides\['ClockSkew'\]"
+        }
+        It 'no longer probes the time hierarchy with the uncached Test-TcpPort' {
+            $fn = @(Get-C14Function 'Get-AdfaTimeHierarchyHealth')
+            @(Get-C14Call $fn[0] 'Test-TcpPort').Count | Should -Be 0
+            @(Get-C14Call $fn[0] 'Test-AdfaDcPort').Count | Should -Be 1
+        }
+        It 'probes through the C14 seams only: no new code calls Test-TcpPort' {
+            foreach ($n in $script:C14Functions) { @(Get-C14Call (Get-C14Function $n)[0] 'Test-TcpPort').Count | Should -Be 0 -Because $n }
+        }
+        It 'the whole script passes the C14 read-only guard' {
+            $cmds = @($script:C14Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+            # Non-vacuity: the reads the guard must see are there.
+            @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Invoke-ExternalCommand' -and $_.Extent.Text -match "w32tm\.exe" }).Count | Should -BeGreaterThan 0
+            @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Invoke-ExternalCommand' -and $_.Extent.Text -match "dfsrmig\.exe" }).Count | Should -BeGreaterThan 0
+            @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Get-ADUser' }).Count | Should -BeGreaterThan 0
+            $hits = Get-C14WriteHit -Ast $script:C14Ast -C14Names $script:C14Functions
+            ($hits -join ' | ') | Should -Be ''
+        }
+        It 'the read-only guard fails on: <Name>' -ForEach @(
+            @{ Name = 'Set-ADUser'; Code = "function Invoke-C14Injected { Set-ADUser -Identity 'old.user' -Enabled `$false }" }
+            @{ Name = 'Disable-ADAccount'; Code = "function Invoke-C14Injected { Disable-ADAccount -Identity 'old.user' }" }
+            @{ Name = 'Remove-ADComputer'; Code = "function Invoke-C14Injected { Remove-ADComputer -Identity 'ws-stale' }" }
+            @{ Name = 'a registry value write'; Code = "function Invoke-C14Injected { Set-ItemProperty -Path 'HKLM:\SYSTEM' -Name 'x' -Value 1 }" }
+            @{ Name = 'an StdRegProv write method'; Code = "function Invoke-C14Injected { Invoke-CimMethod -ClassName StdRegProv -MethodName SetDWORDValue -Arguments @{} }" }
+            @{ Name = 'w32tm /resync'; Code = "function Invoke-C14Injected { Invoke-ExternalCommand -FilePath 'w32tm.exe' -Arguments '/resync /computer:dc1' }" }
+            @{ Name = 'w32tm /config in a variable'; Code = "function Invoke-C14Injected { `$a = 'w32tm /config /update'; `$a }" }
+            @{ Name = 'w32tm /register'; Code = "function Invoke-C14Injected { & 'w32tm.exe' '/register' }" }
+            @{ Name = 'dfsrmig /setglobalstate'; Code = "function Invoke-C14Injected { Invoke-ExternalCommand -FilePath 'dfsrmig.exe' -Arguments '/setglobalstate 3' }" }
+            @{ Name = 'Remove-Item in a C14 function'; Code = "function Get-AdfaStaleRaw { Remove-Item -Path 'x' }" }
+            @{ Name = 'every property in a C14 function'; Code = "function Get-AdfaStaleRaw { Get-ADUser -LDAPFilter '(x)' -Properties '*' }" }
+            @{ Name = 'every property assigned in a C14 function'; Code = "function Get-AdfaStaleRaw { `$q = @{}; `$q.Properties = @('*'); Get-ADUser @q }" }
+            @{ Name = 'every property as a splat key in a C14 function'; Code = "function Get-AdfaStaleRaw { `$q = @{ LDAPFilter = '(x)'; Properties = '*' }; Get-ADUser @q }" }
+        ) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($Code, [ref]$null, [ref]$null)
+            $hits = Get-C14WriteHit -Ast $ast -C14Names @('Get-AdfaStaleRaw')
+            $hits.Count | Should -BeGreaterThan 0
+        }
+        It 'does not take a filter of every object for a list of every property' {
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput("function Get-AdfaStaleRaw { `$q = @{}; `$q.Filter = '*'; Get-ADDomainController @q -Properties @('HostName') }", [ref]$null, [ref]$null)
+            $none = Get-C14WriteHit -Ast $ast -C14Names @('Get-AdfaStaleRaw')
+            $none.Count | Should -Be 0
+        }
+        It 'leaves advice text in the recommendation map alone' {
+            $inMap = [System.Management.Automation.Language.Parser]::ParseInput("`$script:RecommendationMap = @( @{ Match = 'x'; Text = 'Run ""w32tm /resync"" and ""dfsrmig /setglobalstate 3"".' } )", [ref]$null, [ref]$null)
+            $none = Get-C14WriteHit -Ast $inMap
+            $none.Count | Should -Be 0
+        }
+        It 'documents the C14 rows and the five override keys in the help and the README' {
+            $help = $script:C14Ast.GetHelpContent()
+            $cfgHelp = ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ')
+            $cfgHelp | Should -Match 'Sixteen sections can be named'
+            foreach ($k in @('Reach', 'SiteCoverage', 'ClockSkew', 'Stale', 'SysvolEngine')) { $cfgHelp | Should -Match ("And {0}, " -f $k) }
+            $sec = ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ')
+            $sec | Should -Match 'DC reachability'
+            $sec | Should -Match 'NO_CLIENT_SITE'
+            $sec | Should -Match 'forest root PDC'
+            $sec | Should -Match 'SYSVOL replication engine'
+            $readme = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md') -Raw)
+            $readme | Should -Match 'DC reachability'
+            $readme | Should -Match 'Subnets without a site'
+            $readme | Should -Match 'SYSVOL replication engine'
         }
     }
 }

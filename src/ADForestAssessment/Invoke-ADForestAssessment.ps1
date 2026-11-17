@@ -138,8 +138,9 @@
             * DSA GUID CNAME records in _msdcs - the usual cause of RPC 1722 replication
               failures after metadata cleanup or restore
             * Global Catalog flag vs _gc._tcp DNS advertisement
-            * Per-DC reachability matrix on the ports replication requires
-              (Kerberos/RPC/LDAP/SMB + LDAPS/GC/ADWS)
+            * Per-DC reachability class, decided once per run (name resolution, LDAP 389,
+              WinRM 5985, RPC 135), and the reachability matrix on the ports replication
+              requires (Kerberos/RPC/LDAP/SMB + LDAPS/GC/ADWS)
             * DC machine-account password age (replicated attribute, collected centrally)
               and per-DC secure-channel verification over WinRM where reachable
             * Directory Service event log scan per DC for the events that block or mask
@@ -400,9 +401,53 @@
     zone at RecordExportCap (50000, a tool default), with one row per zone saying how many records
     were exported of how many, and whether the cap was reached.
 
+    PortMatrix also classifies every DC of every scoped domain ONCE per run, before the first per-DC
+    section, and gives it a "DC reachability" row: name resolution from the host running the
+    assessment, then a TCP connection to LDAP (389) on each resolved address, then WinRM (5985) and
+    RPC (135) at the address that answered. Unreachable - by name resolution, refused, no answer
+    within the time-out, or no route - is a Fail (Warning by override); LDAP answering with both
+    default management ports silent is a Warning (Info by override); LDAP with WinRM, or with RPC
+    only (remote CIM over DCOM), is a Pass. No ICMP, one attempt per port, a 3000 ms time-out (a tool
+    default). The class is reused by Site Health and Time Hierarchy, which say so for an unreachable
+    DC instead of probing it again. The port matrix rows and the other per-DC sections (DcDisk, Dns,
+    DcDiagnostics and the rest) still run their own probes and report what they met. Access denied
+    is not a reachability class: the read that meets it reports it.
+
+    Topology also gives the forest one "Subnets without a site" row (siteObject of every subnet
+    object; a Warning when any has none, a tool default) and every DC of every scoped domain one
+    "Clients without a site" row: the NO_CLIENT_SITE lines of its netlogon.log, read-only over
+    \\<dc>\ADMIN$\debug\netlogon.log (administrative rights on the DC), the last 4 MB only (a tool
+    default). Clients found are a Warning; none found is Info, never Pass, because Microsoft does not
+    say how long the lines are kept. netlogon.bak is not read.
+
+    TimeHierarchy also gives every DC a "Clock offset vs forest root PDC" row: the difference between
+    its w32tm /stripchart reading and the forest root PDC's, both taken from the host running the
+    assessment, graded against 300 s (the Kerberos default maximum tolerance, Fail) and 60 s (a tool
+    default, Warning), with an error bound from the round trips (tool reasoning). The forest root PDC
+    itself is Info; a DC or a reference that could not be measured is Not Assessed.
+
+    StaleObjects now counts, per scoped domain, enabled users and computers with no logon recorded
+    for -StaleDays days, those that never logged on included (whenCreated older than the cutoff),
+    with a listed-property, capped read (never every property), and states in every row the domain's
+    msDS-LogonTimeSyncInterval and that the real last logon can be up to that many days more recent
+    (Microsoft: updated when the value is "9 to 14 days older" under the default 14). It also gives
+    "Enabled users with an old password" (pwdLastSet older than 365 days, a tool default; pwdLastSet 0
+    with UF_DONT_EXPIRE_PASSWD clear, "must change at next logon", is counted, not graded; pwdLastSet 0
+    with it set is a password of unknown age, and the row cannot pass while one exists). Each domain's
+    enabled users and computers are counted first, as the declared population: a read that found
+    nothing passes only when that count is at least one. A failed or capped read, a sync interval of
+    0, a -StaleDays not longer than the sync interval, and an empty or uncounted population behind an
+    empty result are Not Assessed.
+
+    Sysvol also gives every DC of every scoped domain a "SYSVOL engine" row and every scoped domain a
+    "SYSVOL replication engine" row, from the directory of that domain: the DC's DFSR SYSVOL
+    subscription and its NTFRS subscriber. A writable DC still on FRS, or between FRS and DFSR, is a
+    Warning (Fail by override); every writable DC on DFSR is a Pass; an engine not known is Not
+    Assessed. msDFSR-Flags is quoted as corroboration only.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Eleven sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Sixteen sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -503,6 +548,36 @@
 
         { "Dns": { "NonsecureStatus": "Warning", "RecordExportCap": 10000 } }
 
+    And Reach, used by the PortMatrix section's reachability classes, whose keys are ProbeTimeoutMs
+    (100 to 60000), UnreachableStatus (Fail or Warning) and NotManageableStatus (Warning or Info). All
+    are tool defaults, not Microsoft values. The ports and the socket error names are refused:
+
+        { "Reach": { "ProbeTimeoutMs": 5000 } }
+
+    And SiteCoverage, used by the Topology section, whose keys are UnassignedStatus and
+    NoClientSiteStatus (each Warning or Info), LogTailBytes (65536 to 20000000, how much of the end of
+    netlogon.log is read) and NameListCap (0 to 1000). All are tool defaults. The log path, the marker
+    and the port are refused:
+
+        { "SiteCoverage": { "UnassignedStatus": "Info" } }
+
+    And ClockSkew, used by the TimeHierarchy section, whose keys are WarnSeconds (1 to 299, a tool
+    default) and Samples (1 to 20). KerberosMaxSeconds is Microsoft's and is refused:
+
+        { "ClockSkew": { "WarnSeconds": 30 } }
+
+    And Stale, used by the StaleObjects section, whose keys are StaleStatus and PasswordAgeStatus (each
+    Warning or Info), PasswordAgeDays (30 to 3650), MaxObjects (1 to 1000000) and NameListCap (0 to
+    1000). All are tool defaults. The stale age itself is -StaleDays; the sync interval default, the
+    filters and the property lists are refused:
+
+        { "Stale": { "PasswordAgeDays": 180 } }
+
+    And SysvolEngine, used by the Sysvol section, whose one key is FrsStatus (Warning or Fail; Warning
+    is a tool default). The DN templates and the state names are refused:
+
+        { "SysvolEngine": { "FrsStatus": "Fail" } }
+
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
     stops, before anything is collected, on a missing or malformed file, a file that is not one
@@ -594,8 +669,11 @@
     Optional credential for AD cmdlets and trust verification.
 
 .PARAMETER StaleDays
-    Age (days since last logon timestamp / password set) beyond which an account is stale.
-    Default: 90.
+    Age (days since the last logon timestamp, or since creation for an account that never logged on)
+    beyond which an enabled account is stale. Default: 90, a tool default, not a Microsoft value. It
+    must be longer than the domain's msDS-LogonTimeSyncInterval (14 days by default), the most
+    lastLogonTimestamp can trail the real last logon, or the stale rows are Not Assessed. The password age is the PasswordAgeDays key of the Stale section of
+    -ConfigOverridePath.
 
 .PARAMETER KrbtgtMaxAgeDays
     krbtgt password age (days) beyond which a Warning is raised. Default: 180.
@@ -705,7 +783,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl", "Privileged", "DcDiag" and "Dns" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl", "Privileged", "DcDiag", "Dns", "Reach", "SiteCoverage", "ClockSkew", "Stale" and "SysvolEngine" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -739,7 +817,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.30.0'
+    Version                 = '1.31.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -2639,6 +2717,207 @@ $script:Config = @{
         # Samples per DC. More is steadier but every sample costs a poll interval; the default
         # /period is 2 seconds, so 3 samples is a few seconds per DC.
         Samples             = 3
+        # PORT-PLAN C14 (TIME-001), read 2026-11-17: each DC's offset is also graded against the
+        # forest root PDC emulator, the reference Microsoft names: "the PDC operations master at the
+        # root of the forest becomes the authoritative time server for the organization" (KB 884776).
+        # Kerberos needs only the relative difference between KDC and target ("It cares only that the
+        # relative time difference between the KDC and target domain controller is within the maximum
+        # time skew", replication error 5 article). 300 s: the Kerberos SkewTime default "5 (minutes)"
+        # and the Kerberos policy default of five minutes. The offset against the PDC is the difference
+        # of two w32tm /stripchart readings taken from the host running the assessment, and its error
+        # bound half the sum of the two round trips: both are TOOL REASONING, not a Microsoft method.
+        PdcReadDate         = '2026-11-17'
+        SkewTimeUrl         = 'https://learn.microsoft.com/troubleshoot/windows-server/windows-security/kerberos-protocol-registry-kdc-configuration-keys'
+        RelativeSkewUrl     = 'https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replications-fail-with-error-5'
+        RootPdcReferenceUrl = 'https://learn.microsoft.com/troubleshoot/windows-server/active-directory/configure-w32ime-against-huge-time-offset'
+        ThresholdSource     = 'built-in: 300 s is the Kerberos default maximum tolerance Microsoft documents; the 60 s warning level and 3 samples are tool defaults, not Microsoft values'
+        # -ConfigOverridePath, key "ClockSkew": WarnSeconds (1 to 299) and Samples (1 to 20) only. The
+        # Kerberos maximum is a vendor value and cannot be set from a file.
+        OverrideLabel       = 'ClockSkew'
+        OverrideExample     = '{ "WarnSeconds": 30 }'
+        OverrideRefused     = 'KerberosMaxSeconds, the sources and the read dates cannot be set from a file.'
+        OverrideSpec        = [ordered]@{
+            WarnSeconds = @{ Kind = 'Int'; Min = 1; Max = 299; Unit = 'seconds, below the 300 s Kerberos maximum' }
+            Samples     = @{ Kind = 'Int'; Min = 1; Max = 20; Unit = 'stripchart samples per DC' }
+        }
+    }
+    # --- DC reachability classes (PORT-PLAN C14, REACH-001/002; section PortMatrix) ----------------
+    # Every DC is classified ONCE per run, before the first per-DC section, and the answer is kept in
+    # $script:DcReachCache and seeded into the shared port cache, so a later section reads it rather
+    # than probing again. Name resolution first (Dns.BeginGetHostAddresses, bounded), then TCP to each
+    # resolved ADDRESS on LDAP 389 until one answers, then WinRM 5985 and RPC 135 at that address. A
+    # probe takes an address only, so "does not resolve" is never merged with "silent". No ICMP, one
+    # attempt per port, no retry.
+    #   SocketError names (read 2026-11-17): HostNotFound 11001, TryAgain 11002, NoRecovery 11003,
+    #   NoData 11004 (name resolution); TimedOut 10060; ConnectionRefused 10061; NetworkUnreachable
+    #   10051, HostDown 10064, HostUnreachable 10065.
+    #     https://learn.microsoft.com/dotnet/api/system.net.sockets.socketerror
+    #   DC ports: LDAP 389, RPC endpoint mapper 135, dynamic RPC 49152-65535, SMB 445, GC 3268.
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/config-firewall-for-ad-domains-and-trusts
+    #   WinRM default HTTP port 5985; "WinRM listeners can be configured on any arbitrary port", so a
+    #   silent 5985 is "default management ports silent", not proof the DC cannot be managed.
+    #     https://learn.microsoft.com/windows/win32/winrm/installation-and-configuration-for-windows-remote-management
+    # NOT PUBLISHED: any classification of a DC as unreachable or not manageable. The classes, the
+    # ports probed and the time-out are tool design (the AdAssessment26 catalogue rules REACH-001 and
+    # REACH-002). ProbeTimeoutMs 3000 is a TOOL DEFAULT, not a Microsoft value. Access denied is not a
+    # reachability class: the read that meets it reports it.
+    # -ConfigOverridePath, key "Reach": ProbeTimeoutMs (100 to 60000), UnreachableStatus (Fail |
+    # Warning) and NotManageableStatus (Warning | Info). The ports and the error names are refused.
+    Reach                   = @{
+        SourceUrl              = 'https://learn.microsoft.com/dotnet/api/system.net.sockets.socketerror and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/config-firewall-for-ad-domains-and-trusts and https://learn.microsoft.com/windows/win32/winrm/installation-and-configuration-for-windows-remote-management'
+        ReadDate               = '2026-11-17'
+        ThresholdSource        = 'tool defaults, not Microsoft values (the AdAssessment26 catalogue rules REACH-001 and REACH-002); Microsoft publishes no reachability classes'
+        LdapPort               = 389
+        WinRmPort              = 5985
+        RpcPort                = 135
+        ProbeTimeoutMs         = 3000
+        UnreachableStatus      = 'Fail'
+        NotManageableStatus    = 'Warning'
+        UnresolvedSocketErrors = @('HostNotFound', 'TryAgain', 'NoRecovery', 'NoData')
+        TimedOutSocketErrors   = @('TimedOut')
+        RefusedSocketErrors    = @('ConnectionRefused')
+        NetworkSocketErrors    = @('HostUnreachable', 'NetworkUnreachable', 'HostDown', 'NetworkDown')
+        OverrideLabel          = 'Reach'
+        OverrideExample        = '{ "ProbeTimeoutMs": 5000 }'
+        OverrideRefused        = 'The ports, the socket error names and the sources cannot be set from a file.'
+        OverrideSpec           = [ordered]@{
+            ProbeTimeoutMs      = @{ Kind = 'Int'; Min = 100; Max = 60000; Unit = 'milliseconds per probe' }
+            UnreachableStatus   = @{ Kind = 'Status'; Allowed = @('Fail', 'Warning') }
+            NotManageableStatus = @{ Kind = 'Status'; Allowed = @('Warning', 'Info') }
+        }
+    }
+    # --- Subnets and clients without a site (PORT-PLAN C14, SITE-001; section Topology) ------------
+    # Read 2026-11-17:
+    #   siteObject, "The distinguished name for the site to which this subnet belongs", single-valued,
+    #   on class subnet. The page does NOT say that an absent value means "no site": that is REASONING
+    #   from "The siteObject property of the subnet object defines the name of the site that contains
+    #   the client" (directory-service-functions), and every row says so.
+    #     https://learn.microsoft.com/windows/win32/adschema/a-siteobject
+    #     https://learn.microsoft.com/windows/win32/ad/directory-service-functions
+    #   Netlogon event 5807: clients whose addresses map to no site "have been logged on this computer in
+    #   the following log file '%SystemRoot%\debug\netlogon.log' and, potentially, in the log file
+    #   '%SystemRoot%\debug\netlogon.bak'"; "search for lines that contain text 'NO_CLIENT_SITE:'. The
+    #   first word after this string is the client name and the second word is the client IP address";
+    #   the size is bounded by LogFileMaxSize, default 20000000 bytes (KB 2668820).
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/dc-delayed-response-to-ldap-kerberos-request
+    #   "Netlogon-related activity is logged to %windir%\debug\netlogon.log" (debug logging article).
+    #     https://learn.microsoft.com/troubleshoot/windows-client/windows-security/enable-debug-logging-netlogon-service
+    # NOT PUBLISHED: the full line format and its time stamp, whether the lines are written without
+    # debug logging, how long they stay, and the right needed to read the file remotely. The log is read
+    # over \\<dc>\ADMIN$ (administrative share), read-only, its last LogTailBytes bytes only; netlogon.bak
+    # is not read. A log with no entry is Info, never Pass.
+    # TOOL DEFAULTS, not Microsoft values: UnassignedStatus Warning (catalogue SITE-001), NoClientSiteStatus
+    # Warning, LogTailBytes 4194304, NameListCap 20.
+    # -ConfigOverridePath, key "SiteCoverage": the two statuses (Warning | Info), LogTailBytes (65536 to
+    # 20000000) and NameListCap (0 to 1000). The path, the marker and the port are refused.
+    SiteCoverage            = @{
+        SourceUrl          = 'https://learn.microsoft.com/windows/win32/adschema/a-siteobject and https://learn.microsoft.com/windows/win32/ad/directory-service-functions and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/dc-delayed-response-to-ldap-kerberos-request'
+        ReadDate           = '2026-11-17'
+        ThresholdSource    = 'tool defaults, not Microsoft values (the AdAssessment26 catalogue rule SITE-001); Microsoft publishes no grade for a subnet or a client without a site'
+        UnassignedStatus   = 'Warning'
+        NoClientSiteStatus = 'Warning'
+        NetlogonLogPath    = '\\{0}\ADMIN$\debug\netlogon.log'
+        NoClientSiteMarker = 'NO_CLIENT_SITE:'
+        LogTailBytes       = 4194304
+        NameListCap        = 20
+        SmbPort            = 445
+        OverrideLabel      = 'SiteCoverage'
+        OverrideExample    = '{ "UnassignedStatus": "Info" }'
+        OverrideRefused    = 'The log path, the marker, the port and the sources cannot be set from a file.'
+        OverrideSpec       = [ordered]@{
+            UnassignedStatus   = @{ Kind = 'Status'; Allowed = @('Warning', 'Info') }
+            NoClientSiteStatus = @{ Kind = 'Status'; Allowed = @('Warning', 'Info') }
+            LogTailBytes       = @{ Kind = 'Int'; Min = 65536; Max = 20000000; Unit = 'bytes read from the end of netlogon.log' }
+            NameListCap        = @{ Kind = 'Int'; Min = 0; Max = 1000; Unit = 'names listed per row' }
+        }
+    }
+    # --- Stale enabled objects (PORT-PLAN C14, STALE-001/002; section StaleObjects) -----------------
+    # Read 2026-11-17:
+    #   lastLogonTimestamp: "If the value is older [ current_time - msDS-LogonTimeSyncInterval ], the
+    #   value is updated. The initial update after the raise of the domain functional level is calculated
+    #   as 14 days minus random percentage of 5 days."
+    #     https://learn.microsoft.com/windows/win32/adschema/a-lastlogontimestamp
+    #   "updated only when the current value in Active Directory is 9 to 14 days older than the time of
+    #   logon" (KB 2679653).
+    #     https://learn.microsoft.com/troubleshoot/mem/configmgr/discovery/lastlogontimestamp-not-accurate
+    #   msDS-LogonTimeSyncInterval, on the domain head; the schema page gives no default. "The default
+    #   value is 14 and is set in code"; 0 disables the feature (AskDS archive on Learn).
+    #     https://learn.microsoft.com/windows/win32/adschema/a-msds-logontimesyncinterval
+    #     https://learn.microsoft.com/archive/blogs/askds/the-lastlogontimestamp-attribute-what-it-was-designed-for-and-how-it-works
+    #   pwdLastSet: "If this value is set to 0 and the User-Account-Control attribute does not contain the
+    #   UF_DONT_EXPIRE_PASSWD flag, then the user must set the password at the next logon." It is never
+    #   called "never set" here.
+    #     https://learn.microsoft.com/windows/win32/adschema/a-pwdlastset
+    #   DONT_EXPIRE_PASSWORD (UF_DONT_EXPIRE_PASSWD) is 0x10000 (65536) in userAccountControl (KB 305144).
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties
+    #   The random part SHORTENS the wait ("9 to 14 days" under the default 14), so the value trails the
+    #   real last logon by at most the interval, never the interval plus 5 days (corrected after review,
+    #   2026-11-17): a -StaleDays not longer than the interval is Not Assessed.
+    #   Get-ADUser / Get-ADComputer -LDAPFilter with -ResultSetSize (Int32).
+    #     https://learn.microsoft.com/powershell/module/activedirectory/get-aduser
+    # NOT PUBLISHED: an AD DS stale threshold. -StaleDays (90) is a TOOL DEFAULT; Defender for Identity
+    # calls a user stale after 90 days for its own rule. PasswordAgeDays 365, MaxObjects 100000 and
+    # NameListCap 20 are tool defaults too. Disabled accounts are not counted here (C15 inventory).
+    # -ConfigOverridePath, key "Stale": StaleStatus and PasswordAgeStatus (Warning | Info), PasswordAgeDays
+    # (30 to 3650), MaxObjects (1 to 1000000), NameListCap (0 to 1000). StaleDays stays the parameter;
+    # the sync interval default, the filters and the property lists are refused.
+    Stale                   = @{
+        SourceUrl               = 'https://learn.microsoft.com/windows/win32/adschema/a-lastlogontimestamp and https://learn.microsoft.com/troubleshoot/mem/configmgr/discovery/lastlogontimestamp-not-accurate and https://learn.microsoft.com/archive/blogs/askds/the-lastlogontimestamp-attribute-what-it-was-designed-for-and-how-it-works and https://learn.microsoft.com/windows/win32/adschema/a-pwdlastset'
+        ReadDate                = '2026-11-17'
+        ThresholdSource         = 'tool defaults, not Microsoft values (the AdAssessment26 catalogue rules STALE-001 and STALE-002); Microsoft publishes no stale threshold for AD DS'
+        SyncIntervalDefaultDays = 14
+        SyncRandomisationDays   = 5
+        StaleStatus             = 'Warning'
+        PasswordAgeDays         = 365
+        PasswordAgeStatus       = 'Warning'
+        MaxObjects              = 100000
+        NameListCap             = 20
+        OverrideLabel           = 'Stale'
+        OverrideExample         = '{ "StaleStatus": "Info" }'
+        OverrideRefused         = 'StaleDays is the -StaleDays parameter; the sync interval default, the filters and the property lists cannot be set from a file.'
+        OverrideSpec            = [ordered]@{
+            StaleStatus       = @{ Kind = 'Status'; Allowed = @('Warning', 'Info') }
+            PasswordAgeDays   = @{ Kind = 'Int'; Min = 30; Max = 3650; Unit = 'days' }
+            PasswordAgeStatus = @{ Kind = 'Status'; Allowed = @('Warning', 'Info') }
+            MaxObjects        = @{ Kind = 'Int'; Min = 1; Max = 1000000; Unit = 'objects per read' }
+            NameListCap       = @{ Kind = 'Int'; Min = 0; Max = 1000; Unit = 'names listed per row' }
+        }
+    }
+    # --- SYSVOL replication engine (PORT-PLAN C14, SYSVOL-004; section Sysvol) ---------------------
+    # Per DC, from the directory of its own domain: CN=SYSVOL Subscription under the DC's
+    # DFSR-LocalSettings means DFSR (KB 2218556); the NTFRS subscriber "cn=domain system volume (SYSVOL
+    # share),cn=NTFRS Subscriptions,CN=%DCNAME%,..." means FRS (missing SYSVOL and Netlogon shares
+    # article); both means a migration in progress; neither, or a read that failed, is not known.
+    # msDFSR-Flags on CN=DFSR-GlobalSettings,CN=System is quoted as corroboration only: Start 0, Prepared
+    # 16, Redirected 32, Eliminated 48 (dd639789, PROVISIONAL: the research brief's read of 2026-11-17).
+    # Its absence is never read as FRS: Learn does not say what it means, and a domain born at Windows
+    # Server 2008 functional level uses DFSR without migration.
+    #   "Starting in Windows Server 2019, promoting new domain controllers requires the DFS Replication
+    #   (DFSR) to replicate the contents in the SYSVOL share" (KB 4493934).
+    #     https://learn.microsoft.com/troubleshoot/windows-server/networking/sysvol-dfsr-migration-fails-after-in-place-upgrade
+    #     https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-missing-sysvol-and-netlogon-shares
+    #     https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd639789(v=ws.10)
+    #     https://learn.microsoft.com/windows/win32/adschema/a-msdfsr-flags
+    # NOT PUBLISHED: the exception the ActiveDirectory module throws for an object that does not exist;
+    # NotFoundTypePattern is the module's own type name, unmeasured against a real directory (C17).
+    # TOOL DEFAULT: FrsStatus Warning (catalogue SYSVOL-004 / D20).
+    # -ConfigOverridePath, key "SysvolEngine": FrsStatus (Warning | Fail) only.
+    SysvolEngine            = @{
+        SourceUrl           = 'https://learn.microsoft.com/troubleshoot/windows-server/networking/sysvol-dfsr-migration-fails-after-in-place-upgrade and https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-missing-sysvol-and-netlogon-shares and https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd639789(v=ws.10)'
+        ReadDate            = '2026-11-17'
+        ThresholdSource     = 'tool default, not a Microsoft value (the AdAssessment26 catalogue rule SYSVOL-004)'
+        FrsStatus           = 'Warning'
+        DfsrSubscriptionDn  = 'CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,{0}'
+        FrsSubscriberDn     = 'CN=Domain System Volume (SYSVOL share),CN=NTFRS Subscriptions,{0}'
+        GlobalSettingsDn    = 'CN=DFSR-GlobalSettings,CN=System,{0}'
+        GlobalStateNames    = @{ '0' = 'Start'; '16' = 'Prepared'; '32' = 'Redirected'; '48' = 'Eliminated' }
+        NotFoundTypePattern = '(?i)ADIdentityNotFoundException$'
+        OverrideLabel       = 'SysvolEngine'
+        OverrideExample     = '{ "FrsStatus": "Fail" }'
+        OverrideRefused     = 'The DN templates, the state names and the patterns cannot be set from a file.'
+        OverrideSpec        = [ordered]@{
+            FrsStatus = @{ Kind = 'Status'; Allowed = @('Warning', 'Fail') }
+        }
     }
     # --- DNS: zone dynamic update, aging and scavenging, DC locator SRV records, DC A records,
     #     records that name no DC, zone and record inventory, DC DNS client settings (PORT-PLAN C13;
@@ -8283,22 +8562,48 @@ function Get-AdfaSecurityPosture {
 }
 
 function Get-AdfaStaleObject {
+    <#
+    .SYNOPSIS
+        StaleObjects, per domain: inactive enabled users and computers (STALE-001/002, PORT-PLAN C14),
+        enabled users with an old password, and PasswordNeverExpires users.
+    .DESCRIPTION
+        Directory reads only, each sent to the domain: the domain head's msDS-LogonTimeSyncInterval,
+        the enabled user and computer populations (Get-AdfaStalePopulationRaw, a capped count), then
+        three listed-property, capped searches through Get-AdfaStaleRaw (never every property),
+        each graded by its pure verdict. Before C14 the inactive rows used a -Filter that dropped every
+        account that never logged on, stated no logon-sync caveat and had no cap. The
+        PasswordNeverExpires row is unchanged.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{}, [int]$StaleDays = 90)
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{},
+        [int]$StaleDays = 90,
+        [hashtable]$Config = $script:Config.Stale,
+        [AllowNull()]$Now = $null
+    )
     $rows = @()
     $srv = @{} + $AdParams; $srv.Server = $DomainName
-    $cutoff = (Get-Date).AddDays(-1 * $StaleDays)
-    try {
-        $staleUsers = @(Get-ADUser -Filter { Enabled -eq $true -and LastLogonTimestamp -lt $cutoff } -Properties LastLogonTimestamp @srv)
-        $rows += New-Finding -Scope $DomainName -Area 'Stale' -Item 'Inactive enabled users' -Status $(if ($staleUsers.Count -eq 0) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0} enabled users inactive > {1} days" -f $staleUsers.Count, $StaleDays)
-    }
-    catch { $rows += New-Finding -Scope $DomainName -Area 'Stale' -Item 'Inactive enabled users' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
-    try {
-        $staleComputers = @(Get-ADComputer -Filter { Enabled -eq $true -and LastLogonTimestamp -lt $cutoff } -Properties LastLogonTimestamp @srv)
-        $rows += New-Finding -Scope $DomainName -Area 'Stale' -Item 'Inactive enabled computers' -Status $(if ($staleComputers.Count -eq 0) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0} enabled computers inactive > {1} days" -f $staleComputers.Count, $StaleDays)
-    }
-    catch { $rows += New-Finding -Scope $DomainName -Area 'Stale' -Item 'Inactive enabled computers' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
+    $when = Get-Date
+    if ($Now -is [datetime]) { $when = $Now }
+    $nowUtc = $when
+    if ($nowUtc.Kind -ne [System.DateTimeKind]::Utc) { $nowUtc = $nowUtc.ToUniversalTime() }
+    $interval = Get-AdfaLogonSyncIntervalRaw -DomainName $DomainName -AdParams $AdParams
+    $cutoff = $nowUtc.AddDays(-1 * $StaleDays)
+    $maxObjects = [int]$Config['MaxObjects']
+    # The declared populations: the enabled users and computers this account can see, counted once
+    # each, so that a read that returned nothing is never taken for "none stale" when it saw nothing.
+    $userPopulation = Get-AdfaStalePopulationRaw -DomainName $DomainName -Kind 'User' -MaxObjects $maxObjects -AdParams $AdParams
+    $computerPopulation = Get-AdfaStalePopulationRaw -DomainName $DomainName -Kind 'Computer' -MaxObjects $maxObjects -AdParams $AdParams
+    $users = Get-AdfaStaleRaw -DomainName $DomainName -Kind 'User' -CutoffUtc $cutoff -MaxObjects $maxObjects -AdParams $AdParams
+    $rows += Get-AdfaStaleCountVerdict -DomainName $DomainName -Kind 'User' -Raw $users -Interval $interval -StaleDays $StaleDays -Now $nowUtc -Population $userPopulation -Config $Config
+    $computers = Get-AdfaStaleRaw -DomainName $DomainName -Kind 'Computer' -CutoffUtc $cutoff -MaxObjects $maxObjects -AdParams $AdParams
+    $rows += Get-AdfaStaleCountVerdict -DomainName $DomainName -Kind 'Computer' -Raw $computers -Interval $interval -StaleDays $StaleDays -Now $nowUtc -Population $computerPopulation -Config $Config
+    $passwords = Get-AdfaStaleRaw -DomainName $DomainName -Kind 'Password' -CutoffUtc ($nowUtc.AddDays(-1 * [int]$Config['PasswordAgeDays'])) -MaxObjects $maxObjects -AdParams $AdParams
+    $rows += Get-AdfaPasswordAgeVerdict -DomainName $DomainName -Raw $passwords -Now $nowUtc -Population $userPopulation -Config $Config
     try {
         $neverExpire = @(Get-ADUser -Filter { Enabled -eq $true -and PasswordNeverExpires -eq $true } @srv)
         $rows += New-Finding -Scope $DomainName -Area 'Stale' -Item 'PasswordNeverExpires users' -Status $(if ($neverExpire.Count -eq 0) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0} enabled users" -f $neverExpire.Count)
@@ -11959,6 +12264,7 @@ $script:DcPortCache = @{}
 $script:DnsZoneListCache = @{}
 $script:DnsDelegationCache = @{}
 $script:DcNetworkCache = @{}
+$script:DcReachCache = @{}
 
 function Clear-AdfaDcPortCache {
     <#
@@ -11973,6 +12279,8 @@ function Clear-AdfaDcPortCache {
     $script:DnsZoneListCache = @{}
     $script:DnsDelegationCache = @{}
     $script:DcNetworkCache = @{}
+    # PORT-PLAN C14: the reachability class of each DC, classified once per run.
+    $script:DcReachCache = @{}
 }
 
 function Test-AdfaDcPort {
@@ -19791,6 +20099,13 @@ $script:ConfigOverrideSections = [ordered]@{
     DcDiag         = @{ ConfigKey = 'DcDiag'; Section = 'DcDiagnostics'; Merge = 'Merge-AdfaDcDiagConfig' }
     # PORT-PLAN C13: the statuses and the record export cap only; no record name, pattern or port.
     Dns            = @{ ConfigKey = 'Dns'; Section = 'Dns'; AlsoUsedBy = @('DnsAdConsistency', 'DomainControllers', 'DnsRecordExport'); Merge = 'Merge-AdfaDnsConfig' }
+    # PORT-PLAN C14: five tables, one generic validator that reads each table's own OverrideSpec, so a
+    # file can set only the keys the table declares there.
+    Reach          = @{ ConfigKey = 'Reach'; Section = 'PortMatrix'; AlsoUsedBy = @('TimeHierarchy', 'Topology'); Merge = 'Merge-AdfaSpecConfig' }
+    SiteCoverage   = @{ ConfigKey = 'SiteCoverage'; Section = 'Topology'; Merge = 'Merge-AdfaSpecConfig' }
+    ClockSkew      = @{ ConfigKey = 'ClockSkew'; Section = 'TimeHierarchy'; Merge = 'Merge-AdfaSpecConfig' }
+    Stale          = @{ ConfigKey = 'Stale'; Section = 'StaleObjects'; Merge = 'Merge-AdfaSpecConfig' }
+    SysvolEngine   = @{ ConfigKey = 'SysvolEngine'; Section = 'Sysvol'; Merge = 'Merge-AdfaSpecConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -22374,7 +22689,14 @@ function Get-AdfaTimeHierarchyHealth {
     .DESCRIPTION
         Thin collector over Get-AdfaTimeSourceVerdict and Get-AdfaRootPdcClientTypeVerdict.
         Uses the documented remote form 'w32tm /query /computer:<target> /source'; RPC (135) is
-        probed first so an unreachable DC reports Not Assessed rather than a missing source.
+        probed first, through the shared port cache, so an unreachable DC reports Not Assessed rather
+        than a missing source. A DC the C14 reachability probe classified Unreachable is not probed
+        again: its time source and offset rows are Not Assessed with that cause.
+
+        PORT-PLAN C14 (TIME-001): after the per-DC rows, every DC also gets a "Clock offset vs forest
+        root PDC: <dc>" row, from the same stripchart samples, against the forest root PDC emulator's.
+        When that PDC is not among the DCs asked, its stripchart is read once on its own. A DC the
+        reachability probe classified Unreachable says so.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -22389,7 +22711,9 @@ function Get-AdfaTimeHierarchyHealth {
         [int]$TimeoutSeconds = 60,
         [int]$SkewSamples = 3,
         [double]$WarnSeconds = 60,
-        [double]$FailSeconds = 300
+        [double]$FailSeconds = 300,
+        # Where the grades came from (ClockSkew ThresholdSource, the file's where it supplied one).
+        [AllowEmptyString()][string]$ThresholdSource = ''
     )
     # Named once so every offset finding can say what it measured against. The offset is relative
     # to THIS host; if this host's clock is wrong, every DC agreeing with it still reads clean.
@@ -22409,6 +22733,8 @@ function Get-AdfaTimeHierarchyHealth {
         if ($nk) { $pdcMap[$nk] = [string]$PdcEmulators[$k] }
     }
     $rows = @()
+    # PORT-PLAN C14: each DC's stripchart reading, kept for the forest-root-PDC offset rows below.
+    $samplesByDc = @{}
     foreach ($dc in @($DomainControllers)) {
         $norm = Get-AdfaDnsNameNormalised -Name $dc
         $isPdc = $pdcMap.ContainsKey($norm)
@@ -22416,8 +22742,22 @@ function Get-AdfaTimeHierarchyHealth {
         $scope = ''
         if ($isPdc) { $scope = [string]$pdcMap[$norm] }
 
-        $reachable = Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
+        # PORT-PLAN C14: a DC the reachability probe classified Unreachable is not probed again; its
+        # rows carry that cause, so a name that does not resolve is never reported as a silent port.
+        $dcReachCause = Get-AdfaDcReachCause -HostName $dc
+        if ($dcReachCause -ne '') {
+            $samplesByDc[$norm] = [pscustomobject]@{ Queried = $false; Offsets = @(); Delays = @(); Error = $dcReachCause }
+            $rows += Get-AdfaTimeSourceVerdict -DomainController $dc -Scope $scope -IsPdcEmulator $isPdc `
+                -IsForestRootPdc $isRootPdc -Queried $false -DomainControllerHosts $DomainControllers `
+                -ErrorText ("{0}, so w32tm could not be queried remotely" -f $dcReachCause.Trim().TrimEnd('.'))
+            $rows += Get-AdfaClockOffsetVerdict -DomainController $dc -Scope $scope -ReferenceHost $refHost `
+                -Queried $false -ErrorText ("{0}, so no NTP sample was taken" -f $dcReachCause.Trim().TrimEnd('.')) `
+                -WarnSeconds $WarnSeconds -FailSeconds $FailSeconds
+            continue
+        }
+        $reachable = Test-AdfaDcPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
         if (-not $reachable) {
+            $samplesByDc[$norm] = [pscustomobject]@{ Queried = $false; Offsets = @(); Delays = @(); Error = 'RPC (135) was not reachable, so no NTP sample was taken' }
             $rows += Get-AdfaTimeSourceVerdict -DomainController $dc -Scope $scope -IsPdcEmulator $isPdc `
                 -IsForestRootPdc $isRootPdc -Queried $false -DomainControllerHosts $DomainControllers `
                 -ErrorText 'RPC (135) was not reachable, so w32tm could not be queried remotely'
@@ -22451,24 +22791,13 @@ function Get-AdfaTimeHierarchyHealth {
         # Measured offset, per DC. H8 reported where a DC takes time FROM and said in its own
         # detail that it does not verify the source is accurate; this is that verification.
         # Kerberos fails on skew, not on configuration.
-        $sc = Invoke-ExternalCommand -FilePath 'w32tm.exe' `
-            -Arguments ("/stripchart /computer:{0} /dataonly /samples:{1} /rdtsc" -f $dc, $SkewSamples) `
-            -TimeoutSeconds $TimeoutSeconds -Retries 1 -RetryDelaySeconds 1
-        $scOut = ''
-        $sop = $sc.PSObject.Properties['StdOut']
-        if ($null -ne $sop -and $null -ne $sop.Value) { $scOut = [string]$sop.Value }
-        $samples = ConvertFrom-AdfaStripchartCsv -Text $scOut
-        $skewErr = ''
-        if (@($samples.Offsets).Count -eq 0) {
-            # Name what actually happened rather than just "no samples": the timed-out case is
-            # the common one and reads very differently from a parse miss.
-            if ($scOut -match '(?i)timed out') { $skewErr = 'every NTP sample timed out (UDP 123 blocked, or the Windows Time service is not answering)' }
-            elseif ($samples.RowsSeen -gt 0) { $skewErr = ("{0} sample row(s) were returned but none carried a numeric NtpOffset" -f $samples.RowsSeen) }
-            elseif ([string]::IsNullOrWhiteSpace($scOut)) { $skewErr = 'w32tm produced no output' }
-            else { $skewErr = 'the /rdtsc CSV header was not found in the output' }
-        }
+        # One bounded w32tm /stripchart call (Get-AdfaStripchartSample, PORT-PLAN C14), which names
+        # what happened when no sample parsed: the timed-out case is the common one and reads very
+        # differently from a parse miss.
+        $samples = Get-AdfaStripchartSample -ComputerName $dc -Samples $SkewSamples -TimeoutSeconds $TimeoutSeconds
+        $samplesByDc[$norm] = $samples
         $rows += Get-AdfaClockOffsetVerdict -DomainController $dc -Scope $scope `
-            -ReferenceHost $refHost -Queried $true -Offsets @($samples.Offsets) -ErrorText $skewErr `
+            -ReferenceHost $refHost -Queried $true -Offsets @($samples.Offsets) -ErrorText ([string]$samples.Error) `
             -WarnSeconds $WarnSeconds -FailSeconds $FailSeconds
 
         # The configured intent, for the root PDC only - it is the only role with a documented
@@ -22482,6 +22811,28 @@ function Get-AdfaTimeHierarchyHealth {
             $rows += Get-AdfaRootPdcClientTypeVerdict -DomainController $dc -Scope $scope `
                 -ClientType $cfg.Type -NtpServer $cfg.NtpServer
         }
+    }
+    # PORT-PLAN C14 (TIME-001): each DC against the forest root PDC emulator. Its reading is the one
+    # taken above when it was among the DCs asked; otherwise it is read once here, unless the
+    # reachability probe classified it Unreachable.
+    $referenceSample = $null
+    if ($rootPdc -ne '') {
+        if ($samplesByDc.ContainsKey($rootPdc)) { $referenceSample = $samplesByDc[$rootPdc] }
+        else {
+            $rootCause = Get-AdfaDcReachCause -HostName $ForestRootPdc
+            if ($rootCause -ne '') { $referenceSample = [pscustomobject]@{ Queried = $false; Offsets = @(); Delays = @(); Error = $rootCause } }
+            else { $referenceSample = Get-AdfaStripchartSample -ComputerName $ForestRootPdc -Samples $SkewSamples -TimeoutSeconds $TimeoutSeconds }
+        }
+    }
+    foreach ($dc in @($DomainControllers)) {
+        $norm = Get-AdfaDnsNameNormalised -Name $dc
+        $scope = ''
+        if ($pdcMap.ContainsKey($norm)) { $scope = [string]$pdcMap[$norm] }
+        $sample = $null
+        if ($samplesByDc.ContainsKey($norm)) { $sample = $samplesByDc[$norm] }
+        $rows += Get-AdfaPdcClockOffsetVerdict -DomainController $dc -Scope $scope -ReferencePdc $ForestRootPdc `
+            -IsReference ($rootPdc -ne '' -and $norm -eq $rootPdc) -Sample $sample -ReferenceSample $referenceSample `
+            -ReachCause (Get-AdfaDcReachCause -HostName $dc) -WarnSeconds $WarnSeconds -FailSeconds $FailSeconds -ThresholdSource $ThresholdSource
     }
     if ($rootPdc -eq '') {
         $rows += New-Finding -Area 'TimeHierarchy' -Item 'Forest root PDC emulator' -Status $script:Status.NotAssessed `
@@ -23709,6 +24060,1701 @@ function Get-AdfaInvocationIdVerdict {
 }
 
 # ===========================================================================
+# region Reachability classes, site coverage, clock offset reference, stale objects, SYSVOL engine (PORT-PLAN C14)
+# ===========================================================================
+# Catalogue REACH-001..002, SITE-001, TIME-001, STALE-001..002, SYSVOL-004, built into the existing
+# sections PortMatrix, Topology, TimeHierarchy, StaleObjects and Sysvol. Every read here is a query:
+# name resolution, a TCP connect that sends nothing, a read-only file open, w32tm /stripchart and
+# directory reads with listed properties. The sources and read dates are next to the config tables.
+
+function New-AdfaC14Row {
+    <#
+    .SYNOPSIS
+        Pure: one row of a C14 check. Names, addresses and lists go in their own columns, never in
+        Detail: the consolidated findings choose a recommendation from Detail, and no other column is
+        read there. NotRun is added to the finding after the recommendation is chosen.
+    .OUTPUTS
+        [pscustomobject] Scope, Area, Item, Status, Detail, Evidence, the given columns, NotRun.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Area,
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Item,
+        [Parameter(Mandatory)][ValidateSet('Pass', 'Warning', 'Fail', 'Not Assessed', 'Info')][string]$Status,
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$Evidence = '',
+        [AllowNull()][System.Collections.IDictionary]$Columns = $null,
+        [AllowEmptyString()][string]$NotRun = ''
+    )
+    $row = [ordered]@{ Scope = $Scope; Area = $Area; Item = $Item; Status = $Status; Detail = $Detail; Evidence = $Evidence }
+    if ($null -ne $Columns) { foreach ($k in @($Columns.Keys)) { $row[[string]$k] = $Columns[$k] } }
+    $row['NotRun'] = $NotRun
+    return [pscustomobject]$row
+}
+
+function Merge-AdfaSpecConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an override over a built-in table that declares its own overridable keys, with
+        validation. The validator of the five C14 sections of -ConfigOverridePath: Reach,
+        SiteCoverage, ClockSkew, Stale and SysvolEngine.
+    .DESCRIPTION
+        The table's OverrideSpec names every key a file may set and how it is checked: Kind 'Status'
+        (a string, one of Allowed) or Kind 'Int' (a JSON number, a whole number from Min to Max).
+        Every other key - ports, paths, patterns, DN templates, sources, vendor values - is refused as
+        unknown, so a file can never make a status Pass or point a read somewhere else.
+
+        Refused with the reason: an override that is not one object, an empty object, an unknown key,
+        a key named twice, a null, a status that is not a string or not in its set, a number written
+        as text, a fraction, a number out of range. Provenance (ThresholdSource) names the file for the
+        keys it supplied and the built-in source for the others.
+    .OUTPUTS
+        [hashtable]
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [AllowNull()]$Override,
+        [string]$OverrideSource = ''
+    )
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+    $label = [string]$BaseConfig['OverrideLabel']
+    if ([string]::IsNullOrWhiteSpace($label)) { $label = 'Config' }
+    $spec = $BaseConfig['OverrideSpec']
+    if ($null -eq $spec -or $spec -isnot [System.Collections.IDictionary] -or $spec.Count -eq 0) {
+        throw ("{0} config: the built-in table declares no key a file may set. This is a defect in the tool, not in the file." -f $label)
+    }
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) {
+        throw ("{0} config override must be a single object with named keys (for example {1}), not a {2}." -f $label, [string]$BaseConfig['OverrideExample'], $Override.GetType().Name)
+    }
+    if ($table.Count -eq 0) { throw ("{0} config override is an empty object. It names no key, so it would change nothing while appearing to be in force." -f $label) }
+    $known = @($spec.Keys | ForEach-Object { [string]$_ })
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $supplied = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) {
+            throw ("{0} config override names an unknown key '{1}'. Known keys: {2}. {3}" -f $label, $given, ($known -join ', '), [string]$BaseConfig['OverrideRefused'])
+        }
+        $name = [string]$match[0]
+        if ($supplied -contains $name) { throw ("{0} config override names '{1}' more than once." -f $label, $name) }
+        $value = $table[$k]
+        if ($null -eq $value) { throw ("{0} config override sets '{1}' to null. Remove the key to keep the built-in value." -f $label, $name) }
+        $rule = $spec[$name]
+        $kind = [string](Get-AdfaConfigValue -Entry $rule -Name 'Kind')
+        if ($kind -eq 'Int') {
+            $min = [int](Get-AdfaConfigValue -Entry $rule -Name 'Min')
+            $max = [int](Get-AdfaConfigValue -Entry $rule -Name 'Max')
+            $unit = [string](Get-AdfaConfigValue -Entry $rule -Name 'Unit')
+            if ($value -is [array] -or $numericTypes -notcontains $value.GetType()) {
+                throw ("{0} config override sets '{1}' to a {2}. It must be a JSON number, written without quotes." -f $label, $name, $value.GetType().Name)
+            }
+            $number = [double]$value
+            if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or $number -ne [math]::Floor($number) -or $number -lt $min -or $number -gt $max) {
+                throw ("{0} config override sets '{1}' to {2}. It must be a whole number from {3} to {4} ({5})." -f $label, $name, $number.ToString('0.####', $inv), $min, $max, $unit)
+            }
+            $merged[$name] = [int]$number
+        }
+        elseif ($kind -eq 'Status') {
+            $allowedSet = @(Get-AdfaConfigValue -Entry $rule -Name 'Allowed')
+            if ($value -isnot [string]) { throw ("{0} config override sets '{1}' to a {2}. It must be a string: one of {3}." -f $label, $name, $value.GetType().Name, ($allowedSet -join ', ')) }
+            $allowed = @($allowedSet | Where-Object { $_ -eq $value.Trim() })
+            if ($allowed.Count -eq 0) { throw ("{0} config override sets '{1}' to '{2}'. It must be one of {3}." -f $label, $name, $value, ($allowedSet -join ', ')) }
+            $merged[$name] = [string]$allowed[0]
+        }
+        else {
+            throw ("{0} config: the key '{1}' is declared with an unknown kind '{2}'. This is a defect in the tool, not in the file." -f $label, $name, $kind)
+        }
+        $supplied += $name
+    }
+    $from = 'an override whose source was not recorded'
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+    $fromOverride = @($known | Where-Object { $supplied -contains $_ })
+    $text = ("{0} for {1}" -f $from, ($fromOverride -join ', '))
+    $builtIn = @($known | Where-Object { $supplied -notcontains $_ })
+    if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
+    $merged['ThresholdSource'] = $text
+    return $merged
+}
+
+function Get-AdfaC14NameList {
+    <#
+    .SYNOPSIS
+        Pure: up to -Cap names joined with '; ', and how many were left out. For display columns only.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyCollection()][string[]]$Names = @(), [int]$Cap = 20)
+    $all = @($Names | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($all.Count -eq 0) { return '' }
+    if ($Cap -le 0) { return ("({0} not listed: NameListCap is 0)" -f $all.Count) }
+    $shown = @($all | Select-Object -First $Cap)
+    $text = ($shown -join '; ')
+    if ($all.Count -gt $shown.Count) { $text = ("{0}; and {1} more" -f $text, ($all.Count - $shown.Count)) }
+    return $text
+}
+
+function Get-AdfaReadClassPhrase {
+    <#
+    .SYNOPSIS
+        Pure: the words a row uses for a read-failure class, so that unreachable, access denied and
+        timed out are never worded alike.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$Class)
+    switch ([string]$Class) {
+        'AccessDenied' { return 'access denied' }
+        'Unreachable' { return 'unreachable' }
+        'TimedOut' { return 'timed out' }
+        'NotFound' { return 'not found' }
+    }
+    return 'failed'
+}
+
+# --- REACH-001/002 -----------------------------------------------------------------------------
+
+function Resolve-AdfaHostAddress {
+    <#
+    .SYNOPSIS
+        Seam: the addresses a host name resolves to, bounded in time. Never throws.
+    .DESCRIPTION
+        Dns.BeginGetHostAddresses, waited for at most -TimeoutMs. A lookup that did not finish in time
+        is TimedOut; a SocketException carries its SocketError name (HostNotFound, TryAgain, NoRecovery,
+        NoData - the four name resolution failures, Learn SocketError, read 2026-11-17); any other
+        exception is a fault of the input or the tool, with no SocketError. Sends nothing to the DC.
+    .OUTPUTS
+        [pscustomobject] Ok, Addresses (string[]), SocketError, TimedOut, Error.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$HostName,
+        [ValidateRange(100, 60000)][int]$TimeoutMs = 3000
+    )
+    $out = [pscustomobject]@{ Ok = $false; Addresses = @(); SocketError = ''; TimedOut = $false; Error = '' }
+    try {
+        $iar = [System.Net.Dns]::BeginGetHostAddresses($HostName, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
+            $out.TimedOut = $true
+            $out.Error = ("name resolution did not complete within {0} ms" -f $TimeoutMs)
+            return $out
+        }
+        $addresses = @([System.Net.Dns]::EndGetHostAddresses($iar))
+        $out.Addresses = @($addresses | Where-Object { $null -ne $_ } | ForEach-Object { $_.ToString() })
+        $out.Ok = $true
+    }
+    catch {
+        $ex = $_.Exception
+        while ($null -ne $ex.InnerException -and $ex -isnot [System.Net.Sockets.SocketException]) { $ex = $ex.InnerException }
+        if ($ex -is [System.Net.Sockets.SocketException]) { $out.SocketError = [string]$ex.SocketErrorCode }
+        $out.Error = ([string]$ex.Message).Trim()
+    }
+    return $out
+}
+
+function Test-AdfaTcpAddress {
+    <#
+    .SYNOPSIS
+        Seam: one TCP connection attempt to an IP ADDRESS and port, bounded in time, closed at once.
+        Sends no data. Never throws.
+    .DESCRIPTION
+        Takes an address, never a name: resolving inside the connect would merge "does not resolve"
+        with "port silent", which have different fixes. A wait that runs out is TimedOut; a
+        SocketException carries its SocketError name (ConnectionRefused, TimedOut, HostUnreachable,
+        ...). The client is closed in a finally block. One attempt, no retry.
+    .OUTPUTS
+        [pscustomobject] Outcome (Open | Failed), SocketError, TimedOut, Error.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Address,
+        [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$Port,
+        [ValidateRange(100, 60000)][int]$TimeoutMs = 3000
+    )
+    $out = [pscustomobject]@{ Outcome = 'Failed'; SocketError = ''; TimedOut = $false; Error = '' }
+    $ip = $null
+    if (-not [System.Net.IPAddress]::TryParse($Address, [ref]$ip)) {
+        $out.Error = ("'{0}' is not an IP address; this probe connects to an address only" -f $Address)
+        return $out
+    }
+    $client = $null
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient($ip.AddressFamily)
+        $iar = $client.BeginConnect($ip, $Port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
+            $out.TimedOut = $true
+            $out.Error = ("no answer within {0} ms" -f $TimeoutMs)
+        }
+        else {
+            $client.EndConnect($iar)
+            $out.Outcome = 'Open'
+        }
+    }
+    catch {
+        $ex = $_.Exception
+        while ($null -ne $ex.InnerException -and $ex -isnot [System.Net.Sockets.SocketException]) { $ex = $ex.InnerException }
+        if ($ex -is [System.Net.Sockets.SocketException]) { $out.SocketError = [string]$ex.SocketErrorCode }
+        $out.Error = ([string]$ex.Message).Trim()
+    }
+    finally {
+        if ($null -ne $client) { $client.Close() }
+    }
+    return $out
+}
+
+function Get-AdfaProbeClass {
+    <#
+    .SYNOPSIS
+        Pure: Open, Refused, TimedOut, NetworkUnreachable, Failed or NotProbed, for one probe result.
+    .DESCRIPTION
+        From the outcome first, then the wait that ran out, then the SocketError name against the
+        lists in the Reach table. Anything not recognised is Failed and is quoted, not interpreted.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Probe, [hashtable]$Config = $script:Config.Reach)
+    if ($null -eq $Probe) { return 'NotProbed' }
+    $outcome = [string](Get-AdfaConfigValue -Entry $Probe -Name 'Outcome')
+    if ($outcome -eq 'Open') { return 'Open' }
+    if ([bool](Get-AdfaConfigValue -Entry $Probe -Name 'TimedOut')) { return 'TimedOut' }
+    $se = [string](Get-AdfaConfigValue -Entry $Probe -Name 'SocketError')
+    if ($se -ne '') {
+        if (@($Config['TimedOutSocketErrors']) -contains $se) { return 'TimedOut' }
+        if (@($Config['RefusedSocketErrors']) -contains $se) { return 'Refused' }
+        if (@($Config['NetworkSocketErrors']) -contains $se) { return 'NetworkUnreachable' }
+    }
+    return 'Failed'
+}
+
+function Resolve-AdfaDcReachClass {
+    <#
+    .SYNOPSIS
+        Pure: the reachability class of one DC, from its name resolution and its probes.
+    .DESCRIPTION
+        Classes (tool design, REACH-001/002; Microsoft publishes none):
+          Unreachable       the name does not resolve (Unresolved), resolution timed out
+                            (ResolveTimedOut), it resolved to no address (NoAddress), or LDAP (389)
+                            answered on no address: TimedOut when any attempt got no answer, else
+                            NetworkUnreachable when any had no route, else Refused when every one was
+                            refused, else ConnectFailed.
+          Reachable         LDAP and WinRM (5985) answer.
+          WinRmUnavailable  LDAP and RPC (135) answer, WinRM does not: remote CIM falls back to DCOM.
+          NotManageable     LDAP answers, neither default management port does.
+          NotAssessed       the classification could not be made: a resolver fault that is not a
+                            socket error (ResolveFailed), or a port that was not probed (NotProbed).
+        Never Reachable without every probe it rests on.
+    .OUTPUTS
+        [pscustomobject] Class, Cause.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()]$Resolve,
+        [AllowNull()][AllowEmptyCollection()]$LdapProbes = @(),
+        [AllowNull()]$WinRm = $null,
+        [AllowNull()]$Rpc = $null,
+        [hashtable]$Config = $script:Config.Reach
+    )
+    if ($null -eq $Resolve) { return [pscustomobject]@{ Class = 'NotAssessed'; Cause = 'NotProbed' } }
+    if (-not [bool](Get-AdfaConfigValue -Entry $Resolve -Name 'Ok')) {
+        if ([bool](Get-AdfaConfigValue -Entry $Resolve -Name 'TimedOut')) { return [pscustomobject]@{ Class = 'Unreachable'; Cause = 'ResolveTimedOut' } }
+        $se = [string](Get-AdfaConfigValue -Entry $Resolve -Name 'SocketError')
+        if ($se -ne '' -and @($Config['UnresolvedSocketErrors']) -contains $se) { return [pscustomobject]@{ Class = 'Unreachable'; Cause = 'Unresolved' } }
+        return [pscustomobject]@{ Class = 'NotAssessed'; Cause = 'ResolveFailed' }
+    }
+    if (@(Get-AdfaConfigValue -Entry $Resolve -Name 'Addresses' | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -eq 0) {
+        return [pscustomobject]@{ Class = 'Unreachable'; Cause = 'NoAddress' }
+    }
+    $classes = @(@($LdapProbes) | Where-Object { $null -ne $_ } | ForEach-Object { Get-AdfaProbeClass -Probe $_ -Config $Config })
+    if ($classes.Count -eq 0) { return [pscustomobject]@{ Class = 'NotAssessed'; Cause = 'NotProbed' } }
+    if ($classes -contains 'Open') {
+        $w = Get-AdfaProbeClass -Probe $WinRm -Config $Config
+        $r = Get-AdfaProbeClass -Probe $Rpc -Config $Config
+        if ($w -eq 'Open') { return [pscustomobject]@{ Class = 'Reachable'; Cause = '' } }
+        if ($w -eq 'NotProbed' -or $r -eq 'NotProbed') { return [pscustomobject]@{ Class = 'NotAssessed'; Cause = 'NotProbed' } }
+        if ($r -eq 'Open') { return [pscustomobject]@{ Class = 'WinRmUnavailable'; Cause = '' } }
+        return [pscustomobject]@{ Class = 'NotManageable'; Cause = 'ManagementPortsSilent' }
+    }
+    $cause = 'ConnectFailed'
+    if ($classes -contains 'TimedOut') { $cause = 'TimedOut' }
+    elseif ($classes -contains 'NetworkUnreachable') { $cause = 'NetworkUnreachable' }
+    elseif (@($classes | Where-Object { $_ -ne 'Refused' }).Count -eq 0) { $cause = 'Refused' }
+    return [pscustomobject]@{ Class = 'Unreachable'; Cause = $cause }
+}
+
+function Get-AdfaDcReachability {
+    <#
+    .SYNOPSIS
+        The reachability record of one DC: probed once per run, then read from the cache.
+    .DESCRIPTION
+        Name resolution (Resolve-AdfaHostAddress), then LDAP (389) on each address until one answers,
+        then WinRM (5985) and RPC (135) at that address only. A DC already Unreachable is not probed
+        on the management ports. What was measured, and only that, is written into the shared port
+        cache that Test-AdfaDcPort reads, so a later section reuses it instead of probing again. Read
+        only: a TCP connection that sends no data, closed at once.
+    .OUTPUTS
+        [pscustomobject] HostName, Class, Cause, Addresses, LdapAddress, PortText, TimeoutMs, Error,
+        SocketError.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$HostName,
+        [hashtable]$Config = $script:Config.Reach
+    )
+    $key = $HostName.ToLowerInvariant()
+    if ($script:DcReachCache.ContainsKey($key)) { return $script:DcReachCache[$key] }
+    $timeout = [int]$Config['ProbeTimeoutMs']
+    $ldapPort = [int]$Config['LdapPort']
+    $winRmPort = [int]$Config['WinRmPort']
+    $rpcPort = [int]$Config['RpcPort']
+    $resolve = Resolve-AdfaHostAddress -HostName $HostName -TimeoutMs $timeout
+    $ldapProbes = @()
+    $ldapAddress = ''
+    $winRm = $null
+    $rpc = $null
+    $portText = @()
+    if ([bool]$resolve.Ok) {
+        foreach ($a in @($resolve.Addresses)) {
+            $probe = Test-AdfaTcpAddress -Address ([string]$a) -Port $ldapPort -TimeoutMs $timeout
+            $ldapProbes += $probe
+            $probeClass = Get-AdfaProbeClass -Probe $probe -Config $Config
+            $portText += ("{0} {1}={2}" -f $a, $ldapPort, $probeClass)
+            if ($probeClass -eq 'Open') { $ldapAddress = [string]$a; break }
+        }
+        if ($ldapAddress -ne '') {
+            $winRm = Test-AdfaTcpAddress -Address $ldapAddress -Port $winRmPort -TimeoutMs $timeout
+            $rpc = Test-AdfaTcpAddress -Address $ldapAddress -Port $rpcPort -TimeoutMs $timeout
+            $portText += ("{0} {1}={2}" -f $ldapAddress, $winRmPort, (Get-AdfaProbeClass -Probe $winRm -Config $Config))
+            $portText += ("{0} {1}={2}" -f $ldapAddress, $rpcPort, (Get-AdfaProbeClass -Probe $rpc -Config $Config))
+        }
+    }
+    $class = Resolve-AdfaDcReachClass -Resolve $resolve -LdapProbes $ldapProbes -WinRm $winRm -Rpc $rpc -Config $Config
+    $record = [pscustomobject]@{
+        HostName = $HostName; Class = [string]$class.Class; Cause = [string]$class.Cause
+        Addresses = @($resolve.Addresses); LdapAddress = $ldapAddress; PortText = ($portText -join '; ')
+        TimeoutMs = $timeout; Error = [string]$resolve.Error; SocketError = [string]$resolve.SocketError
+    }
+    # Only what was measured goes into the shared cache. An unprobed port is left out, never written
+    # as closed: a section that needs it probes it itself.
+    if (@($ldapProbes).Count -gt 0) { $script:DcPortCache[('{0}:{1}' -f $key, $ldapPort)] = ($ldapAddress -ne '') }
+    if ($null -ne $winRm) { $script:DcPortCache[('{0}:{1}' -f $key, $winRmPort)] = ((Get-AdfaProbeClass -Probe $winRm -Config $Config) -eq 'Open') }
+    if ($null -ne $rpc) { $script:DcPortCache[('{0}:{1}' -f $key, $rpcPort)] = ((Get-AdfaProbeClass -Probe $rpc -Config $Config) -eq 'Open') }
+    $script:DcReachCache[$key] = $record
+    return $record
+}
+
+function Get-AdfaDcReachRecord {
+    <#
+    .SYNOPSIS
+        The reachability record of one DC if it was classified in this run; $null otherwise. Probes
+        nothing.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][AllowEmptyString()][string]$HostName)
+    if ([string]::IsNullOrWhiteSpace($HostName)) { return $null }
+    $key = $HostName.ToLowerInvariant()
+    if ($script:DcReachCache.ContainsKey($key)) { return $script:DcReachCache[$key] }
+    return $null
+}
+
+function Get-AdfaC14UnreachableText {
+    <#
+    .SYNOPSIS
+        Pure: the words for one Unreachable cause. Never mentions access: a refused read is not a
+        reachability class.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$Cause, [int]$TimeoutMs = 3000, [AllowNull()][AllowEmptyString()][string]$SocketError = '')
+    switch ([string]$Cause) {
+        'Unresolved' { return ("the host name does not resolve: name resolution failed ({0})" -f $SocketError) }
+        'ResolveTimedOut' { return ("name resolution did not complete within {0} ms" -f $TimeoutMs) }
+        'NoAddress' { return 'name resolution returned no address' }
+        'Refused' { return 'every address refused the connection on LDAP (389): the host is up but nothing accepts LDAP there, or a firewall rejects it' }
+        'TimedOut' { return ("LDAP (389) gave no answer within {0} ms on at least one address and answered on none: filtered, or the host is down" -f $TimeoutMs) }
+        'NetworkUnreachable' { return 'there is no route to the host from the host running the assessment' }
+    }
+    return 'the connection to LDAP (389) failed on every address'
+}
+
+function Get-AdfaDcReachCause {
+    <#
+    .SYNOPSIS
+        '' unless this DC was classified Unreachable in this run; then the reason, worded for the row
+        of any section that did not read it. Probes nothing.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$HostName)
+    $record = Get-AdfaDcReachRecord -HostName $HostName
+    if ($null -eq $record -or [string]$record.Class -ne 'Unreachable') { return '' }
+    return ("Unreachable, classified once for this run by the reachability probe: {0}" -f (Get-AdfaC14UnreachableText -Cause ([string]$record.Cause) -TimeoutMs ([int]$record.TimeoutMs) -SocketError ([string]$record.SocketError)))
+}
+
+function Get-AdfaDcReachVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the "DC reachability: <host>" row of one DC, from its reachability record.
+    .DESCRIPTION
+        Unreachable is UnreachableStatus (Fail; Warning by override), NotManageable is
+        NotManageableStatus (Warning; Info by override), Reachable and WinRmUnavailable are Pass,
+        anything not classified is Not Assessed. Addresses and ports are display columns.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$HostName = '',
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()]$Record,
+        [hashtable]$Config = $script:Config.Reach
+    )
+    $label = $HostName
+    if ([string]::IsNullOrWhiteSpace($label)) { $label = '(unnamed)' }
+    $item = ("DC reachability: {0}" -f $label)
+    $evidence = ("Name resolution, then one TCP connection per port from the host running the assessment, no ICMP, no retry; probe time-out {0} ms. The classes are this tool's design (catalogue REACH-001/002), Microsoft publishes none; SocketError names from Learn (read 2026-11-17). A refused read (access is refused by the DC) is not a reachability class: the section whose read met it reports it. Grades: {1}." -f [int]$Config['ProbeTimeoutMs'], [string]$Config['ThresholdSource'])
+    $columns = [ordered]@{ Class = ''; Cause = ''; Addresses = ''; Ports = '' }
+    if ([string]::IsNullOrWhiteSpace($HostName)) {
+        return New-AdfaC14Row -Area 'PortMatrix' -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+            -Detail 'The inventory holds a domain controller with no host name, so it was not probed. This is not a clean result.'
+    }
+    if ($null -eq $Record) {
+        return New-AdfaC14Row -Area 'PortMatrix' -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+            -Detail 'No reachability result exists for this domain controller, so it is not classified. This is not a clean result.'
+    }
+    $class = [string](Get-AdfaConfigValue -Entry $Record -Name 'Class')
+    $cause = [string](Get-AdfaConfigValue -Entry $Record -Name 'Cause')
+    $timeout = [int]$Config['ProbeTimeoutMs']
+    $recTimeout = Get-AdfaConfigValue -Entry $Record -Name 'TimeoutMs'
+    if ($null -ne $recTimeout) { $timeout = [int]$recTimeout }
+    $columns.Class = $class
+    $columns.Cause = $cause
+    $columns.Addresses = (@(Get-AdfaConfigValue -Entry $Record -Name 'Addresses') | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ }) -join '; '
+    $columns.Ports = [string](Get-AdfaConfigValue -Entry $Record -Name 'PortText')
+    switch ($class) {
+        'Unreachable' {
+            $why = Get-AdfaC14UnreachableText -Cause $cause -TimeoutMs $timeout -SocketError ([string](Get-AdfaConfigValue -Entry $Record -Name 'SocketError'))
+            return New-AdfaC14Row -Area 'PortMatrix' -Scope $Scope -Item $item -Status ([string]$Config['UnreachableStatus']) -Evidence $evidence -Columns $columns `
+                -Detail ("Unreachable: {0}. The Time Hierarchy and Site Health rows of this domain controller reuse this result and are Not Assessed with this cause; the port matrix rows and the other per-DC sections probe on their own and report what they met. A firewall between the host running the assessment and the DC gives the same answer as a DC that is down." -f $why)
+        }
+        'NotManageable' {
+            return New-AdfaC14Row -Area 'PortMatrix' -Scope $Scope -Item $item -Status ([string]$Config['NotManageableStatus']) -Evidence $evidence -Columns $columns `
+                -Detail 'LDAP (389) answered, but neither default management port did: WinRM (5985) and the RPC endpoint mapper (135). Directory reads still run; the remote reads of this DC (CIM, event log, w32tm, dcdiag) cannot. WinRM listeners can be configured on any port, so this says the default management ports are silent, not that the DC cannot be managed.'
+        }
+        'Reachable' {
+            return New-AdfaC14Row -Area 'PortMatrix' -Scope $Scope -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
+                -Detail 'LDAP (389) and WinRM (5985) answered.'
+        }
+        'WinRmUnavailable' {
+            return New-AdfaC14Row -Area 'PortMatrix' -Scope $Scope -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
+                -Detail 'LDAP (389) and the RPC endpoint mapper (135) answered; WinRM (5985) did not, so remote CIM reads use DCOM.'
+        }
+    }
+    $err = [string](Get-AdfaConfigValue -Entry $Record -Name 'Error')
+    $what = 'a port the class rests on was not probed'
+    if ($cause -eq 'ResolveFailed') { $what = ("name resolution failed with an error that is not a resolution answer ({0})" -f $err) }
+    return New-AdfaC14Row -Area 'PortMatrix' -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+        -Detail ("The probe could not classify this domain controller: {0}. This is not a clean result." -f $what)
+}
+
+function Get-AdfaDcReachabilityRows {
+    <#
+    .SYNOPSIS
+        PortMatrix, REACH-001/002: one "DC reachability: <host>" row per DC of every scoped domain, a
+        population row per domain, each DC classified once for the run.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [hashtable]$Config = $script:Config.Reach,
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+    )
+    $rows = @()
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaC14Row -Area 'PortMatrix' -Scope ([string]$gap.Domain) -Item ("DC reachability (population): {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No domain controller of it was probed.')
+    }
+    if ($targets.Count -eq 0) {
+        $why = 'No domain controllers were enumerated'
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = ("Domain controller enumeration failed ({0})" -f $EnumerationError) }
+        $rows += New-AdfaC14Row -Area 'PortMatrix' -Item 'DC reachability' -Status $script:Status.NotAssessed -Detail ("{0}, so no domain controller was probed. This is not a clean result." -f $why)
+        return @($rows)
+    }
+    $byDomain = [ordered]@{}
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $record = $null
+        if (-not [string]::IsNullOrWhiteSpace($dc)) { $record = Get-AdfaDcReachability -HostName $dc -Config $Config }
+        $row = Get-AdfaDcReachVerdict -HostName $dc -Scope ([string]$named.Scope) -Record $record -Config $Config
+        $rows += $row
+        $domainKey = [string]$named.Scope
+        if (-not $byDomain.Contains($domainKey)) { $byDomain[$domainKey] = New-Object System.Collections.ArrayList }
+        [void]$byDomain[$domainKey].Add([string]$row.Class)
+    }
+    foreach ($domainKey in @($byDomain.Keys)) {
+        $classes = @($byDomain[$domainKey])
+        $label = $domainKey
+        if ($label -eq '') { $label = '(domain not known)' }
+        $answered = @($classes | Where-Object { $_ -eq 'Reachable' -or $_ -eq 'WinRmUnavailable' }).Count
+        $notManageable = @($classes | Where-Object { $_ -eq 'NotManageable' }).Count
+        $unreachable = @($classes | Where-Object { $_ -eq 'Unreachable' }).Count
+        $rows += New-AdfaC14Row -Area 'PortMatrix' -Scope $domainKey -Item ("DC reachability (population): {0}" -f $label) -Status $script:Status.Info `
+            -Detail ("{0} domain controller(s) probed: {1} answered on LDAP and a default management port, {2} not remotely manageable on the default ports, {3} unreachable, {4} not classified." -f `
+                $classes.Count, $answered, $notManageable, $unreachable, ($classes.Count - $answered - $notManageable - $unreachable))
+    }
+    return @($rows)
+}
+
+# --- SITE-001 ------------------------------------------------------------------------------------
+
+function Get-AdfaSubnetSiteVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Subnets without a site: <forest>" - whether any subnet object carries no site.
+    .DESCRIPTION
+        UnassignedStatus (Warning; Info by override) when any subnet read has no site; Pass when every
+        subnet read has one; Not Assessed when the read failed or returned no subnet. Subnet names
+        are in the Subnets column, never in Detail. "No siteObject means no site" is reasoning, and
+        the Evidence says so.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$Subnets = @(),
+        [AllowNull()][AllowEmptyString()][string]$ReadError = '',
+        [AllowNull()][AllowEmptyString()][string]$ForestName = '',
+        [hashtable]$Config = $script:Config.SiteCoverage
+    )
+    $label = $ForestName
+    if ([string]::IsNullOrWhiteSpace($label)) { $label = '(forest not known)' }
+    $item = ("Subnets without a site: {0}" -f $label)
+    $evidence = 'siteObject of each subnet object under CN=Subnets,CN=Sites (Learn a-siteobject, read 2026-11-17), read with Get-ADReplicationSubnet, whose Site property is taken to carry it (provisional, PORT-PLAN C17). That an empty siteObject means "no site" is reasoning from Microsoft''s statement that "the siteObject property of the subnet object defines the name of the site that contains the client" (directory-service-functions); the schema page does not say it.'
+    $columns = [ordered]@{ SubnetCount = ''; Unassigned = ''; Subnets = '' }
+    if (-not [string]::IsNullOrWhiteSpace($ReadError)) {
+        return New-AdfaC14Row -Area 'Sites' -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+            -Detail ("The subnet objects could not be read: {0}. Whether any subnet has no site is not known. This is not a clean result." -f $ReadError.Trim())
+    }
+    $list = @($Subnets | Where-Object { $null -ne $_ })
+    $columns.SubnetCount = [string]$list.Count
+    if ($list.Count -eq 0) {
+        return New-AdfaC14Row -Area 'Sites' -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+            -Detail 'The read returned no subnet object. A forest with no subnet maps no client to a site, and an empty answer cannot be told from a read that saw nothing, so this is not a clean result.'
+    }
+    $unassigned = @()
+    foreach ($s in $list) {
+        $siteValue = Get-AdfaConfigValue -Entry $s -Name 'Site'
+        if ($null -eq $siteValue -or [string]::IsNullOrWhiteSpace([string]$siteValue)) {
+            $nameValue = [string](Get-AdfaConfigValue -Entry $s -Name 'Name')
+            if ([string]::IsNullOrWhiteSpace($nameValue)) { $nameValue = '(unnamed subnet)' }
+            $unassigned += $nameValue
+        }
+    }
+    $columns.Unassigned = [string]$unassigned.Count
+    $columns.Subnets = Get-AdfaC14NameList -Names $unassigned -Cap ([int]$Config['NameListCap'])
+    if ($unassigned.Count -gt 0) {
+        $status = [string]$Config['UnassignedStatus']
+        return New-AdfaC14Row -Area 'Sites' -Item $item -Status $status -Evidence $evidence -Columns $columns `
+            -Detail ("{0} of {1} subnet(s) have no site (siteObject not set). A client whose address falls only in such a subnet is mapped to no site, so it may use any domain controller, including a distant one. Graded {2}: {3}." -f $unassigned.Count, $list.Count, $status, [string]$Config['ThresholdSource'])
+    }
+    return New-AdfaC14Row -Area 'Sites' -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
+        -Detail ("All {0} subnet(s) read carry a site." -f $list.Count)
+}
+
+function Get-AdfaNetlogonLogRaw {
+    <#
+    .SYNOPSIS
+        File seam of C14: the last -MaxBytes bytes of one netlogon.log, opened for reading only.
+        Never throws.
+    .DESCRIPTION
+        new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete),
+        as Get-AdfaGptIniRaw opens GPT.INI: read access only, and Netlogon, which keeps writing the
+        log, is never refused a write or a rename by this handle. Only the end of the file is read,
+        so the read is bounded; when it starts inside the file, the partial first line is dropped.
+        Decoded as ISO-8859-1, which maps every byte, because Microsoft does not publish the log's
+        encoding. Runs as the account running the script: -Credential is not passed to file reads.
+        A failure is classed by Get-AdfaGpoFileFailure: NotFound, AccessDenied, Unreachable, TimedOut
+        or Error.
+    .OUTPUTS
+        [pscustomobject] Ok, Class, Text, Error, ErrorType, HResult, Path, Partial, BytesRead,
+        FileLength.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateRange(256, 20000000)][int]$MaxBytes = 4194304
+    )
+    $out = [pscustomobject]@{ Ok = $false; Class = ''; Text = ''; Error = ''; ErrorType = ''; HResult = 0; Path = $Path; Partial = $false; BytesRead = 0; FileLength = [int64]0 }
+    $stream = $null
+    try {
+        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+        $stream = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+        $length = [int64]$stream.Length
+        $out.FileLength = $length
+        $start = [int64]0
+        if ($length -gt $MaxBytes) { $start = $length - $MaxBytes; $out.Partial = $true }
+        [void]$stream.Seek($start, [System.IO.SeekOrigin]::Begin)
+        $count = [int]($length - $start)
+        $buffer = New-Object byte[] $count
+        $total = 0
+        while ($total -lt $count) {
+            $n = $stream.Read($buffer, $total, $count - $total)
+            if ($n -le 0) { break }
+            $total += $n
+        }
+        $text = [System.Text.Encoding]::GetEncoding(28591).GetString($buffer, 0, $total)
+        if ($out.Partial) {
+            $nl = $text.IndexOf([char]10)
+            if ($nl -ge 0) { $text = $text.Substring($nl + 1) } else { $text = '' }
+        }
+        $out.Text = $text
+        $out.BytesRead = $total
+        $out.Class = 'Read'
+        $out.Ok = $true
+    }
+    catch {
+        $f = Get-AdfaGpoFileFailure -Exception $_.Exception
+        $out.Class = $f.Class; $out.Error = $f.Error; $out.ErrorType = $f.ErrorType; $out.HResult = $f.HResult
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+    return $out
+}
+
+function ConvertFrom-AdfaNetlogonNoClientSite {
+    <#
+    .SYNOPSIS
+        Pure: the clients a netlogon.log names as mapped to no site.
+    .DESCRIPTION
+        Microsoft (Netlogon event 5807, KB 2668820, read 2026-11-17): "search for lines that contain
+        text 'NO_CLIENT_SITE:'. The first word after this string is the client name and the second
+        word is the client IP address." Nothing else of the line is read: its time stamp format is
+        not published. A marker line without a name and an address that parses as an IP address is
+        counted as Unparsed, never guessed. Clients are listed once each, in first-seen order.
+    .OUTPUTS
+        [pscustomobject] Lines (marker lines), Unparsed, Entries (Name, Address).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Text = '',
+        [string]$Marker = 'NO_CLIENT_SITE:'
+    )
+    $lines = 0
+    $unparsed = 0
+    $seen = @{}
+    $entries = New-Object System.Collections.ArrayList
+    foreach ($line in @(([string]$Text) -split "`r?`n")) {
+        $at = $line.IndexOf($Marker, [System.StringComparison]::Ordinal)
+        if ($at -lt 0) { continue }
+        $lines++
+        $tokens = @($line.Substring($at + $Marker.Length).Split([char[]]@([char]32, [char]9), [System.StringSplitOptions]::RemoveEmptyEntries))
+        $ip = $null
+        if ($tokens.Count -lt 2 -or -not [System.Net.IPAddress]::TryParse($tokens[1], [ref]$ip)) { $unparsed++; continue }
+        $key = ("{0}|{1}" -f $tokens[0].ToLowerInvariant(), $tokens[1])
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        [void]$entries.Add([pscustomobject]@{ Name = [string]$tokens[0]; Address = [string]$tokens[1] })
+    }
+    return [pscustomobject]@{ Lines = $lines; Unparsed = $unparsed; Entries = @($entries.ToArray()) }
+}
+
+function Get-AdfaNoClientSiteVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Clients without a site: <dc>" - the clients this DC's netlogon.log names as mapped to no
+        site.
+    .DESCRIPTION
+        NoClientSiteStatus (Warning; Info by override) when the part of the log read names any; Info,
+        never Pass, when it names none: Microsoft does not state how long the lines are kept, and the
+        log rolls over to netlogon.bak, which is not read. Not Assessed, each with its own cause, when
+        the DC was classified unreachable, SMB (445) did not answer, the read was refused (access
+        denied), the share was unreachable, the log was not found, the read timed out or failed, or a
+        marker line could not be parsed. Client names and addresses are in the Clients column only.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$HostName = '',
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()]$Raw,
+        [bool]$PortOpen = $true,
+        [AllowNull()][AllowEmptyString()][string]$ReachCause = '',
+        [hashtable]$Config = $script:Config.SiteCoverage
+    )
+    $label = $HostName
+    if ([string]::IsNullOrWhiteSpace($label)) { $label = '(unnamed)' }
+    $item = ("Clients without a site: {0}" -f $label)
+    $evidence = ("Netlogon event 5807 (Learn KB 2668820, read 2026-11-17): clients whose addresses map to no site are logged in %SystemRoot%\debug\netlogon.log on lines holding '{0}', the first word after it the client name and the second its address. Read over the ADMIN$ administrative share, read-only, the last {1} bytes only (LogTailBytes, a tool default); the rights needed are not published." -f [string]$Config['NoClientSiteMarker'], [int]$Config['LogTailBytes'])
+    $notRun = 'netlogon.bak, where the log rolls over when full, is not read.'
+    $columns = [ordered]@{ ClientCount = ''; Clients = ''; LogPath = ''; BytesRead = '' }
+    $na = { param([string]$Why) New-AdfaC14Row -Area 'Sites' -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -NotRun $notRun -Detail ("{0} Whether clients of this DC are mapped to no site is not known. This is not a clean result." -f $Why) }
+    if ([string]::IsNullOrWhiteSpace($HostName)) { return (& $na 'The inventory holds a domain controller with no host name, so its netlogon.log was not read.') }
+    if (-not [string]::IsNullOrWhiteSpace($ReachCause)) { return (& $na ("netlogon.log was not read: {0}." -f $ReachCause.Trim().TrimEnd('.'))) }
+    if (-not $PortOpen) { return (& $na ("SMB ({0}) did not answer, so netlogon.log was not read." -f [int]$Config['SmbPort'])) }
+    if ($null -eq $Raw) { return (& $na 'netlogon.log was not read.') }
+    $columns.LogPath = [string](Get-AdfaConfigValue -Entry $Raw -Name 'Path')
+    if (-not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Ok')) {
+        $class = [string](Get-AdfaConfigValue -Entry $Raw -Name 'Class')
+        $err = [string](Get-AdfaConfigValue -Entry $Raw -Name 'Error')
+        switch ($class) {
+            'AccessDenied' { return (& $na 'Reading netlogon.log was refused (access denied): reading it over the ADMIN$ share needs administrative rights on the domain controller, and Microsoft does not publish which.') }
+            'Unreachable' { return (& $na 'The ADMIN$ share of this domain controller was unreachable (network path not found), so netlogon.log was not read.') }
+            'NotFound' { return (& $na 'netlogon.log was not found on the ADMIN$ share (debug\netlogon.log).') }
+            'TimedOut' { return (& $na 'Reading netlogon.log timed out.') }
+        }
+        return (& $na ("Reading netlogon.log failed: {0}." -f $err.Trim().TrimEnd('.')))
+    }
+    $columns.BytesRead = [string](Get-AdfaConfigValue -Entry $Raw -Name 'BytesRead')
+    $parsed = ConvertFrom-AdfaNetlogonNoClientSite -Text ([string](Get-AdfaConfigValue -Entry $Raw -Name 'Text')) -Marker ([string]$Config['NoClientSiteMarker'])
+    $entries = @($parsed.Entries)
+    $columns.ClientCount = [string]$entries.Count
+    $columns.Clients = Get-AdfaC14NameList -Names @($entries | ForEach-Object { "{0} {1}" -f $_.Name, $_.Address }) -Cap ([int]$Config['NameListCap'])
+    $scopeText = 'the whole log'
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'Partial')) { $scopeText = 'its last part' }
+    $unparsedText = ''
+    if ([int]$parsed.Unparsed -gt 0) { $unparsedText = (" {0} marker line(s) did not carry a name and an address and were not read." -f [int]$parsed.Unparsed) }
+    if ($entries.Count -gt 0) {
+        $status = [string]$Config['NoClientSiteStatus']
+        return New-AdfaC14Row -Area 'Sites' -Scope $Scope -Item $item -Status $status -Evidence $evidence -Columns $columns -NotRun $notRun `
+            -Detail ("{0} distinct client(s), on {1} line(s) of {2}, connected to this DC from an address that maps to no site: no subnet object covers it. Such clients may use any domain controller, including a distant one.{3} Graded {4}: {5}." -f $entries.Count, [int]$parsed.Lines, $scopeText, $unparsedText, $status, [string]$Config['ThresholdSource'])
+    }
+    if ([int]$parsed.Unparsed -gt 0) { return (& $na ("{0} line(s) of {1} carry the marker but not a name and an address, so they could not be read." -f [int]$parsed.Unparsed, $scopeText)) }
+    return New-AdfaC14Row -Area 'Sites' -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns -NotRun $notRun `
+        -Detail ("No line of {0} names a client mapped to no site. This is not proof that every client maps to a site, so it is not a clean result: Microsoft does not state how long the lines are kept or whether they are written without debug logging, and the log rolls over when full." -f $scopeText)
+}
+
+function Get-AdfaClientSiteRows {
+    <#
+    .SYNOPSIS
+        Topology, SITE-001: one "Clients without a site: <dc>" row per DC of every scoped domain, and a
+        population row for a scoped domain with no DC row.
+    .DESCRIPTION
+        A DC classified Unreachable in this run is not read. Otherwise SMB (445) is probed through the
+        shared port cache, and netlogon.log is read through Get-AdfaNetlogonLogRaw from
+        \\<dc>\ADMIN$\debug\netlogon.log. Read-only.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [hashtable]$Config = $script:Config.SiteCoverage,
+        [int]$PortTimeoutMs = 1200,
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+    )
+    $rows = @()
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaC14Row -Area 'Sites' -Scope ([string]$gap.Domain) -Item ("Clients without a site (population): {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No netlogon.log of it was read.')
+    }
+    if ($targets.Count -eq 0) {
+        $why = 'No domain controllers were enumerated'
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = ("Domain controller enumeration failed ({0})" -f $EnumerationError) }
+        $rows += New-AdfaC14Row -Area 'Sites' -Item 'Clients without a site' -Status $script:Status.NotAssessed -Detail ("{0}, so no netlogon.log was read. This is not a clean result." -f $why)
+        return @($rows)
+    }
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $reachCause = ''
+        $portOpen = $true
+        $raw = $null
+        if (-not [string]::IsNullOrWhiteSpace($dc)) {
+            $reachCause = Get-AdfaDcReachCause -HostName $dc
+            if ($reachCause -eq '') {
+                $portOpen = [bool](Test-AdfaDcPort -ComputerName $dc -Port ([int]$Config['SmbPort']) -TimeoutMs $PortTimeoutMs)
+                if ($portOpen) { $raw = Get-AdfaNetlogonLogRaw -Path ([string]$Config['NetlogonLogPath'] -f $dc) -MaxBytes ([int]$Config['LogTailBytes']) }
+            }
+        }
+        $rows += Get-AdfaNoClientSiteVerdict -HostName $dc -Scope ([string]$named.Scope) -Raw $raw -PortOpen $portOpen -ReachCause $reachCause -Config $Config
+    }
+    return @($rows)
+}
+
+# --- TIME-001 ------------------------------------------------------------------------------------
+
+function Get-AdfaStripchartSample {
+    <#
+    .SYNOPSIS
+        The w32tm reading of one DC's clock offset from the host running the assessment, in one
+        bounded call: 'w32tm /stripchart /computer:<dc> /dataonly /samples:<n> /rdtsc'.
+    .DESCRIPTION
+        /stripchart "Displays a strip chart of the offset between this computer and another
+        computer"; /samples stops it after that many samples (without it, it runs until stopped);
+        Microsoft documents no state change for it (windows-time-service-tools-and-settings, read
+        2026-11-17). The output is read by ConvertFrom-AdfaStripchartCsv. When no sample parses, the
+        reason is named: access denied, every sample timed out, rows with no number, no output, or no
+        /rdtsc header.
+    .OUTPUTS
+        [pscustomobject] Queried, Offsets, Delays, Error.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [ValidateRange(1, 100)][int]$Samples = 3,
+        [int]$TimeoutSeconds = 60
+    )
+    $sc = Invoke-ExternalCommand -FilePath 'w32tm.exe' -Arguments ("/stripchart /computer:{0} /dataonly /samples:{1} /rdtsc" -f $ComputerName, $Samples) `
+        -TimeoutSeconds $TimeoutSeconds -Retries 1 -RetryDelaySeconds 1
+    $scOut = ''
+    $sop = $sc.PSObject.Properties['StdOut']
+    if ($null -ne $sop -and $null -ne $sop.Value) { $scOut = [string]$sop.Value }
+    $parsed = ConvertFrom-AdfaStripchartCsv -Text $scOut
+    $err = ''
+    if (@($parsed.Offsets).Count -eq 0) {
+        if ($scOut -match '(?i)access is denied|0x80070005') { $err = 'w32tm reported access denied' }
+        elseif ($scOut -match '(?i)timed out|0x800705B4') { $err = 'every NTP sample timed out (UDP 123 blocked, or the Windows Time service is not answering)' }
+        elseif ($parsed.RowsSeen -gt 0) { $err = ("{0} sample row(s) were returned but none carried a numeric NtpOffset" -f $parsed.RowsSeen) }
+        elseif ([string]::IsNullOrWhiteSpace($scOut)) { $err = 'w32tm produced no output' }
+        else { $err = 'the /rdtsc CSV header was not found in the output' }
+    }
+    return [pscustomobject]@{ Queried = $true; Offsets = @($parsed.Offsets); Delays = @($parsed.Delays); Error = $err }
+}
+
+function Get-AdfaC14Median {
+    <#
+    .SYNOPSIS
+        Pure: the median of a list of numbers, or $null for none.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyCollection()][double[]]$Values = @())
+    $sorted = @($Values | Sort-Object)
+    if ($sorted.Count -eq 0) { return $null }
+    $mid = [int][math]::Floor($sorted.Count / 2)
+    if ($sorted.Count % 2 -eq 1) { return [double]$sorted[$mid] }
+    return ([double]$sorted[$mid - 1] + [double]$sorted[$mid]) / 2
+}
+
+function Get-AdfaPdcClockOffsetVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Clock offset vs forest root PDC: <dc>" - one DC's clock against the forest root PDC
+        emulator, the reference Microsoft names for the forest's time.
+    .DESCRIPTION
+        Both clocks are read from the host running the assessment with w32tm /stripchart. The
+        offset of the DC against the PDC is each DC sample minus the median PDC sample, and the worst
+        of those is graded on its size: at or beyond FailSeconds (300, the Kerberos default maximum
+        tolerance) Fail, at or beyond WarnSeconds (60, a tool default, not a Microsoft value) Warning,
+        else Pass. The sign is not graded. The error bound - half the DC's largest round trip plus
+        half the PDC's median round trip - is TOOL REASONING, not a Microsoft method, and is reported,
+        not graded. The forest root PDC itself is Info. Not Assessed, never Pass, when the reference is
+        not identified or not measured, the DC was classified unreachable, or the DC was not measured.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainController,
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()][AllowEmptyString()][string]$ReferencePdc = '',
+        [bool]$IsReference = $false,
+        [AllowNull()]$Sample = $null,
+        [AllowNull()]$ReferenceSample = $null,
+        [AllowNull()][AllowEmptyString()][string]$ReachCause = '',
+        [double]$WarnSeconds = 60,
+        [double]$FailSeconds = 300,
+        [AllowNull()][AllowEmptyString()][string]$ThresholdSource = ''
+    )
+    $item = ("Clock offset vs forest root PDC: {0}" -f $DomainController)
+    $source = $ThresholdSource
+    if ([string]::IsNullOrWhiteSpace($source)) { $source = [string]$script:Config.ClockSkew['ThresholdSource'] }
+    $evidence = ("Reference: the forest root PDC emulator, 'the authoritative time server for the organization' (KB 884776); Kerberos needs only the relative difference between KDC and target (replication error 5 article); Kerberos SkewTime default 5 minutes (read 2026-11-17). Offset = DC sample minus the median reference sample, both from w32tm /stripchart run on the host running the assessment; error bound = half the DC's largest round trip plus half the reference's median round trip. Both are tool reasoning, not a Microsoft method. Grades: {0}." -f $source)
+    $columns = [ordered]@{ Reference = [string]$ReferencePdc; OffsetSeconds = ''; ErrorBoundSeconds = ''; Samples = '' }
+    $na = { param([string]$Why) New-AdfaC14Row -Area 'TimeHierarchy' -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail ("{0} Nothing can be concluded about this DC's time against the forest root PDC emulator - an unmeasured offset is not a small one." -f $Why) }
+    if (-not [string]::IsNullOrWhiteSpace($ReachCause)) { return (& $na ("The offset was not measured: {0}." -f $ReachCause.Trim().TrimEnd('.'))) }
+    if ([string]::IsNullOrWhiteSpace($ReferencePdc)) { return (& $na 'The forest root PDC emulator was not identified, so there is no reference clock.') }
+    if ($IsReference) {
+        return New-AdfaC14Row -Area 'TimeHierarchy' -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+            -Detail 'This domain controller is the forest root PDC emulator, the reference the other DCs are measured against. Its own time source is graded by the rows above.'
+    }
+    $numbers = { param($List) @(@($List) | Where-Object { $_ -is [double] -or $_ -is [int] -or $_ -is [decimal] -or $_ -is [single] } | ForEach-Object { [double]$_ }) }
+    $refOffsets = @()
+    $refDelays = @()
+    $refError = ''
+    if ($null -ne $ReferenceSample) {
+        if ([bool](Get-AdfaConfigValue -Entry $ReferenceSample -Name 'Queried')) { $refOffsets = @(& $numbers (Get-AdfaConfigValue -Entry $ReferenceSample -Name 'Offsets')) }
+        $refDelays = @(& $numbers (Get-AdfaConfigValue -Entry $ReferenceSample -Name 'Delays'))
+        $refError = [string](Get-AdfaConfigValue -Entry $ReferenceSample -Name 'Error')
+    }
+    if ($refOffsets.Count -eq 0) {
+        $why = 'it was not measured'
+        if (-not [string]::IsNullOrWhiteSpace($refError)) { $why = $refError.Trim().TrimEnd('.') }
+        return (& $na ("The reference, the forest root PDC emulator, could not be measured: {0}." -f $why))
+    }
+    $dcOffsets = @()
+    $dcDelays = @()
+    $dcError = ''
+    if ($null -ne $Sample) {
+        if ([bool](Get-AdfaConfigValue -Entry $Sample -Name 'Queried')) { $dcOffsets = @(& $numbers (Get-AdfaConfigValue -Entry $Sample -Name 'Offsets')) }
+        $dcDelays = @(& $numbers (Get-AdfaConfigValue -Entry $Sample -Name 'Delays'))
+        $dcError = [string](Get-AdfaConfigValue -Entry $Sample -Name 'Error')
+    }
+    if ($dcOffsets.Count -eq 0) {
+        $why = 'no sample was taken'
+        if (-not [string]::IsNullOrWhiteSpace($dcError)) { $why = $dcError.Trim().TrimEnd('.') }
+        return (& $na ("This DC's offset could not be measured: {0}." -f $why))
+    }
+    $refMedian = [double](Get-AdfaC14Median -Values $refOffsets)
+    $worst = 0.0
+    foreach ($v in $dcOffsets) {
+        $rel = $v - $refMedian
+        if ([math]::Abs($rel) -gt [math]::Abs($worst)) { $worst = $rel }
+    }
+    $abs = [math]::Abs($worst)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $boundText = 'no round trip was read, so no error bound is given'
+    if ($dcDelays.Count -gt 0 -and $refDelays.Count -gt 0) {
+        $bound = ((@($dcDelays | Measure-Object -Maximum).Maximum) + [double](Get-AdfaC14Median -Values $refDelays)) / 2
+        $columns.ErrorBoundSeconds = $bound.ToString('0.###', $inv)
+        $boundText = ("error bound about {0} s" -f $bound.ToString('0.###', $inv))
+    }
+    $columns.OffsetSeconds = $worst.ToString('0.###', $inv)
+    $columns.Samples = ("{0} DC, {1} reference" -f $dcOffsets.Count, $refOffsets.Count)
+    $thresholds = ("The {0} s warning level is a tool default, not a Microsoft value; {1} s is the Kerberos default maximum tolerance Microsoft documents." -f $WarnSeconds.ToString('0.###', $inv), $FailSeconds.ToString('0.###', $inv))
+    if ($abs -ge $FailSeconds) {
+        return New-AdfaC14Row -Area 'TimeHierarchy' -Scope $Scope -Item $item -Status $script:Status.Fail -Evidence $evidence -Columns $columns `
+            -Detail ("Offset against the forest root PDC emulator is {0} s ({1}), at or beyond the Kerberos maximum tolerance: authentication between this DC and the others fails at this difference. {2}" -f $worst.ToString('0.###', $inv), $boundText, $thresholds)
+    }
+    if ($abs -ge $WarnSeconds) {
+        return New-AdfaC14Row -Area 'TimeHierarchy' -Scope $Scope -Item $item -Status $script:Status.Warning -Evidence $evidence -Columns $columns `
+            -Detail ("Offset against the forest root PDC emulator is {0} s ({1}): inside the Kerberos maximum tolerance but past the warning level. {2}" -f $worst.ToString('0.###', $inv), $boundText, $thresholds)
+    }
+    return New-AdfaC14Row -Area 'TimeHierarchy' -Scope $Scope -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
+        -Detail ("Offset against the forest root PDC emulator is {0} s ({1}), below the warning level. {2}" -f $worst.ToString('0.###', $inv), $boundText, $thresholds)
+}
+
+# --- STALE-001/002 -------------------------------------------------------------------------------
+
+function Get-AdfaStaleLdapFilter {
+    <#
+    .SYNOPSIS
+        Pure: the LDAP filter of one stale read.
+    .DESCRIPTION
+        Enabled only: (!(userAccountControl:1.2.840.113556.1.4.803:=2)) - ACCOUNTDISABLE, bit 2,
+        through the bitwise AND matching rule. User and Computer: lastLogonTimestamp at or before the
+        cutoff (FILETIME), or none and whenCreated at or before it (generalized time) - a never-used
+        account is counted once it is older than the cutoff. Users: (objectCategory=person)
+        (objectClass=user). Computers: (objectCategory=computer) without the group managed and
+        standalone managed service account classes. Password: enabled users whose pwdLastSet is at
+        or before the cutoff (0 included; the verdict tells it apart). EnabledUser and EnabledComputer:
+        the declared population of the User and Computer reads - the same filter without the time
+        term (the cutoff is not used).
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][ValidateSet('User', 'Computer', 'Password', 'EnabledUser', 'EnabledComputer')][string]$Kind,
+        [Parameter(Mandatory)][datetime]$CutoffUtc
+    )
+    $cut = $CutoffUtc
+    if ($cut.Kind -eq [System.DateTimeKind]::Local) { $cut = $cut.ToUniversalTime() }
+    $cut = [datetime]::SpecifyKind($cut, [System.DateTimeKind]::Utc)
+    $ft = $cut.ToFileTimeUtc()
+    $gt = $cut.ToString('yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture) + '.0Z'
+    $enabled = '(!(userAccountControl:1.2.840.113556.1.4.803:=2))'
+    $activity = ("(|(lastLogonTimestamp<={0})(&(!(lastLogonTimestamp=*))(whenCreated<={1})))" -f $ft, $gt)
+    switch ($Kind) {
+        'User' { return ("(&(objectCategory=person)(objectClass=user){0}{1})" -f $enabled, $activity) }
+        'Computer' { return ("(&(objectCategory=computer)(!(objectClass=msDS-GroupManagedServiceAccount))(!(objectClass=msDS-ManagedServiceAccount)){0}{1})" -f $enabled, $activity) }
+        'EnabledUser' { return ("(&(objectCategory=person)(objectClass=user){0})" -f $enabled) }
+        'EnabledComputer' { return ("(&(objectCategory=computer)(!(objectClass=msDS-GroupManagedServiceAccount))(!(objectClass=msDS-ManagedServiceAccount)){0})" -f $enabled) }
+    }
+    return ("(&(objectCategory=person)(objectClass=user){0}(pwdLastSet<={1}))" -f $enabled, $ft)
+}
+
+function Get-AdfaStaleRaw {
+    <#
+    .SYNOPSIS
+        The directory seam of STALE-001/002: one search of one domain, listed properties only,
+        capped. Never throws.
+    .DESCRIPTION
+        Get-ADUser (User, Password) or Get-ADComputer (Computer) with -Server <domain>, -LDAPFilter
+        from Get-AdfaStaleLdapFilter, -Properties naming sAMAccountName, lastLogonTimestamp,
+        whenCreated and userAccountControl (pwdLastSet in place of the two logon attributes for
+        Password) - never every property - and -ResultSetSize one above MaxObjects, so a domain with
+        more than that is Capped, not silently cut. Each object is reduced to a small record as it
+        arrives.
+    .OUTPUTS
+        [pscustomobject] Ok, Error, ErrorType, Records (Name, HasLastLogon, LastLogonUtc,
+        WhenCreatedUtc, PwdLastSetRaw, UserAccountControl), Capped, Filter, Properties.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [Parameter(Mandatory)][ValidateSet('User', 'Computer', 'Password')][string]$Kind,
+        [Parameter(Mandatory)][datetime]$CutoffUtc,
+        [ValidateRange(1, 1000000)][int]$MaxObjects = 100000,
+        [hashtable]$AdParams = @{}
+    )
+    $props = @('sAMAccountName', 'lastLogonTimestamp', 'whenCreated', 'userAccountControl')
+    if ($Kind -eq 'Password') { $props = @('sAMAccountName', 'pwdLastSet', 'userAccountControl') }
+    $filter = Get-AdfaStaleLdapFilter -Kind $Kind -CutoffUtc $CutoffUtc
+    $out = [pscustomobject]@{ Ok = $false; Error = ''; ErrorType = ''; Records = @(); Capped = $false; Filter = $filter; Properties = @($props) }
+    $toRecord = {
+        param($o)
+        $name = [string](Get-AdfaConfigValue -Entry $o -Name 'sAMAccountName')
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = [string](Get-AdfaConfigValue -Entry $o -Name 'Name') }
+        $llt = Get-AdfaConfigValue -Entry $o -Name 'lastLogonTimestamp'
+        $hasLast = ($null -ne $llt -and -not [string]::IsNullOrWhiteSpace([string]$llt))
+        $lastUtc = $null
+        if ($hasLast) { $lastUtc = ConvertTo-AdfaFileTimeUtc -Value $llt }
+        $created = Get-AdfaConfigValue -Entry $o -Name 'whenCreated'
+        $createdUtc = $null
+        if ($created -is [datetime]) { $createdUtc = $created.ToUniversalTime() }
+        $pwdValue = Get-AdfaConfigValue -Entry $o -Name 'pwdLastSet'
+        $pwdRaw = $null
+        if ($null -ne $pwdValue) {
+            $parsed = [int64]0
+            if ([int64]::TryParse(([string]$pwdValue).Trim(), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) { $pwdRaw = $parsed }
+        }
+        # userAccountControl, raw: the password verdict needs UF_DONT_EXPIRE_PASSWD to read pwdLastSet 0.
+        $uacValue = Get-AdfaConfigValue -Entry $o -Name 'userAccountControl'
+        $uacRaw = $null
+        if ($null -ne $uacValue) {
+            $parsedUac = [int64]0
+            if ([int64]::TryParse(([string]$uacValue).Trim(), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsedUac)) { $uacRaw = $parsedUac }
+        }
+        [pscustomobject]@{ Name = $name; HasLastLogon = $hasLast; LastLogonUtc = $lastUtc; WhenCreatedUtc = $createdUtc; PwdLastSetRaw = $pwdRaw; UserAccountControl = $uacRaw }
+    }
+    try {
+        $query = @{} + $AdParams
+        $query.Server = $DomainName
+        $query.LDAPFilter = $filter
+        $query.Properties = @($props)
+        $query.ResultSetSize = $MaxObjects + 1
+        $query.ErrorAction = 'Stop'
+        $records = New-Object System.Collections.ArrayList
+        if ($Kind -eq 'Computer') { Get-ADComputer @query | ForEach-Object { if ($null -ne $_) { [void]$records.Add((& $toRecord $_)) } } }
+        else { Get-ADUser @query | ForEach-Object { if ($null -ne $_) { [void]$records.Add((& $toRecord $_)) } } }
+        $out.Records = @($records.ToArray())
+        $out.Capped = ($records.Count -gt $MaxObjects)
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function Get-AdfaStalePopulationRaw {
+    <#
+    .SYNOPSIS
+        The declared population of STALE-001/002: how many enabled users (or computers) one domain
+        returns to the account running the scan. Never throws.
+    .DESCRIPTION
+        Get-ADUser (User) or Get-ADComputer (Computer) with -Server <domain>, -LDAPFilter from
+        Get-AdfaStaleLdapFilter -Kind EnabledUser / EnabledComputer (the stale filter without its time
+        term), the cmdlet's default property set (no -Properties, so never every property) and
+        -ResultSetSize one above MaxObjects. Only a count is kept. It is what lets a stale read that
+        returned nothing be told from a read that saw nothing: a count of 0 is never a clean result.
+    .OUTPUTS
+        [pscustomobject] Ok, Count, Capped, Error, ErrorType, Filter.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [Parameter(Mandatory)][ValidateSet('User', 'Computer')][string]$Kind,
+        [ValidateRange(1, 1000000)][int]$MaxObjects = 100000,
+        [hashtable]$AdParams = @{}
+    )
+    $filter = Get-AdfaStaleLdapFilter -Kind ("Enabled{0}" -f $Kind) -CutoffUtc ([datetime]::UtcNow)
+    $out = [pscustomobject]@{ Ok = $false; Count = 0; Capped = $false; Error = ''; ErrorType = ''; Filter = $filter }
+    try {
+        $query = @{} + $AdParams
+        $query.Server = $DomainName
+        $query.LDAPFilter = $filter
+        $query.ResultSetSize = $MaxObjects + 1
+        $query.ErrorAction = 'Stop'
+        $count = 0
+        if ($Kind -eq 'Computer') { Get-ADComputer @query | ForEach-Object { if ($null -ne $_) { $count++ } } }
+        else { Get-ADUser @query | ForEach-Object { if ($null -ne $_) { $count++ } } }
+        $out.Count = $count
+        $out.Capped = ($count -gt $MaxObjects)
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function Get-AdfaC14PopulationText {
+    <#
+    .SYNOPSIS
+        Pure: how a stale row states its declared population, and why a row with nothing found cannot
+        pass when that population is not known. Ok is true only for a read that saw at least one
+        enabled account.
+    .OUTPUTS
+        [pscustomobject] Ok, Text, Why.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Population, [Parameter(Mandatory)][string]$Noun, [int]$MaxObjects = 100000)
+    if ($null -eq $Population) {
+        return [pscustomobject]@{ Ok = $false; Text = ("The enabled {0} accounts of this domain were not counted." -f $Noun)
+            Why = ("The enabled {0} accounts of this domain were not counted, so a read that returned nothing cannot be told from a read that saw nothing." -f $Noun) }
+    }
+    if (-not [bool](Get-AdfaConfigValue -Entry $Population -Name 'Ok')) {
+        $err = [string](Get-AdfaConfigValue -Entry $Population -Name 'Error')
+        $class = Get-AdfaDirectoryReadErrorClass -Message $err -TypeName ([string](Get-AdfaConfigValue -Entry $Population -Name 'ErrorType'))
+        $t = ("Counting the enabled {0} accounts of this domain failed ({1}): {2}." -f $Noun, (Get-AdfaReadClassPhrase -Class $class), $err.Trim().TrimEnd('.'))
+        return [pscustomobject]@{ Ok = $false; Text = $t; Why = ("{0} A read that returned nothing cannot be told from a read that saw nothing." -f $t) }
+    }
+    $n = [int](Get-AdfaConfigValue -Entry $Population -Name 'Count')
+    if ($n -le 0) {
+        return [pscustomobject]@{ Ok = $false; Text = ("The read saw no enabled {0} account in this domain." -f $Noun)
+            Why = ("The read saw no enabled {0} account at all in this domain (the declared population is empty): the rights of the account running the scan may hide them, so nothing returned is not proof that none is stale." -f $Noun) }
+    }
+    $countText = [string]$n
+    if ([bool](Get-AdfaConfigValue -Entry $Population -Name 'Capped')) { $countText = ("more than {0}" -f $MaxObjects) }
+    return [pscustomobject]@{ Ok = $true; Text = ("The read saw {0} enabled {1} account(s) in this domain." -f $countText, $Noun); Why = '' }
+}
+
+function Get-AdfaLogonSyncIntervalRaw {
+    <#
+    .SYNOPSIS
+        The domain's msDS-LogonTimeSyncInterval, from its head. Never throws.
+    .DESCRIPTION
+        Get-ADDomain for the DN (with the caller's AD parameters, as the Laps read does), then
+        Get-ADObject -Server <domain> -Identity <DN> -Properties msDS-LogonTimeSyncInterval. Present is
+        false when the attribute is not set; the verdict then states the default.
+    .OUTPUTS
+        [pscustomobject] Ok, Present, Value, Error.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
+    $out = [pscustomobject]@{ Ok = $false; Present = $false; Value = $null; Error = '' }
+    try {
+        $domainArgs = @{} + $AdParams
+        $domainArgs.Identity = $DomainName
+        $domainArgs.ErrorAction = 'Stop'
+        $dn = [string](Get-ADDomain @domainArgs).DistinguishedName
+        if ([string]::IsNullOrWhiteSpace($dn)) { throw 'Get-ADDomain returned no DistinguishedName.' }
+        $headArgs = @{} + $AdParams
+        $headArgs.Server = $DomainName
+        $headArgs.Identity = $dn
+        $headArgs.Properties = @('msDS-LogonTimeSyncInterval')
+        $headArgs.ErrorAction = 'Stop'
+        $head = Get-ADObject @headArgs
+        $value = Get-AdfaConfigValue -Entry $head -Name 'msDS-LogonTimeSyncInterval'
+        if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) { $out.Present = $true; $out.Value = $value }
+        $out.Ok = $true
+    }
+    catch { $out.Error = [string]$_.Exception.Message }
+    return $out
+}
+
+function Get-AdfaC14SyncInterval {
+    <#
+    .SYNOPSIS
+        Pure: the logon-sync interval a stale row states, where it came from, and whether updates are
+        disabled.
+    .OUTPUTS
+        [pscustomobject] Days, Disabled, Text.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Interval, [hashtable]$Config = $script:Config.Stale)
+    $default = [int]$Config['SyncIntervalDefaultDays']
+    if ($null -eq $Interval -or -not [bool](Get-AdfaConfigValue -Entry $Interval -Name 'Ok')) {
+        $err = ''
+        if ($null -ne $Interval) { $err = [string](Get-AdfaConfigValue -Entry $Interval -Name 'Error') }
+        return [pscustomobject]@{ Days = $default; Disabled = $false; Text = ("msDS-LogonTimeSyncInterval could not be read ({0}); {1} days, its default, was assumed" -f $err.Trim().TrimEnd('.'), $default) }
+    }
+    if (-not [bool](Get-AdfaConfigValue -Entry $Interval -Name 'Present')) {
+        return [pscustomobject]@{ Days = $default; Disabled = $false; Text = ("msDS-LogonTimeSyncInterval is not set, which means its default of {0} days" -f $default) }
+    }
+    $days = 0
+    if (-not [int]::TryParse(([string](Get-AdfaConfigValue -Entry $Interval -Name 'Value')).Trim(), [ref]$days)) {
+        return [pscustomobject]@{ Days = $default; Disabled = $false; Text = ("msDS-LogonTimeSyncInterval holds a value that is not a number; {0} days, its default, was assumed" -f $default) }
+    }
+    if ($days -eq 0) { return [pscustomobject]@{ Days = 0; Disabled = $true; Text = 'msDS-LogonTimeSyncInterval is 0' } }
+    return [pscustomobject]@{ Days = $days; Disabled = $false; Text = ("msDS-LogonTimeSyncInterval is {0} days" -f $days) }
+}
+
+function Get-AdfaStaleCountVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Inactive enabled users" / "Inactive enabled computers" for one domain.
+    .DESCRIPTION
+        Counts the enabled accounts whose lastLogonTimestamp is at or before Now minus StaleDays, or
+        that have none and were created at or before it (counted separately as never logged on).
+        StaleStatus (Warning; Info by override) when any; Pass only when a complete read found none
+        AND the declared population (Population, the enabled accounts of the kind the same account
+        could see) is at least one. Every row states the logon-sync interval and that the real last
+        logon can be up to that much more recent. Not Assessed, never Pass or zero, when the read
+        failed (unreachable, access denied, timed out and other errors told apart), the cap was
+        reached, updates are disabled (interval 0), StaleDays is not longer than the interval, a
+        returned object carried neither time, or nothing was found and the population was not
+        counted, could not be counted or was empty. Names are in the Accounts column only.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [Parameter(Mandatory)][ValidateSet('User', 'Computer')][string]$Kind,
+        [AllowNull()]$Raw,
+        [AllowNull()]$Interval,
+        [Parameter(Mandatory)][int]$StaleDays,
+        [Parameter(Mandatory)][datetime]$Now,
+        [AllowNull()]$Population = $null,
+        [hashtable]$Config = $script:Config.Stale
+    )
+    $noun = 'user'
+    $item = 'Inactive enabled users'
+    if ($Kind -eq 'Computer') { $noun = 'computer'; $item = 'Inactive enabled computers' }
+    $sync = Get-AdfaC14SyncInterval -Interval $Interval -Config $Config
+    $random = [int]$Config['SyncRandomisationDays']
+    # Microsoft: the value is updated when it is older than the interval minus a random part (up to 5
+    # days by default), "9 to 14 days" under the default. The random part shortens the wait, so the
+    # value trails the real last logon by at most the interval itself, never by more.
+    $caveat = ("lastLogonTimestamp is rewritten at a logon only when the value held is older than the logon-sync interval ({0}) minus a random part of up to {1} days, so the real last logon can be up to the interval more recent than the value read, never more (Microsoft: 'updated only when the current value in Active Directory is 9 to 14 days older than the time of logon' under the default)." -f $sync.Text, $random)
+    $evidence = ("LDAP filter: enabled (ACCOUNTDISABLE clear), lastLogonTimestamp at or before the cutoff, or none and whenCreated at or before it; -Server {0}, listed properties only, at most {1} objects (MaxObjects). Declared population: the enabled accounts of the same kind, counted with the same filter without its time term. StaleDays {2} is the -StaleDays parameter, a tool default, not a Microsoft value (Defender for Identity uses 90 days for its own rule). Sources read 2026-11-17: a-lastlogontimestamp, KB 2679653, the AskDS archive on Learn." -f $DomainName, [int]$Config['MaxObjects'], $StaleDays)
+    $columns = [ordered]@{ Count = ''; NeverLoggedOn = ''; Population = ''; StaleDays = [string]$StaleDays; SyncIntervalDays = $sync.Days; Accounts = '' }
+    $na = { param([string]$Why) New-AdfaC14Row -Area 'Stale' -Scope $DomainName -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail ("{0} The count of stale enabled {1} accounts is not known - not zero, and not a clean result." -f $Why, $noun) }
+    if ($null -eq $Raw) { return (& $na 'The accounts were not read.') }
+    if (-not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Ok')) {
+        $err = [string](Get-AdfaConfigValue -Entry $Raw -Name 'Error')
+        $class = Get-AdfaDirectoryReadErrorClass -Message $err -TypeName ([string](Get-AdfaConfigValue -Entry $Raw -Name 'ErrorType'))
+        return (& $na ("Reading the {0} accounts of this domain failed ({1}): {2}." -f $noun, (Get-AdfaReadClassPhrase -Class $class), $err.Trim().TrimEnd('.')))
+    }
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'Capped')) { return (& $na ("The read reached its cap of {0} objects (MaxObjects, a tool default), so the count is incomplete." -f [int]$Config['MaxObjects'])) }
+    if ($sync.Disabled) { return (& $na ("{0}: lastLogonTimestamp updates are disabled, so the attribute cannot show activity." -f $sync.Text)) }
+    if ($StaleDays -le $sync.Days) { return (& $na ("StaleDays {0} is not longer than the logon-sync interval ({1} days), the most lastLogonTimestamp can trail the real last logon, so an account in use can look stale. Re-run with a larger -StaleDays." -f $StaleDays, $sync.Days)) }
+    $nowUtc = $Now
+    if ($nowUtc.Kind -eq [System.DateTimeKind]::Local) { $nowUtc = $nowUtc.ToUniversalTime() }
+    $cutoff = $nowUtc.AddDays(-1 * $StaleDays)
+    $stale = @()
+    $never = 0
+    $unclassified = 0
+    foreach ($r in @(Get-AdfaConfigValue -Entry $Raw -Name 'Records' | Where-Object { $null -ne $_ })) {
+        $last = Get-AdfaConfigValue -Entry $r -Name 'LastLogonUtc'
+        $created = Get-AdfaConfigValue -Entry $r -Name 'WhenCreatedUtc'
+        $name = [string](Get-AdfaConfigValue -Entry $r -Name 'Name')
+        if ([bool](Get-AdfaConfigValue -Entry $r -Name 'HasLastLogon')) {
+            if ($last -isnot [datetime]) { $unclassified++; continue }
+            if ($last -le $cutoff) { $stale += $name }
+            continue
+        }
+        if ($created -isnot [datetime]) { $unclassified++; continue }
+        if ($created -le $cutoff) { $stale += $name; $never++ }
+    }
+    if ($unclassified -gt 0) { return (& $na ("{0} returned object(s) carried no readable lastLogonTimestamp and no readable whenCreated, so they could not be classified." -f $unclassified)) }
+    $pop = Get-AdfaC14PopulationText -Population $Population -Noun $noun -MaxObjects ([int]$Config['MaxObjects'])
+    if ($null -ne $Population -and [bool](Get-AdfaConfigValue -Entry $Population -Name 'Ok')) {
+        $columns.Population = [string](Get-AdfaConfigValue -Entry $Population -Name 'Count')
+        if ([bool](Get-AdfaConfigValue -Entry $Population -Name 'Capped')) { $columns.Population = ("more than {0}" -f [int]$Config['MaxObjects']) }
+    }
+    $columns.Count = [string]$stale.Count
+    $columns.NeverLoggedOn = [string]$never
+    $columns.Accounts = Get-AdfaC14NameList -Names $stale -Cap ([int]$Config['NameListCap'])
+    if ($stale.Count -gt 0) {
+        $status = [string]$Config['StaleStatus']
+        return New-AdfaC14Row -Area 'Stale' -Scope $DomainName -Item $item -Status $status -Evidence $evidence -Columns $columns `
+            -Detail ("{0} enabled {1} account(s) with no logon recorded for more than {2} days; {3} of them never logged on (no lastLogonTimestamp, created more than {2} days ago). {4} {5} Graded {6}: {7}." -f $stale.Count, $noun, $StaleDays, $never, $pop.Text, $caveat, $status, [string]$Config['ThresholdSource'])
+    }
+    # Nothing found passes only against a declared population the read could see.
+    if (-not $pop.Ok) { return (& $na $pop.Why) }
+    return New-AdfaC14Row -Area 'Stale' -Scope $DomainName -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
+        -Detail ("0 enabled {0} accounts with no logon recorded for more than {1} days, in a complete read. {2} {3}" -f $noun, $StaleDays, $pop.Text, $caveat)
+}
+
+function Get-AdfaPasswordAgeVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Enabled users with an old password" for one domain.
+    .DESCRIPTION
+        Enabled users whose pwdLastSet is at or before Now minus PasswordAgeDays (365, a tool default,
+        not a Microsoft value) are PasswordAgeStatus (Warning; Info by override). pwdLastSet 0 is read
+        as Microsoft documents it - the user must set the password at the next logon - only where the
+        record's userAccountControl is readable and UF_DONT_EXPIRE_PASSWD (0x10000) is clear; those are
+        counted on their own, not graded. pwdLastSet 0 with UF_DONT_EXPIRE_PASSWD set is an account
+        whose password age is not known: it is counted and named in its own column, and the row
+        cannot pass while any exists. Not Assessed when the read failed, was capped, a returned object
+        carried no pwdLastSet (or pwdLastSet 0 with no readable userAccountControl), or nothing was
+        found and the declared population (Population, the enabled users) was not counted or empty.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [AllowNull()]$Raw,
+        [Parameter(Mandatory)][datetime]$Now,
+        [AllowNull()]$Population = $null,
+        [hashtable]$Config = $script:Config.Stale
+    )
+    $item = 'Enabled users with an old password'
+    $days = [int]$Config['PasswordAgeDays']
+    $evidence = ("LDAP filter: enabled users (ACCOUNTDISABLE clear) with pwdLastSet at or before the cutoff; -Server {0}, listed properties only. Declared population: the enabled users, counted with the same filter without its pwdLastSet term. PasswordAgeDays {1} is a tool default, not a Microsoft value. pwdLastSet 0: 'If this value is set to 0 and the User-Account-Control attribute does not contain the UF_DONT_EXPIRE_PASSWD flag, then the user must set the password at the next logon' (Learn a-pwdlastset, read 2026-11-17)." -f $DomainName, $days)
+    $columns = [ordered]@{ Count = ''; MustChangeAtNextLogon = ''; AgeNotKnown = ''; Population = ''; PasswordAgeDays = [string]$days; Accounts = ''; AgeNotKnownAccounts = '' }
+    $na = { param([string]$Why) New-AdfaC14Row -Area 'Stale' -Scope $DomainName -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail ("{0} The count of enabled users with an old password is not known - not zero, and not a clean result." -f $Why) }
+    if ($null -eq $Raw) { return (& $na 'The accounts were not read.') }
+    if (-not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Ok')) {
+        $err = [string](Get-AdfaConfigValue -Entry $Raw -Name 'Error')
+        $class = Get-AdfaDirectoryReadErrorClass -Message $err -TypeName ([string](Get-AdfaConfigValue -Entry $Raw -Name 'ErrorType'))
+        return (& $na ("Reading the user accounts of this domain failed ({0}): {1}." -f (Get-AdfaReadClassPhrase -Class $class), $err.Trim().TrimEnd('.')))
+    }
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'Capped')) { return (& $na ("The read reached its cap of {0} objects (MaxObjects, a tool default), so the count is incomplete." -f [int]$Config['MaxObjects'])) }
+    $nowUtc = $Now
+    if ($nowUtc.Kind -eq [System.DateTimeKind]::Local) { $nowUtc = $nowUtc.ToUniversalTime() }
+    $cutoff = $nowUtc.AddDays(-1 * $days)
+    $old = @()
+    $mustChange = 0
+    $ageUnknown = @()
+    $unclassified = 0
+    $noUac = 0
+    $dontExpire = [int64]0x10000
+    foreach ($r in @(Get-AdfaConfigValue -Entry $Raw -Name 'Records' | Where-Object { $null -ne $_ })) {
+        $rawValue = Get-AdfaConfigValue -Entry $r -Name 'PwdLastSetRaw'
+        if ($null -eq $rawValue) { $unclassified++; continue }
+        if ([int64]$rawValue -eq 0) {
+            # Learn a-pwdlastset: 0 means "must set the password at the next logon" only where
+            # UF_DONT_EXPIRE_PASSWD is clear; with it set, the age of the password is not known.
+            $uac = Get-AdfaConfigValue -Entry $r -Name 'UserAccountControl'
+            if ($null -eq $uac) { $noUac++; continue }
+            if (([int64]$uac -band $dontExpire) -ne 0) { $ageUnknown += [string](Get-AdfaConfigValue -Entry $r -Name 'Name'); continue }
+            $mustChange++
+            continue
+        }
+        $set = ConvertTo-AdfaFileTimeUtc -Value ([int64]$rawValue)
+        if ($null -eq $set) { $unclassified++; continue }
+        if ($set -le $cutoff) { $old += [string](Get-AdfaConfigValue -Entry $r -Name 'Name') }
+    }
+    if ($unclassified -gt 0) { return (& $na ("{0} returned object(s) carried no readable pwdLastSet, so they could not be classified." -f $unclassified)) }
+    if ($noUac -gt 0) { return (& $na ("{0} returned object(s) carried pwdLastSet 0 and no readable userAccountControl, so whether they must change their password at the next logon or hold a password of unknown age (UF_DONT_EXPIRE_PASSWD) could not be told." -f $noUac)) }
+    $pop = Get-AdfaC14PopulationText -Population $Population -Noun 'user' -MaxObjects ([int]$Config['MaxObjects'])
+    if ($null -ne $Population -and [bool](Get-AdfaConfigValue -Entry $Population -Name 'Ok')) {
+        $columns.Population = [string](Get-AdfaConfigValue -Entry $Population -Name 'Count')
+        if ([bool](Get-AdfaConfigValue -Entry $Population -Name 'Capped')) { $columns.Population = ("more than {0}" -f [int]$Config['MaxObjects']) }
+    }
+    $columns.Count = [string]$old.Count
+    $columns.MustChangeAtNextLogon = [string]$mustChange
+    $columns.AgeNotKnown = [string]$ageUnknown.Count
+    $columns.Accounts = Get-AdfaC14NameList -Names $old -Cap ([int]$Config['NameListCap'])
+    $columns.AgeNotKnownAccounts = Get-AdfaC14NameList -Names $ageUnknown -Cap ([int]$Config['NameListCap'])
+    $mustText = ("{0} more must change their password at the next logon (pwdLastSet 0, UF_DONT_EXPIRE_PASSWD clear); they are counted, not graded." -f $mustChange)
+    $unknownText = ''
+    if ($ageUnknown.Count -gt 0) { $unknownText = (" {0} more carry pwdLastSet 0 with UF_DONT_EXPIRE_PASSWD set, so the age of their password is not known (AgeNotKnown column)." -f $ageUnknown.Count) }
+    if ($old.Count -gt 0) {
+        $status = [string]$Config['PasswordAgeStatus']
+        return New-AdfaC14Row -Area 'Stale' -Scope $DomainName -Item $item -Status $status -Evidence $evidence -Columns $columns `
+            -Detail ("{0} enabled user account(s) whose password was last set more than {1} days ago. {2}{3} {4} Graded {5}: {6}." -f $old.Count, $days, $mustText, $unknownText, $pop.Text, $status, [string]$Config['ThresholdSource'])
+    }
+    if ($ageUnknown.Count -gt 0) { return (& $na ("No enabled user account read has a password last set more than {0} days ago, but {1} carry pwdLastSet 0 with UF_DONT_EXPIRE_PASSWD set, so the age of their password was not measured." -f $days, $ageUnknown.Count)) }
+    # Nothing found passes only against a declared population the read could see.
+    if (-not $pop.Ok) { return (& $na $pop.Why) }
+    return New-AdfaC14Row -Area 'Stale' -Scope $DomainName -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
+        -Detail ("0 enabled user accounts whose password was last set more than {0} days ago, in a complete read. {1} {2}" -f $days, $mustText, $pop.Text)
+}
+
+# --- SYSVOL-004 ----------------------------------------------------------------------------------
+
+function Get-AdfaDirectoryObjectState {
+    <#
+    .SYNOPSIS
+        Whether one directory object exists, read from the server named: Present, Absent or Unread.
+        Never throws.
+    .DESCRIPTION
+        Get-ADObject -Identity <DN> -Server <domain>. Absent only when the exception's type is the
+        module's "identity not found" (NotFoundTypePattern; Microsoft does not publish the exceptions,
+        PORT-PLAN C17). Anything else - refused, unreachable, timed out - is Unread, with its class, so
+        a refused read is never taken for an object that does not exist.
+    .OUTPUTS
+        [pscustomobject] State, Object, Error, ErrorType, Class.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Identity,
+        [Parameter(Mandatory)][string]$Server,
+        [AllowNull()][AllowEmptyCollection()][string[]]$Properties = @(),
+        [hashtable]$AdParams = @{},
+        [hashtable]$Config = $script:Config.SysvolEngine
+    )
+    $out = [pscustomobject]@{ State = 'Unread'; Object = $null; Error = ''; ErrorType = ''; Class = '' }
+    try {
+        $query = @{} + $AdParams
+        $query.Server = $Server
+        $query.Identity = $Identity
+        if (@($Properties).Count -gt 0) { $query.Properties = @($Properties) }
+        $query.ErrorAction = 'Stop'
+        $obj = Get-ADObject @query
+        if ($null -eq $obj) { $out.Error = 'the read returned nothing'; $out.Class = 'Error'; return $out }
+        $out.Object = $obj
+        $out.State = 'Present'
+    }
+    catch {
+        $type = [string]$_.Exception.GetType().FullName
+        $out.ErrorType = $type
+        $out.Error = ([string]$_.Exception.Message).Trim()
+        if ($type -match [string]$Config['NotFoundTypePattern']) { $out.State = 'Absent'; $out.Class = 'NotFound' }
+        else { $out.Class = Get-AdfaDirectoryReadErrorClass -Message $out.Error -TypeName $type }
+    }
+    return $out
+}
+
+function Get-AdfaSysvolEngineRaw {
+    <#
+    .SYNOPSIS
+        The directory seam of SYSVOL-004: per DC of one domain, whether its DFSR SYSVOL subscription
+        and its NTFRS subscriber exist, and the domain's msDFSR-Flags. Never throws.
+    .DESCRIPTION
+        Get-ADDomainController -Filter * -Server <domain> for the DCs (HostName, IsReadOnly,
+        ComputerObjectDN); Get-ADDomain for the domain's DN; then, each with -Server <domain> so a child
+        domain is asked of its own DC, CN=DFSR-GlobalSettings,CN=System,<domain DN> (msDFSR-Flags) and,
+        per DC, CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,<computer DN> and
+        CN=Domain System Volume (SYSVOL share),CN=NTFRS Subscriptions,<computer DN>. Reads only.
+    .OUTPUTS
+        [pscustomobject] Ok, Error, ErrorType, DomainDn, GlobalState, GlobalFlags, GlobalError, Dcs
+        (HostName, IsReadOnly, ComputerDn, Dfsr, DfsrError, Frs, FrsError).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{},
+        [hashtable]$Config = $script:Config.SysvolEngine
+    )
+    $out = [pscustomobject]@{ Ok = $false; Error = ''; ErrorType = ''; DomainDn = ''; GlobalState = 'Unread'; GlobalFlags = $null; GlobalError = ''; Dcs = @() }
+    $dcs = @()
+    try {
+        $dcArgs = @{} + $AdParams
+        $dcArgs.Server = $DomainName
+        $dcArgs.Filter = '*'
+        $dcArgs.ErrorAction = 'Stop'
+        $dcs = @(Get-ADDomainController @dcArgs | Where-Object { $null -ne $_ })
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = ([string]$_.Exception.Message).Trim()
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+        return $out
+    }
+    try {
+        $domainArgs = @{} + $AdParams
+        $domainArgs.Identity = $DomainName
+        $domainArgs.ErrorAction = 'Stop'
+        $out.DomainDn = [string](Get-ADDomain @domainArgs).DistinguishedName
+    }
+    catch { $out.GlobalError = ([string]$_.Exception.Message).Trim() }
+    if (-not [string]::IsNullOrWhiteSpace($out.DomainDn)) {
+        $g = Get-AdfaDirectoryObjectState -Identity ([string]$Config['GlobalSettingsDn'] -f $out.DomainDn) -Server $DomainName -Properties @('msDFSR-Flags') -AdParams $AdParams -Config $Config
+        $out.GlobalState = $g.State
+        $out.GlobalError = $g.Error
+        if ($g.State -eq 'Present') {
+            $flags = Get-AdfaConfigValue -Entry $g.Object -Name 'msDFSR-Flags'
+            $n = 0
+            if ($null -ne $flags -and [int]::TryParse(([string]$flags).Trim(), [ref]$n)) { $out.GlobalFlags = $n }
+        }
+    }
+    elseif ([string]::IsNullOrWhiteSpace($out.GlobalError)) { $out.GlobalError = 'Get-ADDomain returned no DistinguishedName' }
+    $records = New-Object System.Collections.ArrayList
+    foreach ($dc in $dcs) {
+        $hostName = [string](Get-AdfaConfigValue -Entry $dc -Name 'HostName')
+        $ro = Get-AdfaConfigValue -Entry $dc -Name 'IsReadOnly'
+        $isRo = $null
+        if ($ro -is [bool]) { $isRo = [bool]$ro }
+        $computerDn = [string](Get-AdfaConfigValue -Entry $dc -Name 'ComputerObjectDN')
+        $record = [pscustomobject]@{ HostName = $hostName; IsReadOnly = $isRo; ComputerDn = $computerDn; Dfsr = 'Unread'; DfsrError = ''; Frs = 'Unread'; FrsError = '' }
+        if ([string]::IsNullOrWhiteSpace($computerDn)) {
+            $record.DfsrError = 'the DC was returned with no computer object DN, so its objects could not be named'
+            $record.FrsError = $record.DfsrError
+        }
+        else {
+            $d = Get-AdfaDirectoryObjectState -Identity ([string]$Config['DfsrSubscriptionDn'] -f $computerDn) -Server $DomainName -AdParams $AdParams -Config $Config
+            $f = Get-AdfaDirectoryObjectState -Identity ([string]$Config['FrsSubscriberDn'] -f $computerDn) -Server $DomainName -AdParams $AdParams -Config $Config
+            $record.Dfsr = $d.State
+            $record.Frs = $f.State
+            if ($d.State -eq 'Unread') { $record.DfsrError = ("{0}: {1}" -f (Get-AdfaReadClassPhrase -Class $d.Class), $d.Error) }
+            if ($f.State -eq 'Unread') { $record.FrsError = ("{0}: {1}" -f (Get-AdfaReadClassPhrase -Class $f.Class), $f.Error) }
+        }
+        [void]$records.Add($record)
+    }
+    $out.Dcs = @($records.ToArray())
+    return $out
+}
+
+function Resolve-AdfaSysvolEngineDc {
+    <#
+    .SYNOPSIS
+        Pure: the SYSVOL engine of one DC from its two objects - DFSR, FRS, Transitional (both: a
+        migration has started and not finished) or Unknown (neither, or either not read).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Dfsr = 'Unread',
+        [AllowNull()][AllowEmptyString()][string]$Frs = 'Unread'
+    )
+    if ($Dfsr -eq 'Unread' -or $Frs -eq 'Unread') { return 'Unknown' }
+    if ($Dfsr -eq 'Present' -and $Frs -eq 'Absent') { return 'DFSR' }
+    if ($Dfsr -eq 'Absent' -and $Frs -eq 'Present') { return 'FRS' }
+    if ($Dfsr -eq 'Present' -and $Frs -eq 'Present') { return 'Transitional' }
+    return 'Unknown'
+}
+
+function Get-AdfaSysvolEngineVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "SYSVOL engine: <dc>" (Info) per DC and "SYSVOL replication engine: <domain>" for the
+        domain.
+    .DESCRIPTION
+        The domain row grades the writable DCs (a DC whose read-only flag is unknown counts as
+        writable): any that still uses FRS or is between FRS and DFSR is FrsStatus (Warning; Fail by
+        override) - measured, so it stands even when another DC was not read; else any whose engine
+        is not known is Not Assessed; else Pass when every writable DC uses DFSR. No writable DC, or
+        a DC list that could not be read, is Not Assessed. msDFSR-Flags is quoted as corroboration
+        only; its absence is never read as FRS.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [AllowNull()]$Raw,
+        [hashtable]$Config = $script:Config.SysvolEngine
+    )
+    $rows = @()
+    $item = ("SYSVOL replication engine: {0}" -f $DomainName)
+    $evidence = 'Per DC, from its own domain: CN=SYSVOL Subscription under its DFSR-LocalSettings (DFSR, KB 2218556) and the NTFRS subscriber "Domain System Volume (SYSVOL share)" under its NTFRS Subscriptions (FRS, missing SYSVOL and Netlogon shares article). FRS is deprecated since Windows Server 2008 R2; "Starting in Windows Server 2019, promoting new domain controllers requires the DFS Replication (DFSR)" (KB 4493934). Read 2026-11-17.'
+    $columns = [ordered]@{ Writable = ''; Dfsr = ''; Frs = ''; Transitional = ''; Unknown = ''; GlobalFlags = '' }
+    if ($null -eq $Raw -or -not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Ok')) {
+        $err = ''
+        $type = ''
+        if ($null -ne $Raw) { $err = [string](Get-AdfaConfigValue -Entry $Raw -Name 'Error'); $type = [string](Get-AdfaConfigValue -Entry $Raw -Name 'ErrorType') }
+        $class = Get-AdfaDirectoryReadErrorClass -Message $err -TypeName $type
+        $rows += New-AdfaC14Row -Area 'SYSVOL' -Scope $DomainName -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+            -Detail ("The domain controllers of this domain could not be enumerated ({0}): {1}. The SYSVOL replication engine is not known - not a clean result." -f (Get-AdfaReadClassPhrase -Class $class), $err.Trim().TrimEnd('.'))
+        return @($rows)
+    }
+    $names = $Config['GlobalStateNames']
+    $globalState = [string](Get-AdfaConfigValue -Entry $Raw -Name 'GlobalState')
+    $flags = Get-AdfaConfigValue -Entry $Raw -Name 'GlobalFlags'
+    $flagText = ''
+    if ($globalState -eq 'Present' -and $null -ne $flags) {
+        $flagName = 'not a value this tool knows'
+        if ($names.ContainsKey([string]$flags)) { $flagName = [string]$names[[string]$flags] }
+        $flagText = ("Corroboration: msDFSR-Flags on CN=DFSR-GlobalSettings is {0} ({1}; mapping from Microsoft's SYSVOL migration reference, provisional)." -f [int]$flags, $flagName)
+        $columns.GlobalFlags = [string]$flags
+    }
+    elseif ($globalState -eq 'Present') { $flagText = 'Corroboration: CN=DFSR-GlobalSettings exists and carries no msDFSR-Flags.' }
+    elseif ($globalState -eq 'Absent') { $flagText = 'Corroboration: CN=DFSR-GlobalSettings was not found; Microsoft does not say what that means, so it is not read as FRS.' }
+    else { $flagText = ("Corroboration: msDFSR-Flags could not be read ({0})." -f ([string](Get-AdfaConfigValue -Entry $Raw -Name 'GlobalError')).Trim().TrimEnd('.')) }
+    $dcs = @(Get-AdfaConfigValue -Entry $Raw -Name 'Dcs' | Where-Object { $null -ne $_ })
+    $writable = @()
+    foreach ($dc in $dcs) {
+        $hostName = [string](Get-AdfaConfigValue -Entry $dc -Name 'HostName')
+        if ([string]::IsNullOrWhiteSpace($hostName)) { $hostName = '(unnamed)' }
+        $dfsr = [string](Get-AdfaConfigValue -Entry $dc -Name 'Dfsr')
+        $frs = [string](Get-AdfaConfigValue -Entry $dc -Name 'Frs')
+        $engine = Resolve-AdfaSysvolEngineDc -Dfsr $dfsr -Frs $frs
+        $ro = Get-AdfaConfigValue -Entry $dc -Name 'IsReadOnly'
+        $roText = 'unknown'
+        if ($ro -is [bool]) { $roText = [string]$ro }
+        $dcColumns = [ordered]@{ Engine = $engine; DfsrSubscription = $dfsr; FrsSubscriber = $frs; ReadOnly = $roText }
+        $reason = ''
+        switch ($engine) {
+            'DFSR' { $reason = 'The DFSR SYSVOL subscription exists and the NTFRS subscriber does not: SYSVOL is replicated by DFS Replication.' }
+            'FRS' { $reason = 'The NTFRS subscriber exists and the DFSR SYSVOL subscription does not: SYSVOL is replicated by FRS.' }
+            'Transitional' { $reason = 'Both the DFSR SYSVOL subscription and the NTFRS subscriber exist: a migration from FRS to DFSR has started and not finished.' }
+            default {
+                $parts = @()
+                $dfsrError = [string](Get-AdfaConfigValue -Entry $dc -Name 'DfsrError')
+                $frsError = [string](Get-AdfaConfigValue -Entry $dc -Name 'FrsError')
+                if ($dfsr -eq 'Unread') { $parts += ("the DFSR subscription could not be read ({0})" -f $dfsrError.Trim().TrimEnd('.')) }
+                if ($frs -eq 'Unread' -and $frsError -ne $dfsrError) { $parts += ("the NTFRS subscriber could not be read ({0})" -f $frsError.Trim().TrimEnd('.')) }
+                elseif ($frs -eq 'Unread') { $parts += 'nor the NTFRS subscriber' }
+                if ($parts.Count -eq 0) { $parts += 'neither object was found' }
+                $reason = ("The engine is not known: {0}. This is not a clean result." -f ($parts -join '; '))
+            }
+        }
+        $dcStatus = $script:Status.Info
+        if ($engine -eq 'Unknown') { $dcStatus = $script:Status.NotAssessed }
+        $rows += New-AdfaC14Row -Area 'SYSVOL' -Scope $DomainName -Item ("SYSVOL engine: {0}" -f $hostName) -Status $dcStatus -Evidence $evidence -Columns $dcColumns -Detail $reason
+        if ($ro -ne $true) { $writable += [pscustomobject]@{ Engine = $engine; Unread = ($dfsr -eq 'Unread' -or $frs -eq 'Unread') } }
+    }
+    $columns.Writable = [string]$writable.Count
+    $countOf = { param([string]$E) @($writable | Where-Object { $_.Engine -eq $E }).Count }
+    $columns.Dfsr = [string](& $countOf 'DFSR')
+    $columns.Frs = [string](& $countOf 'FRS')
+    $columns.Transitional = [string](& $countOf 'Transitional')
+    $columns.Unknown = [string](& $countOf 'Unknown')
+    if ($writable.Count -eq 0) {
+        $rows += New-AdfaC14Row -Area 'SYSVOL' -Scope $DomainName -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+            -Detail ("There is no writable domain controller to grade ({0} DC(s) enumerated), so the SYSVOL replication engine of this domain is not known - not a clean result. {1}" -f $dcs.Count, $flagText)
+        return @($rows)
+    }
+    $frsLike = (& $countOf 'FRS') + (& $countOf 'Transitional')
+    $unknown = @($writable | Where-Object { $_.Engine -eq 'Unknown' })
+    if ($frsLike -gt 0) {
+        $status = [string]$Config['FrsStatus']
+        $unknownText = ''
+        if ($unknown.Count -gt 0) { $unknownText = (" The engine of {0} other writable DC(s) is not known." -f $unknown.Count) }
+        $rows += New-AdfaC14Row -Area 'SYSVOL' -Scope $DomainName -Item $item -Status $status -Evidence $evidence -Columns $columns `
+            -Detail ("{0} of {1} writable domain controller(s) still replicate SYSVOL with FRS or are between FRS and DFSR ({2} FRS, {3} migrating).{4} FRS is deprecated, it was removed in Windows Server 2019, and a Windows Server 2019 or later DC cannot be promoted into a domain whose SYSVOL still uses FRS. {5} Graded {6}: {7}." -f `
+                $frsLike, $writable.Count, (& $countOf 'FRS'), (& $countOf 'Transitional'), $unknownText, $flagText, $status, [string]$Config['ThresholdSource'])
+        return @($rows)
+    }
+    if ($unknown.Count -gt 0) {
+        $unread = @($unknown | Where-Object { $_.Unread }).Count
+        $neither = $unknown.Count - $unread
+        $parts = @()
+        if ($unread -gt 0) { $parts += ("{0} could not be read" -f $unread) }
+        if ($neither -gt 0) { $parts += ("{0} had neither object" -f $neither) }
+        $rows += New-AdfaC14Row -Area 'SYSVOL' -Scope $DomainName -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+            -Detail ("The engine of {0} of {1} writable domain controller(s) is not known: {2}. The others use DFSR. The domain's SYSVOL replication engine is not known - not a clean result. {3}" -f $unknown.Count, $writable.Count, ($parts -join ', '), $flagText)
+        return @($rows)
+    }
+    $rows += New-AdfaC14Row -Area 'SYSVOL' -Scope $DomainName -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
+        -Detail ("All {0} writable domain controller(s) replicate SYSVOL with DFS Replication: each has the DFSR SYSVOL subscription and no NTFRS subscriber. {1}" -f $writable.Count, $flagText)
+    return @($rows)
+}
+
+# ===========================================================================
 # region Best-practice recommendations
 # ===========================================================================
 
@@ -24110,6 +26156,37 @@ $script:RecommendationMap = @(
        Text  = 'Recreate the delegation records in the PARENT zone: an NS record naming each DNS server authoritative for _msdcs.<forest>, and a glue host (A/AAAA) record for each of those names. DNS Manager: right-click the parent zone -> New Delegation, or repair an existing delegation by editing the NS records and adding the missing glue. A delegation with an NS record but no glue is a dead referral - the resolver has a name it cannot turn into an address.' }
     @{ Section = '(?i)msdcs'; Match = '(?i)not a known DC'
        Text  = 'Compare each NS host against the DCs this report inventoried. For a decommissioned DC, delete the NS record from the _msdcs zone (and from the domain zone) as the forest recovery guide instructs after metadata cleanup, then run "nltest.exe /dsderegdns:<oldhost>" to clear its remaining SRV records. For a non-DC DNS server that is genuinely authoritative, no change is needed - record why, so the next run is not re-investigated.' }
+    # --- Section-scoped: PORT-PLAN C14. Anchored on the Items this tool writes, ahead of the unscoped
+    #     entries ('replication', 'does not resolve', 'port.*not reachable', 'time sync|w32tm|clock',
+    #     'sysvol|dfsr', 'stale|inactive'), which would otherwise answer these rows with advice for a
+    #     different fault. Sources, read 2026-11-17:
+    #       https://learn.microsoft.com/troubleshoot/windows-server/active-directory/config-firewall-for-ad-domains-and-trusts
+    #       https://learn.microsoft.com/windows-server/identity/ad-ds/deploy/ad-ds-metadata-cleanup
+    #       https://learn.microsoft.com/windows/win32/winrm/installation-and-configuration-for-windows-remote-management
+    #       https://learn.microsoft.com/windows/win32/ad/directory-service-functions
+    #       https://learn.microsoft.com/troubleshoot/windows-server/active-directory/dc-delayed-response-to-ldap-kerberos-request
+    #       https://learn.microsoft.com/troubleshoot/windows-server/active-directory/configure-w32ime-against-huge-time-offset
+    #       https://learn.microsoft.com/troubleshoot/windows-server/windows-security/kerberos-protocol-registry-kdc-configuration-keys
+    #       https://learn.microsoft.com/troubleshoot/mem/configmgr/discovery/lastlogontimestamp-not-accurate
+    #       https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts
+    #       https://learn.microsoft.com/windows/win32/adschema/a-pwdlastset
+    #       https://learn.microsoft.com/windows-server/storage/dfs-replication/migrate-sysvol-to-dfsr
+    #       https://learn.microsoft.com/windows-server/administration/windows-commands/dfsrmig
+    #       https://learn.microsoft.com/troubleshoot/windows-server/networking/sysvol-dfsr-migration-fails-after-in-place-upgrade
+    @{ Section = '(?i)^port reachability$'; Match = '(?i)^Port Reachability :: DC reachability: '
+       Text  = 'Find out why this domain controller does not answer the host running the assessment before reading any other result for it. A name that does not resolve needs its A record (check the DC''s DNS client settings and its registration). A refused or silent LDAP port needs the firewall between the two hosts checked against Microsoft''s port list for AD (TCP 389, 88, 135, 445, 3268 and the dynamic RPC range 49152-65535), or the DC itself checked. A DC that answers LDAP but neither WinRM (5985) nor RPC (135) cannot be read remotely; WinRM can listen on another port, so confirm its listener before opening anything. If the DC was retired and will not come back, perform metadata cleanup (delete its computer object in Active Directory Users and Computers, or ntdsutil "metadata cleanup"), as Microsoft documents for a forcibly removed DC.' }
+    @{ Section = '(?i)^site health$'; Match = '(?i)^Site Health :: Subnets without a site: '
+       Text  = 'Assign a site to each subnet listed in the Subnets column: Active Directory Sites and Services, Sites > Subnets, the subnet''s properties, Site. A domain controller maps a client to a site by the subnet object that covers its address, whose siteObject names the site; a subnet with no site maps its clients to none, and they may then use any domain controller.' }
+    @{ Section = '(?i)^site health$'; Match = '(?i)^Site Health :: Clients without a site: '
+       Text  = 'Create subnet object(s) covering the client addresses listed in the Clients column and map each to the site those clients are in (Active Directory Sites and Services, Sites > Subnets > New Subnet), as Microsoft''s Netlogon event 5807 advises. Until then those clients have no site and may use any domain controller, including a distant one. Look at netlogon.bak on the DC as well, which this tool does not read.' }
+    @{ Section = '(?i)^time hierarchy$'; Match = '(?i)^Time Hierarchy :: Clock offset (vs forest root PDC: |on )'
+       Text  = 'Kerberos tolerates five minutes of difference by default, and what counts is the difference between the KDC and the target, so every DC must keep step with the forest root PDC emulator, the authoritative time server of the forest. Check this DC''s source with "w32tm /query /computer:<dc> /source" and "w32tm /query /computer:<dc> /status": a DC takes time from the domain hierarchy (Type NT5DS), and only the forest root PDC emulator from an external source. Give a virtualised DC one time source, not the host''s as well. Fix time before chasing Kerberos or replication errors.' }
+    @{ Section = '(?i)^stale objects$'; Match = '(?i)^Stale Objects :: Inactive enabled (users|computers) :: '
+       Text  = 'Confirm that each account in the Accounts column is unused before acting: lastLogonTimestamp can trail the real last logon by up to the logon-sync interval (14 days by default; Microsoft says the value is updated when it is 9 to 14 days old), so for a borderline account read lastLogon on every DC. Then disable first, wait, and delete later, keeping any account its owner confirms is in use. Defender for Identity treats a user with no logon for 90 days as stale.' }
+    @{ Section = '(?i)^stale objects$'; Match = '(?i)^Stale Objects :: Enabled users with an old password :: '
+       Text  = 'Find the owner of each account in the Accounts column: an enabled account whose pwdLastSet is older than the threshold is either unused (disable it) or a service account (move it to a group managed service account, or set a new long random password). pwdLastSet 0 means the user must set a password at the next logon when UF_DONT_EXPIRE_PASSWD is clear; those accounts are counted, not listed. An account in the AgeNotKnownAccounts column has pwdLastSet 0 and a password that never expires, so its password age is not known: find its owner too.' }
+    @{ Section = '(?i)^sysvol / dfsr$'; Match = '(?i)^SYSVOL / DFSR :: SYSVOL replication engine: '
+       Text  = 'Migrate SYSVOL replication from FRS to DFS Replication with dfsrmig: confirm AD replication is healthy, then step the global state with "dfsrmig /setglobalstate 1" (Prepared), 2 (Redirected) and 3 (Eliminated), checking "dfsrmig /getmigrationstate" until every DC has reached each state before the next. From Prepared or Redirected the migration can be rolled back ("dfsrmig /setglobalstate 0"); reaching Eliminated is irreversible. FRS was removed in Windows Server 2019, and a Windows Server 2019 or later DC cannot be promoted into a domain whose SYSVOL still uses FRS. Where the engine was not known, re-run with rights to read each DC''s DFSR-LocalSettings and NTFRS Subscriptions objects.' }
     # --- Section-scoped: time hierarchy. Must precede the unscoped time entry, which assumes
     #     the finding is about the local host.
     @{ Section = '(?i)time hierarchy'; Match = "(?i)virtualisation host's time provider"
@@ -24770,6 +26847,29 @@ function Invoke-Main {
                 -Detail ("{0} Every per-DC check (replication, DNS consistency, ports, secure channels, DS events, diagnostics) is therefore UNASSESSED, not clean." -f $whyNoDcs))
     }
 
+    # ---- DC reachability classes (PORT-PLAN C14, REACH-001/002) ----
+    # Every DC is classified ONCE, here, before the first per-DC section: name resolution, LDAP (389),
+    # then WinRM (5985) and RPC (135). The class is kept for the run and seeded into the shared port
+    # cache, and the later sections that read it (Site Health, Time Hierarchy) say "Unreachable" with
+    # the cause instead of probing again. The table the file supplied where it supplied one.
+    $reachConfig = $script:Config.Reach
+    if ($configOverrides.ContainsKey('Reach')) { $reachConfig = $configOverrides['Reach'] }
+    # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk takes them.
+    $c14Targets = @($allDcInventory)
+    $c14Failures = @($dcInventoryFailures)
+    if (-not $dcInventoryCollected -and ((Test-SectionSelected 'PortMatrix' $Sections) -or (Test-SectionSelected 'Topology' $Sections))) {
+        $c14Enumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+        $c14Targets = @($c14Enumeration.Targets)
+        $c14Failures = @($c14Enumeration.Failures)
+    }
+    if ($c14Targets.Count -eq 0) { $c14Targets = @($dcNames) }
+    $reachRows = @()
+    if (Test-SectionSelected 'PortMatrix' $Sections) {
+        Write-Stage 'DC reachability (name resolution, LDAP 389, WinRM 5985, RPC 135; once per DC, reused by Site Health and Time Hierarchy)'
+        $reachRows = @(Get-AdfaDcReachabilityRows -DomainControllers $c14Targets -Config $reachConfig -InventoryFailures $c14Failures `
+                -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
+    }
+
     # A throw here used to drop the domain from the section silently - the same shape of defect
     # as the v1.6.0 multi-domain data loss, where a reader saw a shorter list and no error. Each
     # failure now becomes a row, so the section's own count reconciles with the domains scoped.
@@ -24808,6 +26908,8 @@ function Invoke-Main {
     $topology = $null
     if (Test-SectionSelected 'Topology' $Sections) {
         Write-Stage 'Topology'
+        $topologyError = ''
+        $siteRows = @()
         try {
             $topology = Get-AdfaReplicationTopology -AdParams $adParams
             $sectionData['AD Sites'] = $topology.Sites
@@ -24815,10 +26917,29 @@ function Invoke-Main {
             $sectionData['Site Links'] = $topology.SiteLinks
             $sectionData['Replication Connections'] = $topology.Connections
             if ($allDcInventory.Count -gt 0) {
-                $sectionData['Site Health'] = Get-AdfaSiteHealthFinding -Topology $topology -DomainControllers $allDcInventory
+                $siteRows += @(Get-AdfaSiteHealthFinding -Topology $topology -DomainControllers $allDcInventory)
             }
         }
-        catch { Write-Warning ("Topology failed: {0}" -f $_.Exception.Message) }
+        catch {
+            $topologyError = [string]$_.Exception.Message
+            Write-Warning ("Topology failed: {0}" -f $topologyError)
+            Write-Log -Level ERROR -Section 'Topology' -Message ("Topology read failed, so whether any subnet lacks a site is unknown: {0}" -f $topologyError)
+        }
+        # PORT-PLAN C14 (SITE-001): subnets without a site, outside the DC inventory gate, and the
+        # clients each DC's netlogon.log names as mapped to no site. The table the file supplied where
+        # it supplied one.
+        $siteConfig = $script:Config.SiteCoverage
+        if ($configOverrides.ContainsKey('SiteCoverage')) { $siteConfig = $configOverrides['SiteCoverage'] }
+        $subnetList = @()
+        if ($null -ne $topology) { $subnetList = @($topology.Subnets) }
+        $siteForest = ''
+        if (-not $forestError) { $siteForest = [string]$forest.Name }
+        else { $topologyError = ("the forest could not be read ({0})" -f $forestError) }
+        $siteRows += Get-AdfaSubnetSiteVerdict -Subnets $subnetList -ReadError $topologyError -ForestName $siteForest -Config $siteConfig
+        Write-Stage 'Clients without a site (netlogon.log NO_CLIENT_SITE, per DC, read-only)'
+        $siteRows += @(Get-AdfaClientSiteRows -DomainControllers $c14Targets -Config $siteConfig -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                -InventoryFailures $c14Failures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
+        $sectionData['Site Health'] = @($siteRows)
     }
 
     if (Test-SectionSelected 'Trusts' $Sections) {
@@ -24891,6 +27012,21 @@ function Invoke-Main {
                 })
             $subs = @(Get-AdfaDfsrSubscription -DomainName $d -DomainControllers $domainDcs -AdParams $adParams)
             $sysvolRows += @(Get-AdfaDfsrSubscriptionVerdict -DomainName $d -Subscriptions $subs)
+        }
+        # PORT-PLAN C14 (SYSVOL-004): the SYSVOL replication engine of each DC and each scoped domain,
+        # from the DFSR SYSVOL subscription and the NTFRS subscriber of every DC, read from its own
+        # domain. The table the file supplied where it supplied one.
+        $sysvolEngineConfig = $script:Config.SysvolEngine
+        if ($configOverrides.ContainsKey('SysvolEngine')) { $sysvolEngineConfig = $configOverrides['SysvolEngine'] }
+        if ($forestError) {
+            $sysvolRows += New-AdfaC14Row -Area 'SYSVOL' -Item 'SYSVOL replication engine' -Status $script:Status.NotAssessed `
+                -Detail ("The forest could not be read ({0}), so no domain was scoped and no SYSVOL subscription was read. This is not a clean result." -f $forestError)
+        }
+        else {
+            foreach ($d in $targetDomains) {
+                $engineRaw = Get-AdfaSysvolEngineRaw -DomainName $d -AdParams $adParams -Config $sysvolEngineConfig
+                $sysvolRows += @(Get-AdfaSysvolEngineVerdict -DomainName $d -Raw $engineRaw -Config $sysvolEngineConfig)
+            }
         }
         $sectionData['SYSVOL / DFSR'] = @($sysvolRows)
 
@@ -24997,7 +27133,20 @@ function Invoke-Main {
         $sectionData['Security Posture'] = @(@($sp) + @($sidHistoryRows))
     }
     if (Test-SectionSelected 'StaleObjects' $Sections) {
-        $so = foreach ($d in $targetDomains) { Get-AdfaStaleObject -DomainName $d -AdParams $adParams -StaleDays $script:Config.StaleDays }
+        # PORT-PLAN C14 (STALE-001/002): per scoped domain, a listed-property, capped read of the
+        # enabled users and computers with no logon recorded for -StaleDays, never-logged-on ones
+        # included, and of the enabled users with an old password. The table the file supplied where
+        # it supplied one.
+        Write-Stage 'Stale enabled objects (lastLogonTimestamp, pwdLastSet; per domain)'
+        $staleConfig = $script:Config.Stale
+        if ($configOverrides.ContainsKey('Stale')) { $staleConfig = $configOverrides['Stale'] }
+        $staleNow = Get-Date
+        $so = @()
+        if ($forestError) {
+            $so += New-AdfaC14Row -Area 'Stale' -Item 'Stale objects' -Status $script:Status.NotAssessed `
+                -Detail ("The forest could not be read ({0}), so no domain was scoped and no account was read. This is not a clean result." -f $forestError)
+        }
+        foreach ($d in $targetDomains) { $so += @(Get-AdfaStaleObject -DomainName $d -AdParams $adParams -StaleDays $script:Config.StaleDays -Config $staleConfig -Now $staleNow) }
         $sectionData['Stale Objects'] = @($so)
     }
 
@@ -25270,12 +27419,16 @@ function Invoke-Main {
                 Write-Log -Level ERROR -Section $d -Message ("PDC emulator lookup failed, so the time-hierarchy role rules could not be applied to that domain: {0}" -f $_.Exception.Message)
             }
         }
+        # The ClockSkew table the file supplied where it supplied one (PORT-PLAN C14): WarnSeconds and
+        # Samples only; the Kerberos maximum is never taken from a file.
+        $clockConfig = $script:Config.ClockSkew
+        if ($configOverrides.ContainsKey('ClockSkew')) { $clockConfig = $configOverrides['ClockSkew'] }
         $timeRows = @(Get-AdfaTimeHierarchyHealth -DomainControllers $dcNames -PdcEmulators $pdcMap `
                 -ForestRootPdc $rootPdc -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
                 -TimeoutSeconds $script:Config.ExternalToolTimeoutSec `
-                -SkewSamples $script:Config.ClockSkew.Samples `
-                -WarnSeconds $script:Config.ClockSkew.WarnSeconds `
-                -FailSeconds $script:Config.ClockSkew.KerberosMaxSeconds)
+                -SkewSamples $clockConfig.Samples `
+                -WarnSeconds $clockConfig.WarnSeconds `
+                -FailSeconds $clockConfig.KerberosMaxSeconds -ThresholdSource ([string]$clockConfig['ThresholdSource']))
         if (@($pdcErrors).Count -gt 0) {
             $timeRows += New-Finding -Area 'TimeHierarchy' -Item 'PDC emulator resolution' -Status $script:Status.NotAssessed `
                 -Detail ("The PDC emulator could not be read for {0} domain(s), so the role-specific time rule was not applied there: {1}. Those DCs were graded as ordinary domain controllers, which is a partial result." -f @($pdcErrors).Count, (@($pdcErrors) -join '; '))
@@ -25288,7 +27441,9 @@ function Invoke-Main {
     }
     if (Test-SectionSelected 'PortMatrix' $Sections) {
         Write-Stage 'Port reachability matrix (replication port set)'
-        $sectionData['Port Reachability'] = Get-AdfaPortMatrix -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        # PORT-PLAN C14: the reachability class of each DC, classified once before the first per-DC
+        # section, then the port matrix rows, unchanged.
+        $sectionData['Port Reachability'] = @(@($reachRows) + @(Get-AdfaPortMatrix -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs))
     }
     if (Test-SectionSelected 'DcSecureChannel' $Sections) {
         Write-Stage 'DC machine-account passwords & secure channels'

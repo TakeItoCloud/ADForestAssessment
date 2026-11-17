@@ -10,6 +10,132 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-11-17 (Reachability classes, subnets and clients without a site, clock offset against the forest root PDC, stale enabled objects, SYSVOL replication engine, tool v1.31.0)
+
+**PORT-PLAN C14.** The AdAssessment26 catalogue rows REACH-001..002, SITE-001, TIME-001,
+STALE-001..002 and SYSVOL-004, built into the existing `PortMatrix` (`Port Reachability`), `Topology`
+(`Site Health`), `TimeHierarchy`, `StaleObjects` and `Sysvol` (`SYSVOL / DFSR`) sections. No new
+`-Sections` value. The reference repository has code for the reachability probe only; the other rules
+come from its catalogue, PORT-PLAN and SPEC text. The `NO_CLIENT_SITE` read and the old-password row are
+additions of the C14 brief beyond the catalogue.
+
+**This has run only against stubs.** No name was resolved, no port probed, no `netlogon.log` read, no
+`w32tm` run and no directory object read by this code against a real forest: every answer it was tested
+on is a stub in the shape the cmdlet, the .NET method or the documented output has. Not verified (PORT-PLAN
+C14a, with the first real run, C17): the text and time stamp of a real `NO_CLIENT_SITE:` line, whether it is
+written without debug logging and how long it stays; the rights a read over `ADMIN$` needs; the exception
+`Get-ADObject` throws for an object that does not exist; that `Get-ADReplicationSubnet` carries the site in
+`Site`; a real `/rdtsc` CSV; `-ResultSetSize` on a large domain; `msDFSR-Flags` in a domain born at Windows
+Server 2008 level; the SocketError a real host gives for a filtered, a refused and an unrouted DC.
+
+**What it reads, and nothing else.** `Dns.BeginGetHostAddresses` (bounded) and one TCP connect per port
+that sends nothing and is closed at once (LDAP 389 per address, then WinRM 5985 and RPC 135 at the address
+that answered); a read-only open (FileShare ReadWrite/Delete) of the last 4 MB of
+`\\<dc>\ADMIN$\debug\netlogon.log` after an SMB 445 probe through the shared cache; `w32tm /stripchart
+/computer:<dc> /dataonly /samples:<n> /rdtsc` (the same call the section already made, now through one
+helper, plus one for the forest root PDC when it is not among the DCs asked); `Get-ADUser` /
+`Get-ADComputer -LDAPFilter` with `-Server <domain>`, a listed property set (never every property; the
+population count asks for no property and takes the default set) and `-ResultSetSize`; `Get-ADDomain` and `Get-ADObject -Identity <DN> -Server <domain>` for
+`msDS-LogonTimeSyncInterval`, `CN=DFSR-GlobalSettings,CN=System` (`msDFSR-Flags`) and each DC's
+`CN=SYSVOL Subscription` and NTFRS subscriber; `Get-ADDomainController -Filter * -Server <domain>`. No
+`dfsrmig /setglobalstate`, no `w32tm /resync`, `/config`, `/register`, `/unregister` or `/debug`, no `Set-AD*`,
+`Disable-ADAccount` or `Remove-*`, no registry write. A test parses the script and fails on any of those
+outside the recommendation map and the finding rows (whose advice names commands for the operator); a
+switch assembled at run time is not seen by it.
+
+| Section | Rows |
+| --- | --- |
+| Port Reachability (`-Sections PortMatrix`) | `DC reachability: <dc>` per DC of every scoped domain (REACH-001/002), `DC reachability (population): <domain>` per domain (Info, or `Not Assessed` for a domain with no DC row); the port matrix rows follow, unchanged |
+| Site Health (`-Sections Topology`) | `Subnets without a site: <forest>` (SITE-001), outside the DC inventory gate; `Clients without a site: <dc>` per DC, with the clients in the `Clients` column; `Clients without a site (population): <domain>` for a domain with no DC row |
+| Time Hierarchy | `Clock offset vs forest root PDC: <dc>` per DC (TIME-001), with `OffsetSeconds`, `ErrorBoundSeconds` and `Reference` columns; the `Clock offset on <dc>` rows are kept |
+| Stale Objects | `Inactive enabled users` and `Inactive enabled computers` (STALE-001/002; Items kept), with `Accounts`, `NeverLoggedOn`, `Population` and `SyncIntervalDays` columns; new `Enabled users with an old password` (with `MustChangeAtNextLogon`, `AgeNotKnown` and `Population`) |
+| SYSVOL / DFSR | `SYSVOL engine: <dc>` (Info) per DC and `SYSVOL replication engine: <domain>` per scoped domain (SYSVOL-004) |
+
+**The grades.** Unreachable `Fail`, not remotely manageable on the default ports `Warning`, reachable
+`Pass`; a subnet with no site `Warning`; clients without a site `Warning`, none found `Info`; offset against
+the forest root PDC at 300 s `Fail` (Microsoft) and at 60 s `Warning` (tool default); stale accounts and old
+passwords `Warning`; a writable DC on FRS or migrating `Warning`. Every grade that is a tool default says so
+in its row, and five config tables can be overridden from `-ConfigOverridePath` (`Reach`, `SiteCoverage`,
+`ClockSkew` - `WarnSeconds` and `Samples` only -, `Stale`, `SysvolEngine`) through one validator that refuses
+every key a table does not declare. Unreachable, access denied, timed out, not found, not configured and a
+tool that is missing are each their own `Not Assessed` cause; a stale count that is not complete is
+`Not Assessed`, never zero.
+
+**Changed.** The time hierarchy now probes RPC through the shared port cache instead of `Test-TcpPort`.
+The `Inactive enabled users/computers` rows used a `-Filter` that dropped every account that never logged
+on and stated no logon-sync caveat; they now count those accounts and state it. Site Health is produced
+whenever `Topology` runs, not only when the DC inventory was collected. Seven section-scoped
+recommendation entries anchored on the new Items precede the unscoped entries; the existing
+`Clock offset on <dc>` rows, whose detail mentions replication metadata and so drew the unscoped AD
+replication advice, now get the time advice. Existing tests changed because behaviour legitimately
+changed: the version assertions (1.30.0 to 1.31.0), the `$script:ConfigOverrideSections` population
+assertions (five new keys) and the "Eleven sections can be named" help assertions (now sixteen).
+
+**Sources, read on Microsoft Learn on 2026-11-17:**
+
+- https://learn.microsoft.com/dotnet/api/system.net.sockets.socketerror (SocketError names and codes)
+- https://learn.microsoft.com/troubleshoot/windows-server/active-directory/config-firewall-for-ad-domains-and-trusts (DC ports)
+- https://learn.microsoft.com/windows/win32/winrm/installation-and-configuration-for-windows-remote-management (WinRM 5985; listeners on any port)
+- https://learn.microsoft.com/windows-server/identity/ad-ds/deploy/ad-ds-metadata-cleanup (metadata cleanup, advice)
+- https://learn.microsoft.com/windows/win32/adschema/a-siteobject and https://learn.microsoft.com/windows/win32/ad/directory-service-functions (siteObject; a client's site)
+- https://learn.microsoft.com/troubleshoot/windows-server/active-directory/dc-delayed-response-to-ldap-kerberos-request (Netlogon event 5807, `NO_CLIENT_SITE:`, netlogon.log, LogFileMaxSize)
+- https://learn.microsoft.com/troubleshoot/windows-client/windows-security/enable-debug-logging-netlogon-service (netlogon.log path)
+- https://learn.microsoft.com/troubleshoot/windows-server/windows-security/kerberos-protocol-registry-kdc-configuration-keys (SkewTime default 5 minutes)
+- https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replications-fail-with-error-5 (relative skew between KDC and target)
+- https://learn.microsoft.com/troubleshoot/windows-server/active-directory/configure-w32ime-against-huge-time-offset (forest root PDC as the authoritative time server)
+- https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings (`/stripchart`, `/samples`, `/rdtsc`; the writing verbs)
+- https://learn.microsoft.com/windows/win32/adschema/a-lastlogontimestamp, https://learn.microsoft.com/windows/win32/adschema/a-msds-logontimesyncinterval, https://learn.microsoft.com/troubleshoot/mem/configmgr/discovery/lastlogontimestamp-not-accurate and https://learn.microsoft.com/archive/blogs/askds/the-lastlogontimestamp-attribute-what-it-was-designed-for-and-how-it-works (update rule, 9 to 14 days, default 14, 0 disables)
+- https://learn.microsoft.com/windows/win32/adschema/a-pwdlastset (pwdLastSet 0)
+- https://learn.microsoft.com/powershell/module/activedirectory/get-aduser (`-LDAPFilter`, `-ResultSetSize`)
+- https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts (90 days, Defender's own rule, cited as adjacent only)
+- https://learn.microsoft.com/troubleshoot/windows-server/networking/sysvol-dfsr-migration-fails-after-in-place-upgrade (Windows Server 2019 promotion requires DFSR)
+- https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-missing-sysvol-and-netlogon-shares (the NTFRS subscriber DN)
+- https://learn.microsoft.com/windows/win32/adschema/a-msdfsr-flags (msDFSR-Flags schema; values from https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd639789(v=ws.10), provisional: that page was read by the research brief, not re-read for this entry)
+- https://learn.microsoft.com/windows-server/administration/windows-commands/dfsrmig and https://learn.microsoft.com/windows-server/storage/dfs-replication/migrate-sysvol-to-dfsr (advice)
+
+**Not published by Microsoft, and so tool defaults or tool reasoning, labelled in the rows:** the
+reachability classes and the 3000 ms time-out; "an empty siteObject means no site"; the 60 s warning
+level; the PDC difference method and its error bound; the 90-day stale age (`-StaleDays`), the 365-day
+password age, the 100000-object cap; the FRS grade.
+
+**Found by an independent review of the diff before commit, and fixed in it.** (1) The `DC reachability`
+row of an unreachable DC said every check of the run that needs it is `Not Assessed`, while the port matrix
+rows of the same section re-resolve the DC and grade it `Fail`: the Detail now names the sections that reuse
+the class (Time Hierarchy, Site Health) and says the port matrix and the other per-DC sections probe on
+their own (moving them onto the class stays C14c). (2) An empty stale or old-password read was `Pass` with
+no declared population, so a read that saw nothing read as "none stale": each domain's enabled users and
+computers are now counted first (`Get-AdfaStalePopulationRaw`, the same filter without its time term, the
+default property set, capped), shown in a `Population` column, and an empty result passes only when that
+count is at least one; uncounted, refused or empty is `Not Assessed`. (3) `pwdLastSet` 0 was always read as
+"must change at next logon"; Learn says so only where `UF_DONT_EXPIRE_PASSWD` (0x10000, KB 305144) is clear.
+The record now keeps `userAccountControl`; with the flag set the password's age is not known
+(`AgeNotKnown`/`AgeNotKnownAccounts` columns, and the row cannot pass), and with it unread the row is
+`Not Assessed`. (4) Time Hierarchy probed a DC already classified Unreachable and reported a name that does
+not resolve as "RPC (135) was not reachable"; it now reuses the class for the `Time source` and
+`Clock offset on` rows too. (8) The lag of `lastLogonTimestamp` was stated as the interval "plus up to 5"
+days and the guard made `-StaleDays` 15 to 19 `Not Assessed`; KB 2679653 says "9 to 14 days" under the
+default, so the random part shortens the wait: the lag is at most the interval, and the guard is now
+`-StaleDays` not longer than the interval (help, README, advice and row text corrected). (9) The SYSVOL
+advice said "The migration is one-way"; dfsrmig on Learn says only Eliminated is irreversible and shows
+`dfsrmig /setglobalstate 0` to roll back, which the advice now says. Tests that could not fail were
+rewritten or added so the reviewer's mutations now fail them: an unclassifiable stale record (5), a
+password record with no `pwdLastSet` (6), the password read's property list (7), an unreadable read-only
+flag counted as writable (10), LDAP probed address by address until one answers (11), a silent WinRM seeded
+closed (12), exactly `MaxObjects` records not capped and a password set exactly at the cutoff counted (13),
+and the stated error bound (14). Existing tests changed for it: the threshold-inside-the-sync-window case
+now uses `-StaleDays` 14, not 19 (Pester and Run-Validation), because 19 is now graded; the stale and
+password Pass cases now pass a declared population, and the password records carry `userAccountControl`;
+the C14 function population is 29, not 27. Still run against stubs only; the population count against a
+real domain of more than 1000 accounts (paging) is part of C14a.
+
+Added source, read on Microsoft Learn on 2026-11-17:
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties
+(KB 305144: DONT_EXPIRE_PASSWORD is 0x10000). Re-read on 2026-11-17 for the corrections:
+https://learn.microsoft.com/troubleshoot/mem/configmgr/discovery/lastlogontimestamp-not-accurate ("9 to 14
+days"), https://learn.microsoft.com/windows/win32/adschema/a-pwdlastset (the UF_DONT_EXPIRE_PASSWD
+condition) and https://learn.microsoft.com/windows-server/administration/windows-commands/dfsrmig
+("Migration to the Eliminated state is irreversible"; `/setglobalstate 0` rolls back to Start).
+
 ### Added — 2026-11-17 (DNS: zone dynamic update, aging and scavenging, DC locator SRV and A records, records naming no DC, zone inventory, DC DNS client, opt-in record export, tool v1.30.0)
 
 **PORT-PLAN C13.** The AdAssessment26 catalogue rows ADA-DNS-001 to -005, ADA-INV-013, -014 and -016,
