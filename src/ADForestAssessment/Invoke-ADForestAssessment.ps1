@@ -419,10 +419,25 @@
     within the time-out, or no route - is a Fail (Warning by override); LDAP answering with both
     default management ports silent is a Warning (Info by override); LDAP with WinRM, or with RPC
     only (remote CIM over DCOM), is a Pass. No ICMP, one attempt per port, a 3000 ms time-out (a tool
-    default). The class is reused by Site Health and Time Hierarchy, which say so for an unreachable
-    DC instead of probing it again. The port matrix rows and the other per-DC sections (DcDisk, Dns,
-    DcDiagnostics and the rest) still run their own probes and report what they met. Access denied
-    is not a reachability class: the read that meets it reports it.
+    default). Since v1.34.0 (PORT-PLAN C14c, C1b) the class is reused by every per-DC section that
+    connects to the DC - the port matrix, Replication, Backup, DcSystem, DcDisk, DcHardening,
+    DcCertificates, Dns, DcDiagnostics, DcSecureChannel, Sysvol, DsEvents, RestoreIntegrity, Site
+    Health, Time Hierarchy, the SYSVOL read of Gpo on each PDC, and the partner DC of a trust: a DC
+    classified Unreachable is Not Assessed there with its class (the dcdiag grid row stays Fail) and
+    is probed by its name on no port again; every other probe goes through one per-run cache, so a
+    DC is probed once per port. The trust check still probes the trusted domain's own name (135, 389),
+    which is not a DC host name. Only PortMatrix classifies: without it no DC is classified (Topology
+    alone does not), and the sections share the cache only. Access denied is not a reachability
+    class: the read that meets it reports it.
+
+    Since v1.34.0 (PORT-PLAN C2e) the per-DC sections that took the unscoped DC list - Replication,
+    the SYSVOL shares, DFS Replication events and backlog, the patch level of DcSystem, Backup, Time
+    Hierarchy, the port matrix, DsEvents, RestoreIntegrity, the DNS server set of the DNS-vs-AD
+    sections and the raw repadmin/dcdiag captures - take the DCs of every scoped domain, each row
+    carrying its domain, even when DomainControllers is not among -Sections; a scoped domain whose DCs
+    could not be enumerated, or returned none, gets its own Not Assessed "(population)" row. Not yet
+    the SYSVOL subscription verdict, which still takes its DCs from the DC inventory only (PORT-PLAN
+    C2i).
 
     Topology also gives the forest one "Subnets without a site" row (siteObject of every subnet
     object; a Warning when any has none, a tool default) and every DC of every scoped domain one
@@ -508,7 +523,7 @@
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
     Seventeen sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
-    WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
+    WarnBelowFreeGB and FailBelowFreeGB (WsmanPort and RpcPort are refused since v1.34.0, see below):
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
 
@@ -520,8 +535,11 @@
 
         { "DcHardening": { "Settings": { "LmCompatibilityLevel": { "ExpectedMinimum": 3 } } } }
 
-    DcHardening refuses WsmanPort and RpcPort: its CIM session always uses the default ports,
-    so a port set in the file would change the probe and not the connection.
+    DcHardening and DcDisk refuse WsmanPort and RpcPort, and so does -DcSystemConfigPath (PORT-PLAN
+    C3g, v1.34.0): WsmanPort and RpcPort are refused because the CIM session always uses the default
+    ports - WinRM 5985, or DCOM through the RPC endpoint mapper on 135 - so a port set in the file
+    would change the probe and not the connection. New-CimSession -Port needs a WinRM listener on that
+    port, which only a change on the DC creates, and DCOM has no port option.
 
     And Laps, whose keys are WarnAbovePercent and FailAbovePercent (the share of in-population
     computers with no LAPS expiry time visible above which a domain is a Warning or a Fail),
@@ -664,7 +682,8 @@
     Microsoft ships a release or publishes an Extended Security Updates date this build does
     not know. Keys the file omits keep their built-in value; a file that supplies OsLifecycle
     replaces the whole list. A missing or malformed file, or a row that could not be used,
-    stops the run.
+    stops the run. WsmanPort and RpcPort are refused (PORT-PLAN C3g): the CIM session of the
+    patch-level read always uses the default ports.
 
 .PARAMETER IncludeDcdiag
     Also capture raw 'dcdiag /c /v' output per DC under raw\. NOT read-only. Microsoft
@@ -888,7 +907,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.33.0'
+    Version                 = '1.34.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1336,7 +1355,13 @@ $script:Config = @{
         SourceUrl   = 'https://learn.microsoft.com/windows-server/get-started/windows-server-release-info and https://learn.microsoft.com/lifecycle/faq/extended-security-updates'
         ReadDate    = '2026-11-13'
         # Ports probed before a remote read: WinRM over HTTP, then the RPC endpoint mapper for
-        # the DCOM fallback. The same two values the rest of this script already uses.
+        # the DCOM fallback. The same two values the rest of this script already uses. NOT
+        # replaceable from -DcSystemConfigPath (PORT-PLAN C3g): New-CimSession is opened without
+        # -Port, so these are the ports it connects to, and a file could only have changed the probe.
+        #   https://learn.microsoft.com/powershell/module/cimcmdlets/new-cimsession (-Port: "Before
+        #   using an alternate port, you must configure the WinRM listener on the remote computer")
+        #   https://learn.microsoft.com/powershell/module/cimcmdlets/new-cimsessionoption (-Protocol
+        #   Dcom, Default or Wsman; no port option in either parameter set). Read: 2026-11-17.
         WsmanPort   = 5985
         RpcPort     = 135
         OsLifecycle = @(
@@ -1375,7 +1400,8 @@ $script:Config = @{
     # Either test is enough: the worse of the two results is reported, with which one fired.
     #
     # Replaceable from a file via -ConfigOverridePath, under the key "DcDisk": the four
-    # thresholds and the two ports. Paths, SourceUrl and ReadDate are not replaceable.
+    # thresholds. Paths, SourceUrl and ReadDate are not replaceable, and the two ports are refused
+    # (PORT-PLAN C3g: the CIM session is opened on them, without -Port; see the DcSystem table).
     DcDisk                  = @{
         ThresholdSource  = 'tool default, not a Microsoft value'
         WarnBelowPercent = 20
@@ -1384,7 +1410,7 @@ $script:Config = @{
         WarnBelowFreeGB  = 5
         FailBelowFreeGB  = 2
         # Ports probed before a remote read: WinRM over HTTP, then the RPC endpoint mapper for
-        # the DCOM fallback. The same two values the DcSystem section uses.
+        # the DCOM fallback. The same two values the DcSystem section uses. Not replaceable (C3g).
         WsmanPort        = 5985
         RpcPort          = 135
         # Vendor facts: the registry values that name the three locations. No LDAP attribute
@@ -4009,6 +4035,12 @@ function Test-AdfaRemoteSecureChannel {
     $scArgument = Get-AdfaNltestScArgument -Domain $VerifyDomain -LiveVerify:$LiveVerify
     $manual = ("Run 'nltest {0}' on a DC in {1} to check this direction." -f $scArgument, $PartnerDomain)
 
+    # PORT-PLAN C14c: a partner DC the reachability probe classified Unreachable in this run (a DC of a
+    # scoped domain, on an intra-forest trust) is not probed again; the row names its class.
+    $reachCause = Get-AdfaDcReachCause -HostName $remoteHost
+    if (-not [string]::IsNullOrWhiteSpace($reachCause)) {
+        return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'winrm'; Detail = ("{0} {1}" -f (Get-AdfaDcGateText -Cause $reachCause -NotRead ('WinRM (5985) on {0} was not probed' -f $remoteHost)), $manual) }
+    }
     if (-not (Test-TcpPort -ComputerName $remoteHost -Port 5985 -TimeoutMs $RpcPortTimeoutMs)) {
         return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'winrm'; Detail = ("WinRM (5985) not reachable on {0}. {1}" -f $remoteHost, $manual) }
     }
@@ -4153,17 +4185,24 @@ function Get-AdfaTrustHealth {
         if ([string]::IsNullOrWhiteSpace($direction)) { $direction = 'Bidirectional' }
 
         $reachable = $false
+        # PORT-PLAN C14c: the partner DC nltest names may be a DC of a scoped domain (an intra-forest
+        # trust) that the reachability probe classified Unreachable in this run. It is then not probed
+        # again, here or by the inbound check, and the trust's detail names its class.
+        $probeHostCause = ''
+        $probeHost = $target
         if (-not $SkipVerification) {
             # Resolve a DC for the target and probe it, so verification cannot hang.
-            $probeHost = $target
             if (Test-CommandAvailable -Name 'nltest.exe') {
                 $dsg = Invoke-ExternalCommand -FilePath 'nltest.exe' -Arguments ("/dsgetdc:{0}" -f $target) `
                     -TimeoutSeconds $TimeoutSeconds -Retries 1 -RetryDelaySeconds $RetryDelaySeconds
                 if ($dsg.StdOut -match 'DC:\s*\\\\([^\s]+)') { $probeHost = $Matches[1] }
             }
+            $probeHostCause = Get-AdfaDcReachCause -HostName $probeHost
+            # The domain name itself is not a DC host name and carries no class; it is probed as before.
+            # The partner DC is probed only when it carries no class.
             $reachable = (Test-TcpPort -ComputerName $target -Port 135 -TimeoutMs $RpcPortTimeoutMs) -or
                          (Test-TcpPort -ComputerName $target -Port 389 -TimeoutMs $RpcPortTimeoutMs) -or
-                         (Test-TcpPort -ComputerName $probeHost -Port 135 -TimeoutMs $RpcPortTimeoutMs)
+                         ([string]::IsNullOrWhiteSpace($probeHostCause) -and (Test-TcpPort -ComputerName $probeHost -Port 135 -TimeoutMs $RpcPortTimeoutMs))
         }
 
         $outbound = 'Not Assessed'
@@ -4190,6 +4229,10 @@ function Get-AdfaTrustHealth {
             }
         }
 
+        $partnerDetail = $null
+        if (-not [string]::IsNullOrWhiteSpace($probeHostCause)) {
+            $partnerDetail = ("Partner DC {0}: {1}" -f $probeHost, (Get-AdfaDcGateText -Cause $probeHostCause -NotRead 'it was not probed again by the trust check'))
+        }
         $secWarnings = Get-AdfaTrustSecurityWarning -Trust $t
         $verdict = Resolve-AdfaTrustHealth -Direction $direction `
             -OutboundResult $outbound -InboundResult $inbound `
@@ -4216,7 +4259,7 @@ function Get-AdfaTrustHealth {
             Reasons               = ($verdict.Reasons -join ' | ')
             Created               = (Get-AdfaConfigValue -Entry $t -Name 'Created')
             Modified              = (Get-AdfaConfigValue -Entry $t -Name 'Modified')
-            VerifyDetail          = (@($outboundDetail, $inboundDetail) | Where-Object { $_ } ) -join ' || '
+            VerifyDetail          = (@($partnerDetail, $outboundDetail, $inboundDetail) | Where-Object { $_ } ) -join ' || '
         }
     }
 
@@ -4351,29 +4394,51 @@ function Get-AdfaReplicationHealth {
     <#
     .SYNOPSIS
         Per-DC replication health with reachability gating. Get-ADReplication* take no -Server.
+    .DESCRIPTION
+        Takes the DCs of every scoped domain (PORT-PLAN C2e): rows (HostName, Scope) so each row
+        carries its domain, or plain host names. A scoped domain with no DC row gets its own
+        "Replication health (population): <domain>" Not Assessed row. A DC is probed through the
+        shared gate (Get-AdfaDcProbeGate, PORT-PLAN C1b): one classified Unreachable is Not
+        Assessed with that class and is not probed again.
     .OUTPUTS
         [pscustomobject[]]
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        # AllowEmptyCollection: when DC enumeration fails the caller passes an empty list, and a
-        # Mandatory [string[]] refuses to bind it - which aborted the whole run with a parameter
-        # binding error instead of reporting the section as unassessed. The recovery sections
-        # added in v1.4.0 already allowed an empty list; these older ones did not.
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers,
+        # AllowEmptyCollection: when DC enumeration fails the caller passes an empty list. DC rows
+        # (HostName, Scope) or plain host names (PORT-PLAN C2e).
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
         [hashtable]$RepParams = @{},
         [int]$RpcPortTimeoutMs = 1200,
-        [int]$StaleMinutes = 180
+        [int]$StaleMinutes = 180,
+        # Domains whose DC enumeration threw (Domain, Error), and the domains of the run.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
-    if (@($DomainControllers).Count -eq 0) {
-        return @(New-Finding -Area 'Replication' -Item 'Replication health' -Status $script:Status.NotAssessed `
-                -Detail 'No domain controllers were enumerated, so replication health could not be assessed. This is not a clean result.')
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    $population = @(Get-AdfaDcPopulationRow -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains -Area 'Replication' `
+            -Label 'Replication health' -NothingRead 'No replication partner of it was read.' -Shape 'DomainController')
+    if ($targets.Count -eq 0) {
+        return @(@($population) + @(New-Finding -Area 'Replication' -Item 'Replication health' -Status $script:Status.NotAssessed `
+                    -Detail 'No domain controllers were enumerated, so replication health could not be assessed. This is not a clean result.'))
     }
-    $rows = foreach ($dc in $DomainControllers) {
-        $rpcOk = Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
-        $adwsOk = Test-TcpPort -ComputerName $dc -Port 9389 -TimeoutMs $RpcPortTimeoutMs
-        if (-not ($rpcOk -and $adwsOk)) {
+    $rows = foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        $gate = $null
+        $skip = ''
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $dc = '(unnamed)'
+            $skip = 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no replication partner was read.'
+        }
+        else {
+            $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135, 9389) -TimeoutMs $RpcPortTimeoutMs
+            if ($gate.Cause) { $skip = Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'no replication partner was read' }
+            elseif (-not ($gate.Open[135] -and $gate.Open[9389])) { $skip = ("SKIPPED: RPC135={0} ADWS9389={1}" -f $gate.Open[135], $gate.Open[9389]) }
+        }
+        if ($skip) {
             # Same shape as the full row below - a section whose rows disagree breaks CSV
             # columns and, under StrictMode, the HTML renderer.
             [pscustomobject]@{
@@ -4381,7 +4446,7 @@ function Get-AdfaReplicationHealth {
                 LastSuccessMinutesAgo = $null; FailureCount = $null; OldestFailureTime = $null
                 ReplicationQueue = $null; Status = $script:Status.NotAssessed
                 FailureDetail = ''
-                Detail = ("SKIPPED: RPC135={0} ADWS9389={1}" -f $rpcOk, $adwsOk)
+                Detail = $skip; Scope = $scope
             }
             continue
         }
@@ -4438,9 +4503,10 @@ function Get-AdfaReplicationHealth {
             ReplicationQueue = $qCount; Status = $status
             FailureDetail = ($failingList -join ' | ')
             Detail = $(if ($notes.Count -gt 0) { $notes -join ' | ' } else { '' })
+            Scope = $scope
         }
     }
-    return @($rows)
+    return @(@($population) + @($rows))
 }
 
 function Get-AdfaTopologyObjectRaw {
@@ -5685,13 +5751,20 @@ function Get-AdfaDcDiagnostic {
             [void]$rows.Add([pscustomobject]$row)
             continue
         }
-        $reachable = Test-AdfaDcPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
+        # PORT-PLAN C14c: a DC classified Unreachable is not probed again; its row and its DNS
+        # rows carry that class. The grid row stays Fail, as for a DC silent on RPC (C11g(1)).
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $RpcPortTimeoutMs
+        $reachable = [bool]$gate.Open[135]
         $row.Ping = $(if ($reachable) { $script:Status.Pass } else { $script:Status.Fail })
         if (-not $reachable) {
             $row.Status = $script:Status.Fail
             $row.Failures = 'DC not reachable (RPC/135) - no dcdiag tests run.'
-            $state.Status = $row.Status
             $state.DnsCause = 'unreachable: the domain controller did not answer on RPC/135, so dcdiag was not run against it.'
+            if ($gate.Cause) {
+                $row.Failures = ("DC not reachable - no dcdiag tests run. {0}" -f (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'it was not probed again'))
+                $state.DnsCause = (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'dcdiag was not run against it')
+            }
+            $state.Status = $row.Status
             [void]$rows.Add([pscustomobject]$row)
             continue
         }
@@ -6544,7 +6617,9 @@ function Get-AdfaDnsServerRecord {
     $unread = { param([string]$Cause) [pscustomobject]@{ Outcome = 'Unread'; Targets = @(); Cause = $Cause } }
     if (-not $ModuleAvailable) { return (& $unread 'Server read: the DnsServer PowerShell module is not installed on the host running the assessment.') }
     $rpcPort = [int]$Config['RpcPort']
-    if (-not (Test-AdfaDcPort -ComputerName $ComputerName -Port $rpcPort -TimeoutMs $PortTimeoutMs)) {
+    $gate = Get-AdfaDcProbeGate -ComputerName $ComputerName -Ports @($rpcPort) -TimeoutMs $PortTimeoutMs
+    if ($gate.Cause) { return (& $unread ("Server read: {0}" -f (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'the server was not read'))) }
+    if (-not $gate.Open[$rpcPort]) {
         return (& $unread ("Server read: Unreachable: RPC ({0}) did not answer within {1} ms." -f $rpcPort, $PortTimeoutMs))
     }
     $where = Resolve-AdfaDnsServerZone -ComputerName $ComputerName -Name $Name -Config $Config
@@ -7111,9 +7186,14 @@ function Get-AdfaDcNetworkState {
     $wsmanPort = [int]$Config['WsmanPort']
     $rpcPort = [int]$Config['RpcPort']
     $protocols = @()
-    if (Test-AdfaDcPort -ComputerName $ComputerName -Port $wsmanPort -TimeoutMs $PortTimeoutMs) { $protocols += 'Wsman' }
-    if (Test-AdfaDcPort -ComputerName $ComputerName -Port $rpcPort -TimeoutMs $PortTimeoutMs) { $protocols += 'Dcom' }
-    if ($protocols.Count -eq 0) {
+    $gate = Get-AdfaDcProbeGate -ComputerName $ComputerName -Ports @($wsmanPort, $rpcPort) -TimeoutMs $PortTimeoutMs
+    if ($gate.Open[$wsmanPort]) { $protocols += 'Wsman' }
+    if ($gate.Open[$rpcPort]) { $protocols += 'Dcom' }
+    if ($gate.Cause) {
+        $state.Status = 'Unreachable'
+        $state.Cause = Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'the adapters were not read'
+    }
+    elseif ($protocols.Count -eq 0) {
         $state.Status = 'Unreachable'
         $state.Cause = ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so the adapters were not read." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
     }
@@ -7243,13 +7323,19 @@ function Get-AdfaDnsHealth {
         if ([string]::IsNullOrWhiteSpace($dc)) { $label = '(unnamed)' }
         $entry = [pscustomobject]@{ Server = $label; Read = $false; Cause = ''; Raw = $null }
         $item = ("DNS server: {0}" -f $label)
+        $dnsReach = ''
+        if (-not [string]::IsNullOrWhiteSpace($dc)) { $dnsReach = Get-AdfaDcReachCause -HostName $dc }
         if ([string]::IsNullOrWhiteSpace($dc)) {
             $entry.Cause = 'The inventory holds a domain controller with no host name, so there was nothing to connect to.'
+        }
+        elseif ($dnsReach) {
+            # PORT-PLAN C14c: classified Unreachable for this run; not probed again.
+            $entry.Cause = Get-AdfaDcGateText -Cause $dnsReach -NotRead 'no DNS server read was attempted'
         }
         elseif (-not $module) {
             $entry.Cause = 'The DnsServer PowerShell module is not installed on the host running the assessment (it comes with the DNS Server role or RSAT), so no DNS server was read.'
         }
-        elseif (-not (Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs)) {
+        elseif (-not (Get-AdfaDcProbeGate -ComputerName $dc -Ports @($rpcPort) -TimeoutMs $PortTimeoutMs).Open[$rpcPort]) {
             $entry.Cause = ("Unreachable: RPC ({0}) did not answer within {1} ms, so no DNS server read was attempted." -f $rpcPort, $PortTimeoutMs)
         }
         else {
@@ -7509,7 +7595,9 @@ function Get-AdfaDnsLocatorFinding {
         $msdcs = ("{0}.{1}" -f [string]$script:Config.MsdcsZoneLabel, $ForestRoot.Trim().TrimEnd('.')).ToLowerInvariant()
         foreach ($srv in $servers) {
             if (-not $module) { $unread += ("CNAME on {0}: the DnsServer module is not installed" -f $srv); continue }
-            if (-not (Test-AdfaDcPort -ComputerName $srv -Port ([int]$Config['RpcPort']) -TimeoutMs $PortTimeoutMs)) { $unread += ("CNAME on {0}: unreachable" -f $srv); continue }
+            $srvGate = Get-AdfaDcProbeGate -ComputerName $srv -Ports @([int]$Config['RpcPort']) -TimeoutMs $PortTimeoutMs
+            if ($srvGate.Cause) { $unread += ("CNAME on {0}: {1}" -f $srv, $srvGate.Cause.Trim().TrimEnd('.')); continue }
+            if (-not $srvGate.Open[[int]$Config['RpcPort']]) { $unread += ("CNAME on {0}: unreachable" -f $srv); continue }
             # The zone that holds <guid>._msdcs.<forest> on this server, or why none can be read: no
             # zone, a stub or forwarder zone, or a delegation of _msdcs out of the zone it holds.
             $where = Resolve-AdfaDnsServerZone -ComputerName $srv -Name ("00000000-0000-0000-0000-000000000000.{0}" -f $msdcs) -Config $Config
@@ -7686,7 +7774,11 @@ function Export-AdfaDnsRecord {
         $cause = ''
         if ([string]::IsNullOrWhiteSpace($dc)) { $cause = 'The inventory holds a domain controller with no host name, so nothing was exported.' }
         elseif (-not $module) { $cause = 'The DnsServer PowerShell module is not installed on the host running the assessment, so nothing was exported.' }
-        elseif (-not (Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs)) { $cause = ("Unreachable: RPC ({0}) did not answer within {1} ms, so nothing was exported." -f $rpcPort, $PortTimeoutMs) }
+        else {
+            $exportGate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @($rpcPort) -TimeoutMs $PortTimeoutMs
+            if ($exportGate.Cause) { $cause = Get-AdfaDcGateText -Cause $exportGate.Cause -NotRead 'nothing was exported' }
+            elseif (-not $exportGate.Open[$rpcPort]) { $cause = ("Unreachable: RPC ({0}) did not answer within {1} ms, so nothing was exported." -f $rpcPort, $PortTimeoutMs) }
+        }
         $zones = $null
         if ($cause -eq '') {
             $zones = Get-AdfaDnsServerZoneNames -ComputerName $dc
@@ -8456,9 +8548,10 @@ function Get-AdfaGpoSysvolRaw {
         The SYSVOL seam of C8: on the PDC, a probe of SMB, a listing of the Policies folder, and a
         read of each GPT.INI. Read-only. Never throws.
     .DESCRIPTION
-        1. Test-AdfaDcPort <PDC> 445 (the per-run probe cache). With no answer nothing else is
-           tried: a UNC "not found" cannot be told from a host that did not answer, so no file is
-           reported absent unless this DC answered.
+        1. Get-AdfaDcProbeGate <PDC> 445 (the reachability class, then the per-run probe cache). A
+           PDC classified Unreachable in this run is not probed: ReachCause holds its class. With
+           no answer nothing else is tried: a UNC "not found" cannot be told from a host that did
+           not answer, so no file is reported absent unless this DC answered.
         2. The folder names under \\<PDC>\SYSVOL\<domain>\Policies (Get-AdfaSysvolPolicyFolderRaw).
         3. GPT.INI of each target whose folder the listing holds (Get-AdfaGptIniRaw). A target whose
            folder is not listed is not read: its folder is absent, which the verdict reports. When
@@ -8470,7 +8563,8 @@ function Get-AdfaGpoSysvolRaw {
            listing's class.
     .OUTPUTS
         [pscustomobject] PortOk, Port, Pdc, PoliciesPath, Listing (or $null when SMB did not answer),
-        Reads (hashtable: GUID -> read).
+        Reads (hashtable: GUID -> read), ReachCause ('' unless the PDC was classified Unreachable in
+        this run, PORT-PLAN C14c: then port 445 was not probed and this is the class).
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8482,8 +8576,12 @@ function Get-AdfaGpoSysvolRaw {
     )
     $port = [int]$Config['SmbPort']
     $policies = ("\\{0}\{1}\{2}\{3}" -f $Pdc, [string]$Config['SysvolShare'], $Domain, [string]$Config['PoliciesFolder'])
-    $out = [pscustomobject]@{ PortOk = $false; Port = $port; Pdc = $Pdc; PoliciesPath = $policies; Listing = $null; Reads = @{} }
-    $out.PortOk = [bool](Test-AdfaDcPort -ComputerName $Pdc -Port $port -TimeoutMs ([int]$Config['SmbProbeTimeoutMs']))
+    $out = [pscustomobject]@{ PortOk = $false; Port = $port; Pdc = $Pdc; PoliciesPath = $policies; Listing = $null; Reads = @{}; ReachCause = '' }
+    # PORT-PLAN C1b: through the shared gate, so a PDC classified Unreachable is not probed again. Its
+    # class is kept (ReachCause), so the verdict names it instead of a probe of 445 that was never made.
+    $smbGate = Get-AdfaDcProbeGate -ComputerName $Pdc -Ports @($port) -TimeoutMs ([int]$Config['SmbProbeTimeoutMs'])
+    $out.ReachCause = [string]$smbGate.Cause
+    $out.PortOk = [bool]$smbGate.Open[$port]
     if (-not $out.PortOk) { return $out }
     $out.Listing = Get-AdfaSysvolPolicyFolderRaw -Path $policies
     $listed = @{}
@@ -8628,6 +8726,13 @@ function Get-AdfaGpoDomainFinding {
 
     $guidPattern = [string]$Config['GuidPattern']
     $portOk = ($null -ne $Sysvol -and [bool]$Sysvol.PortOk)
+    # PORT-PLAN C14c: a PDC classified Unreachable was not probed on 445; its rows name the class,
+    # never a probe result that was not measured. Read without assuming the property (an older shape).
+    $reachCause = ''
+    if ($null -ne $Sysvol) {
+        $reachProp = $Sysvol.PSObject.Properties['ReachCause']
+        if ($null -ne $reachProp -and $null -ne $reachProp.Value) { $reachCause = [string]$reachProp.Value }
+    }
     $listing = $null
     if ($portOk) { $listing = $Sysvol.Listing }
     $listingOk = ($null -ne $listing -and [bool]$listing.Ok)
@@ -8681,7 +8786,10 @@ function Get-AdfaGpoDomainFinding {
             else { $causes += ("Not parsed: versionNumber of this GPO's container could not be read as a 32-bit version ({0})." -f [string]$ds.Cause) }
         }
         if ($path.Ok) {
-            if (-not $portOk) {
+            if (-not $portOk -and -not [string]::IsNullOrWhiteSpace($reachCause)) {
+                $causes += ("{0} This is not a clean result." -f (Get-AdfaDcGateText -Cause $reachCause -NotRead ('port {0} (SMB) of {1} was not probed, GPT.INI of this GPO was not read and its versions were not compared' -f $smbPort, $pdc)))
+            }
+            elseif (-not $portOk) {
                 $causes += ("Unreachable: port {0} (SMB) of {1} did not answer, so GPT.INI of this GPO was not read and its versions were not compared. This is not a clean result." -f $smbPort, $pdc)
             }
             elseif ($listingOk -and -not $listed.ContainsKey($guid)) {
@@ -8753,6 +8861,10 @@ function Get-AdfaGpoDomainFinding {
             $rows += New-AdfaGpoVersionRow -Scope $Domain -Item ("GPO folder without container: {0}" -f $upper) -Status $orphanStatus -Evidence 'SYSVOL' -GpoGuid $upper -ReadFrom $pdc `
                 -Detail ("SYSVOL folder with no container visible to this account: {0}\{1} on {2} is named by a GPO GUID, and no groupPolicyContainer with that GUID was returned under CN=Policies,CN=System. Microsoft calls such a folder an orphaned GPO in the file system. A container this account cannot read looks the same as a missing one. Graded {3}: {4}." -f $policies, $upper, $pdc, $orphanStatus, [string]$Config['ThresholdSource'])
         }
+    }
+    elseif (-not $portOk -and -not [string]::IsNullOrWhiteSpace($reachCause)) {
+        $rows += New-AdfaGpoVersionRow -Scope $Domain -Item ("GPO folder listing: {0}" -f $Domain) -Status $script:Status.NotAssessed -Evidence 'none' -ReadFrom $pdc `
+            -Detail ("{0} This is not a clean result." -f (Get-AdfaDcGateText -Cause $reachCause -NotRead ('port {0} (SMB) of {1} was not probed, {2} was not listed and SYSVOL folders with no container were not looked for' -f $smbPort, $pdc, $policies)))
     }
     elseif (-not $portOk) {
         $rows += New-AdfaGpoVersionRow -Scope $Domain -Item ("GPO folder listing: {0}" -f $Domain) -Status $script:Status.NotAssessed -Evidence 'none' -ReadFrom $pdc `
@@ -13481,25 +13593,46 @@ function Get-AdfaDcPatchLevel {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DomainControllers,
+        # DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e).
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
         [Parameter(Mandatory)][hashtable]$Config,
         [pscredential]$Credential,
         [int]$PortTimeoutMs = 1200,
         [int]$OperationTimeoutSec = 90,
-        [datetime]$Now = (Get-Date)
+        [datetime]$Now = (Get-Date),
+        # Domains whose DC enumeration threw (Domain, Error), and the domains of the run.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
-    if (@($DomainControllers).Count -eq 0) {
-        return @(New-Finding -Area 'DcSystem' -Item 'Patch level' -Status $script:Status.NotAssessed `
-                -Detail 'No domain controllers were enumerated, so no build, uptime or update date could be read. This is not a clean result.')
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    $rows = @(Get-AdfaDcPopulationRow -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains -Area 'DcSystem' `
+            -Label 'Patch level' -NothingRead 'No build, uptime or update date of its DCs was read.')
+    if ($targets.Count -eq 0) {
+        return @(@($rows) + @(New-Finding -Area 'DcSystem' -Item 'Patch level' -Status $script:Status.NotAssessed `
+                    -Detail 'No domain controllers were enumerated, so no build, uptime or update date could be read. This is not a clean result.'))
     }
+    # The CIM session always uses the default ports (PORT-PLAN C3g: a file cannot set them).
     $wsmanPort = [int]$Config['WsmanPort']
     $rpcPort = [int]$Config['RpcPort']
-    $rows = @()
-    foreach ($dc in $DomainControllers) {
-        $wsman = Test-AdfaDcPort -ComputerName $dc -Port $wsmanPort -TimeoutMs $PortTimeoutMs
-        $rpc = Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-Finding -Scope $scope -Area 'DcSystem' -Item 'Patch level: (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no build, uptime or update date was read.'
+            continue
+        }
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @($wsmanPort, $rpcPort) -TimeoutMs $PortTimeoutMs
+        $wsman = [bool]$gate.Open[$wsmanPort]
+        $rpc = [bool]$gate.Open[$rpcPort]
+        if ($gate.Cause) {
+            $rows += New-Finding -Scope $scope -Area 'DcSystem' -Item ("Patch level: {0}" -f $dc) -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'no read was attempted')
+            continue
+        }
         if (-not $wsman -and -not $rpc) {
-            $rows += New-Finding -Area 'DcSystem' -Item ("Patch level: {0}" -f $dc) -Status $script:Status.NotAssessed `
+            $rows += New-Finding -Scope $scope -Area 'DcSystem' -Item ("Patch level: {0}" -f $dc) -Status $script:Status.NotAssessed `
                 -Detail ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so no read was attempted." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
             continue
         }
@@ -13527,7 +13660,7 @@ function Get-AdfaDcPatchLevel {
         if ($null -eq $raw -or -not $raw.Ok) {
             $lead = 'Read failed: a port answered, but system information could not be read. If the text below is a refusal in another language, local Administrators rights on the DC are what is missing.'
             if ($denied) { $lead = 'Access denied: the account running the assessment could not read system information from this DC. Local Administrators rights on the DC are needed for this read.' }
-            $rows += New-Finding -Area 'DcSystem' -Item ("Patch level: {0}" -f $dc) -Status $script:Status.NotAssessed `
+            $rows += New-Finding -Scope $scope -Area 'DcSystem' -Item ("Patch level: {0}" -f $dc) -Status $script:Status.NotAssessed `
                 -Detail ("{0} Reported by the DC - {1}" -f $lead, ($attempts -join ' | '))
             continue
         }
@@ -13549,30 +13682,30 @@ function Get-AdfaDcPatchLevel {
         # The class answered but gave neither value: nothing was measured, so it is not Info.
         $osStatus = $script:Status.Info
         if (-not $hasBuild -and -not ($raw.LastBootUpTime -is [datetime])) { $osStatus = $script:Status.NotAssessed }
-        $rows += New-Finding -Area 'DcSystem' -Item ("OS build and uptime: {0}" -f $dc) -Status $osStatus `
+        $rows += New-Finding -Scope $scope -Area 'DcSystem' -Item ("OS build and uptime: {0}" -f $dc) -Status $osStatus `
             -Detail ("{0} {1} The update revision within the build is not part of this read. Read over {2}." -f $build, $boot, [string]$raw.Protocol)
 
         # ---- Latest update install date ----
         $hfItem = ("Last update installed: {0}" -f $dc)
         if (-not $raw.HotfixOk) {
-            $rows += New-Finding -Area 'DcSystem' -Item $hfItem -Status $script:Status.NotAssessed `
+            $rows += New-Finding -Scope $scope -Area 'DcSystem' -Item $hfItem -Status $script:Status.NotAssessed `
                 -Detail ("The update list could not be read: {0}" -f [string]$raw.HotfixError)
             continue
         }
         $summary = Get-AdfaHotfixSummary -InstalledOn @($raw.InstalledOn)
         $cbs = 'Win32_QuickFixEngineering lists only updates supplied by Component Based Servicing, so this is the latest of those and not necessarily the latest update of any kind.'
         if ($summary.Total -eq 0) {
-            $rows += New-Finding -Area 'DcSystem' -Item $hfItem -Status $script:Status.NotAssessed `
+            $rows += New-Finding -Scope $scope -Area 'DcSystem' -Item $hfItem -Status $script:Status.NotAssessed `
                 -Detail '0 records were returned by Win32_QuickFixEngineering, so no install date is known. This is not a statement that no update is installed.'
         }
         elseif ($summary.Parsed -eq 0) {
-            $rows += New-Finding -Area 'DcSystem' -Item $hfItem -Status $script:Status.NotAssessed `
+            $rows += New-Finding -Scope $scope -Area 'DcSystem' -Item $hfItem -Status $script:Status.NotAssessed `
                 -Detail ("{0} record(s) were returned, but none carries an install date that can be read without guessing the day/month order (examples: {1})." -f $summary.Total, (@($summary.UnparsedSamples) -join ', '))
         }
         else {
             $caveat = ''
             if ($summary.Unparsed -gt 0) { $caveat = (" {0} record(s) had no date or one that could not be read without guessing, and any of them may be newer." -f $summary.Unparsed) }
-            $rows += New-Finding -Area 'DcSystem' -Item $hfItem -Status $script:Status.Info `
+            $rows += New-Finding -Scope $scope -Area 'DcSystem' -Item $hfItem -Status $script:Status.Info `
                 -Detail ("Latest update install date {0:yyyy-MM-dd}, from {1} of {2} record(s).{3} {4}" -f $summary.Latest, $summary.Parsed, $summary.Total, $caveat, $cbs)
         }
     }
@@ -13623,9 +13756,16 @@ function Merge-AdfaDcSystemConfig {
     }
     # Only keys this tool reads. A misspelt key ("OsLifecycles") would otherwise be accepted,
     # ignored, and leave the operator believing their table was applied.
-    $known = @('OsLifecycle', 'WsmanPort', 'RpcPort')
+    $known = @('OsLifecycle')
     $replacedTable = $false
     foreach ($k in $names) {
+        # PORT-PLAN C3g: the two port keys are refused whatever they hold, with their own reason, as
+        # DcHardening refuses them: a port set here was probed, and the CIM session still went to the
+        # default one. New-CimSession -Port needs a WinRM listener on that port, which only a change
+        # on the DC creates, and DCOM has no port option (Learn, read 2026-11-17).
+        if (@('WsmanPort', 'RpcPort') -contains [string]$k) {
+            throw ("DC system config override names '{0}'. The ports of this section cannot be set from a file: its CIM session is always opened on the default WinRM port ({1}), or through the RPC endpoint mapper ({2}) for DCOM, so a different port here would change what is probed and not what is connected to. Remove the key." -f [string]$k, [int]$BaseConfig['WsmanPort'], [int]$BaseConfig['RpcPort'])
+        }
         if ($known -notcontains [string]$k) {
             throw ("DC system config override names an unknown key '{0}'. Known keys: {1}." -f [string]$k, ($known -join ', '))
         }
@@ -13643,13 +13783,6 @@ function Merge-AdfaDcSystemConfig {
                 throw "DC system config override sets 'OsLifecycle' to an empty list. An empty table would leave every DC unjudged - remove the key to keep the built-in table."
             }
             $replacedTable = $true
-        }
-        else {
-            $port = 0
-            if (-not [int]::TryParse([string]$value, [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
-                throw ("DC system config override sets '{0}' to '{1}', which is not a TCP port number between 1 and 65535." -f [string]$k, [string]$value)
-            }
-            $value = $port
         }
         $merged[$k] = $value
     }
@@ -14737,6 +14870,77 @@ function ConvertTo-AdfaDcTarget {
     return $out
 }
 
+function Get-AdfaDcHostSet {
+    <#
+    .SYNOPSIS
+        Pure: the host names of a list of per-DC targets, in order, each once (PORT-PLAN C2e). The
+        DNS server set of the four DNS-vs-AD sections and the DC count of the run.
+    .DESCRIPTION
+        A DC can be listed under more than one target (the same host returned by the enumeration of
+        two domains, or in another case); it is counted and queried once. Names are compared
+        without regard to case and without a trailing dot; the first spelling is kept. A target
+        with no host name is left out: it names no server.
+    .OUTPUTS
+        [string[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([AllowNull()][AllowEmptyCollection()]$Targets = @())
+    $hosts = New-Object System.Collections.ArrayList
+    $seen = @{}
+    foreach ($target in @($Targets | Where-Object { $null -ne $_ })) {
+        $name = ([string](ConvertTo-AdfaDcTarget -Target $target).HostName).Trim()
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        $key = $name.TrimEnd('.').ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        [void]$hosts.Add($name)
+    }
+    return [string[]]@($hosts.ToArray())
+}
+
+function Get-AdfaDomainDcHostName {
+    <#
+    .SYNOPSIS
+        Pure: the host names of ONE scoped domain's DCs among the per-DC targets, or why there are
+        none (PORT-PLAN C2e). For a per-domain consumer such as the SYSVOL backlog.
+    .DESCRIPTION
+        HostNames: the targets whose Scope is -Domain (case-insensitive). When no target carries a
+        domain at all (the unscoped fallback enumeration against the default server) and -Domain
+        is the only scoped domain, the unscoped names are that domain's - the default server's
+        domain is the one scoped - and are returned, as before. In every other case the unscoped
+        names are NOT taken for this domain: on a multi-domain run they are another domain's DCs.
+        Gap: when HostNames is empty, this domain's entry of Get-AdfaDcPopulationGap (its
+        enumeration threw, with the error; or it returned no DC), for the caller to report as a Not
+        Assessed row; $null otherwise.
+    .OUTPUTS
+        [pscustomobject] HostNames (string[]), Gap.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [AllowNull()][AllowEmptyCollection()]$Targets = @(),
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+    )
+    $key = $Domain.Trim().TrimEnd('.').ToLowerInvariant()
+    $named = @(@($Targets | Where-Object { $null -ne $_ }) | ForEach-Object { ConvertTo-AdfaDcTarget -Target $_ })
+    $names = @($named | Where-Object { $_.Scope.Trim().TrimEnd('.').ToLowerInvariant() -eq $key } | ForEach-Object { [string]$_.HostName })
+    $anyScoped = (@($named | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Scope) }).Count -gt 0)
+    $scoped = @(@($ScopedDomains) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ([string]$_).Trim().TrimEnd('.').ToLowerInvariant() } | Sort-Object -Unique)
+    if ($names.Count -eq 0 -and -not $anyScoped -and $scoped.Count -eq 1 -and $scoped[0] -eq $key) {
+        $names = @($named | ForEach-Object { [string]$_.HostName })
+    }
+    $gap = $null
+    if ($names.Count -eq 0) {
+        $ownFailures = @(@($InventoryFailures | Where-Object { $null -ne $_ }) | Where-Object { ([string]$_.Domain).Trim().TrimEnd('.').ToLowerInvariant() -eq $key })
+        $gaps = @(Get-AdfaDcPopulationGap -Targets @($Targets) -InventoryFailures $ownFailures -ScopedDomains @($Domain))
+        if ($gaps.Count -gt 0) { $gap = $gaps[0] }
+    }
+    return [pscustomobject]@{ HostNames = [string[]]@($names); Gap = $gap }
+}
+
 function Invoke-AdfaDcRemoteRead {
     <#
     .SYNOPSIS
@@ -14859,8 +15063,14 @@ function Get-AdfaDcDiskSpace {
             continue
         }
         $item = ("Disk space: {0}" -f $dc)
-        $wsman = Test-AdfaDcPort -ComputerName $dc -Port $wsmanPort -TimeoutMs $PortTimeoutMs
-        $rpc = Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @($wsmanPort, $rpcPort) -TimeoutMs $PortTimeoutMs
+        $wsman = [bool]$gate.Open[$wsmanPort]
+        $rpc = [bool]$gate.Open[$rpcPort]
+        if ($gate.Cause) {
+            $rows += New-AdfaDcDiskRow -Scope $scope -Item $item -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'no read was attempted')
+            continue
+        }
         if (-not $wsman -and -not $rpc) {
             $rows += New-AdfaDcDiskRow -Scope $scope -Item $item -Status $script:Status.NotAssessed `
                 -Detail ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so no read was attempted." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
@@ -14894,20 +15104,22 @@ function Merge-AdfaDcDiskConfig {
         validator for -ConfigOverridePath.
     .DESCRIPTION
         Only the keys the override names are replaced. The keys that can be named are the four
-        thresholds and the two ports. Paths, SourceUrl and ReadDate cannot: they are what the
-        tool reads and where the vendor documents it, not a volatile value, and a file that
-        redirected the registry reads would make every finding describe something else.
+        thresholds. Paths, SourceUrl and ReadDate cannot: they are what the tool reads and where
+        the vendor documents it, not a volatile value, and a file that redirected the registry
+        reads would make every finding describe something else. WsmanPort and RpcPort are refused
+        with their own reason (PORT-PLAN C3g): the CIM session is opened on the default ports, so
+        a port set here would only have changed what was probed.
 
         Anything this tool could not use is refused with the reason: an override that is not one
         object, an empty object, an unknown key, a null, a value that is not a JSON number, a
-        percentage outside 0 to 100, a negative floor, a port that is not a port. The MERGED
+        percentage outside 0 to 100, a negative floor, either port key. The MERGED
         table is then checked as a whole, so a file that names only FailBelowPercent is still
         refused when that puts Fail above the built-in Warning threshold, and a table left with
         no threshold at all - which would pass every volume - is refused too.
 
         Provenance follows the thresholds key by key. ThresholdSource is rewritten to name the
         override's source for exactly the thresholds it supplied, and goes on calling the rest
-        tool defaults. A file that changes only a port leaves it untouched.
+        tool defaults.
     .OUTPUTS
         [hashtable]
     #>
@@ -14937,12 +15149,20 @@ function Merge-AdfaDcDiskConfig {
     }
     $thresholdKeys = @('WarnBelowPercent', 'FailBelowPercent', 'WarnBelowFreeGB', 'FailBelowFreeGB')
     $portKeys = @('WsmanPort', 'RpcPort')
-    $known = @($thresholdKeys + $portKeys)
+    $known = @($thresholdKeys)
     $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $supplied = @()
     foreach ($k in $names) {
         $given = [string]$k
+        # PORT-PLAN C3g: the two port keys are refused whatever they hold, with their own reason, as
+        # DcHardening refuses them: a port set here was probed, and the CIM session still went to the
+        # default one. New-CimSession -Port needs a WinRM listener on that port, which only a change
+        # on the DC creates, and DCOM has no port option (Learn, read 2026-11-17).
+        $portMatch = @($portKeys | Where-Object { $_ -eq $given })
+        if ($portMatch.Count -gt 0) {
+            throw ("DC disk config override names '{0}'. The ports of this section cannot be set from a file: its CIM session is always opened on the default WinRM port ({1}), or through the RPC endpoint mapper ({2}) for DCOM, so a different port here would change what is probed and not what is connected to. Remove the key." -f [string]$portMatch[0], [int]$BaseConfig['WsmanPort'], [int]$BaseConfig['RpcPort'])
+        }
         # A misspelt key would otherwise be accepted, ignored, and leave the operator believing
         # their threshold was applied.
         $match = @($known | Where-Object { $_ -eq $given })
@@ -14970,13 +15190,7 @@ function Merge-AdfaDcDiskConfig {
             throw ("DC disk config override sets '{0}' to a value that is not a finite number." -f $name)
         }
         $shown = $number.ToString('0.####', $inv)
-        if ($portKeys -contains $name) {
-            if ($number -ne [math]::Floor($number) -or $number -lt 1 -or $number -gt 65535) {
-                throw ("DC disk config override sets '{0}' to {1}, which is not a TCP port number between 1 and 65535." -f $name, $shown)
-            }
-            $merged[$name] = [int]$number
-        }
-        elseif ($name -like '*Percent') {
+        if ($name -like '*Percent') {
             if ($number -lt 0 -or $number -gt 100) {
                 throw ("DC disk config override sets '{0}' to {1}. A percentage of free space must be in the range 0 to 100." -f $name, $shown)
             }
@@ -16067,8 +16281,14 @@ function Get-AdfaDcHardening {
             continue
         }
         $item = ("DC hardening: {0}" -f $dc)
-        $wsman = Test-AdfaDcPort -ComputerName $dc -Port $wsmanPort -TimeoutMs $PortTimeoutMs
-        $rpc = Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @($wsmanPort, $rpcPort) -TimeoutMs $PortTimeoutMs
+        $wsman = [bool]$gate.Open[$wsmanPort]
+        $rpc = [bool]$gate.Open[$rpcPort]
+        if ($gate.Cause) {
+            $rows += New-AdfaDcHardeningRow -Scope $scope -Item $item -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'no read was attempted')
+            continue
+        }
         if (-not $wsman -and -not $rpc) {
             $rows += New-AdfaDcHardeningRow -Scope $scope -Item $item -Status $script:Status.NotAssessed `
                 -Detail ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so no read was attempted." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
@@ -18191,7 +18411,9 @@ function Get-AdfaDcLdapsFinding {
         [AllowNull()]$Raw = $null,
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][datetime]$NowUtc,
-        [int]$PortTimeoutMs = 1200
+        [int]$PortTimeoutMs = 1200,
+        # PORT-PLAN C14c: the reachability class of a DC classified Unreachable, which was not probed.
+        [AllowEmptyString()][string]$ReachCause = ''
     )
     $item = ("LDAPS certificate: {0}" -f $DomainController)
     $port = [int]$Config['LdapsPort']
@@ -18201,6 +18423,10 @@ function Get-AdfaDcLdapsFinding {
     if (-not $HandshakeRun) {
         return (New-AdfaDcCertificateRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence 'none' -NotRun $notRun `
                 -Detail ("Not run: the LDAPS handshake is opt-in (-IncludeLdapsHandshake). Microsoft documents Schannel error logging as on by default and does not state that a TLS handshake leaves no trace on the server, so a handshake this DC cannot complete may write an error event to its System log. No connection was made to port {0}, so the certificate this DC presents is not known." -f $port))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ReachCause)) {
+        return (New-AdfaDcCertificateRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence 'none' -NotRun $notRun `
+                -Detail (Get-AdfaDcGateText -Cause $ReachCause -NotRead ('port {0} was not probed and no handshake was attempted' -f $port)))
     }
     if (-not $PortAnswered) {
         return (New-AdfaDcCertificateRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence 'none' -NotRun $notRun `
@@ -18424,14 +18650,17 @@ function Get-AdfaDcCertificates {
         try {
             $answered = $false
             $raw = $null
+            $ldapsReach = ''
             if ($IncludeHandshake) {
-                $answered = Test-AdfaDcPort -ComputerName $dc -Port $port -TimeoutMs $PortTimeoutMs
+                $ldapsGate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @($port) -TimeoutMs $PortTimeoutMs
+                $ldapsReach = [string]$ldapsGate.Cause
+                $answered = [bool]$ldapsGate.Open[$port]
                 if ($answered) {
                     $raw = Get-AdfaDcTlsCertificateRaw -ComputerName $dc -Port $port -ConnectTimeoutMs ([int]$Config['ConnectTimeoutMs']) -HandshakeTimeoutMs ([int]$Config['HandshakeTimeoutMs'])
                 }
             }
             $dcRows += Get-AdfaDcLdapsFinding -DomainController $dc -Scope $scope -HandshakeRun $IncludeHandshake -PortAnswered $answered -Raw $raw `
-                -Config $Config -NowUtc $nowUtc -PortTimeoutMs $PortTimeoutMs
+                -Config $Config -NowUtc $nowUtc -PortTimeoutMs $PortTimeoutMs -ReachCause $ldapsReach
             $presented = ''
             if ($null -ne $raw -and [bool]$raw.Ok -and $null -ne $raw.Certificate -and [bool]$raw.Certificate.Read) { $presented = [string]$raw.Certificate.Thumbprint }
             $directoryRaw = Get-AdfaDcCertificateDirectoryRaw -HostName $dc -Server $scope -AdParams $AdParams
@@ -21439,18 +21668,23 @@ function Get-AdfaBackupStatus {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        # DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e).
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
         [int]$TimeoutSeconds = 90,
         [int]$Retries = 2,
         [int]$RetryDelaySeconds = 2,
         [int]$MaxAgeDays = 30,
-        [int]$RpcPortTimeoutMs = 1200
+        [int]$RpcPortTimeoutMs = 1200,
+        # Domains whose DC enumeration threw (Domain, Error), and the domains of the run.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
     if (-not (Test-CommandAvailable -Name 'repadmin.exe')) {
         return @(New-Finding -Area 'Backup' -Item 'Directory backup status' -Status $script:Status.NotAssessed -Detail 'repadmin.exe not available on this host.')
     }
-    $rows = @()
-    $targets = @($DomainControllers | Where-Object { $_ })
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ -and -not ($_ -is [string] -and [string]::IsNullOrWhiteSpace($_)) })
+    $rows = @(Get-AdfaDcPopulationRow -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains -Area 'Backup' `
+            -Label 'Directory backup' -NothingRead 'No backup time of its DCs was read.')
     if (@($targets).Count -eq 0) {
         # No DC list - fall back to the local view.
         $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments '/showbackup' -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
@@ -21466,21 +21700,35 @@ function Get-AdfaBackupStatus {
         }
         return @($rows)
     }
-    foreach ($dc in $targets) {
-        if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
-            $rows += New-Finding -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail 'DC not reachable (RPC/135) - run repadmin /showbackup locally on it.'
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-Finding -Scope $scope -Area 'Backup' -Item 'Directory backup: (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so repadmin /showbackup had nothing to ask.'
+            continue
+        }
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $RpcPortTimeoutMs
+        if ($gate.Cause) {
+            $rows += New-Finding -Scope $scope -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'repadmin /showbackup was not run against it')
+            continue
+        }
+        if (-not $gate.Open[135]) {
+            $rows += New-Finding -Scope $scope -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail 'DC not reachable (RPC/135) - run repadmin /showbackup locally on it.'
             continue
         }
         $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments ("/showbackup {0}" -f $dc) -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
         $latest = Get-AdfaLatestBackupDate -Text $r.StdOut
         if ($null -eq $latest) {
-            $rows += New-Finding -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail ("Could not parse repadmin /showbackup output for this DC.{0}" -f $(if ($r.Error) { ' ' + $r.Error } else { '' }))
+            $rows += New-Finding -Scope $scope -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail ("Could not parse repadmin /showbackup output for this DC.{0}" -f $(if ($r.Error) { ' ' + $r.Error } else { '' }))
         }
         else {
             $age = ((Get-Date) - $latest).TotalDays
             $status = $script:Status.Pass
             if ($age -gt $MaxAgeDays) { $status = $script:Status.Warning }
-            $rows += New-Finding -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $status -Detail ("Latest partition backup {0:yyyy-MM-dd HH:mm} ({1:N0} day(s) ago). A very old value on a restored DC dates the backup it came from." -f $latest, $age)
+            $rows += New-Finding -Scope $scope -Area 'Backup' -Item ("Directory backup: {0}" -f $dc) -Status $status -Detail ("Latest partition backup {0:yyyy-MM-dd HH:mm} ({1:N0} day(s) ago). A very old value on a restored DC dates the backup it came from." -f $latest, $age)
         }
     }
     return @($rows)
@@ -21545,7 +21793,13 @@ function Get-AdfaLingeringObjectScan {
 
     foreach ($dc in $dcs) {
         if ($dc.ToLowerInvariant().TrimEnd('.') -eq $refDc.ToLowerInvariant().TrimEnd('.')) { continue }
-        if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $RpcPortTimeoutMs
+        if ($gate.Cause) {
+            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'the advisory scan was not run against it')
+            continue
+        }
+        if (-not $gate.Open[135]) {
             $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail 'DC not reachable (RPC/135).'
             continue
         }
@@ -22841,10 +23095,15 @@ function Get-AdfaMsdcsDelegationVerdict {
         # GlueUnknown. Supplied by the collector so this verdict needs no directory or resolver.
         [AllowNull()][AllowEmptyCollection()]$Observations = @(),
         [AllowEmptyCollection()][string[]]$AdDcHosts = @(),
-        [AllowEmptyCollection()][string[]]$Unanswered = @()
+        [AllowEmptyCollection()][string[]]$Unanswered = @(),
+        # PORT-PLAN C2e: scoped domains whose DCs are missing from -AdDcHosts (their enumeration threw or
+        # returned no DC). With any named, an NS host missing from -AdDcHosts may be one of their DCs,
+        # so it is Not Assessed naming them, never "not a known DC".
+        [AllowNull()][AllowEmptyCollection()][string[]]$IncompleteDomains = @()
     )
     $zone = "{0}.{1}" -f $script:Config.MsdcsZoneLabel, $ForestRoot
     $rows = @()
+    $incomplete = @(@($IncompleteDomains) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ([string]$_).Trim() } | Sort-Object -Unique)
     $obs = @(@($Observations) | Where-Object { $null -ne $_ })
     $unansweredNote = ''
     if (@($Unanswered).Count -gt 0) {
@@ -22942,7 +23201,12 @@ function Get-AdfaMsdcsDelegationVerdict {
     }
 
     # 4. NS records naming hosts AD does not know as DCs.
-    if (@($notDcs).Count -gt 0) {
+    if (@($notDcs).Count -gt 0 -and $incomplete.Count -gt 0) {
+        $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation - NS hosts not cross-checked" -f $zone) -Status $script:Status.NotAssessed `
+            -Detail ("NS records for {0} name hosts that are not among the {1} domain controller(s) listed in this run: {2}. The domain controllers of {3} could not be listed (the enumeration failed or returned none), so each of these hosts may be one of theirs: whether any is a stale NS record is not known. This is not a clean result." -f `
+                $zone, $knownDcs.Count, (@($notDcs) -join '; '), ($incomplete -join ', '))
+    }
+    elseif (@($notDcs).Count -gt 0) {
         $rows += New-Finding -Area 'MsdcsDelegation' -Item ("{0} delegation - NS host not a known DC" -f $zone) -Status $script:Status.Warning `
             -Detail ("NS records for {0} name hosts that are not domain controllers in this forest's inventory: {1}. After a recovery with metadata cleanup, NS records of DCs that no longer exist must be deleted, or resolvers keep being referred to servers that are gone. Confirm each host above is a DNS server you intend to be authoritative for this zone; if it is a decommissioned DC, remove the record." -f `
                 $zone, (@($notDcs) -join '; '))
@@ -22976,7 +23240,10 @@ function Get-AdfaMsdcsDelegation {
     param(
         [Parameter(Mandatory)][string]$ForestRoot,
         [AllowEmptyCollection()][string[]]$DnsServers = @(),
-        [AllowEmptyCollection()][string[]]$AdDcHosts = @()
+        [AllowEmptyCollection()][string[]]$AdDcHosts = @(),
+        # PORT-PLAN C2e: scoped domains whose DCs are missing from -AdDcHosts (their enumeration threw or
+        # returned no DC). Passed to the verdict, which then does not call an NS host "not a known DC".
+        [AllowNull()][AllowEmptyCollection()][string[]]$IncompleteDomains = @()
     )
     $zone = "{0}.{1}" -f $script:Config.MsdcsZoneLabel, $ForestRoot
     $soaView = Get-AdfaDnsRecordView -Name $zone -Type SOA -DnsServers $DnsServers
@@ -23018,7 +23285,7 @@ function Get-AdfaMsdcsDelegation {
         }
     }
     return @(Get-AdfaMsdcsDelegationVerdict -ForestRoot $ForestRoot -Observations $observations `
-            -AdDcHosts $AdDcHosts -Unanswered $unanswered)
+            -AdDcHosts $AdDcHosts -Unanswered $unanswered -IncompleteDomains @($IncompleteDomains))
 }
 
 function ConvertFrom-AdfaW32tmConfiguration {
@@ -23380,7 +23647,8 @@ function Get-AdfaTimeHierarchyHealth {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        # DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e).
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
         # Hashtable of DC host name -> domain DNS name, for the PDC emulator of each domain.
         [hashtable]$PdcEmulators = @{},
         [string]$ForestRootPdc = '',
@@ -23390,18 +23658,40 @@ function Get-AdfaTimeHierarchyHealth {
         [double]$WarnSeconds = 60,
         [double]$FailSeconds = 300,
         # Where the grades came from (ClockSkew ThresholdSource, the file's where it supplied one).
-        [AllowEmptyString()][string]$ThresholdSource = ''
+        [AllowEmptyString()][string]$ThresholdSource = '',
+        # Domains whose DC enumeration threw (Domain, Error), and the domains of the run.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
     # Named once so every offset finding can say what it measured against. The offset is relative
     # to THIS host; if this host's clock is wrong, every DC agreeing with it still reads clean.
     $refHost = [Environment]::MachineName
+    # PORT-PLAN C2e: the DCs of every scoped domain, each with its domain; a scoped domain with no DC
+    # row gets its own population row, and a DC with no host name its own row.
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    $population = @(Get-AdfaDcPopulationRow -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains -Area 'TimeHierarchy' `
+            -Label 'Time hierarchy' -NothingRead 'No time source of its DCs was read.')
+    $hostList = New-Object System.Collections.ArrayList
+    $hostScopes = New-Object System.Collections.ArrayList
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        if ([string]::IsNullOrWhiteSpace([string]$named.HostName)) {
+            $population += New-Finding -Scope ([string]$named.Scope) -Area 'TimeHierarchy' -Item 'Time source on (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so w32tm had nothing to query.'
+            continue
+        }
+        [void]$hostList.Add([string]$named.HostName)
+        [void]$hostScopes.Add([string]$named.Scope)
+    }
+    $DomainControllers = @($hostList.ToArray())
     if (@($DomainControllers).Count -eq 0) {
-        return @(New-Finding -Area 'TimeHierarchy' -Item 'Time hierarchy' -Status $script:Status.NotAssessed `
-                -Detail 'No domain controllers were enumerated, so no time source could be read. This is not a clean result.')
+        if ($targets.Count -gt 0) { return @($population) }
+        return @(@($population) + @(New-Finding -Area 'TimeHierarchy' -Item 'Time hierarchy' -Status $script:Status.NotAssessed `
+                    -Detail 'No domain controllers were enumerated, so no time source could be read. This is not a clean result.'))
     }
     if (-not (Test-CommandAvailable -Name 'w32tm.exe')) {
-        return @(New-Finding -Area 'TimeHierarchy' -Item 'Time hierarchy' -Status $script:Status.NotAssessed `
-                -Detail 'w32tm.exe is not available on this host, so no domain controller time source could be queried. Run this assessment from a domain-joined Windows host with the Windows Time tools present.')
+        return @(@($population) + @(New-Finding -Area 'TimeHierarchy' -Item 'Time hierarchy' -Status $script:Status.NotAssessed `
+                    -Detail 'w32tm.exe is not available on this host, so no domain controller time source could be queried. Run this assessment from a domain-joined Windows host with the Windows Time tools present.'))
     }
     $rootPdc = Get-AdfaDnsNameNormalised -Name $ForestRootPdc
     $pdcMap = @{}
@@ -23412,12 +23702,15 @@ function Get-AdfaTimeHierarchyHealth {
     $rows = @()
     # PORT-PLAN C14: each DC's stripchart reading, kept for the forest-root-PDC offset rows below.
     $samplesByDc = @{}
-    foreach ($dc in @($DomainControllers)) {
+    for ($hostIndex = 0; $hostIndex -lt @($DomainControllers).Count; $hostIndex++) {
+        $dc = [string]@($DomainControllers)[$hostIndex]
         $norm = Get-AdfaDnsNameNormalised -Name $dc
         $isPdc = $pdcMap.ContainsKey($norm)
         $isRootPdc = ($rootPdc -ne '' -and $norm -eq $rootPdc)
-        $scope = ''
-        if ($isPdc) { $scope = [string]$pdcMap[$norm] }
+        # The domain of the DC's own target where it carries one (PORT-PLAN C2e); otherwise, as before,
+        # the domain whose PDC emulator it is.
+        $scope = [string]$hostScopes[$hostIndex]
+        if ($isPdc -and $scope -eq '') { $scope = [string]$pdcMap[$norm] }
 
         # PORT-PLAN C14: a DC the reachability probe classified Unreachable is not probed again; its
         # rows carry that cause, so a name that does not resolve is never reported as a silent port.
@@ -23432,7 +23725,7 @@ function Get-AdfaTimeHierarchyHealth {
                 -WarnSeconds $WarnSeconds -FailSeconds $FailSeconds
             continue
         }
-        $reachable = Test-AdfaDcPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs
+        $reachable = [bool](Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $RpcPortTimeoutMs).Open[135]
         if (-not $reachable) {
             $samplesByDc[$norm] = [pscustomobject]@{ Queried = $false; Offsets = @(); Delays = @(); Error = 'RPC (135) was not reachable, so no NTP sample was taken' }
             $rows += Get-AdfaTimeSourceVerdict -DomainController $dc -Scope $scope -IsPdcEmulator $isPdc `
@@ -23501,10 +23794,11 @@ function Get-AdfaTimeHierarchyHealth {
             else { $referenceSample = Get-AdfaStripchartSample -ComputerName $ForestRootPdc -Samples $SkewSamples -TimeoutSeconds $TimeoutSeconds }
         }
     }
-    foreach ($dc in @($DomainControllers)) {
+    for ($hostIndex = 0; $hostIndex -lt @($DomainControllers).Count; $hostIndex++) {
+        $dc = [string]@($DomainControllers)[$hostIndex]
         $norm = Get-AdfaDnsNameNormalised -Name $dc
-        $scope = ''
-        if ($pdcMap.ContainsKey($norm)) { $scope = [string]$pdcMap[$norm] }
+        $scope = [string]$hostScopes[$hostIndex]
+        if ($pdcMap.ContainsKey($norm) -and $scope -eq '') { $scope = [string]$pdcMap[$norm] }
         $sample = $null
         if ($samplesByDc.ContainsKey($norm)) { $sample = $samplesByDc[$norm] }
         $rows += Get-AdfaPdcClockOffsetVerdict -DomainController $dc -Scope $scope -ReferencePdc $ForestRootPdc `
@@ -23519,7 +23813,7 @@ function Get-AdfaTimeHierarchyHealth {
         $rows += New-Finding -Area 'TimeHierarchy' -Item 'Forest root PDC emulator' -Status $script:Status.NotAssessed `
             -Detail ("The forest root PDC emulator ({0}) is not in the list of domain controllers queried, so the one DC with a role-specific time requirement was not assessed. Re-run with -AllDomains, or with -Server pointed into the forest root domain." -f $ForestRootPdc)
     }
-    return @($rows)
+    return @(@($population) + @($rows))
 }
 
 function Get-AdfaSiteGcCoverage {
@@ -23636,35 +23930,61 @@ function Get-AdfaPortMatrix {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        # DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e). The population rows of the
+        # section are the "DC reachability (population)" rows, which take the same targets.
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
         [int]$RpcPortTimeoutMs = 1200
     )
     $rows = @()
-    foreach ($dc in $DomainControllers) {
-        $resolvable = $true
-        try { [void][System.Net.Dns]::GetHostAddresses($dc) }
-        catch { $resolvable = $false }
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-Finding -Scope $scope -Area 'PortMatrix' -Item '(unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so no port was probed.'
+            continue
+        }
+        # PORT-PLAN C14c: a DC the reachability probe classified Unreachable is not probed on any
+        # port; its "DC reachability" row carries the Fail, and this row says why nothing was probed.
+        $reachCause = Get-AdfaDcReachCause -HostName $dc
+        if ($reachCause) {
+            $rows += New-Finding -Scope $scope -Area 'PortMatrix' -Item $dc -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcGateText -Cause $reachCause -NotRead 'none of the replication ports was probed; the DC reachability row of this DC carries the finding')
+            continue
+        }
+        # Name resolution: the classification's where it ran (no second lookup), otherwise one
+        # bounded lookup through the same seam.
+        $record = Get-AdfaDcReachRecord -HostName $dc
+        $resolvable = $false
+        if ($null -ne $record) { $resolvable = (@(@(Get-AdfaConfigValue -Entry $record -Name 'Addresses') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) }
+        else {
+            $lookup = Resolve-AdfaHostAddress -HostName $dc -TimeoutMs ([int]$script:Config.Reach['ProbeTimeoutMs'])
+            $resolvable = ([bool]$lookup.Ok -and @(@($lookup.Addresses) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0)
+        }
         if (-not $resolvable) {
-            $rows += New-Finding -Area 'PortMatrix' -Item $dc -Status $script:Status.Fail -Detail 'Host name does not resolve in DNS - no A record. Nothing can reach this DC by name.'
+            $rows += New-Finding -Scope $scope -Area 'PortMatrix' -Item $dc -Status $script:Status.Fail -Detail 'Host name does not resolve in DNS - no A record. Nothing can reach this DC by name.'
             continue
         }
         $closedCritical = @(); $closedOptional = @(); $open = @()
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @($script:Config.ReplicationPorts | ForEach-Object { [int]$_.Port }) -TimeoutMs $RpcPortTimeoutMs
         foreach ($p in $script:Config.ReplicationPorts) {
-            if (Test-TcpPort -ComputerName $dc -Port $p.Port -TimeoutMs $RpcPortTimeoutMs) { $open += ("{0}/{1}" -f $p.Port, $p.Name) }
+            if ($gate.Open[[int]$p.Port]) { $open += ("{0}/{1}" -f $p.Port, $p.Name) }
             elseif ($p.Critical) { $closedCritical += ("{0}/{1}" -f $p.Port, $p.Name) }
             else { $closedOptional += ("{0}/{1}" -f $p.Port, $p.Name) }
         }
         if (@($closedCritical).Count -gt 0) {
-            $rows += New-Finding -Area 'PortMatrix' -Item $dc -Status $script:Status.Fail -Detail ("Critical port(s) not reachable: {0}.{1}" -f ($closedCritical -join ', '), $(if (@($closedOptional).Count -gt 0) { ' Also closed: ' + ($closedOptional -join ', ') + '.' } else { '' }))
+            $rows += New-Finding -Scope $scope -Area 'PortMatrix' -Item $dc -Status $script:Status.Fail -Detail ("Critical port(s) not reachable: {0}.{1}" -f ($closedCritical -join ', '), $(if (@($closedOptional).Count -gt 0) { ' Also closed: ' + ($closedOptional -join ', ') + '.' } else { '' }))
         }
         elseif (@($closedOptional).Count -gt 0) {
-            $rows += New-Finding -Area 'PortMatrix' -Item $dc -Status $script:Status.Warning -Detail ("Optional port(s) not reachable: {0}. Core replication ports are open." -f ($closedOptional -join ', '))
+            $rows += New-Finding -Scope $scope -Area 'PortMatrix' -Item $dc -Status $script:Status.Warning -Detail ("Optional port(s) not reachable: {0}. Core replication ports are open." -f ($closedOptional -join ', '))
         }
         else {
-            $rows += New-Finding -Area 'PortMatrix' -Item $dc -Status $script:Status.Pass -Detail ("All {0} probed ports reachable." -f @($open).Count)
+            $rows += New-Finding -Scope $scope -Area 'PortMatrix' -Item $dc -Status $script:Status.Pass -Detail ("All {0} probed ports reachable." -f @($open).Count)
         }
     }
-    if (@($DomainControllers).Count -eq 0) {
+    if (@($targets).Count -eq 0) {
         $rows += New-Finding -Area 'PortMatrix' -Item 'Port matrix' -Status $script:Status.NotAssessed -Detail 'No domain controllers enumerated.'
     }
     return @($rows)
@@ -23699,13 +24019,31 @@ function Get-AdfaDcSecureChannel {
     $scArgument = Get-AdfaNltestScArgument -Domain $DomainName -LiveVerify:$LiveVerify
     $p = @{} + $AdParams; $p.Server = $DomainName
     $dcs = @()
-    try { $dcs = @(Get-ADDomainController -Filter * @p) }
+    # PORT-PLAN C2e: the domain's own enumeration (-Server <domain>), so every scoped domain is read; a
+    # domain that cannot be enumerated, or that returns no DC, says so in its own row.
+    try { $dcs = @(Get-ADDomainController -Filter * @p | Where-Object { $null -ne $_ }) }
     catch {
-        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'DC enumeration' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'DC enumeration' -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap ([pscustomobject]@{ Domain = $DomainName; Failed = $true; Error = [string]$_.Exception.Message; Seen = $false; WithoutDomain = 0 }) `
+                -NothingRead 'No machine-account password and no secure channel of its DCs was read.')
+        return @($rows)
+    }
+    if ($dcs.Count -eq 0) {
+        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'DC enumeration' -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap ([pscustomobject]@{ Domain = $DomainName; Failed = $false; Error = ''; Seen = $false; WithoutDomain = 0 }) `
+                -NothingRead 'No machine-account password and no secure channel of its DCs was read.')
         return @($rows)
     }
 
     foreach ($dc in $dcs) {
+        $dcHost = ''
+        $hostProp = $dc.PSObject.Properties['HostName']
+        if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $dcHost = [string]$hostProp.Value }
+        if ([string]::IsNullOrWhiteSpace($dcHost)) {
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'Secure channel: (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The enumeration returned a domain controller with no host name, so there was nothing to connect to: neither its machine-account password nor its secure channel was read.'
+            continue
+        }
         # (1) Machine-account password age - central, from the replicated attribute.
         try {
             $comp = Get-ADComputer -Identity $dc.ComputerObjectDN -Properties PasswordLastSet @p
@@ -23720,8 +24058,14 @@ function Get-AdfaDcSecureChannel {
             $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Machine-account password: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail $_.Exception.Message
         }
 
-        # (2) Secure channel verified ON the DC, via WinRM where reachable.
-        if (Test-TcpPort -ComputerName $dc.HostName -Port 5985 -TimeoutMs $RpcPortTimeoutMs) {
+        # (2) Secure channel verified ON the DC, via WinRM where reachable. PORT-PLAN C1b/C14c: through
+        # the shared gate, so a DC classified Unreachable is not probed again and says so.
+        $scGate = Get-AdfaDcProbeGate -ComputerName $dcHost -Ports @(5985) -TimeoutMs $RpcPortTimeoutMs
+        if ($scGate.Cause) {
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dcHost) -Status $script:Status.NotAssessed `
+                -Detail ("{0} Run 'nltest {1}' locally on the DC." -f (Get-AdfaDcGateText -Cause $scGate.Cause -NotRead 'its secure channel was not queried'), $scArgument)
+        }
+        elseif ($scGate.Open[5985]) {
             try {
                 $icm = @{
                     ComputerName = $dc.HostName
@@ -23965,16 +24309,36 @@ function Get-AdfaSysvolShareHealth {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
-        [int]$RpcPortTimeoutMs = 1200
+        # DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e).
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [int]$RpcPortTimeoutMs = 1200,
+        # Domains whose DC enumeration threw (Domain, Error), and the domains of the run.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
-    $rows = @()
-    if (@($DomainControllers).Count -eq 0) {
-        return @(New-Finding -Area 'SYSVOL' -Item 'SYSVOL / NETLOGON shares' -Status $script:Status.NotAssessed `
-                -Detail 'No domain controllers were enumerated, so no share could be probed. This is not a clean result.')
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    $rows = @(Get-AdfaDcPopulationRow -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains -Area 'SYSVOL' `
+            -Label 'SYSVOL / NETLOGON shares' -NothingRead 'No share of its DCs was probed.')
+    if ($targets.Count -eq 0) {
+        return @(@($rows) + @(New-Finding -Area 'SYSVOL' -Item 'SYSVOL / NETLOGON shares' -Status $script:Status.NotAssessed `
+                    -Detail 'No domain controllers were enumerated, so no share could be probed. This is not a clean result.'))
     }
-    foreach ($dc in $DomainControllers) {
-        $smbOk = Test-TcpPort -ComputerName $dc -Port 445 -TimeoutMs $RpcPortTimeoutMs
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-Finding -Scope $scope -Area 'SYSVOL' -Item 'Shares on (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no share was probed.'
+            continue
+        }
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @(445) -TimeoutMs $RpcPortTimeoutMs
+        if ($gate.Cause) {
+            $rows += New-Finding -Scope $scope -Area 'SYSVOL' -Item ("Shares on {0}" -f $dc) -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'its shares were not probed. Nothing can be concluded about them from here')
+            continue
+        }
+        $smbOk = [bool]$gate.Open[445]
         $sysvol = $null
         $netlogon = $null
         if ($smbOk) {
@@ -24010,7 +24374,7 @@ function Get-AdfaSysvolShareHealth {
                 $detail = 'SMB (445) was not reachable, so the shares could not be probed. Nothing can be concluded about them from here - check on the DC itself.'
             }
         }
-        $rows += New-Finding -Area 'SYSVOL' -Item ("Shares on {0}" -f $dc) -Status $status -Detail $detail
+        $rows += New-Finding -Scope $scope -Area 'SYSVOL' -Item ("Shares on {0}" -f $dc) -Status $status -Detail $detail
     }
     return @($rows)
 }
@@ -24285,7 +24649,13 @@ function Get-AdfaSysvolBacklog {
     $group = [string]$script:Config.SysvolReplicationGroup
     $folder = [string]$script:Config.SysvolReplicatedFolder
     foreach ($peer in $peers) {
-        if (-not (Test-TcpPort -ComputerName $peer -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
+        $peerGate = Get-AdfaDcProbeGate -ComputerName $peer -Ports @(135) -TimeoutMs $RpcPortTimeoutMs
+        if ($peerGate.Cause) {
+            $rows += New-Finding -Scope $DomainName -Area 'SysvolBacklog' -Item ("Backlog with {0}" -f $peer) -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcGateText -Cause $peerGate.Cause -NotRead 'neither direction could be measured')
+            continue
+        }
+        if (-not $peerGate.Open[135]) {
             $rows += New-Finding -Scope $DomainName -Area 'SysvolBacklog' -Item ("Backlog with {0}" -f $peer) -Status $script:Status.NotAssessed `
                 -Detail 'RPC (135) not reachable, so neither direction could be measured.'
             continue
@@ -24336,24 +24706,45 @@ function Get-AdfaDfsrEventLog {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        # DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e).
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
         [pscredential]$Credential,
         [int]$LookbackDays = 14,
-        [int]$RpcPortTimeoutMs = 1200
+        [int]$RpcPortTimeoutMs = 1200,
+        # Domains whose DC enumeration threw (Domain, Error), and the domains of the run.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
-    $rows = @()
-    if (@($DomainControllers).Count -eq 0) {
-        return @(New-Finding -Area 'DfsrEvents' -Item 'DFS Replication events' -Status $script:Status.NotAssessed `
-                -Detail 'No domain controllers were enumerated, so the DFS Replication log could not be read. This is not a clean result.')
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    $population = @(Get-AdfaDcPopulationRow -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains -Area 'DfsrEvents' `
+            -Label 'DFS Replication events' -NothingRead 'The DFS Replication log of none of its DCs was read.')
+    if ($targets.Count -eq 0) {
+        return @(@($population) + @(New-Finding -Area 'DfsrEvents' -Item 'DFS Replication events' -Status $script:Status.NotAssessed `
+                    -Detail 'No domain controllers were enumerated, so the DFS Replication log could not be read. This is not a clean result.'))
     }
     $ids = @($script:Config.DfsrEventsOfInterest | ForEach-Object { [int]$_.Id })
     $meta = @{}
     foreach ($e in $script:Config.DfsrEventsOfInterest) { $meta[[int]$e.Id] = $e }
     $windowStart = (Get-Date).AddDays(-$LookbackDays)
+    $rows = @()
 
-    foreach ($dc in $DomainControllers) {
-        if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
-            $rows += New-Finding -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed -Detail 'RPC (135) not reachable - the DFS Replication log could not be read remotely.'
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-Finding -Scope $scope -Area 'DfsrEvents' -Item '(unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and its DFS Replication log was not read.'
+            continue
+        }
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $RpcPortTimeoutMs
+        if ($gate.Cause) {
+            $rows += New-Finding -Scope $scope -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'the DFS Replication log was not read remotely')
+            continue
+        }
+        if (-not $gate.Open[135]) {
+            $rows += New-Finding -Scope $scope -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed -Detail 'RPC (135) not reachable - the DFS Replication log could not be read remotely.'
             continue
         }
         $cov = Get-AdfaEventLogCoverageForLog -ComputerName $dc -LogName 'DFS Replication' -Credential $Credential -WindowStart $windowStart
@@ -24362,7 +24753,7 @@ function Get-AdfaDfsrEventLog {
             $covNote = ("The DFS Replication log does not cover the full {0}-day window (coverage: {1}{2}), so absence of an event proves nothing." -f `
                     $LookbackDays, $cov.Coverage, $(if ($null -ne $cov.OldestRecord) { ("; oldest record {0:yyyy-MM-dd HH:mm}" -f $cov.OldestRecord) } else { '' }))
         }
-        $rows += New-Finding -Area 'DfsrEvents' -Item ("Log coverage on {0}" -f $dc) `
+        $rows += New-Finding -Scope $scope -Area 'DfsrEvents' -Item ("Log coverage on {0}" -f $dc) `
             -Status $(if ($cov.Coverage -eq 'Covered') { $script:Status.Pass } else { $script:Status.NotAssessed }) `
             -Detail $(if ($cov.Coverage -eq 'Covered') { ("DFS Replication log covers the full {0}-day window." -f $LookbackDays) } else { $covNote })
 
@@ -24378,11 +24769,11 @@ function Get-AdfaDfsrEventLog {
             if (@($events).Count -eq 0) {
                 if ($cov.Coverage -eq 'Covered') {
                     # Not a Pass: SYSVOL health is proven by seeing 4604, not by silence.
-                    $rows += New-Finding -Area 'DfsrEvents' -Item $dc -Status $script:Status.Warning `
+                    $rows += New-Finding -Scope $scope -Area 'DfsrEvents' -Item $dc -Status $script:Status.Warning `
                         -Detail ("No DFS Replication events of interest in {0} day(s) - including no 4604 (SYSVOL initialised). Silence is not evidence that SYSVOL initialised; confirm the shares are present and that DFSR has logged a 4604 at some point." -f $LookbackDays)
                 }
                 else {
-                    $rows += New-Finding -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed `
+                    $rows += New-Finding -Scope $scope -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed `
                         -Detail ("No DFS Replication events of interest found, but this is NOT a pass. {0}" -f $covNote)
                 }
                 continue
@@ -24400,21 +24791,21 @@ function Get-AdfaDfsrEventLog {
                 $last = ($g.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1).TimeCreated
                 $floor = ''
                 if ($cov.Coverage -ne 'Covered') { $floor = (" Count is a MINIMUM - {0}" -f $covNote) }
-                $rows += New-Finding -Area 'DfsrEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev `
+                $rows += New-Finding -Scope $scope -Area 'DfsrEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev `
                     -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}{4}" -f $g.Count, $LookbackDays, $last, $meaning, $floor)
             }
         }
         catch {
             if ($_.Exception.Message -match 'No events were found|There is not an event log') {
-                $rows += New-Finding -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed `
+                $rows += New-Finding -Scope $scope -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed `
                     -Detail ("The DFS Replication log held no matching events or is not present: {0}. Not a pass." -f $_.Exception.Message)
             }
             else {
-                $rows += New-Finding -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("DFS Replication log query failed: {0}" -f $_.Exception.Message)
+                $rows += New-Finding -Scope $scope -Area 'DfsrEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("DFS Replication log query failed: {0}" -f $_.Exception.Message)
             }
         }
     }
-    return @($rows)
+    return @(@($population) + @($rows))
 }
 
 function Get-AdfaDsEventLog {
@@ -24437,21 +24828,42 @@ function Get-AdfaDsEventLog {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
+        # DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e).
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
         [pscredential]$Credential,
         [int]$LookbackDays = 14,
-        [int]$RpcPortTimeoutMs = 1200
+        [int]$RpcPortTimeoutMs = 1200,
+        # Domains whose DC enumeration threw (Domain, Error), and the domains of the run.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
     $rows = @()
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    $population = @(Get-AdfaDcPopulationRow -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains -Area 'DsEvents' `
+            -Label 'Directory Service events' -NothingRead 'The Directory Service log of none of its DCs was read.')
     $ids = @($script:Config.DsEventsOfInterest | ForEach-Object { [int]$_.Id })
     $meta = @{}
     foreach ($e in $script:Config.DsEventsOfInterest) { $meta[[int]$e.Id] = $e }
 
     $windowStart = (Get-Date).AddDays(-$LookbackDays)
 
-    foreach ($dc in $DomainControllers) {
-        if (-not (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $RpcPortTimeoutMs)) {
-            $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail 'RPC (135) not reachable - event log could not be read remotely. Check the Directory Service log on the DC itself.'
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item '(unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and its Directory Service log was not read.'
+            continue
+        }
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $RpcPortTimeoutMs
+        if ($gate.Cause) {
+            $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'its event log was not read remotely. Check the Directory Service log on the DC itself')
+            continue
+        }
+        if (-not $gate.Open[135]) {
+            $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail 'RPC (135) not reachable - event log could not be read remotely. Check the Directory Service log on the DC itself.'
             continue
         }
 
@@ -24460,7 +24872,7 @@ function Get-AdfaDsEventLog {
         $cov = Get-AdfaEventLogCoverageForLog -ComputerName $dc -LogName 'Directory Service' -Credential $Credential -WindowStart $windowStart
         $covNote = Get-AdfaEventCoverageDetail -Coverage $cov.Coverage -OldestRecord $cov.OldestRecord `
             -LookbackDays $LookbackDays -Reason $cov.Reason -LogName 'Directory Service'
-        $rows += New-Finding -Area 'DsEvents' -Item ("Log coverage on {0}" -f $dc) `
+        $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item ("Log coverage on {0}" -f $dc) `
             -Status $(if ($cov.Coverage -eq 'Covered') { $script:Status.Pass } else { $script:Status.NotAssessed }) `
             -Detail $(if ($cov.Coverage -eq 'Covered') {
                     ("Directory Service log covers the full {0}-day window (oldest record {1:yyyy-MM-dd HH:mm})." -f $LookbackDays, $cov.OldestRecord)
@@ -24480,10 +24892,10 @@ function Get-AdfaDsEventLog {
                 # The fail-closed branch: silence over an incomplete window is not a clean bill
                 # of health. Reporting Pass here is what let a wiped log look healthy.
                 if ($cov.Coverage -eq 'Covered') {
-                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s); log covers the whole window." -f $LookbackDays)
+                    $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s); log covers the whole window." -f $LookbackDays)
                 }
                 else {
-                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("No events of interest found, but this is NOT a pass. {0}" -f $covNote)
+                    $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("No events of interest found, but this is NOT a pass. {0}" -f $covNote)
                 }
                 continue
             }
@@ -24500,27 +24912,27 @@ function Get-AdfaDsEventLog {
                 # A count taken from a partial log is a lower bound, and saying so costs nothing.
                 $floor = ''
                 if ($cov.Coverage -ne 'Covered') { $floor = (" Count is a MINIMUM - {0}" -f $covNote) }
-                $rows += New-Finding -Area 'DsEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}{4}" -f $g.Count, $LookbackDays, $last, $meaning, $floor)
+                $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}{4}" -f $g.Count, $LookbackDays, $last, $meaning, $floor)
             }
         }
         catch {
             if ($_.Exception.Message -match 'No events were found') {
                 if ($cov.Coverage -eq 'Covered') {
-                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s); log covers the whole window." -f $LookbackDays)
+                    $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item $dc -Status $script:Status.Pass -Detail ("No events of interest in the last {0} day(s); log covers the whole window." -f $LookbackDays)
                 }
                 else {
-                    $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("No events of interest found, but this is NOT a pass. {0}" -f $covNote)
+                    $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("No events of interest found, but this is NOT a pass. {0}" -f $covNote)
                 }
             }
             else {
-                $rows += New-Finding -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("Event log query failed: {0}" -f $_.Exception.Message)
+                $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item $dc -Status $script:Status.NotAssessed -Detail ("Event log query failed: {0}" -f $_.Exception.Message)
             }
         }
     }
-    if (@($DomainControllers).Count -eq 0) {
+    if ($targets.Count -eq 0) {
         $rows += New-Finding -Area 'DsEvents' -Item 'Directory Service events' -Status $script:Status.NotAssessed -Detail 'No domain controllers enumerated.'
     }
-    return @($rows)
+    return @(@($population) + @($rows))
 }
 
 # ===========================================================================
@@ -24613,48 +25025,132 @@ function Get-AdfaUsnRollbackForensics {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
-        [AllowEmptyCollection()][string[]]$DomainControllers = @(),
-        [int]$RpcPortTimeoutMs = 1200
+        # DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e).
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [int]$RpcPortTimeoutMs = 1200,
+        # Domains whose DC enumeration threw (Domain, Error), and the domains of the run.
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
-    if (@($DomainControllers).Count -eq 0) {
-        return @(New-Finding -Area 'RestoreIntegrity' -Item 'USN rollback forensics' -Status $script:Status.NotAssessed `
-                -Detail 'No domain controllers were enumerated, so the USN-rollback marker could not be read on any of them. This is not a clean result.')
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    $rows = @(Get-AdfaDcPopulationRow -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains -Area 'RestoreIntegrity' `
+            -Label 'USN rollback marker' -NothingRead 'The marker was read on none of its DCs.')
+    if ($targets.Count -eq 0) {
+        return @(@($rows) + @(New-Finding -Area 'RestoreIntegrity' -Item 'USN rollback forensics' -Status $script:Status.NotAssessed `
+                    -Detail 'No domain controllers were enumerated, so the USN-rollback marker could not be read on any of them. This is not a clean result.'))
     }
-    $rows = @()
-    foreach ($dc in $DomainControllers) {
-        if (-not (Test-TcpPort -ComputerName $dc -Port 445 -TimeoutMs $RpcPortTimeoutMs)) {
-            $rows += New-Finding -Area 'RestoreIntegrity' -Item ("USN rollback marker on {0}" -f $dc) -Status $script:Status.NotAssessed `
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-Finding -Scope $scope -Area 'RestoreIntegrity' -Item 'USN rollback marker on (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and the marker was not read.'
+            continue
+        }
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @(445) -TimeoutMs $RpcPortTimeoutMs
+        if ($gate.Cause) {
+            $rows += New-Finding -Scope $scope -Area 'RestoreIntegrity' -Item ("USN rollback marker on {0}" -f $dc) -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaUsnRollbackDetail -Verdict 'Unknown' -Value $null -Reason (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'the remote registry was not opened'))
+            continue
+        }
+        if (-not $gate.Open[445]) {
+            $rows += New-Finding -Scope $scope -Area 'RestoreIntegrity' -Item ("USN rollback marker on {0}" -f $dc) -Status $script:Status.NotAssessed `
                 -Detail (Get-AdfaUsnRollbackDetail -Verdict 'Unknown' -Value $null -Reason 'SMB (445) not reachable, so the remote registry could not be opened.')
             continue
         }
-        $readable = $false
-        $present = $null
-        $value = $null
-        $reason = ''
-        try {
-            $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $dc)
-            $key = $reg.OpenSubKey('SYSTEM\CurrentControlSet\Services\NTDS\Parameters')
-            if ($null -eq $key) {
-                $reason = 'The NTDS Parameters key does not exist - is this host actually a domain controller?'
-            }
-            else {
-                $readable = $true
-                $names = @($key.GetValueNames())
-                $present = [bool]($names -contains 'Dsa Not Writable')
-                if ($present) { $value = $key.GetValue('Dsa Not Writable') }
-            }
-        }
-        catch { $reason = $_.Exception.Message }
-
+        $raw = Get-AdfaUsnRollbackRaw -ComputerName $dc
+        $readable = [bool]$raw.Readable
+        $present = $raw.Present
+        $value = $raw.Value
+        $reason = [string]$raw.Reason
         $verdict = Get-AdfaUsnRollbackVerdict -Readable $readable -Present $present -Value $value
         $status = $script:Status.NotAssessed
         if ($verdict -eq 'Rollback') { $status = $script:Status.Fail }
         elseif ($verdict -eq 'OtherValue') { $status = $script:Status.Warning }
         elseif ($verdict -eq 'NoEvidence') { $status = $script:Status.Pass }
-        $rows += New-Finding -Area 'RestoreIntegrity' -Item ("USN rollback marker on {0}" -f $dc) -Status $status `
-            -Detail (Get-AdfaUsnRollbackDetail -Verdict $verdict -Value $value -Reason $reason)
+        $detail = Get-AdfaUsnRollbackDetail -Verdict $verdict -Value $value -Reason $reason
+        # Access denied is not "could not be read for some reason": it says what is missing.
+        if ($verdict -eq 'Unknown' -and (Get-AdfaRemoteReadErrorClass -Message $reason -ErrorCode ([string]$raw.ErrorCode)) -eq 'AccessDenied') {
+            $detail = ("Access denied: the account running the assessment could not open the remote registry of this DC. {0}" -f $detail)
+        }
+        $rows += New-Finding -Scope $scope -Area 'RestoreIntegrity' -Item ("USN rollback marker on {0}" -f $dc) -Status $status -Detail $detail
     }
     return @($rows)
+}
+
+function Get-AdfaUsnRollbackRaw {
+    <#
+    .SYNOPSIS
+        The read seam of the USN-rollback marker: the "Dsa Not Writable" value under the NTDS
+        Parameters key of one DC, through the remote registry. Read-only. Never throws.
+    .DESCRIPTION
+        RegistryKey.OpenRemoteBaseKey(LocalMachine, <dc>), then OpenSubKey of the NTDS Parameters key
+        in its read-only overload, GetValueNames and GetValue - reads only; each key is closed. The
+        connection is made with the identity of the process: -Credential is not used by this read.
+        Taken out of Get-AdfaUsnRollbackForensics (PORT-PLAN C14c) so the collector can be tested
+        without a DC.
+    .OUTPUTS
+        [pscustomobject] Readable, Present ($null unless Readable), Value, Reason, ErrorCode.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$ComputerName)
+    $out = [pscustomobject]@{ Readable = $false; Present = $null; Value = $null; Reason = ''; ErrorCode = '' }
+    $reg = $null
+    $key = $null
+    try {
+        $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $ComputerName)
+        $key = $reg.OpenSubKey('SYSTEM\CurrentControlSet\Services\NTDS\Parameters')
+        if ($null -eq $key) {
+            $out.Reason = 'The NTDS Parameters key does not exist - is this host actually a domain controller?'
+        }
+        else {
+            $out.Readable = $true
+            $names = @($key.GetValueNames())
+            $out.Present = [bool]($names -contains 'Dsa Not Writable')
+            if ($out.Present) { $out.Value = $key.GetValue('Dsa Not Writable') }
+        }
+    }
+    catch {
+        $out.Reason = [string]$_.Exception.Message
+        $out.ErrorCode = Get-AdfaRegistryReadErrorCode -Exception $_.Exception
+    }
+    finally {
+        if ($null -ne $key) { $key.Close() }
+        if ($null -ne $reg) { $reg.Close() }
+    }
+    return $out
+}
+
+function Get-AdfaRegistryReadErrorCode {
+    <#
+    .SYNOPSIS
+        Pure: 'AccessDenied' when a remote registry read failed because access was refused, told by
+        the exception TYPE, never by its text; '' otherwise.
+    .DESCRIPTION
+        RegistryKey.OpenRemoteBaseKey reports a refusal as System.UnauthorizedAccessException ("The
+        user does not have the necessary registry rights") or System.Security.SecurityException, and
+        OpenSubKey as SecurityException (Learn, read 2026-11-17:
+        https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.openremotebasekey and
+        https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.opensubkey). PowerShell
+        wraps a .NET method's exception in
+        MethodInvocationException, so the chain of inner exceptions is walked. The message is
+        localised on a host whose language is not English, which is why the type decides.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Exception)
+    $ex = $Exception
+    while ($null -ne $ex) {
+        if ($ex -is [System.UnauthorizedAccessException] -or $ex -is [System.Security.SecurityException]) { return 'AccessDenied' }
+        $innerProp = $ex.PSObject.Properties['InnerException']
+        if ($null -eq $innerProp) { break }
+        $ex = $innerProp.Value
+    }
+    return ''
 }
 
 function Get-AdfaInvocationIdVerdict {
@@ -25180,6 +25676,107 @@ function Get-AdfaDcReachCause {
     return ("Unreachable, classified once for this run by the reachability probe: {0}" -f (Get-AdfaC14UnreachableText -Cause ([string]$record.Cause) -TimeoutMs ([int]$record.TimeoutMs) -SocketError ([string]$record.SocketError)))
 }
 
+function Get-AdfaDcProbeGate {
+    <#
+    .SYNOPSIS
+        The one way a per-DC section probes a DC (PORT-PLAN C1b, C14c): the reachability class
+        first, then the shared port cache.
+    .DESCRIPTION
+        A DC the reachability probe classified Unreachable in this run (its name does not resolve,
+        or LDAP 389 answered on no address) is not probed again on any port: Cause is that class,
+        worded by Get-AdfaDcReachCause, and every port is reported closed without a connection.
+        Before PORT-PLAN C14c every section probed such a DC again on its own ports, because the
+        classification measures 5985 and 135 only where 389 answered, so the cache held nothing
+        for them.
+
+        Any other DC is probed once per port in the whole run through Test-AdfaDcPort; a port the
+        classification already measured (389, 5985, 135) comes from the cache. A DC whose default
+        management ports are silent (NotManageable) or that answers RPC but not WinRM
+        (WinRmUnavailable) is not Unreachable: its sections keep their own port wording.
+
+        Read only: a TCP connection that sends no data, closed at once (Test-TcpPort). Probes
+        nothing for an empty host name.
+    .OUTPUTS
+        [pscustomobject] Cause ('' unless the DC was classified Unreachable), Open (hashtable:
+        port -> bool).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$ComputerName,
+        [AllowNull()][AllowEmptyCollection()][int[]]$Ports = @(),
+        [int]$TimeoutMs = 1200
+    )
+    $open = @{}
+    foreach ($p in @($Ports)) { $open[[int]$p] = $false }
+    if ([string]::IsNullOrWhiteSpace($ComputerName)) { return [pscustomobject]@{ Cause = ''; Open = $open } }
+    $cause = Get-AdfaDcReachCause -HostName $ComputerName
+    if (-not [string]::IsNullOrWhiteSpace($cause)) { return [pscustomobject]@{ Cause = [string]$cause; Open = $open } }
+    foreach ($p in @($Ports)) { $open[[int]$p] = [bool](Test-AdfaDcPort -ComputerName $ComputerName -Port ([int]$p) -TimeoutMs $TimeoutMs) }
+    return [pscustomobject]@{ Cause = ''; Open = $open }
+}
+
+function Get-AdfaDcGateText {
+    <#
+    .SYNOPSIS
+        Pure: the Detail of a row a section could not read because the DC is classified
+        Unreachable - the class, then what was not read. The same cause in every section.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Cause,
+        [Parameter(Mandatory)][string]$NotRead
+    )
+    return ("{0}, so {1}." -f $Cause.Trim().TrimEnd('.'), $NotRead.Trim().TrimEnd('.'))
+}
+
+function Get-AdfaDcPopulationRow {
+    <#
+    .SYNOPSIS
+        Pure: the "<label> (population): <domain>" rows of a per-DC section (PORT-PLAN C2e), one
+        for each scoped domain its DC rows do not account for, in the New-Finding shape.
+    .DESCRIPTION
+        DECLARED POPULATION: Get-AdfaDcPopulationGap's - the domains named in -ScopedDomains plus
+        any named only in -InventoryFailures. Each such domain without a DC row gets one Not
+        Assessed row naming why (its enumeration threw, with the error; or it returned no DC),
+        worded by Get-AdfaDcPopulationGapText. -Shape 'DomainController' builds the row in the
+        replication-health shape, whose item column is DomainController.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$Targets = @(),
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [Parameter(Mandatory)][string]$Area,
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$NothingRead,
+        [ValidateSet('Finding', 'DomainController')][string]$Shape = 'Finding'
+    )
+    $rows = @()
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets @($Targets) -InventoryFailures @($InventoryFailures) -ScopedDomains @($ScopedDomains))) {
+        $item = ("{0} (population): {1}" -f $Label, [string]$gap.Domain)
+        $detail = Get-AdfaDcPopulationGapText -Gap $gap -NothingRead $NothingRead
+        if ($Shape -eq 'DomainController') {
+            $rows += [pscustomobject]@{
+                DomainController = $item; PartnerCount = $null; PartnerErrors = $null
+                LastSuccessMinutesAgo = $null; FailureCount = $null; OldestFailureTime = $null
+                ReplicationQueue = $null; Status = $script:Status.NotAssessed
+                FailureDetail = ''; Detail = $detail; Scope = [string]$gap.Domain
+            }
+        }
+        else {
+            $rows += New-Finding -Scope ([string]$gap.Domain) -Area $Area -Item $item -Status $script:Status.NotAssessed -Detail $detail
+        }
+    }
+    return @($rows)
+}
+
 function Get-AdfaDcReachVerdict {
     <#
     .SYNOPSIS
@@ -25225,7 +25822,7 @@ function Get-AdfaDcReachVerdict {
         'Unreachable' {
             $why = Get-AdfaC14UnreachableText -Cause $cause -TimeoutMs $timeout -SocketError ([string](Get-AdfaConfigValue -Entry $Record -Name 'SocketError'))
             return New-AdfaC14Row -Area 'PortMatrix' -Scope $Scope -Item $item -Status ([string]$Config['UnreachableStatus']) -Evidence $evidence -Columns $columns `
-                -Detail ("Unreachable: {0}. The Time Hierarchy and Site Health rows of this domain controller reuse this result and are Not Assessed with this cause; the port matrix rows and the other per-DC sections probe on their own and report what they met. A firewall between the host running the assessment and the DC gives the same answer as a DC that is down." -f $why)
+                -Detail ("Unreachable: {0}. The sections that connect to this domain controller reuse this result: their rows of it are Not Assessed with this cause (the dcdiag grid row stays Fail, as for any DC dcdiag could not reach), and no port of it is probed again, the port matrix included. Rows read from the directory about it (its OS lifecycle, machine-account password, published certificates, RID pool) are still graded. A firewall between the host running the assessment and the DC gives the same answer as a DC that is down." -f $why)
         }
         'NotManageable' {
             return New-AdfaC14Row -Area 'PortMatrix' -Scope $Scope -Item $item -Status ([string]$Config['NotManageableStatus']) -Evidence $evidence -Columns $columns `
@@ -25569,7 +26166,7 @@ function Get-AdfaClientSiteRows {
         if (-not [string]::IsNullOrWhiteSpace($dc)) {
             $reachCause = Get-AdfaDcReachCause -HostName $dc
             if ($reachCause -eq '') {
-                $portOpen = [bool](Test-AdfaDcPort -ComputerName $dc -Port ([int]$Config['SmbPort']) -TimeoutMs $PortTimeoutMs)
+                $portOpen = [bool](Get-AdfaDcProbeGate -ComputerName $dc -Ports @([int]$Config['SmbPort']) -TimeoutMs $PortTimeoutMs).Open[[int]$Config['SmbPort']]
                 if ($portOpen) { $raw = Get-AdfaNetlogonLogRaw -Path ([string]$Config['NetlogonLogPath'] -f $dc) -MaxBytes ([int]$Config['LogTailBytes']) }
             }
         }
@@ -28112,7 +28709,7 @@ function Get-AdfaEventInventory {
             continue
         }
         $unreachable = Get-AdfaDcReachCause -HostName $dc
-        if ([string]::IsNullOrWhiteSpace($unreachable) -and -not (Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs)) {
+        if ([string]::IsNullOrWhiteSpace($unreachable) -and -not (Get-AdfaDcProbeGate -ComputerName $dc -Ports @($rpcPort) -TimeoutMs $PortTimeoutMs).Open[$rpcPort]) {
             $unreachable = ("Unreachable: RPC ({0}) did not answer within {1} ms, so no event log was read remotely." -f $rpcPort, $PortTimeoutMs)
         }
         foreach ($log in $logs) {
@@ -28322,8 +28919,9 @@ function Get-AdfaW32TimeInventory {
             $rows += Get-AdfaW32TimeConfigRow -ComputerName $dc -Scope $scope -Read $null -Unreachable $reach -Config $Config
             continue
         }
-        $wsman = Test-AdfaDcPort -ComputerName $dc -Port $wsmanPort -TimeoutMs $PortTimeoutMs
-        $rpc = Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs
+        $w32Gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @($wsmanPort, $rpcPort) -TimeoutMs $PortTimeoutMs
+        $wsman = [bool]$w32Gate.Open[$wsmanPort]
+        $rpc = [bool]$w32Gate.Open[$rpcPort]
         if (-not $wsman -and -not $rpc) {
             $rows += Get-AdfaW32TimeConfigRow -ComputerName $dc -Scope $scope -Read $null -Config $Config `
                 -Unreachable ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so no read was attempted." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
@@ -29403,11 +30001,10 @@ function Invoke-Main {
         $allDcInventory = $inv
         $sectionData['Domain Controllers'] = $inv
         # ADA-INV-016: each DC's DNS server list from its enabled adapters (read-only CIM). Its own
-        # key, so the inventory rows keep the columns they had.
-        Write-Stage 'DC DNS client settings (enabled adapters, per DC)'
-        $sectionData['DC DNS Client'] = @(Get-AdfaDcDnsClient -DomainControllers $inv -Config $dnsConfig -Credential $Credential `
-                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
-                -InventoryFailures $dcInventoryFailures -ScopedDomains $targetDomains -ForestComplete $scopeCoversForest)
+        # key, so the inventory rows keep the columns they had. The key is placed here, in its place
+        # in the report; the adapters are read after the reachability classification below
+        # (PORT-PLAN C14c), so a DC classified Unreachable is not probed by this read first.
+        $sectionData['DC DNS Client'] = @()
     }
     $dcNames = @($allDcInventory | Select-Object -ExpandProperty HostName -ErrorAction SilentlyContinue)
     # Every per-DC section downstream reads $dcNames. When this fallback threw silently, all of
@@ -29462,7 +30059,10 @@ function Invoke-Main {
     $c15Targets = @($c14Targets)
     $c15Failures = @($c14Failures)
     $c14PerDomain = ($dcInventoryCollected -or (Test-SectionSelected 'PortMatrix' $Sections) -or (Test-SectionSelected 'Topology' $Sections))
+    # Whether $c15Targets is a per-domain list (PORT-PLAN C2e reuses it rather than enumerating again).
+    $c15PerDomain = $c14PerDomain
     if (-not $c14PerDomain -and ((Test-SectionSelected 'Forest' $Sections) -or (Test-SectionSelected 'DsEvents' $Sections) -or (Test-SectionSelected 'TimeHierarchy' $Sections))) {
+        $c15PerDomain = $true
         $c15Enumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
         $c15Targets = @($c15Enumeration.Targets)
         $c15Failures = @($c15Enumeration.Failures)
@@ -29479,6 +30079,42 @@ function Invoke-Main {
         $reachRows = @(Get-AdfaDcReachabilityRows -DomainControllers $c14Targets -Config $reachConfig -InventoryFailures $c14Failures `
                 -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
     }
+    if ($dcInventoryCollected) {
+        # ADA-INV-016, read after the classification (PORT-PLAN C14c): see the DomainControllers block,
+        # which set $dcInventoryCollected exactly when DomainControllers is among -Sections.
+        Write-Stage 'DC DNS client settings (enabled adapters, per DC)'
+        $sectionData['DC DNS Client'] = @(Get-AdfaDcDnsClient -DomainControllers $allDcInventory -Config $dnsConfig -Credential $Credential `
+                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
+                -InventoryFailures $dcInventoryFailures -ScopedDomains $targetDomains -ForestComplete $scopeCoversForest)
+    }
+
+    # ---- Per-domain DC targets of the per-DC sections that took $dcNames (PORT-PLAN C2e) ----
+    # Replication, SYSVOL shares and DFS Replication events, the patch-level half of DcSystem, Backup,
+    # Time Hierarchy, the port matrix, Directory Service events, Restore Integrity, the DNS server set of
+    # the four DNS-vs-AD sections and the raw repadmin/dcdiag captures used to take $dcNames, which with
+    # DomainControllers not selected is one unscoped Get-ADDomainController against the default server:
+    # the current domain's DCs only. They now take the DCs of EVERY scoped domain, each with its domain:
+    # the per-domain list C14/C15 already hold where one exists, otherwise one enumeration here shared
+    # by all of them (one Get-ADDomainController per domain per run), and the unscoped names last.
+    $perDcTargets = @($c15Targets)
+    $perDcFailures = @($c15Failures)
+    $perDcSections = @('Replication', 'Sysvol', 'DcSystem', 'Backup', 'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'MsdcsDelegation',
+        'TimeHierarchy', 'PortMatrix', 'DsEvents', 'RestoreIntegrity')
+    $perDcSelected = (@($perDcSections | Where-Object { Test-SectionSelected $_ $Sections }).Count -gt 0)
+    if (-not $c15PerDomain -and ($perDcSelected -or $IncludeRepadmin -or $IncludeDcdiag)) {
+        $perDcEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+        $perDcTargets = @($perDcEnumeration.Targets)
+        $perDcFailures = @($perDcEnumeration.Failures)
+    }
+    if ($perDcTargets.Count -eq 0) { $perDcTargets = @($dcNames) }
+    # The host names of those targets, in order, each once: the DNS server set and the DC count.
+    $perDcHosts = @(Get-AdfaDcHostSet -Targets $perDcTargets)
+    $perDcDnsServers = @($perDcHosts)
+    # The scoped domains whose DCs are missing from those targets (enumeration threw, or returned no DC):
+    # a check that compares a host with "the known DCs" cannot call it unknown while these are missing.
+    # On a single-domain run the unscoped fallback names are that domain's DCs (Get-AdfaDomainDcHostName).
+    $perDcGapDomains = @(@(Get-AdfaDcPopulationGap -Targets $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains) |
+        Where-Object { -not ([int]$_.WithoutDomain -gt 0 -and @($targetDomains).Count -eq 1) } | ForEach-Object { [string]$_.Domain })
 
     # A throw here used to drop the domain from the section silently - the same shape of defect
     # as the v1.6.0 multi-domain data loss, where a reader saw a shorter list and no error. Each
@@ -29508,7 +30144,8 @@ function Invoke-Main {
 
     if (Test-SectionSelected 'Replication' $Sections) {
         Write-Stage 'Replication health'
-        $sectionData['Replication Health'] = Get-AdfaReplicationHealth -DomainControllers $dcNames -RepParams $repParams -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -StaleMinutes $script:Config.ReplicationStaleMinutes
+        $sectionData['Replication Health'] = Get-AdfaReplicationHealth -DomainControllers $perDcTargets -RepParams $repParams -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -StaleMinutes $script:Config.ReplicationStaleMinutes `
+            -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
         Write-Stage 'Replication cross-check (repadmin /showrepl * /csv)'
         $sectionData['Replication Cross-Check (repadmin)'] = Get-AdfaRepadminReplication -TimeoutSeconds 300 -Retries $script:Config.Retries -RetryDelaySeconds $script:Config.RetryDelaySeconds
         Write-Stage 'Replication convergence summary (repadmin /replsummary)'
@@ -29617,7 +30254,7 @@ function Invoke-Main {
         # Whether each DC is actually serving SYSVOL and NETLOGON. The vendor's own first
         # diagnostic for broken SYSVOL replication, and a common state after a restore: DFSR
         # does not share SYSVOL until the replicated folder has initialised.
-        $sysvolRows += @(Get-AdfaSysvolShareHealth -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs)
+        $sysvolRows += @(Get-AdfaSysvolShareHealth -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains)
 
         # The two attributes a D2/D4-equivalent rebuild edits by hand, per KB 2218556. Read
         # per domain, because "exactly one member is authoritative" is a cross-DC rule that
@@ -29648,8 +30285,8 @@ function Invoke-Main {
         $sectionData['SYSVOL / DFSR'] = @($sysvolRows)
 
         Write-Stage 'DFS Replication events'
-        $sectionData['DFS Replication Events'] = Get-AdfaDfsrEventLog -DomainControllers $dcNames -Credential $Credential `
-            -LookbackDays $script:Config.DfsrEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        $sectionData['DFS Replication Events'] = Get-AdfaDfsrEventLog -DomainControllers $perDcTargets -Credential $Credential `
+            -LookbackDays $script:Config.DfsrEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
 
         if ($IncludeSysvolBacklog) {
             Write-Stage 'SYSVOL backlog (DFSR, both directions against each domain PDC)'
@@ -29665,13 +30302,18 @@ function Invoke-Main {
                         -Detail ("The PDC emulator could not be identified, so there was no reference DC to measure against: {0}" -f $_.Exception.Message)
                     continue
                 }
-                $domainDcNames = @($allDcInventory | Where-Object {
-                        $sc = $_.PSObject.Properties['Scope']   # $null when absent - StrictMode-safe
-                        $null -ne $sc -and [string]$sc.Value -eq $d
-                    } | Select-Object -ExpandProperty HostName)
-                if (@($domainDcNames).Count -eq 0) { $domainDcNames = @($dcNames) }
+                # PORT-PLAN C2e: this domain's own DCs only. The unscoped host names are taken only on a
+                # single-domain run, where they are that domain's; a domain whose DCs could not be listed
+                # gets a Not Assessed row with the cause, never another domain's DCs under its scope.
+                $backlogPeers = Get-AdfaDomainDcHostName -Domain $d -Targets $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
+                if (@($backlogPeers.HostNames).Count -eq 0) {
+                    $backlogWhy = 'No domain controller of it was listed, so no SYSVOL backlog was measured.'
+                    if ($null -ne $backlogPeers.Gap) { $backlogWhy = Get-AdfaDcPopulationGapText -Gap $backlogPeers.Gap -NothingRead 'No SYSVOL backlog of its domain controllers was measured.' }
+                    $backlogRows += New-Finding -Scope $d -Area 'SysvolBacklog' -Item ("SYSVOL backlog (population): {0}" -f $d) -Status $script:Status.NotAssessed -Detail $backlogWhy
+                    continue
+                }
                 $backlogRows += @(Get-AdfaSysvolBacklog -DomainName $d -ReferenceDc $pdc `
-                        -DomainControllers $domainDcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs)
+                        -DomainControllers @($backlogPeers.HostNames) -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs)
             }
             $sectionData['SYSVOL Backlog'] = @($backlogRows)
         }
@@ -29857,8 +30499,8 @@ function Invoke-Main {
         # gets a lifecycle verdict for every one of them.
         $dcSystemRows += Get-AdfaDcOsLifecycle -DomainControllers $allDcInventory -Config $dcSystemConfig -Today (Get-Date) `
             -InventoryFailures $dcInventoryFailures
-        $dcSystemRows += Get-AdfaDcPatchLevel -DomainControllers $dcNames -Config $dcSystemConfig -Credential $Credential `
-            -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec
+        $dcSystemRows += Get-AdfaDcPatchLevel -DomainControllers $perDcTargets -Config $dcSystemConfig -Credential $Credential `
+            -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
         $sectionData['DC System'] = @($dcSystemRows)
     }
     if (Test-SectionSelected 'DcDisk' $Sections) {
@@ -29962,7 +30604,7 @@ function Invoke-Main {
     }
     if (Test-SectionSelected 'Backup' $Sections) {
         Write-Stage 'Directory backup status (per DC)'
-        $sectionData['Backup Status'] = Get-AdfaBackupStatus -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs @ext
+        $sectionData['Backup Status'] = Get-AdfaBackupStatus -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains @ext
     }
     if (Test-SectionSelected 'TimeSync' $Sections) {
         Write-Stage 'Time synchronization'
@@ -29970,7 +30612,7 @@ function Invoke-Main {
     }
     if (Test-SectionSelected 'DnsDepth' $Sections) {
         Write-Stage 'DNS depth (SRV / secure updates)'
-        $ddRows = foreach ($d in $targetDomains) { Get-AdfaDnsDepth -DomainName $d -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs }
+        $ddRows = foreach ($d in $targetDomains) { Get-AdfaDnsDepth -DomainName $d -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs }
         $sectionData['DNS Depth'] = @($ddRows)
     }
     if (Test-SectionSelected 'Redundancy' $Sections) {
@@ -29992,18 +30634,18 @@ function Invoke-Main {
             Write-Log -Level ERROR -Section 'DnsAdConsistency' -Message ("DSA inventory failed, so no <guid>._msdcs CNAME can be judged: {0}" -f $dnsDsaError)
         }
         $dacRows = foreach ($d in $targetDomains) {
-            Get-AdfaDnsAdConsistency -DomainName $d -AdParams $adParams -DnsServers $dcNames -Config $dnsConfig -ForestRoot $rootDomain -DsaInventory $dnsDsa -DsaError $dnsDsaError `
+            Get-AdfaDnsAdConsistency -DomainName $d -AdParams $adParams -DnsServers $perDcDnsServers -Config $dnsConfig -ForestRoot $rootDomain -DsaInventory $dnsDsa -DsaError $dnsDsaError `
                 -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec
         }
         $sectionData['DNS vs AD Consistency'] = @($dacRows)
     }
     if (Test-SectionSelected 'DsaCname' $Sections) {
         Write-Stage 'DSA GUID CNAME records (_msdcs, per DNS server)'
-        $sectionData['DSA GUID CNAMEs'] = Get-AdfaDsaGuidCname -ForestRoot $forest.Name -AdParams $adParams -DnsServers $dcNames
+        $sectionData['DSA GUID CNAMEs'] = Get-AdfaDsaGuidCname -ForestRoot $forest.Name -AdParams $adParams -DnsServers $perDcDnsServers
     }
     if (Test-SectionSelected 'GcConsistency' $Sections) {
         Write-Stage 'Global Catalog consistency (AD flag vs DNS, per DNS server)'
-        $sectionData['Global Catalog Consistency'] = Get-AdfaGcConsistency -ForestRoot $forest.Name -AdParams $adParams -DnsServers $dcNames
+        $sectionData['Global Catalog Consistency'] = Get-AdfaGcConsistency -ForestRoot $forest.Name -AdParams $adParams -DnsServers $perDcDnsServers
     }
     if (Test-SectionSelected 'MsdcsDelegation' $Sections) {
         Write-Stage 'Forest-wide locator zone delegation (_msdcs, per DNS server)'
@@ -30015,7 +30657,7 @@ function Invoke-Main {
         }
         else {
             $sectionData['_msdcs Zone Delegation'] = @(Get-AdfaMsdcsDelegation -ForestRoot $forest.Name `
-                    -DnsServers $dcNames -AdDcHosts $dcNames)
+                    -DnsServers $perDcDnsServers -AdDcHosts $perDcHosts -IncompleteDomains $perDcGapDomains)
         }
     }
     if (Test-SectionSelected 'TimeHierarchy' $Sections) {
@@ -30045,7 +30687,7 @@ function Invoke-Main {
         # Samples only; the Kerberos maximum is never taken from a file.
         $clockConfig = $script:Config.ClockSkew
         if ($configOverrides.ContainsKey('ClockSkew')) { $clockConfig = $configOverrides['ClockSkew'] }
-        $timeRows = @(Get-AdfaTimeHierarchyHealth -DomainControllers $dcNames -PdcEmulators $pdcMap `
+        $timeRows = @(Get-AdfaTimeHierarchyHealth -DomainControllers $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains -PdcEmulators $pdcMap `
                 -ForestRootPdc $rootPdc -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
                 -TimeoutSeconds $script:Config.ExternalToolTimeoutSec `
                 -SkewSamples $clockConfig.Samples `
@@ -30071,7 +30713,7 @@ function Invoke-Main {
         Write-Stage 'Port reachability matrix (replication port set)'
         # PORT-PLAN C14: the reachability class of each DC, classified once before the first per-DC
         # section, then the port matrix rows, unchanged.
-        $sectionData['Port Reachability'] = @(@($reachRows) + @(Get-AdfaPortMatrix -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs))
+        $sectionData['Port Reachability'] = @(@($reachRows) + @(Get-AdfaPortMatrix -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs))
     }
     if (Test-SectionSelected 'DcSecureChannel' $Sections) {
         Write-Stage 'DC machine-account passwords & secure channels'
@@ -30084,8 +30726,8 @@ function Invoke-Main {
     }
     if (Test-SectionSelected 'DsEvents' $Sections) {
         Write-Stage 'Directory Service event log (lingering / rollback / DNS failures)'
-        $sectionData['Directory Service Events'] = Get-AdfaDsEventLog -DomainControllers $dcNames -Credential $Credential `
-            -LookbackDays $script:Config.DsEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        $sectionData['Directory Service Events'] = Get-AdfaDsEventLog -DomainControllers $perDcTargets -Credential $Credential `
+            -LookbackDays $script:Config.DsEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
         # PORT-PLAN C15 (INV-012): every configured log of every DC, by level (Critical, Error, Warning),
         # bounded by -EventLookbackDays and EventMaxEvents, grouped by event ID; inventory only.
         Write-Stage 'Event inventory (Critical, Error and Warning per log and DC; bounded reads)'
@@ -30099,7 +30741,7 @@ function Invoke-Main {
         # The registry marker first: it is the only restore-integrity signal that does not depend
         # on the Directory Service log still holding the event, which on a recovered forest it
         # frequently does not.
-        $riRows += @(Get-AdfaUsnRollbackForensics -DomainControllers $dcNames -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs)
+        $riRows += @(Get-AdfaUsnRollbackForensics -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains)
         try {
             $riRows += @(Get-AdfaInvocationIdVerdict -DsaInventory (Get-AdfaDsaInventory -AdParams $adParams))
         }
@@ -30217,16 +30859,16 @@ function Invoke-Main {
     if ($IncludeRepadmin -and (Test-CommandAvailable -Name 'repadmin.exe')) {
         Write-Stage 'raw repadmin'
         Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments '/replsummary * /bysrc /bydest /sort:delta' -OutFile (Join-Path $rawPath 'repadmin_replsummary.txt') @ext | Out-Null
-        foreach ($dc in $dcNames) {
-            if (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $script:Config.RpcPortTimeoutMs) {
+        foreach ($dc in $perDcHosts) {
+            if ((Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $script:Config.RpcPortTimeoutMs).Open[135]) {
                 Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments ("/showrepl {0} /errorsonly" -f $dc) -OutFile (Join-Path $rawPath ("repadmin_showrepl_{0}.txt" -f (New-SafeFileName $dc))) @ext | Out-Null
             }
         }
     }
     if ($IncludeDcdiag -and (Test-CommandAvailable -Name 'dcdiag.exe')) {
         Write-Stage 'raw dcdiag'
-        foreach ($dc in $dcNames) {
-            if (Test-TcpPort -ComputerName $dc -Port 135 -TimeoutMs $script:Config.RpcPortTimeoutMs) {
+        foreach ($dc in $perDcHosts) {
+            if ((Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $script:Config.RpcPortTimeoutMs).Open[135]) {
                 Invoke-ExternalCommand -FilePath 'dcdiag.exe' -Arguments ("/s:{0} /c /v" -f $dc) -OutFile (Join-Path $rawPath ("dcdiag_{0}.txt" -f (New-SafeFileName $dc))) @ext | Out-Null
             }
         }
@@ -30324,7 +30966,7 @@ function Invoke-Main {
         RunBy         = ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
         Version       = $script:Config.Version
         DomainsScoped = @($targetDomains)
-        DcCount       = @($dcNames).Count
+        DcCount       = @($perDcHosts).Count
         Badges        = $badges
     }
 
@@ -30383,7 +31025,7 @@ function Invoke-Main {
     [pscustomobject]@{
         Forest        = $forest.Name
         DomainsScoped = $targetDomains
-        DcCount       = $dcNames.Count
+        DcCount       = @($perDcHosts).Count
         OutputRoot    = $runRoot
         ReportPath    = $reportPath
         JsonPath      = $jsonPath

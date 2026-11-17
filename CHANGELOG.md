@@ -10,6 +10,187 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-17 (Per-domain DC targets for every per-DC section, one probe per port, the reachability class in every section, CIM ports refused, tool v1.34.0)
+
+**PORT-PLAN C2e, C1b, C3g and the reachability part of C14c, in one change. No new `-Sections` value.
+A BREAKING change for an override file that names `WsmanPort` or `RpcPort` under `DcDisk`, or in
+`-DcSystemConfigPath`.** **Run against stubs only** - nothing in this entry has been run against a real
+directory or a real DC (C17).
+
+- **C2e - what was wrong.** The per-DC sections other than `DcDisk`, `DcHardening`, `DcCertificates`,
+  `RidPool`, `Dns`, `DcDiagnostics` and `DnsRecordExport` took their DC list from `$dcNames`. When
+  `DomainControllers` is not among `-Sections`, that is one `Get-ADDomainController -Filter *` against the
+  default server, which Microsoft documents as the domain "of the computer running Windows PowerShell": on
+  `-AllDomains` every other domain was missing from `Replication`, the SYSVOL shares and DFS Replication
+  events, the patch-level half of `DcSystem`, `Backup`, `TimeHierarchy`, `PortMatrix`, `DsEvents` and
+  `RestoreIntegrity`, with no row to say so; the DNS server set of `DnsAdConsistency`, `DsaCname`,
+  `GcConsistency` and `MsdcsDelegation`, the SYSVOL backlog fallback, the raw `repadmin`/`dcdiag`
+  captures and the run's DC count had the same gap.
+- **C2e - what it does now.** One per-domain list, `$perDcTargets`: the C14/C15 list where the run
+  already holds one per domain, otherwise one `Get-AdfaDcTargetsByDomain` (one `Get-ADDomainController
+  -Filter * -Server <domain>` per scoped domain) shared by every section, and the unscoped names only when
+  no domain gave a DC. Each of those sections takes it, each row carries its domain in `Scope`, and a
+  scoped domain whose DCs could not be enumerated - or that returned none - gets one `Not Assessed`
+  `<label> (population): <domain>` row with the cause (`Get-AdfaDcPopulationRow`, the C2 gap logic):
+  `Replication health`, `SYSVOL / NETLOGON shares`, `DFS Replication events`, `Patch level`,
+  `Directory backup`, `USN rollback marker`, `Directory Service events` and `Time hierarchy`; the port
+  matrix uses the `DC reachability (population)` rows it already had. A DC with no host name is its own
+  `Not Assessed` row, never probed and never dropped. `DcSecureChannel`, which already read each domain,
+  words a failed enumeration with the same text and no longer returns nothing for a domain that returned no
+  DC. The DNS server set is the per-domain host names, each once; `DcCount` counts them. **A test reads
+  the parsed `Invoke-Main` and fails if any command takes `$dcNames` again**: every reference must be its
+  definition, its emptiness check, or the last-resort fallback of a declared list of sections.
+- **C1b and C14c - what was wrong.** The reachability classification (C14) measures 5985 and 135 only on
+  a DC whose LDAP answered, so for a DC classified `Unreachable` the cache held nothing for them, and every
+  section that probed 5985, 135, 445 or 636 probed it again and reported a silent port instead of the
+  class. Nine sections bypassed the cache altogether with `Test-TcpPort` (`Replication` on 135 and 9389,
+  `Backup`, `PortMatrix` on all seven ports plus its own unbounded `Dns.GetHostAddresses`,
+  `DcSecureChannel`, the SYSVOL shares, the backlog, the DFS Replication and Directory Service events,
+  `RestoreIntegrity`, the lingering-object scan and the raw captures).
+- **C1b and C14c - what it does now.** One gate, `Get-AdfaDcProbeGate`: the C14 class first - a DC
+  classified `Unreachable` is probed on **no** port and the gate returns the class as the cause - then
+  `Test-AdfaDcPort`, the per-run cache. Every per-DC section probes through it; `Test-TcpPort` remains in
+  the cache and the trust checks only - the trusted domain's own name (135, 389; not a DC host name) and
+  the partner DC, which `Get-AdfaTrustHealth` and `Test-AdfaRemoteSecureChannel` probe only after
+  `Get-AdfaDcReachCause` finds no class for it - and `Test-AdfaDcPort` in the gate only, all pinned by a
+  test. Every row of an unreachable DC in `Replication`, `DcSecureChannel` (secure channel), `DsEvents`,
+  `RestoreIntegrity`, `Backup`, `DcDisk`, `DcHardening`, `DcSystem` (patch level), `Dns` (server read, DC
+  DNS client, locator CNAMEs, record export), `DcDiagnostics`, `DcCertificates` (LDAPS handshake), the
+  DFS Replication events, the SYSVOL shares, the backlog, the lingering scan, the GPO SYSVOL read of a
+  PDC (`GPO folder listing` and each `GPO version` row) and the inbound check of a trust partner DC is
+  `Not Assessed` with the class, worded once (`Get-AdfaDcGateText`: the class, then what was not read).
+  The dcdiag grid row keeps `Status` and `Ping` `Fail` (C11g(1)) and names the class in `Failures`. The
+  port matrix row of such a DC is `Not Assessed` (its `DC reachability` row carries the `Fail`), and the
+  port matrix of any other DC takes the classification's name resolution, or the bounded seam, instead of
+  resolving again. The DC DNS client adapters, which used to be read before the classification, are read
+  after it (their section keeps its place in the report). `RestoreIntegrity` reads the registry through
+  a new seam, `Get-AdfaUsnRollbackRaw` (the same `OpenRemoteBaseKey` read, keys now closed), and an
+  access-denied read now says `Access denied:`, apart from a key that does not exist and from an
+  unreachable DC. **Measured on stubs: with one DC whose name does not resolve, a whole `All` run makes
+  one name resolution and no TCP probe of it; with one that refuses LDAP, one resolution and one probe of
+  389** (the smoke harness, both passes, and a Pester test across all fourteen per-DC collectors).
+  The `DC reachability` row of an unreachable DC no longer says the other sections probe on their own.
+- **C3g.** `WsmanPort` and `RpcPort` under `DcDisk` in `-ConfigOverridePath`, and in
+  `-DcSystemConfigPath`, are refused with the `DcHardening` wording, whatever they hold. They changed the
+  port that was probed and not the port the CIM session connects to: `New-CimSession` is opened without
+  `-Port` (pinned by a test on both seams). Honouring them was not chosen: Microsoft documents that "Before
+  using an alternate port, you must configure the WinRM listener on the remote computer to listen at that
+  port", which only a change on the DC does, says "Do not use the Port parameter unless you must", and
+  `New-CimSessionOption` has no port option for DCOM, which always starts at the RPC endpoint mapper on 135.
+  The keys stay in the built-in tables, which the code reads.
+- **Behaviour kept.** Item texts and statuses of a reachable DC are unchanged; rows of the moved sections
+  gained a `Scope` value (and the replication rows a `Scope` column). The classification runs only when
+  `PortMatrix` is selected (it is the `PortMatrix` branch of `Invoke-Main` that calls it; `Topology` alone
+  enumerates per domain but classifies nothing); without it the gate shares the cache only (C2h(1)).
+- **Tests.** A new Describe (`Per-domain DC targets, one probe per port, ...`): the gate (unreachable,
+  not classified, reachable with measured ports reused, NotManageable); every one of fourteen per-DC
+  collectors with an unreachable DC first and a live DC second (Not Assessed with the class, the second
+  DC still handled, the first never probed, resolved once), all fourteen together (one resolution, no
+  probe) and a refused DC (one probe of 389); population rows for eight sections (a failed domain, an
+  empty domain, the DC rows' scope), the unnamed DC, the empty run; `RestoreIntegrity` unreachable, access
+  denied, absent key and a mixed three-DC result; the C3g refusals (each key, values 5985, 5986, 135 and
+  1, through the override file and `-DcSystemConfigPath`, the seams opened without a port, the help and
+  README); and the wiring by the parsed script (`$dcNames` population, the shared list, nine collectors and
+  four DNS sections, the probe allow-lists, the classification before the DC DNS client, `DcCount`). The
+  smoke harness gains a counting `Test-TcpPort`, a `Get-AdfaUsnRollbackRaw` stub (so no pass opens a real
+  remote registry any more), a read-only `repadmin /showbackup` answer, a nine-section multi-domain pass
+  without `DomainControllers`, an unresolved and a refused pass over the whole run, and the failing-
+  collector checks of seven sections; `Run-Validation.ps1` gains the pure-logic assertions.
+- **Existing tests changed, because the behaviour they pinned changed (none deleted):** C1 "goes on
+  citing Microsoft when the override changes a port" (now: the port is refused, the dates keep their
+  source); C2 "uses only the transport whose port answered, and the ports the config names" (now: the
+  default ports), "shares the per-run probe cache" (now: through the gate) and "goes on calling the
+  thresholds tool defaults when the override changes only a port" (now: refused); C3 "reads each DC through
+  the shared transport loop and the shared probe cache" (one gate call instead of two cache calls) and the
+  `DcDisk` line of "refuses the two port keys" (now refused); C5 "probes port 636 through the shared cache
+  only" (through the gate); C8 "reads through its seams only" (the probe and the command whitelist name the
+  gate); C11 "probes through the per-run cache" (the gate); C13 "gives the Dns, DnsAdConsistency and
+  DomainControllers branches..." (the DNS server set and the DC DNS client's own branch); C14 "says which
+  sections reuse an Unreachable class" (reworded) and "no longer probes the time hierarchy with the
+  uncached Test-TcpPort" (the gate); the eleven version pins (1.34.0). In `Run-Validation.ps1`: the
+  `DcDisk` port line and the C14 reachability wording. After the review: C8 "reads through its seams only"
+  (the command whitelist gains the pure `Get-AdfaDcGateText`, 30 commands); the C2e `$dcNames` population
+  (`fallback:domainDcNames` removed, because that consumer is gone); the C2e `Test-TcpPort` pin (comment
+  corrected, and it now also asserts that the class is consulted before each partner-DC probe); the C2e
+  RestoreIntegrity access-denied stub (`ErrorCode` `AccessDenied`, the shape the seam returns, instead of
+  `5`); the smoke unreachable pass excludes `Directory certificate:` rows, read from the directory, from
+  "no row passes", as it does the OS lifecycle and password rows.
+- **Mutations.** Fourteen single mutations of the new code, each on a scratch copy of the repository and run against the new Describe, the script restored byte-for-byte after each and checked by SHA-256 - **all fourteen killed**: M1 the gate ignores the class (15 tests fail); M2 a population row `Pass` instead of `Not Assessed` (7); M3 access denied worded as unreachable (1); M4 the `DcDisk` port refusal removed (3); M5 the `-DcSystemConfigPath` port refusal removed (3); M6 `Backup` wired back to `$dcNames` (2); M7 the empty check of `DsEvents` off by one (1); M8 the DFS Replication loop over the first DC only (3); M9 the port matrix gate inverted (2); M10 the scoped domains dropped from the population (8); M11 the DC DNS client read before the classification (1); M12 `Replication` probing a DC after its class (4); M13 the per-domain list replaced by the unscoped names (2); M14 the dcdiag grid row without the class (2).
+- **Found by an independent review of the diff before commit, and fixed in it.** Fourteen defects.
+  (1, 2) The GPO SYSVOL read went through the gate but kept only `Open[445]`, so the `GPO folder listing`
+  row and every `GPO version` row of a PDC classified `Unreachable` said "port 445 (SMB) ... did not
+  answer" for a probe that was never made, and did not name the class (on any run with `PortMatrix` and
+  `Gpo`, `All` included): `Get-AdfaGpoSysvolRaw` now returns the gate's cause as `ReachCause`, and
+  `Get-AdfaGpoDomainFinding` words those rows with it. (3) The SYSVOL backlog took the unscoped current-domain
+  names for any domain with no per-domain DC, so on `-AllDomains` another domain's DCs were measured under
+  the failed domain's scope with no row naming the failure: `Get-AdfaDomainDcHostName` (pure) now gives a
+  domain its own DCs only, the unscoped names only on a single-domain run, and otherwise a `SYSVOL backlog
+  (population): <domain>` row with the cause; the last consumer of `$dcNames` outside the declared fallbacks
+  is gone from `Invoke-Main`. (4) `MsdcsDelegation` graded an NS host missing from an incomplete DC list as
+  the `Warning` "not a known DC" (with advice to remove a decommissioned DC's record): it is now told which
+  scoped domains' DCs are missing (`-IncompleteDomains`) and such a host is `Not Assessed` naming them. (5,
+  14) The help said `Topology` triggers the classification (only `PortMatrix` does) and that every per-DC
+  section takes every scoped domain's DCs (the `Sysvol` subscription verdict does not, C2i(5)); both
+  corrected, here, in PORT-PLAN C2h(1) and in the README. (6) The trust checks probed the partner DC that
+  `nltest /dsgetdc` names with `Test-TcpPort` (135, and 5985 for the inbound check) even when it was a DC
+  of a scoped domain classified `Unreachable`: both now consult `Get-AdfaDcReachCause` first, do not probe
+  it, and name the class in `VerifyDetail` and the inbound result; the trusted domain's own name is still
+  probed (C2h(10)). (7, 8, 13) The gate branches of the LDAPS handshake, the SYSVOL backlog, the lingering
+  scan, the locator CNAME read, the record export and the DC DNS client, and the `Secure channel: (unnamed)`
+  branch, had no test that could fail; each now has one, with an unreachable DC first and a live DC after
+  it (the smoke unreachable pass now also runs with `-IncludeLdapsHandshake` and checks the GPO rows). (9,
+  12) The hand-kept `$perDcSections` list and the single shared enumeration were unpinned: a test now reads
+  the list, derives from the parsed `Invoke-Main` every section branch and switch that uses the per-domain
+  targets and fails if one is not covered, and pins `$c15PerDomain = $true`; the smoke harness runs `Backup`
+  alone and `DsEvents` with `Backup` on the three-domain forest and counts one `Get-ADDomainController` per
+  domain. (10) The access-denied test of the registry seam stubbed an `ErrorCode` the seam never returns:
+  the type check is now a pure function, `Get-AdfaRegistryReadErrorCode`, tested with
+  `UnauthorizedAccessException`, `SecurityException` and a wrapped `MethodInvocationException`, with
+  Portuguese and German messages, the seam's one assignment from it is pinned, and the stub returns
+  `AccessDenied`. (11) De-duplication of the DC host set is now a pure function, `Get-AdfaDcHostSet`, tested
+  with one DC listed under three domains and in another case. The behaviour fixes (1-4, 6, 10, 11) were run
+  red first against the script as it was before them (6 of the 15 new tests failed); each test gap was
+  closed by a mutation on a scratch copy that the new tests now kill - see the next item.
+- **Mutations for the review fixes.** Eighteen single mutations, each on its own scratch copy of `src`,
+  `tests` and the README (the working-tree script's SHA-256 checked equal before and after), run against the
+  new Describe (78 tests) and, where named, the harnesses - **all eighteen killed**: R1 the LDAPS
+  `ReachCause` branch off (1 test); R2 the backlog peer gate off (1); R3 the lingering-scan gate off (1); R4
+  the locator CNAME gate off (1); R5 the record-export gate off (1); R6 the DC DNS client gate off (1); R7
+  `Backup` dropped from `$perDcSections` (1, and 7 smoke checks); R8 the raw-capture switches dropped from
+  the enumeration guard (1); R9 the registry seam no longer assigns the error code (1); R10 the type check of
+  `Get-AdfaRegistryReadErrorCode` off (1, and 1 validation assertion); R11 the host-set de-duplication
+  removed (1, and 1 validation); R12 `$c15PerDomain = $false` (1, and 3 smoke checks: each domain enumerated
+  twice); R13 the `(unnamed)` branch of `DcSecureChannel` off (1); R14 the GPO class branches off (1, 2
+  smoke checks, 1 validation); R15 the trust check probes the partner DC again (1); R16 the inbound check
+  probes it again (1); R17 the incomplete-list branch of the `_msdcs` verdict off (1, and 1 validation);
+  R18 the unscoped fallback taken for any domain (1, and 1 validation).
+- **Not verified.** Everything against a real DC: that a DC classified `Unreachable` is in fact
+  unreachable on 445, 636 and 9389 as well (Microsoft publishes no rule that a DC silent on 389 is silent
+  elsewhere; the class is the tool's design, REACH-001); the number of `Get-ADDomainController` calls a
+  real run makes; `RegistryKey.OpenRemoteBaseKey` access-denied exception types on a real DC (read as
+  `UnauthorizedAccessException` or `SecurityException`, by type, then by text); Windows PowerShell 5.1 and
+  PowerShell 7 against a real forest. `New-CimSessionOption` was read in the PowerShell 7.5 view; Learn
+  does not say what `New-CimSession -Port` does to a DCOM session.
+- **Vendor sources, read 2026-11-17:**
+  https://learn.microsoft.com/powershell/module/cimcmdlets/new-cimsession (the Windows PowerShell 5.1
+  view, read for this entry: `-Port`, the WinRM listener sentence, "Do not use the Port parameter unless
+  you must", WSMan by default with `-ComputerName`, DCOM through `New-CimSessionOption`),
+  https://learn.microsoft.com/powershell/module/cimcmdlets/new-cimsessionoption (`-Protocol` Dcom, Default
+  or Wsman; no port option in either parameter set),
+  https://learn.microsoft.com/windows/win32/winrm/installation-and-configuration-for-windows-remote-management
+  (default listener ports 5985/5986; "WinRM listeners can be configured on any arbitrary port"),
+  https://learn.microsoft.com/powershell/module/activedirectory/get-addomaincontroller (`-Server` default is
+  the domain of the computer running PowerShell; `HostName` not set when `DNSHostName` is null),
+  https://learn.microsoft.com/troubleshoot/windows-server/active-directory/config-firewall-for-ad-domains-and-trusts
+  (the DC port list the port matrix probes). The last four were read by the research step of this
+  session, not re-opened while writing the code. For the review fixes:
+  https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.openremotebasekey (exceptions:
+  `SecurityException`, "The user does not have the proper permissions to perform this operation";
+  `UnauthorizedAccessException`, "The user does not have the necessary registry rights"; `IOException`
+  when the machine is not found) and
+  https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.opensubkey (`SecurityException`; a key
+  that does not exist returns null), both read 2026-11-17.
+
 ### Changed - 2026-11-17 (Declared property lists: no read of every attribute, no secret attribute in any list, tool v1.33.0)
 
 **PORT-PLAN C4b. A security fix, and a BREAKING change of the `AllUsers_<domain>.csv` and

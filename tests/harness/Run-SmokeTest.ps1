@@ -982,7 +982,10 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
 # C13: Resolve-DnsName is present only in the DNS scenario ($script:SmokeDnsResolver), so every other pass
 # keeps the shape it had: no DNS query tool on this host.
 $script:SmokeDnsResolver = $false
-function Test-CommandAvailable { param([string]$Name) return ($Name -eq 'dcdiag.exe' -or ($script:SmokeDnsResolver -and $Name -eq 'Resolve-DnsName') -or ($script:SmokeW32tm -and $Name -eq 'w32tm.exe')) }
+# PORT-PLAN C2e: repadmin.exe is present only in the per-domain pass ($script:SmokeRepadmin), where it answers /showbackup.
+$script:SmokeRepadmin = $false
+$script:SmokeRepadminCalls = @()
+function Test-CommandAvailable { param([string]$Name) return ($Name -eq 'dcdiag.exe' -or ($script:SmokeDnsResolver -and $Name -eq 'Resolve-DnsName') -or ($script:SmokeW32tm -and $Name -eq 'w32tm.exe') -or ($script:SmokeRepadmin -and $Name -eq 'repadmin.exe')) }
 # C11 (DcDiagnostics): dcdiag, answered in the shape the dcdiag command reference prints (Learn,
 # read 2026-11-16): a banner, the initial Connectivity block under "Testing server: <site>\<DC>",
 # then the test's own block. CheckSDRefDom and CrossRefValidation answer one verdict per partition
@@ -1039,6 +1042,9 @@ function Invoke-ExternalCommand {
     param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
     if ($script:SmokeW32tm -and $FilePath -eq 'w32tm.exe') {
         # C14: read-only w32tm forms only; any other switch fails the run here.
+        # PORT-PLAN C14c: the local read-only queries of the TimeSync section are answered too, and not
+        # recorded as a call to a DC.
+        if ($Arguments -match '^/query /(source|status|configuration)\s*$') { return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile; StdOut = 'dc1.contoso.com' } }
         if ($Arguments -notmatch '^/(stripchart|query) /computer:\S+') { throw ("STUB: w32tm asked for '{0}', which this harness does not answer" -f $Arguments) }
         $script:SmokeW32tmCalls += $Arguments
         $w32Out = 'time.contoso.com,0x8'
@@ -1049,6 +1055,15 @@ function Invoke-ExternalCommand {
         }
         elseif ($Arguments -match '/configuration') { $w32Out = "Type: NTP (Local)`r`nNtpServer: time.contoso.com,0x8 (Local)" }
         return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile; StdOut = $w32Out }
+    }
+    if ($script:SmokeRepadmin -and $FilePath -eq 'repadmin.exe') {
+        # PORT-PLAN C2e: /showbackup answered; the other read-only forms the Replication section asks for
+        # (/showrepl, /replsummary) are answered as a failed run, and any form that writes fails the run here.
+        if ($Arguments -match '(?i)/(removelingeringobjects|replicate|syncall|kcc|options|add|del|mod)\b') { throw ("STUB: repadmin asked for '{0}', which is not a read" -f $Arguments) }
+        if ($Arguments -notmatch '^/showbackup \S+$') { return [pscustomobject]@{ Success = $false; ExitCode = 1; Attempt = 1; Error = 'STUB: not answered by this harness'; OutFile = $OutFile; StdOut = '' } }
+        $script:SmokeRepadminCalls += $Arguments
+        return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile; StdOut = ("CN=Configuration,DC=contoso,DC=com
+  Last backup: {0:yyyy-MM-dd HH:mm:ss}" -f $now.AddDays(-2)) }
     }
     if ($FilePath -ne 'dcdiag.exe') { throw ("STUB: only dcdiag.exe is answered by this harness, not {0}" -f $FilePath) }
     $script:SmokeDcdiagCalls += [pscustomobject]@{ Arguments = $Arguments; Timeout = $TimeoutSeconds; Retries = $Retries }
@@ -1119,7 +1134,14 @@ function Resolve-DnsName { param([string]$Name, [string]$Type, [string]$Server, 
     }
     if ($Type -eq 'A' -and $Name -eq 'dc1.contoso.com') { return [pscustomobject]@{ Name = $Name; Type = 'A'; IPAddress = '192.0.2.10' } }
     throw ("{0} : DNS name does not exist" -f $Name) }
-function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+# PORT-PLAN C1b/C14c: every probe is recorded, so a pass can show that a DC classified Unreachable is
+# probed on no port by any section.
+$script:SmokeTcpCalls = @()
+function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:SmokeTcpCalls += ('{0}:{1}' -f $ComputerName.ToLowerInvariant(), $Port); return $true }
+# PORT-PLAN C14c: the USN-rollback registry seam, so no pass opens a real remote registry. It answers as
+# a DC with no "Dsa Not Writable" value does. Every call is recorded.
+$script:SmokeUsnCalls = @()
+function Get-AdfaUsnRollbackRaw { param([string]$ComputerName) $script:SmokeUsnCalls += $ComputerName; [pscustomobject]@{ Readable = $true; Present = $false; Value = $null; Reason = ''; ErrorCode = '' } }
 # C14 (REACH-001/002): the two probe seams, so no pass makes a real DNS lookup or TCP connection. Every
 # DC resolves to 192.0.2.10 and answers every port ('Open'); 'Unresolved' answers HostNotFound, as the
 # resolver does for a name with no record; 'Refused' resolves and refuses every port. Every call is
@@ -1750,6 +1772,80 @@ Write-Host ("Output bundle: {0}" -f $result.OutputRoot)
 Get-ChildItem -Recurse $result.OutputRoot | Select-Object -First 30 FullName | ForEach-Object { Write-Host ("   {0}" -f $_.FullName) }
 
 # =============================================================================
+# UNREACHABLE DC PASS (PORT-PLAN C1b, C14c)
+# =============================================================================
+# The whole run, every section, with the one DC classified Unreachable: first its name does not resolve,
+# then it resolves and refuses LDAP. The classification is the only contact with it - one name
+# resolution, and in the second pass one probe of 389 - and every per-DC section says so in its own
+# rows: Not Assessed with the class (the dcdiag grid row stays Fail, C11g), never Pass, nothing read.
+$smokeOutputSaved = $script:OutputPath
+foreach ($c14cMode in @('Unresolved', 'Refused')) {
+    $outU = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_unreach_" + [guid]::NewGuid().ToString('N'))
+    $script:OutputPath = $outU
+    $script:SmokeReachMode = $c14cMode
+    $script:SmokeReachCalls = @()
+    $script:SmokeTcpCalls = @()
+    $script:SmokeUsnCalls = @()
+    $script:SmokeEventCalls = @()
+    $script:SmokeNetlogonCalls = @()
+    $script:SmokeDcdiagCalls = @()
+    $script:SmokeRepadmin = $true
+    $script:SmokeRepadminCalls = @()
+    $script:SmokeW32tm = $true
+    $script:SmokeW32tmCalls = @()
+    # Found by the independent review: the opt-in reads that consult the class too - the LDAPS handshake
+    # (its TLS seam records every call) and the SYSVOL backlog (DFSR module absent here, so its own row).
+    $script:IncludeLdapsHandshake = $true
+    $script:SmokeTlsCalls = @()
+    $resultU = Invoke-Main
+    $script:IncludeLdapsHandshake = $false
+    $script:SmokeRepadmin = $false
+    $script:SmokeW32tm = $false
+    $script:SmokeReachMode = 'Open'
+    $findingsU = @(Import-Csv $resultU.FindingsFile)
+    $expectReach = 'resolve dc1.contoso.com'
+    $why = 'the host name does not resolve'
+    if ($c14cMode -eq 'Refused') { $expectReach = 'resolve dc1.contoso.com,tcp 192.0.2.10:389'; $why = 'every address refused the connection on LDAP \(389\)' }
+    Check ((@($script:SmokeReachCalls) -join ',') -eq $expectReach) ("C14c {0}: the classification is the only contact - {1} ({2})" -f $c14cMode, $expectReach, (@($script:SmokeReachCalls) -join ', '))
+    Check (@($script:SmokeTcpCalls | Where-Object { $_ -like 'dc1.contoso.com:*' }).Count -eq 0) ("C14c {0}: no section probes the DC on any port afterwards ({1})" -f $c14cMode, (@($script:SmokeTcpCalls | Where-Object { $_ -like 'dc1.contoso.com:*' }) -join ', '))
+    Check (@($script:SmokeUsnCalls).Count -eq 0 -and @($script:SmokeEventCalls).Count -eq 0 -and @($script:SmokeNetlogonCalls).Count -eq 0 -and @($script:SmokeRepadminCalls).Count -eq 0 -and @($script:SmokeW32tmCalls).Count -eq 0 -and @($script:SmokeDcdiagCalls | Where-Object { $_.Arguments -match 'dc1\.contoso\.com' }).Count -eq 0) ("C14c {0}: nothing is read from the DC - no registry, event log, netlogon.log, repadmin, w32tm or dcdiag" -f $c14cMode)
+    # Declared population: the per-DC sections and the item each gives the DC.
+    $c14cExpect = [ordered]@{
+        'Replication Health'                    = '^dc1\.contoso\.com$'
+        'SYSVOL / DFSR'                         = '^Shares on dc1\.contoso\.com$'
+        'DFS Replication Events'                = '^dc1\.contoso\.com$'
+        'DC System'                             = '^Patch level: dc1\.contoso\.com$'
+        'Backup Status'                         = '^Directory backup: dc1\.contoso\.com$'
+        'Port Reachability'                     = '^dc1\.contoso\.com$'
+        'Restore Integrity'                     = '^USN rollback marker on dc1\.contoso\.com$'
+        'Directory Service Events'              = '^dc1\.contoso\.com$'
+        'Time Hierarchy'                        = '^Time source on dc1\.contoso\.com '
+        'DC Disk Space'                         = '^Disk space: dc1\.contoso\.com$'
+        'DC Hardening'                          = '^DC hardening: dc1\.contoso\.com$'
+        'DC Secure Channel & Machine Passwords' = '^Secure channel: dc1\.contoso\.com$'
+        'DNS Health'                            = '^DNS server: dc1\.contoso\.com$'
+        'Time Configuration'                    = '^W32Time configuration: dc1\.contoso\.com$'
+        'DC Certificates'                       = '^LDAPS certificate: dc1\.contoso\.com$'
+    }
+    foreach ($sec in @($c14cExpect.Keys)) {
+        $hits = @($findingsU | Where-Object { $_.Section -eq $sec -and $_.Item -match $c14cExpect[$sec] })
+        Check ($hits.Count -ge 1 -and @($hits | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0 -and @($hits | Where-Object { $_.Detail -notmatch 'classified once for this run' -or $_.Detail -notmatch $why }).Count -eq 0) ("C14c {0}: '{1}' has the DC Not Assessed with its class ({2} rows)" -f $c14cMode, $sec, $hits.Count)
+    }
+    $gridU = @($findingsU | Where-Object { $_.Section -eq 'DC Diagnostics' -and $_.Item -eq 'dc1.contoso.com' })
+    Check ($gridU.Count -eq 1 -and $gridU[0].Status -eq 'Fail' -and $gridU[0].Detail -match 'classified once for this run' -and $gridU[0].Detail -match $why) ("C14c {0}: the dcdiag grid row stays Fail (C11g) and names the class" -f $c14cMode)
+    Check (@($findingsU | Where-Object { $_.Section -eq 'Port Reachability' -and $_.Item -eq 'DC reachability: dc1.contoso.com' -and $_.Status -eq 'Fail' }).Count -eq 1) ("C14c {0}: non-vacuity - the DC is classified Unreachable (REACH-001 Fail)" -f $c14cMode)
+    $passU = @($findingsU | Where-Object { $_.Item -match 'dc1\.contoso\.com' -and $_.Section -in @($c14cExpect.Keys) -and $_.Status -eq 'Pass' -and $_.Item -notmatch '^(Machine-account password|OS lifecycle|Directory certificates?): ' })
+    # The three rows read from the directory about the DC (its OS lifecycle, machine-account password and
+    # published certificates) need no connection.
+    Check ($passU.Count -eq 0) ("C14c {0}: no per-DC row of the unreachable DC passes ({1})" -f $c14cMode, (@($passU | ForEach-Object { "{0} :: {1}" -f $_.Section, $_.Item }) -join '; '))
+    Check (@($script:SmokeTlsCalls).Count -eq 0 -and @($findingsU | Where-Object { $_.Section -eq 'DC Certificates' -and $_.Item -eq 'LDAPS certificate: dc1.contoso.com' -and $_.Detail -match 'port 636 was not probed' }).Count -eq 1) ("C14c {0}: with -IncludeLdapsHandshake, no handshake is attempted with the DC and its row names the class" -f $c14cMode)
+    # The SYSVOL read of Gpo on the PDC (the same DC): every row names the class, none says 445 did not answer.
+    $gpoU = @($findingsU | Where-Object { $_.Section -eq 'GPO Inventory' -and ($_.Item -like 'GPO folder listing: *' -or $_.Item -like 'GPO version: {*') })
+    Check ($gpoU.Count -ge 1 -and @($gpoU | Where-Object { $_.Status -ne 'Not Assessed' -or $_.Detail -notmatch 'classified once for this run' -or $_.Detail -match 'did not answer' }).Count -eq 0) ("C14c {0}: the GPO SYSVOL rows of the PDC name its class, never a 445 probe that was not made ({1} rows)" -f $c14cMode, $gpoU.Count)
+    Remove-Item -Recurse -Force $outU -ErrorAction SilentlyContinue
+}
+$script:OutputPath = $smokeOutputSaved
+# =============================================================================
 # MULTI-DOMAIN PASS (regression: live run 2026-08-31)
 # =============================================================================
 # The single-domain pass above cannot catch aggregation faults. Per-domain sections are
@@ -2043,6 +2139,77 @@ foreach ($d in $multiDomains) {
 Check (@($ridR | Where-Object { -not $_.Scope }).Count -eq 0) 'Multi-domain, RidPool alone: no row is without a domain'
 Check (-not (Test-Path (Join-Path $resultR.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, RidPool alone: non-vacuity - the DomainControllers section itself was not run'
 Remove-Item -Recurse -Force $outR -ErrorAction SilentlyContinue
+# PORT-PLAN C2e: the nine sections that took the unscoped host names, selected together WITHOUT
+# DomainControllers. Each now takes the DCs of every scoped domain, each row carrying its domain; the
+# DNS server set of DNS vs AD is the per-domain host names, each once. repadmin and w32tm answer here.
+$outC2e = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_c2e_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outC2e
+$script:Sections = @('Replication', 'Sysvol', 'DcSystem', 'Backup', 'PortMatrix', 'RestoreIntegrity', 'DsEvents', 'TimeHierarchy', 'DnsAdConsistency')
+$script:SmokeRepadmin = $true
+$script:SmokeW32tm = $true
+$script:SmokeRepadminCalls = @()
+$script:SmokeUsnCalls = @()
+$resultC2e = Invoke-Main
+$script:SmokeRepadmin = $false
+$script:SmokeW32tm = $false
+$findingsC2e = @(Import-Csv $resultC2e.FindingsFile)
+Check (@($resultC2e.DomainsScoped).Count -eq 3) ("Multi-domain C2e: three domains scoped ({0})" -f @($resultC2e.DomainsScoped).Count)
+# Declared population: one row per section per domain, for the one DC each domain returns.
+$c2eExpect = [ordered]@{
+    'Replication Health'       = 'dc1.contoso.com'
+    'SYSVOL / DFSR'            = 'Shares on dc1.contoso.com'
+    'DFS Replication Events'   = 'Log coverage on dc1.contoso.com'
+    'DC System'                = 'OS build and uptime: dc1.contoso.com'
+    'Backup Status'            = 'Directory backup: dc1.contoso.com'
+    'Port Reachability'        = 'dc1.contoso.com'
+    'Restore Integrity'        = 'USN rollback marker on dc1.contoso.com'
+    'Directory Service Events' = 'Log coverage on dc1.contoso.com'
+    'Time Hierarchy'           = 'Time source on dc1.contoso.com (FOREST ROOT PDC emulator)'
+}
+foreach ($sec in @($c2eExpect.Keys)) {
+    foreach ($d in $multiDomains) {
+        $hits = @($findingsC2e | Where-Object { $_.Section -eq $sec -and $_.Item -eq $c2eExpect[$sec] -and $_.Scope -eq $d })
+        Check ($hits.Count -eq 1) ("Multi-domain C2e: '{0}' has the DC of '{1}', scoped to it ({2} rows)" -f $sec, $d, $hits.Count)
+    }
+    # The reachability rows of Port Reachability carry an Info population row per domain (C14); no other population row.
+    Check (@($findingsC2e | Where-Object { $_.Section -eq $sec -and $_.Item -like '*(population)*' -and $_.Item -notlike 'DC reachability (population): *' }).Count -eq 0) ("Multi-domain C2e: '{0}' needs no population row when every domain returned its DC" -f $sec)
+}
+Check (@($findingsC2e | Where-Object { $_.Section -eq 'Restore Integrity' -and $_.Item -like 'USN rollback marker on *' -and $_.Status -eq 'Pass' }).Count -eq 3 -and @($script:SmokeUsnCalls).Count -eq 3) ("Multi-domain C2e: the USN-rollback marker is read through the seam once per domain's DC ({0} reads)" -f @($script:SmokeUsnCalls).Count)
+Check (@($script:SmokeRepadminCalls | Where-Object { $_ -eq '/showbackup dc1.contoso.com' }).Count -eq 3) ("Multi-domain C2e: repadmin /showbackup is asked once per domain's DC, read-only ({0})" -f (@($script:SmokeRepadminCalls) -join ', '))
+Check (@($findingsC2e | Where-Object { $_.Section -eq 'DNS vs AD Consistency' } | Select-Object -ExpandProperty Scope -Unique | Where-Object { $_ }).Count -eq 3) 'Multi-domain C2e: DNS vs AD Consistency has rows for each of the three domains'
+Check (-not (Test-Path (Join-Path $resultC2e.CsvPath 'Domain Controllers.csv'))) 'Multi-domain C2e: non-vacuity - the DomainControllers section itself was not run'
+Remove-Item -Recurse -Force $outC2e -ErrorAction SilentlyContinue
+# Found by the independent review of C2e: (1) each per-DC section ALONE must enumerate per domain - a
+# section missing from the list that triggers the shared enumeration falls back to the current domain's
+# DCs; Backup is the one that triggers nothing else. (2) Each domain is enumerated ONCE per run, also
+# when DsEvents (which enumerates for its C15 inventory) is selected with another per-DC section.
+$smokeDcEnumFunction = ${function:Get-ADDomainController}
+$script:SmokeDcEnumCalls = @()
+function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
+    $named = ConvertTo-StubArgument -Given $a
+    $server = ''
+    if ($named.ContainsKey('Server')) { $server = [string]$named['Server'] }
+    $script:SmokeDcEnumCalls += $server
+    & $smokeDcEnumFunction @a }
+foreach ($c2eAlone in @(@('Backup'), @('DsEvents', 'Backup'))) {
+    $outA = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_c2e_alone_" + [guid]::NewGuid().ToString('N'))
+    $script:OutputPath = $outA
+    $script:Sections = $c2eAlone
+    $script:SmokeRepadmin = $true
+    $script:SmokeRepadminCalls = @()
+    $script:SmokeDcEnumCalls = @()
+    $resultA = Invoke-Main
+    $script:SmokeRepadmin = $false
+    $findingsA = @(Import-Csv $resultA.FindingsFile)
+    $label = $c2eAlone -join '+'
+    foreach ($d in $multiDomains) {
+        Check (@($findingsA | Where-Object { $_.Section -eq 'Backup Status' -and $_.Item -eq 'Directory backup: dc1.contoso.com' -and $_.Scope -eq $d }).Count -eq 1) ("Multi-domain C2e review, {0}: Backup has the DC of '{1}', scoped to it" -f $label, $d)
+        Check (@($script:SmokeDcEnumCalls | Where-Object { $_ -eq $d }).Count -eq 1) ("Multi-domain C2e review, {0}: '{1}' is enumerated once in the run ({2} times)" -f $label, $d, @($script:SmokeDcEnumCalls | Where-Object { $_ -eq $d }).Count)
+    }
+    Check (@($findingsA | Where-Object { $_.Section -eq 'Backup Status' -and $_.Item -like '*(population)*' }).Count -eq 0) ("Multi-domain C2e review, {0}: Backup needs no population row" -f $label)
+    Remove-Item -Recurse -Force $outA -ErrorAction SilentlyContinue
+}
+${function:Get-ADDomainController} = $smokeDcEnumFunction
 # C4, found by the independent review: a DC whose expiry time is the last date .NET holds (the
 # FILETIME of [datetime]::MaxValue, which an administrator gets by setting "never") threw out of
 # the section and ended the run with no report. The run must finish, and every DC row must be graded.
@@ -2595,7 +2762,10 @@ $script:SmokeDcdiagCalls = @()
 $out3 =Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out3
 $script:AllDomains = $false
+# PORT-PLAN C2e review: the SYSVOL backlog too, which must not measure DCs it cannot attribute to the domain.
+$script:IncludeSysvolBacklog = $true
 $result3 = Invoke-Main
+$script:IncludeSysvolBacklog = $false
 
 Check ($null -ne $result3) 'Failure mode: Invoke-Main still returns a summary rather than dying'
 Check (Test-Path $result3.FindingsFile) 'Failure mode: consolidated findings still written'
@@ -2641,6 +2811,25 @@ Check (@($dns3).Count -eq 2 -and @($dns3 | Where-Object { $_.Status -ne 'Not Ass
 $cli3 = @($findings3 | Where-Object { $_.Section -eq 'DC DNS Client' })
 Check (@($cli3 | Where-Object { $_.Item -eq 'DNS client - contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1 -and @($cli3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) 'Failure mode C13: DC DNS Client gives the failed domain a Not Assessed row with the cause, and passes nothing'
 Check (@($findings3 | Where-Object { $_.Section -eq 'DNS vs AD Consistency' -and $_.Status -eq 'Pass' }).Count -eq 0) 'Failure mode C13: DNS vs AD Consistency passes nothing when the DC list could not be read'
+# PORT-PLAN C2e: with DC enumeration failing, each section that took the unscoped host names gives the
+# domain whose DCs could not be enumerated its own population row with the cause, says no DC was
+# enumerated, and passes nothing. Declared population: the seven per-DC sections and their labels.
+$c2e3 = [ordered]@{
+    'Replication Health'       = 'Replication health (population): contoso.com'
+    'SYSVOL / DFSR'            = 'SYSVOL / NETLOGON shares (population): contoso.com'
+    'DFS Replication Events'   = 'DFS Replication events (population): contoso.com'
+    'DC System'                = 'Patch level (population): contoso.com'
+    'Restore Integrity'        = 'USN rollback marker (population): contoso.com'
+    'Directory Service Events' = 'Directory Service events (population): contoso.com'
+    'Time Hierarchy'           = 'Time hierarchy (population): contoso.com'
+}
+foreach ($sec in @($c2e3.Keys)) {
+    Check (@($findings3 | Where-Object { $_.Section -eq $sec -and $_.Item -eq $c2e3[$sec] -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'could not be enumerated' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) ("Failure mode C2e: '{0}' gives the domain its own Not Assessed row with the cause" -f $sec)
+}
+Check (@($findings3 | Where-Object { @($c2e3.Keys) -contains $_.Section -and $_.Status -eq 'Pass' }).Count -eq 0) 'Failure mode C2e: none of the seven sections passes anything when no DC was enumerated'
+$backlog3 = @($findings3 | Where-Object { $_.Section -eq 'SYSVOL Backlog' })
+Check ($backlog3.Count -eq 1 -and $backlog3[0].Item -eq 'SYSVOL backlog (population): contoso.com' -and $backlog3[0].Status -eq 'Not Assessed' -and $backlog3[0].Scope -eq 'contoso.com' -and $backlog3[0].Detail -match 'could not be enumerated' -and $backlog3[0].Detail -match 'ADWS unreachable') ("Failure mode C2e review: the SYSVOL backlog gives the domain whose DCs could not be listed one Not Assessed row with the cause, and measures nothing ({0} rows)" -f $backlog3.Count)
+Check (@($findings3 | Where-Object { $_.Section -eq 'Backup Status' -and $_.Status -eq 'Pass' }).Count -eq 0 -and @($findings3 | Where-Object { $_.Section -eq 'Port Reachability' -and $_.Status -eq 'Pass' }).Count -eq 0) 'Failure mode C2e: Backup and the port matrix pass nothing'
 # C2: the same for DcDisk. With no DC there is nothing to read; the section must say so, name
 # the enumeration failure, give the domain whose inventory failed its own row, and pass nothing.
 $disk3 = @($findings3 | Where-Object { $_.Section -eq 'DC Disk Space' })
