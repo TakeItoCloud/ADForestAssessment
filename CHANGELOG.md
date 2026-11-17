@@ -10,6 +10,246 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added - 2026-11-17 (Inventory depth: topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration, tool v1.32.0)
+
+**PORT-PLAN C15.** The AdAssessment26 catalogue rows INV-001, INV-006..INV-012 and INV-015, built into the
+existing `Forest` (`Topology Inventory`), `Trusts` (`Trust Inventory`), `Identity` (`Object Counts`,
+`Group Inventory`), `StaleObjects` (`Stale Objects`), `Gpo` (`GPO Directory Inventory`), `DsEvents`
+(`Event Inventory`) and `TimeHierarchy` (`Time Configuration`) sections. No new `-Sections` value. The
+catalogue grades none of these rows (Kind Inventory, decision D7): every row is `Info` when it was read
+and `Not Assessed` with its cause when it was not, never `Pass`, `Warning` or `Fail`, so none carries a
+recommendation and no recommendation entry was added. The reference repository has code for the
+topology and trust reads only; the other rules come from its catalogue, PORT-PLAN and SPEC text.
+
+**This has run only against stubs.** No directory object, event log or registry value was read by this
+code from a real forest: every answer it was tested on is a stub in the shape the cmdlet or the CIM
+method returns. Not verified (PORT-PLAN C15a, with the first real run, C17): the error texts
+`Get-WinEvent` raises for "no events" and for a missing log (tool patterns; anything else is `Not
+Assessed`); whether ADWS returns more than 1500 `member` values; the property names `Get-ADObject`
+returns for the trust, gPLink and WMI filter attributes; the `gPCWQLFilter` format and the `cn` of an
+`msWMI-Som` object; the registry type of W32Time `Type` and `NtpServer`; the cost of the count reads on
+a large domain; `-ResultSetSize` on `Get-ADObject`; how `Get-WinEvent -ComputerName` answers an
+account outside Event Log Readers on a DC, for the filtered read and for the one-event access check
+(C15d).
+
+- **One directory seam, one config table.** Every read goes through `Get-AdfaInventoryDirectoryRaw`:
+  `Get-ADObject -Server <domain>`, listed properties only (a wildcard is refused before anything is sent),
+  `-ResultSetSize MaxObjects+1` so a capped read is `Capped`, a read that throws part-way is not used,
+  and a counted property (`member`) keeps only its number of values. The versioned `Inventory` table
+  holds the caps, the MS-ADTS names, the filters, the logs and levels, and the W32Time keys; the
+  `-ConfigOverridePath` key `Inventory` sets `MaxObjects` (1-1000000), `NameListCap` (0-1000),
+  `EventMaxEvents` (1-100000) and `EventGroupCap` (1-1000) only, through `Merge-AdfaSpecConfig`.
+  "Seventeen sections can be named."
+- **Topology Inventory (INV-001, INV-007).** Forest and domain functional levels from
+  `msDS-Behavior-Version` (CN=Partitions and each domain head), named as MS-ADTS names them; 8, 9, a value
+  that is not a whole number, or one not returned is `Not Assessed` (MS-ADTS says an absent value is 0,
+  but a read that cannot see the attribute looks the same). The five FSMO holders from `fSMORoleOwner`
+  on the five role objects, the holder in a column; a value naming a deleted NTDS Settings object
+  (`DEL:`) is `Not Assessed`. The UPN suffixes of CN=Partitions, each domain's
+  `msDS-AllowedDNSSuffixes`, each DC's DNS suffix against its domain (Disjoint Yes, No or Unknown, never
+  graded) with a population row per scoped domain, and the runner DC from the rootDSE `dnsHostName`.
+- **Trust Inventory (INV-006).** The `trustedDomain` objects one level under CN=System of every scoped
+  domain, read from that domain with six listed attributes. `trustAttributes` by the 13 names of
+  MS-ADTS 6.1.6.7.9 (read unsigned; an unnamed bit kept as "unknown 0x.."); direction and type by name
+  (0 Disabled, 5 AAD, others "(no published name)"); transitivity as NON_TRANSITIVE set or clear;
+  QUARANTINED_DOMAIN, TREAT_AS_EXTERNAL and PIM_TRUST as the SID filtering flags; CROSS_ORGANIZATION by
+  its raw name (Learn does not call it selective authentication); TGT delegation from the MS-KILE rule.
+  A failed or capped read is `Not Assessed`, never "0 trusts". The trust health rows are unchanged and
+  still read `Get-ADTrust -Properties *` (C4b).
+- **Object Counts and Group Inventory (INV-008, INV-010).** Thirteen counts per domain from seven capped
+  reads that are not the full export: users and computers split enabled/disabled on ACCOUNTDISABLE,
+  groups split security/distribution on 0x80000000, contacts, OUs, gMSA, sMSA (computers exclude both
+  managed account classes). A failed or capped read, or a split with any unreadable flag, is `Not
+  Assessed`. Groups by scope and type, empty groups (names in a column; primaryGroupID members are not
+  counted, and the row says so), direct member counts (1500 values or more, the MaxValRange default, is
+  "not counted exactly"), and one row per group in `csv\Groups_<domain>.csv`, each with `ListComplete`
+  ("No: ..." on every row of a read that reached its cap, which writes at most MaxObjects rows). **Fixed:** a failed user
+  or computer export was summarised in `Identity Inventory` as 0 objects with status `Info`; it is now
+  `Not Assessed` with the cause. The export itself is unchanged (C4b).
+- **Stale disabled objects (INV-009).** `Stale disabled users` and `Stale disabled computers` per domain in
+  `Stale Objects`: ACCOUNTDISABLE set, `lastLogonTimestamp` at or before `-StaleDays` or none and created
+  before it, from the same listed, capped read as the C14 rows, against the disabled accounts counted
+  first as the declared population; the sync interval is stated. `Info`, names in a column only.
+- **GPO Directory Inventory (INV-011).** From the directory, without the GroupPolicy module: each GPO's
+  status flags (labels from the Gpo table, "unknown" otherwise), WMI filter (the GUID in `gPCWQLFilter`
+  matched to an `msWMI-Som` object under CN=System) and links; the `gPLink` entries of the domain head,
+  its OUs, every site, and the domain head and OUs of every other scoped domain that link one of the
+  domain's GPOs (options 0x1 disabled and 0x2 enforced counted, an entry that cannot be parsed kept,
+  `gPOptions` raw); a link is credited to a GPO by its GUID and the domain named in its GPC DN. Linked and
+  unlinked GPOs per domain, counting as linking only a SOM with a link that was read. A GPO whose links
+  could not be read is never called unlinked, and a GPO is called unlinked only when the SOMs of every
+  domain of the forest were read; otherwise it is "no link found" and the summary is `Not Assessed`.
+  The GroupPolicy-module rows are unchanged.
+- **Event Inventory (INV-012).** On every DC of every scoped domain, the System, Directory Service, DFS
+  Replication, DNS Server and File Replication Service logs read with `Get-WinEvent -FilterHashtable`
+  (Level 1, 2, 3; StartTime `-EventLookbackDays`) and `-MaxEvents 2000` (a tool default), grouped by
+  event ID, worst level first, at most 50 groups per log (a tool default). A missing log is `Info` "log
+  absent"; a count at the bound or over a log that does not reach back is a floor, on the log row and on
+  every group row; none found over such a log is `Not Assessed`; none found is taken only after a
+  one-event `-LogName -MaxEvents 1` read of the log succeeds; a refusal, a DC classified unreachable or
+  silent on RPC 135, and any other error are each their own `Not Assessed` cause. No event is graded.
+- **Time Configuration (INV-015).** Each DC's W32Time `Type` and `NtpServer` (`W32Time\Parameters`) and
+  `AnnounceFlags` (`W32Time\Config`) through the shared CIM transport loop, whose allow-list gains
+  `Get-AdfaDcW32TimeRaw`, using the StdRegProv `GetStringValue` and `GetDWORDValue` methods already on the
+  CIM allow-list - no new CIM method. Not set, refused, another type and not answered are each named.
+  The Group Policy area that overrides these values is not read, and each row says so. Not graded.
+- **Read-only guard.** A new AST guard in the tests fails on an event log write or clear
+  (`Clear-/Limit-/Remove-/Write-/New-EventLog`, `wevtutil cl/sl/im`), a GroupPolicy write
+  (`New-/Set-/Remove-/Copy-/Import-/Restore-/Backup-GP*`, `Rename-GPO`), a `.SaveChanges()` call, an
+  StdRegProv method outside the Get ones, and, in the C15 functions, any `Set-/New-/Remove-` command,
+  `Invoke-CimMethod`, a w32tm string and a `*` property list; 17 injected cases each make it fail.
+- **Tests.** A new Describe (160 tests with the review fixes): normal, empty, unreachable, access denied, timed out, capped and
+  mixed data per family, the config override (valid and every malformed shape), the seams, two DCs in
+  every per-DC loop, and the wiring read from the parsed script. The smoke harness asserts every new
+  section in the single-domain, three-domain, failing-collector and unreadable-forest passes, with stubs
+  for `Get-WinEvent`, the inventory directory reads, the disabled-account reads, the rootDSE and the
+  W32Time registry values in the shapes the cmdlets return.
+- **Pins moved** because behaviour legitimately changed: the version (1.31.0 to 1.32.0) in every
+  Describe and the validation harness; the override key order and "Sixteen" to "Seventeen" sections; the
+  shared transport loop's allow-list (adds `Get-AdfaDcW32TimeRaw`); the CIM session count (4 to 5: the
+  W32Time seam opens and closes one); the `-Properties` argument count (27 to 38) and assignment count
+  (22 to 23), each new one a non-secret list; the smoke harness's stale-read counts are unchanged
+  because the disabled reads are recorded apart.
+
+Mutations (each a single change to the new code on a scratch copy of the repository, the C15 tests run,
+the file restored and checked by SHA-256; every one killed):
+
+| Id | Kind | Mutation | Tests failed | Restored (SHA-256) |
+| --- | --- | --- | --- | --- |
+| M1 | wrong verdict direction | Disjoint Yes/No swapped in Get-AdfaDnsSuffixRows | 1 | yes |
+| M2 | Not Assessed turned into Info | failed trust read population row Info instead of Not Assessed | 4 | yes |
+| M3 | unreachable DC read as reachable | W32Time: no transport answered, read attempted anyway | 1 | yes |
+| M4 | unreachable DC read as reachable | Events: RPC 135 silent, logs read anyway | 1 | yes |
+| M5 | access denied reported as unreachable | W32Time refusal worded Unreachable | 2 | yes |
+| M6 | access denied reported as read failed | Event log refusal not told apart | 1 | yes |
+| M7 | override validation removed | EventMaxEvents lower bound 1 -> 0 | 1 | yes |
+| M8 | override validation removed | Inventory key unregistered from ConfigOverrideSections | 2 | yes |
+| M9 | wiring dropped | Event Inventory not put in sectionData | 1 | yes |
+| M10 | wiring dropped | Topology inventory given the built-in table, not the override | 1 | yes |
+| M11 | threshold off by one | member ceiling -ge -> -gt | 1 | yes |
+| M12 | threshold off by one | stale disabled cutoff -le -> -lt | 1 | yes |
+| M13 | per-DC loop handles only the first DC | Get-AdfaEventInventory | 2 | yes |
+| M14 | per-DC loop handles only the first DC | Get-AdfaW32TimeInventory | 2 | yes |
+| M15 | Not Assessed turned into Info | a failed count read reported Info | 2 | yes |
+| M16 | Not Assessed turned into a count | a capped read treated as complete | 2 | yes |
+| M17 | value dropped | unknown trustAttributes bits dropped | 1 | yes |
+| M18 | read-only guard removed | wildcard property list no longer refused in the seam | 1 | yes |
+| M19 | bound removed | Get-WinEvent without -MaxEvents | 2 | yes |
+| M20 | Not Assessed turned into a value | msDS-Behavior-Version not returned read as level 0 | 1 | yes |
+| M21 | Not Assessed turned into a value | GPO links unknown treated as known (unlinked) | 1 | yes |
+| M22 | Not Assessed turned into Info | no events over a log that does not reach back reported Info 0 | 1 | yes |
+| M23 | wrong verdict direction | TGT delegation: disable conditions ignored | 1 | yes |
+
+**Found by an independent review of the diff before commit, and fixed in it.** Each behaviour fix has a
+test that failed against the tree as the review found it (run on a scratch copy: 24 of the C15 tests
+red there) and passes now; each test that could not fail was rewritten until the reviewer's mutation
+fails it (table below).
+1. A `gPLink` options field too large for Int64 (`;99999999999999999999`) or written with a non-ASCII
+   digit (U+0663, which .NET's `\d` matches) made `[int64]` throw out of the Gpo section, and nothing
+   on the way up caught it: the run ended with no report. The options are now matched as `[0-9]+` and
+   parsed with `[int64]::TryParse` (invariant culture); an entry that does not parse is kept as unparsed,
+   as other bad entries already were. An entry whose DN names no domain is unparsed too.
+2. A GPO linked only from an OU or domain head of another domain was reported `Info` "with no link", in
+   a run scoped to one domain and with `-AllDomains` alike. Learn: a GPO "is a per-domain object that can
+   be linked anywhere in the forest". Every scoped domain is now read before any is matched, so a link
+   from another scoped domain's SOM is credited to the GPO its DN names (by GUID and the domain in the
+   GPC DN, since the two default GPOs have the same GUID in every domain), and "unlinked" is stated only
+   when the SOMs of every domain in `Get-ADForest`'s `Domains` were read. Otherwise a GPO with none found
+   has Links '' and is counted in `NoLinkFound`, the summary is `Not Assessed` and names the cause (out of
+   scope, a failed read, or the domain list unknown), and link counts are a floor. Reading the domains
+   outside the scope is left out (C15d). The review raised this three times (its findings 2, 5 and 15).
+3. A SOM whose `gPLink` held no link that could be read (a blank value) was counted among the "linking"
+   SOMs. `Soms` now counts only SOMs with a link read; the others are `SomsWithNoLink`, and their row says
+   so.
+4. `Get-WinEvent -FilterHashtable` answers an account that may not read a log with `NoMatchingEventsFound`
+   (measured by the review under Windows PowerShell 5.1 on a local Security log; not published), so a
+   refusal was read as "no events" and the row blamed the log's reach back. A filtered read that finds
+   nothing is now followed by one `-LogName <log> -MaxEvents 1` read (a read, bounded): a refusal there is
+   `Access denied`, another error is kept and quoted, and only an event or a second "no events" sets
+   `NoEvents`. Not measured remotely against a DC (C15d).
+5. The `Event group` rows of a read cut at `EventMaxEvents`, or of a log that does not reach back, showed
+   Count and First as exact. Each now has `PartialRead` "Yes", Count "at least n", and a Detail that says
+   First is the earliest event read.
+6. `csv\Groups_<domain>.csv` was written from a capped read (MaxObjects+1 records) with nothing saying
+   the list was cut. It now holds at most MaxObjects rows, and every row carries `ListComplete` ("Yes", or
+   "No: the read reached its cap ...").
+7. Tests that could not fail, now able to: a failed site `gPLink` read with a GPO linked only at a site
+   (mutation V); TGT delegation from QUARANTINED_DOMAIN alone, trustAttributes 0x24 (A, MS-KILE 3.3.5.7.5);
+   disabled and enabled link counts (S); a site that links only another domain's GPO left out (D); a
+   mixed-case DC host name against its domain (I); a W32Time key absent, StdRegProv 2, as "(not set)" (R);
+   a refusal wrapped as an InnerException (M).
+
+Tests changed because behaviour legitimately changed: the INV-011 "normal data" test passes
+`-ForestDomains` (a one-domain forest), since without the forest's domain list no GPO is called
+unlinked; the event seam test's `Get-WinEvent` stub takes `-LogName` and answers the one-event access
+check, since "no events" now needs it; the AST test "bounds every event read" now finds two
+`Get-WinEvent` calls and checks that each is splatted from a hashtable holding `MaxEvents`; the smoke
+harness's event read count leaves out the access checks and asserts them apart, and its directory stub
+gives each domain its own DNs.
+
+Review mutations (single changes to the fixed code on a scratch copy, the C15 tests run, the file
+restored byte for byte and its SHA-256 checked):
+
+| Id | Finding | Mutation | Tests failed | Restored (SHA-256) |
+| --- | --- | --- | --- | --- |
+| V | 8 | `$linksKnown` ignores the site read | 1 | yes |
+| A | 9 | QUARANTINED_DOMAIN dropped from the TGT delegation disable list | 1 | yes |
+| S | 10 | every link counted as enabled | 1 | yes |
+| D | 11 | a site that links none of the domain's GPOs no longer left out | 1 | yes |
+| I | 12 | DNS suffix compared with `-ceq` | 1 | yes |
+| R | 13 | W32Time KeyAbsent written "(empty)" | 1 | yes |
+| M | 14 | the InnerException walk stops after the outer exception | 1 | yes |
+| X1 | 1 | options cast with `[int64]` instead of TryParse | 1 | yes |
+| X1b | 1 | options matched with `\d` instead of `[0-9]` | 0 - equivalent: TryParse with `NumberStyles.None` refuses U+0663 too; `[0-9]` kept as the first guard | yes |
+| X2 | 2 | other forest domains treated as read | 3 | yes |
+| X3 | 3 | every SOM counted as linking | 1 | yes |
+| X4 | 4 | a refused access check not marked AccessDenied | 2 | yes |
+| X5 | 6 | group rows never marked partial | 2 | yes |
+| X6 | 7 | a capped group read not marked or trimmed | 1 | yes |
+| X7 | 2 | a link credited by GUID alone | 2 | yes |
+| X8 | 2 | the collector passes no other domain's SOM read | 1 | yes |
+| X9 | 2 | the GPOs' domain not taken from their own DNs | 1 | yes |
+
+The smoke harness's three-domain pass also caught that the domain DN must come from the GPOs' own DNs:
+its `Get-ADDomain` stub answers `DC=contoso,DC=com` for every domain, so matching on that DN credited
+contoso's links to north's GPOs. The domain a GPO lives in is now taken from its `groupPolicyContainer`
+DN when every container names the same one (else `Get-ADDomain`'s DN, else the DNS name).
+
+Sources, each read on Learn on 2026-11-17:
+- MS-ADTS msDS-Behavior-Version, forest and domain:
+  https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/564dc969-6db3-49b3-891a-f2f8d0a68a7f and
+  https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/d7422d35-448a-451a-8846-6a7def0044df
+- FSMO role objects and invalid `fSMORoleOwner`:
+  https://learn.microsoft.com/troubleshoot/windows-server/active-directory/fsmo-transfer-seizure-process and
+  https://learn.microsoft.com/troubleshoot/windows-server/active-directory/error-seize-rid-master-role-with-ntdsutil
+- trustAttributes, trustType, trustDirection, TGT delegation:
+  https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646fdb51a3c,
+  https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/36565693-b5e4-4f37-b0a8-c1b12138e18e,
+  https://learn.microsoft.com/openspecs/windows_protocols/ms-lsad/f28f42b7-173c-4cda-9809-3fe4a5213ab3,
+  https://learn.microsoft.com/openspecs/windows_protocols/ms-kile/bac4dc69-352d-416c-a9f4-730b81ababb3;
+  Get-ADTrust (lists no output property names):
+  https://learn.microsoft.com/powershell/module/activedirectory/get-adtrust?view=windowsserver2025-ps
+- Suffixes and disjoint namespace: https://learn.microsoft.com/windows/win32/adschema/a-upnsuffixes,
+  https://learn.microsoft.com/windows/win32/adschema/a-msds-alloweddnssuffixes,
+  https://learn.microsoft.com/windows-server/identity/ad-ds/plan/disjoint-namespace,
+  https://learn.microsoft.com/troubleshoot/windows-server/active-directory/event-ids-5788-5789
+- Counts and groups:
+  https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties,
+  https://learn.microsoft.com/windows/win32/adschema/a-grouptype,
+  https://learn.microsoft.com/troubleshoot/windows-server/active-directory/view-set-ldap-policy-using-ntdsutil
+- Stale: https://learn.microsoft.com/windows/win32/adschema/a-lastlogontimestamp and
+  https://learn.microsoft.com/windows/win32/adschema/a-msds-logontimesyncinterval (no default published)
+- GPOs: https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-policy/group-policy-scope,
+  https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-policy/group-policy-management-console
+  ("A GPO is a per-domain object that can be linked anywhere in the forest"; added by the review fix),
+  https://learn.microsoft.com/windows/win32/adschema/a-gpcwqlfilter,
+  https://learn.microsoft.com/windows/win32/adschema/c-mswmi-som
+- Events: https://learn.microsoft.com/powershell/module/microsoft.powershell.diagnostics/get-winevent?view=powershell-5.1,
+  https://learn.microsoft.com/powershell/scripting/samples/creating-get-winevent-queries-with-filterhashtable,
+  https://learn.microsoft.com/troubleshoot/windows-server/application-management/move-event-viewer-log-files
+- W32Time: https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings and
+  https://learn.microsoft.com/troubleshoot/windows-server/active-directory/configure-authoritative-time-server
+
 ### Added — 2026-11-17 (Reachability classes, subnets and clients without a site, clock offset against the forest root PDC, stale enabled objects, SYSVOL replication engine, tool v1.31.0)
 
 **PORT-PLAN C14.** The AdAssessment26 catalogue rows REACH-001..002, SITE-001, TIME-001,

@@ -16,7 +16,9 @@
     timeout/retry wrapper, StrictMode, honest "Not Assessed" status, CSV-per-topic + HTML)
     and adds full-forest coverage:
 
-        - Forest / domain functional levels and FSMO roles
+        - Forest / domain functional levels and FSMO roles, and an inventory of the raw levels
+          (msDS-Behavior-Version), the five FSMO holders (fSMORoleOwner), UPN and allowed DNS
+          suffixes, each DC's DNS suffix (disjoint namespace, not graded) and the runner DC
         - Domain controller inventory (OS / GC / site / IP), and each DC's DNS client settings:
           the DNS server list of its enabled adapters (Win32_NetworkAdapterConfiguration, remote
           CIM, needs local admin on the DC), with a single DNS server flagged where more than one
@@ -38,6 +40,8 @@
           transfer. Get-DnsServer* reads only                              [DnsServer optional]
         - SYSVOL / DFSR replication migration state                          [DFSR optional]
         - GPO inventory (linked / unlinked)                                  [GroupPolicy optional]
+        - GPO directory inventory, without the GroupPolicy module: status flags, WMI filter and
+          links of each GPO, links per site, domain and OU (inventory only)
         - GPO version consistency, per scoped domain: each GPO's version in the directory
           (versionNumber) against the version in its GPT.INI in SYSVOL, user and computer
           halves, both read from the domain's PDC emulator; GPOs whose SYSVOL folder or GPT.INI
@@ -61,7 +65,10 @@
           historic SIDs came from. Directory reads only; sIDHistory is never written. An empty
           answer is "none visible to this account", because a read returns no attribute the
           account may not see
-        - Stale user / computer objects
+        - Stale user / computer objects, and stale disabled ones (inventory only)
+        - Object counts per domain (users, computers, groups, contacts, OUs, gMSA, sMSA; enabled
+          and disabled) and a group inventory (scope, type, empty groups, direct member counts),
+          from capped reads with listed properties
         - Full user & computer export with ALL populated attributes (CSV; HTML shows a summary),
           except the attributes that hold a LAPS password, which are left out of the computer
           export since v1.21.0. The export still ASKS the directory for every attribute
@@ -125,7 +132,10 @@
           Info, never "no certificate": Microsoft's Domain Controller Authentication and
           Kerberos Authentication templates do not publish to the directory. The DC's own
           certificate stores are not read (PORT-PLAN C5a)
-        - Directory backup status (repadmin /showbackup), time synchronization (w32tm)
+        - Directory backup status (repadmin /showbackup), time synchronization (w32tm), and each
+          DC's W32Time Type, NtpServer and AnnounceFlags from the registry (inventory only)
+        - Event inventory per DC: Critical, Error and Warning events of five logs, bounded by a
+          time window and a per-log cap, grouped by event ID (inventory only)
         - DNS depth: critical SRV records (secure dynamic updates moved to DNS health in v1.30.0)
         - Redundancy: DC count, GPO central store, duplicate SPNs
         - RECOVERY & CONSISTENCY (post-incident, e.g. after a restore-from-backup):
@@ -445,9 +455,58 @@
     Warning (Fail by override); every writable DC on DFSR is a Pass; an engine not known is Not
     Assessed. msDFSR-Flags is quoted as corroboration only.
 
+    Inventory depth (PORT-PLAN C15). Every row below is Info when it was read and Not Assessed with
+    its cause (unreachable, access denied, timed out, cap reached, not set, not returned) when it was
+    not - never Pass, Warning or Fail, and a count that could not be read is never 0. Each read names
+    its properties (never every property) and has a cap.
+
+    Forest also gives a "Topology Inventory" section: the forest and domain functional levels
+    (msDS-Behavior-Version, named as MS-ADTS names them; 8, 9 or a value not returned is Not
+    Assessed), the five FSMO holders from fSMORoleOwner (a value naming a deleted NTDS Settings
+    object is Not Assessed), the UPN suffixes of CN=Partitions, each domain's msDS-AllowedDNSSuffixes,
+    each DC's DNS suffix against its domain (Disjoint Yes or No; Microsoft calls a disjoint namespace
+    usable with caution) and the runner DC (the rootDSE dnsHostName that answered the run).
+
+    Trusts also gives a "Trust Inventory" section: every trustedDomain object of every scoped
+    domain, read from that domain, with trustAttributes decoded by its MS-ADTS names (a bit with no
+    name kept as "unknown 0x.."), direction and type with their names, transitivity, the SID filtering
+    flags, CROSS_ORGANIZATION by its raw name, and TGT delegation from the MS-KILE rule.
+
+    Identity also gives "Object Counts" (users, computers and groups, each split enabled and
+    disabled or security and distribution, contacts, OUs, gMSA and sMSA, from capped reads that are
+    not the full export) and "Group Inventory" (groups by scope and type, empty groups, direct
+    member counts - a group of 1500 values or more, the MaxValRange default, is not counted exactly;
+    one row per group in csv\Groups_<domain>.csv, ListComplete "No" on every row of a read that
+    reached its cap). A failed user or computer export is now Not
+    Assessed in "Identity Inventory", not 0.
+
+    StaleObjects also gives "Stale disabled users" and "Stale disabled computers" per domain:
+    disabled accounts with no logon recorded for -StaleDays days, counted and named, not graded.
+
+    Gpo also gives a "GPO Directory Inventory" section from the directory, without the GroupPolicy
+    module: each GPO's status flags, WMI filter (gPCWQLFilter matched to its msWMI-Som object) and
+    links, the links of every site, domain and OU (gPLink options disabled and enforced; gPOptions
+    raw), and per domain the linked and unlinked GPOs. A GPO whose links could not be read is never
+    called unlinked. A GPO can be linked from any domain of the forest: the links of every scoped
+    domain are matched against every other's GPOs, and "unlinked" is stated only when every forest
+    domain was read (-AllDomains); otherwise a GPO with none found is "no link found", Not Assessed.
+
+    DsEvents also gives an "Event Inventory" section: on every DC, the System, Directory Service,
+    DFS Replication, DNS Server and File Replication Service logs read by level (Critical, Error,
+    Warning) over -EventLookbackDays with at most 2000 events per log (a tool default), grouped by
+    event ID (at most 50 groups per log, a tool default). A log that does not exist is Info "log
+    absent"; a count read at the bound or over a log that does not reach back is a floor, on the log
+    row and on each event group row. "No events" is taken only after a one-event read of the log
+    (-LogName -MaxEvents 1) succeeds, because the filtered read answers a refusal as "no events".
+
+    TimeHierarchy also gives a "Time Configuration" section: each DC's W32Time Type and NtpServer
+    (W32Time\Parameters) and AnnounceFlags (W32Time\Config), read from the registry with the two
+    StdRegProv Get methods the tool already uses (local Administrators on the DC). Not graded. The
+    Group Policy area that overrides these values is not read, and each row says so.
+
 .PARAMETER ConfigOverridePath
     Path to a JSON file that replaces built-in config tables, one top-level key per section.
-    Sixteen sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
+    Seventeen sections can be named. DcDisk, whose keys are WarnBelowPercent, FailBelowPercent,
     WarnBelowFreeGB, FailBelowFreeGB, WsmanPort and RpcPort:
 
         { "DcDisk": { "WarnBelowPercent": 25, "FailBelowPercent": 15 } }
@@ -577,6 +636,15 @@
     is a tool default). The DN templates and the state names are refused:
 
         { "SysvolEngine": { "FrsStatus": "Fail" } }
+
+    And Inventory, used by the inventory rows of the Identity, Forest, Trusts, Gpo, DsEvents and
+    TimeHierarchy sections, whose keys are MaxObjects (objects per directory read, 1 to 1000000),
+    NameListCap (names listed per row, 0 to 1000), EventMaxEvents (events read per log and DC, 1 to
+    100000) and EventGroupCap (event ID groups listed per log and DC, 1 to 1000). All are tool
+    defaults, not Microsoft values. The logs, the levels, the filters, the flag tables and labels,
+    the registry keys and the patterns are refused; the event window is -EventLookbackDays:
+
+        { "Inventory": { "EventMaxEvents": 5000 } }
 
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
@@ -783,7 +851,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl", "Privileged", "DcDiag", "Dns", "Reach", "SiteCoverage", "ClockSkew", "Stale" and "SysvolEngine" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl", "Privileged", "DcDiag", "Dns", "Reach", "SiteCoverage", "ClockSkew", "Stale", "SysvolEngine" and "Inventory" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -817,7 +885,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.31.0'
+    Version                 = '1.32.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -2917,6 +2985,169 @@ $script:Config = @{
         OverrideRefused     = 'The DN templates, the state names and the patterns cannot be set from a file.'
         OverrideSpec        = [ordered]@{
             FrsStatus = @{ Kind = 'Status'; Allowed = @('Warning', 'Fail') }
+        }
+    }
+    # --- Inventory depth (PORT-PLAN C15; catalogue INV-001, INV-006..INV-012, INV-015) -------------
+    # Built into the existing sections Forest, Trusts, Identity, StaleObjects (which reads the Stale
+    # table), Gpo, DsEvents and TimeHierarchy. Every row is Info when collected and Not Assessed with
+    # its cause when not: the catalogue grades none of these rows (Kind Inventory, decision D7), so no
+    # row here is Pass, Warning or Fail. Every URL below was read on 2026-11-17.
+    #
+    # Functional levels (INV-001): msDS-Behavior-Version on CN=Partitions,CN=Configuration (forest) and
+    #   on the domain NC head (domain). 0 DS_BEHAVIOR_WIN2000, 1 WIN2003_WITH_MIXED_DOMAINS, 2 WIN2003,
+    #   3 WIN2008, 4 WIN2008R2, 5 WIN2012, 6 WIN2012R2, 7 WIN2016, 10 WIN2025; no 8 or 9 is defined.
+    #   "The absence of the msDS-Behavior-Version attribute on a crossRefContainer object is equivalent
+    #   to the msDS-Behavior-Version attribute on that object having the value zero" (and the same for
+    #   a domain NC root object).
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/564dc969-6db3-49b3-891a-f2f8d0a68a7f
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/d7422d35-448a-451a-8846-6a7def0044df
+    # FSMO holders (INV-001): fSMORoleOwner on the domain head (PDC emulator), CN=RID Manager$,CN=System
+    #   (RID master), CN=Infrastructure (infrastructure master), CN=Partitions,CN=Configuration (domain
+    #   naming master) and CN=Schema,CN=Configuration (schema master); "written with the Distinguished
+    #   Name (DN) of the NTDS Settings object" of the holder. A value naming a deleted NTDS Settings
+    #   object ("CN=NTDS Settings DEL:") is documented as invalid.
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/fsmo-transfer-seizure-process
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/error-seize-rid-master-role-with-ntdsutil
+    # Runner DC (INV-001): the dnsHostName rootDSE returns to this run - the DC that answered.
+    # Trusts (INV-006): the trustedDomain objects under CN=System of each scoped domain, listed
+    #   attributes only. trustAttributes bits from MS-ADTS 6.1.6.7.9; a bit not in the table is kept as
+    #   "unknown 0x..", never dropped. trustType 1..5 (MS-ADTS 6.1.6.7.15; 5 AAD only with the listed
+    #   updates). trustDirection is a bitmap: 1 inbound, 2 outbound, 3 both, 0 "the trust is said to be
+    #   disabled" (MS-LSAD). TGT delegation is derived from the MS-KILE rule: enabled by WITHIN_FOREST or
+    #   CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION, disabled by CROSS_ORGANIZATION_NO_TGT_DELEGATION or
+    #   QUARANTINED_DOMAIN (and by a source ticket without ok-as-delegate, which a trust object cannot
+    #   show). NOT PUBLISHED: that CROSS_ORGANIZATION (0x10) is "selective authentication"; the raw flag
+    #   name is reported.
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646fdb51a3c
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/36565693-b5e4-4f37-b0a8-c1b12138e18e
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-lsad/f28f42b7-173c-4cda-9809-3fe4a5213ab3
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-kile/bac4dc69-352d-416c-a9f4-730b81ababb3
+    # UPN and DNS suffixes (INV-007): uPNSuffixes on CN=Partitions (multi-valued; what an absent value
+    #   means is not published, so it is reported as "attribute absent" after a read that succeeded);
+    #   msDS-AllowedDNSSuffixes on the domain head; disjoint is "a primary DNS suffix that does not match
+    #   the DNS name of the Active Directory domain", compared here on each DC's dNSHostName - inventory
+    #   only: "Disjoint namespace can be used with caution in some scenarios".
+    #     https://learn.microsoft.com/windows/win32/adschema/a-upnsuffixes
+    #     https://learn.microsoft.com/windows/win32/adschema/a-msds-alloweddnssuffixes
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/plan/disjoint-namespace
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/event-ids-5788-5789
+    # Object counts and groups (INV-008, INV-010): ACCOUNTDISABLE 0x2; groupType 0x2 global, 0x4 domain
+    #   local, 0x8 universal, 0x80000000 security ("If this flag is not set, then the group is a
+    #   distribution group"). MaxValRange, the most values one read of an attribute returns before
+    #   range retrieval is needed, defaults to 1500: a group returning that many member values or more
+    #   is "not counted exactly", never a low count. Members by primaryGroupID are not in member.
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties
+    #     https://learn.microsoft.com/windows/win32/adschema/a-grouptype
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/view-set-ldap-policy-using-ntdsutil
+    # GPOs (INV-011): gPLink "[<GPC DN>;<options>]" with 0x1 disabled and 0x2 enforced, on sites, domains
+    #   and OUs; gPCWQLFilter "a string that contains a GUID for the filter and a WMI namespace path";
+    #   WMI filters are msWMI-Som objects. The GPO flags labels are the Gpo table's (MS-GPOL, read
+    #   2026-11-16). NOT PUBLISHED: the gPOptions value meaning block inheritance (reported raw), the
+    #   container that holds msWMI-Som (found by class under CN=System) and the exact gPCWQLFilter
+    #   format (a GUID is taken from it by pattern - a tool pattern, not a Microsoft value).
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-policy/group-policy-scope
+    #     https://learn.microsoft.com/windows/win32/adschema/a-gpcwqlfilter
+    #     https://learn.microsoft.com/windows/win32/adschema/c-mswmi-som
+    # Events (INV-012): Get-WinEvent -FilterHashtable LogName, Level and StartTime with -MaxEvents
+    #   always passed ("The default is to return all the events"); levels 1 Critical, 2 Error,
+    #   3 Warning. The DNS Server log exists "only on DNS servers". NOT PUBLISHED: the error raised for
+    #   no matching event and for a log that does not exist (reference N57); EventNoEventsPattern is
+    #   the text this script's DsEvents section already reads plus an error id, EventNoLogPattern a
+    #   tool pattern - both tool patterns, not Microsoft values, unmeasured against a real DC (C17). Anything else is Not Assessed, never zero events. The
+    #   window is -EventLookbackDays. NOT PUBLISHED, measured by the C15 review (Windows PowerShell 5.1,
+    #   a local Security log, 2026-11-17): -FilterHashtable answers an account that may not read the
+    #   log with NoMatchingEventsFound, so "no events" is confirmed by one -LogName -MaxEvents 1 read,
+    #   which raised UnauthorizedAccessException; unmeasured remotely against a DC (PORT-PLAN C15d).
+    # GPO links across domains: "A GPO is a per-domain object that can be linked anywhere in the
+    #   forest" (read 2026-11-17), so links are matched across the scoped domains and "unlinked" needs
+    #   every forest domain read.
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-policy/group-policy-management-console
+    #     https://learn.microsoft.com/powershell/module/microsoft.powershell.diagnostics/get-winevent?view=powershell-5.1
+    #     https://learn.microsoft.com/powershell/scripting/samples/creating-get-winevent-queries-with-filterhashtable
+    #     https://learn.microsoft.com/troubleshoot/windows-server/application-management/move-event-viewer-log-files
+    # W32Time (INV-015): Type and NtpServer under SYSTEM\CurrentControlSet\Services\W32Time\Parameters,
+    #   AnnounceFlags (a DWORD) under ...\W32Time\Config; read with StdRegProv GetStringValue and
+    #   GetDWORDValue. "There's no default value for this registry entry [NtpServer] on domain
+    #   members", so NtpServer not set is the documented default. "If you use Group Policy to set the
+    #   NtpServer value ... W32Time doesn't use the NtpServer registry value": the policy area is not
+    #   read in this build (its exact subkeys are not stated on the page), so a row states the service
+    #   registry values, which may not be the effective configuration. Not graded (reference N21).
+    #     https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/configure-authoritative-time-server
+    #
+    # TOOL DEFAULTS, not Microsoft values: MaxObjects 100000 per read, NameListCap 20, EventMaxEvents
+    # 2000 per log and DC, EventGroupCap 50 event ID groups per log and DC (the reference SPEC's
+    # -EventGroupCap). -ConfigOverridePath, key "Inventory": MaxObjects (1 to 1000000), NameListCap
+    # (0 to 1000), EventMaxEvents (1 to 100000), EventGroupCap (1 to 1000). Everything else - the logs,
+    # the levels, the filters, the flag tables, the labels, the registry keys and the patterns - is
+    # refused.
+    Inventory               = @{
+        SourceUrl              = 'https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/564dc969-6db3-49b3-891a-f2f8d0a68a7f and https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646fdb51a3c and https://learn.microsoft.com/windows/win32/adschema/a-grouptype and https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-policy/group-policy-scope and https://learn.microsoft.com/powershell/module/microsoft.powershell.diagnostics/get-winevent?view=powershell-5.1 and https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings'
+        ReadDate               = '2026-11-17'
+        ThresholdSource        = 'tool defaults, not Microsoft values (caps only; inventory rows are not graded - AdAssessment26 catalogue Kind Inventory, decision D7)'
+        MaxObjects             = 100000
+        NameListCap            = 20
+        EventMaxEvents         = 2000
+        EventGroupCap          = 50
+        # Learn (view-set-ldap-policy-using-ntdsutil): MaxValRange default 1500.
+        MemberCountCeiling     = 1500
+        BehaviorVersionLabels  = @{ '0' = 'DS_BEHAVIOR_WIN2000'; '1' = 'DS_BEHAVIOR_WIN2003_WITH_MIXED_DOMAINS'; '2' = 'DS_BEHAVIOR_WIN2003'; '3' = 'DS_BEHAVIOR_WIN2008'; '4' = 'DS_BEHAVIOR_WIN2008R2'; '5' = 'DS_BEHAVIOR_WIN2012'; '6' = 'DS_BEHAVIOR_WIN2012R2'; '7' = 'DS_BEHAVIOR_WIN2016'; '10' = 'DS_BEHAVIOR_WIN2025' }
+        TrustAttributeFlags    = @(
+            @{ Bit = 0x1; Name = 'NON_TRANSITIVE' }
+            @{ Bit = 0x2; Name = 'UPLEVEL_ONLY' }
+            @{ Bit = 0x4; Name = 'QUARANTINED_DOMAIN' }
+            @{ Bit = 0x8; Name = 'FOREST_TRANSITIVE' }
+            @{ Bit = 0x10; Name = 'CROSS_ORGANIZATION' }
+            @{ Bit = 0x20; Name = 'WITHIN_FOREST' }
+            @{ Bit = 0x40; Name = 'TREAT_AS_EXTERNAL' }
+            @{ Bit = 0x80; Name = 'USES_RC4_ENCRYPTION' }
+            @{ Bit = 0x100; Name = 'TRUST_USES_AES_KEYS' }
+            @{ Bit = 0x200; Name = 'CROSS_ORGANIZATION_NO_TGT_DELEGATION' }
+            @{ Bit = 0x400; Name = 'PIM_TRUST' }
+            @{ Bit = 0x800; Name = 'CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION' }
+            @{ Bit = 0x1000; Name = 'DISABLE_AUTH_TARGET_VALIDATION' }
+        )
+        TrustDirectionLabels   = @{ '0' = 'Disabled'; '1' = 'Inbound'; '2' = 'Outbound'; '3' = 'Bidirectional' }
+        TrustTypeLabels        = @{ '1' = 'DOWNLEVEL'; '2' = 'UPLEVEL'; '3' = 'MIT'; '4' = 'DCE'; '5' = 'AAD' }
+        TrustProperties        = @('cn', 'trustPartner', 'flatName', 'trustAttributes', 'trustDirection', 'trustType')
+        AccountDisableBit      = 2
+        GroupScopeBits         = [ordered]@{ Global = 0x2; DomainLocal = 0x4; Universal = 0x8 }
+        GroupSecurityBit       = 2147483648
+        CountFilters           = [ordered]@{
+            Users     = '(&(objectCategory=person)(objectClass=user))'
+            Computers = '(&(objectCategory=computer)(!(objectClass=msDS-GroupManagedServiceAccount))(!(objectClass=msDS-ManagedServiceAccount)))'
+            Groups    = '(objectClass=group)'
+            Contacts  = '(objectClass=contact)'
+            OUs       = '(objectClass=organizationalUnit)'
+            gMSA      = '(objectClass=msDS-GroupManagedServiceAccount)'
+            sMSA      = '(objectClass=msDS-ManagedServiceAccount)'
+        }
+        GpoContainerProperties = @('displayName', 'flags', 'gPCWQLFilter', 'versionNumber')
+        SomProperties          = @('gPLink', 'gPOptions', 'objectClass')
+        WmiFilterProperties    = @('msWMI-Name')
+        # Tool pattern, not published: the first curly-braced GUID in gPCWQLFilter, and the GUID of a
+        # GPO's container in a gPLink entry.
+        GuidPattern            = '\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}'
+        EventLogs              = @('System', 'Directory Service', 'DFS Replication', 'DNS Server', 'File Replication Service')
+        EventLevels            = @(1, 2, 3)
+        EventLevelNames        = @{ '1' = 'Critical'; '2' = 'Error'; '3' = 'Warning' }
+        EventNoEventsPattern   = '(?i)No events were found|NoMatchingEventsFound'
+        EventNoLogPattern      = '(?i)There is not an event log|NoMatchingLogsFound'
+        W32TimeValues          = @(
+            @{ Id = 'Type'; Key = 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'; ValueName = 'Type'; Kind = 'String' }
+            @{ Id = 'NtpServer'; Key = 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'; ValueName = 'NtpServer'; Kind = 'String' }
+            @{ Id = 'AnnounceFlags'; Key = 'SYSTEM\CurrentControlSet\Services\W32Time\Config'; ValueName = 'AnnounceFlags'; Kind = 'Dword' }
+        )
+        WsmanPort              = 5985
+        RpcPort                = 135
+        OverrideLabel          = 'Inventory'
+        OverrideExample        = '{ "MaxObjects": 50000 }'
+        OverrideRefused        = 'The logs, the levels, the filters, the property lists, the flag tables and labels, the registry keys, the patterns and the ports cannot be set from a file; the event window is -EventLookbackDays.'
+        OverrideSpec           = [ordered]@{
+            MaxObjects     = @{ Kind = 'Int'; Min = 1; Max = 1000000; Unit = 'objects per read' }
+            NameListCap    = @{ Kind = 'Int'; Min = 0; Max = 1000; Unit = 'names listed per row' }
+            EventMaxEvents = @{ Kind = 'Int'; Min = 1; Max = 100000; Unit = 'events per log and DC' }
+            EventGroupCap  = @{ Kind = 'Int'; Min = 1; Max = 1000; Unit = 'event ID groups per log and DC' }
         }
     }
     # --- DNS: zone dynamic update, aging and scavenging, DC locator SRV records, DC A records,
@@ -8604,6 +8835,14 @@ function Get-AdfaStaleObject {
     $rows += Get-AdfaStaleCountVerdict -DomainName $DomainName -Kind 'Computer' -Raw $computers -Interval $interval -StaleDays $StaleDays -Now $nowUtc -Population $computerPopulation -Config $Config
     $passwords = Get-AdfaStaleRaw -DomainName $DomainName -Kind 'Password' -CutoffUtc ($nowUtc.AddDays(-1 * [int]$Config['PasswordAgeDays'])) -MaxObjects $maxObjects -AdParams $AdParams
     $rows += Get-AdfaPasswordAgeVerdict -DomainName $DomainName -Raw $passwords -Now $nowUtc -Population $userPopulation -Config $Config
+    # PORT-PLAN C15 (INV-009): stale DISABLED users and computers, inventory only - the same listed,
+    # capped read with ACCOUNTDISABLE set, against the disabled accounts as the declared population.
+    $disabledUserPopulation = Get-AdfaStalePopulationRaw -DomainName $DomainName -Kind 'DisabledUser' -MaxObjects $maxObjects -AdParams $AdParams
+    $disabledUsers = Get-AdfaStaleRaw -DomainName $DomainName -Kind 'DisabledUser' -CutoffUtc $cutoff -MaxObjects $maxObjects -AdParams $AdParams
+    $rows += Get-AdfaStaleDisabledVerdict -DomainName $DomainName -Kind 'User' -Raw $disabledUsers -Interval $interval -StaleDays $StaleDays -Now $nowUtc -Population $disabledUserPopulation -Config $Config
+    $disabledComputerPopulation = Get-AdfaStalePopulationRaw -DomainName $DomainName -Kind 'DisabledComputer' -MaxObjects $maxObjects -AdParams $AdParams
+    $disabledComputers = Get-AdfaStaleRaw -DomainName $DomainName -Kind 'DisabledComputer' -CutoffUtc $cutoff -MaxObjects $maxObjects -AdParams $AdParams
+    $rows += Get-AdfaStaleDisabledVerdict -DomainName $DomainName -Kind 'Computer' -Raw $disabledComputers -Interval $interval -StaleDays $StaleDays -Now $nowUtc -Population $disabledComputerPopulation -Config $Config
     try {
         $neverExpire = @(Get-ADUser -Filter { Enabled -eq $true -and PasswordNeverExpires -eq $true } @srv)
         $rows += New-Finding -Scope $DomainName -Area 'Stale' -Item 'PasswordNeverExpires users' -Status $(if ($neverExpire.Count -eq 0) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0} enabled users" -f $neverExpire.Count)
@@ -8721,7 +8960,11 @@ function Get-AdfaIdentitySummary {
         [Parameter(Mandatory)][string]$DomainName,
         [AllowEmptyCollection()]$Users,
         [AllowEmptyCollection()]$Computers,
-        [int]$StaleDays = 90
+        [int]$StaleDays = 90,
+        # PORT-PLAN C15: why an export failed. Before v1.32.0 a failed export was summarised as 0
+        # objects with status Info; it is now Not Assessed with its cause, never 0.
+        [AllowNull()][AllowEmptyString()][string]$UsersError = '',
+        [AllowNull()][AllowEmptyString()][string]$ComputersError = ''
     )
     $rows = @()
     $u = @($Users)
@@ -8730,10 +8973,20 @@ function Get-AdfaIdentitySummary {
         param($o)
         ($o.PSObject.Properties.Name -contains 'Enabled') -and ("$($o.Enabled)" -eq 'True')
     }
-    $enabledU = @($u | Where-Object { & $isEnabled $_ }).Count
-    $enabledC = @($c | Where-Object { & $isEnabled $_ }).Count
-    $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Users'; Total = $u.Count; Enabled = $enabledU; Disabled = ($u.Count - $enabledU); Status = $script:Status.Info; Detail = 'Full attribute export in csv\AllUsers_*.csv' }
-    $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Computers'; Total = $c.Count; Enabled = $enabledC; Disabled = ($c.Count - $enabledC); Status = $script:Status.Info; Detail = 'Full attribute export in csv\AllComputers_*.csv' }
+    if (-not [string]::IsNullOrWhiteSpace($UsersError)) {
+        $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Users'; Total = ''; Enabled = ''; Disabled = ''; Status = $script:Status.NotAssessed; Detail = ("The user export failed, so the users of this domain were not counted - not zero: {0}" -f $UsersError.Trim()) }
+    }
+    else {
+        $enabledU = @($u | Where-Object { & $isEnabled $_ }).Count
+        $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Users'; Total = $u.Count; Enabled = $enabledU; Disabled = ($u.Count - $enabledU); Status = $script:Status.Info; Detail = 'Full attribute export in csv\AllUsers_*.csv' }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ComputersError)) {
+        $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Computers'; Total = ''; Enabled = ''; Disabled = ''; Status = $script:Status.NotAssessed; Detail = ("The computer export failed, so the computers of this domain were not counted - not zero: {0}" -f $ComputersError.Trim()) }
+    }
+    else {
+        $enabledC = @($c | Where-Object { & $isEnabled $_ }).Count
+        $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Computers'; Total = $c.Count; Enabled = $enabledC; Disabled = ($c.Count - $enabledC); Status = $script:Status.Info; Detail = 'Full attribute export in csv\AllComputers_*.csv' }
+    }
     return @($rows)
 }
 
@@ -14087,7 +14340,7 @@ function Invoke-AdfaDcRemoteRead {
     param(
         [Parameter(Mandatory)][string]$ComputerName,
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Protocols,
-        [Parameter(Mandatory)][ValidateSet('Get-AdfaDcDiskRaw', 'Get-AdfaDcHardeningRaw', 'Get-AdfaDcNetworkRaw')][string]$ReadCommand,
+        [Parameter(Mandatory)][ValidateSet('Get-AdfaDcDiskRaw', 'Get-AdfaDcHardeningRaw', 'Get-AdfaDcNetworkRaw', 'Get-AdfaDcW32TimeRaw')][string]$ReadCommand,
         [hashtable]$ReadArguments = @{}
     )
     $raw = $null
@@ -20106,6 +20359,9 @@ $script:ConfigOverrideSections = [ordered]@{
     ClockSkew      = @{ ConfigKey = 'ClockSkew'; Section = 'TimeHierarchy'; Merge = 'Merge-AdfaSpecConfig' }
     Stale          = @{ ConfigKey = 'Stale'; Section = 'StaleObjects'; Merge = 'Merge-AdfaSpecConfig' }
     SysvolEngine   = @{ ConfigKey = 'SysvolEngine'; Section = 'Sysvol'; Merge = 'Merge-AdfaSpecConfig' }
+    # PORT-PLAN C15: the inventory caps only (objects per read, names per row, events per log, event
+    # groups per log); no log, level, filter, flag table, label, key or pattern.
+    Inventory      = @{ ConfigKey = 'Inventory'; Section = 'Identity'; AlsoUsedBy = @('Forest', 'Trusts', 'Gpo', 'DsEvents', 'TimeHierarchy'); Merge = 'Merge-AdfaSpecConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -25070,14 +25326,16 @@ function Get-AdfaStaleLdapFilter {
         standalone managed service account classes. Password: enabled users whose pwdLastSet is at
         or before the cutoff (0 included; the verdict tells it apart). EnabledUser and EnabledComputer:
         the declared population of the User and Computer reads - the same filter without the time
-        term (the cutoff is not used).
+        term (the cutoff is not used). DisabledUser and DisabledComputer (PORT-PLAN C15, INV-009): the
+        User and Computer filters with ACCOUNTDISABLE set instead of clear; AllDisabledUser and
+        AllDisabledComputer, their declared population, without the time term.
     .OUTPUTS
         [string]
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [Parameter(Mandatory)][ValidateSet('User', 'Computer', 'Password', 'EnabledUser', 'EnabledComputer')][string]$Kind,
+        [Parameter(Mandatory)][ValidateSet('User', 'Computer', 'Password', 'EnabledUser', 'EnabledComputer', 'DisabledUser', 'DisabledComputer', 'AllDisabledUser', 'AllDisabledComputer')][string]$Kind,
         [Parameter(Mandatory)][datetime]$CutoffUtc
     )
     $cut = $CutoffUtc
@@ -25086,12 +25344,17 @@ function Get-AdfaStaleLdapFilter {
     $ft = $cut.ToFileTimeUtc()
     $gt = $cut.ToString('yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture) + '.0Z'
     $enabled = '(!(userAccountControl:1.2.840.113556.1.4.803:=2))'
+    $disabled = '(userAccountControl:1.2.840.113556.1.4.803:=2)'
     $activity = ("(|(lastLogonTimestamp<={0})(&(!(lastLogonTimestamp=*))(whenCreated<={1})))" -f $ft, $gt)
     switch ($Kind) {
         'User' { return ("(&(objectCategory=person)(objectClass=user){0}{1})" -f $enabled, $activity) }
         'Computer' { return ("(&(objectCategory=computer)(!(objectClass=msDS-GroupManagedServiceAccount))(!(objectClass=msDS-ManagedServiceAccount)){0}{1})" -f $enabled, $activity) }
         'EnabledUser' { return ("(&(objectCategory=person)(objectClass=user){0})" -f $enabled) }
         'EnabledComputer' { return ("(&(objectCategory=computer)(!(objectClass=msDS-GroupManagedServiceAccount))(!(objectClass=msDS-ManagedServiceAccount)){0})" -f $enabled) }
+        'DisabledUser' { return ("(&(objectCategory=person)(objectClass=user){0}{1})" -f $disabled, $activity) }
+        'DisabledComputer' { return ("(&(objectCategory=computer)(!(objectClass=msDS-GroupManagedServiceAccount))(!(objectClass=msDS-ManagedServiceAccount)){0}{1})" -f $disabled, $activity) }
+        'AllDisabledUser' { return ("(&(objectCategory=person)(objectClass=user){0})" -f $disabled) }
+        'AllDisabledComputer' { return ("(&(objectCategory=computer)(!(objectClass=msDS-GroupManagedServiceAccount))(!(objectClass=msDS-ManagedServiceAccount)){0})" -f $disabled) }
     }
     return ("(&(objectCategory=person)(objectClass=user){0}(pwdLastSet<={1}))" -f $enabled, $ft)
 }
@@ -25116,7 +25379,7 @@ function Get-AdfaStaleRaw {
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$DomainName,
-        [Parameter(Mandatory)][ValidateSet('User', 'Computer', 'Password')][string]$Kind,
+        [Parameter(Mandatory)][ValidateSet('User', 'Computer', 'Password', 'DisabledUser', 'DisabledComputer')][string]$Kind,
         [Parameter(Mandatory)][datetime]$CutoffUtc,
         [ValidateRange(1, 1000000)][int]$MaxObjects = 100000,
         [hashtable]$AdParams = @{}
@@ -25159,7 +25422,7 @@ function Get-AdfaStaleRaw {
         $query.ResultSetSize = $MaxObjects + 1
         $query.ErrorAction = 'Stop'
         $records = New-Object System.Collections.ArrayList
-        if ($Kind -eq 'Computer') { Get-ADComputer @query | ForEach-Object { if ($null -ne $_) { [void]$records.Add((& $toRecord $_)) } } }
+        if ($Kind -eq 'Computer' -or $Kind -eq 'DisabledComputer') { Get-ADComputer @query | ForEach-Object { if ($null -ne $_) { [void]$records.Add((& $toRecord $_)) } } }
         else { Get-ADUser @query | ForEach-Object { if ($null -ne $_) { [void]$records.Add((& $toRecord $_)) } } }
         $out.Records = @($records.ToArray())
         $out.Capped = ($records.Count -gt $MaxObjects)
@@ -25190,11 +25453,15 @@ function Get-AdfaStalePopulationRaw {
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$DomainName,
-        [Parameter(Mandatory)][ValidateSet('User', 'Computer')][string]$Kind,
+        [Parameter(Mandatory)][ValidateSet('User', 'Computer', 'DisabledUser', 'DisabledComputer')][string]$Kind,
         [ValidateRange(1, 1000000)][int]$MaxObjects = 100000,
         [hashtable]$AdParams = @{}
     )
-    $filter = Get-AdfaStaleLdapFilter -Kind ("Enabled{0}" -f $Kind) -CutoffUtc ([datetime]::UtcNow)
+    # The enabled accounts for the C14 stale reads; the disabled ones (PORT-PLAN C15, INV-009) for the
+    # stale disabled reads.
+    $filterKind = ("Enabled{0}" -f $Kind)
+    if ($Kind -like 'Disabled*') { $filterKind = ("All{0}" -f $Kind) }
+    $filter = Get-AdfaStaleLdapFilter -Kind $filterKind -CutoffUtc ([datetime]::UtcNow)
     $out = [pscustomobject]@{ Ok = $false; Count = 0; Capped = $false; Error = ''; ErrorType = ''; Filter = $filter }
     try {
         $query = @{} + $AdParams
@@ -25203,7 +25470,7 @@ function Get-AdfaStalePopulationRaw {
         $query.ResultSetSize = $MaxObjects + 1
         $query.ErrorAction = 'Stop'
         $count = 0
-        if ($Kind -eq 'Computer') { Get-ADComputer @query | ForEach-Object { if ($null -ne $_) { $count++ } } }
+        if ($Kind -like '*Computer') { Get-ADComputer @query | ForEach-Object { if ($null -ne $_) { $count++ } } }
         else { Get-ADUser @query | ForEach-Object { if ($null -ne $_) { $count++ } } }
         $out.Count = $count
         $out.Capped = ($count -gt $MaxObjects)
@@ -25751,6 +26018,1899 @@ function Get-AdfaSysvolEngineVerdict {
     }
     $rows += New-AdfaC14Row -Area 'SYSVOL' -Scope $DomainName -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
         -Detail ("All {0} writable domain controller(s) replicate SYSVOL with DFS Replication: each has the DFSR SYSVOL subscription and no NTFRS subscriber. {1}" -f $writable.Count, $flagText)
+    return @($rows)
+}
+
+# ===========================================================================
+# region Inventory depth (PORT-PLAN C15)
+# ===========================================================================
+# Catalogue INV-001, INV-006..INV-012, INV-015, built into the existing sections Forest, Trusts,
+# Identity, StaleObjects, Gpo, DsEvents and TimeHierarchy. Every row is Info when collected and Not
+# Assessed with its cause when not: the catalogue grades none of them. Every read here is a query -
+# directory reads with listed properties and a cap, Get-WinEvent with a time window and -MaxEvents,
+# StdRegProv GetStringValue and GetDWORDValue. The sources and read dates are next to the config table.
+
+function Get-AdfaInventoryDirectoryRaw {
+    <#
+    .SYNOPSIS
+        The directory seam of the C15 inventory: one Get-ADObject read, by identity or by search,
+        listed properties only, capped. Never throws.
+    .DESCRIPTION
+        -Identity reads one object; otherwise -LDAPFilter searches under -SearchBase (the domain's
+        default naming context when none is given) with -SearchScope, -ResultSetSize one above
+        MaxObjects, so a read with more than that is Capped, not silently cut. -Server is always
+        sent, so each domain is read from itself. -Properties names the attributes kept on each
+        record; -CountProperties names attributes of which only the number of values is kept
+        (<name>Count), so a member list is never held. A property name holding a wildcard is
+        refused before anything is sent. A read that throws part-way is not Ok: a count is never
+        taken from a read that did not finish.
+    .OUTPUTS
+        [pscustomobject] Ok, Error, ErrorType, NotFound, Records (DistinguishedName, Name, the listed
+        properties, <name>Count), Count, Capped, Filter, Identity.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Server,
+        [AllowEmptyString()][string]$Identity = '',
+        [AllowEmptyString()][string]$SearchBase = '',
+        [AllowEmptyString()][string]$SearchScope = '',
+        [AllowEmptyString()][string]$LDAPFilter = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$Properties = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$CountProperties = @(),
+        [ValidateRange(1, 1000000)][int]$MaxObjects = 100000,
+        [hashtable]$AdParams = @{}
+    )
+    $out = [pscustomobject]@{ Ok = $false; Error = ''; ErrorType = ''; NotFound = $false; Records = @(); Count = 0; Capped = $false; Filter = $LDAPFilter; Identity = $Identity }
+    $keep = @(@($Properties) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { [string]$_ })
+    $counted = @(@($CountProperties) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { [string]$_ })
+    $asked = @($keep + $counted)
+    foreach ($p in $asked) {
+        if ($p -match '[*?]') { $out.Error = ("The property list holds '{0}', a wildcard; every property is never requested." -f $p); return $out }
+    }
+    $toRecord = {
+        param($o)
+        $record = [ordered]@{ DistinguishedName = [string](Get-AdfaConfigValue -Entry $o -Name 'DistinguishedName'); Name = [string](Get-AdfaConfigValue -Entry $o -Name 'Name') }
+        foreach ($p in $keep) {
+            $prop = $o.PSObject.Properties[$p]
+            $v = $null
+            if ($null -ne $prop) { $v = $prop.Value }
+            if ($null -ne $v -and $v -isnot [string] -and $v -is [System.Collections.IEnumerable]) { $v = @($v | ForEach-Object { $_ }) }
+            $record[$p] = $v
+        }
+        foreach ($p in $counted) {
+            $prop = $o.PSObject.Properties[$p]
+            $n = 0
+            if ($null -ne $prop -and $null -ne $prop.Value) {
+                if ($prop.Value -isnot [string] -and $prop.Value -is [System.Collections.IEnumerable]) { $n = @($prop.Value).Count } else { $n = 1 }
+            }
+            $record[("{0}Count" -f $p)] = $n
+        }
+        [pscustomobject]$record
+    }
+    try {
+        $query = @{} + $AdParams
+        $query.Server = $Server
+        if ($asked.Count -gt 0) { $query.Properties = @($asked) }
+        $query.ErrorAction = 'Stop'
+        $records = New-Object System.Collections.ArrayList
+        if ($Identity -ne '') {
+            $query.Identity = $Identity
+        }
+        else {
+            $query.LDAPFilter = $LDAPFilter
+            if ($SearchBase -ne '') { $query.SearchBase = $SearchBase }
+            if ($SearchScope -ne '') { $query.SearchScope = $SearchScope }
+            $query.ResultSetSize = $MaxObjects + 1
+        }
+        Get-ADObject @query | ForEach-Object { if ($null -ne $_) { [void]$records.Add((& $toRecord $_)) } }
+        $out.Records = @($records.ToArray())
+        $out.Count = $records.Count
+        $out.Capped = ($Identity -eq '' -and $records.Count -gt $MaxObjects)
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+        if ($out.ErrorType -match '(?i)ADIdentityNotFoundException$') { $out.NotFound = $true }
+    }
+    return $out
+}
+
+function Get-AdfaInventoryReadCause {
+    <#
+    .SYNOPSIS
+        Pure: why a C15 directory read cannot be used - '' when it can. Unreachable, access denied,
+        timed out, not found and a reached cap are each worded apart.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Raw, [Parameter(Mandatory)][string]$What, [int]$MaxObjects = 100000)
+    if ($null -eq $Raw) {
+        $lead = $What
+        if ($lead.Length -gt 0) { $lead = $lead.Substring(0, 1).ToUpperInvariant() + $lead.Substring(1) }
+        return ("{0} was not read." -f $lead)
+    }
+    if (-not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Ok')) {
+        $err = ([string](Get-AdfaConfigValue -Entry $Raw -Name 'Error')).Trim().TrimEnd('.')
+        $class = Get-AdfaDirectoryReadErrorClass -Message $err -TypeName ([string](Get-AdfaConfigValue -Entry $Raw -Name 'ErrorType'))
+        if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'NotFound')) { $class = 'NotFound' }
+        return ("Reading {0} failed ({1}): {2}." -f $What, (Get-AdfaReadClassPhrase -Class $class), $err)
+    }
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'Capped')) { return ("Reading {0} reached its cap of {1} objects (MaxObjects, a tool default), so the list is incomplete." -f $What, $MaxObjects) }
+    return ''
+}
+
+function Get-AdfaInventoryDomainDn {
+    <#
+    .SYNOPSIS
+        The distinguished name of one domain, from Get-ADDomain. Never throws.
+    .OUTPUTS
+        [pscustomobject] Ok, Dn, Error, ErrorType.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
+    $out = [pscustomobject]@{ Ok = $false; Dn = ''; Error = ''; ErrorType = '' }
+    try {
+        $domainArgs = @{} + $AdParams
+        $domainArgs.Identity = $DomainName
+        $domainArgs.ErrorAction = 'Stop'
+        $dn = [string](Get-AdfaConfigValue -Entry (Get-ADDomain @domainArgs) -Name 'DistinguishedName')
+        if ([string]::IsNullOrWhiteSpace($dn)) { throw 'Get-ADDomain returned no DistinguishedName.' }
+        $out.Dn = $dn
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function Get-AdfaRootDseRaw {
+    <#
+    .SYNOPSIS
+        The rootDSE of the DC this run talks to: its dnsHostName (the runner DC) and the
+        configuration naming context. Never throws.
+    .OUTPUTS
+        [pscustomobject] Ok, DnsHostName, ConfigurationNamingContext, Error, ErrorType.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([hashtable]$AdParams = @{})
+    $out = [pscustomobject]@{ Ok = $false; DnsHostName = ''; ConfigurationNamingContext = ''; Error = ''; ErrorType = '' }
+    try {
+        $rootArgs = @{} + $AdParams
+        $rootArgs.ErrorAction = 'Stop'
+        $root = Get-ADRootDSE @rootArgs
+        if ($null -eq $root) { throw 'Get-ADRootDSE returned nothing.' }
+        $out.DnsHostName = [string](Get-AdfaConfigValue -Entry $root -Name 'dnsHostName')
+        $out.ConfigurationNamingContext = [string](Get-AdfaConfigValue -Entry $root -Name 'configurationNamingContext')
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function New-AdfaInventoryFailedRead {
+    <#
+    .SYNOPSIS
+        Pure: a read result that failed before it was sent, carrying the cause, in the shape the
+        directory seam returns.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowEmptyString()][string]$ErrorText = '', [AllowEmptyString()][string]$ErrorType = '')
+    return [pscustomobject]@{ Ok = $false; Error = $ErrorText; ErrorType = $ErrorType; NotFound = $false; Records = @(); Count = 0; Capped = $false; Filter = ''; Identity = '' }
+}
+
+# --- INV-001 / INV-007 -------------------------------------------------------------------------
+
+function Get-AdfaLevelRow {
+    <#
+    .SYNOPSIS
+        Pure: "Forest functional level: <forest>" or "Domain functional level: <domain>" from a read
+        of msDS-Behavior-Version.
+    .DESCRIPTION
+        Info with the value and its MS-ADTS name. Not Assessed when the read failed, returned no
+        object, did not return the attribute (MS-ADTS says an absent value is equivalent to 0, but a
+        read that cannot see it returns nothing the same way, so the level is not asserted), returned
+        something that is not a whole number, or a number with no published name (8, 9 and anything
+        above 10; the raw value is kept).
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][ValidateSet('Forest', 'Domain')][string]$Kind,
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()]$Raw,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("{0} functional level: {1}" -f $Kind, $Scope)
+    $where = 'msDS-Behavior-Version on the domain head'
+    if ($Kind -eq 'Forest') { $where = 'msDS-Behavior-Version on CN=Partitions,CN=Configuration' }
+    $evidence = ("{0}; names from MS-ADTS 6.1.4.3 and 6.1.4.4 (Learn, read 2026-11-17). Inventory only (catalogue INV-001): not graded." -f $where)
+    $columns = [ordered]@{ Level = ''; LevelName = ''; Source = $where }
+    $noun = $Kind.ToLowerInvariant()
+    $na = { param([string]$Why) New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail ("{0} The {1} functional level is not known." -f $Why, $noun) }
+    $cause = Get-AdfaInventoryReadCause -Raw $Raw -What ("the {0} level object" -f $noun) -MaxObjects ([int]$Config['MaxObjects'])
+    if ($cause -ne '') { return (& $na $cause) }
+    $records = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ })
+    if ($records.Count -eq 0) { return (& $na 'The read returned no object.') }
+    $value = Get-AdfaConfigValue -Entry $records[0] -Name 'msDS-Behavior-Version'
+    if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+        return (& $na 'msDS-Behavior-Version was not returned. MS-ADTS says an absent value is equivalent to 0, but a read that cannot see the attribute returns nothing the same way, so the level is not asserted.')
+    }
+    $n = ConvertTo-AdfaInventoryInteger -Value $value
+    if ($null -eq $n) {
+        return (& $na 'msDS-Behavior-Version holds a value that is not a whole number.')
+    }
+    $columns.Level = [string]$n
+    $labels = $Config['BehaviorVersionLabels']
+    if ($null -eq $labels -or -not $labels.ContainsKey([string]$n)) {
+        return (& $na ("msDS-Behavior-Version is {0}, which has no name published by Microsoft (MS-ADTS defines 0 to 7 and 10)." -f $n))
+    }
+    $columns.LevelName = [string]$labels[[string]$n]
+    return New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+        -Detail ("msDS-Behavior-Version read; the value and its MS-ADTS name are in the Level and LevelName columns. Inventory only, not graded.")
+}
+
+function Get-AdfaFsmoHolderName {
+    <#
+    .SYNOPSIS
+        Pure: the server an fSMORoleOwner value names. The value is the DN of the holder's NTDS
+        Settings object, so the server is the next RDN. A value naming a deleted object (DEL:) is
+        documented as invalid and is not read as a server.
+    .OUTPUTS
+        [pscustomobject] Valid, Server, Reason.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][AllowEmptyString()][string]$Value)
+    $out = [pscustomobject]@{ Valid = $false; Server = ''; Reason = '' }
+    if ([string]::IsNullOrWhiteSpace($Value)) { $out.Reason = 'fSMORoleOwner holds no value'; return $out }
+    if ($Value -match '(?i)DEL:') { $out.Reason = 'fSMORoleOwner names a deleted NTDS Settings object (DEL:), which Microsoft documents as an invalid value'; return $out }
+    if ($Value -match '^(?i)CN=NTDS Settings,CN=((?:[^,\\]|\\.)+),') {
+        $out.Server = [string]$Matches[1]
+        $out.Valid = $true
+        return $out
+    }
+    $out.Reason = 'fSMORoleOwner is not the distinguished name of an NTDS Settings object'
+    return $out
+}
+
+function Get-AdfaFsmoRow {
+    <#
+    .SYNOPSIS
+        Pure: "FSMO role holder: <Role> <scope>" from a read of fSMORoleOwner on the role object.
+        The holder is in the Holder column, never in Detail.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Role,
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()]$Raw,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("FSMO role holder: {0} {1}" -f $Role, $Scope)
+    $evidence = 'fSMORoleOwner on the role object, the DN of the holder''s NTDS Settings object (Learn fsmo-transfer-seizure-process, read 2026-11-17). Inventory only (catalogue INV-001): not graded.'
+    $columns = [ordered]@{ Role = $Role; Holder = ''; HolderDn = '' }
+    $na = { param([string]$Why) New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail ("{0} The role holder is not known." -f $Why) }
+    $cause = Get-AdfaInventoryReadCause -Raw $Raw -What 'the role object' -MaxObjects ([int]$Config['MaxObjects'])
+    if ($cause -ne '') { return (& $na $cause) }
+    $records = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ })
+    if ($records.Count -eq 0) { return (& $na 'The read returned no object.') }
+    $value = [string](Get-AdfaConfigValue -Entry $records[0] -Name 'fSMORoleOwner')
+    $columns.HolderDn = $value
+    if ([string]::IsNullOrWhiteSpace($value)) { return (& $na 'fSMORoleOwner was not returned.') }
+    $holder = Get-AdfaFsmoHolderName -Value $value
+    if (-not $holder.Valid) { return (& $na ("{0}." -f $holder.Reason)) }
+    $columns.Holder = $holder.Server
+    return New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+        -Detail 'fSMORoleOwner read; the holder is the server named in the Holder column. Inventory only, not graded.'
+}
+
+function Get-AdfaSuffixListRow {
+    <#
+    .SYNOPSIS
+        Pure: one row listing a multi-valued suffix attribute read from one object. Shared by the
+        UPN suffix and allowed DNS suffix rows.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Item,
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$Attribute,
+        [Parameter(Mandatory)][string]$Noun,
+        [Parameter(Mandatory)][string]$What,
+        [Parameter(Mandatory)][string]$Evidence,
+        [AllowNull()]$Raw,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $columns = [ordered]@{ Count = ''; Suffixes = '' }
+    $na = { param([string]$Why) New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $Item -Status $script:Status.NotAssessed -Evidence $Evidence -Columns $columns -Detail ("{0} The {1} are not known - not zero." -f $Why, $Noun) }
+    $cause = Get-AdfaInventoryReadCause -Raw $Raw -What $What -MaxObjects ([int]$Config['MaxObjects'])
+    if ($cause -ne '') { return (& $na $cause) }
+    $records = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ })
+    if ($records.Count -eq 0) { return (& $na 'The read returned no object.') }
+    $prop = $records[0].PSObject.Properties[$Attribute]
+    $values = @()
+    if ($null -ne $prop -and $null -ne $prop.Value) { $values = @(@($prop.Value) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ }) }
+    $columns.Count = [string]$values.Count
+    if ($values.Count -eq 0) {
+        return New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $Item -Status $script:Status.Info -Evidence $Evidence -Columns $columns `
+            -Detail ("0 {0}: {1} is not set (attribute absent) in a read that succeeded. Learn does not say what an absent value means, and a read that cannot see the attribute returns nothing the same way. Inventory only, not graded." -f $Noun, $Attribute)
+    }
+    $columns.Suffixes = Get-AdfaC14NameList -Names $values -Cap ([int]$Config['NameListCap'])
+    return New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $Item -Status $script:Status.Info -Evidence $Evidence -Columns $columns `
+        -Detail ("{0} {1} read from {2}; listed in the Suffixes column. Inventory only, not graded." -f $values.Count, $Noun, $Attribute)
+}
+
+function Get-AdfaUpnSuffixRow {
+    <#
+    .SYNOPSIS
+        Pure: "UPN suffixes: <forest>" from uPNSuffixes on CN=Partitions.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowEmptyString()][string]$ForestName = '', [AllowNull()]$Raw, [Parameter(Mandatory)][hashtable]$Config)
+    return Get-AdfaSuffixListRow -Item ("UPN suffixes: {0}" -f $ForestName) -Scope $ForestName -Attribute 'uPNSuffixes' -Noun 'additional UPN suffixes' `
+        -What 'CN=Partitions' -Evidence 'uPNSuffixes on CN=Partitions,CN=Configuration (Learn a-upnsuffixes, read 2026-11-17). Inventory only (catalogue INV-007): not graded.' -Raw $Raw -Config $Config
+}
+
+function Get-AdfaAllowedDnsSuffixRow {
+    <#
+    .SYNOPSIS
+        Pure: "Allowed DNS suffixes: <domain>" from msDS-AllowedDNSSuffixes on the domain head.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowEmptyString()][string]$DomainName = '', [AllowNull()]$Raw, [Parameter(Mandatory)][hashtable]$Config)
+    return Get-AdfaSuffixListRow -Item ("Allowed DNS suffixes: {0}" -f $DomainName) -Scope $DomainName -Attribute 'msDS-AllowedDNSSuffixes' -Noun 'allowed DNS suffixes' `
+        -What 'the domain head' -Evidence 'msDS-AllowedDNSSuffixes on the domain head, "the list of allowed suffixes for the dNSHostName attribute in computer objects" (Learn a-msds-alloweddnssuffixes, read 2026-11-17). Inventory only (catalogue INV-007): not graded.' -Raw $Raw -Config $Config
+}
+
+function Get-AdfaDnsSuffixRows {
+    <#
+    .SYNOPSIS
+        Pure: "DNS suffix: <dc>" per DC - the suffix of its host name against its domain (disjoint
+        namespace, inventory only) - and a population row for each scoped domain no DC row covers.
+    .DESCRIPTION
+        Disjoint is "a primary DNS suffix that does not match the DNS name of the Active Directory
+        domain" (Learn). Microsoft calls it usable with caution, so it is never graded. A DC whose
+        domain is not known (the fallback enumeration) or whose host name has no suffix gets
+        Disjoint "Unknown" and Not Assessed.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rows = @()
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    $evidence = 'The suffix of each DC''s host name (dNSHostName, from the DC inventory) against the DNS name of its domain. Disjoint namespace: Learn plan/disjoint-namespace and event-ids-5788-5789, read 2026-11-17 ("can be used with caution"). Inventory only (catalogue INV-007): not graded.'
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaC14Row -Area 'Inventory' -Scope ([string]$gap.Domain) -Item ("DNS suffix (population): {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed -Evidence $evidence `
+            -Columns ([ordered]@{ DnsSuffix = ''; Domain = [string]$gap.Domain; Disjoint = 'Unknown' }) -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No DC DNS suffix of this domain was compared.')
+    }
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = ([string]$named.HostName).Trim().TrimEnd('.')
+        $scope = ([string]$named.Scope).Trim().TrimEnd('.')
+        $columns = [ordered]@{ DnsSuffix = ''; Domain = $scope; Disjoint = 'Unknown' }
+        if ($dc -eq '') {
+            $rows += New-AdfaC14Row -Area 'Inventory' -Scope $scope -Item 'DNS suffix: (unnamed)' -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+                -Detail 'The inventory holds a domain controller with no host name, so there is no suffix to compare.'
+            continue
+        }
+        $item = ("DNS suffix: {0}" -f $dc)
+        $dot = $dc.IndexOf('.')
+        if ($dot -lt 1 -or $dot -ge ($dc.Length - 1)) {
+            $rows += New-AdfaC14Row -Area 'Inventory' -Scope $scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+                -Detail 'The host name carries no DNS suffix, so whether it matches the domain is not known.'
+            continue
+        }
+        $suffix = $dc.Substring($dot + 1)
+        $columns.DnsSuffix = $suffix
+        if ($scope -eq '') {
+            $rows += New-AdfaC14Row -Area 'Inventory' -Scope $scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+                -Detail 'The domain of this DC is not known (it came from the fallback enumeration), so whether its suffix matches its domain is not known.'
+            continue
+        }
+        if ($suffix -ieq $scope) { $columns.Disjoint = 'No' } else { $columns.Disjoint = 'Yes' }
+        $rows += New-AdfaC14Row -Area 'Inventory' -Scope $scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+            -Detail 'The suffix of the host name, the domain and whether they differ (Disjoint) are in their columns. Inventory only, not graded.'
+    }
+    return @($rows)
+}
+
+function Get-AdfaRunnerRow {
+    <#
+    .SYNOPSIS
+        Pure: "Runner DC: <forest>" - the DC that answered this run (rootDSE dnsHostName) and the
+        computer the run ran on.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowEmptyString()][string]$ForestName = '', [AllowNull()]$RootDse, [AllowEmptyString()][string]$ComputerName = '')
+    $item = ("Runner DC: {0}" -f $ForestName)
+    $evidence = 'dnsHostName of the rootDSE this run read (the DC that answered; -Server, when given, names it). Inventory only (catalogue INV-001): not graded.'
+    $columns = [ordered]@{ RunnerDc = ''; RunnerComputer = $ComputerName }
+    if ($null -eq $RootDse -or -not [bool](Get-AdfaConfigValue -Entry $RootDse -Name 'Ok')) {
+        $err = ''
+        $type = ''
+        if ($null -ne $RootDse) { $err = ([string](Get-AdfaConfigValue -Entry $RootDse -Name 'Error')).Trim().TrimEnd('.'); $type = [string](Get-AdfaConfigValue -Entry $RootDse -Name 'ErrorType') }
+        $class = Get-AdfaDirectoryReadErrorClass -Message $err -TypeName $type
+        return New-AdfaC14Row -Area 'Inventory' -Scope $ForestName -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+            -Detail ("Reading the rootDSE failed ({0}): {1}. The DC that answered this run is not known." -f (Get-AdfaReadClassPhrase -Class $class), $err)
+    }
+    $runner = [string](Get-AdfaConfigValue -Entry $RootDse -Name 'DnsHostName')
+    if ([string]::IsNullOrWhiteSpace($runner)) {
+        return New-AdfaC14Row -Area 'Inventory' -Scope $ForestName -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+            -Detail 'The rootDSE returned no dnsHostName. The DC that answered this run is not known.'
+    }
+    $columns.RunnerDc = $runner
+    return New-AdfaC14Row -Area 'Inventory' -Scope $ForestName -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+        -Detail 'The DC that answered this run and the computer the run ran on are in their columns. Inventory only, not graded.'
+}
+
+function Get-AdfaTopologyInventory {
+    <#
+    .SYNOPSIS
+        Forest: functional levels, the five FSMO holders, UPN and allowed DNS suffixes, each DC's
+        DNS suffix and the runner DC (INV-001, INV-007). Directory reads only.
+    .DESCRIPTION
+        From the forest root domain: CN=Partitions (msDS-Behavior-Version, uPNSuffixes,
+        fSMORoleOwner) and CN=Schema (fSMORoleOwner). From each scoped domain, read from itself: the
+        domain head (msDS-Behavior-Version, fSMORoleOwner, msDS-AllowedDNSSuffixes), CN=RID Manager$
+        and CN=Infrastructure (fSMORoleOwner). Every read names its properties. A domain whose DN
+        could not be read gets every one of its rows Not Assessed with that cause.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyString()][string]$ForestName = '',
+        [AllowEmptyString()][string]$RootDomain = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$Domains = @(),
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [AllowNull()][AllowEmptyString()][string]$ForestError = '',
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config,
+        [AllowEmptyString()][string]$ComputerName = [Environment]::MachineName
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ForestError)) {
+        return @(New-AdfaC14Row -Area 'Inventory' -Scope '' -Item ("Topology inventory: {0}" -f $ForestName) -Status $script:Status.NotAssessed `
+                -Detail ("The forest could not be read ({0}), so no functional level, FSMO holder, suffix or runner DC was read. This is not a clean result." -f $ForestError.Trim().TrimEnd('.')))
+    }
+    $rows = @()
+    $max = [int]$Config['MaxObjects']
+    $rootDn = Get-AdfaInventoryDomainDn -DomainName $RootDomain -AdParams $AdParams
+    if ($rootDn.Ok) {
+        $partitions = Get-AdfaInventoryDirectoryRaw -Server $RootDomain -Identity ("CN=Partitions,CN=Configuration,{0}" -f $rootDn.Dn) -Properties @('msDS-Behavior-Version', 'uPNSuffixes', 'fSMORoleOwner') -MaxObjects $max -AdParams $AdParams
+        $schema = Get-AdfaInventoryDirectoryRaw -Server $RootDomain -Identity ("CN=Schema,CN=Configuration,{0}" -f $rootDn.Dn) -Properties @('fSMORoleOwner') -MaxObjects $max -AdParams $AdParams
+    }
+    else {
+        $partitions = New-AdfaInventoryFailedRead -ErrorText ("the forest root domain's distinguished name could not be read: {0}" -f $rootDn.Error) -ErrorType $rootDn.ErrorType
+        $schema = $partitions
+    }
+    $rows += Get-AdfaLevelRow -Kind 'Forest' -Scope $ForestName -Raw $partitions -Config $Config
+    $rows += Get-AdfaFsmoRow -Role 'Schema master' -Scope $ForestName -Raw $schema -Config $Config
+    $rows += Get-AdfaFsmoRow -Role 'Domain naming master' -Scope $ForestName -Raw $partitions -Config $Config
+    $rows += Get-AdfaUpnSuffixRow -ForestName $ForestName -Raw $partitions -Config $Config
+    foreach ($d in @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $dn = Get-AdfaInventoryDomainDn -DomainName $d -AdParams $AdParams
+        if ($dn.Ok) {
+            $head = Get-AdfaInventoryDirectoryRaw -Server $d -Identity $dn.Dn -Properties @('msDS-Behavior-Version', 'fSMORoleOwner', 'msDS-AllowedDNSSuffixes') -MaxObjects $max -AdParams $AdParams
+            $rid = Get-AdfaInventoryDirectoryRaw -Server $d -Identity ("CN=RID Manager$,CN=System,{0}" -f $dn.Dn) -Properties @('fSMORoleOwner') -MaxObjects $max -AdParams $AdParams
+            $infra = Get-AdfaInventoryDirectoryRaw -Server $d -Identity ("CN=Infrastructure,{0}" -f $dn.Dn) -Properties @('fSMORoleOwner') -MaxObjects $max -AdParams $AdParams
+        }
+        else {
+            $head = New-AdfaInventoryFailedRead -ErrorText ("the domain's distinguished name could not be read: {0}" -f $dn.Error) -ErrorType $dn.ErrorType
+            $rid = $head
+            $infra = $head
+        }
+        $rows += Get-AdfaLevelRow -Kind 'Domain' -Scope $d -Raw $head -Config $Config
+        $rows += Get-AdfaFsmoRow -Role 'PDC emulator' -Scope $d -Raw $head -Config $Config
+        $rows += Get-AdfaFsmoRow -Role 'RID master' -Scope $d -Raw $rid -Config $Config
+        $rows += Get-AdfaFsmoRow -Role 'Infrastructure master' -Scope $d -Raw $infra -Config $Config
+        $rows += Get-AdfaAllowedDnsSuffixRow -DomainName $d -Raw $head -Config $Config
+    }
+    $rows += Get-AdfaRunnerRow -ForestName $ForestName -RootDse (Get-AdfaRootDseRaw -AdParams $AdParams) -ComputerName $ComputerName
+    $rows += @(Get-AdfaDnsSuffixRows -DomainControllers $DomainControllers -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains -Config $Config)
+    return @($rows)
+}
+
+# --- INV-006 -----------------------------------------------------------------------------------
+
+function Get-AdfaTrustAttributeDecode {
+    <#
+    .SYNOPSIS
+        Pure: the trustAttributes flags by their MS-ADTS names. A bit the table does not name is
+        kept as "unknown 0x..", never dropped. The value is a 32-bit field: a negative number (the
+        high bit read as signed) is taken as unsigned. A value not returned or not a whole number is
+        not measured - never "no flags".
+    .OUTPUTS
+        [pscustomobject] Measured, Value, Flags (string[]), Unknown (string[]), Reason.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Value, [Parameter(Mandatory)][hashtable]$Config)
+    $out = [pscustomobject]@{ Measured = $false; Value = $null; Flags = @(); Unknown = @(); Reason = '' }
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { $out.Reason = 'trustAttributes was not returned'; return $out }
+    $n = ConvertTo-AdfaInventoryInteger -Value $Value
+    if ($null -eq $n) {
+        $out.Reason = 'trustAttributes holds a value that is not a whole number'
+        return $out
+    }
+    if ($n -lt 0 -and $n -ge [int64]-2147483648) { $n = $n + [int64]4294967296 }
+    if ($n -lt 0 -or $n -gt [int64]4294967295) { $out.Reason = 'trustAttributes holds a value outside 32 bits'; return $out }
+    $flags = @()
+    $remaining = $n
+    foreach ($f in @($Config['TrustAttributeFlags'])) {
+        $bit = [int64](Get-AdfaConfigValue -Entry $f -Name 'Bit')
+        if (($n -band $bit) -ne 0) {
+            $flags += [string](Get-AdfaConfigValue -Entry $f -Name 'Name')
+            $remaining = $remaining -band (-bnot $bit)
+        }
+    }
+    $unknown = @()
+    for ($i = 0; $i -lt 32; $i++) {
+        $b = [int64]1 -shl $i
+        if (($remaining -band $b) -ne 0) { $unknown += ("unknown 0x{0:X}" -f $b) }
+    }
+    $out.Value = $n
+    $out.Flags = @($flags)
+    $out.Unknown = @($unknown)
+    $out.Measured = $true
+    return $out
+}
+
+function Get-AdfaInventoryCodeLabel {
+    <#
+    .SYNOPSIS
+        Pure: "<raw> <name>" for an enumerated value, "<raw> (no published name)" for one the table
+        does not name, '' for none.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Value, [AllowNull()][hashtable]$Labels)
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return '' }
+    $key = ([string]$Value).Trim()
+    if ($null -ne $Labels -and $Labels.ContainsKey($key)) { return ("{0} {1}" -f $key, [string]$Labels[$key]) }
+    return ("{0} (no published name)" -f $key)
+}
+
+function Get-AdfaTrustInventoryRows {
+    <#
+    .SYNOPSIS
+        Pure: "Trust: <domain> -> <partner>" per trustedDomain object, and "Trusts (population):
+        <domain>" with the number read.
+    .DESCRIPTION
+        Columns, never graded: trustAttributes raw and by name; direction and type raw and by name;
+        transitivity (NON_TRANSITIVE set or clear - clear is not claimed to mean transitive); the
+        SID filtering flags (QUARANTINED_DOMAIN, TREAT_AS_EXTERNAL, PIM_TRUST); CROSS_ORGANIZATION by
+        its raw name (Learn does not call it "selective authentication"); TGT delegation from the
+        MS-KILE rule. A trust with no readable trustAttributes is Not Assessed. A failed or capped read
+        makes the population Not Assessed with its cause, never 0 trusts.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)][string]$DomainName, [AllowNull()]$Raw, [Parameter(Mandatory)][hashtable]$Config)
+    $rows = @()
+    $evidence = 'trustedDomain objects one level under CN=System of this domain, read from the domain, listed attributes only (cn, trustPartner, flatName, trustAttributes, trustDirection, trustType). Bits: MS-ADTS 6.1.6.7.9; trustType: MS-ADTS 6.1.6.7.15; trustDirection: MS-LSAD; TGT delegation: MS-KILE (Learn, read 2026-11-17). Inventory only (catalogue INV-006): not graded.'
+    $popItem = ("Trusts (population): {0}" -f $DomainName)
+    $cause = Get-AdfaInventoryReadCause -Raw $Raw -What 'the trustedDomain objects of this domain' -MaxObjects ([int]$Config['MaxObjects'])
+    if ($cause -ne '') {
+        return @(New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $popItem -Status $script:Status.NotAssessed -Evidence $evidence -Columns ([ordered]@{ Count = '' }) `
+                -Detail ("{0} How many trusts this domain has is not known - not zero." -f $cause))
+    }
+    $records = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ })
+    foreach ($r in $records) {
+        $partner = [string](Get-AdfaConfigValue -Entry $r -Name 'trustPartner')
+        if ([string]::IsNullOrWhiteSpace($partner)) { $partner = [string](Get-AdfaConfigValue -Entry $r -Name 'cn') }
+        if ([string]::IsNullOrWhiteSpace($partner)) { $partner = [string](Get-AdfaConfigValue -Entry $r -Name 'Name') }
+        if ([string]::IsNullOrWhiteSpace($partner)) { $partner = '(no trustPartner)' }
+        $item = ("Trust: {0} -> {1}" -f $DomainName, $partner)
+        $raw = Get-AdfaConfigValue -Entry $r -Name 'trustAttributes'
+        $decode = Get-AdfaTrustAttributeDecode -Value $raw -Config $Config
+        $columns = [ordered]@{
+            Partner = $partner; FlatName = [string](Get-AdfaConfigValue -Entry $r -Name 'flatName'); TrustAttributes = ''; TrustAttributeFlags = ''
+            TrustDirection = (Get-AdfaInventoryCodeLabel -Value (Get-AdfaConfigValue -Entry $r -Name 'trustDirection') -Labels $Config['TrustDirectionLabels'])
+            TrustType = (Get-AdfaInventoryCodeLabel -Value (Get-AdfaConfigValue -Entry $r -Name 'trustType') -Labels $Config['TrustTypeLabels'])
+            Transitive = ''; SidFiltering = ''; CrossOrganization = ''; TgtDelegation = ''
+        }
+        if (-not $decode.Measured) {
+            $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+                -Detail ("{0}, so the trust's flags (transitivity, SID filtering, TGT delegation) are not known." -f $decode.Reason)
+            continue
+        }
+        $flags = @($decode.Flags)
+        $columns.TrustAttributes = ("0x{0:X}" -f [int64]$decode.Value)
+        $columns.TrustAttributeFlags = (@($flags + @($decode.Unknown)) -join ', ')
+        if ($flags -contains 'NON_TRANSITIVE') { $columns.Transitive = 'No (NON_TRANSITIVE set)' } else { $columns.Transitive = 'NON_TRANSITIVE clear' }
+        $sid = @($flags | Where-Object { @('QUARANTINED_DOMAIN', 'TREAT_AS_EXTERNAL', 'PIM_TRUST') -contains $_ })
+        if ($sid.Count -gt 0) { $columns.SidFiltering = ($sid -join ', ') } else { $columns.SidFiltering = 'none of QUARANTINED_DOMAIN, TREAT_AS_EXTERNAL, PIM_TRUST set' }
+        if ($flags -contains 'CROSS_ORGANIZATION') { $columns.CrossOrganization = 'Yes (CROSS_ORGANIZATION set)' } else { $columns.CrossOrganization = 'No' }
+        $disable = @($flags | Where-Object { @('CROSS_ORGANIZATION_NO_TGT_DELEGATION', 'QUARANTINED_DOMAIN') -contains $_ })
+        $enable = @($flags | Where-Object { @('WITHIN_FOREST', 'CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION') -contains $_ })
+        if ($disable.Count -gt 0) { $columns.TgtDelegation = ("Disabled by trustAttributes ({0})" -f ($disable -join ', ')) }
+        elseif ($enable.Count -gt 0) { $columns.TgtDelegation = ("Enabled by trustAttributes ({0}) for a source ticket that is ok-as-delegate" -f ($enable -join ', ')) }
+        else { $columns.TgtDelegation = 'not enabled by trustAttributes (neither WITHIN_FOREST nor CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION set)' }
+        $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+            -Detail 'trustedDomain object read; its flags, direction and type are in their columns. Inventory only, not graded.'
+    }
+    $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $popItem -Status $script:Status.Info -Evidence $evidence -Columns ([ordered]@{ Count = [string]$records.Count }) `
+        -Detail ("{0} trustedDomain object(s) in a complete read under CN=System of this domain." -f $records.Count)
+    return @($rows)
+}
+
+function Get-AdfaTrustInventory {
+    <#
+    .SYNOPSIS
+        Trusts: the trustedDomain objects of every scoped domain, read from that domain (INV-006).
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][string[]]$Domains = @(),
+        [AllowNull()][AllowEmptyString()][string]$ForestError = '',
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ForestError)) {
+        return @(New-AdfaC14Row -Area 'Inventory' -Item 'Trusts (population): (forest unreadable)' -Status $script:Status.NotAssessed `
+                -Detail ("The forest could not be read ({0}), so no domain was scoped and no trustedDomain object was read. This is not a clean result." -f $ForestError.Trim().TrimEnd('.')))
+    }
+    $rows = @()
+    foreach ($d in @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $dn = Get-AdfaInventoryDomainDn -DomainName $d -AdParams $AdParams
+        if ($dn.Ok) {
+            $raw = Get-AdfaInventoryDirectoryRaw -Server $d -SearchBase ("CN=System,{0}" -f $dn.Dn) -SearchScope 'OneLevel' -LDAPFilter '(objectClass=trustedDomain)' `
+                -Properties @($Config['TrustProperties']) -MaxObjects ([int]$Config['MaxObjects']) -AdParams $AdParams
+        }
+        else { $raw = New-AdfaInventoryFailedRead -ErrorText ("the domain's distinguished name could not be read: {0}" -f $dn.Error) -ErrorType $dn.ErrorType }
+        $rows += @(Get-AdfaTrustInventoryRows -DomainName $d -Raw $raw -Config $Config)
+    }
+    return @($rows)
+}
+
+# --- INV-008 / INV-010 -------------------------------------------------------------------------
+
+function ConvertTo-AdfaInventoryInteger {
+    <#
+    .SYNOPSIS
+        Pure: a whole number from a directory or registry value - an integral number as it is, a
+        string only when it is a whole number - or $null. A fraction, a boolean or text is $null.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+    if ($null -eq $Value) { return $null }
+    $base = $Value
+    if ($Value -is [System.Management.Automation.PSObject]) { $base = $Value.PSObject.BaseObject }
+    $integral = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64])
+    if ($integral -contains $base.GetType()) { return [int64]$base }
+    if ($base -is [uint64]) { if ($base -le [uint64][int64]::MaxValue) { return [int64]$base }; return $null }
+    if ($base -isnot [string]) { return $null }
+    $n = [int64]0
+    if ([int64]::TryParse($base.Trim(), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$n)) { return $n }
+    return $null
+}
+
+function ConvertTo-AdfaInventoryUInt32 {
+    <#
+    .SYNOPSIS
+        Pure: a 32-bit flag attribute as an unsigned number (a negative value read as signed is
+        taken as unsigned), or $null when it is not a whole number.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+    $n = ConvertTo-AdfaInventoryInteger -Value $Value
+    if ($null -eq $n) { return $null }
+    if ($n -lt 0 -and $n -ge [int64]-2147483648) { $n = $n + [int64]4294967296 }
+    if ($n -lt 0 -or $n -gt [int64]4294967295) { return $null }
+    return $n
+}
+
+function Get-AdfaObjectCountRows {
+    <#
+    .SYNOPSIS
+        Pure: "Object count: <Kind> <domain>" for the thirteen counts of a domain, from the seven
+        capped reads (Users, Computers, Groups, Contacts, OUs, gMSA, sMSA).
+    .DESCRIPTION
+        Enabled and disabled from ACCOUNTDISABLE (0x2) in userAccountControl; security and
+        distribution groups from 0x80000000 in groupType. A read that failed or reached its cap, or
+        a split with any record whose flags could not be read, is Not Assessed - never 0. A complete
+        read that returned nothing is 0, visible to the account running the assessment.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [AllowNull()][System.Collections.IDictionary]$Reads = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rows = @()
+    if ($null -eq $Reads) { $Reads = @{} }
+    $max = [int]$Config['MaxObjects']
+    $filters = $Config['CountFilters']
+    $evidence = ("Get-ADObject -Server {0} with the LDAP filter in the Filter column, at most {1} objects (MaxObjects, a tool default); counted as returned to the account running the assessment. ACCOUNTDISABLE 0x2 (Learn useraccountcontrol-manipulate-account-properties) and groupType 0x80000000 security (Learn a-grouptype), read 2026-11-17. Inventory only (catalogue INV-008): not graded." -f $DomainName, $max)
+    $newRow = {
+        param([string]$Kind, [string]$Status, [string]$Count, [string]$Detail, [string]$Filter)
+        New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item ("Object count: {0} {1}" -f $Kind, $DomainName) -Status $Status -Evidence $evidence `
+            -Columns ([ordered]@{ Kind = $Kind; Count = $Count; Filter = $Filter }) -Detail $Detail
+    }
+    $plan = @(
+        @{ Read = 'Users'; Kinds = @('Users', 'Enabled users', 'Disabled users'); Attribute = 'userAccountControl'; Bit = [int64]$Config['AccountDisableBit']; Set = 'Disabled users'; Clear = 'Enabled users' }
+        @{ Read = 'Computers'; Kinds = @('Computers', 'Enabled computers', 'Disabled computers'); Attribute = 'userAccountControl'; Bit = [int64]$Config['AccountDisableBit']; Set = 'Disabled computers'; Clear = 'Enabled computers' }
+        @{ Read = 'Groups'; Kinds = @('Groups', 'Security groups', 'Distribution groups'); Attribute = 'groupType'; Bit = [int64]$Config['GroupSecurityBit']; Set = 'Security groups'; Clear = 'Distribution groups' }
+        @{ Read = 'Contacts'; Kinds = @('Contacts') }
+        @{ Read = 'OUs'; Kinds = @('OUs') }
+        @{ Read = 'gMSA'; Kinds = @('gMSA') }
+        @{ Read = 'sMSA'; Kinds = @('sMSA') }
+    )
+    foreach ($p in $plan) {
+        $readName = [string]$p['Read']
+        $filter = ''
+        if ($null -ne $filters -and $filters.Contains($readName)) { $filter = [string]$filters[$readName] }
+        $raw = $null
+        if ($Reads.Contains($readName)) { $raw = $Reads[$readName] }
+        $kinds = @($p['Kinds'])
+        $cause = Get-AdfaInventoryReadCause -Raw $raw -What ("the {0} of this domain" -f $readName) -MaxObjects $max
+        if ($cause -ne '') {
+            foreach ($k in $kinds) { $rows += & $newRow $k $script:Status.NotAssessed '' ("{0} The count is not known - not zero." -f $cause) $filter }
+            continue
+        }
+        $records = @(@(Get-AdfaConfigValue -Entry $raw -Name 'Records') | Where-Object { $null -ne $_ })
+        $rows += & $newRow $kinds[0] $script:Status.Info ([string]$records.Count) ("{0} object(s) in a complete read of this domain with the filter in the Filter column, visible to the account running the assessment." -f $records.Count) $filter
+        if ($kinds.Count -eq 1) { continue }
+        $attribute = [string]$p['Attribute']
+        $bit = [int64]$p['Bit']
+        $set = 0
+        $clear = 0
+        $unread = 0
+        foreach ($r in $records) {
+            $flags = ConvertTo-AdfaInventoryUInt32 -Value (Get-AdfaConfigValue -Entry $r -Name $attribute)
+            if ($null -eq $flags) { $unread++; continue }
+            if (([int64]$flags -band $bit) -ne 0) { $set++ } else { $clear++ }
+        }
+        foreach ($k in @([string]$p['Clear'], [string]$p['Set'])) {
+            if ($unread -gt 0) {
+                $rows += & $newRow $k $script:Status.NotAssessed '' ("{0} of the {1} object(s) read carried no readable {2}, so this split cannot be counted - not zero." -f $unread, $records.Count, $attribute) $filter
+                continue
+            }
+            $n = $clear
+            if ($k -eq [string]$p['Set']) { $n = $set }
+            $rows += & $newRow $k $script:Status.Info ([string]$n) ("{0} of the {1} object(s) read, split on {2} 0x{3:X}." -f $n, $records.Count, $attribute, $bit) $filter
+        }
+    }
+    return @($rows)
+}
+
+function Get-AdfaGroupScopeType {
+    <#
+    .SYNOPSIS
+        Pure: the scope (Global, DomainLocal, Universal, Other) and type (Security, Distribution) a
+        groupType value holds; both '' when it could not be read.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Value, [Parameter(Mandatory)][hashtable]$Config)
+    $out = [pscustomobject]@{ Read = $false; Scope = ''; Type = ''; Raw = '' }
+    $n = ConvertTo-AdfaInventoryUInt32 -Value $Value
+    if ($null -eq $n) { return $out }
+    $out.Read = $true
+    $out.Raw = ("0x{0:X}" -f [int64]$n)
+    $out.Scope = 'Other'
+    $bits = $Config['GroupScopeBits']
+    foreach ($k in @($bits.Keys)) { if (([int64]$n -band [int64]$bits[$k]) -ne 0) { $out.Scope = [string]$k; break } }
+    if (([int64]$n -band [int64]$Config['GroupSecurityBit']) -ne 0) { $out.Type = 'Security' } else { $out.Type = 'Distribution' }
+    return $out
+}
+
+function Get-AdfaGroupInventoryRows {
+    <#
+    .SYNOPSIS
+        Pure: "Groups by type and scope", "Empty groups" and "Group member counts" for one domain.
+    .DESCRIPTION
+        Direct members only, from the number of member values the read returned. A group with
+        MemberCountCeiling (1500, the MaxValRange default) values or more is not counted exactly.
+        Members by primaryGroupID are not in member, so an "empty" group can still have members; the
+        row says so. Names only in the Groups column. A failed or capped read is Not Assessed.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)][string]$DomainName, [AllowNull()]$Raw, [Parameter(Mandatory)][hashtable]$Config)
+    $ceiling = [int]$Config['MemberCountCeiling']
+    $evidence = ("Get-ADObject -Server {0} (objectClass=group), sAMAccountName and groupType, and the number of member values only (never the members), at most {1} groups (MaxObjects, a tool default). groupType bits: Learn a-grouptype; MaxValRange default 1500: Learn view-set-ldap-policy-using-ntdsutil (read 2026-11-17). One row per group in csv\Groups_<domain>.csv. Inventory only (catalogue INV-010): not graded." -f $DomainName, [int]$Config['MaxObjects'])
+    $typeItem = ("Groups by type and scope: {0}" -f $DomainName)
+    $emptyItem = ("Empty groups: {0}" -f $DomainName)
+    $countItem = ("Group member counts: {0}" -f $DomainName)
+    $cause = Get-AdfaInventoryReadCause -Raw $Raw -What 'the groups of this domain' -MaxObjects ([int]$Config['MaxObjects'])
+    if ($cause -ne '') {
+        $text = ("{0} The group inventory of this domain is not known - not zero." -f $cause)
+        return @(
+            (New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $typeItem -Status $script:Status.NotAssessed -Evidence $evidence -Detail $text)
+            (New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $emptyItem -Status $script:Status.NotAssessed -Evidence $evidence -Columns ([ordered]@{ Count = ''; Groups = '' }) -Detail $text)
+            (New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $countItem -Status $script:Status.NotAssessed -Evidence $evidence -Detail $text)
+        )
+    }
+    $records = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ })
+    $types = [ordered]@{ GlobalSecurity = 0; GlobalDistribution = 0; DomainLocalSecurity = 0; DomainLocalDistribution = 0; UniversalSecurity = 0; UniversalDistribution = 0; OtherScope = 0; TypeNotRead = 0 }
+    $empty = @()
+    $exact = 0
+    $over = 0
+    $memberUnread = 0
+    foreach ($r in $records) {
+        $st = Get-AdfaGroupScopeType -Value (Get-AdfaConfigValue -Entry $r -Name 'groupType') -Config $Config
+        if (-not $st.Read) { $types.TypeNotRead++ }
+        elseif ($st.Scope -eq 'Other') { $types.OtherScope++ }
+        else { $types[("{0}{1}" -f $st.Scope, $st.Type)]++ }
+        $countValue = Get-AdfaConfigValue -Entry $r -Name 'memberCount'
+        if ($null -eq $countValue) { $memberUnread++; continue }
+        $count = [int]$countValue
+        if ($count -ge $ceiling) { $over++; continue }
+        $exact++
+        if ($count -eq 0) {
+            $name = [string](Get-AdfaConfigValue -Entry $r -Name 'sAMAccountName')
+            if ([string]::IsNullOrWhiteSpace($name)) { $name = [string](Get-AdfaConfigValue -Entry $r -Name 'Name') }
+            $empty += $name
+        }
+    }
+    $typeColumns = [ordered]@{ Groups = [string]$records.Count }
+    foreach ($k in @($types.Keys)) { $typeColumns[$k] = [string]$types[$k] }
+    $rows = @()
+    $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $typeItem -Status $script:Status.Info -Evidence $evidence -Columns $typeColumns `
+        -Detail ("{0} group(s) in a complete read, counted by scope (groupType 0x2 global, 0x4 domain local, 0x8 universal) and type (0x80000000 security) in their columns." -f $records.Count)
+    $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $emptyItem -Status $script:Status.Info -Evidence $evidence `
+        -Columns ([ordered]@{ Count = [string]$empty.Count; Groups = (Get-AdfaC14NameList -Names $empty -Cap ([int]$Config['NameListCap'])) }) `
+        -Detail ("{0} group(s) with no direct member visible to this account; names in the Groups column. Members by primaryGroupID (the primary group of an account) are not held in member and are not counted, so a group listed here can still have members." -f $empty.Count)
+    $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $countItem -Status $script:Status.Info -Evidence $evidence `
+        -Columns ([ordered]@{ Groups = [string]$records.Count; CountedExactly = [string]$exact; NotCountedExactly = [string]$over; MemberNotRead = [string]$memberUnread }) `
+        -Detail ("Direct member counts per group are in csv\Groups_<domain>.csv. A group returning {0} member values or more (the MaxValRange default, beyond which range retrieval is needed) is not counted exactly and is listed as '{0} or more'." -f $ceiling)
+    return @($rows)
+}
+
+function ConvertTo-AdfaGroupExportRow {
+    <#
+    .SYNOPSIS
+        Pure: one row per group for csv\Groups_<domain>.csv - name, scope, type, raw groupType and
+        the direct member count ("<ceiling> or more" where it was not counted exactly).
+        ListComplete on every row says whether the read held every group of the domain: a read
+        that reached its cap (MaxObjects) gives at most MaxObjects rows, each marked "No", so the
+        CSV never reads as the domain's complete group list.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)][string]$DomainName, [AllowNull()]$Raw, [Parameter(Mandatory)][hashtable]$Config)
+    if ($null -eq $Raw -or -not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Ok')) { return @() }
+    $ceiling = [int]$Config['MemberCountCeiling']
+    $max = [int]$Config['MaxObjects']
+    $records = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ })
+    $complete = 'Yes'
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'Capped')) {
+        $complete = ("No: the read reached its cap of {0} objects (MaxObjects, a tool default), so groups after it are not listed" -f $max)
+        $records = @($records | Select-Object -First $max)
+    }
+    $out = @()
+    foreach ($r in $records) {
+        $st = Get-AdfaGroupScopeType -Value (Get-AdfaConfigValue -Entry $r -Name 'groupType') -Config $Config
+        $name = [string](Get-AdfaConfigValue -Entry $r -Name 'sAMAccountName')
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = [string](Get-AdfaConfigValue -Entry $r -Name 'Name') }
+        $countValue = Get-AdfaConfigValue -Entry $r -Name 'memberCount'
+        $members = 'not read'
+        if ($null -ne $countValue) {
+            if ([int]$countValue -ge $ceiling) { $members = ("{0} or more (not counted exactly)" -f $ceiling) } else { $members = [string][int]$countValue }
+        }
+        $out += [pscustomobject]@{ Domain = $DomainName; Name = $name; Scope = $st.Scope; Type = $st.Type; GroupType = $st.Raw; DirectMembers = $members; ListComplete = $complete }
+    }
+    return @($out)
+}
+
+function Get-AdfaIdentityInventoryDepth {
+    <#
+    .SYNOPSIS
+        Identity: per scoped domain, the seven capped count reads and the group inventory (INV-008,
+        INV-010). Directory reads only, listed properties, member values counted and never kept.
+    .OUTPUTS
+        [pscustomobject] Counts (rows), Groups (rows), GroupExport (domain -> rows for the CSV).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][string[]]$Domains = @(),
+        [AllowNull()][AllowEmptyString()][string]$ForestError = '',
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $counts = @()
+    $groups = @()
+    $export = @{}
+    if (-not [string]::IsNullOrWhiteSpace($ForestError)) {
+        $counts += New-AdfaC14Row -Area 'Inventory' -Item 'Object count: (forest unreadable)' -Status $script:Status.NotAssessed `
+            -Detail ("The forest could not be read ({0}), so no domain was scoped and nothing was counted. This is not a clean result." -f $ForestError.Trim().TrimEnd('.'))
+    }
+    $max = [int]$Config['MaxObjects']
+    foreach ($d in @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $reads = [ordered]@{}
+        foreach ($kind in @($Config['CountFilters'].Keys)) {
+            $props = @()
+            $countProps = @()
+            if ($kind -eq 'Users' -or $kind -eq 'Computers') { $props = @('userAccountControl') }
+            if ($kind -eq 'Groups') { $props = @('sAMAccountName', 'groupType'); $countProps = @('member') }
+            $reads[[string]$kind] = Get-AdfaInventoryDirectoryRaw -Server $d -LDAPFilter ([string]$Config['CountFilters'][$kind]) -Properties $props -CountProperties $countProps -MaxObjects $max -AdParams $AdParams
+        }
+        $counts += @(Get-AdfaObjectCountRows -DomainName $d -Reads $reads -Config $Config)
+        $groups += @(Get-AdfaGroupInventoryRows -DomainName $d -Raw $reads['Groups'] -Config $Config)
+        $export[$d] = @(ConvertTo-AdfaGroupExportRow -DomainName $d -Raw $reads['Groups'] -Config $Config)
+    }
+    return [pscustomobject]@{ Counts = @($counts); Groups = @($groups); GroupExport = $export }
+}
+
+# --- INV-009 -----------------------------------------------------------------------------------
+
+function Get-AdfaStaleDisabledVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Stale disabled users" / "Stale disabled computers" for one domain - inventory only.
+    .DESCRIPTION
+        Disabled accounts (ACCOUNTDISABLE set) whose lastLogonTimestamp is at or before Now minus
+        StaleDays, or that have none and were created at or before it. Info with the count (names in
+        the Accounts column) - never graded, as the catalogue says (INV-009). Not Assessed, never 0,
+        when the read failed (unreachable, access denied, timed out told apart), reached its cap,
+        logon-time updates are disabled, StaleDays is not longer than the sync interval, a returned
+        object carried neither time, or nothing was found and the disabled accounts could not be
+        counted. StaleDays is the -StaleDays parameter: Microsoft publishes no stale threshold.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [Parameter(Mandatory)][ValidateSet('User', 'Computer')][string]$Kind,
+        [AllowNull()]$Raw,
+        [AllowNull()]$Interval,
+        [Parameter(Mandatory)][int]$StaleDays,
+        [Parameter(Mandatory)][datetime]$Now,
+        [AllowNull()]$Population = $null,
+        [hashtable]$Config = $script:Config.Stale
+    )
+    $noun = 'user'
+    $item = 'Stale disabled users'
+    if ($Kind -eq 'Computer') { $noun = 'computer'; $item = 'Stale disabled computers' }
+    $sync = Get-AdfaC14SyncInterval -Interval $Interval -Config $Config
+    $caveat = ("lastLogonTimestamp can trail the real last logon by up to the logon-sync interval ({0})." -f $sync.Text)
+    $evidence = ("LDAP filter: disabled (ACCOUNTDISABLE set), lastLogonTimestamp at or before the cutoff, or none and whenCreated at or before it; -Server {0}, listed properties only, at most {1} objects (MaxObjects). Declared population: the disabled accounts of the same kind. StaleDays {2} is the -StaleDays parameter, set by the operator: Microsoft publishes no stale threshold. Inventory only (catalogue INV-009): not graded." -f $DomainName, [int]$Config['MaxObjects'], $StaleDays)
+    $columns = [ordered]@{ Count = ''; NeverLoggedOn = ''; Population = ''; StaleDays = [string]$StaleDays; SyncIntervalDays = $sync.Days; Accounts = '' }
+    $na = { param([string]$Why) New-AdfaC14Row -Area 'Stale' -Scope $DomainName -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail ("{0} The count of stale disabled {1} accounts is not known - not zero." -f $Why, $noun) }
+    if ($null -eq $Raw) { return (& $na 'The accounts were not read.') }
+    if (-not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Ok')) {
+        $err = [string](Get-AdfaConfigValue -Entry $Raw -Name 'Error')
+        $class = Get-AdfaDirectoryReadErrorClass -Message $err -TypeName ([string](Get-AdfaConfigValue -Entry $Raw -Name 'ErrorType'))
+        return (& $na ("Reading the disabled {0} accounts of this domain failed ({1}): {2}." -f $noun, (Get-AdfaReadClassPhrase -Class $class), $err.Trim().TrimEnd('.')))
+    }
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'Capped')) { return (& $na ("The read reached its cap of {0} objects (MaxObjects, a tool default), so the count is incomplete." -f [int]$Config['MaxObjects'])) }
+    if ($sync.Disabled) { return (& $na ("{0}: lastLogonTimestamp updates are disabled, so the attribute cannot show activity." -f $sync.Text)) }
+    if ($StaleDays -le $sync.Days) { return (& $na ("StaleDays {0} is not longer than the logon-sync interval ({1} days), the most lastLogonTimestamp can trail the real last logon. Re-run with a larger -StaleDays." -f $StaleDays, $sync.Days)) }
+    $nowUtc = $Now
+    if ($nowUtc.Kind -eq [System.DateTimeKind]::Local) { $nowUtc = $nowUtc.ToUniversalTime() }
+    $cutoff = $nowUtc.AddDays(-1 * $StaleDays)
+    $stale = @()
+    $never = 0
+    $unclassified = 0
+    foreach ($r in @(Get-AdfaConfigValue -Entry $Raw -Name 'Records' | Where-Object { $null -ne $_ })) {
+        $last = Get-AdfaConfigValue -Entry $r -Name 'LastLogonUtc'
+        $created = Get-AdfaConfigValue -Entry $r -Name 'WhenCreatedUtc'
+        $name = [string](Get-AdfaConfigValue -Entry $r -Name 'Name')
+        if ([bool](Get-AdfaConfigValue -Entry $r -Name 'HasLastLogon')) {
+            if ($last -isnot [datetime]) { $unclassified++; continue }
+            if ($last -le $cutoff) { $stale += $name }
+            continue
+        }
+        if ($created -isnot [datetime]) { $unclassified++; continue }
+        if ($created -le $cutoff) { $stale += $name; $never++ }
+    }
+    if ($unclassified -gt 0) { return (& $na ("{0} returned object(s) carried no readable lastLogonTimestamp and no readable whenCreated, so they could not be classified." -f $unclassified)) }
+    $popOk = ($null -ne $Population -and [bool](Get-AdfaConfigValue -Entry $Population -Name 'Ok'))
+    $popText = ("The disabled {0} accounts of this domain were not counted." -f $noun)
+    if ($null -ne $Population -and -not $popOk) {
+        $perr = [string](Get-AdfaConfigValue -Entry $Population -Name 'Error')
+        $pclass = Get-AdfaDirectoryReadErrorClass -Message $perr -TypeName ([string](Get-AdfaConfigValue -Entry $Population -Name 'ErrorType'))
+        $popText = ("Counting the disabled {0} accounts of this domain failed ({1}): {2}." -f $noun, (Get-AdfaReadClassPhrase -Class $pclass), $perr.Trim().TrimEnd('.'))
+    }
+    if ($popOk) {
+        $columns.Population = [string](Get-AdfaConfigValue -Entry $Population -Name 'Count')
+        if ([bool](Get-AdfaConfigValue -Entry $Population -Name 'Capped')) { $columns.Population = ("more than {0}" -f [int]$Config['MaxObjects']) }
+        $popText = ("The read saw {0} disabled {1} account(s) in this domain." -f $columns.Population, $noun)
+    }
+    # Nothing found is a count only against a declared population the read could see.
+    if ($stale.Count -eq 0 -and -not $popOk) { return (& $na ("{0} A read that returned nothing cannot be told from a read that saw nothing." -f $popText)) }
+    $columns.Count = [string]$stale.Count
+    $columns.NeverLoggedOn = [string]$never
+    $columns.Accounts = Get-AdfaC14NameList -Names $stale -Cap ([int]$Config['NameListCap'])
+    if ($stale.Count -gt 0) {
+        return New-AdfaC14Row -Area 'Stale' -Scope $DomainName -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+            -Detail ("{0} disabled {1} account(s) with no logon recorded for more than {2} days; {3} of them never logged on. {4} {5} Names in the Accounts column. Inventory only, not graded." -f $stale.Count, $noun, $StaleDays, $never, $popText, $caveat)
+    }
+    return New-AdfaC14Row -Area 'Stale' -Scope $DomainName -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+        -Detail ("0 disabled {0} accounts with no logon recorded for more than {1} days, in a complete read. {2} {3} Inventory only, not graded." -f $noun, $StaleDays, $popText, $caveat)
+}
+
+# --- INV-011 -----------------------------------------------------------------------------------
+
+function ConvertFrom-AdfaGpLink {
+    <#
+    .SYNOPSIS
+        Pure: the entries of one gPLink value, "[<GPC DN>;<options>]" each, with or without an
+        LDAP:// prefix. Options 0x1 disabled, 0x2 enforced (Learn group-policy-scope); any other bit
+        is kept as UnknownOptions. An entry that cannot be parsed is kept with Parsed $false, never
+        dropped and never read as "not linked": that includes options that are not ASCII digits or
+        do not fit Int64 (gPLink is a free-form string anyone who may write it can set), and a DN
+        with no DC= part, whose GPO cannot be placed in a domain.
+        DomainDn is the DC= part of the GPC DN, lower case with no spaces: the domain the linked GPO
+        belongs to. The GUID alone does not say that - the two default GPOs have the same GUID in
+        every domain.
+    .OUTPUTS
+        [pscustomobject[]] Raw, Dn, DomainDn, Guid, Options, Disabled, Enforced, UnknownOptions, Parsed.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([AllowNull()][AllowEmptyString()][string]$Value, [Parameter(Mandatory)][hashtable]$Config)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return @() }
+    $entries = @()
+    $unparsed = { param([string]$Text) [pscustomobject]@{ Raw = $Text; Dn = ''; DomainDn = ''; Guid = ''; Options = $null; Disabled = $false; Enforced = $false; UnknownOptions = $false; Parsed = $false } }
+    $found = [regex]::Matches($Value, '\[([^\]]*)\]')
+    if ($found.Count -eq 0) { return @(& $unparsed $Value.Trim()) }
+    foreach ($m in $found) {
+        $inner = [string]$m.Groups[1].Value
+        # [0-9], not \d: in .NET \d matches every Unicode decimal digit, which Int64 does not parse.
+        if ($inner -notmatch '^(?i)(?:LDAP://)?(.+);([0-9]+)$') { $entries += & $unparsed $inner; continue }
+        $dn = [string]$Matches[1]
+        $optionsText = [string]$Matches[2]
+        $options = [int64]0
+        if (-not [int64]::TryParse($optionsText, [System.Globalization.NumberStyles]::None, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$options)) { $entries += & $unparsed $inner; continue }
+        $guid = [regex]::Match($dn, [string]$Config['GuidPattern']).Value
+        if ([string]::IsNullOrWhiteSpace($guid)) { $entries += & $unparsed $inner; continue }
+        $domainPart = [regex]::Match($dn, '(?i)(?:^|,)\s*(DC=.*)$')
+        if (-not $domainPart.Success) { $entries += & $unparsed $inner; continue }
+        $entries += [pscustomobject]@{
+            Raw = $inner; Dn = $dn; DomainDn = (ConvertTo-AdfaGpLinkDomainDn -Dn $domainPart.Groups[1].Value); Guid = $guid.ToUpperInvariant(); Options = $options
+            Disabled = (($options -band 1) -ne 0); Enforced = (($options -band 2) -ne 0); UnknownOptions = (($options -band (-bnot [int64]3)) -ne 0); Parsed = $true
+        }
+    }
+    return @($entries)
+}
+
+function ConvertTo-AdfaGpLinkDomainDn {
+    <#
+    .SYNOPSIS
+        Pure: a domain DN in the one form the GPO inventory compares - lower case, no space around
+        ',' or '='. From a DN when one is given, otherwise built from the DNS name (DC= per label).
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowEmptyString()][string]$Dn = '', [AllowEmptyString()][string]$DomainName = '')
+    $text = $Dn
+    if ([string]::IsNullOrWhiteSpace($text) -and -not [string]::IsNullOrWhiteSpace($DomainName)) {
+        $text = 'DC=' + ((@($DomainName.Trim().TrimEnd('.') -split '\.') | Where-Object { $_ -ne '' }) -join ',DC=')
+    }
+    return ($text.Trim() -replace '\s*([,=])\s*', '$1').ToLowerInvariant()
+}
+
+function Get-AdfaGpoDirectoryRows {
+    <#
+    .SYNOPSIS
+        Pure: "GPO: <guid>" per groupPolicyContainer (status flags, WMI filter, links), "GPO links on a
+        SOM: <domain>" per site, domain or OU that links one, and "GPO directory inventory: <domain>".
+    .DESCRIPTION
+        Display names, DNs and filter names only in columns. A GPO whose links could not be read has
+        Links '' - never 0, never "unlinked" - and the summary is Not Assessed. A failed container read
+        gives the summary alone, Not Assessed. The flags labels are the Gpo table's; a value it does
+        not hold is "unknown". The GroupPolicy-module rows of 'GPO Inventory' are unchanged.
+        A GPO "is a per-domain object that can be linked anywhere in the forest" (Learn
+        group-policy-management-console, read 2026-11-17), so its links are looked for in this
+        domain's SOMs, the sites, and the SOM reads of the other forest domains passed in -OtherSom.
+        A link is credited to this domain's GPO only when the GPC DN in it names this domain, never by
+        GUID alone; this domain is the one the groupPolicyContainer objects' own DNs name, else
+        -DomainDn, else the DC= form of -DomainName. "No link" is stated only when every forest domain's SOMs
+        were read; otherwise a GPO with none found has Links '' and is counted in NoLinkFound, the
+        counts found are a floor, and the summary is Not Assessed when any GPO has none found.
+        -ForestDomains empty means the forest's domain list is not known - the fail-closed case.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [AllowNull()]$Gpc, [AllowNull()]$Som, [AllowNull()]$Site, [AllowNull()]$Wmi,
+        [AllowEmptyString()][string]$DomainDn = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$ForestDomains = @(),
+        [AllowNull()][AllowEmptyCollection()]$OtherSom = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$GpoConfig
+    )
+    $max = [int]$Config['MaxObjects']
+    $evidence = ("groupPolicyContainer objects one level under CN=Policies,CN=System (displayName, flags, gPCWQLFilter, versionNumber); gPLink and gPOptions of the domain head, its OUs and every site, and of the domain head and OUs of every other scoped domain; msWMI-Som under CN=System. Read from the domain, listed properties, at most {0} objects per read. gPLink options: Learn group-policy-scope; gPCWQLFilter, msWMI-Som: Learn adschema; a GPO can be linked anywhere in the forest: Learn group-policy-management-console (read 2026-11-17); flags labels: the Gpo table (MS-GPOL). Inventory only (catalogue INV-011): not graded." -f $max)
+    $sumItem = ("GPO directory inventory: {0}" -f $DomainName)
+    $sumColumns = [ordered]@{ Gpos = ''; Linked = ''; Unlinked = ''; NoLinkFound = ''; Soms = ''; SomsWithNoLink = ''; Links = ''; UnparsedLinks = ''; LinksToOtherGpos = ''; OtherDomainSoms = ''; OtherDomainsNotRead = ''; UnlinkedGpos = ''; NoLinkFoundGpos = '' }
+    $thisDn = ConvertTo-AdfaGpLinkDomainDn -Dn $DomainDn -DomainName $DomainName
+    $gpcCause = Get-AdfaInventoryReadCause -Raw $Gpc -What 'the groupPolicyContainer objects of this domain' -MaxObjects $max
+    if ($gpcCause -ne '') {
+        return @(New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $sumItem -Status $script:Status.NotAssessed -Evidence $evidence -Columns $sumColumns `
+                -Detail ("{0} How many GPOs this domain has is not known - not zero." -f $gpcCause))
+    }
+    $somCause = Get-AdfaInventoryReadCause -Raw $Som -What 'the gPLink of the domain head and its OUs' -MaxObjects $max
+    $siteCause = Get-AdfaInventoryReadCause -Raw $Site -What 'the gPLink of the sites' -MaxObjects $max
+    $wmiCause = Get-AdfaInventoryReadCause -Raw $Wmi -What 'the WMI filters (msWMI-Som)' -MaxObjects $max
+    $linksKnown = ($somCause -eq '' -and $siteCause -eq '')
+    $gpcRecords = @(@(Get-AdfaConfigValue -Entry $Gpc -Name 'Records') | Where-Object { $null -ne $_ })
+    $guids = @{}
+    foreach ($g in $gpcRecords) { $guids[([string](Get-AdfaConfigValue -Entry $g -Name 'Name')).ToUpperInvariant()] = $true }
+    # The domain the GPOs were read from, as their own DNs name it, when they all name one: links are
+    # matched against the domain the containers live in. Otherwise -DomainDn, else the DNS name.
+    $gpcDomains = @(foreach ($g in $gpcRecords) {
+            $m = [regex]::Match([string](Get-AdfaConfigValue -Entry $g -Name 'DistinguishedName'), '(?i),\s*CN=Policies\s*,\s*CN=System\s*,\s*(DC=.*)$')
+            if ($m.Success) { ConvertTo-AdfaGpLinkDomainDn -Dn $m.Groups[1].Value }
+        })
+    $gpcDomains = @($gpcDomains | Select-Object -Unique)
+    if ($gpcDomains.Count -eq 1) { $thisDn = [string]$gpcDomains[0] }
+    $wmiNames = @{}
+    if ($wmiCause -eq '') {
+        foreach ($w in @(@(Get-AdfaConfigValue -Entry $Wmi -Name 'Records') | Where-Object { $null -ne $_ })) {
+            $wmiNames[([string](Get-AdfaConfigValue -Entry $w -Name 'Name')).ToUpperInvariant()] = [string](Get-AdfaConfigValue -Entry $w -Name 'msWMI-Name')
+        }
+    }
+    # The SOMs of the other forest domains: a GPO can be linked from any of them. Domain names go in
+    # the OtherDomainsNotRead column only, never in Detail.
+    $crossCauses = @()
+    $notRead = @()
+    $otherSources = @()
+    $otherDone = 0
+    $forestList = @(@($ForestDomains) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim() })
+    if ($forestList.Count -eq 0) { $crossCauses += "The forest's domain list was not read, so which other domains could link these GPOs is not known." }
+    $otherDomains = @($forestList | Where-Object { $_ -ne $DomainName })
+    $outOfScope = 0
+    foreach ($fd in $otherDomains) {
+        $match = @(@($OtherSom) | Where-Object { $null -ne $_ -and [string](Get-AdfaConfigValue -Entry $_ -Name 'Domain') -eq $fd })
+        if ($match.Count -eq 0) { $outOfScope++; $notRead += $fd; continue }
+        $otherRaw = Get-AdfaConfigValue -Entry $match[0] -Name 'Raw'
+        $otherCause = Get-AdfaInventoryReadCause -Raw $otherRaw -What "the gPLink of another forest domain's head and OUs" -MaxObjects $max
+        if ($otherCause -ne '') { $crossCauses += $otherCause; $notRead += $fd; continue }
+        $otherDone++
+        foreach ($s in @(@(Get-AdfaConfigValue -Entry $otherRaw -Name 'Records') | Where-Object { $null -ne $_ })) { $otherSources += [pscustomobject]@{ Record = $s; IsSite = $false; IsOther = $true } }
+    }
+    if ($outOfScope -gt 0) { $crossCauses += ("The domain head and OUs of {0} other forest domain(s) were not read: they are not in this run's scope (-AllDomains reads them)." -f $outOfScope) }
+    $crossKnown = ($crossCauses.Count -eq 0)
+    $counters = @{}
+    $rows = @()
+    $somCount = 0
+    $somNoLink = 0
+    $linkTotal = 0
+    $unparsedTotal = 0
+    $otherTotal = 0
+    $sources = @()
+    if ($somCause -eq '') { foreach ($s in @(@(Get-AdfaConfigValue -Entry $Som -Name 'Records') | Where-Object { $null -ne $_ })) { $sources += [pscustomobject]@{ Record = $s; IsSite = $false; IsOther = $false } } }
+    if ($siteCause -eq '') { foreach ($s in @(@(Get-AdfaConfigValue -Entry $Site -Name 'Records') | Where-Object { $null -ne $_ })) { $sources += [pscustomobject]@{ Record = $s; IsSite = $true; IsOther = $false } } }
+    $sources += $otherSources
+    foreach ($src in $sources) {
+        $entries = @(ConvertFrom-AdfaGpLink -Value ([string](Get-AdfaConfigValue -Entry $src.Record -Name 'gPLink')) -Config $Config)
+        $parsed = @($entries | Where-Object { $_.Parsed })
+        # This domain's GPO: its GUID AND the domain in its GPC DN, since the default GPOs share a GUID in every domain.
+        $ours = @($parsed | Where-Object { [string]$_.DomainDn -eq $thisDn -and $guids.ContainsKey($_.Guid) })
+        # A site is forest-wide, and another domain's SOM is that domain's: either is listed under this
+        # domain only when it links a GPO of this domain.
+        if (($src.IsSite -or $src.IsOther) -and $ours.Count -eq 0) { continue }
+        $somClass = 'site'
+        if (-not $src.IsSite) {
+            $classes = @(@(Get-AdfaConfigValue -Entry $src.Record -Name 'objectClass') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+            $somClass = ''
+            if ($classes.Count -gt 0) { $somClass = [string]$classes[$classes.Count - 1] }
+        }
+        $unparsed = @($entries | Where-Object { -not $_.Parsed }).Count
+        # Counted as linking only when it holds a link that was read: a gPLink that is blank, or holds
+        # only entries that could not be parsed, links nothing that is known.
+        if ($parsed.Count -gt 0) { $somCount++ } else { $somNoLink++ }
+        if (-not $src.IsSite -and -not $src.IsOther) { $unparsedTotal += $unparsed; $otherTotal += ($parsed.Count - $ours.Count) }
+        foreach ($e in $ours) {
+            $linkTotal++
+            if (-not $counters.ContainsKey($e.Guid)) { $counters[$e.Guid] = @{ Links = 0; Enabled = 0; Disabled = 0; Enforced = 0 } }
+            $counters[$e.Guid]['Links']++
+            if ($e.Disabled) { $counters[$e.Guid]['Disabled']++ } else { $counters[$e.Guid]['Enabled']++ }
+            if ($e.Enforced) { $counters[$e.Guid]['Enforced']++ }
+        }
+        $somDetail = 'gPLink read; its entries are counted in the columns (options 0x1 disabled, 0x2 enforced). gPOptions is shown raw: the value that means block inheritance is not published. Inventory only, not graded.'
+        if ($src.IsOther) { $somDetail = ("A site, domain or OU of another forest domain that links at least one GPO of this domain. {0}" -f $somDetail) }
+        elseif ($parsed.Count -eq 0) { $somDetail = ("gPLink is present but holds no link that could be read, so this SOM links no known GPO. {0}" -f $somDetail) }
+        $gpOptions = Get-AdfaConfigValue -Entry $src.Record -Name 'gPOptions'
+        $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item ("GPO links on a SOM: {0}" -f $DomainName) -Status $script:Status.Info -Evidence $evidence `
+            -Columns ([ordered]@{ Som = [string](Get-AdfaConfigValue -Entry $src.Record -Name 'DistinguishedName'); SomClass = $somClass; Links = [string]$parsed.Count
+                LinksToThisDomain = [string]$ours.Count
+                Disabled = [string]@($parsed | Where-Object { $_.Disabled }).Count; Enforced = [string]@($parsed | Where-Object { $_.Enforced }).Count
+                Unparsed = [string]$unparsed; GpOptions = [string]$gpOptions }) `
+            -Detail $somDetail
+    }
+    $crossText = ($crossCauses -join ' ')
+    $unlinked = @()
+    $noLinkFound = @()
+    $linked = 0
+    foreach ($g in $gpcRecords) {
+        $guid = ([string](Get-AdfaConfigValue -Entry $g -Name 'Name')).ToUpperInvariant()
+        $display = [string](Get-AdfaConfigValue -Entry $g -Name 'displayName')
+        $flagsValue = Get-AdfaConfigValue -Entry $g -Name 'flags'
+        $label = 'unknown'
+        $flagNumber = ConvertTo-AdfaInventoryInteger -Value $flagsValue
+        if ($null -ne $flagNumber) {
+            foreach ($fl in @($GpoConfig['FlagLabels'])) { if ([int64](Get-AdfaConfigValue -Entry $fl -Name 'Value') -eq $flagNumber) { $label = [string](Get-AdfaConfigValue -Entry $fl -Name 'Label') } }
+        }
+        $wql = [string](Get-AdfaConfigValue -Entry $g -Name 'gPCWQLFilter')
+        $wmiGuid = ''
+        $wmiName = ''
+        if (-not [string]::IsNullOrWhiteSpace($wql)) {
+            $wmiGuid = ([regex]::Match($wql, [string]$Config['GuidPattern']).Value).ToUpperInvariant()
+            if ($wmiGuid -eq '') { $wmiName = '(filter value not parsed)' }
+            elseif ($wmiCause -ne '') { $wmiName = '(WMI filters not read)' }
+            elseif ($wmiNames.ContainsKey($wmiGuid)) { $wmiName = [string]$wmiNames[$wmiGuid] }
+            else { $wmiName = '(no WMI filter with this GUID found)' }
+        }
+        $columns = [ordered]@{ DisplayName = $display; Flags = [string]$flagsValue; FlagsLabel = $label; VersionNumber = [string](Get-AdfaConfigValue -Entry $g -Name 'versionNumber')
+            WmiFilter = $wmiGuid; WmiFilterName = $wmiName; Links = ''; EnabledLinks = ''; DisabledLinks = ''; EnforcedLinks = '' }
+        $detail = 'groupPolicyContainer read; its status flags, WMI filter and links are in the columns. Inventory only, not graded.'
+        if ($linksKnown) {
+            $c = @{ Links = 0; Enabled = 0; Disabled = 0; Enforced = 0 }
+            if ($counters.ContainsKey($guid)) { $c = $counters[$guid] }
+            if ([int]$c['Links'] -gt 0) {
+                $columns.Links = [string]$c['Links']; $columns.EnabledLinks = [string]$c['Enabled']; $columns.DisabledLinks = [string]$c['Disabled']; $columns.EnforcedLinks = [string]$c['Enforced']
+                $linked++
+                if (-not $crossKnown) { $detail = ("{0} The link counts are a floor: the SOMs of every other forest domain were not read." -f $detail) }
+            }
+            elseif ($crossKnown) {
+                $columns.Links = '0'; $columns.EnabledLinks = '0'; $columns.DisabledLinks = '0'; $columns.EnforcedLinks = '0'
+                $unlinked += $display
+            }
+            else {
+                # None found is not none: a SOM of a domain that was not read may link it.
+                $noLinkFound += $display
+                $detail = ("{0} No link to it was found in the SOMs read, but the SOMs of every other forest domain were not read, so whether it is linked is not known." -f $detail)
+            }
+        }
+        else { $detail = ("{0} Its links could not be read, so whether it is linked is not known." -f $detail) }
+        $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item ("GPO: {0}" -f $guid) -Status $script:Status.Info -Evidence $evidence -Columns $columns -Detail $detail
+    }
+    $sumColumns.Gpos = [string]$gpcRecords.Count
+    $notes = ''
+    if ($wmiCause -ne '') { $notes = (" {0} WMI filter names are not shown." -f $wmiCause) }
+    if (-not $linksKnown) {
+        $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $sumItem -Status $script:Status.NotAssessed -Evidence $evidence -Columns $sumColumns `
+            -Detail ("{0} GPO(s) read. {1}{2} Which GPOs are linked is not known - none is called unlinked.{3}" -f $gpcRecords.Count, $somCause, $siteCause, $notes)
+        return @($rows)
+    }
+    $sumColumns.Linked = [string]$linked
+    $sumColumns.Soms = [string]$somCount
+    $sumColumns.SomsWithNoLink = [string]$somNoLink
+    $sumColumns.Links = [string]$linkTotal
+    $sumColumns.UnparsedLinks = [string]$unparsedTotal
+    $sumColumns.LinksToOtherGpos = [string]$otherTotal
+    $sumColumns.OtherDomainsNotRead = (@($notRead) -join '; ')
+    $readText = "this domain's head and OUs and the sites"
+    if ($otherDone -gt 0) { $readText = ("{0}, and the domain head and OUs of {1} other forest domain(s)" -f $readText, $otherDone) }
+    $somText = ("{0} site(s), domain or OU(s) with at least one link read" -f $somCount)
+    if ($somNoLink -gt 0) { $somText = ("{0}; {1} more hold a gPLink with no link that could be read" -f $somText, $somNoLink) }
+    if ($crossKnown) {
+        $sumColumns.Unlinked = [string]$unlinked.Count
+        $sumColumns.NoLinkFound = [string]$unlinked.Count
+        $sumColumns.OtherDomainSoms = 'All read'
+        $sumColumns.UnlinkedGpos = Get-AdfaC14NameList -Names $unlinked -Cap ([int]$Config['NameListCap'])
+        $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $sumItem -Status $script:Status.Info -Evidence $evidence -Columns $sumColumns `
+            -Detail ("{0} GPO(s), {1} linked and {2} with no link in any site, domain or OU of the forest ({3} read), from {4}. Counts in the columns; unlinked GPO names in UnlinkedGpos. Inventory only, not graded.{5}" -f $gpcRecords.Count, $linked, $unlinked.Count, $readText, $somText, $notes)
+        return @($rows)
+    }
+    # Partial: the SOMs of some other forest domain were not read. A link found is a link; none found
+    # is not a measured absence, so the summary is Not Assessed whenever a GPO has none found.
+    $sumColumns.NoLinkFound = [string]$noLinkFound.Count
+    $sumColumns.OtherDomainSoms = 'Not all read'
+    $sumColumns.NoLinkFoundGpos = Get-AdfaC14NameList -Names $noLinkFound -Cap ([int]$Config['NameListCap'])
+    $status = $script:Status.Info
+    if ($noLinkFound.Count -gt 0) { $status = $script:Status.NotAssessed }
+    $rows += New-AdfaC14Row -Area 'Inventory' -Scope $DomainName -Item $sumItem -Status $status -Evidence $evidence -Columns $sumColumns `
+        -Detail ("{0} GPO(s), {1} with a link found and {2} with no link found in the SOMs read ({3}), from {4}. {5} A GPO can be linked from a site, domain or OU anywhere in the forest (Learn group-policy-management-console, read 2026-11-17), so none is called unlinked and the link counts are a floor. GPO names with no link found in NoLinkFoundGpos. Inventory only, not graded.{6}" -f $gpcRecords.Count, $linked, $noLinkFound.Count, $readText, $somText, $crossText, $notes)
+    return @($rows)
+}
+
+function Get-AdfaGpoDirectoryInventory {
+    <#
+    .SYNOPSIS
+        Gpo: per scoped domain, the groupPolicyContainer objects, the gPLink of the domain head and
+        its OUs and the WMI filters; the sites once per run (INV-011). Directory reads only.
+    .DESCRIPTION
+        Every scoped domain is read first, so each domain's GPOs are matched against the SOMs of
+        every other scoped domain too: a GPO can be linked from any domain of the forest. The
+        domains of -ForestDomains outside the scope are not read; their absence is named in the
+        rows and keeps "no link" from being stated.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][string[]]$Domains = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ForestDomains = @(),
+        [AllowEmptyString()][string]$RootDomain = '',
+        [AllowNull()][AllowEmptyString()][string]$ForestError = '',
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$GpoConfig
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ForestError)) {
+        return @(New-AdfaC14Row -Area 'Inventory' -Item 'GPO directory inventory: (forest unreadable)' -Status $script:Status.NotAssessed `
+                -Detail ("The forest could not be read ({0}), so no domain was scoped and no GPO was read. This is not a clean result." -f $ForestError.Trim().TrimEnd('.')))
+    }
+    $max = [int]$Config['MaxObjects']
+    $somProps = @($Config['SomProperties'])
+    $root = Get-AdfaRootDseRaw -AdParams $AdParams
+    $siteServer = $RootDomain
+    if ([string]::IsNullOrWhiteSpace($siteServer)) { $siteServer = @($Domains)[0] }
+    if ($root.Ok -and -not [string]::IsNullOrWhiteSpace($root.ConfigurationNamingContext) -and -not [string]::IsNullOrWhiteSpace($siteServer)) {
+        $site = Get-AdfaInventoryDirectoryRaw -Server $siteServer -SearchBase ("CN=Sites,{0}" -f $root.ConfigurationNamingContext) -SearchScope 'Subtree' -LDAPFilter '(&(objectClass=site)(gPLink=*))' -Properties $somProps -MaxObjects $max -AdParams $AdParams
+    }
+    else { $site = New-AdfaInventoryFailedRead -ErrorText ("the configuration naming context could not be read from the rootDSE: {0}" -f $root.Error) -ErrorType $root.ErrorType }
+    $reads = @()
+    foreach ($d in @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $dn = Get-AdfaInventoryDomainDn -DomainName $d -AdParams $AdParams
+        $domainDn = ''
+        if ($dn.Ok) {
+            $domainDn = [string]$dn.Dn
+            $gpc = Get-AdfaInventoryDirectoryRaw -Server $d -SearchBase ("CN=Policies,CN=System,{0}" -f $dn.Dn) -SearchScope 'OneLevel' -LDAPFilter '(objectClass=groupPolicyContainer)' -Properties @($Config['GpoContainerProperties']) -MaxObjects $max -AdParams $AdParams
+            $som = Get-AdfaInventoryDirectoryRaw -Server $d -SearchBase $dn.Dn -SearchScope 'Subtree' -LDAPFilter '(gPLink=*)' -Properties $somProps -MaxObjects $max -AdParams $AdParams
+            $wmi = Get-AdfaInventoryDirectoryRaw -Server $d -SearchBase ("CN=System,{0}" -f $dn.Dn) -SearchScope 'Subtree' -LDAPFilter '(objectClass=msWMI-Som)' -Properties @($Config['WmiFilterProperties']) -MaxObjects $max -AdParams $AdParams
+        }
+        else {
+            $gpc = New-AdfaInventoryFailedRead -ErrorText ("the domain's distinguished name could not be read: {0}" -f $dn.Error) -ErrorType $dn.ErrorType
+            $som = $gpc
+            $wmi = $gpc
+        }
+        $reads += [pscustomobject]@{ Domain = $d; DomainDn = $domainDn; Gpc = $gpc; Som = $som; Wmi = $wmi }
+    }
+    $rows = @()
+    foreach ($r in $reads) {
+        $other = @($reads | Where-Object { $_.Domain -ne $r.Domain } | ForEach-Object { [pscustomobject]@{ Domain = $_.Domain; Raw = $_.Som } })
+        $rows += @(Get-AdfaGpoDirectoryRows -DomainName $r.Domain -DomainDn $r.DomainDn -Gpc $r.Gpc -Som $r.Som -Site $site -Wmi $r.Wmi -ForestDomains $ForestDomains -OtherSom $other -Config $Config -GpoConfig $GpoConfig)
+    }
+    return @($rows)
+}
+
+# --- INV-012 -----------------------------------------------------------------------------------
+
+function Get-AdfaEventInventoryRaw {
+    <#
+    .SYNOPSIS
+        The event seam of the C15 inventory: one bounded Get-WinEvent read of one log on one DC.
+        Never throws.
+    .DESCRIPTION
+        -FilterHashtable LogName, Level and StartTime, and -MaxEvents always passed: without it
+        "The default is to return all the events in the logs" (Learn). Each event is reduced to its
+        ID, level, provider and time as it arrives; no message is kept. A read that returned
+        MaxEvents events is Truncated. "No events" and "no such log" are recognised by the config's
+        patterns (not published by Microsoft; unmeasured against a real DC); any other error is kept
+        and quoted, never read as zero events. An UnauthorizedAccessException, thrown or wrapped
+        as an InnerException, is marked ErrorCode AccessDenied, so a refusal in another language
+        is still told apart.
+        "No events" is never taken from the filtered read alone: Get-WinEvent -FilterHashtable
+        answers an account that may not read the log with NoMatchingEventsFound, the same answer as
+        an empty window (measured on Windows PowerShell 5.1 by the review of this row, 2026-11-17;
+        not published by Microsoft). So a filtered read that found nothing is followed by one
+        unfiltered read of a single event (-LogName -MaxEvents 1), which does raise
+        UnauthorizedAccessException for that account. Only when that read returns an event, or
+        also finds none, is NoEvents set; a refusal is AccessDenied and any other error is kept.
+    .OUTPUTS
+        [pscustomobject] Ok, NoEvents, LogAbsent, Events, Truncated, Error, ErrorId, ErrorCode.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][string]$LogName,
+        [Parameter(Mandatory)][datetime]$StartTime,
+        [Parameter(Mandatory)][int[]]$Levels,
+        [Parameter(Mandatory)][ValidateRange(1, 100000)][int]$MaxEvents,
+        [pscredential]$Credential,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $out = [pscustomobject]@{ Ok = $false; NoEvents = $false; LogAbsent = $false; Events = @(); Truncated = $false; Error = ''; ErrorId = ''; ErrorCode = '' }
+    $isDenied = {
+        param($Exception)
+        $ex = $Exception
+        while ($null -ne $ex) {
+            if ($ex -is [System.UnauthorizedAccessException]) { return $true }
+            $ex = $ex.InnerException
+        }
+        return $false
+    }
+    $isNoEvents = { param([string]$Message, [string]$ErrorId) ($Message -match [string]$Config['EventNoEventsPattern'] -or $ErrorId -match [string]$Config['EventNoEventsPattern']) }
+    $foundNone = $false
+    try {
+        $filter = @{ LogName = $LogName; Level = @($Levels); StartTime = $StartTime }
+        $gwe = @{ ComputerName = $ComputerName; FilterHashtable = $filter; MaxEvents = $MaxEvents; ErrorAction = 'Stop' }
+        if ($Credential) { $gwe.Credential = $Credential }
+        $list = New-Object System.Collections.ArrayList
+        Get-WinEvent @gwe | ForEach-Object {
+            if ($null -ne $_) { [void]$list.Add([pscustomobject]@{ Id = [int](Get-AdfaConfigValue -Entry $_ -Name 'Id'); Level = (Get-AdfaConfigValue -Entry $_ -Name 'Level'); ProviderName = [string](Get-AdfaConfigValue -Entry $_ -Name 'ProviderName'); TimeCreated = (Get-AdfaConfigValue -Entry $_ -Name 'TimeCreated') }) }
+        }
+        $out.Events = @($list.ToArray())
+        $out.Truncated = ($list.Count -ge $MaxEvents)
+        if ($list.Count -eq 0) { $foundNone = $true } else { $out.Ok = $true }
+    }
+    catch {
+        $message = [string]$_.Exception.Message
+        $errorId = [string]$_.FullyQualifiedErrorId
+        if (& $isNoEvents $message $errorId) { $foundNone = $true }
+        elseif ($message -match [string]$Config['EventNoLogPattern'] -or $errorId -match [string]$Config['EventNoLogPattern']) { $out.LogAbsent = $true; $out.Error = $message }
+        else {
+            $out.Error = $message
+            $out.ErrorId = $errorId
+            if (& $isDenied $_.Exception) { $out.ErrorCode = 'AccessDenied' }
+        }
+    }
+    if ($foundNone) {
+        # The filtered read cannot tell an empty window from a log the account may not read: one
+        # unfiltered single-event read can.
+        try {
+            $probe = @{ ComputerName = $ComputerName; LogName = $LogName; MaxEvents = 1; ErrorAction = 'Stop' }
+            if ($Credential) { $probe.Credential = $Credential }
+            $null = @(Get-WinEvent @probe)
+            $out.Ok = $true
+            $out.NoEvents = $true
+        }
+        catch {
+            $message = [string]$_.Exception.Message
+            $errorId = [string]$_.FullyQualifiedErrorId
+            if (& $isDenied $_.Exception) {
+                $out.ErrorCode = 'AccessDenied'
+                $out.Error = $message
+                $out.ErrorId = $errorId
+            }
+            elseif (& $isNoEvents $message $errorId) { $out.Ok = $true; $out.NoEvents = $true }
+            else {
+                $out.Error = ("the filtered read found no event, and a one-event read to confirm the log can be read failed: {0}" -f $message)
+                $out.ErrorId = $errorId
+            }
+        }
+    }
+    return $out
+}
+
+function Get-AdfaEventInventoryRows {
+    <#
+    .SYNOPSIS
+        Pure: "Event log: <log> on <dc>" and, per event ID, "Event group: <log> <id> on <dc>" (level,
+        provider, count, first and last), worst level first, at most EventGroupCap groups.
+    .DESCRIPTION
+        Inventory only: no event is graded. A count read at MaxEvents, or over a log that does not
+        reach back across the window, is a floor and says so. None found is Info 0 only over a log
+        that covers the window; otherwise Not Assessed. A log that does not exist is Info "log
+        absent" (the repo has no Not Applicable status). A refusal, an unreachable DC and any other
+        error are Not Assessed, each with its own cause.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][string]$LogName,
+        [AllowNull()]$Raw,
+        [AllowNull()]$Coverage,
+        [AllowNull()][AllowEmptyString()][string]$Unreachable = '',
+        [int]$LookbackDays = 14,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $cap = [int]$Config['EventGroupCap']
+    $levelNames = $Config['EventLevelNames']
+    $item = ("Event log: {0} on {1}" -f $LogName, $ComputerName)
+    $evidence = ("Get-WinEvent -ComputerName <dc> -FilterHashtable LogName, Level 1, 2, 3 (Critical, Error, Warning), StartTime {0} days back (-EventLookbackDays), -MaxEvents {1} (a tool default: without it Get-WinEvent returns every event); when that finds nothing, one -LogName -MaxEvents 1 read confirms the log can be read, since the filtered read answers a refusal as no events. Grouped by event ID, at most {2} groups listed (EventGroupCap, a tool default). Learn get-winevent, read 2026-11-17. Inventory only (catalogue INV-012): no event is graded." -f $LookbackDays, [int]$Config['EventMaxEvents'], $cap)
+    $columns = [ordered]@{ Log = $LogName; Events = ''; DistinctIds = ''; Critical = ''; Error = ''; Warning = ''; Truncated = ''; Coverage = '' }
+    $na = { param([string]$Why) @(New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail $Why) }
+    if (-not [string]::IsNullOrWhiteSpace($Unreachable)) { return (& $na ("{0} The {1} log was not read." -f $Unreachable.Trim(), $LogName)) }
+    if ($null -eq $Raw) { return (& $na ("The {0} log was not read." -f $LogName)) }
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'LogAbsent')) {
+        return @(New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+                -Detail ("log absent: this DC has no {0} log (the DNS Server log exists only on DNS servers, the File Replication Service log only where FRS runs), so there was nothing to read. Not applicable, not a fault." -f $LogName))
+    }
+    if (-not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Ok')) {
+        $err = ([string](Get-AdfaConfigValue -Entry $Raw -Name 'Error')).Trim()
+        if ((Get-AdfaRemoteReadErrorClass -Message $err -ErrorCode ([string](Get-AdfaConfigValue -Entry $Raw -Name 'ErrorCode'))) -eq 'AccessDenied') {
+            return (& $na ("Access denied: the account running the assessment could not read the {0} log of this DC ({1}). Members of Event Log Readers (S-1-5-32-573) can read event logs; the log's own permissions decide." -f $LogName, $err.TrimEnd('.')))
+        }
+        return (& $na ("Read failed: the {0} log of this DC could not be read: {1}. Its events are not known - not zero." -f $LogName, $err.TrimEnd('.')))
+    }
+    $coverageState = ''
+    if ($null -ne $Coverage) { $coverageState = [string](Get-AdfaConfigValue -Entry $Coverage -Name 'Coverage') }
+    $columns.Coverage = $coverageState
+    $covered = ($coverageState -eq 'Covered')
+    $events = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Events') | Where-Object { $null -ne $_ })
+    $truncated = [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Truncated')
+    if ($truncated) { $columns.Truncated = 'Yes' } else { $columns.Truncated = 'No' }
+    if ($events.Count -eq 0) {
+        if (-not $covered) {
+            $state = $coverageState
+            if ($state -eq '') { $state = 'not measured' }
+            return (& $na ("No event at levels Critical, Error and Warning found, but the log's reach back over the {0}-day window is {1}, so none found is not a measurement of the window." -f $LookbackDays, $state))
+        }
+        $columns.Events = '0'; $columns.DistinctIds = '0'; $columns.Critical = '0'; $columns.Error = '0'; $columns.Warning = '0'
+        return @(New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+                -Detail ("0 events at levels Critical, Error and Warning in the last {0} days; the log reaches back over the whole window. Inventory only, not graded." -f $LookbackDays))
+    }
+    $levelCount = @{ 1 = 0; 2 = 0; 3 = 0 }
+    foreach ($e in $events) { $lv = 0; if ([int]::TryParse([string]$e.Level, [ref]$lv) -and $levelCount.ContainsKey($lv)) { $levelCount[$lv]++ } }
+    $groups = @()
+    foreach ($g in @($events | Group-Object -Property Id)) {
+        $members = @($g.Group)
+        $worst = 99
+        foreach ($m in $members) { $lv = 99; if ([int]::TryParse([string]$m.Level, [ref]$lv) -and $lv -lt $worst) { $worst = $lv } }
+        $times = @($members | ForEach-Object { $_.TimeCreated } | Where-Object { $_ -is [datetime] } | Sort-Object)
+        $groups += [pscustomobject]@{ Id = [int]$g.Name; Worst = $worst; Count = $members.Count; Provider = [string]$members[0].ProviderName; First = $(if ($times.Count -gt 0) { $times[0] } else { $null }); Last = $(if ($times.Count -gt 0) { $times[$times.Count - 1] } else { $null }) }
+    }
+    $groups = @($groups | Sort-Object -Property @{ Expression = 'Worst'; Ascending = $true }, @{ Expression = 'Count'; Descending = $true }, @{ Expression = 'Id'; Ascending = $true })
+    $shown = @($groups | Select-Object -First $cap)
+    $omitted = $groups.Count - $shown.Count
+    $columns.Events = [string]$events.Count
+    $columns.DistinctIds = [string]$groups.Count
+    $columns.Critical = [string]$levelCount[1]; $columns.Error = [string]$levelCount[2]; $columns.Warning = [string]$levelCount[3]
+    $detail = ("{0} event(s) at levels Critical, Error and Warning in the last {1} days, {2} distinct event ID(s); {3} listed as Event group rows" -f $events.Count, $LookbackDays, $groups.Count, $shown.Count)
+    if ($omitted -gt 0) { $detail = ("{0}, and {1} more not listed (EventGroupCap {2}, a tool default)" -f $detail, $omitted, $cap) }
+    $detail = ("{0}." -f $detail)
+    if ($truncated -or -not $covered) {
+        $why = @()
+        if ($truncated) { $why += ("the read stopped at MaxEvents {0}" -f [int]$Config['EventMaxEvents']) }
+        if (-not $covered) { $c = $coverageState; if ($c -eq '') { $c = 'not measured' }; $why += ("the log's reach back over the window is {0}" -f $c) }
+        $detail = ("{0} The count is a floor - at least {1} - because {2}." -f $detail, $events.Count, ($why -join ' and '))
+    }
+    $rows = @(New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns -Detail ("{0} Inventory only, not graded." -f $detail))
+    # A read cut at MaxEvents (Get-WinEvent returns the newest first) or a log that does not reach
+    # back leaves older events out: each group's Count is then a floor and First may be later than
+    # the real first occurrence, and every group row says so.
+    $partial = ($truncated -or -not $covered)
+    $groupDetail = 'Occurrences of this event ID in the window; level, provider, count, first and last in the columns. Inventory only, not graded.'
+    if ($partial) {
+        $groupDetail = ("Occurrences of this event ID found in the window, from a partial read ({0}): Count is a floor - at least this many - and First is the earliest event read, not necessarily the first in the window. Level, provider, count, first and last in the columns. Inventory only, not graded." -f ($why -join ' and '))
+    }
+    foreach ($g in $shown) {
+        $levelName = [string]$g.Worst
+        if ($null -ne $levelNames -and $levelNames.ContainsKey([string]$g.Worst)) { $levelName = [string]$levelNames[[string]$g.Worst] }
+        $first = ''
+        $last = ''
+        if ($g.First -is [datetime]) { $first = $g.First.ToString('yyyy-MM-dd HH:mm', $inv) }
+        if ($g.Last -is [datetime]) { $last = $g.Last.ToString('yyyy-MM-dd HH:mm', $inv) }
+        $countText = [string]$g.Count
+        $partialText = 'No'
+        if ($partial) { $countText = ("at least {0}" -f $g.Count); $partialText = 'Yes' }
+        $rows += New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item ("Event group: {0} {1} on {2}" -f $LogName, $g.Id, $ComputerName) -Status $script:Status.Info -Evidence $evidence `
+            -Columns ([ordered]@{ Log = $LogName; EventId = [string]$g.Id; Level = $levelName; Provider = $g.Provider; Count = $countText; First = $first; Last = $last; PartialRead = $partialText }) `
+            -Detail $groupDetail
+    }
+    return @($rows)
+}
+
+function Get-AdfaEventInventory {
+    <#
+    .SYNOPSIS
+        DsEvents: per DC of every scoped domain, each configured log read once by level, bounded by
+        -EventLookbackDays and EventMaxEvents (INV-012), with a population row for each scoped domain
+        no DC row covers.
+    .DESCRIPTION
+        A DC the reachability probe classified unreachable, or whose RPC (135) does not answer the
+        shared probe, is not read; every log gets a Not Assessed row saying so. The log's coverage of
+        the window (Get-AdfaEventLogCoverageForLog) is measured after a read that worked.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        [int]$LookbackDays = 14,
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rows = @()
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaC14Row -Area 'Inventory' -Scope ([string]$gap.Domain) -Item ("Events (population): {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No event log of its DCs was read.')
+    }
+    if ($targets.Count -eq 0) {
+        $why = ''
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = (" Domain controller enumeration failed: {0}." -f $EnumerationError.Trim().TrimEnd('.')) }
+        $rows += New-AdfaC14Row -Area 'Inventory' -Item 'Events (population): (no domain controller)' -Status $script:Status.NotAssessed `
+            -Detail ("No domain controllers were enumerated, so no event log was read.{0} This is not a clean result." -f $why)
+        return @($rows)
+    }
+    $start = (Get-Date).AddDays(-1 * $LookbackDays)
+    $rpcPort = [int]$Config['RpcPort']
+    $logs = @($Config['EventLogs'])
+    $levels = @($Config['EventLevels'] | ForEach-Object { [int]$_ })
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-AdfaC14Row -Area 'Inventory' -Scope $scope -Item 'Event log: (all) on (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no event log was read.'
+            continue
+        }
+        $unreachable = Get-AdfaDcReachCause -HostName $dc
+        if ([string]::IsNullOrWhiteSpace($unreachable) -and -not (Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs)) {
+            $unreachable = ("Unreachable: RPC ({0}) did not answer within {1} ms, so no event log was read remotely." -f $rpcPort, $PortTimeoutMs)
+        }
+        foreach ($log in $logs) {
+            if (-not [string]::IsNullOrWhiteSpace($unreachable)) {
+                $rows += @(Get-AdfaEventInventoryRows -ComputerName $dc -Scope $scope -LogName $log -Raw $null -Coverage $null -Unreachable $unreachable -LookbackDays $LookbackDays -Config $Config)
+                continue
+            }
+            $raw = Get-AdfaEventInventoryRaw -ComputerName $dc -LogName $log -StartTime $start -Levels $levels -MaxEvents ([int]$Config['EventMaxEvents']) -Credential $Credential -Config $Config
+            $coverage = $null
+            if ([bool]$raw.Ok) { $coverage = Get-AdfaEventLogCoverageForLog -ComputerName $dc -LogName $log -Credential $Credential -WindowStart $start }
+            $rows += @(Get-AdfaEventInventoryRows -ComputerName $dc -Scope $scope -LogName $log -Raw $raw -Coverage $coverage -LookbackDays $LookbackDays -Config $Config)
+        }
+    }
+    return @($rows)
+}
+
+# --- INV-015 -----------------------------------------------------------------------------------
+
+function Get-AdfaDcW32TimeRaw {
+    <#
+    .SYNOPSIS
+        The registry seam of INV-015: Type, NtpServer and AnnounceFlags of one DC, in one bounded
+        CIM session, with the two StdRegProv Get methods this script already uses. Never throws.
+    .DESCRIPTION
+        GetStringValue for a String value, GetDWORDValue for a Dword value, one call per value, no
+        retry and no other method; each answer is kept as the provider gave it (a value not set, a
+        refusal and a wrong type are all answers). Ok is $false only when the session could not be
+        opened or no value got an answer, which lets the transport loop try the other protocol. The
+        session is always closed, with -WhatIf and -Confirm forced off (see Get-AdfaDcDiskRaw).
+    .OUTPUTS
+        [pscustomobject] Ok, Protocol, Error, ErrorCode, Values (Id, Key, ValueName, Kind, Answered,
+        ReturnValue, Value, Method, Error, ErrorCode).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [ValidateSet('Wsman', 'Dcom')][string]$Protocol = 'Wsman',
+        [pscredential]$Credential,
+        [int]$OperationTimeoutSec = 90,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()]$Values
+    )
+    $out = [pscustomobject]@{ Ok = $false; Protocol = $Protocol; Error = ''; ErrorCode = ''; Values = @() }
+    $session = $null
+    try {
+        $sessionArgs = @{ ComputerName = $ComputerName; OperationTimeoutSec = [uint32]$OperationTimeoutSec; ErrorAction = 'Stop' }
+        if ($Protocol -eq 'Dcom') { $sessionArgs.SessionOption = New-CimSessionOption -Protocol Dcom }
+        if ($Credential) { $sessionArgs.Credential = $Credential }
+        $session = New-CimSession @sessionArgs
+        $answered = $false
+        $firstError = ''
+        $firstCode = ''
+        $entries = New-Object System.Collections.ArrayList
+        foreach ($definition in @($Values)) {
+            if ($null -eq $definition) { continue }
+            $key = [string](Get-AdfaConfigValue -Entry $definition -Name 'Key')
+            $valueName = [string](Get-AdfaConfigValue -Entry $definition -Name 'ValueName')
+            $kind = [string](Get-AdfaConfigValue -Entry $definition -Name 'Kind')
+            if ($kind -eq 'Dword') { $read = Get-AdfaStdRegDwordValue -CimSession $session -Key $key -ValueName $valueName -OperationTimeoutSec $OperationTimeoutSec }
+            else { $read = Get-AdfaStdRegStringValue -CimSession $session -Key $key -ValueName $valueName -OperationTimeoutSec $OperationTimeoutSec }
+            if ($read.Answered) { $answered = $true }
+            elseif ($firstError -eq '') { $firstError = [string]$read.Error; $firstCode = [string]$read.ErrorCode }
+            [void]$entries.Add([pscustomobject]@{
+                    Id = [string](Get-AdfaConfigValue -Entry $definition -Name 'Id'); Key = $key; ValueName = $valueName; Kind = $kind
+                    Answered = [bool]$read.Answered; ReturnValue = $read.ReturnValue; Value = $read.Value
+                    Method = [string]$read.Method; Error = [string]$read.Error; ErrorCode = [string]$read.ErrorCode
+                })
+        }
+        $out.Values = $entries.ToArray()
+        if ($answered) { $out.Ok = $true }
+        else {
+            $out.Error = $firstError
+            $out.ErrorCode = $firstCode
+            if ($out.Error -eq '') { $out.Error = 'No registry value got an answer from the DC.' }
+        }
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $nativeCode = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $nativeCode -and $null -ne $nativeCode.Value) { $out.ErrorCode = [string]$nativeCode.Value }
+    }
+    finally {
+        if ($null -ne $session) {
+            try { Remove-CimSession -CimSession $session -WhatIf:$false -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+    return $out
+}
+
+function Get-AdfaW32TimeConfigRow {
+    <#
+    .SYNOPSIS
+        Pure: "W32Time configuration: <dc>" - Type, NtpServer and AnnounceFlags from the service
+        registry, in columns, never graded (INV-015, reference N21).
+    .DESCRIPTION
+        A value not set (StdRegProv 1 or 2, measured, not published) is "(not set)"; NtpServer not
+        set is the documented default on domain members. Not Assessed when the DC was unreachable,
+        access was denied, the read failed, or any value could not be read (refused, of another
+        type, failed, or not answered) - each named. The policy area that overrides these values is
+        not read, and the row says so.
+    .OUTPUTS
+        [pscustomobject]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()]$Read,
+        [AllowNull()][AllowEmptyString()][string]$Unreachable = '',
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("W32Time configuration: {0}" -f $ComputerName)
+    $evidence = 'StdRegProv GetStringValue (Type and NtpServer under SYSTEM\CurrentControlSet\Services\W32Time\Parameters) and GetDWORDValue (AnnounceFlags under ...\W32Time\Config) over one CIM session, WinRM then DCOM; needs local Administrators on the DC. Learn windows-time-service-tools-and-settings and configure-authoritative-time-server, read 2026-11-17. Inventory only (catalogue INV-015): no expected value is graded.'
+    $policy = 'These are the service registry values. A Group Policy value under HKLM\SOFTWARE\Policies\Microsoft\W32Time overrides them (Learn: with the NTP client policy applied, W32Time does not use the NtpServer registry value); the policy area is not read, so this may not be the effective configuration.'
+    $columns = [ordered]@{ Type = ''; NtpServer = ''; AnnounceFlags = ''; Transport = '' }
+    $na = { param([string]$Why) New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail $Why }
+    if (-not [string]::IsNullOrWhiteSpace($Unreachable)) { return (& $na ("{0} No W32Time value was read." -f $Unreachable.Trim())) }
+    if ($null -eq $Read) { return (& $na 'No W32Time value was read.') }
+    $raw = Get-AdfaConfigValue -Entry $Read -Name 'Raw'
+    $err = ''
+    if ($null -ne $raw) { $err = ([string](Get-AdfaConfigValue -Entry $raw -Name 'Error')).Trim().TrimEnd('.'); $columns.Transport = [string](Get-AdfaConfigValue -Entry $raw -Name 'Protocol') }
+    if ([bool](Get-AdfaConfigValue -Entry $Read -Name 'Denied')) {
+        return (& $na ("Access denied: the account running the assessment could not read the registry of this DC ({0}). Local Administrators rights on the DC are needed for this read." -f $err))
+    }
+    if ($null -eq $raw -or -not [bool](Get-AdfaConfigValue -Entry $raw -Name 'Ok')) {
+        return (& $na ("Read failed: a port answered, but no W32Time value could be read: {0}." -f $err))
+    }
+    $values = @(@(Get-AdfaConfigValue -Entry $raw -Name 'Values') | Where-Object { $null -ne $_ })
+    $problems = @()
+    foreach ($definition in @($Config['W32TimeValues'])) {
+        $id = [string](Get-AdfaConfigValue -Entry $definition -Name 'Id')
+        $entry = @($values | Where-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Id') -eq $id })
+        if ($entry.Count -eq 0) { $problems += ("{0} was not read (no answer for it)" -f $id); continue }
+        $e = $entry[0]
+        $class = Get-AdfaStdRegReturnClass -ReturnValue (Get-AdfaConfigValue -Entry $e -Name 'ReturnValue') -ErrorText ([string](Get-AdfaConfigValue -Entry $e -Name 'Error')) -ErrorCode ([string](Get-AdfaConfigValue -Entry $e -Name 'ErrorCode'))
+        switch ($class.Class) {
+            'Success' {
+                $v = Get-AdfaConfigValue -Entry $e -Name 'Value'
+                if ($null -eq $v -or [string]::IsNullOrWhiteSpace([string]$v)) { $columns[$id] = '(empty)' } else { $columns[$id] = [string]$v }
+            }
+            'ValueNotSet' { $columns[$id] = '(not set)' }
+            'KeyAbsent' { $columns[$id] = '(not set)' }
+            'AccessDenied' { $problems += ("{0}: access denied" -f $id) }
+            'TypeMismatch' { $problems += ("{0}: the value exists with a type the read does not take (the registry type of Type and NtpServer is not published)" -f $id) }
+            default {
+                $why = ([string](Get-AdfaConfigValue -Entry $e -Name 'Error')).Trim().TrimEnd('.')
+                if ($why -eq '') { $why = ("return code {0}" -f [string]$class.Code) }
+                $problems += ("{0}: read failed ({1})" -f $id, $why)
+            }
+        }
+    }
+    if ($problems.Count -gt 0) {
+        return (& $na ("Not every W32Time value could be read: {0}. {1}" -f ($problems -join '; '), $policy))
+    }
+    return New-AdfaC14Row -Area 'Inventory' -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+        -Detail ("Type, NtpServer and AnnounceFlags read; values in their columns. NtpServer not set is the documented default on domain members. {0} Inventory only, not graded." -f $policy)
+}
+
+function Get-AdfaW32TimeInventory {
+    <#
+    .SYNOPSIS
+        TimeHierarchy: the W32Time configuration of every DC of every scoped domain, through the
+        shared CIM transport loop (INV-015), with a population row for each scoped domain no DC row
+        covers. Read-only: no w32tm verb is run here.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rows = @()
+    $targets = @($DomainControllers | Where-Object { $null -ne $_ })
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaC14Row -Area 'Inventory' -Scope ([string]$gap.Domain) -Item ("W32Time configuration (population): {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No W32Time value of its DCs was read.')
+    }
+    if ($targets.Count -eq 0) {
+        $why = ''
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = (" Domain controller enumeration failed: {0}." -f $EnumerationError.Trim().TrimEnd('.')) }
+        $rows += New-AdfaC14Row -Area 'Inventory' -Item 'W32Time configuration (population): (no domain controller)' -Status $script:Status.NotAssessed `
+            -Detail ("No domain controllers were enumerated, so no W32Time value was read.{0} This is not a clean result." -f $why)
+        return @($rows)
+    }
+    $wsmanPort = [int]$Config['WsmanPort']
+    $rpcPort = [int]$Config['RpcPort']
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-AdfaC14Row -Area 'Inventory' -Scope $scope -Item 'W32Time configuration: (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no value was read.'
+            continue
+        }
+        $reach = Get-AdfaDcReachCause -HostName $dc
+        if (-not [string]::IsNullOrWhiteSpace($reach)) {
+            $rows += Get-AdfaW32TimeConfigRow -ComputerName $dc -Scope $scope -Read $null -Unreachable $reach -Config $Config
+            continue
+        }
+        $wsman = Test-AdfaDcPort -ComputerName $dc -Port $wsmanPort -TimeoutMs $PortTimeoutMs
+        $rpc = Test-AdfaDcPort -ComputerName $dc -Port $rpcPort -TimeoutMs $PortTimeoutMs
+        if (-not $wsman -and -not $rpc) {
+            $rows += Get-AdfaW32TimeConfigRow -ComputerName $dc -Scope $scope -Read $null -Config $Config `
+                -Unreachable ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so no read was attempted." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
+            continue
+        }
+        $protocols = @()
+        if ($wsman) { $protocols += 'Wsman' }
+        if ($rpc) { $protocols += 'Dcom' }
+        $readArguments = @{ OperationTimeoutSec = $OperationTimeoutSec; Values = $Config['W32TimeValues'] }
+        if ($Credential) { $readArguments.Credential = $Credential }
+        $read = Invoke-AdfaDcRemoteRead -ComputerName $dc -Protocols $protocols -ReadCommand 'Get-AdfaDcW32TimeRaw' -ReadArguments $readArguments
+        $rows += Get-AdfaW32TimeConfigRow -ComputerName $dc -Scope $scope -Read $read -Config $Config
+    }
     return @($rows)
 }
 
@@ -26863,6 +29023,27 @@ function Invoke-Main {
         $c14Failures = @($c14Enumeration.Failures)
     }
     if ($c14Targets.Count -eq 0) { $c14Targets = @($dcNames) }
+    # ---- Inventory depth (PORT-PLAN C15, INV-001, INV-006..INV-012, INV-015) ----
+    # The Inventory table the file supplied where it supplied one; read by Forest, Trusts, Identity, Gpo,
+    # DsEvents and TimeHierarchy. The per-DC families (DNS suffix, events, W32Time configuration) take
+    # the DCs of every scoped domain with their domains: the C14 targets where they were enumerated per
+    # domain, otherwise enumerated here, as the C14 block does.
+    $inventoryConfig = $script:Config.Inventory
+    if ($configOverrides.ContainsKey('Inventory')) { $inventoryConfig = $configOverrides['Inventory'] }
+    $c15Targets = @($c14Targets)
+    $c15Failures = @($c14Failures)
+    $c14PerDomain = ($dcInventoryCollected -or (Test-SectionSelected 'PortMatrix' $Sections) -or (Test-SectionSelected 'Topology' $Sections))
+    if (-not $c14PerDomain -and ((Test-SectionSelected 'Forest' $Sections) -or (Test-SectionSelected 'DsEvents' $Sections) -or (Test-SectionSelected 'TimeHierarchy' $Sections))) {
+        $c15Enumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+        $c15Targets = @($c15Enumeration.Targets)
+        $c15Failures = @($c15Enumeration.Failures)
+        if ($c15Targets.Count -eq 0) { $c15Targets = @($dcNames) }
+    }
+    if (Test-SectionSelected 'Forest' $Sections) {
+        Write-Stage 'Topology inventory (functional levels, FSMO holders, UPN and DNS suffixes, runner DC)'
+        $sectionData['Topology Inventory'] = @(Get-AdfaTopologyInventory -ForestName ([string]$forest.Name) -RootDomain $rootDomain -Domains $targetDomains `
+                -DomainControllers $c15Targets -InventoryFailures $c15Failures -ScopedDomains $targetDomains -ForestError $forestError -AdParams $adParams -Config $inventoryConfig)
+    }
     $reachRows = @()
     if (Test-SectionSelected 'PortMatrix' $Sections) {
         Write-Stage 'DC reachability (name resolution, LDAP 389, WinRM 5985, RPC 135; once per DC, reused by Site Health and Time Hierarchy)'
@@ -26952,6 +29133,10 @@ function Invoke-Main {
                 -RetryDelaySeconds $script:Config.RetryDelaySeconds -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
         }
         $sectionData['Trusts & Two-Way Health'] = $trustRows
+        # PORT-PLAN C15 (INV-006): the trustedDomain objects of every scoped domain, read from that
+        # domain with a listed attribute set and decoded by name; inventory only.
+        Write-Stage 'Trust inventory (trustedDomain objects, per domain)'
+        $sectionData['Trust Inventory'] = @(Get-AdfaTrustInventory -Domains $targetDomains -ForestError $forestError -AdParams $adParams -Config $inventoryConfig)
     }
 
     if (Test-SectionSelected 'DcDiagnostics' $Sections) {
@@ -27079,6 +29264,11 @@ function Invoke-Main {
             $gpoVersionRows = @(Get-AdfaGpoVersion -Domains $targetDomains -AdParams $adParams -Config $gpoConfig)
         }
         $sectionData['GPO Inventory'] = @(@($g) + @($gpoVersionRows))
+        # PORT-PLAN C15 (INV-011): from the directory, without the GroupPolicy module - each GPO's
+        # status flags, WMI filter and links, and the links of every site, domain and OU; inventory only.
+        Write-Stage 'GPO directory inventory (status flags, WMI filters, links per site, domain and OU)'
+        $sectionData['GPO Directory Inventory'] = @(Get-AdfaGpoDirectoryInventory -Domains $targetDomains -ForestDomains @($forest.Domains) -RootDomain $rootDomain -ForestError $forestError `
+                -AdParams $adParams -Config $inventoryConfig -GpoConfig $gpoConfig)
     }
     if (Test-SectionSelected 'PasswordPolicy' $Sections) {
         $pp = foreach ($d in $targetDomains) { Get-AdfaPasswordPolicy -DomainName $d -AdParams $adParams }
@@ -27434,6 +29624,12 @@ function Invoke-Main {
                 -Detail ("The PDC emulator could not be read for {0} domain(s), so the role-specific time rule was not applied there: {1}. Those DCs were graded as ordinary domain controllers, which is a partial result." -f @($pdcErrors).Count, (@($pdcErrors) -join '; '))
         }
         $sectionData['Time Hierarchy'] = @($timeRows)
+        # PORT-PLAN C15 (INV-015): Type, NtpServer and AnnounceFlags of every DC, read from the registry
+        # through the shared CIM transport loop; inventory only, no expected value.
+        Write-Stage 'W32Time configuration (Type, NtpServer, AnnounceFlags; per DC, read-only)'
+        $sectionData['Time Configuration'] = @(Get-AdfaW32TimeInventory -DomainControllers $c15Targets -InventoryFailures $c15Failures -ScopedDomains $targetDomains `
+                -EnumerationError $script:DcEnumerationError -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec -Config $inventoryConfig)
     }
     if (Test-SectionSelected 'SiteGc' $Sections) {
         Write-Stage 'Writeable global catalog coverage per site'
@@ -27458,6 +29654,12 @@ function Invoke-Main {
         Write-Stage 'Directory Service event log (lingering / rollback / DNS failures)'
         $sectionData['Directory Service Events'] = Get-AdfaDsEventLog -DomainControllers $dcNames -Credential $Credential `
             -LookbackDays $script:Config.DsEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        # PORT-PLAN C15 (INV-012): every configured log of every DC, by level (Critical, Error, Warning),
+        # bounded by -EventLookbackDays and EventMaxEvents, grouped by event ID; inventory only.
+        Write-Stage 'Event inventory (Critical, Error and Warning per log and DC; bounded reads)'
+        $sectionData['Event Inventory'] = @(Get-AdfaEventInventory -DomainControllers $c15Targets -InventoryFailures $c15Failures -ScopedDomains $targetDomains `
+                -EnumerationError $script:DcEnumerationError -LookbackDays $script:Config.DsEventLookbackDays -Credential $Credential `
+                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -Config $inventoryConfig)
     }
     if (Test-SectionSelected 'RestoreIntegrity' $Sections) {
         Write-Stage 'Restore integrity (USN rollback forensics, database instantiation)'
@@ -27526,17 +29728,33 @@ function Invoke-Main {
         $identitySummary = @()
         foreach ($d in $targetDomains) {
             $users = @(); $computers = @()
+            # PORT-PLAN C15: a failed export is carried to the summary, which says Not Assessed with the
+            # cause instead of 0 objects.
+            $usersError = ''; $computersError = ''
             try { $users = Get-AdfaUserInventory -DomainName $d -AdParams $adParams }
-            catch { Write-Warning ("User export failed for {0}: {1}" -f $d, $_.Exception.Message) }
+            catch { $usersError = [string]$_.Exception.Message; Write-Warning ("User export failed for {0}: {1}" -f $d, $_.Exception.Message) }
             try { $computers = Get-AdfaComputerInventory -DomainName $d -AdParams $adParams }
-            catch { Write-Warning ("Computer export failed for {0}: {1}" -f $d, $_.Exception.Message) }
+            catch { $computersError = [string]$_.Exception.Message; Write-Warning ("Computer export failed for {0}: {1}" -f $d, $_.Exception.Message) }
 
             $safeDom = New-SafeFileName $d
             if (@($users).Count -gt 0) { Save-Csv -InputObject $users -Path (Join-Path $csvPath ("AllUsers_{0}.csv" -f $safeDom)) }
             if (@($computers).Count -gt 0) { Save-Csv -InputObject $computers -Path (Join-Path $csvPath ("AllComputers_{0}.csv" -f $safeDom)) }
-            $identitySummary += Get-AdfaIdentitySummary -DomainName $d -Users $users -Computers $computers -StaleDays $script:Config.StaleDays
+            $identitySummary += Get-AdfaIdentitySummary -DomainName $d -Users $users -Computers $computers -StaleDays $script:Config.StaleDays `
+                -UsersError $usersError -ComputersError $computersError
         }
         $sectionData['Identity Inventory'] = @($identitySummary)
+        # PORT-PLAN C15 (INV-008, INV-010): per scoped domain, thirteen object counts from seven capped,
+        # listed-property reads (never the export above), and the group inventory - scope and type,
+        # empty groups, direct member counts (member values counted, never kept). One CSV of groups per
+        # domain; inventory only.
+        Write-Stage 'Object counts and group inventory (capped reads, listed properties, per domain)'
+        $identityDepth = Get-AdfaIdentityInventoryDepth -Domains $targetDomains -ForestError $forestError -AdParams $adParams -Config $inventoryConfig
+        $sectionData['Object Counts'] = @($identityDepth.Counts)
+        $sectionData['Group Inventory'] = @($identityDepth.Groups)
+        foreach ($gd in @($identityDepth.GroupExport.Keys)) {
+            $groupRows = @($identityDepth.GroupExport[$gd])
+            if ($groupRows.Count -gt 0) { Save-Csv -InputObject $groupRows -Path (Join-Path $csvPath ("Groups_{0}.csv" -f (New-SafeFileName $gd))) }
+        }
     }
 
     # ---- DNS record export (PORT-PLAN C13, ADA-INV-014) -> one CSV per zone and server ----
