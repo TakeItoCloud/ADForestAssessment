@@ -3600,10 +3600,10 @@ Describe 'DC disk space, and the generic config override (C2)' {
         }
         It 'forces -WhatIf and -Confirm off where a CIM session is closed, so a preference cannot leave sessions open' {
             $closes = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Remove-CimSession' })
-            # Declared population: the DcSystem seam, the DcDisk seam and the DcHardening seam (C3),
-            # the three places a CIM session is opened.
-            $closes.Count | Should -Be 3
-            @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'New-CimSession' }).Count | Should -Be 3
+            # Declared population: the DcSystem seam, the DcDisk seam, the DcHardening seam (C3) and the DC
+            # network seam (C13), the four places a CIM session is opened.
+            $closes.Count | Should -Be 4
+            @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'New-CimSession' }).Count | Should -Be 4
             foreach ($call in $closes) {
                 foreach ($switch in @('WhatIf', 'Confirm')) {
                     $w = @($call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $switch })
@@ -3635,8 +3635,9 @@ Describe 'DC disk space, and the generic config override (C2)' {
             }
             # Non-vacuity, declared population: the six instance reads this script makes -
             # Win32_OperatingSystem and Win32_QuickFixEngineering (DcSystem), Win32_Volume (DcDisk),
-            # and Win32_OperatingSystem, MSFT_SmbServerConfiguration and Win32_Service (DcHardening, C3).
-            @($names | Where-Object { $_ -eq 'Get-CimInstance' }).Count | Should -Be 6
+            # Win32_OperatingSystem, MSFT_SmbServerConfiguration and Win32_Service (DcHardening, C3), and
+            # Win32_NetworkAdapterConfiguration (C13): seven.
+            @($names | Where-Object { $_ -eq 'Get-CimInstance' }).Count | Should -Be 7
         }
         It 'reads Win32_Volume as instances only, naming the properties it wants' {
             $vol = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Get-CimInstance' -and $_.Extent.Text -match 'Win32_Volume' })
@@ -5313,7 +5314,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
             # DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -5348,7 +5349,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             $readParam.Count | Should -Be 1
             $allowed = @($readParam[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
             $allowed.Count | Should -Be 1
-            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw'
+            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw,Get-AdfaDcNetworkRaw'
             { Invoke-AdfaDcRemoteRead -ComputerName $script:C3Dc1 -Protocols @('Wsman') -ReadCommand 'Remove-Item' } | Should -Throw
             # And DcDisk goes through the same loop: the helper was generalised, not copied.
             $disk = @(Get-C3Function -Name 'Get-AdfaDcDiskSpace')
@@ -7493,7 +7494,7 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7545,9 +7546,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
-            [string]$script:Config.Version | Should -Be '1.29.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
+        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
+            [string]$script:Config.Version | Should -Be '1.30.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
         }
     }
 
@@ -9136,7 +9137,7 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
             $entry = $script:ConfigOverrideSections['DcCertificates']
             [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
             [string]$entry['Section'] | Should -Be 'DcCertificates'
@@ -9217,9 +9218,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
-            [string]$script:Config.Version | Should -Be '1.29.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
+        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
+            [string]$script:Config.Version | Should -Be '1.30.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
         }
     }
 
@@ -10136,7 +10137,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
             $entry = $script:ConfigOverrideSections['RidPool']
             [string]$entry['ConfigKey'] | Should -Be 'RidPool'
             [string]$entry['Section'] | Should -Be 'RidPool'
@@ -10196,7 +10197,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'rIDAvailablePool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'RidPool'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'WarnAtPercentUsed'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
         }
         It 'has one row in the README Coverage table, and the README says what the row cannot see' {
             $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
@@ -10207,9 +10208,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
-            [string]$script:Config.Version | Should -Be '1.29.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
+        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
+            [string]$script:Config.Version | Should -Be '1.30.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
         }
     }
 
@@ -11091,7 +11092,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
         }
         It 'is registered for -ConfigOverridePath under SidHistory, used by SecurityPosture, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
             $entry = $script:ConfigOverrideSections['SidHistory']
             [string]$entry['ConfigKey'] | Should -Be 'SidHistory'
             [string]$entry['Section'] | Should -Be 'SecurityPosture'
@@ -11133,7 +11134,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             $help = $script:C7Ast.GetHelpContent()
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'SID history'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'sIDHistory'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'SidHistory'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'PresentStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'NameListCap'
@@ -11146,9 +11147,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
-            [string]$script:Config.Version | Should -Be '1.29.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
+        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
+            [string]$script:Config.Version | Should -Be '1.30.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
         }
     }
 
@@ -12029,7 +12030,7 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
         }
         It 'is registered for -ConfigOverridePath under Gpo, used by the Gpo section, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
             $entry = $script:ConfigOverrideSections['Gpo']
             [string]$entry['ConfigKey'] | Should -Be 'Gpo'
             [string]$entry['Section'] | Should -Be 'Gpo'
@@ -12124,7 +12125,7 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'GPT\.INI'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'PDC emulator'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Gpo"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'MismatchStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'OrphanFolderStatus'
@@ -12137,9 +12138,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
-            [string]$script:Config.Version | Should -Be '1.29.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
+        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
+            [string]$script:Config.Version | Should -Be '1.30.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
         }
     }
 
@@ -13304,7 +13305,7 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
         }
         It 'is registered for -ConfigOverridePath under Acl, used by the Acl section, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
             $entry = $script:ConfigOverrideSections['Acl']
             [string]$entry['ConfigKey'] | Should -Be 'Acl'
             [string]$entry['Section'] | Should -Be 'Acl'
@@ -13363,7 +13364,7 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'matched by SID'
             ([string]$help.Description -replace '\s+', ' ') | Should -Not -Match 'Dangerous ACLs: non-default principals holding DCSync rights on the domain head'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'nTSecurityDescriptor'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Acl"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'FlaggedStatus'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'AdditionalAllowed'
@@ -13377,9 +13378,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
-            [string]$script:Config.Version | Should -Be '1.29.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
+        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
+            [string]$script:Config.Version | Should -Be '1.30.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
         }
     }
 
@@ -14519,7 +14520,7 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
         }
         It 'is registered for -ConfigOverridePath under Privileged, used by PrivilegedAccounts and also by PrivilegedHygiene and Kerberos, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns'
             $entry = $script:ConfigOverrideSections['Privileged']
             [string]$entry['ConfigKey'] | Should -Be 'Privileged'
             [string]$entry['Section'] | Should -Be 'PrivilegedAccounts'
@@ -14580,7 +14581,7 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             ([string]$help.Description -replace '\s+', ' ') | Should -Match 'protocol transition'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'primaryGroupID'
             ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'serverReference'
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match '"Privileged"'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'EnterpriseAdminsExemptRootAdministrator'
         }
@@ -14595,9 +14596,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
-            [string]$script:Config.Version | Should -Be '1.29.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
+        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
+            [string]$script:Config.Version | Should -Be '1.30.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
         }
     }
 
@@ -16461,13 +16462,13 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
-            [string]$script:Config.Version | Should -Be '1.29.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
+        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
+            [string]$script:Config.Version | Should -Be '1.30.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
-            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Ten sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
             [string]$help.Parameters['CONFIGOVERRIDEPATH'] | Should -Match 'TestTimeoutSeconds'
             ([string]$help.Parameters['INCLUDEDCDIAGACTIVETESTS'] -replace '\s+', ' ') | Should -Match 'SystemLog'
             ([string]$help.Parameters['INCLUDEDCDIAGACTIVETESTS'] -replace '\s+', ' ') | Should -Match 'once per site'
@@ -17132,9 +17133,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.29.0 (bumped by PORT-PLAN C12)' {
-            [string]$script:Config.Version | Should -Be '1.29.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.29.0'
+        It 'carries the same version in the script and the manifest: 1.30.0 (bumped by PORT-PLAN C13)' {
+            [string]$script:Config.Version | Should -Be '1.30.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17144,6 +17145,1292 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $row = @($readme | Where-Object { $_ -match '^\| Diagnostics \|' })
             $row.Count | Should -Be 1
             $row[0] | Should -Match 'Auth, Basc, Forw, Del, Dyn, RReg, Ext'
+        }
+    }
+}
+
+Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A records, records naming no DC, zone and record inventory, DC DNS client (C13)' {
+    # PORT-PLAN C13: catalogue ADA-DNS-001..005, ADA-INV-013, 014, 016. Sections Dns ('DNS Health'),
+    # DnsAdConsistency ('DNS vs AD Consistency'), DomainControllers ('DC DNS Client') and the opt-in
+    # DnsRecordExport ('DNS Record Export'). Every name and address below is fictional (contoso,
+    # fabrikam, 192.0.2.0/24) and held in a variable (PSAvoidUsingComputerNameHardcoded).
+    BeforeAll {
+        $script:C13Cfg = $script:Config.Dns
+        $script:C13Dc1 = 'dc1.contoso.com'
+        $script:C13Dc2 = 'dc2.contoso.com'
+        $script:C13Dc3 = 'dc3.north.contoso.com'
+        $script:C13Old = 'old-dc.contoso.com'
+        $script:C13Ip1 = '192.0.2.11'
+        $script:C13Ip2 = '192.0.2.12'
+        $script:C13Ip3 = '192.0.2.13'
+        $script:C13IpX = '192.0.2.99'
+        $script:C13Hostile = 'replication stale delegation secure dynamic zone transfer scavenging aging no a record does not resolve global catalog backup dcdiag NOT a pass log coverage pdc emulator missing from dns time sync C:\Backup\stale.json'
+        function New-C13Target { param([string]$HostName, [string]$Scope, [string]$Ip = '')
+            [pscustomobject]@{ HostName = $HostName; Scope = $Scope; Site = 'HQ'; IsReadOnly = $false; IPv4Address = $Ip } }
+        # The comma keeps a one-row answer an array, so .Count works under StrictMode on Windows PowerShell 5.1.
+        function Get-C13Row { param($Rows, [string]$Item) return , @($Rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -eq $Item }) }
+        function Get-C13Like { param($Rows, [string]$Pattern) return , @($Rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like $Pattern }) }
+        # One zone as Get-DnsServerZone returns it (property names provisional, see the config table).
+        function New-C13Zone { param([string]$Name, [string]$Dyn = 'Secure', [bool]$Ds = $true, [string]$Type = 'Primary', [bool]$Auto = $false, [bool]$Reverse = $false, [string]$Scope = 'Domain')
+            [pscustomobject]@{ ZoneName = $Name; ZoneType = $Type; IsAutoCreated = $Auto; IsDsIntegrated = $Ds; IsReverseLookupZone = $Reverse
+                DynamicUpdate = $Dyn; ReplicationScope = $Scope; SecureSecondaries = 'NoTransfer' } }
+        # One Get-AdfaDnsServerRaw result, in the shape it returns.
+        function New-C13ServerRaw { param($Zones, $Interval = [timespan]::FromDays(7), [bool]$Aging = $true, [string[]]$Forwarders = @())
+            $agingMap = @{}
+            foreach ($z in @($Zones)) {
+                if ($z.ZoneType -eq 'Primary' -and -not $z.IsAutoCreated) {
+                    $agingMap[([string]$z.ZoneName).ToLowerInvariant()] = [pscustomobject]@{ Ok = $true; AgingEnabled = $Aging; NoRefreshInterval = [timespan]::FromDays(7)
+                        RefreshInterval = [timespan]::FromDays(7); ScavengeServers = @(); Error = '' }
+                }
+            }
+            [pscustomobject]@{ Ok = $true; Error = ''; ErrorCode = ''; Zones = @($Zones); ScavengingOk = $true; ScavengingInterval = $Interval; ScavengingState = $false
+                ScavengingError = ''; Aging = $agingMap; ForwardersOk = $true; Forwarders = @($Forwarders); ForwarderError = '' } }
+        function New-C13FailedRaw { param([string]$Message, [string]$Code = '')
+            [pscustomobject]@{ Ok = $false; Error = $Message; ErrorCode = $Code; Zones = @(); ScavengingOk = $false; ScavengingInterval = $null; ScavengingState = $null
+                ScavengingError = ''; Aging = @{}; ForwardersOk = $false; Forwarders = @(); ForwarderError = '' } }
+        function New-C13Obs { param([string]$Server, [bool]$Read = $true, $Ds = $true, [string]$Dyn = 'Secure', $Scav = $true, $Aging = $true, [string]$Cause = '')
+            [pscustomobject]@{ Server = $Server; Read = $Read; IsDsIntegrated = $Ds; DynamicUpdate = $Dyn; ServerScavenging = $Scav; AgingEnabled = $Aging; Cause = $Cause; ZoneType = 'Primary' } }
+        function New-C13Check { param([string]$Record, [string]$Server, [string]$State, [string]$Cause = '')
+            [pscustomobject]@{ Record = $Record; Server = $Server; State = $State; Cause = $Cause } }
+        function New-C13Adapter { param([string[]]$Ip, $Dns)
+            [pscustomobject]@{ IPEnabled = $true; IPAddress = @($Ip); DNSServerSearchOrder = $Dns; Description = 'Fictional adapter'; InterfaceIndex = [uint32]4 } }
+        function New-C13NetRaw { param($Adapters, [bool]$Ok = $true, [string]$Message = '', [string]$Code = '')
+            [pscustomobject]@{ Ok = $Ok; Protocol = 'Wsman'; Error = $Message; ErrorCode = $Code; Adapters = @($Adapters) } }
+        # DnsServer cmdlets, defined so the raw seams can be exercised on a host without the module.
+        function Get-DnsServerZone { param([string]$ComputerName, [string]$Name, $ErrorAction) & $script:C13ZoneAnswer $ComputerName }
+        function Get-DnsServerScavenging { param([string]$ComputerName, $ErrorAction) & $script:C13ScavAnswer $ComputerName }
+        function Get-DnsServerZoneAging { param([string]$Name, [string]$ComputerName, $ErrorAction) $script:C13AgingCalls += $Name; & $script:C13AgingAnswer $Name }
+        function Get-DnsServerForwarder { param([string]$ComputerName, $ErrorAction) [pscustomobject]@{ IPAddress = @($script:C13IpX) } }
+        function Get-DnsServerResourceRecord { param([string]$ComputerName, [string]$ZoneName, [string]$Name, [string]$RRType, $ErrorAction)
+            $script:C13RecordCalls += [pscustomobject]@{ ComputerName = $ComputerName; ZoneName = $ZoneName; Name = $Name; RRType = $RRType }
+            & $script:C13RecordAnswer $ComputerName $ZoneName $Name $RRType }
+        function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a) $script:C13AdDcs }
+        function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: not used by these tests' }
+        function New-C13Srv { param([string]$HostName, [string]$Target)
+            [pscustomobject]@{ HostName = $HostName; RecordType = 'SRV'; RecordClass = 'IN'; TimeToLive = [timespan]::FromMinutes(10); Timestamp = $null
+                RecordData = [pscustomobject]@{ DomainName = ($Target + '.'); Port = [uint16]389; Priority = [uint16]0; Weight = [uint16]100 } } }
+        function New-C13A { param([string]$HostName, [string]$Ip)
+            [pscustomobject]@{ HostName = $HostName; RecordType = 'A'; RecordClass = 'IN'; TimeToLive = [timespan]::FromMinutes(20); Timestamp = [datetime]'2026-11-10'
+                RecordData = [pscustomobject]@{ IPv4Address = $Ip } } }
+        function New-C13Cname { param([string]$HostName, [string]$Alias)
+            [pscustomobject]@{ HostName = $HostName; RecordType = 'CNAME'; RecordClass = 'IN'; TimeToLive = [timespan]::FromMinutes(10); Timestamp = $null
+                RecordData = [pscustomobject]@{ HostNameAlias = ($Alias + '.') } } }
+        $script:C13Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C13Main = @($script:C13Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C13Function { param([string]$Name) @($script:C13Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true)) }
+        function Get-C13Parameter { param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C13Branch { param([string]$Condition)
+            @($script:C13Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq $Condition }, $true)) }
+        # The read-only guard over a parsed script: a DnsServer/DnsClient cmdlet that writes; dnscmd or
+        # ipconfig named as a command or as a string argument of ANY command (the script starts console
+        # tools through Invoke-ExternalCommand -FilePath '<tool>.exe'); and a registration or cache
+        # switch (/registerdns, /dsregdns, /dsderegdns, /flushdns, /release, /renew) in any string
+        # literal outside the recommendation map, whose advice names them for the operator to run.
+        # What it cannot see: a switch assembled at run time from pieces.
+        function Get-C13WriteHit { param($Ast)
+            $hits = @()
+            $cmds = @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+            $cmdletRx = '(?i)^(Set|Add|Remove|Start|Stop|Clear|Register|Sync|Restore|Import|Export|Reset|Resume|Suspend|Invoke|Update|Enable|Disable|Step|Test)-DnsServer|^Register-DnsClient|^Set-DnsClient|^Clear-DnsClientCache'
+            $toolRx = '(?i)(^|\\)(dnscmd|ipconfig)(\.exe)?$'
+            foreach ($c in $cmds) {
+                $name = [string]$c.GetCommandName()
+                if ($name -match $cmdletRx) { $hits += ("cmdlet: {0}" -f $c.Extent.Text) }
+                $words = @($name) + @(@($c.CommandElements) | ForEach-Object { @($_.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true)) } | ForEach-Object { [string]$_.Value })
+                if (@($words | Where-Object { $_ -match $toolRx }).Count -gt 0) { $hits += ("tool: {0}" -f $c.Extent.Text) }
+            }
+            $switchRx = '(?i)(^|[\s"''])/(dsregdns|dsderegdns|registerdns|flushdns|release|renew)\b'
+            $map = @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:RecommendationMap' }, $true))
+            foreach ($s in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))) {
+                if ([string]$s.Value -notmatch $switchRx) { continue }
+                $inMap = $false
+                $p = $s.Parent
+                while ($null -ne $p) { if ($map -contains $p) { $inMap = $true; break }; $p = $p.Parent }
+                if (-not $inMap) { $hits += ("switch: {0}" -f $s.Extent.Text) }
+            }
+            return , @($hits)
+        }
+    }
+    BeforeEach {
+        Clear-AdfaDcPortCache
+        $script:C13AgingCalls = @()
+        $script:C13RecordCalls = @()
+        $script:C13ZoneAnswer = { param($c) @((New-C13Zone 'contoso.com'), (New-C13Zone '_msdcs.contoso.com'), (New-C13Zone '0.in-addr.arpa' -Auto $true -Ds $false -Dyn 'None'), (New-C13Zone 'fabrikam.com' -Type 'Forwarder' -Dyn 'None' -Ds $false)) }
+        $script:C13ScavAnswer = { param($c) [pscustomobject]@{ ScavengingInterval = [timespan]::FromDays(7); ScavengingState = $true } }
+        $script:C13AgingAnswer = { param($n) [pscustomobject]@{ ZoneName = $n; AgingEnabled = $true; NoRefreshInterval = [timespan]::FromDays(7); RefreshInterval = [timespan]::FromDays(7); ScavengeServers = @() } }
+        $script:C13RecordAnswer = { param($c, $z, $n, $t) @() }
+    }
+
+    Context 'Config table (Learn, read 2026-11-17)' {
+        It 'declares the graded locator records, the dynamic update values and the tool defaults, labelled as tool defaults' {
+            $script:C13Cfg | Should -Not -BeNullOrEmpty
+            [string]$script:C13Cfg['ReadDate'] | Should -Be '2026-11-17'
+            [string]$script:C13Cfg['ThresholdSource'] | Should -Match 'tool defaults, not Microsoft values'
+            # Declared population: the two SRV records of reference decision 61, Dc and Kdc.
+            (@($script:C13Cfg['LocatorRecords'] | ForEach-Object { [string]$_['Mnemonic'] }) -join ',') | Should -Be 'Dc,Kdc'
+            (@($script:C13Cfg['LocatorRecords'] | ForEach-Object { [string]$_['Name'] }) -join ',') | Should -Be '_ldap._tcp.dc._msdcs.{0},_kerberos._tcp.dc._msdcs.{0}'
+            (@($script:C13Cfg['DynamicUpdateValues']) -join ',') | Should -Be 'None,Secure,NonsecureAndSecure'
+            $expected = [ordered]@{ NonsecureStatus = 'Fail'; ScavengingOffStatus = 'Warning'; AgingOffStatus = 'Warning'; ARecordStatus = 'Warning'; StaleRecordStatus = 'Warning'; OneInstrumentStatus = 'Warning'; SingleServerStatus = 'Warning' }
+            # Declared population: the seven statuses a file can set.
+            @($expected.Keys).Count | Should -Be 7
+            foreach ($k in @($expected.Keys)) { [string]$script:C13Cfg[$k] | Should -Be $expected[$k] -Because $k }
+            [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
+            [int]$script:C13Cfg['RpcPort'] | Should -Be 135
+        }
+        It 'carries version 1.30.0 in the script and the manifest (bumped by PORT-PLAN C13)' {
+            [string]$script:Config.Version | Should -Be '1.30.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.30.0'
+        }
+    }
+
+    Context 'Verdict: zone dynamic update (DNS-001, pure)' {
+        It 'fails a zone that one hosting server reports NonsecureAndSecure on an AD-integrated zone' {
+            $v = Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1), (New-C13Obs $script:C13Dc2 -Dyn 'NonsecureAndSecure')) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Fail'
+            $v.Detail | Should -Match 'Nonsecure and secure'
+            $v.Detail | Should -Match '1 of 2'
+        }
+        It 'passes Secure and None, read on every hosting server' {
+            (Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1), (New-C13Obs $script:C13Dc2)) -Config $script:C13Cfg).Status | Should -Be 'Pass'
+            (Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1 -Dyn 'None')) -Config $script:C13Cfg).Status | Should -Be 'Pass'
+        }
+        It 'is Not Assessed, never Pass, when a hosting server was not read, and names the cause' {
+            $v = Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1), (New-C13Obs $script:C13Dc2 -Read $false -Cause 'Unreachable: RPC (135) did not answer')) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Not Assessed'
+            $v.Detail | Should -Match '1 of 2'
+            $v.Evidence | Should -Match 'Unreachable'
+        }
+        It 'keeps a measured Fail when another server was not read' {
+            (Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1 -Dyn 'NonsecureAndSecure'), (New-C13Obs $script:C13Dc2 -Read $false -Cause 'x')) -Config $script:C13Cfg).Status | Should -Be 'Fail'
+        }
+        It 'reads a value it does not know, or an absent property, as not measured' {
+            $odd = Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1 -Dyn 'Bogus')) -Config $script:C13Cfg
+            $odd.Status | Should -Be 'Not Assessed'
+            $odd.Detail | Should -Match 'not recognised'
+            (Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1 -Dyn '')) -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+            (Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1 -Ds $null)) -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+            (Get-AdfaDnsDynamicUpdateVerdict -Observations @() -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+        }
+        It 'reports a zone that is not AD-integrated as Info: secure updates exist only for AD-integrated zones' {
+            $v = Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1 -Ds $false -Dyn 'NonsecureAndSecure')) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Info'
+            $v.Detail | Should -Match 'only for AD-integrated zones'
+        }
+        It 'grades NonsecureStatus from the config, so an override to Warning is honoured' {
+            $cfg = Merge-AdfaDnsConfig -BaseConfig $script:C13Cfg -Override @{ NonsecureStatus = 'Warning' } -OverrideSource 'C:\cfg\dns.json'
+            (Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1 -Dyn 'NonsecureAndSecure')) -Config $cfg).Status | Should -Be 'Warning'
+        }
+    }
+
+    Context 'Verdict: zone aging and server scavenging (DNS-002, pure)' {
+        It 'warns when every hosting server was read and none scavenges' {
+            $v = Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Scav $false), (New-C13Obs $script:C13Dc2 -Scav $false)) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Warning'
+            $v.Detail | Should -Match 'no hosting DNS server has scavenging enabled'
+            $v.Detail | Should -Match 'tool default'
+        }
+        It 'passes when one hosting server scavenges and the zone ages its records' {
+            (Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Scav $false), (New-C13Obs $script:C13Dc2 -Scav $true)) -Config $script:C13Cfg).Status | Should -Be 'Pass'
+        }
+        It 'warns when a server scavenges but the zone has aging off (Learn: scavenging skips that zone)' {
+            $v = Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Scav $true -Aging $false)) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Warning'
+            $v.Detail | Should -Match 'aging is not enabled'
+        }
+        It 'is Not Assessed, never Pass or Warning, when a hosting server or a value was not read' {
+            (Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Scav $false), (New-C13Obs $script:C13Dc2 -Read $false -Cause 'Access denied')) -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+            (Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Scav $null)) -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+            (Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Aging $null)) -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+            (Get-AdfaDnsScavengingVerdict -Observations @() -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+        }
+        It 'treats a scavenging interval of zero as off and any longer one as on (Learn: 0 disables scavenging)' {
+            Test-AdfaDnsServerScavenges -Interval ([timespan]::Zero) | Should -BeFalse
+            Test-AdfaDnsServerScavenges -Interval ([timespan]::FromSeconds(1)) | Should -BeTrue
+            Test-AdfaDnsServerScavenges -Interval ([timespan]::FromDays(7)) | Should -BeTrue
+            Test-AdfaDnsServerScavenges -Interval '7.00:00:00' | Should -BeTrue
+            Test-AdfaDnsServerScavenges -Interval '00:00:00' | Should -BeFalse
+            $null -eq (Test-AdfaDnsServerScavenges -Interval $null) | Should -BeTrue
+            $null -eq (Test-AdfaDnsServerScavenges -Interval 'seven days') | Should -BeTrue
+            $null -eq (Test-AdfaDnsServerScavenges -Interval 168) | Should -BeTrue
+        }
+        It 'keeps a measured "aging off" as AgingOffStatus when another hosting server was not read' {
+            $v = Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Scav $true -Aging $false), (New-C13Obs $script:C13Dc2 -Read $false -Cause 'Unreachable: RPC (135) did not answer')) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Warning'
+            $v.Detail | Should -Match 'aging is not enabled for this zone on 1 of 2'
+        }
+        It 'does not assert "no hosting server scavenges" when the hosting set is not complete, and still grades aging off' {
+            $obs = @((New-C13Obs $script:C13Dc1 -Scav $false), (New-C13Obs $script:C13Dc2 -Scav $false))
+            $v = Get-AdfaDnsScavengingVerdict -Observations $obs -Config $script:C13Cfg -HostSetComplete $false -HostSetCause 'its replication scope (Forest) reaches DNS servers in every domain'
+            $v.Status | Should -Be 'Not Assessed'
+            $v.Detail | Should -Match 'replication scope \(Forest\)'
+            $v.Detail | Should -Not -Match 'Every one of the'
+            (Get-AdfaDnsScavengingVerdict -Observations $obs -Config $script:C13Cfg -HostSetComplete $true).Status | Should -Be 'Warning'
+            (Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Scav $true)) -Config $script:C13Cfg -HostSetComplete $false).Status | Should -Be 'Pass'
+            (Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Scav $false -Aging $false)) -Config $script:C13Cfg -HostSetComplete $false).Status | Should -Be 'Warning'
+        }
+        It 'honours ScavengingOffStatus and AgingOffStatus from an override' {
+            $cfg = Merge-AdfaDnsConfig -BaseConfig $script:C13Cfg -Override @{ ScavengingOffStatus = 'Info'; AgingOffStatus = 'Info' } -OverrideSource 'C:\cfg\dns.json'
+            (Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Scav $false)) -Config $cfg).Status | Should -Be 'Info'
+            (Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Aging $false)) -Config $cfg).Status | Should -Be 'Info'
+        }
+    }
+
+    Context 'Verdict: two instruments and the DC locator records (DNS-003, pure)' {
+        It 'combines the server read and the resolver into one state: <Server> + <Resolver> = <Expect>' -ForEach @(
+            @{ Server = 'Present'; Resolver = 'Absent'; Expect = 'Present' }
+            @{ Server = 'Absent'; Resolver = 'Present'; Expect = 'Present' }
+            @{ Server = 'Absent'; Resolver = 'Absent'; Expect = 'AbsentBoth' }
+            @{ Server = 'Absent'; Resolver = 'Unread'; Expect = 'AbsentOne' }
+            @{ Server = 'Unread'; Resolver = 'Absent'; Expect = 'AbsentOne' }
+            @{ Server = 'Unread'; Resolver = 'Unread'; Expect = 'Unread' }
+            @{ Server = 'Present'; Resolver = 'Present'; Expect = 'Present' }
+        ) {
+            Get-AdfaDnsEvidenceState -ServerOutcome $Server -ResolverOutcome $Resolver | Should -Be $Expect
+        }
+        It 'passes a DC every record names on every DNS server' {
+            $checks = @((New-C13Check 'Dc' $script:C13Dc1 'Present'), (New-C13Check 'Kdc' $script:C13Dc1 'Present'), (New-C13Check 'Dc' $script:C13Dc2 'Present'), (New-C13Check 'Kdc' $script:C13Dc2 'Present'))
+            (Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks $checks -Config $script:C13Cfg).Status | Should -Be 'Pass'
+        }
+        It 'fails a DC only when both instruments agree a record is absent' {
+            $v = Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @((New-C13Check 'Dc' $script:C13Dc1 'Present'), (New-C13Check 'Kdc' $script:C13Dc1 'AbsentBoth')) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Fail'
+            $v.Detail | Should -Match 'both instruments'
+        }
+        It 'grades an absence seen by one instrument only as OneInstrumentStatus, and says so' {
+            $v = Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @((New-C13Check 'Dc' $script:C13Dc1 'AbsentOne')) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Warning'
+            $v.Detail | Should -Match 'one instrument'
+            $cfg = Merge-AdfaDnsConfig -BaseConfig $script:C13Cfg -Override @{ OneInstrumentStatus = 'Not Assessed' } -OverrideSource 'x.json'
+            (Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @((New-C13Check 'Dc' $script:C13Dc1 'AbsentOne')) -Config $cfg).Status | Should -Be 'Not Assessed'
+        }
+        It 'is Not Assessed, never Pass, when a server was not read or there is nothing to check' {
+            $v = Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @((New-C13Check 'Dc' $script:C13Dc1 'Present'), (New-C13Check 'Dc' $script:C13Dc2 'Unread' 'no answer')) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Not Assessed'
+            (Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @() -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+        }
+        It 'excludes a read-only DC as Info: RODCs register site-specific records by default' {
+            $v = Get-AdfaDcLocatorVerdict -IsReadOnly $true -Checks @((New-C13Check 'Dc' $script:C13Dc1 'AbsentBoth')) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Info'
+            $v.Detail | Should -Match 'read-only'
+        }
+    }
+
+    Context 'Verdict: DC A records (DNS-004, pure)' {
+        It 'passes when every A record is a configured IPv4 address of the DC' {
+            $a = @([pscustomobject]@{ Server = $script:C13Dc1; State = 'Present'; Addresses = @($script:C13Ip1) }, [pscustomobject]@{ Server = $script:C13Dc2; State = 'Present'; Addresses = @($script:C13Ip1) })
+            (Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers $a -Config $script:C13Cfg).Status | Should -Be 'Pass'
+        }
+        It 'warns on an A record for an address the DC does not have, and on an A record absent on both instruments' {
+            $wrong = Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers @([pscustomobject]@{ Server = $script:C13Dc1; State = 'Present'; Addresses = @($script:C13Ip1, $script:C13IpX) }) -Config $script:C13Cfg
+            $wrong.Status | Should -Be 'Warning'
+            $wrong.Detail | Should -Match 'not configured on'
+            $wrong.Detail | Should -Not -Match ([regex]::Escape($script:C13IpX))
+            $wrong.Evidence | Should -Match ([regex]::Escape($script:C13IpX))
+            (Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers @([pscustomobject]@{ Server = $script:C13Dc1; State = 'AbsentBoth'; Addresses = @() }) -Config $script:C13Cfg).Status | Should -Be 'Warning'
+        }
+        It 'is Not Assessed when the adapters were not read, or a server did not answer' {
+            $na = Get-AdfaDcARecordVerdict -ConfiguredIPv4 $null -ConfiguredCause 'Access denied' -Answers @([pscustomobject]@{ Server = $script:C13Dc1; State = 'Present'; Addresses = @($script:C13Ip1) }) -Config $script:C13Cfg
+            $na.Status | Should -Be 'Not Assessed'
+            $na.Detail | Should -Match 'Access denied'
+            (Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers @([pscustomobject]@{ Server = $script:C13Dc1; State = 'Unread'; Addresses = @() }) -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+            (Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers @() -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+        }
+        It 'grades an A record absent on one instrument only as OneInstrumentStatus, never Pass' {
+            $one = @([pscustomobject]@{ Server = $script:C13Dc1; State = 'AbsentOne'; Addresses = @() }, [pscustomobject]@{ Server = $script:C13Dc2; State = 'Present'; Addresses = @($script:C13Ip1) })
+            $v = Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers $one -Config $script:C13Cfg
+            $v.Status | Should -Be 'Warning'
+            $v.Detail | Should -Match 'one instrument only'
+            $cfg = Merge-AdfaDnsConfig -BaseConfig $script:C13Cfg -Override @{ OneInstrumentStatus = 'Not Assessed' } -OverrideSource 'x.json'
+            (Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers $one -Config $cfg).Status | Should -Be 'Not Assessed'
+        }
+        It 'is Not Assessed, never Pass, when a record was returned but no address could be read from it' {
+            $v = Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers @([pscustomobject]@{ Server = $script:C13Dc1; State = 'Present'; Addresses = @() }) -Config $script:C13Cfg
+            $v.Status | Should -Be 'Not Assessed'
+            $v.Detail | Should -Match 'could not read, so it was not compared'
+            (Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers @([pscustomobject]@{ Server = $script:C13Dc1; State = 'Present'; Addresses = @('', ' ') }) -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+            # A measured mismatch on another server still stands.
+            (Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers @([pscustomobject]@{ Server = $script:C13Dc1; State = 'Present'; Addresses = @() }, [pscustomobject]@{ Server = $script:C13Dc2; State = 'Present'; Addresses = @($script:C13IpX) }) -Config $script:C13Cfg).Status | Should -Be 'Warning'
+        }
+    }
+
+    Context 'Grade provenance: a grade a file set names the file, a built-in grade says tool default' {
+        It 'names the override file in every graded family whose status it set: <Family>' -ForEach @(
+            @{ Family = 'zone dynamic update'; Key = 'NonsecureStatus'; Value = 'Warning' }
+            @{ Family = 'zone scavenging'; Key = 'ScavengingOffStatus'; Value = 'Info' }
+            @{ Family = 'zone aging'; Key = 'AgingOffStatus'; Value = 'Info' }
+            @{ Family = 'locator, one instrument'; Key = 'OneInstrumentStatus'; Value = 'Not Assessed' }
+            @{ Family = 'A record'; Key = 'ARecordStatus'; Value = 'Info' }
+            @{ Family = 'stale record'; Key = 'StaleRecordStatus'; Value = 'Info' }
+            @{ Family = 'DNS client'; Key = 'SingleServerStatus'; Value = 'Info' }
+        ) {
+            $path = 'C:\cfg\backup-stale-replication.json'
+            $cfg = Merge-AdfaDnsConfig -BaseConfig $script:C13Cfg -Override @{ $Key = $Value } -OverrideSource $path
+            $v = switch ($Family) {
+                'zone dynamic update' { Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1 -Dyn 'NonsecureAndSecure')) -Config $cfg }
+                'zone scavenging' { Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Scav $false)) -Config $cfg }
+                'zone aging' { Get-AdfaDnsScavengingVerdict -Observations @((New-C13Obs $script:C13Dc1 -Aging $false)) -Config $cfg }
+                'locator, one instrument' { Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @((New-C13Check 'Dc' $script:C13Dc1 'AbsentOne')) -Config $cfg }
+                'A record' { Get-AdfaDcARecordVerdict -ConfiguredIPv4 @($script:C13Ip1) -Answers @([pscustomobject]@{ Server = $script:C13Dc1; State = 'Present'; Addresses = @($script:C13IpX) }) -Config $cfg }
+                'stale record' { Get-AdfaStaleDnsRecordVerdict -Candidates @([pscustomobject]@{ Name = '_ldap._tcp.dc._msdcs.contoso.com'; Type = 'SRV'; Target = $script:C13Old; Server = $script:C13Dc1 }) -KnownDcHosts @($script:C13Dc1) -Config $cfg }
+                'DNS client' { Get-AdfaDcDnsClientVerdict -DnsServers @('127.0.0.1') -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @($script:C13Ip1, $script:C13Ip2) -DcCount 2 -Config $cfg }
+            }
+            [string]$v.Status | Should -Be $Value
+            $v.Detail | Should -Match ("Graded {0}: {1} \(loaded [0-9-]+\) for {2}" -f [regex]::Escape($Value), [regex]::Escape($path), $Key)
+            $v.Detail | Should -Not -Match 'The grade is a tool default'
+        }
+        It 'says tool defaults, not Microsoft values, when no file set the grade' {
+            $v = Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1 -Dyn 'NonsecureAndSecure')) -Config $script:C13Cfg
+            $v.Detail | Should -Match 'Graded Fail: tool defaults, not Microsoft values'
+        }
+        It 'keeps each graded row on its own advice when the provenance names a file whose path says backup, stale and replication' {
+            $cfg = Merge-AdfaDnsConfig -BaseConfig $script:C13Cfg -Override @{ NonsecureStatus = 'Warning'; StaleRecordStatus = 'Warning' } -OverrideSource 'C:\cfg\backup-stale-replication.json'
+            $dyn = Get-AdfaDnsDynamicUpdateVerdict -Observations @((New-C13Obs $script:C13Dc1 -Dyn 'NonsecureAndSecure')) -Config $cfg
+            $row = New-AdfaDnsRow -Scope 'contoso.com' -Item 'Zone dynamic update: contoso.com' -Status ([string]$dyn.Status) -Detail ([string]$dyn.Detail)
+            (ConvertTo-AdfaConsolidatedFinding -Section 'DNS Health' -Row $row -StatusColumn 'Status').Recommendation | Should -Match 'Secure only'
+            $st = Get-AdfaStaleDnsRecordVerdict -Candidates @([pscustomobject]@{ Name = '_ldap._tcp.dc._msdcs.contoso.com'; Type = 'SRV'; Target = $script:C13Old; Server = $script:C13Dc1 }) -KnownDcHosts @($script:C13Dc1) -Config $cfg
+            $row2 = New-AdfaDnsRow -Area 'DnsAdConsistency' -Scope 'contoso.com' -Item ("Stale DC record: {0}" -f $script:C13Old) -Status ([string]$st.Status) -Detail ([string]$st.Detail)
+            $rec = (ConvertTo-AdfaConsolidatedFinding -Section 'DNS vs AD Consistency' -Row $row2 -StatusColumn 'Status').Recommendation
+            $rec | Should -Match 'stale domain controllers'
+            $rec | Should -Not -Match 'Disable first|repadmin'
+        }
+    }
+
+    Context 'Verdict: records that name no DC (DNS-005, pure)' {
+        It 'lists an SRV target that matches no known DC, and no record of a known DC, an RODC included' {
+            $cand = @([pscustomobject]@{ Name = '_ldap._tcp.dc._msdcs.contoso.com'; Type = 'SRV'; Target = $script:C13Old; Server = $script:C13Dc1 },
+                [pscustomobject]@{ Name = '_ldap._tcp.dc._msdcs.contoso.com'; Type = 'SRV'; Target = 'RODC1.contoso.com.'; Server = $script:C13Dc1 })
+            $v = Get-AdfaStaleDnsRecordVerdict -Candidates $cand -KnownDcHosts @($script:C13Dc1, 'rodc1.contoso.com') -KnownDsaGuids @() -Config $script:C13Cfg
+            # Declared population: the one target that is no DC.
+            @($v.Stale).Count | Should -Be 1
+            [string]@($v.Stale)[0].Target | Should -Be $script:C13Old
+            $v.Status | Should -Be 'Warning'
+            $v.Detail | Should -Not -Match ([regex]::Escape($script:C13Old))
+        }
+        It 'lists a GUID._msdcs CNAME whose GUID is no NTDS Settings object, only when the DSA GUIDs were read' {
+            $g1 = '11111111-2222-3333-4444-555555555555'
+            $g2 = '99999999-8888-7777-6666-555555555555'
+            $cand = @([pscustomobject]@{ Name = ("{0}._msdcs.contoso.com" -f $g1); Type = 'CNAME'; Target = $script:C13Dc1; Server = $script:C13Dc1 },
+                [pscustomobject]@{ Name = ("{0}._msdcs.contoso.com" -f $g2); Type = 'CNAME'; Target = $script:C13Old; Server = $script:C13Dc1 })
+            $v = Get-AdfaStaleDnsRecordVerdict -Candidates $cand -KnownDcHosts @($script:C13Dc1) -KnownDsaGuids @($g1.ToUpperInvariant()) -Config $script:C13Cfg
+            (@($v.Stale | ForEach-Object { [string]$_.Name }) -join ',') | Should -Be ("{0}._msdcs.contoso.com" -f $g2)
+            $noGuids = Get-AdfaStaleDnsRecordVerdict -Candidates $cand -KnownDcHosts @($script:C13Dc1) -KnownDsaGuids @() -DsaError 'STUB: configuration partition unreadable' -Config $script:C13Cfg
+            @($noGuids.Stale).Count | Should -Be 0
+            $noGuids.Status | Should -Be 'Not Assessed'
+            $noGuids.Detail | Should -Match 'configuration partition unreadable'
+        }
+        It 'passes when everything was read and nothing is stale, and is Not Assessed when a server was not read' {
+            (Get-AdfaStaleDnsRecordVerdict -Candidates @() -KnownDcHosts @($script:C13Dc1) -KnownDsaGuids @() -Config $script:C13Cfg).Status | Should -Be 'Pass'
+            $na = Get-AdfaStaleDnsRecordVerdict -Candidates @() -KnownDcHosts @($script:C13Dc1) -KnownDsaGuids @() -Unread @('dc2.contoso.com: no answer') -Config $script:C13Cfg
+            $na.Status | Should -Be 'Not Assessed'
+            (Get-AdfaStaleDnsRecordVerdict -Candidates @() -KnownDcHosts @() -KnownDsaGuids @() -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+        }
+        It 'lists nothing as stale when no DC is known, whatever the records name' {
+            $cand = @([pscustomobject]@{ Name = '_ldap._tcp.dc._msdcs.contoso.com'; Type = 'SRV'; Target = $script:C13Dc1; Server = $script:C13Dc1 },
+                [pscustomobject]@{ Name = '_ldap._tcp.dc._msdcs.contoso.com'; Type = 'SRV'; Target = $script:C13Dc2; Server = $script:C13Dc1 })
+            foreach ($known in @(, @()) + @(, $null)) {
+                $v = Get-AdfaStaleDnsRecordVerdict -Candidates $cand -KnownDcHosts $known -KnownDsaGuids @() -Config $script:C13Cfg
+                $v.Status | Should -Be 'Not Assessed'
+                @($v.Stale).Count | Should -Be 0
+                $v.Detail | Should -Match 'No domain controller is known'
+            }
+        }
+        It 'judges no GUID._msdcs CNAME when no DSA GUID is known and no error was given' {
+            $cand = @([pscustomobject]@{ Name = '11111111-2222-3333-4444-555555555555._msdcs.contoso.com'; Type = 'CNAME'; Target = $script:C13Dc1; Server = $script:C13Dc1 })
+            $v = Get-AdfaStaleDnsRecordVerdict -Candidates $cand -KnownDcHosts @($script:C13Dc1) -KnownDsaGuids @() -Config $script:C13Cfg
+            @($v.Stale).Count | Should -Be 0
+            $v.Status | Should -Be 'Not Assessed'
+            $v.Detail | Should -Match 'no DSA GUID is known'
+        }
+    }
+
+    Context 'Verdict: DC DNS client settings (INV-016, pure)' {
+        It 'is Not Assessed with the cause when the adapters were not read' {
+            $v = Get-AdfaDcDnsClientVerdict -DnsServers $null -Cause 'Access denied: x' -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @() -DcCount 2 -Config $script:C13Cfg
+            $v.Status | Should -Be 'Not Assessed'
+            $v.Detail | Should -Match 'Access denied'
+        }
+        It 'warns on a single DNS server when more than one DC is known (KB 4013), and is Info in a single-DC forest' {
+            (Get-AdfaDcDnsClientVerdict -DnsServers @('127.0.0.1') -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @($script:C13Ip1, $script:C13Ip2) -DcCount 2 -Config $script:C13Cfg).Status | Should -Be 'Warning'
+            (Get-AdfaDcDnsClientVerdict -DnsServers @($script:C13Ip2) -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @($script:C13Ip1, $script:C13Ip2) -DcCount 2 -Config $script:C13Cfg).Status | Should -Be 'Warning'
+            $one = Get-AdfaDcDnsClientVerdict -DnsServers @('127.0.0.1') -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @($script:C13Ip1) -DcCount 1 -DcCountIsForest $true -Config $script:C13Cfg
+            $one.Status | Should -Be 'Info'
+            $one.Detail | Should -Match 'tolerable'
+        }
+        It 'does not call a single DNS server tolerable when the one DC known is not the forest''s only DC (the run did not cover the forest)' {
+            $v = Get-AdfaDcDnsClientVerdict -DnsServers @('127.0.0.1') -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @($script:C13Ip1) -DcCount 1 -Config $script:C13Cfg
+            $v.Status | Should -Be 'Not Assessed'
+            $v.Detail | Should -Match 'did not count the domain controllers of the whole forest'
+            (Get-AdfaDcDnsClientVerdict -DnsServers @('127.0.0.1') -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @($script:C13Ip1) -DcCount 1 -DcCountIsForest $false -Config $script:C13Cfg).Status | Should -Be 'Not Assessed'
+        }
+        It 'warns on a DNS server list that was returned empty, and is Not Assessed on one that was not returned' {
+            (Get-AdfaDcDnsClientVerdict -DnsServers @() -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @() -DcCount 1 -Config $script:C13Cfg).Status | Should -Be 'Warning'
+            $na = Get-AdfaDcDnsClientVerdict -DnsServers $null -Cause 'Not returned: x' -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @() -DcCount 2 -Config $script:C13Cfg
+            $na.Status | Should -Be 'Not Assessed'
+            $na.Detail | Should -Match '^Not returned'
+        }
+        It 'reports loopback first, no other DC and unknown resolvers as Info only (Learn publishes no rule for them)' {
+            $v = Get-AdfaDcDnsClientVerdict -DnsServers @('127.0.0.1', $script:C13IpX) -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @($script:C13Ip1, $script:C13Ip2) -DcCount 2 -Config $script:C13Cfg
+            $v.Status | Should -Be 'Info'
+            $v.Detail | Should -Match 'itself or loopback first'
+            $v.Detail | Should -Match 'no other domain controller'
+            $v.Detail | Should -Match 'ISP'
+            $v.Detail | Should -Not -Match ([regex]::Escape($script:C13IpX))
+            $good = Get-AdfaDcDnsClientVerdict -DnsServers @($script:C13Ip2, '127.0.0.1') -SelfAddresses @($script:C13Ip1) -KnownDcAddresses @($script:C13Ip1, $script:C13Ip2) -DcCount 2 -Config $script:C13Cfg
+            $good.Status | Should -Be 'Info'
+            $good.Detail | Should -Not -Match 'itself or loopback first|no other domain controller|ISP'
+        }
+    }
+
+    Context 'Config override: the Dns key' {
+        It 'merges the statuses and the cap and rewrites provenance for exactly those keys' {
+            $m = Merge-AdfaDnsConfig -BaseConfig $script:C13Cfg -Override ('{ "NonsecureStatus": "Warning", "RecordExportCap": 10 }' | ConvertFrom-Json) -OverrideSource 'C:\cfg\dns.json'
+            [string]$m['NonsecureStatus'] | Should -Be 'Warning'
+            [int]$m['RecordExportCap'] | Should -Be 10
+            [string]$m['ThresholdSource'] | Should -Match 'dns\.json'
+            [string]$m['ThresholdSource'] | Should -Match 'NonsecureStatus, RecordExportCap'
+            [string]$m['ScavengingOffStatus'] | Should -Be 'Warning'
+            [object]::ReferenceEquals($m['LocatorRecords'], $script:C13Cfg['LocatorRecords']) | Should -BeTrue
+            [string]$script:C13Cfg['NonsecureStatus'] | Should -Be 'Fail'
+        }
+        It 'refuses <Name>' -ForEach @(
+            @{ Name = 'an array'; Json = '[ 1, 2 ]'; Expect = 'single object' }
+            @{ Name = 'a string'; Json = '"Warning"'; Expect = 'single object' }
+            @{ Name = 'an empty object'; Json = '{ }'; Expect = 'empty object' }
+            @{ Name = 'an unknown key'; Json = '{ "LocatorRecords": [] }'; Expect = "unknown key 'LocatorRecords'" }
+            @{ Name = 'a pattern'; Json = '{ "NoRecordPattern": "." }'; Expect = "unknown key 'NoRecordPattern'" }
+            @{ Name = 'a null'; Json = '{ "NonsecureStatus": null }'; Expect = 'null' }
+            @{ Name = 'a status outside its set'; Json = '{ "NonsecureStatus": "Pass" }'; Expect = 'Fail, Warning' }
+            @{ Name = 'Not Assessed where it is not allowed'; Json = '{ "StaleRecordStatus": "Not Assessed" }'; Expect = 'Warning, Info' }
+            @{ Name = 'a status that is a number'; Json = '{ "AgingOffStatus": 1 }'; Expect = 'string' }
+            @{ Name = 'a cap of zero'; Json = '{ "RecordExportCap": 0 }'; Expect = '1 to 1000000' }
+            @{ Name = 'a cap above the range'; Json = '{ "RecordExportCap": 1000001 }'; Expect = '1 to 1000000' }
+            @{ Name = 'a fractional cap'; Json = '{ "RecordExportCap": 1.5 }'; Expect = '1 to 1000000' }
+            @{ Name = 'a quoted cap'; Json = '{ "RecordExportCap": "10" }'; Expect = 'JSON number' }
+        ) {
+            { Merge-AdfaDnsConfig -BaseConfig $script:C13Cfg -Override ($Json | ConvertFrom-Json) -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage ("*{0}*" -f $Expect)
+        }
+        It 'is registered for -ConfigOverridePath, used by the four DNS sections' {
+            @($script:ConfigOverrideSections.Keys) | Should -Contain 'Dns'
+            $def = $script:ConfigOverrideSections['Dns']
+            [string]$def['Merge'] | Should -Be 'Merge-AdfaDnsConfig'
+            [string]$def['Section'] | Should -Be 'Dns'
+            (@($def['AlsoUsedBy']) -join ',') | Should -Be 'DnsAdConsistency,DomainControllers,DnsRecordExport'
+            $r = Resolve-AdfaConfigOverride -Override ('{ "Dns": { "OneInstrumentStatus": "Not Assessed" } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'x.json'
+            [string]$r['Dns']['OneInstrumentStatus'] | Should -Be 'Not Assessed'
+            { Resolve-AdfaConfigOverride -Override ('{ "Dns": { "RecordExportCap": -1 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage "*section 'Dns'*"
+        }
+    }
+
+    Context 'Raw seams: the DnsServer reads, the record read, the adapter read' {
+        It 'reads the zones, ages only the primary zones that were not auto-created, and reads scavenging and forwarders' {
+            $r = Get-AdfaDnsServerRaw -ComputerName $script:C13Dc1
+            $r.Ok | Should -BeTrue
+            # Declared population: the four zones the stub server holds.
+            @($r.Zones).Count | Should -Be 4
+            (@($r.Zones | ForEach-Object { [string]$_.ZoneName }) -join ',') | Should -Be 'contoso.com,_msdcs.contoso.com,0.in-addr.arpa,fabrikam.com'
+            @($r.Zones)[0].IsDsIntegrated | Should -BeTrue
+            [string]@($r.Zones)[0].DynamicUpdate | Should -Be 'Secure'
+            (@($script:C13AgingCalls) -join ',') | Should -Be 'contoso.com,_msdcs.contoso.com'
+            $r.Aging['contoso.com'].AgingEnabled | Should -BeTrue
+            $r.ScavengingOk | Should -BeTrue
+            Test-AdfaDnsServerScavenges -Interval $r.ScavengingInterval | Should -BeTrue
+            (@($r.Forwarders) -join ',') | Should -Be $script:C13IpX
+        }
+        It 'returns the error and its code, not an exception, when the zone list cannot be read' {
+            $script:C13ZoneAnswer = { param($c) $e = New-Object System.Exception 'Acesso negado.'; $e | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'; throw $e }
+            $r = Get-AdfaDnsServerRaw -ComputerName $script:C13Dc1
+            $r.Ok | Should -BeFalse
+            $r.ErrorCode | Should -Be 'AccessDenied'
+            Get-AdfaDnsReadErrorClass -Message $r.Error -ErrorCode $r.ErrorCode -Config $script:C13Cfg | Should -Be 'AccessDenied'
+        }
+        It 'keeps the zones when only the scavenging read fails, and marks a zone whose aging read failed' {
+            $script:C13ScavAnswer = { param($c) throw 'The operation has timed out.' }
+            $script:C13AgingAnswer = { param($n) if ($n -eq 'contoso.com') { throw 'RPC server unavailable' }; [pscustomobject]@{ ZoneName = $n; AgingEnabled = $false } }
+            $r = Get-AdfaDnsServerRaw -ComputerName $script:C13Dc1
+            $r.Ok | Should -BeTrue
+            $r.ScavengingOk | Should -BeFalse
+            $r.ScavengingError | Should -Match 'timed out'
+            $r.Aging['contoso.com'].Ok | Should -BeFalse
+            $r.Aging['_msdcs.contoso.com'].AgingEnabled | Should -BeFalse
+        }
+        It 'tells apart access denied, no provider, time-out, no such record and any other error' {
+            Get-AdfaDnsReadErrorClass -Message 'Access is denied.' -ErrorCode '' -Config $script:C13Cfg | Should -Be 'AccessDenied'
+            Get-AdfaDnsReadErrorClass -Message 'Invalid namespace' -ErrorCode 'InvalidNamespace' -Config $script:C13Cfg | Should -Be 'NoProvider'
+            Get-AdfaDnsReadErrorClass -Message 'The operation has timed out.' -ErrorCode '' -Config $script:C13Cfg | Should -Be 'Timeout'
+            Get-AdfaDnsReadErrorClass -Message 'Failed to get the record: WIN32 9714' -ErrorCode '' -Config $script:C13Cfg | Should -Be 'NotFound'
+            Get-AdfaDnsReadErrorClass -Message 'DNS record does not exist.' -ErrorCode '' -Config $script:C13Cfg | Should -Be 'NotFound'
+            # A CIM NotFound code does not say what was not found: a failed read, not an absence.
+            Get-AdfaDnsReadErrorClass -Message 'x' -ErrorCode 'NotFound' -Config $script:C13Cfg | Should -Be 'Error'
+            Get-AdfaDnsReadErrorClass -Message 'The RPC server is unavailable.' -ErrorCode '' -Config $script:C13Cfg | Should -Be 'Error'
+        }
+        It 'reads a transport or domain failure that says "was not found" or "does not exist" as a failed read, never as no such record: <Message>' -ForEach @(
+            @{ Message = 'The network path was not found.' }
+            @{ Message = 'The specified domain either does not exist or could not be contacted.' }
+            @{ Message = 'The zone contoso.com was not found on server dc1.' }
+            @{ Message = 'ObjectNotFound' }
+        ) {
+            Get-AdfaDnsReadErrorClass -Message $Message -ErrorCode '' -Config $script:C13Cfg | Should -Be 'Error'
+            $script:C13Thrown = $Message
+            $script:C13RecordAnswer = { param($c, $z, $n, $t) throw $script:C13Thrown }
+            $r = Get-AdfaDnsRecordSetRaw -ComputerName $script:C13Dc1 -ZoneName 'contoso.com' -Name 'dc9' -RRType 'A'
+            $r.Outcome | Should -Be 'Error'
+            $r.Ok | Should -BeFalse
+        }
+        It 'caps a record read, keeps the real count, and reads the SRV target from RecordData' {
+            $script:C13RecordAnswer = { param($c, $z, $n, $t) @(1..5 | ForEach-Object { New-C13Srv '_ldap._tcp.dc' ("dc{0}.contoso.com" -f $_) }) }
+            $r = Get-AdfaDnsRecordSetRaw -ComputerName $script:C13Dc1 -ZoneName '_msdcs.contoso.com' -Cap 3
+            $r.Outcome | Should -Be 'Resolved'
+            @($r.Records).Count | Should -Be 3
+            $r.RealCount | Should -Be 5
+            $r.Truncated | Should -BeTrue
+            [string]@($r.Records)[0].Target | Should -Be 'dc1.contoso.com'
+            [string]@($r.Records)[0].RecordData | Should -Match 'DomainName=dc1\.contoso\.com'
+            $exact = Get-AdfaDnsRecordSetRaw -ComputerName $script:C13Dc1 -ZoneName '_msdcs.contoso.com' -Cap 5
+            $exact.Truncated | Should -BeFalse
+            @($exact.Records).Count | Should -Be 5
+        }
+        It 'reads a missing record as NoRecord and any other failure as Error' {
+            $script:C13RecordAnswer = { param($c, $z, $n, $t) throw 'Failed to get dc9 record in contoso.com zone on server: WIN32 9714' }
+            (Get-AdfaDnsRecordSetRaw -ComputerName $script:C13Dc1 -ZoneName 'contoso.com' -Name 'dc9' -RRType 'A').Outcome | Should -Be 'NoRecord'
+            $script:C13RecordAnswer = { param($c, $z, $n, $t) throw 'The RPC server is unavailable.' }
+            $e = Get-AdfaDnsRecordSetRaw -ComputerName $script:C13Dc1 -ZoneName 'contoso.com' -Name 'dc9' -RRType 'A'
+            $e.Outcome | Should -Be 'Error'
+            $e.Ok | Should -BeFalse
+            $script:C13RecordAnswer = { param($c, $z, $n, $t) @() }
+            (Get-AdfaDnsRecordSetRaw -ComputerName $script:C13Dc1 -ZoneName 'contoso.com' -Name 'dc9' -RRType 'A').Outcome | Should -Be 'NoRecord'
+        }
+        It 'finds the zone that holds a name, longest suffix first' {
+            $z = Resolve-AdfaDnsZoneForName -Name '_ldap._tcp.dc._msdcs.contoso.com' -ZoneNames @('contoso.com', '_msdcs.contoso.com')
+            $z.Zone | Should -Be '_msdcs.contoso.com'
+            $z.Relative | Should -Be '_ldap._tcp.dc'
+            (Resolve-AdfaDnsZoneForName -Name 'contoso.com' -ZoneNames @('contoso.com')).Relative | Should -Be '@'
+            $null -eq (Resolve-AdfaDnsZoneForName -Name 'fabrikam.com' -ZoneNames @('contoso.com')) | Should -BeTrue
+            $null -eq (Resolve-AdfaDnsZoneForName -Name 'xcontoso.com' -ZoneNames @('contoso.com')) | Should -BeTrue
+        }
+        It 'reads the adapters with the IPEnabled filter, the five properties and no method, and closes the session' {
+            $script:C13Closed = 0
+            $script:C13Cim = @()
+            function New-CimSessionOption { param([string]$Protocol) [pscustomobject]@{ Protocol = $Protocol } }
+            function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction) [pscustomobject]@{ ComputerName = $ComputerName } }
+            function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) $script:C13Closed++ }
+            function Get-CimInstance { param($CimSession, [string]$Namespace, [string]$ClassName, [string[]]$Property, [string]$Filter, [uint32]$OperationTimeoutSec, $ErrorAction)
+                $script:C13Cim += [pscustomobject]@{ ClassName = $ClassName; Filter = $Filter; Property = (@($Property) -join ',') }
+                @((New-C13Adapter -Ip @($script:C13Ip1, 'fe80::1') -Dns @($script:C13Ip2, '127.0.0.1'))) }
+            function Invoke-CimMethod { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: no method may be called' }
+            $r = Get-AdfaDcNetworkRaw -ComputerName $script:C13Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30
+            $r.Ok | Should -BeTrue
+            @($script:C13Cim).Count | Should -Be 1
+            $script:C13Cim[0].ClassName | Should -Be 'Win32_NetworkAdapterConfiguration'
+            $script:C13Cim[0].Filter | Should -Be 'IPEnabled = TRUE'
+            $script:C13Cim[0].Property | Should -Be 'IPEnabled,IPAddress,DNSServerSearchOrder,Description,InterfaceIndex'
+            (@(@($r.Adapters)[0].DNSServerSearchOrder) -join ',') | Should -Be ("{0},127.0.0.1" -f $script:C13Ip2)
+            $script:C13Closed | Should -Be 1
+        }
+    }
+
+    Context 'Collector: DNS Health (Get-AdfaDnsHealth)' {
+        BeforeEach {
+            $script:C13Raw = @{}
+            $script:C13Down = @()
+            $script:C13RawCalls = @()
+            $script:C13Module = $true
+            Mock Test-ModuleAvailable { [bool]$script:C13Module }
+            Mock Test-TcpPort { $script:C13Down -notcontains [string]$ComputerName }
+            Mock Get-AdfaDnsServerRaw {
+                $script:C13RawCalls += [string]$ComputerName
+                if ($script:C13Raw.ContainsKey([string]$ComputerName)) { return $script:C13Raw[[string]$ComputerName] }
+                New-C13ServerRaw -Zones @((New-C13Zone 'contoso.com'), (New-C13Zone '_msdcs.contoso.com'))
+            }
+        }
+        It 'grades every primary zone over the domain''s DNS servers, with one inventory row per zone per server' {
+            $script:C13Raw[$script:C13Dc2] = New-C13ServerRaw -Zones @((New-C13Zone 'contoso.com' -Dyn 'NonsecureAndSecure'), (New-C13Zone '_msdcs.contoso.com'), (New-C13Zone 'fabrikam.com' -Type 'Forwarder' -Dyn 'None' -Ds $false)) -Interval ([timespan]::Zero)
+            $rows = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com'), (New-C13Target $script:C13Dc2 'contoso.com')) -Config $script:C13Cfg -ScopedDomains @('contoso.com'))
+            # Declared population: two DNS servers.
+            (Get-C13Like $rows 'DNS server: *').Count | Should -Be 2
+            @((Get-C13Like $rows 'DNS server: *') | Where-Object { $_.Status -ne 'Info' }).Count | Should -Be 0
+            $dyn = Get-C13Row $rows 'Zone dynamic update: contoso.com'
+            $dyn.Count | Should -Be 1
+            $dyn[0].Status | Should -Be 'Fail'
+            $dyn[0].Scope | Should -Be 'contoso.com'
+            $dyn[0].Zone | Should -Be 'contoso.com'
+            (Get-C13Row $rows 'Zone dynamic update: _msdcs.contoso.com')[0].Status | Should -Be 'Pass'
+            # dc1 scavenges, dc2 does not: one hosting server is enough.
+            (Get-C13Row $rows 'Zone scavenging: contoso.com')[0].Status | Should -Be 'Pass'
+            # A forwarder zone is inventoried, not graded.
+            (Get-C13Row $rows 'Zone dynamic update: fabrikam.com').Count | Should -Be 0
+            # Declared population: 2 zones on dc1 + 3 on dc2.
+            (Get-C13Like $rows 'Zone configuration: *').Count | Should -Be 5
+            @((Get-C13Like $rows 'Zone configuration: *') | Where-Object { $_.Status -ne 'Info' }).Count | Should -Be 0
+            $pop = Get-C13Row $rows 'DNS zones (population): contoso.com'
+            $pop[0].Status | Should -Be 'Info'
+            $pop[0].Detail | Should -Match '2 of 2 DNS server'
+            # The legacy rows that stay, and the two that are replaced.
+            (Get-C13Like $rows '*: forwarders').Count | Should -Be 2
+            (Get-C13Like $rows '*: scavenging').Count | Should -Be 0
+            (Get-C13Like $rows '*: zones').Count | Should -Be 0
+        }
+        It 'warns when no hosting server scavenges' {
+            foreach ($dc in @($script:C13Dc1, $script:C13Dc2)) { $script:C13Raw[$dc] = New-C13ServerRaw -Zones @((New-C13Zone 'contoso.com')) -Interval ([timespan]::Zero) }
+            $rows = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com'), (New-C13Target $script:C13Dc2 'contoso.com')) -Config $script:C13Cfg -ScopedDomains @('contoso.com'))
+            (Get-C13Row $rows 'Zone scavenging: contoso.com')[0].Status | Should -Be 'Warning'
+        }
+        It 'with no DC reports Not Assessed, a row for each scoped domain, and reads nothing' {
+            $rows = @(Get-AdfaDnsHealth -DomainControllers @() -Config $script:C13Cfg -ScopedDomains @('contoso.com') -EnumerationError 'STUB: ADWS unreachable')
+            (Get-C13Row $rows 'DNS health')[0].Status | Should -Be 'Not Assessed'
+            (Get-C13Row $rows 'DNS health')[0].Detail | Should -Match 'ADWS unreachable'
+            (Get-C13Row $rows 'DNS server - contoso.com')[0].Status | Should -Be 'Not Assessed'
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            @($script:C13RawCalls).Count | Should -Be 0
+        }
+        It 'reports an unreachable DC as Unreachable, reads nothing from it, and grades no zone it might host as Pass' {
+            $script:C13Down = @($script:C13Dc2)
+            $rows = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com'), (New-C13Target $script:C13Dc2 'contoso.com')) -Config $script:C13Cfg -ScopedDomains @('contoso.com'))
+            $two = Get-C13Row $rows ("DNS server: {0}" -f $script:C13Dc2)
+            $two[0].Status | Should -Be 'Not Assessed'
+            $two[0].Detail | Should -Match '^Unreachable'
+            @($script:C13RawCalls) | Should -Not -Contain $script:C13Dc2
+            (Get-C13Row $rows 'Zone dynamic update: contoso.com')[0].Status | Should -Be 'Not Assessed'
+            (Get-C13Row $rows 'Zone scavenging: contoso.com')[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'reports access denied as access denied, not unreachable, and a missing provider and a time-out as their own causes' {
+            $script:C13Raw[$script:C13Dc1] = New-C13FailedRaw -Message 'Acesso negado.' -Code 'AccessDenied'
+            $script:C13Raw[$script:C13Dc2] = New-C13FailedRaw -Message 'Invalid namespace' -Code 'InvalidNamespace'
+            $script:C13Raw[$script:C13Dc3] = New-C13FailedRaw -Message 'The operation has timed out.'
+            $rows = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com'), (New-C13Target $script:C13Dc2 'contoso.com'), (New-C13Target $script:C13Dc3 'north.contoso.com')) -Config $script:C13Cfg -ScopedDomains @('contoso.com', 'north.contoso.com'))
+            $one = (Get-C13Row $rows ("DNS server: {0}" -f $script:C13Dc1))[0]
+            $one.Status | Should -Be 'Not Assessed'
+            $one.Detail | Should -Match '^Access denied'
+            $one.Detail | Should -Not -Match 'Unreachable'
+            (Get-C13Row $rows ("DNS server: {0}" -f $script:C13Dc2))[0].Detail | Should -Match '^DNS provider did not answer'
+            (Get-C13Row $rows ("DNS server: {0}" -f $script:C13Dc3))[0].Detail | Should -Match '^Timed out'
+            (Get-C13Row $rows 'DNS zones (population): contoso.com')[0].Status | Should -Be 'Not Assessed'
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'reports the DnsServer module missing on every DC and reads nothing' {
+            $script:C13Module = $false
+            $rows = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com'), (New-C13Target $script:C13Dc2 'contoso.com')) -Config $script:C13Cfg -ScopedDomains @('contoso.com'))
+            $srv = Get-C13Like $rows 'DNS server: *'
+            $srv.Count | Should -Be 2
+            @($srv | Where-Object { $_.Status -ne 'Not Assessed' -or $_.Detail -notmatch 'DnsServer PowerShell module' }).Count | Should -Be 0
+            @($script:C13RawCalls).Count | Should -Be 0
+        }
+        It 'reads every DC of every domain, each zone graded under its own domain (mixed: one DC denied)' {
+            $script:C13Raw[$script:C13Dc2] = New-C13FailedRaw -Message 'Access is denied.'
+            $rows = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com'), (New-C13Target $script:C13Dc2 'contoso.com'), (New-C13Target $script:C13Dc3 'north.contoso.com')) -Config $script:C13Cfg -ScopedDomains @('contoso.com', 'north.contoso.com'))
+            (@($script:C13RawCalls) -join ',') | Should -Be (@($script:C13Dc1, $script:C13Dc2, $script:C13Dc3) -join ',')
+            $dyn = Get-C13Row $rows 'Zone dynamic update: contoso.com'
+            # Declared population: the zone under each of the two domains.
+            $dyn.Count | Should -Be 2
+            (@($dyn | Where-Object { $_.Scope -eq 'contoso.com' }))[0].Status | Should -Be 'Not Assessed'
+            (@($dyn | Where-Object { $_.Scope -eq 'north.contoso.com' }))[0].Status | Should -Be 'Pass'
+            (Get-C13Row $rows 'DNS zones (population): north.contoso.com')[0].Detail | Should -Match '1 of 1 DNS server'
+        }
+        It 'keeps names in display columns only: a hostile zone name reaches no Detail' {
+            $script:C13Raw[$script:C13Dc1] = New-C13ServerRaw -Zones @((New-C13Zone 'replication-stale.contoso.com' -Dyn 'NonsecureAndSecure'))
+            $rows = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com')) -Config $script:C13Cfg -ScopedDomains @('contoso.com'))
+            $r = (Get-C13Row $rows 'Zone dynamic update: replication-stale.contoso.com')[0]
+            $r.Status | Should -Be 'Fail'
+            $r.Detail | Should -Not -Match 'replication-stale'
+            $f = ConvertTo-AdfaConsolidatedFinding -Section 'DNS Health' -Row $r -StatusColumn 'Status'
+            $f.Recommendation | Should -Match 'Secure only'
+            $f.Recommendation | Should -Not -Match 'repadmin'
+        }
+        It 'writes the zone configuration columns (INV-013) as each server reported them' {
+            $script:C13Raw[$script:C13Dc1] = New-C13ServerRaw -Zones @((New-C13Zone 'contoso.com' -Dyn 'Secure' -Scope 'Domain'), (New-C13Zone '_msdcs.contoso.com' -Dyn 'NonsecureAndSecure' -Scope 'Forest'), (New-C13Zone 'legacy.contoso.com' -Ds $false -Dyn 'None' -Scope 'Legacy'))
+            $rows = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com')) -Config $script:C13Cfg -ScopedDomains @('contoso.com'))
+            $expected = @(
+                @{ Zone = 'contoso.com'; ZoneType = 'Primary'; ReplicationScope = 'Domain'; DsIntegrated = 'True'; DynamicUpdate = 'Secure' }
+                @{ Zone = '_msdcs.contoso.com'; ZoneType = 'Primary'; ReplicationScope = 'Forest'; DsIntegrated = 'True'; DynamicUpdate = 'NonsecureAndSecure' }
+                @{ Zone = 'legacy.contoso.com'; ZoneType = 'Primary'; ReplicationScope = 'Legacy'; DsIntegrated = 'False'; DynamicUpdate = 'None' }
+            )
+            # Declared population: the three zones the one server holds.
+            (Get-C13Like $rows 'Zone configuration: *').Count | Should -Be 3
+            foreach ($e in $expected) {
+                $r = Get-C13Row $rows ("Zone configuration: {0} on {1}" -f $e.Zone, $script:C13Dc1)
+                $r.Count | Should -Be 1 -Because $e.Zone
+                foreach ($col in @('Zone', 'ZoneType', 'ReplicationScope', 'DsIntegrated', 'DynamicUpdate')) { [string]$r[0].$col | Should -Be $e[$col] -Because ("{0} {1}" -f $e.Zone, $col) }
+                [string]$r[0].Server | Should -Be $script:C13Dc1
+                [string]$r[0].Aging | Should -Match '^AgingEnabled=True; NoRefresh=7\.00:00:00; Refresh=7\.00:00:00'
+            }
+        }
+        It 'grades a forest-wide zone once over the DNS servers of every domain: a root DC that scavenges covers a child DC that does not' {
+            $script:C13Raw[$script:C13Dc1] = New-C13ServerRaw -Zones @((New-C13Zone 'contoso.com'), (New-C13Zone '_msdcs.contoso.com' -Scope 'Forest')) -Interval ([timespan]::FromDays(7))
+            $script:C13Raw[$script:C13Dc3] = New-C13ServerRaw -Zones @((New-C13Zone 'north.contoso.com'), (New-C13Zone '_msdcs.contoso.com' -Scope 'Forest')) -Interval ([timespan]::Zero)
+            $rows = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com'), (New-C13Target $script:C13Dc3 'north.contoso.com')) -Config $script:C13Cfg -ScopedDomains @('contoso.com', 'north.contoso.com'))
+            $f = Get-C13Row $rows 'Zone scavenging: _msdcs.contoso.com'
+            # Declared population: one row for the forest-wide zone, not one per domain.
+            $f.Count | Should -Be 1
+            $f[0].Status | Should -Be 'Pass'
+            $f[0].Evidence | Should -Match ([regex]::Escape($script:C13Dc3))
+            $f[0].ReplicationScope | Should -Be 'Forest'
+            (Get-C13Row $rows 'Zone dynamic update: _msdcs.contoso.com').Count | Should -Be 1
+            # The child domain's own zone is still graded under the child domain, over its server alone.
+            $child = Get-C13Row $rows 'Zone scavenging: north.contoso.com'
+            $child[0].Scope | Should -Be 'north.contoso.com'
+            $child[0].Status | Should -Be 'Warning'
+        }
+        It 'does not warn "no hosting server scavenges" on a forest-wide zone unless the run covered the forest' {
+            $script:C13Raw[$script:C13Dc3] = New-C13ServerRaw -Zones @((New-C13Zone '_msdcs.contoso.com' -Scope 'Forest')) -Interval ([timespan]::Zero)
+            $one = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc3 'north.contoso.com')) -Config $script:C13Cfg -ScopedDomains @('north.contoso.com'))
+            $r = (Get-C13Row $one 'Zone scavenging: _msdcs.contoso.com')[0]
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'replication scope \(Forest\)'
+            $all = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc3 'north.contoso.com')) -Config $script:C13Cfg -ScopedDomains @('north.contoso.com') -ForestComplete $true)
+            (Get-C13Row $all 'Zone scavenging: _msdcs.contoso.com')[0].Status | Should -Be 'Warning'
+            $failed = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc3 'north.contoso.com')) -Config $script:C13Cfg -ScopedDomains @('north.contoso.com') -ForestComplete $true -InventoryFailures @([pscustomobject]@{ Domain = 'contoso.com'; Error = 'STUB: ADWS unreachable' }))
+            (Get-C13Row $failed 'Zone scavenging: _msdcs.contoso.com')[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'never warns "no hosting server scavenges" on a zone whose replication scope does not name its servers (Legacy, or not returned)' {
+            foreach ($scope in @('Legacy', '')) {
+                $script:C13Raw[$script:C13Dc1] = New-C13ServerRaw -Zones @((New-C13Zone 'contoso.com' -Scope $scope)) -Interval ([timespan]::Zero)
+                $rows = @(Get-AdfaDnsHealth -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com')) -Config $script:C13Cfg -ScopedDomains @('contoso.com') -ForestComplete $true)
+                (Get-C13Row $rows 'Zone scavenging: contoso.com')[0].Status | Should -Be 'Not Assessed' -Because ("scope '{0}'" -f $scope)
+            }
+        }
+    }
+
+    Context 'Collector: DNS vs AD Consistency, the per-DC rows (Get-AdfaDnsAdConsistency)' {
+        BeforeEach {
+            $script:C13AdDcs = @(
+                [pscustomobject]@{ HostName = $script:C13Dc1; IsReadOnly = $false; IPv4Address = $script:C13Ip1 }
+                [pscustomobject]@{ HostName = $script:C13Dc2; IsReadOnly = $false; IPv4Address = $script:C13Ip2 })
+            $script:C13Srv = @{ '_ldap._tcp.dc._msdcs.contoso.com' = @($script:C13Dc1, $script:C13Dc2); '_kerberos._tcp.dc._msdcs.contoso.com' = @($script:C13Dc1, $script:C13Dc2) }
+            $script:C13A = @{ $script:C13Dc1 = @($script:C13Ip1); $script:C13Dc2 = @($script:C13Ip2) }
+            $script:C13Resolver = 'Answer'
+            $script:C13ZoneFail = @{}
+            $script:C13Module = $true
+            $script:C13Down = @()
+            $script:C13Nics = @{ $script:C13Dc1 = @($script:C13Ip1); $script:C13Dc2 = @($script:C13Ip2) }
+            $script:C13Cnames = @()
+            Mock Test-ModuleAvailable { [bool]$script:C13Module }
+            Mock Test-TcpPort { $script:C13Down -notcontains [string]$ComputerName }
+            # The zones each server holds, with their types, in the shape Get-AdfaDnsServerZoneNames
+            # returns; the NS owner names below each zone's apex (its delegations).
+            $script:C13ZoneList = @{ 'contoso.com' = 'Primary'; '_msdcs.contoso.com' = 'Primary' }
+            $script:C13Delegations = @{}
+            $script:C13NsFail = ''
+            Mock Get-AdfaDnsServerZoneNames { [pscustomobject]@{ Ok = $true; Names = @($script:C13ZoneList.Keys); Types = $script:C13ZoneList; Error = ''; ErrorCode = '' } }
+            Mock Get-AdfaDnsRecordSetRaw {
+                $srv = [string]$ComputerName
+                if ($script:C13ZoneFail.ContainsKey($srv)) { return [pscustomobject]@{ Ok = $false; Outcome = 'Error'; Records = @(); RealCount = 0; Truncated = $false; Error = $script:C13ZoneFail[$srv]; ErrorCode = ''; ErrorId = '' } }
+                if ($RRType -eq 'Ns') {
+                    if ($script:C13NsFail -ne '') { return [pscustomobject]@{ Ok = $false; Outcome = 'Error'; Records = @(); RealCount = 0; Truncated = $false; Error = $script:C13NsFail; ErrorCode = ''; ErrorId = '' } }
+                    $owners = @('@') + @($script:C13Delegations[[string]$ZoneName] | Where-Object { $null -ne $_ })
+                    $ns = @($owners | ForEach-Object { [pscustomobject]@{ HostName = $_; RecordType = 'NS'; Target = $script:C13Dc1; RecordData = ''; TimeToLive = ''; Timestamp = '' } })
+                    return [pscustomobject]@{ Ok = $true; Outcome = 'Resolved'; Records = $ns; RealCount = $ns.Count; Truncated = $false; Error = ''; ErrorCode = ''; ErrorId = '' }
+                }
+                $fqdn = ("{0}.{1}" -f $Name, $ZoneName)
+                $recs = @()
+                if ($RRType -eq 'Srv' -and $script:C13Srv.ContainsKey($fqdn)) { $recs = @($script:C13Srv[$fqdn] | ForEach-Object { [pscustomobject]@{ HostName = $Name; RecordType = 'SRV'; Target = $_; RecordData = ''; TimeToLive = ''; Timestamp = '' } }) }
+                if ($RRType -eq 'A' -and $script:C13A.ContainsKey($fqdn)) { $recs = @($script:C13A[$fqdn] | ForEach-Object { [pscustomobject]@{ HostName = $Name; RecordType = 'A'; Target = $_; RecordData = ''; TimeToLive = ''; Timestamp = '' } }) }
+                if ($RRType -eq 'CName') { $recs = @($script:C13Cnames | ForEach-Object { [pscustomobject]@{ HostName = $_; RecordType = 'CNAME'; Target = $script:C13Old; RecordData = ''; TimeToLive = ''; Timestamp = '' } }) }
+                $outcome = 'NoRecord'
+                if (@($recs).Count -gt 0) { $outcome = 'Resolved' }
+                [pscustomobject]@{ Ok = $true; Outcome = $outcome; Records = @($recs); RealCount = @($recs).Count; Truncated = $false; Error = ''; ErrorCode = '' }
+            }
+            Mock Resolve-AdfaDnsRecord {
+                if ($script:C13Resolver -eq 'NoTool') { return [pscustomobject]@{ Available = $false; Targets = @(); Error = 'Neither Resolve-DnsName nor nslookup.exe is available on this host.'; Outcome = 'NoTool' } }
+                if ($script:C13Resolver -eq 'NoAnswer') { return [pscustomobject]@{ Available = $true; Targets = @(); Error = 'timeout'; Outcome = 'NoAnswer' } }
+                $t = @()
+                if ($Type -eq 'SRV' -and $script:C13Srv.ContainsKey($Name)) { $t = @($script:C13Srv[$Name]) }
+                if ($Type -eq 'A' -and $script:C13A.ContainsKey($Name)) { $t = @($script:C13A[$Name]) }
+                if (@($t).Count -gt 0) { return [pscustomobject]@{ Available = $true; Targets = $t; Error = ''; Outcome = 'Resolved' } }
+                [pscustomobject]@{ Available = $true; Targets = @(); Error = 'DNS name does not exist'; Outcome = 'NoRecord' }
+            }
+            Mock Get-AdfaDcNetworkRaw {
+                $ips = $script:C13Nics[[string]$ComputerName]
+                if ($null -eq $ips) { return (New-C13NetRaw -Ok $false -Message 'Access is denied.' -Adapters @()) }
+                New-C13NetRaw -Adapters @((New-C13Adapter -Ip $ips -Dns @('127.0.0.1')))
+            }
+            function Invoke-C13Dac { param([string[]]$Servers = @($script:C13Dc1, $script:C13Dc2), [string]$DsaError = '', $Dsa = $null, [hashtable]$Config = $script:C13Cfg)
+                if ($null -eq $Dsa) { $Dsa = @([pscustomobject]@{ DsaGuid = '11111111-2222-3333-4444-555555555555'; DnsHostName = $script:C13Dc1 }, [pscustomobject]@{ DsaGuid = '21111111-2222-3333-4444-555555555555'; DnsHostName = $script:C13Dc2 }) }
+                @(Get-AdfaDnsAdConsistency -DomainName 'contoso.com' -AdParams @{} -DnsServers $Servers -Config $Config -ForestRoot 'contoso.com' -DsaInventory $Dsa -DsaError $DsaError -PortTimeoutMs 50 -OperationTimeoutSec 5)
+            }
+        }
+        It 'passes each writable DC that both instruments see on every DNS server, and its A record' {
+            $rows = Invoke-C13Dac
+            foreach ($dc in @($script:C13Dc1, $script:C13Dc2)) {
+                (Get-C13Row $rows ("DC locator records: {0}" -f $dc))[0].Status | Should -Be 'Pass' -Because $dc
+                (Get-C13Row $rows ("DC A record: {0}" -f $dc))[0].Status | Should -Be 'Pass' -Because $dc
+            }
+            (Get-C13Row $rows 'Stale DC records (population): contoso.com')[0].Status | Should -Be 'Pass'
+            (Get-C13Like $rows 'Stale DC record: *').Count | Should -Be 0
+        }
+        It 'fails a DC both instruments agree is missing, and only that DC' {
+            $script:C13Srv['_kerberos._tcp.dc._msdcs.contoso.com'] = @($script:C13Dc1)
+            $rows = Invoke-C13Dac
+            (Get-C13Row $rows ("DC locator records: {0}" -f $script:C13Dc2))[0].Status | Should -Be 'Fail'
+            (Get-C13Row $rows ("DC locator records: {0}" -f $script:C13Dc1))[0].Status | Should -Be 'Pass'
+        }
+        It 'grades a missing record seen by the server read alone as one instrument only, never Fail' {
+            $script:C13Resolver = 'NoTool'
+            $script:C13Srv['_kerberos._tcp.dc._msdcs.contoso.com'] = @($script:C13Dc1)
+            $rows = Invoke-C13Dac
+            $two = (Get-C13Row $rows ("DC locator records: {0}" -f $script:C13Dc2))[0]
+            $two.Status | Should -Be 'Warning'
+            $two.Detail | Should -Match 'one instrument'
+        }
+        It 'excludes an RODC as Info and never lists its records as naming no DC' {
+            $script:C13AdDcs = @($script:C13AdDcs + @([pscustomobject]@{ HostName = 'rodc1.contoso.com'; IsReadOnly = $true; IPv4Address = $script:C13Ip3 }))
+            $script:C13Srv['_ldap._tcp.dc._msdcs.contoso.com'] = @($script:C13Dc1, $script:C13Dc2, 'rodc1.contoso.com')
+            $rows = Invoke-C13Dac
+            (Get-C13Row $rows 'DC locator records: rodc1.contoso.com')[0].Status | Should -Be 'Info'
+            (Get-C13Like $rows 'Stale DC record: *').Count | Should -Be 0
+        }
+        It 'lists an SRV target that names no DC as a stale record, shown in the record columns only' {
+            $script:C13Srv['_ldap._tcp.dc._msdcs.contoso.com'] = @($script:C13Dc1, $script:C13Dc2, $script:C13Old)
+            $rows = Invoke-C13Dac
+            $stale = Get-C13Row $rows ("Stale DC record: {0}" -f $script:C13Old)
+            $stale.Count | Should -Be 1
+            $stale[0].Status | Should -Be 'Warning'
+            $stale[0].RecordData | Should -Be $script:C13Old
+            $stale[0].Detail | Should -Not -Match ([regex]::Escape($script:C13Old))
+            (Get-C13Row $rows 'Stale DC records (population): contoso.com')[0].Status | Should -Be 'Warning'
+        }
+        It 'lists a GUID._msdcs CNAME of no NTDS Settings object in the forest root, and judges none when no NTDS Settings object was returned' {
+            $script:C13Cnames = @('11111111-2222-3333-4444-555555555555', '99999999-8888-7777-6666-555555555555')
+            $rows = Invoke-C13Dac
+            $stale = Get-C13Like $rows 'Stale DC record: *'
+            # Declared population: the one CNAME whose GUID is no DSA (the other is dc1's).
+            $stale.Count | Should -Be 1
+            $stale[0].Item | Should -Be 'Stale DC record: 99999999-8888-7777-6666-555555555555._msdcs.contoso.com'
+            $empty = Invoke-C13Dac -Dsa @()
+            (Get-C13Like $empty 'Stale DC record: *').Count | Should -Be 0
+            $pop = (Get-C13Row $empty 'Stale DC records (population): contoso.com')[0]
+            $pop.Status | Should -Be 'Not Assessed'
+            $pop.Detail | Should -Match 'no NTDS Settings object'
+        }
+        It 'is Not Assessed, never Pass, when no DNS server answered either instrument' {
+            $script:C13Down = @($script:C13Dc1, $script:C13Dc2)
+            $script:C13Resolver = 'NoAnswer'
+            $rows = Invoke-C13Dac
+            $new = @($rows | Where-Object { [string]$_.Item -match '^(DC locator records|DC A record|Stale DC records \(population\)): ' })
+            # Declared population: two DCs x two rows + one population row.
+            $new.Count | Should -Be 5
+            @($new | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            (Get-C13Row $rows ("DC locator records: {0}" -f $script:C13Dc1))[0].Evidence | Should -Match 'Unreachable'
+        }
+        It 'names access denied on the zone read as access denied, not as unreachable' {
+            $script:C13ZoneFail[$script:C13Dc1] = 'Access is denied.'
+            $script:C13ZoneFail[$script:C13Dc2] = 'Access is denied.'
+            $script:C13Resolver = 'NoAnswer'
+            $rows = Invoke-C13Dac
+            $r = (Get-C13Row $rows ("DC locator records: {0}" -f $script:C13Dc1))[0]
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Evidence | Should -Match 'Access denied'
+            $r.Evidence | Should -Not -Match 'Unreachable'
+        }
+        It 'warns on an A record for an address the DC''s adapters do not hold, and is Not Assessed where the adapters were not read' {
+            $script:C13A[$script:C13Dc1] = @($script:C13Ip1, $script:C13IpX)
+            $script:C13Nics.Remove($script:C13Dc2)
+            $rows = Invoke-C13Dac
+            (Get-C13Row $rows ("DC A record: {0}" -f $script:C13Dc1))[0].Status | Should -Be 'Warning'
+            $two = (Get-C13Row $rows ("DC A record: {0}" -f $script:C13Dc2))[0]
+            $two.Status | Should -Be 'Not Assessed'
+            $two.Detail | Should -Match 'Access denied'
+        }
+        It 'without any DNS server to ask, reports every per-DC row Not Assessed' {
+            $rows = Invoke-C13Dac -Servers @()
+            @($rows | Where-Object { [string]$_.Item -match '^(DC locator records|DC A record): ' -and $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            (Get-C13Like $rows 'DC locator records: *').Count | Should -Be 2
+        }
+        It 'gives the per-DC families their own advice whatever the Detail says' {
+            $script:C13Srv['_kerberos._tcp.dc._msdcs.contoso.com'] = @($script:C13Dc1)
+            $script:C13Srv['_ldap._tcp.dc._msdcs.contoso.com'] = @($script:C13Dc1, $script:C13Dc2, $script:C13Old)
+            $rows = Invoke-C13Dac
+            $loc = ConvertTo-AdfaConsolidatedFinding -Section 'DNS vs AD Consistency' -Row (Get-C13Row $rows ("DC locator records: {0}" -f $script:C13Dc2))[0] -StatusColumn 'Status'
+            $loc.Recommendation | Should -Match 'Netlogon\.dns'
+            $stale = ConvertTo-AdfaConsolidatedFinding -Section 'DNS vs AD Consistency' -Row (Get-C13Row $rows ("Stale DC record: {0}" -f $script:C13Old))[0] -StatusColumn 'Status'
+            $stale.Recommendation | Should -Match 'stale domain controllers'
+            $stale.Recommendation | Should -Not -Match 'Disable first'
+        }
+        It 'finds the delegation a name sits below, on a label boundary only' {
+            Get-AdfaDnsDelegationPoint -Relative '_ldap._tcp.dc._msdcs.north' -Delegations @('north') | Should -Be 'north'
+            Get-AdfaDnsDelegationPoint -Relative 'dc3.north' -Delegations @('_msdcs', 'north') | Should -Be 'north'
+            Get-AdfaDnsDelegationPoint -Relative 'north' -Delegations @('north') | Should -Be 'north'
+            Get-AdfaDnsDelegationPoint -Relative 'dc1' -Delegations @('north') | Should -Be ''
+            Get-AdfaDnsDelegationPoint -Relative 'dc1.xnorth' -Delegations @('north') | Should -Be ''
+            Get-AdfaDnsDelegationPoint -Relative '@' -Delegations @('north') | Should -Be ''
+            Get-AdfaDnsDelegationPoint -Relative 'dc1' -Delegations @() | Should -Be ''
+        }
+        It 'never reads a parent zone for a name below a delegation: a child domain asked of a root DNS server is Not Assessed, not a measured absence' {
+            $script:C13AdDcs = @([pscustomobject]@{ HostName = $script:C13Dc3; IsReadOnly = $false; IPv4Address = $script:C13Ip3 })
+            $script:C13Nics[$script:C13Dc3] = @($script:C13Ip3)
+            $script:C13Delegations['contoso.com'] = @('north')
+            $script:C13Resolver = 'NoAnswer'
+            $rows = @(Get-AdfaDnsAdConsistency -DomainName 'north.contoso.com' -AdParams @{} -DnsServers @($script:C13Dc1, $script:C13Dc2) -Config $script:C13Cfg -ForestRoot 'contoso.com' -DsaInventory @() -PortTimeoutMs 50 -OperationTimeoutSec 5)
+            $loc = (Get-C13Row $rows ("DC locator records: {0}" -f $script:C13Dc3))[0]
+            $loc.Status | Should -Be 'Not Assessed'
+            $loc.Evidence | Should -Match 'below a delegation'
+            (Get-C13Row $rows ("DC A record: {0}" -f $script:C13Dc3))[0].Status | Should -Be 'Not Assessed'
+            (Get-C13Row $rows 'Stale DC records (population): north.contoso.com')[0].Status | Should -Be 'Not Assessed'
+            Should -Invoke Get-AdfaDnsRecordSetRaw -Times 0 -Exactly -ParameterFilter { $RRType -ne 'Ns' -and $ZoneName -eq 'contoso.com' }
+            # With a resolver answer "no such record", one instrument only: never Fail.
+            $script:C13Resolver = 'Answer'
+            Clear-AdfaDcPortCache
+            $two = @(Get-AdfaDnsAdConsistency -DomainName 'north.contoso.com' -AdParams @{} -DnsServers @($script:C13Dc1, $script:C13Dc2) -Config $script:C13Cfg -ForestRoot 'contoso.com' -DsaInventory @() -PortTimeoutMs 50 -OperationTimeoutSec 5)
+            (Get-C13Row $two ("DC locator records: {0}" -f $script:C13Dc3))[0].Status | Should -Be 'Warning'
+            (Get-C13Row $two ("DC A record: {0}" -f $script:C13Dc3))[0].Status | Should -Be 'Warning'
+        }
+        It 'reads a server that holds no zone for the name, or only a stub zone, or whose delegations could not be read, as Unread: one instrument, never Fail (<Case>)' -ForEach @(
+            @{ Case = 'no zone'; Zones = @{ 'fabrikam.com' = 'Primary' }; NsFail = ''; Expect = 'holds no zone for the name' }
+            @{ Case = 'stub zones'; Zones = @{ 'contoso.com' = 'Stub'; '_msdcs.contoso.com' = 'Stub' }; NsFail = ''; Expect = "of type 'Stub'" }
+            @{ Case = 'forwarder zone'; Zones = @{ 'contoso.com' = 'Forwarder' }; NsFail = ''; Expect = "of type 'Forwarder'" }
+            @{ Case = 'zone type not returned'; Zones = @{ 'contoso.com' = ''; '_msdcs.contoso.com' = '' }; NsFail = ''; Expect = "of type 'not returned'" }
+            @{ Case = 'NS read failed'; Zones = @{ 'contoso.com' = 'Primary'; '_msdcs.contoso.com' = 'Primary' }; NsFail = 'The RPC server is unavailable.'; Expect = 'NS records of the zone it holds' }
+        ) {
+            $script:C13ZoneList = $Zones
+            $script:C13NsFail = $NsFail
+            # The resolver says dc2 is not a Kdc target; the server read cannot say anything.
+            $script:C13Srv['_kerberos._tcp.dc._msdcs.contoso.com'] = @($script:C13Dc1)
+            $rows = Invoke-C13Dac
+            $two = (Get-C13Row $rows ("DC locator records: {0}" -f $script:C13Dc2))[0]
+            $two.Status | Should -Be 'Warning'
+            $two.Detail | Should -Match 'one instrument'
+            $two.Evidence | Should -Match ([regex]::Escape($Expect))
+        }
+        It 'judges no GUID._msdcs CNAME on a server whose _msdcs is delegated out of the zone it holds' {
+            $script:C13ZoneList = @{ 'contoso.com' = 'Primary' }
+            $script:C13Delegations['contoso.com'] = @('_msdcs')
+            $script:C13Cnames = @('99999999-8888-7777-6666-555555555555')
+            $rows = Invoke-C13Dac
+            (Get-C13Like $rows 'Stale DC record: *').Count | Should -Be 0
+            $pop = (Get-C13Row $rows 'Stale DC records (population): contoso.com')[0]
+            $pop.Status | Should -Be 'Not Assessed'
+            $pop.Evidence | Should -Match ("CNAME on {0}: the name sits below a delegation" -f [regex]::Escape($script:C13Dc1))
+        }
+        It 'lists no live DC''s record as stale when the directory returned no DC' {
+            $script:C13AdDcs = @()
+            $rows = Invoke-C13Dac -Dsa @()
+            (Get-C13Like $rows 'Stale DC record: *').Count | Should -Be 0
+            $pop = (Get-C13Row $rows 'Stale DC records (population): contoso.com')[0]
+            $pop.Status | Should -Be 'Not Assessed'
+            $pop.Detail | Should -Match 'No domain controller is known'
+        }
+        It 'grades an A record one instrument cannot find as one instrument only, and one with no readable address as Not Assessed (two DCs)' {
+            $script:C13Resolver = 'NoTool'
+            $script:C13A.Remove($script:C13Dc2)
+            $rows = Invoke-C13Dac
+            $two = (Get-C13Row $rows ("DC A record: {0}" -f $script:C13Dc2))[0]
+            $two.Status | Should -Be 'Warning'
+            $two.Detail | Should -Match 'one instrument only'
+            (Get-C13Row $rows ("DC A record: {0}" -f $script:C13Dc1))[0].Status | Should -Be 'Pass'
+            $script:C13Resolver = 'Answer'
+            $script:C13A[$script:C13Dc1] = @('')
+            $script:C13A[$script:C13Dc2] = @($script:C13Ip2)
+            Clear-AdfaDcPortCache
+            $rows2 = Invoke-C13Dac
+            $one = (Get-C13Row $rows2 ("DC A record: {0}" -f $script:C13Dc1))[0]
+            $one.Status | Should -Be 'Not Assessed'
+            $one.Detail | Should -Match 'not compared'
+            (Get-C13Row $rows2 ("DC A record: {0}" -f $script:C13Dc2))[0].Status | Should -Be 'Pass'
+        }
+    }
+
+    Context 'Collector: DC DNS client (Get-AdfaDcDnsClient)' {
+        BeforeEach {
+            $script:C13Down = @()
+            $script:C13NetAnswer = @{}
+            Mock Test-TcpPort { $script:C13Down -notcontains [string]$ComputerName }
+            Mock Get-AdfaDcNetworkRaw {
+                if ($script:C13NetAnswer.ContainsKey([string]$ComputerName)) { return $script:C13NetAnswer[[string]$ComputerName] }
+                New-C13NetRaw -Adapters @((New-C13Adapter -Ip @($script:C13Ip1) -Dns @($script:C13Ip2, '127.0.0.1')))
+            }
+            $script:C13Three = @((New-C13Target $script:C13Dc1 'contoso.com' $script:C13Ip1), (New-C13Target $script:C13Dc2 'contoso.com' $script:C13Ip2), (New-C13Target $script:C13Dc3 'north.contoso.com' $script:C13Ip3))
+        }
+        It 'reads every DC once and gives each its row and each domain a population row' {
+            $rows = @(Get-AdfaDcDnsClient -DomainControllers $script:C13Three -Config $script:C13Cfg -ScopedDomains @('contoso.com', 'north.contoso.com') -PortTimeoutMs 50 -OperationTimeoutSec 5)
+            $dc = Get-C13Like $rows 'DNS client: *'
+            # Declared population: three DCs.
+            $dc.Count | Should -Be 3
+            Should -Invoke Get-AdfaDcNetworkRaw -Times 3 -Exactly
+            (Get-C13Row $rows ("DNS client: {0}" -f $script:C13Dc3))[0].Scope | Should -Be 'north.contoso.com'
+            (Get-C13Row $rows ("DNS client: {0}" -f $script:C13Dc1))[0].DnsServers | Should -Be ("{0}, 127.0.0.1" -f $script:C13Ip2)
+            (Get-C13Like $rows 'DNS client (population): *').Count | Should -Be 2
+        }
+        It 'reports unreachable, access denied and a failed read as three causes, never Pass' {
+            $script:C13Down = @($script:C13Dc1)
+            $script:C13NetAnswer[$script:C13Dc2] = New-C13NetRaw -Ok $false -Message 'Acesso negado.' -Code 'AccessDenied' -Adapters @()
+            $script:C13NetAnswer[$script:C13Dc3] = New-C13NetRaw -Ok $false -Message 'The RPC server is unavailable.' -Adapters @()
+            $rows = @(Get-AdfaDcDnsClient -DomainControllers $script:C13Three -Config $script:C13Cfg -ScopedDomains @('contoso.com', 'north.contoso.com') -PortTimeoutMs 50 -OperationTimeoutSec 5)
+            (Get-C13Row $rows ("DNS client: {0}" -f $script:C13Dc1))[0].Detail | Should -Match '^Unreachable'
+            (Get-C13Row $rows ("DNS client: {0}" -f $script:C13Dc2))[0].Detail | Should -Match '^Access denied'
+            (Get-C13Row $rows ("DNS client: {0}" -f $script:C13Dc3))[0].Detail | Should -Match '^Read failed'
+            @((Get-C13Like $rows 'DNS client: *') | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            (Get-C13Row $rows 'DNS client (population): contoso.com')[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'warns on a DC that points to a single DNS server in a multi-DC run (mixed with healthy DCs)' {
+            $script:C13NetAnswer[$script:C13Dc2] = New-C13NetRaw -Adapters @((New-C13Adapter -Ip @($script:C13Ip2) -Dns @('127.0.0.1')))
+            $rows = @(Get-AdfaDcDnsClient -DomainControllers $script:C13Three -Config $script:C13Cfg -ScopedDomains @('contoso.com', 'north.contoso.com') -PortTimeoutMs 50 -OperationTimeoutSec 5)
+            (Get-C13Row $rows ("DNS client: {0}" -f $script:C13Dc2))[0].Status | Should -Be 'Warning'
+            (Get-C13Row $rows ("DNS client: {0}" -f $script:C13Dc1))[0].Status | Should -Be 'Info'
+        }
+        It 'reports a read that listed no adapter, and an adapter list with no DNS server list, as Not Assessed, never as a configuration fault' {
+            $script:C13NetAnswer[$script:C13Dc2] = New-C13NetRaw -Adapters @()
+            $script:C13NetAnswer[$script:C13Dc3] = New-C13NetRaw -Adapters @((New-C13Adapter -Ip @($script:C13Ip3) -Dns $null))
+            $state = Get-AdfaDcNetworkState -ComputerName $script:C13Dc2 -Config $script:C13Cfg -PortTimeoutMs 50 -OperationTimeoutSec 5
+            $state.Status | Should -Be 'Error'
+            $state.Cause | Should -Match '^Read returned no adapter'
+            $null -eq (Get-AdfaDcNetworkState -ComputerName $script:C13Dc3 -Config $script:C13Cfg -PortTimeoutMs 50 -OperationTimeoutSec 5).DnsServers | Should -BeTrue
+            $rows = @(Get-AdfaDcDnsClient -DomainControllers $script:C13Three -Config $script:C13Cfg -ScopedDomains @('contoso.com', 'north.contoso.com') -PortTimeoutMs 50 -OperationTimeoutSec 5)
+            $two = (Get-C13Row $rows ("DNS client: {0}" -f $script:C13Dc2))[0]
+            $two.Status | Should -Be 'Not Assessed'
+            $two.Detail | Should -Match '^Read returned no adapter'
+            $three = (Get-C13Row $rows ("DNS client: {0}" -f $script:C13Dc3))[0]
+            $three.Status | Should -Be 'Not Assessed'
+            $three.Detail | Should -Match '^Not returned'
+            $three.ConfiguredIPv4 | Should -Be $script:C13Ip3
+            (Get-C13Row $rows ("DNS client: {0}" -f $script:C13Dc1))[0].Status | Should -Be 'Info'
+            (Get-C13Row $rows 'DNS client (population): contoso.com')[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'calls a single DNS server on the only DC tolerable only when the run covered the whole forest' {
+            $solo = @((New-C13Target $script:C13Dc1 'contoso.com' $script:C13Ip1))
+            $script:C13NetAnswer[$script:C13Dc1] = New-C13NetRaw -Adapters @((New-C13Adapter -Ip @($script:C13Ip1) -Dns @('127.0.0.1')))
+            $part = @(Get-AdfaDcDnsClient -DomainControllers $solo -Config $script:C13Cfg -ScopedDomains @('contoso.com') -PortTimeoutMs 50 -OperationTimeoutSec 5)
+            (Get-C13Row $part ("DNS client: {0}" -f $script:C13Dc1))[0].Status | Should -Be 'Not Assessed'
+            $whole = @(Get-AdfaDcDnsClient -DomainControllers $solo -Config $script:C13Cfg -ScopedDomains @('contoso.com') -ForestComplete $true -PortTimeoutMs 50 -OperationTimeoutSec 5)
+            (Get-C13Row $whole ("DNS client: {0}" -f $script:C13Dc1))[0].Status | Should -Be 'Info'
+            $gap = @(Get-AdfaDcDnsClient -DomainControllers $solo -Config $script:C13Cfg -ScopedDomains @('contoso.com', 'north.contoso.com') -ForestComplete $true -InventoryFailures @([pscustomobject]@{ Domain = 'north.contoso.com'; Error = 'STUB: ADWS unreachable' }) -PortTimeoutMs 50 -OperationTimeoutSec 5)
+            (Get-C13Row $gap ("DNS client: {0}" -f $script:C13Dc1))[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'with no DC reports Not Assessed, with a row for each scoped domain' {
+            $rows = @(Get-AdfaDcDnsClient -DomainControllers @() -Config $script:C13Cfg -ScopedDomains @('contoso.com') -InventoryFailures @([pscustomobject]@{ Domain = 'contoso.com'; Error = 'STUB: ADWS unreachable' }))
+            (Get-C13Row $rows 'DNS client')[0].Status | Should -Be 'Not Assessed'
+            (Get-C13Row $rows 'DNS client - contoso.com')[0].Detail | Should -Match 'ADWS unreachable'
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Collector: DNS record export (Export-AdfaDnsRecord, opt-in)' {
+        BeforeEach {
+            $script:C13Down = @()
+            $script:C13Module = $true
+            Mock Test-ModuleAvailable { [bool]$script:C13Module }
+            Mock Test-TcpPort { $script:C13Down -notcontains [string]$ComputerName }
+            Mock Get-AdfaDnsServerZoneNames { [pscustomobject]@{ Ok = $true; Names = @('contoso.com', '_msdcs.contoso.com'); Error = ''; ErrorCode = '' } }
+            Mock Get-AdfaDnsRecordSetRaw {
+                $n = 2
+                if ($ZoneName -eq 'contoso.com') { $n = 5 }
+                $all = @(1..$n | ForEach-Object { [pscustomobject]@{ HostName = ("host{0}" -f $_); RecordType = 'A'; TimeToLive = '00:20:00'; Timestamp = ''; RecordData = ('IPv4Address=192.0.2.{0}' -f $_); Target = ('192.0.2.{0}' -f $_) } })
+                $keep = @($all | Select-Object -First $Cap)
+                [pscustomobject]@{ Ok = $true; Outcome = 'Resolved'; Records = $keep; RealCount = $n; Truncated = ($n -gt $Cap); Error = ''; ErrorCode = '' }
+            }
+            $script:C13Csv = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $script:C13Csv | Out-Null
+        }
+        It 'writes one capped CSV per zone and server, and says how many were exported and whether the cap was hit' {
+            $cfg = Merge-AdfaDnsConfig -BaseConfig $script:C13Cfg -Override @{ RecordExportCap = 3 } -OverrideSource 'x.json'
+            $rows = @(Export-AdfaDnsRecord -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com'), (New-C13Target $script:C13Dc2 'contoso.com')) -Config $cfg -CsvPath $script:C13Csv -ScopedDomains @('contoso.com'))
+            $files = @(Get-ChildItem -LiteralPath $script:C13Csv -Filter 'DnsRecords_*.csv')
+            # Declared population: two zones on two servers.
+            $files.Count | Should -Be 4
+            $big = @(Import-Csv -LiteralPath (Join-Path $script:C13Csv ('DnsRecords_{0}_{1}.csv' -f (New-SafeFileName $script:C13Dc1), (New-SafeFileName 'contoso.com'))))
+            $big.Count | Should -Be 3
+            $z = (Get-C13Row $rows ("Record export: contoso.com on {0}" -f $script:C13Dc1))[0]
+            $z.Status | Should -Be 'Info'
+            $z.Detail | Should -Match 'Exported 3 of 5'
+            $z.Detail | Should -Match 'cap reached: yes'
+            (Get-C13Row $rows ("Record export: _msdcs.contoso.com on {0}" -f $script:C13Dc1))[0].Detail | Should -Match 'cap reached: no'
+            $total = (Get-C13Row $rows 'Record export: total')[0]
+            $total.Detail | Should -Match '^10 record\(s\) exported'
+            $total.Detail | Should -Match 'cap reached in 2'
+        }
+        It 'reports an unreachable server and a missing module as Not Assessed, writing nothing for them' {
+            $script:C13Down = @($script:C13Dc2)
+            $rows = @(Export-AdfaDnsRecord -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com'), (New-C13Target $script:C13Dc2 'contoso.com')) -Config $script:C13Cfg -CsvPath $script:C13Csv -ScopedDomains @('contoso.com'))
+            (Get-C13Row $rows ("Record export (population): {0}" -f $script:C13Dc2))[0].Status | Should -Be 'Not Assessed'
+            @(Get-ChildItem -LiteralPath $script:C13Csv -Filter ('DnsRecords_{0}_*' -f (New-SafeFileName $script:C13Dc2))).Count | Should -Be 0
+            $script:C13Module = $false
+            $none = @(Export-AdfaDnsRecord -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com')) -Config $script:C13Cfg -CsvPath $script:C13Csv -ScopedDomains @('contoso.com'))
+            @($none | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+        }
+        It 'makes a server''s population row Not Assessed when one of its zones could not be read, and keeps the other server Info' {
+            Mock Get-AdfaDnsRecordSetRaw {
+                if ([string]$ComputerName -eq $script:C13Dc1 -and $ZoneName -eq '_msdcs.contoso.com') { return [pscustomobject]@{ Ok = $false; Outcome = 'Error'; Records = @(); RealCount = 0; Truncated = $false; Error = 'Access is denied.'; ErrorCode = ''; ErrorId = '' } }
+                $all = @([pscustomobject]@{ HostName = 'host1'; RecordType = 'A'; TimeToLive = '00:20:00'; Timestamp = ''; RecordData = 'IPv4Address=192.0.2.1'; Target = '192.0.2.1' })
+                [pscustomobject]@{ Ok = $true; Outcome = 'Resolved'; Records = $all; RealCount = 1; Truncated = $false; Error = ''; ErrorCode = ''; ErrorId = '' }
+            }
+            $rows = @(Export-AdfaDnsRecord -DomainControllers @((New-C13Target $script:C13Dc1 'contoso.com'), (New-C13Target $script:C13Dc2 'contoso.com')) -Config $script:C13Cfg -CsvPath $script:C13Csv -ScopedDomains @('contoso.com'))
+            $failedZone = (Get-C13Row $rows ("Record export: _msdcs.contoso.com on {0}" -f $script:C13Dc1))[0]
+            $failedZone.Status | Should -Be 'Not Assessed'
+            $failedZone.Detail | Should -Match '^Access denied'
+            $one = (Get-C13Row $rows ("Record export (population): {0}" -f $script:C13Dc1))[0]
+            $one.Status | Should -Be 'Not Assessed'
+            $one.Detail | Should -Match '1 exported, 1 not read'
+            (Get-C13Row $rows ("Record export (population): {0}" -f $script:C13Dc2))[0].Status | Should -Be 'Info'
+        }
+    }
+
+    Context 'Recommendations' {
+        It 'gives each graded family its own advice, which says this tool changes nothing, whatever the Detail says' {
+            $cases = @(
+                @{ Section = 'DNS Health'; Item = 'Zone dynamic update: contoso.com'; Expect = 'Secure only' }
+                @{ Section = 'DNS Health'; Item = 'Zone scavenging: contoso.com'; Expect = 'only one DNS server per zone' }
+                @{ Section = 'DNS vs AD Consistency'; Item = ("DC locator records: {0}" -f $script:C13Dc1); Expect = 'Netlogon\.dns' }
+                @{ Section = 'DNS vs AD Consistency'; Item = ("DC A record: {0}" -f $script:C13Dc1); Expect = 'host record' }
+                @{ Section = 'DNS vs AD Consistency'; Item = ("Stale DC record: {0}" -f $script:C13Old); Expect = 'stale domain controllers' }
+                @{ Section = 'DC DNS Client'; Item = ("DNS client: {0}" -f $script:C13Dc1); Expect = 'single point of failure' }
+            )
+            # Declared population: the six families that can be Warning or Fail.
+            $cases.Count | Should -Be 6
+            foreach ($c in $cases) {
+                $rec = Get-AdfaRecommendation -Section $c.Section -Item $c.Item -Detail $script:C13Hostile
+                $rec | Should -Match $c.Expect -Because $c.Item
+                $rec | Should -Match 'changes nothing' -Because $c.Item
+            }
+        }
+        It 'gives the inventory and population families no advice' {
+            foreach ($c in @(@('DNS Health', 'DNS server: dc1.contoso.com'), @('DNS Health', 'Zone configuration: contoso.com on dc1.contoso.com'), @('DNS Health', 'DNS zones (population): contoso.com'),
+                    @('DNS vs AD Consistency', 'Stale DC records (population): contoso.com'), @('DC DNS Client', 'DNS client (population): contoso.com'), @('DNS Record Export', 'Record export: total'))) {
+                Get-AdfaRecommendation -Section $c[0] -Item $c[1] -Detail $script:C13Hostile | Should -Be '' -Because $c[1]
+            }
+        }
+        It 'leaves the existing DNS Health and DNS vs AD rows on the advice they had' {
+            Get-AdfaRecommendation -Section 'DNS Health' -Item 'dc1.contoso.com: zone transfer' -Detail 'Zones allowing transfer to ANY server: 1' | Should -Match 'Restrict zone transfers'
+            Get-AdfaRecommendation -Section 'DNS vs AD Consistency' -Item 'SRV _ldap._tcp.dc._msdcs.contoso.com on dc1.contoso.com' -Detail 'missing (DC in AD, not advertised): dc2.contoso.com' | Should -Match 'nltest /dsregdns'
+        }
+        It 'sits ahead of the first unscoped entry' {
+            $map = @($script:RecommendationMap)
+            $firstUnscoped = -1
+            for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $firstUnscoped = $i; break } }
+            $mine = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Section -match 'dns health|dns vs ad|dc dns client|dns record export') { $i } })
+            # Declared population: two DNS Health families and their catch-all, three DNS vs AD families
+            # and their catch-all, the DNS client family and its catch-all, the export catch-all.
+            $mine.Count | Should -Be 10
+            @($mine | Where-Object { $_ -gt $firstUnscoped }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Wiring and read-only guard' {
+        It 'adds DnsRecordExport to -Sections, outside the default All run' {
+            $p = @($script:C13Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $vs = @($p[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+            $values = @($vs[0].PositionalArguments | ForEach-Object { [string]$_.Value })
+            $values | Should -Contain 'DnsRecordExport'
+            $values | Should -Contain 'Dns'
+            $branches = @(Get-C13Branch "`$Sections -contains 'DnsRecordExport'")
+            $branches.Count | Should -Be 1
+            @(Get-C13Branch "Test-SectionSelected 'DnsRecordExport' `$Sections").Count | Should -Be 0
+            $calls = @($branches[0].Clauses[0].Item2.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Export-AdfaDnsRecord' }, $true))
+            $calls.Count | Should -Be 1
+            (Get-C13Parameter -Call $calls[0] -Name 'Config').Extent.Text | Should -Be '$dnsConfig'
+            (Get-C13Parameter -Call $calls[0] -Name 'CsvPath').Extent.Text | Should -Be '$csvPath'
+            $assign = @($branches[0].Clauses[0].Item2.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['DNS Record Export']" }, $true))
+            $assign.Count | Should -Be 1
+        }
+        It 'gives the Dns, DnsAdConsistency and DomainControllers branches the DNS config, the targets and the causes' {
+            $expected = @(
+                @{ Cond = "Test-SectionSelected 'Dns' `$Sections"; Call = 'Get-AdfaDnsHealth'; Key = "`$sectionData['DNS Health']"; Params = @{ Config = '$dnsConfig'; DomainControllers = '$dnsTargets'; InventoryFailures = '$dnsFailures'; EnumerationError = '$script:DcEnumerationError'; ScopedDomains = '$targetDomains'; ForestComplete = '$dnsForestComplete' } }
+                @{ Cond = "Test-SectionSelected 'DnsAdConsistency' `$Sections"; Call = 'Get-AdfaDnsAdConsistency'; Key = "`$sectionData['DNS vs AD Consistency']"; Params = @{ Config = '$dnsConfig'; DsaInventory = '$dnsDsa'; DsaError = '$dnsDsaError'; ForestRoot = '$rootDomain'; DnsServers = '$dcNames' } }
+                @{ Cond = "Test-SectionSelected 'DomainControllers' `$Sections"; Call = 'Get-AdfaDcDnsClient'; Key = "`$sectionData['DC DNS Client']"; Params = @{ Config = '$dnsConfig'; DomainControllers = '$inv'; InventoryFailures = '$dcInventoryFailures'; ScopedDomains = '$targetDomains'; ForestComplete = '$scopeCoversForest' } }
+            )
+            # The forest-coverage flag both take is computed once, from the forest's domains against
+            # the scoped ones, and the DNS Health copy is cleared when it falls back to bare host names.
+            $cover = @($script:C13Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$scopeCoversForest' }, $true))
+            $cover.Count | Should -Be 1
+            $cover[0].Right.Extent.Text | Should -Match '\$forestDomainList'
+            $cover[0].Right.Extent.Text | Should -Match '\$scopedDomainList'
+            $fallback = @($script:C13Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dnsForestComplete' }, $true))
+            # Declared population: the copy of the flag, then the fallback that clears it.
+            $fallback.Count | Should -Be 2
+            $fallback[1].Right.Extent.Text | Should -Be '$false'
+            # Declared population: the three existing sections C13 extends.
+            $expected.Count | Should -Be 3
+            foreach ($e in $expected) {
+                $b = @(Get-C13Branch $e.Cond)
+                $b.Count | Should -Be 1 -Because $e.Cond
+                $calls = @($b[0].Clauses[0].Item2.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq $e.Call }, $true))
+                $calls.Count | Should -Be 1 -Because $e.Call
+                foreach ($k in @($e.Params.Keys)) {
+                    $given = Get-C13Parameter -Call $calls[0] -Name $k
+                    $given | Should -Not -BeNullOrEmpty -Because ("{0} -{1}" -f $e.Call, $k)
+                    $given.Extent.Text | Should -Be $e.Params[$k] -Because ("{0} -{1}" -f $e.Call, $k)
+                }
+                @($b[0].Clauses[0].Item2.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq $e.Key }, $true)).Count | Should -Be 1 -Because $e.Key
+            }
+            $cfgAssigns = @($script:C13Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dnsConfig' }, $true))
+            # Declared population: the built-in table, then the override.
+            $cfgAssigns.Count | Should -Be 2
+            $cfgAssigns[0].Right.Extent.Text | Should -Be '$script:Config.Dns'
+            $cfgAssigns[1].Right.Extent.Text | Should -Be "`$configOverrides['Dns']"
+            $guard = $cfgAssigns[1].Parent
+            while ($null -ne $guard -and $guard -isnot [System.Management.Automation.Language.IfStatementAst]) { $guard = $guard.Parent }
+            $guard.Clauses[0].Item1.Extent.Text | Should -Be "`$configOverrides.ContainsKey('Dns')"
+        }
+        It 'reads the adapters through the shared transport loop, which now knows the network seam' {
+            $loop = @(Get-C13Function 'Invoke-AdfaDcRemoteRead')
+            $readParam = @($loop[0].Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'ReadCommand' })
+            $allowed = @($readParam[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw,Get-AdfaDcNetworkRaw'
+            $state = @(Get-C13Function 'Get-AdfaDcNetworkState')
+            @($state[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-AdfaDcRemoteRead' }, $true)).Count | Should -Be 1
+            @($state[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-TcpPort' }, $true)).Count | Should -Be 0
+        }
+        It 'calls no command that changes DNS, DNS registration or an adapter, anywhere in the script' {
+            $cmds = @($script:C13Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+            # Non-vacuity: the read cmdlets are there to be found, and so is the way the script starts
+            # console tools (Invoke-ExternalCommand -FilePath 'nltest.exe'), which the guard must see.
+            @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Get-DnsServerZone' }).Count | Should -BeGreaterThan 0
+            @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Get-DnsServerResourceRecord' }).Count | Should -BeGreaterThan 0
+            @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Invoke-ExternalCommand' -and $_.Extent.Text -match "-FilePath 'nltest\.exe'" }).Count | Should -BeGreaterThan 0
+            $hits = Get-C13WriteHit -Ast $script:C13Ast
+            ($hits -join ' | ') | Should -Be ''
+            $adapterMethod = @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Invoke-CimMethod' -and $_.Extent.Text -match '(?i)NetworkAdapterConfiguration' })
+            $adapterMethod.Count | Should -Be 0
+            $net = @(Get-C13Function 'Get-AdfaDcNetworkRaw')
+            @($net[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-CimMethod' }, $true)).Count | Should -Be 0
+        }
+        It 'the read-only guard fails on a write started the way the script starts console tools: <Name>' -ForEach @(
+            @{ Name = 'nltest /dsregdns through Invoke-ExternalCommand'; Code = "function Invoke-C13Injected { Invoke-ExternalCommand -FilePath 'nltest.exe' -Arguments '/dsregdns' }" }
+            @{ Name = 'ipconfig /registerdns through Invoke-ExternalCommand'; Code = "function Invoke-C13Injected { Invoke-ExternalCommand -FilePath 'ipconfig.exe' -Arguments '/registerdns' }" }
+            @{ Name = 'dnscmd through Invoke-ExternalCommand'; Code = "function Invoke-C13Injected { Invoke-ExternalCommand -FilePath 'dnscmd.exe' -Arguments '/config contoso.com /allowupdate 1' }" }
+            @{ Name = 'a switch held in a variable'; Code = "function Invoke-C13Injected { `$a = '/dsderegdns:old-dc.contoso.com'; Invoke-ExternalCommand -FilePath 'nltest.exe' -Arguments `$a }" }
+            @{ Name = 'the call operator'; Code = "function Invoke-C13Injected { & 'ipconfig.exe' /flushdns }" }
+            @{ Name = 'a DnsServer write cmdlet'; Code = "function Invoke-C13Injected { Set-DnsServerPrimaryZone -Name 'contoso.com' -DynamicUpdate Secure }" }
+        ) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($Code, [ref]$null, [ref]$null)
+            # Not wrapped in @(): the helper returns its list as one array, so @() would count 1 for none.
+            $hits = Get-C13WriteHit -Ast $ast
+            $hits.Count | Should -BeGreaterThan 0
+            ($hits -join ' | ') | Should -Not -Be ''
+        }
+        It 'the read-only guard leaves advice text in the recommendation map alone, and only there' {
+            $inMap = [System.Management.Automation.Language.Parser]::ParseInput("`$script:RecommendationMap = @( @{ Match = 'x'; Text = 'Run ""ipconfig /registerdns"" and ""nltest /dsregdns"".' } )", [ref]$null, [ref]$null)
+            $none = Get-C13WriteHit -Ast $inMap
+            $none.Count | Should -Be 0
+            $outside = [System.Management.Automation.Language.Parser]::ParseInput("`$advice = 'Run ""ipconfig /registerdns"".'", [ref]$null, [ref]$null)
+            $one = Get-C13WriteHit -Ast $outside
+            $one.Count | Should -Be 1
+            [string]$one[0] | Should -Match '^switch: '
+        }
+        It 'grades dynamic update in DNS Health only: DnsDepth no longer reads a zone' {
+            $depth = @(Get-C13Function 'Get-AdfaDnsDepth')
+            @($depth[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-DnsServerZone' }, $true)).Count | Should -Be 0
+            # No query tool, so no real resolver is asked for a fictional name.
+            Mock Test-CommandAvailable { $false }
+            $rows = @(Get-AdfaDnsDepth -DomainName 'contoso.com' -DomainControllers @($script:C13Dc1))
+            $sec = Get-C13Row $rows 'Secure dynamic updates'
+            $sec.Count | Should -Be 1
+            $sec[0].Status | Should -Be 'Info'
+            $sec[0].Detail | Should -Match 'Zone dynamic update'
+        }
+        It 'documents the new section, the override key and the four DNS reads in the help and the README' {
+            $help = $script:C13Ast.GetHelpContent()
+            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'DnsRecordExport'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eleven sections can be named'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Dns, whose keys are'
+            $readme = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            @($readme | Where-Object { $_ -match '^\| DNS record export \|' }).Count | Should -Be 1
+            @($readme | Where-Object { $_ -match '^\| DNS \|' -and $_ -match 'Secure only' -and $_ -match 'scavenging' }).Count | Should -Be 1
         }
     }
 }

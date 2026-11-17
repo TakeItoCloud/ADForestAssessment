@@ -424,8 +424,19 @@ function Get-CimInstance {
             [pscustomobject]@{ Name = 'D:\'; DeviceID = '\\?\Volume{00000000-0000-0000-0000-00000000000d}\'; DriveType = [uint32]5; Capacity = $null; FreeSpace = $null }
         )
     }
+    # C13 (DC DNS client, DC A records): Win32_NetworkAdapterConfiguration in the shape the class
+    # returns - IPAddress and DNSServerSearchOrder are string arrays, IPEnabled a boolean - answered only
+    # for the IPEnabled filter the section sends. One enabled adapter with an IPv4 and an IPv6 address;
+    # $script:SmokeDnsClientServers is its DNS server list. The class's methods (SetDNSServerSearchOrder
+    # and the like) are refused by the Invoke-CimMethod stub below, which answers StdRegProv only.
+    if ($ClassName -eq 'Win32_NetworkAdapterConfiguration') {
+        if ($Filter -ne 'IPEnabled = TRUE') { return @() }
+        return [pscustomobject]@{ IPEnabled = $true; IPAddress = @('192.0.2.10', 'fe80::10'); DNSServerSearchOrder = @($script:SmokeDnsClientServers)
+            Description = 'Stub adapter'; InterfaceIndex = [uint32]4 }
+    }
     throw ("STUB: CIM class '{0}' is not stubbed" -f $ClassName)
 }
+$script:SmokeDnsClientServers = @('192.0.2.20', '127.0.0.1')
 # C2 (DcDisk): the registry is read through StdRegProv, which has no instances - a value comes
 # back from a METHOD call, as an object carrying ReturnValue (uint32, 0 for success) and the
 # method's [out] parameter sValue. The stub answers GetStringValue for the three values the
@@ -625,6 +636,16 @@ function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a)
 function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubAsked = (@($a | ForEach-Object { [string]$_ }) -join ' ')
     $stubNamed = ConvertTo-StubArgument -Given $a
+    # C13 (the DNS scenario only, $script:SmokeDnsDsa): DC1's NTDS Settings object under the configuration
+    # partition, as Get-AdfaDsaInventory searches for it, and its server object with dNSHostName. Every
+    # other pass keeps the answer it had.
+    if ($script:SmokeDnsDsa -and [string]$stubNamed['LDAPFilter'] -eq '(objectClass=nTDSDSA)' -and [string]$stubNamed['SearchBase'] -eq 'CN=Configuration,DC=contoso,DC=com') {
+        return [pscustomobject]@{ DistinguishedName = 'CN=NTDS Settings,CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,CN=Configuration,DC=contoso,DC=com'; ObjectClass = 'nTDSDSA'
+            objectGUID = [guid]$script:SmokeDsaGuid; invocationId = [guid]'99999999-0000-4000-8000-000000000001' }
+    }
+    if ($script:SmokeDnsDsa -and [string]$stubNamed['Identity'] -eq 'CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,CN=Configuration,DC=contoso,DC=com') {
+        return [pscustomobject]@{ DistinguishedName = [string]$stubNamed['Identity']; ObjectClass = 'server'; dNSHostName = 'dc1.contoso.com' }
+    }
     # C10: told apart by what they ask for - the member and delegation property lists hold
     # primaryGroupID, no other section's does - and by the configuration searches under CN=Sites and
     # the read of CN=Directory Service.
@@ -740,7 +761,10 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
 # No verification tools on this host -> trust health should degrade to Not Assessed honestly.
 # C11: dcdiag.exe is the one exception, so the DC Diagnostics section is exercised end to end
 # through the dcdiag stub below; every other tool stays absent.
-function Test-CommandAvailable { param([string]$Name) return ($Name -eq 'dcdiag.exe') }
+# C13: Resolve-DnsName is present only in the DNS scenario ($script:SmokeDnsResolver), so every other pass
+# keeps the shape it had: no DNS query tool on this host.
+$script:SmokeDnsResolver = $false
+function Test-CommandAvailable { param([string]$Name) return ($Name -eq 'dcdiag.exe' -or ($script:SmokeDnsResolver -and $Name -eq 'Resolve-DnsName')) }
 # C11 (DcDiagnostics): dcdiag, answered in the shape the dcdiag command reference prints (Learn,
 # read 2026-11-16): a banner, the initial Connectivity block under "Testing server: <site>\<DC>",
 # then the test's own block. CheckSDRefDom and CrossRefValidation answer one verdict per partition
@@ -805,7 +829,65 @@ function Invoke-ExternalCommand {
     [pscustomobject]@{ Success = ($exit -eq 0); ExitCode = $exit; Attempt = 1; Error = $null; OutFile = $OutFile
         StdOut = (New-StubDcdiagOutput -Dc $dc -Test $test -Mode $script:SmokeDcdiagMode) }
 }
-function Test-ModuleAvailable { param([string]$Name) return $false }
+# C13: the DnsServer module is present only in the DNS scenario ($script:SmokeDnsModule); every other pass
+# keeps "no optional module", so DNS Health says the module is missing.
+$script:SmokeDnsModule = $false
+function Test-ModuleAvailable { param([string]$Name) return ($script:SmokeDnsModule -and $Name -eq 'DnsServer') }
+# C13: the DnsServer cmdlets, in the shape the CIM classes return (property names as the config table
+# lists them; Learn does not publish the output properties). One DNS server, dc1.contoso.com: the forest
+# zone with NONSECURE dynamic update, the _msdcs zone Secure, an auto-created reverse zone, a conditional
+# forwarder zone. Scavenging every 7 days, aging on. The _msdcs zone holds the two locator SRV records
+# (the _ldap one also naming a removed DC), dc1's DSA CNAME and one CNAME of a DSA that no longer exists;
+# the forest zone holds dc1's A record. Each zone carries its apex NS record and no delegation, which the
+# server read checks before it reads a name (C13 review: a name below a delegation is never read). A -Name with no such record throws the WIN32 9714 text this tool
+# reads as "no such record" (provisional: the real error is not published). Every call is recorded.
+$script:SmokeDnsCalls = @()
+$script:SmokeDnsDsa = $false
+$script:SmokeDsaGuid = '0f0e0d0c-0b0a-4909-8807-060504030201'
+$script:SmokeOrphanGuid = '1a2b3c4d-0000-4000-8000-00000000abcd'
+function New-StubDnsZone { param([string]$Name, [string]$Dyn, [bool]$Ds = $true, [string]$Type = 'Primary', [bool]$Auto = $false, [string]$Scope = 'Domain')
+    [pscustomobject]@{ ZoneName = $Name; ZoneType = $Type; IsAutoCreated = $Auto; IsDsIntegrated = $Ds; IsReverseLookupZone = ($Name -like '*.arpa')
+        DynamicUpdate = $Dyn; ReplicationScope = $Scope; SecureSecondaries = 'NoTransfer' } }
+function New-StubDnsRecord { param([string]$HostName, [string]$Type, [hashtable]$Data)
+    [pscustomobject]@{ HostName = $HostName; RecordType = $Type; RecordClass = 'IN'; TimeToLive = [timespan]::FromMinutes(10); Timestamp = $null; RecordData = [pscustomobject]$Data } }
+$script:SmokeDnsRecords = @{
+    'contoso.com'        = @((New-StubDnsRecord 'dc1' 'A' @{ IPv4Address = '192.0.2.10' }), (New-StubDnsRecord '@' 'NS' @{ NameServer = 'dc1.contoso.com.' }))
+    '_msdcs.contoso.com' = @((New-StubDnsRecord '_ldap._tcp.dc' 'SRV' @{ DomainName = 'dc1.contoso.com.'; Port = [uint16]389; Priority = [uint16]0; Weight = [uint16]100 }),
+        (New-StubDnsRecord '_ldap._tcp.dc' 'SRV' @{ DomainName = 'old-dc.contoso.com.'; Port = [uint16]389; Priority = [uint16]0; Weight = [uint16]100 }),
+        (New-StubDnsRecord '_kerberos._tcp.dc' 'SRV' @{ DomainName = 'dc1.contoso.com.'; Port = [uint16]88; Priority = [uint16]0; Weight = [uint16]100 }),
+        (New-StubDnsRecord $script:SmokeDsaGuid 'CNAME' @{ HostNameAlias = 'dc1.contoso.com.' }),
+        (New-StubDnsRecord $script:SmokeOrphanGuid 'CNAME' @{ HostNameAlias = 'old-dc.contoso.com.' }),
+        (New-StubDnsRecord '@' 'NS' @{ NameServer = 'dc1.contoso.com.' }))
+}
+function Get-DnsServerZone { param([string]$ComputerName, [string]$Name, $ErrorAction)
+    $script:SmokeDnsCalls += ("Get-DnsServerZone {0}" -f $ComputerName)
+    if ($ComputerName -ne 'dc1.contoso.com') { throw ("STUB: {0} is not a DNS server" -f $ComputerName) }
+    @((New-StubDnsZone 'contoso.com' 'NonsecureAndSecure'), (New-StubDnsZone '_msdcs.contoso.com' 'Secure' -Scope 'Forest'), (New-StubDnsZone '0.in-addr.arpa' 'None' -Ds $false -Auto $true),
+        (New-StubDnsZone 'fabrikam.com' 'None' -Ds $false -Type 'Forwarder')) }
+function Get-DnsServerScavenging { param([string]$ComputerName, $ErrorAction) $script:SmokeDnsCalls += ("Get-DnsServerScavenging {0}" -f $ComputerName)
+    [pscustomobject]@{ ScavengingInterval = [timespan]::FromDays(7); ScavengingState = $true; NoRefreshInterval = [timespan]::FromDays(7); RefreshInterval = [timespan]::FromDays(7) } }
+function Get-DnsServerZoneAging { param([string]$Name, [string]$ComputerName, $ErrorAction) $script:SmokeDnsCalls += ("Get-DnsServerZoneAging {0} {1}" -f $ComputerName, $Name)
+    [pscustomobject]@{ ZoneName = $Name; AgingEnabled = $true; NoRefreshInterval = [timespan]::FromDays(7); RefreshInterval = [timespan]::FromDays(7); ScavengeServers = $null } }
+function Get-DnsServerForwarder { param([string]$ComputerName, $ErrorAction) $script:SmokeDnsCalls += ("Get-DnsServerForwarder {0}" -f $ComputerName)
+    [pscustomobject]@{ IPAddress = @('192.0.2.53'); UseRootHint = $true } }
+function Get-DnsServerResourceRecord { param([string]$ComputerName, [string]$ZoneName, [string]$Name, [string]$RRType, $ErrorAction)
+    $script:SmokeDnsCalls += ("Get-DnsServerResourceRecord {0} {1} {2} {3}" -f $ComputerName, $ZoneName, $Name, $RRType)
+    $all = @($script:SmokeDnsRecords[$ZoneName.ToLowerInvariant()])
+    if ($Name -ne '') { $all = @($all | Where-Object { $_.HostName -eq $Name }) }
+    if ($RRType -ne '') { $all = @($all | Where-Object { $_.RecordType -eq $RRType }) }
+    if ($Name -ne '' -and $all.Count -eq 0) { throw ("Failed to get {0} record in {1} zone on {2} server. WIN32 9714" -f $Name, $ZoneName, $ComputerName) }
+    return $all }
+# Resolve-DnsName -DnsOnly -Server, in the shape of Microsoft.DnsClient.Commands.DnsRecord: an SRV
+# answer carries NameTarget, an A answer IPAddress. It answers from the same records as the zone.
+function Resolve-DnsName { param([string]$Name, [string]$Type, [string]$Server, [switch]$DnsOnly, $ErrorAction)
+    $script:SmokeDnsCalls += ("Resolve-DnsName {0} {1} {2}" -f $Name, $Type, $Server)
+    if ($Type -eq 'SRV') {
+        $rel = ($Name -replace '\._msdcs\.contoso\.com$', '')
+        $hits = @($script:SmokeDnsRecords['_msdcs.contoso.com'] | Where-Object { $_.RecordType -eq 'SRV' -and $_.HostName -eq $rel })
+        if ($hits.Count -gt 0) { return @($hits | ForEach-Object { [pscustomobject]@{ Name = $Name; Type = 'SRV'; NameTarget = $_.RecordData.DomainName.TrimEnd('.') } }) }
+    }
+    if ($Type -eq 'A' -and $Name -eq 'dc1.contoso.com') { return [pscustomobject]@{ Name = $Name; Type = 'A'; IPAddress = '192.0.2.10' } }
+    throw ("{0} : DNS name does not exist" -f $Name) }
 function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
 # C5: the TLS handshake seam. Test-TcpPort above says every port answers, so without this stub a
 # run with -IncludeLdapsHandshake would make a real DNS lookup and a real TCP connection to
@@ -970,6 +1052,21 @@ Check (@($ddRows | Where-Object { $_.Recommendation }).Count -eq 0) 'DC Diagnost
 $ddDnsNotRun = @($ddRows | Where-Object { $_.Item -like 'dcdiag DNS not run: *' })
 Check (@($ddDnsNotRun).Count -eq 1 -and $ddDnsNotRun[0].Item -eq 'dcdiag DNS not run: contoso.com' -and $ddDnsNotRun[0].Scope -eq 'contoso.com' -and $ddDnsNotRun[0].Status -eq 'Not Assessed' -and $ddDnsNotRun[0].Detail -match 'IncludeDcdiagActiveTests') 'C12: a default run reports one "dcdiag DNS not run" row for the stub domain, Not Assessed, naming the switch'
 Check (@($ddRows | Where-Object { $_.Item -match '^dcdiag DNS (Auth|Basc|Forw|Del|Dyn|RReg|Ext): ' }).Count -eq 0) 'C12: a default run has no DNS test-group row'
+# C13: with no DnsServer module and no DNS query tool on this host, every graded DNS row is Not Assessed
+# with its cause and none is Pass; the DC DNS Client rows are read through the CIM stub; the opt-in
+# record export is not part of All.
+$c13Health = @($smokeFindings | Where-Object { $_.Section -eq 'DNS Health' })
+Check (@($c13Health | Where-Object { $_.Item -eq 'DNS server: dc1.contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'DnsServer PowerShell module' }).Count -eq 1) 'C13: DNS Health is wired, scoped to the stub domain, and names the missing DnsServer module for the stub DC'
+Check (@($c13Health | Where-Object { $_.Item -eq 'DNS zones (population): contoso.com' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'C13: the zone population row of the stub domain is Not Assessed when no DNS server was read'
+Check (@($c13Health | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0 -and @($c13Health | Where-Object { $_.Item -match '^Zone (dynamic update|scavenging): ' }).Count -eq 0) 'C13: DNS Health grades no zone, and passes nothing, when nothing could be read'
+$c13Dac = @($smokeFindings | Where-Object { $_.Section -eq 'DNS vs AD Consistency' -and $_.Item -match '^(DC locator records|DC A record|Stale DC records \(population\)): ' })
+Check (@($c13Dac).Count -eq 3 -and @($c13Dac | Where-Object { $_.Status -ne 'Not Assessed' -or $_.Scope -ne 'contoso.com' }).Count -eq 0) ("C13: DNS vs AD gives the stub DC its locator and A record rows and the domain its stale-record row, all Not Assessed with no instrument (declared population: three; got {0})" -f @($c13Dac).Count)
+$c13Client = @($smokeFindings | Where-Object { $_.Section -eq 'DC DNS Client' })
+Check (@($c13Client | Where-Object { $_.Item -eq 'DNS client: dc1.contoso.com' -and $_.Status -eq 'Info' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'C13: DC DNS Client is wired into the DomainControllers section and reads the stub DC''s adapter (two DNS servers, one DC: Info)'
+$c13ClientCsv = Join-Path $result.CsvPath 'DC DNS Client.csv'
+Check ((Test-Path $c13ClientCsv) -and @(@(Import-Csv $c13ClientCsv) | Where-Object { $_.DnsServers -eq '192.0.2.20, 127.0.0.1' -and $_.ConfiguredIPv4 -eq '192.0.2.10' }).Count -eq 1) 'C13: the DNS server list and the IPv4 address are in their own columns of the DC DNS Client CSV'
+Check (@($smokeFindings | Where-Object { $_.Section -eq 'DNS Record Export' }).Count -eq 0 -and @(Get-ChildItem -LiteralPath $result.CsvPath -Filter 'DnsRecords_*').Count -eq 0) 'C13: the DNS record export is opt-in - the All run writes no record and no export row'
+Check (@($smokeFindings | Where-Object { $_.Section -eq 'DNS Depth' -and $_.Item -eq 'Secure dynamic updates' -and $_.Status -eq 'Info' -and $_.Detail -match 'Zone dynamic update' }).Count -eq 1) 'C13: DNS Depth no longer grades dynamic update and says where it went'
 # C1: the DcSystem section must be wired, must judge the stub DC's OS from the inventory, and
 # must report the patch-level inventory read through the CIM stubs - as Info, never as Pass.
 $dcsRows = @($smokeFindings | Where-Object { $_.Section -eq 'DC System' })
@@ -1269,6 +1366,18 @@ Check (@($dd2 | Where-Object { $_.Item -eq 'dcdiag CrossRefValidation: forest co
 Check (@($dd2 | Where-Object { $_.Item -like 'dcdiag CrossRefValidation: *' -and $_.Item -ne 'dcdiag CrossRefValidation: Configuration' -and $_.Item -ne 'dcdiag CrossRefValidation: forest contoso.com' -and $_.Status -ne 'Pass' }).Count -eq 0) 'Multi-domain: the other four partitions still pass'
 # C12: one "dcdiag DNS not run" row per scoped domain, each scoped to its own domain, never Pass.
 $dd2DnsNotRun = @($dd2 | Where-Object { $_.Item -like 'dcdiag DNS not run: *' })
+# C13: DNS Health, DC DNS Client and the per-DC DNS vs AD rows give each scoped domain its own rows, and
+# with nothing readable none of them passes.
+$c13H2 = @($findings2 | Where-Object { $_.Section -eq 'DNS Health' })
+$c13C2 = @($findings2 | Where-Object { $_.Section -eq 'DC DNS Client' -and $_.Item -like 'DNS client: *' })
+$c13D2 = @($findings2 | Where-Object { $_.Section -eq 'DNS vs AD Consistency' -and $_.Item -like 'DC locator records: *' })
+foreach ($d in $multiDomains) {
+    Check (@($c13H2 | Where-Object { $_.Item -eq 'DNS server: dc1.contoso.com' -and $_.Scope -eq $d -and $_.Status -eq 'Not Assessed' }).Count -eq 1) ("Multi-domain C13: DNS Health has the DNS server row of {0}'s DC, scoped to it, Not Assessed" -f $d)
+    Check (@($c13H2 | Where-Object { $_.Item -eq ("DNS zones (population): {0}" -f $d) -and $_.Scope -eq $d }).Count -eq 1) ("Multi-domain C13: DNS Health has one zone population row for {0}" -f $d)
+    Check (@($c13C2 | Where-Object { $_.Scope -eq $d }).Count -eq 1) ("Multi-domain C13: DC DNS Client has one row for {0}'s DC" -f $d)
+    Check (@($c13D2 | Where-Object { $_.Scope -eq $d -and $_.Status -eq 'Not Assessed' }).Count -eq 1) ("Multi-domain C13: DNS vs AD has one locator row for {0}'s DC, Not Assessed" -f $d)
+}
+Check (@($c13H2).Count -gt 0 -and @($c13H2 | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0) 'Multi-domain C13: DNS Health passes nothing when nothing could be read (declared population: three domains)'
 Check (@($dd2DnsNotRun).Count -eq 3 -and @($dd2DnsNotRun | Where-Object { $_.Status -ne 'Not Assessed' -or $_.Item -ne ("dcdiag DNS not run: {0}" -f $_.Scope) -or $multiDomains -notcontains $_.Scope }).Count -eq 0) 'Multi-domain: one Not Assessed "dcdiag DNS not run" row per scoped domain, each scoped to it (declared population: three domains)'
 # C1: one lifecycle row per DC per domain, each carrying its own domain - not three copies of
 # the first domain, and not one row for the forest.
@@ -1854,6 +1963,51 @@ Check (@($ddDnsDom).Count -eq 7 -and @($ddDnsDom | Where-Object { $_.Scope -ne '
 Check (@($ddDns | Where-Object { $_.Item -like 'dcdiag DNS not run: *' }).Count -eq 0) 'C12: with the opt-in no "not run" row is written'
 Remove-Item -Recurse -Force $outDns -ErrorAction SilentlyContinue
 
+# C13: the DNS sections with the DnsServer module and Resolve-DnsName present (stubs above), and the
+# opt-in record export named. The stub zone allows nonsecure updates (Fail), the _msdcs zone is Secure
+# (Pass), both age and the server scavenges (Pass); dc1 is named by both locator records on both
+# instruments (Pass) and its A record is its adapter address (Pass); the _ldap record also names a removed
+# DC and the _msdcs zone holds a CNAME of a DSA that no longer exists (two stale records).
+Write-Host "== Running Invoke-Main with the DnsServer module and Resolve-DnsName (C13: DNS sections) ==" -ForegroundColor Cyan
+$outC13 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_c13_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outC13
+$script:Sections = @('DomainControllers', 'Dns', 'DnsAdConsistency', 'DnsRecordExport')
+$script:SmokeDnsModule = $true
+$script:SmokeDnsResolver = $true
+$script:SmokeDnsDsa = $true
+$script:SmokeDnsCalls = @()
+$resultC13 = Invoke-Main
+$script:SmokeDnsModule = $false
+$script:SmokeDnsResolver = $false
+$script:SmokeDnsDsa = $false
+$script:Sections = @('All')
+$fC13 = @(Import-Csv $resultC13.FindingsFile)
+$hC13 = @($fC13 | Where-Object { $_.Section -eq 'DNS Health' })
+Check (@($hC13 | Where-Object { $_.Item -eq 'DNS server: dc1.contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'C13: the stub DNS server is read'
+$dynC13 = @($hC13 | Where-Object { $_.Item -eq 'Zone dynamic update: contoso.com' })
+Check (@($dynC13).Count -eq 1 -and $dynC13[0].Status -eq 'Fail' -and $dynC13[0].Scope -eq 'contoso.com' -and $dynC13[0].Recommendation -match 'Secure only') 'C13: nonsecure dynamic update on the AD-integrated zone fails, with the Secure only advice'
+Check (@($hC13 | Where-Object { $_.Item -eq 'Zone dynamic update: _msdcs.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C13: the Secure _msdcs zone passes'
+Check (@($hC13 | Where-Object { $_.Item -like 'Zone scavenging: *' -and $_.Status -eq 'Pass' }).Count -eq 2) 'C13: both primary zones age and the server scavenges (declared population: two zones)'
+Check (@($hC13 | Where-Object { $_.Item -match '^Zone (dynamic update|scavenging): (fabrikam\.com|0\.in-addr\.arpa)$' }).Count -eq 0) 'C13: the forwarder zone and the auto-created zone are not graded'
+Check (@($hC13 | Where-Object { $_.Item -like 'Zone configuration: * on dc1.contoso.com' }).Count -eq 3) 'C13: one zone configuration row per zone not auto-created (declared population: three)'
+$healthCsvC13 = @(Import-Csv (Join-Path $resultC13.CsvPath 'DNS Health.csv'))
+Check (@($healthCsvC13 | Where-Object { $_.Item -eq 'Zone configuration: _msdcs.contoso.com on dc1.contoso.com' -and $_.ReplicationScope -eq 'Forest' -and $_.ZoneType -eq 'Primary' -and $_.DynamicUpdate -eq 'Secure' }).Count -eq 1) 'C13: the zone configuration row carries the replication scope, type and dynamic update the server reported (INV-013)'
+Check (@($hC13 | Where-Object { $_.Item -eq 'Zone scavenging: _msdcs.contoso.com' }).Count -eq 1) 'C13: the forest-wide _msdcs zone is graded once (declared population: one forest-wide zone)'
+Check (@($script:SmokeDnsCalls | Where-Object { $_ -match '^Get-DnsServerResourceRecord dc1\.contoso\.com \S+  Ns$' }).Count -ge 1) 'C13: the server read checks the zone''s delegations (its NS records) before it reads a name'
+$dC13 = @($fC13 | Where-Object { $_.Section -eq 'DNS vs AD Consistency' })
+Check (@($dC13 | Where-Object { $_.Item -eq 'DC locator records: dc1.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C13: dc1 is named by both locator records on both instruments'
+Check (@($dC13 | Where-Object { $_.Item -eq 'DC A record: dc1.contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C13: dc1''s A record is the address its adapter holds'
+$staleC13 = @($dC13 | Where-Object { $_.Item -like 'Stale DC record: *' })
+Check (@($staleC13).Count -eq 2 -and @($staleC13 | Where-Object { $_.Item -eq 'Stale DC record: old-dc.contoso.com' }).Count -eq 1 -and @($staleC13 | Where-Object { $_.Item -eq ("Stale DC record: {0}._msdcs.contoso.com" -f $script:SmokeOrphanGuid) }).Count -eq 1) ("C13: the removed DC's SRV target and the orphan DSA CNAME are listed, dc1's CNAME is not (declared population: two; got {0})" -f @($staleC13).Count)
+Check (@($staleC13 | Where-Object { $_.Status -ne 'Warning' -or $_.Recommendation -notmatch 'stale domain controllers' }).Count -eq 0) 'C13: each stale record is a Warning with the stale DC advice'
+Check (@($fC13 | Where-Object { $_.Section -eq 'DC DNS Client' -and $_.Item -eq 'DNS client: dc1.contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'C13: the DC DNS client row is read in the DNS scenario too'
+$xC13 = @($fC13 | Where-Object { $_.Section -eq 'DNS Record Export' })
+Check (@($xC13 | Where-Object { $_.Item -eq 'Record export: _msdcs.contoso.com on dc1.contoso.com' -and $_.Detail -match '^Exported 6 of 6' -and $_.Detail -match 'cap reached: no' }).Count -eq 1) 'C13: the opt-in export writes the _msdcs zone in full and says the cap was not reached'
+Check (@(Get-ChildItem -LiteralPath $resultC13.CsvPath -Filter 'DnsRecords_*.csv').Count -eq 2) 'C13: one CSV per zone that holds a record (declared population: the two zones of the stub server with records; the auto-created and forwarder zones hold none)'
+Check (@($xC13 | Where-Object { $_.Item -eq 'Record export: total' -and $_.Detail -match '^8 record\(s\) exported from 4 zone\(s\) on 1 DNS server' }).Count -eq 1) 'C13: the export total counts every record written'
+Check (@($script:SmokeDnsCalls | Where-Object { $_ -match '^(Set|Add|Remove|Start|Clear|Register)-' }).Count -eq 0) 'C13: no DNS write was attempted'
+Remove-Item -Recurse -Force $outC13 -ErrorAction SilentlyContinue
+
 # ---- Scenario 3: collection failures must be reported, never swallowed -------
 # Regression guard for the empty-catch fixes. The failure mode being pinned is the one this
 # repo already shipped once (v1.6.0): a collector throws, its rows quietly do not appear, and
@@ -1931,7 +2085,15 @@ $dcs3 = @($findings3 | Where-Object { $_.Section -eq 'DC System' })
 Check (@($dcs3 | Where-Object { $_.Item -eq 'OS lifecycle' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode: DC System reports the OS lifecycle check as Not Assessed when there is no DC inventory'
 Check (@($dcs3 | Where-Object { $_.Item -eq 'Patch level' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode: DC System reports patch level as Not Assessed when no DC was enumerated'
 Check (@($dcs3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC System reports nothing but Not Assessed ({0} rows)" -f @($dcs3).Count)
-
+# C13: with DC enumeration failing, DNS Health and DC DNS Client say so, give the domain whose inventory
+# failed its own row, and pass nothing; DNS vs AD gives no per-DC row a Pass.
+$dns3 = @($findings3 | Where-Object { $_.Section -eq 'DNS Health' })
+Check (@($dns3 | Where-Object { $_.Item -eq 'DNS health' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode C13: DNS Health reports Not Assessed when no DC was enumerated, and carries the enumeration failure'
+Check (@($dns3 | Where-Object { $_.Item -eq 'DNS server - contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'Failure mode C13: DNS Health gives the domain whose inventory failed its own Not Assessed row'
+Check (@($dns3).Count -eq 2 -and @($dns3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode C13: DNS Health reports nothing but Not Assessed ({0} rows, expected 2)" -f @($dns3).Count)
+$cli3 = @($findings3 | Where-Object { $_.Section -eq 'DC DNS Client' })
+Check (@($cli3 | Where-Object { $_.Item -eq 'DNS client - contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1 -and @($cli3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) 'Failure mode C13: DC DNS Client gives the failed domain a Not Assessed row with the cause, and passes nothing'
+Check (@($findings3 | Where-Object { $_.Section -eq 'DNS vs AD Consistency' -and $_.Status -eq 'Pass' }).Count -eq 0) 'Failure mode C13: DNS vs AD Consistency passes nothing when the DC list could not be read'
 # C2: the same for DcDisk. With no DC there is nothing to read; the section must say so, name
 # the enumeration failure, give the domain whose inventory failed its own row, and pass nothing.
 $disk3 = @($findings3 | Where-Object { $_.Section -eq 'DC Disk Space' })

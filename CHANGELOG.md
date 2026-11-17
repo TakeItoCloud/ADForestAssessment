@@ -10,6 +10,267 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added — 2026-11-17 (DNS: zone dynamic update, aging and scavenging, DC locator SRV and A records, records naming no DC, zone inventory, DC DNS client, opt-in record export, tool v1.30.0)
+
+**PORT-PLAN C13.** The AdAssessment26 catalogue rows ADA-DNS-001 to -005, ADA-INV-013, -014 and -016,
+built into the existing `Dns` (`DNS Health`), `DnsAdConsistency` (`DNS vs AD Consistency`) and
+`DomainControllers` sections, plus one new opt-in `-Sections` value, `DnsRecordExport`. The reference
+repository has no code for any of these rows; the rules come from its catalogue, PORT-PLAN and SPEC
+text. The differences from the catalogue rules are listed below.
+
+**This has run only against stubs.** No DnsServer cmdlet, no `Resolve-DnsName` query and no
+`Win32_NetworkAdapterConfiguration` read has been made by it against a real DNS server or domain
+controller: every answer it was tested on is a stub in the shape the config table names, and Learn
+does not publish the output property names of `Get-DnsServerZone`, `Get-DnsServerScavenging` or
+`Get-DnsServerZoneAging`. The first run against a real forest is PORT-PLAN C17, owned by the operator,
+and PORT-PLAN C13a lists what that run must confirm for this row.
+
+**What it reads, and nothing else.** `Get-DnsServerZone`, `Get-DnsServerScavenging`,
+`Get-DnsServerZoneAging` (primary zones only), `Get-DnsServerForwarder` and
+`Get-DnsServerResourceRecord`, with `-ComputerName`, from the DnsServer module of the host running the
+assessment, after an RPC (135) probe through the shared port cache; `Resolve-DnsName -DnsOnly -Server`
+(nslookup where the DnsClient module is absent) as the second instrument; and
+`Win32_NetworkAdapterConfiguration` where `IPEnabled = TRUE`, five properties, through the shared CIM
+transport loop (WinRM, then DCOM; `Get-AdfaDcNetworkRaw` added to its allow-list). No `Set-`, `Add-`,
+`Remove-`, `Start-` or `Clear-DnsServer*` cmdlet, no CIM method (the adapter class's
+`SetDNSServerSearchOrder` and the like are never called), no `ipconfig`, no `nltest /dsregdns`, no
+`dnscmd`. A test parses the script and fails on a DnsServer or DnsClient cmdlet that writes, on
+`dnscmd` or `ipconfig` named as a command or as a string argument of any command (the script starts
+console tools through `Invoke-ExternalCommand -FilePath '<tool>.exe'`), and on a registration or
+cache switch (`/registerdns`, `/dsregdns`, `/dsderegdns`, `/flushdns`, `/release`, `/renew`) in any
+string literal outside the recommendation map; a switch assembled at run time from pieces is not
+seen by it.
+
+| Section | Rows |
+| --- | --- |
+| DNS Health (`-Sections Dns`) | `DNS server: <dc>` per DC (Info when read, otherwise `Not Assessed` with the cause); `Zone configuration: <zone> on <dc>` per zone not auto-created (Info: type, replication scope, AD-integrated, dynamic update, aging - ADA-INV-013); per domain and primary zone over every DNS server of the domain, `Zone dynamic update: <zone>` (ADA-DNS-001) and `Zone scavenging: <zone>` (ADA-DNS-002); `DNS zones (population): <domain>`; a `DNS server - <domain>` row for a scoped domain with no DC row. The `<dc>: forwarders` and `<dc>: zone transfer` rows are kept as they were |
+| DNS vs AD Consistency | after the per-server SRV rows, which are unchanged: `DC locator records: <dc>` (ADA-DNS-003), `DC A record: <dc>` (ADA-DNS-004), one `Stale DC record: <target or CNAME>` per record that names no DC and `Stale DC records (population): <domain>` (ADA-DNS-005) |
+| DC DNS Client (`-Sections DomainControllers`, its own report section) | `DNS client: <dc>` per DC, with its DNS server list and IPv4 addresses in their own columns; `DNS client (population): <domain>`; `DNS client - <domain>` for a scoped domain with no DC row (ADA-INV-016) |
+| DNS Record Export (`-Sections DnsRecordExport`, opt-in) | one `csv\DnsRecords_<server>_<zone>.csv` per zone that holds a record; `Record export: <zone> on <server>` ("Exported N of M record(s); cap C per zone; cap reached: yes/no"), `Record export (population): <server>` and `Record export: total` (ADA-INV-014) |
+
+**The grades.** Each is a status in the new versioned `Dns` config table. Each graded row ends with
+"Graded <status>: <source>": the built-in source says tool defaults, not Microsoft values; a status
+set by `-ConfigOverridePath` names the file and the keys it supplied.
+
+- Zone dynamic update: `NonsecureAndSecure` on an AD-integrated zone on any hosting server is a `Fail`
+  (`NonsecureStatus`; Learn: "Secure only is recommended for AD-integrated zones"); that measured
+  finding stands when another server was not read. Every hosting server read and none nonsecure:
+  `Pass`. A zone that is not AD-integrated: `Info` (Learn: secure update exists only for
+  AD-integrated zones). A server not read, `IsDsIntegrated` not returned, or a value outside None,
+  Secure, NonsecureAndSecure: `Not Assessed`.
+- Zone scavenging: zone aging off on a read server is a `Warning` (`AgingOffStatus`; Learn:
+  scavenging "skips any zone that has aging disabled"); every hosting server read and none with
+  scavenging enabled (`ScavengingInterval` above zero, Learn: "0, which disables scavenging") is a
+  `Warning` (`ScavengingOffStatus`), only when the hosting set is complete: a `Domain`-scope zone over
+  the DNS servers of its domain; a `Forest` or `Custom` zone is graded once over every DNS server of
+  the run, and that `Warning` needs a run that covered every domain of the forest; any other scope
+  (`Legacy`, none, not returned) never gets it. A server or a value not read: `Not Assessed`.
+- DC locator records: each graded record (`_ldap._tcp.dc._msdcs.<domain>`,
+  `_kerberos._tcp.dc._msdcs.<domain>`; reference decision 61) on each DNS server, by two
+  instruments. `Fail` only when both instruments agree the record does not name the DC; `Warning`
+  (`OneInstrumentStatus`, `Not Assessed` by override) when one could say so and the other could not
+  be read; `Not Assessed` when neither could; `Info` for a read-only DC (Learn: RODCs register
+  site-specific records by default).
+- DC A record: an A record for an address the DC's adapters do not hold, or none by both instruments,
+  is a `Warning` (`ARecordStatus`); none by one instrument is `OneInstrumentStatus`; adapters not
+  read, or a record whose address could not be read, is `Not Assessed`. IPv4 only.
+- The server instrument reads only the zone that holds the name: a server that holds no zone for it,
+  only a stub or forwarder zone, or a parent zone in which the name sits below a delegation (an NS
+  record below the apex), or whose NS records could not be read, is an unread instrument, never an
+  absence. Only Win32 9701 or 9714 ("DNS record does not exist.", "DNS name does not exist."), in
+  the message or the error id, is read as no such record; anything else is a failed read.
+- Stale DC record: an SRV target that matches no DC of the domain or of the NTDS Settings objects
+  (RODCs included, so their records are never stale), or, in the forest root, a `<guid>._msdcs` CNAME
+  whose GUID is no NTDS Settings object, is a `Warning` (`StaleRecordStatus`; Learn: "Remove
+  references to stale domain controllers").
+- DNS client: a list returned empty, or a single DNS server while more than one DC is known to the
+  run, is a `Warning` (`SingleServerStatus`; KB 4013: a single DNS server, loopback included, is a
+  single point of failure, tolerable only in a single-DC forest). A single server with one DC known
+  is `Info` only when the run covered every domain of the forest with no inventory failure, otherwise
+  `Not Assessed`. A list no adapter returned, and a read that listed no adapter, are `Not Assessed`. Itself or loopback first, no other DC in the
+  list, and an address that is no known DC are `Info` notes: Learn allows a DC to use itself as
+  preferred server and publishes no "loopback not first" rule, and an address alone cannot show an
+  ISP resolver.
+
+**Not Assessed, each with its own cause, never Pass.** No DC enumerated (the enumeration error
+quoted); a DC with no host name; the DnsServer module not installed on the host running the
+assessment; unreachable on RPC (DnsServer reads) or on WinRM and RPC (adapter read); access denied
+(CIM error code first, then the text); the DNS provider missing (`InvalidNamespace`, `InvalidClass`);
+timed out; any other failure, quoted; a property not returned; a value not recognised; one instrument
+only; no query tool on the host; a server whose zone does not hold the name (no zone, a stub or
+forwarder zone, a delegation, NS records not read); an adapter read that listed no adapter; a DNS
+server list no adapter returned; a single DNS server on the only DC of a run that did not cover the
+forest; a forest-wide zone no server of such a run scavenges; in the forest root, DSA GUIDs not read or an NTDS Settings search that
+returned no object (no `<guid>._msdcs` CNAME is then judged, so none is called stale).
+
+**Changed.** DNS Health's `<dc>: zones` and `<dc>: scavenging` rows are replaced by the zone rows:
+the old scavenging row passed a zone whose aging property was not returned, and it never read server
+scavenging. DNS Health now covers the DCs of every scoped domain, each row carrying its domain, from
+the DC inventory or its own enumeration, as DcDisk does (it used to take the unscoped host list).
+DNS Depth's `Secure dynamic updates` row, which read the domain zone on the first DC only and warned
+on anything but `Secure`, is retired: it is now one `Info` row saying the check moved to DNS Health,
+so a zone is never graded twice by two rules. Existing tests pinned on the version (1.29.0), the
+config override section list (ten sections), the transport loop's allow-list and the number of CIM
+sessions and instance reads in the script were updated for the new values; no assertion was removed.
+
+**Config.** A new `Dns` table with its sources and read date, and a `Dns` key for
+`-ConfigOverridePath` (`Merge-AdfaDnsConfig`): `NonsecureStatus` (Fail or Warning),
+`ScavengingOffStatus`, `AgingOffStatus`, `ARecordStatus`, `StaleRecordStatus`, `SingleServerStatus`
+(Warning or Info), `OneInstrumentStatus` (Warning or Not Assessed) and `RecordExportCap` (1 to
+1000000, default 50000 - the reference's `-DnsRecordCap`). The record names, zone types, patterns,
+error codes and ports are refused, so a file can never make a status Pass or turn a failed read into
+an absence.
+
+**Recommendations.** Section-scoped entries anchored on the Item prefixes this tool writes, ahead of
+the unscoped entries: zone dynamic update (Secure only), zone scavenging (aging and one scavenging
+server per zone), DC locator records (Netlogon.dns, DnsAvoidRegisterRecords), DC A record, stale DC
+record, DNS client (single point of failure, no ISP DNS); catch-alls give the inventory and population
+rows no advice. The forwarder, zone transfer and per-server SRV rows keep the unscoped advice they had.
+
+**Where this differs from the catalogue rules.**
+
+- ADA-DNS-002 keeps zone aging as evidence only; here a measured "aging off" is its own `Warning`,
+  because Learn says scavenging skips such a zone (C13b).
+- ADA-DNS-003 has no two-instrument rule and grades a missing record `Fail`; here `Fail` needs both
+  instruments, one instrument is a `Warning` (C13b).
+- ADA-DNS-003's DsaCname part is not graded again: the existing DsaCname section grades it per DNS
+  server. Its orphans (ADA-DNS-005) are graded here.
+- ADA-INV-014 is JSON-only in the reference SPEC; here it is CSV, as the C13 brief asked (C13b).
+- ADA-INV-016 is inventory only; here a single DNS server is graded, from KB 4013 (C13b).
+- The catalogue's PROPOSED severity is not carried: the finding shape has no severity column.
+
+**Guards shown able to fail.** 21 single mutations of the new code, each applied to a scratch copy of
+the repository, the C13 tests run, and the file restored byte for byte and checked by SHA-256; every
+one was killed: the nonsecure test inverted; a Not Assessed turned into Pass (dynamic update, stale
+population) or into Warning (scavenging with a server unread); an unreachable DC read as reachable;
+access denied reported as a plain failure (DNS read, adapter read); the status and cap validation
+removed; the override, the DC DNS Client branch and the opt-in gate unwired; three thresholds off by
+one (scavenging interval, export cap, single-server DC count); the per-DC loops cut to the first DC
+(DNS Health, DC DNS Client, locator and A records); the two-instrument rule made one; RODCs dropped
+from the known DCs; an empty NTDS Settings answer judged.
+
+**Found by an independent review of the diff before commit, and fixed in it.** Each behaviour fix has a
+test that fails without it; each was shown by reverting the fix on a scratch copy of the repository,
+running the C13 tests and restoring the file byte for byte (SHA-256 checked) - 17 mutations, all
+killed.
+
+- The server instrument chose the longest zone suffix and ignored delegations, so a root DNS server
+  asked about a child domain read the parent zone, got "no such name" and reported a measured
+  absence (a Warning with a resolver time-out, a Fail with a resolver NXDOMAIN). It now reads a name
+  only from a Primary or Secondary zone that holds it with no delegation (an NS record below the
+  apex, read once per zone and server) above it; a parent zone, a stub or forwarder zone, no zone, a
+  zone type not returned, or NS records that could not be read make that instrument unread. The
+  forest-root CNAME scan uses the same rule.
+- `NoRecordPattern` read bare "was not found" and "does not exist", so "The network path was not
+  found." (Win32 53) and "The specified domain either does not exist ..." (1355) were measured
+  absences, and a CIM `NotFound` code was too. Only Win32 9701 or 9714, by number in the message or
+  the error id or by their exact text, is now "no such record".
+- A read that listed no IP-enabled adapter was graded "No DNS server is configured" (Warning); it is
+  now `Not Assessed` ("Read returned no adapter"), and the DC A record row agrees. A DNS server list
+  that no adapter returned stays `$null` (the call site no longer wraps it in `@()`), so it is
+  `Not Assessed` ("Not returned"), not an empty list.
+- With no DC known, every SRV target was listed as a stale DC record before the "no DC known" guard
+  ran; the guard now runs first. An empty DSA GUID list with a CNAME to judge is read as not known.
+- An A record whose address could not be read passed with nothing compared; it is `Not Assessed`.
+- A forest-wide zone was graded per domain, so a child DC that does not scavenge got "no hosting
+  server scavenges" although the root DC scavenges it. `Forest` and `Custom` zones are graded once
+  over every DNS server of the run, and that Warning needs a run that covered every domain of the
+  forest (`-ForestComplete` from `Invoke-Main`); any other non-`Domain` scope never gets it.
+- Every grade said "tool default" even when an override file set it. Every graded row now ends
+  "Graded <status>: <ThresholdSource>", which names the file for the keys it supplied; those rows are
+  all matched by Item-anchored section entries, so a path cannot choose advice (tested with a path
+  that says backup, stale and replication).
+- A single DNS server on the only DC known was `Info` ("tolerable in a forest with one DC") from the
+  run's DC count; it is `Info` only when the run covered every domain of the forest with no inventory
+  failure, otherwise `Not Assessed`.
+- The read-only guard missed `Invoke-ExternalCommand -FilePath 'nltest.exe' -Arguments '/dsregdns'`,
+  the way the script starts console tools; it now checks the string arguments of every command and
+  every string literal outside the recommendation map, and a test injects the reviewer's three calls
+  (and a switch held in a variable, the call operator, a DnsServer write cmdlet) to show it fails.
+- Tests that could not fail now can: an A record absent on one instrument; a server with no zone, a
+  stub zone, a forwarder zone, a zone type not returned or an NS read failure; aging off with another
+  server unread; a failed zone read in the export's population row; the zone inventory columns.
+- Text: the README no longer says Microsoft says not to use `ipconfig /registerdns` (the dynamic
+  update page says so for DHCP clients; the DC DNS client page tells you to run it after a change),
+  and PublishAddresses is credited to the dynamic registration page, not the DNS client page.
+
+Existing tests changed because the behaviour changed, none removed: the error-class test now
+expects `Error` for a CIM `NotFound` code (it expected `NotFound`); the single-DC `Info` case now
+passes `-DcCountIsForest $true` (and a new case asserts `Not Assessed` without it), in Pester and
+Run-Validation; the DNS vs AD collector mocks now return zone types and answer the NS read, the shape
+the seams now read; the smoke stubs give each zone its apex NS record and the `_msdcs` zone `Forest`
+scope, so the export counts are 6 of 6 and 8 records (were 5 and 7). Not built from the review:
+PORT-PLAN C13d.
+
+**Not verified.** The output property names of `Get-DnsServerZone` (`ZoneType`, `IsDsIntegrated`,
+`IsAutoCreated`, `DynamicUpdate`, `ReplicationScope`, `SecureSecondaries`), `Get-DnsServerScavenging`
+(`ScavengingInterval`) and `Get-DnsServerZoneAging` (`AgingEnabled`, `NoRefreshInterval`,
+`RefreshInterval`, `ScavengeServers`); the property names inside `RecordData` (`DomainName`,
+`IPv4Address`, `HostNameAlias` - Add-DnsServerResourceRecord parameter names); the error a missing
+record raises (read as Win32 9701 or 9714 only, by number in the message or the error id, or by
+their exact text); that `Get-DnsServerResourceRecord -ZoneName <zone> -RRType Ns` with no `-Name`
+returns the delegation NS records below the apex as well as the apex ones; the transport
+`-ComputerName` uses and whether RPC 135 is the right probe; the rights a read needs (Learn documents
+DnsAdmins or local Administrators for configuring only); that a DC which is not a DNS server answers
+with an error the tool reports, which keeps every zone of its domain `Not Assessed`; how
+`DNSServerSearchOrder` lists IPv6 servers; whether `Resolve-DnsName` fills the local cache; that the
+DnsServer cmdlets have no time bound of their own (C13a).
+
+**Vendor sources, all read 2026-11-17.**
+
+- Troubleshooting DNS dynamic update (Secure only recommended; the three options):
+  https://learn.microsoft.com/troubleshoot/windows-client/networking/troubleshooting-dns-dynamic-update-issues
+- Dynamic update (AD-integrated default; any computer can modify an A record without secure update;
+  for DHCP clients, ipconfig /renew rather than /registerdns):
+  https://learn.microsoft.com/windows-server/networking/dns/dynamic-update
+- Set-DnsServerPrimaryZone (DynamicUpdate and ReplicationScope values):
+  https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserverprimaryzone
+- Get-DnsServerZone (outputs not published): https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverzone
+- MicrosoftDNS_Zone (AllowUpdate values not published; not used):
+  https://learn.microsoft.com/windows/win32/dns/microsoftdns-zone
+- Aging and scavenging (both needed; scavenging skips a zone with aging off; one scavenging server per
+  zone; static records): https://learn.microsoft.com/windows-server/networking/dns/aging-scavenging
+- Configure aging and scavenging (defaults; DHCP lease; primary zones only):
+  https://learn.microsoft.com/windows-server/networking/dns/configure-aging-scavenging
+- Set-DnsServerScavenging (ScavengingInterval 0 disables; ScavengingState is the default for new
+  zones): https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserverscavenging
+- Set-DnsServerZoneAging and Get-DnsServerZoneAging (Aging alias AgingEnabled; primary zones only):
+  https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserverzoneaging and
+  https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverzoneaging
+- DNS scavenging setup (dnscmd /ageallrecords stamps static records):
+  https://learn.microsoft.com/troubleshoot/windows-server/networking/dns-scavenging-setup
+- Get-DnsServerResourceRecord (fields; whole-zone read; -RRType values; -CimSession and -ComputerName):
+  https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverresourcerecord
+- Add-DnsServerResourceRecord (IPv4Address, HostNameAlias parameters):
+  https://learn.microsoft.com/powershell/module/dnsserver/add-dnsserverresourcerecord
+- Problems with DCs and AD-integrated zones (the Netlogon mnemonic table; DnsAvoidRegisterRecords;
+  RODCs register site-specific records):
+  https://learn.microsoft.com/troubleshoot/windows-server/active-directory/problems-with-dc-ad-integrated-dns-zones
+- Enable or disable DNS dynamic registration (Netlogon re-registers hourly; Netlogon.dns; the DNS
+  Server service registers A records for the adapters it listens on; PublishAddresses):
+  https://learn.microsoft.com/troubleshoot/windows-server/networking/enable-disable-dns-dynamic-registration
+- Best practices for DNS client settings on DCs (self as preferred allowed; no ISP DNS; host record;
+  ipconfig /registerdns after changing the settings):
+  https://learn.microsoft.com/troubleshoot/windows-server/networking/best-practices-for-dns-client-settings
+- Troubleshoot DNS event ID 4013 (single server, loopback included, a single point of failure;
+  hub-and-branch order; remove references to stale DCs):
+  https://learn.microsoft.com/troubleshoot/windows-server/networking/troubleshoot-dns-event-id-4013
+- Win32_NetworkAdapterConfiguration (IPEnabled, IPAddress, DNSServerSearchOrder; the class's methods):
+  https://learn.microsoft.com/windows/win32/cimwin32prov/win32-networkadapterconfiguration
+- Resolve-DnsName (-Server, -Type, -DnsOnly): https://learn.microsoft.com/powershell/module/dnsclient/resolve-dnsname
+- NativeErrorCode (AccessDenied, InvalidNamespace, InvalidClass, NotFound; no time-out value):
+  https://learn.microsoft.com/dotnet/api/microsoft.management.infrastructure.nativeerrorcode
+- System error codes 9000-11999 (DNS_ERROR_RECORD_DOES_NOT_EXIST 9701 "DNS record does not exist.",
+  DNS_ERROR_NAME_DOES_NOT_EXIST 9714 "DNS name does not exist."):
+  https://learn.microsoft.com/windows/win32/debug/system-error-codes--9000-11999-
+- DNS zones (primary, secondary, stub; "A stub zone only contains information about the
+  authoritative name servers for the zone"): https://learn.microsoft.com/windows-server/networking/dns/zone-types
+- Add-DnsServerPrimaryZone (ReplicationScope: Domain "The domain directory partition", Forest "The
+  ForestDnsZone directory partition", Legacy "A legacy directory partition", Custom):
+  https://learn.microsoft.com/powershell/module/dnsserver/add-dnsserverprimaryzone
+- Get-DnsServerResourceRecord -RRType accepted values include Ns; Example 6 reads a zone's apex NS
+  records: https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverresourcerecord
+
 ### Added — 2026-11-16 (dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, Ext, per DC and per domain, tool v1.29.0)
 
 **PORT-PLAN C12, and H15 closed.** In the existing `DcDiagnostics` section (report section `DC

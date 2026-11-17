@@ -2128,7 +2128,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the ten sections the file can carry (DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the eleven sections the file can carry (Dns since v1.30.0, DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -2986,6 +2986,93 @@ Assert-Equal 'DC1' ((@($dnsBlock.Rows) | ForEach-Object { $_.Name }) -join ',') 
 $dnsRecDyn = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dcdiag DNS Dyn: dc1.contoso.com' -Detail 'x'
 $dnsRecRReg = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dcdiag DNS RReg: dc1.contoso.com' -Detail 'x'
 Assert-True ($dnsRecDyn -match 'AAAA' -and $dnsRecRReg -notmatch 'AAAA') 'C12 advice: the AAAA caveat is under Dyn, where Learn gives it, not under RReg'
+Write-Host "== C13. DNS: dynamic update, aging and scavenging, locator records, A records, records naming no DC, DNS client ==" -ForegroundColor Cyan
+$dnsCfg = $script:Config.Dns
+$dnsObs = { param([string]$Server, [bool]$Read = $true, $Ds = $true, [string]$Dyn = 'Secure', $Scav = $true, $Aging = $true)
+    [pscustomobject]@{ Server = $Server; Read = $Read; Cause = 'not read'; IsDsIntegrated = $Ds; DynamicUpdate = $Dyn; ServerScavenging = $Scav; AgingEnabled = $Aging } }
+$dnsDyn = @(
+    [string](Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.contoso.com'), (& $dnsObs 'dc2.contoso.com' -Dyn 'NonsecureAndSecure')) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.contoso.com'), (& $dnsObs 'dc2.contoso.com' -Dyn 'None')) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.contoso.com'), (& $dnsObs 'dc2.contoso.com' -Read $false)) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Dyn 'Bogus')) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Ds $null)) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Ds $false -Dyn 'NonsecureAndSecure')) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsDynamicUpdateVerdict -Observations @() -Config $dnsCfg).Status
+)
+Assert-Equal 'Fail,Pass,Not Assessed,Not Assessed,Not Assessed,Info,Not Assessed' ($dnsDyn -join ',') 'C13 DNS-001: nonsecure on an AD-integrated zone fails; Secure/None pass; an unread server, an unknown value or an absent property is Not Assessed; a file-backed zone is Info (declared population: seven cases)'
+$dnsScav = @(
+    [string](Get-AdfaDnsScavengingVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Scav $false), (& $dnsObs 'dc2.contoso.com' -Scav $false)) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsScavengingVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Scav $false), (& $dnsObs 'dc2.contoso.com' -Scav $true)) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsScavengingVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Aging $false)) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsScavengingVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Scav $false), (& $dnsObs 'dc2.contoso.com' -Read $false)) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsScavengingVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Scav $null)) -Config $dnsCfg).Status
+)
+Assert-Equal 'Warning,Pass,Warning,Not Assessed,Not Assessed' ($dnsScav -join ',') 'C13 DNS-002: no scavenging server or aging off is a Warning, one scavenging server passes, an unread server or value is Not Assessed (declared population: five cases)'
+$dnsSpan = @((Test-AdfaDnsServerScavenges -Interval ([timespan]::Zero)), (Test-AdfaDnsServerScavenges -Interval ([timespan]::FromSeconds(1))), ($null -eq (Test-AdfaDnsServerScavenges -Interval 168)))
+Assert-Equal 'False,True,True' ($dnsSpan -join ',') 'C13 DNS-002: a scavenging interval of zero is off, one second is on, a bare number is not read'
+$dnsStates = @(foreach ($pair in @(@('Present', 'Absent'), @('Absent', 'Absent'), @('Absent', 'Unread'), @('Unread', 'Absent'), @('Unread', 'Unread'))) { Get-AdfaDnsEvidenceState -ServerOutcome $pair[0] -ResolverOutcome $pair[1] })
+Assert-Equal 'Present,AbsentBoth,AbsentOne,AbsentOne,Unread' ($dnsStates -join ',') 'C13 two instruments: only both saying absent is a confirmed absence (declared population: five pairs)'
+$dnsCheck = { param([string]$State) [pscustomobject]@{ Record = 'Dc'; Server = 'dc1.contoso.com'; State = $State; Cause = '' } }
+$dnsLoc = @(
+    [string](Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @((& $dnsCheck 'Present')) -Config $dnsCfg).Status
+    [string](Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @((& $dnsCheck 'AbsentBoth')) -Config $dnsCfg).Status
+    [string](Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @((& $dnsCheck 'AbsentOne')) -Config $dnsCfg).Status
+    [string](Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @((& $dnsCheck 'Unread')) -Config $dnsCfg).Status
+    [string](Get-AdfaDcLocatorVerdict -IsReadOnly $true -Checks @((& $dnsCheck 'AbsentBoth')) -Config $dnsCfg).Status
+    [string](Get-AdfaDcLocatorVerdict -IsReadOnly $false -Checks @() -Config $dnsCfg).Status
+)
+Assert-Equal 'Pass,Fail,Warning,Not Assessed,Info,Not Assessed' ($dnsLoc -join ',') 'C13 DNS-003: Fail only on two instruments, one instrument a Warning, unread Not Assessed, an RODC Info (declared population: six cases)'
+$dnsA = @(
+    [string](Get-AdfaDcARecordVerdict -ConfiguredIPv4 @('192.0.2.11') -Answers @([pscustomobject]@{ Server = 'dc1.contoso.com'; State = 'Present'; Addresses = @('192.0.2.11') }) -Config $dnsCfg).Status
+    [string](Get-AdfaDcARecordVerdict -ConfiguredIPv4 @('192.0.2.11') -Answers @([pscustomobject]@{ Server = 'dc1.contoso.com'; State = 'Present'; Addresses = @('192.0.2.99') }) -Config $dnsCfg).Status
+    [string](Get-AdfaDcARecordVerdict -ConfiguredIPv4 $null -Answers @([pscustomobject]@{ Server = 'dc1.contoso.com'; State = 'Present'; Addresses = @('192.0.2.11') }) -Config $dnsCfg).Status
+)
+Assert-Equal 'Pass,Warning,Not Assessed' ($dnsA -join ',') 'C13 DNS-004: an A record not on the adapters is a Warning; adapters not read is Not Assessed (declared population: three cases)'
+$dnsStale = Get-AdfaStaleDnsRecordVerdict -Candidates @([pscustomobject]@{ Name = '_ldap._tcp.dc._msdcs.contoso.com'; Type = 'SRV'; Target = 'old-dc.contoso.com.'; Server = 'dc1.contoso.com' },
+    [pscustomobject]@{ Name = '_ldap._tcp.dc._msdcs.contoso.com'; Type = 'SRV'; Target = 'rodc1.contoso.com'; Server = 'dc1.contoso.com' }) -KnownDcHosts @('dc1.contoso.com', 'rodc1.contoso.com') -KnownDsaGuids @() -Config $dnsCfg
+Assert-True ($dnsStale.Status -eq 'Warning' -and @($dnsStale.Stale).Count -eq 1 -and [string]@($dnsStale.Stale)[0].Target -eq 'old-dc.contoso.com' -and $dnsStale.Detail -notmatch 'old-dc') 'C13 DNS-005: the target that is no DC is listed (RODC known), and its name is not in Detail'
+$dnsClient = @(
+    [string](Get-AdfaDcDnsClientVerdict -DnsServers @('127.0.0.1') -SelfAddresses @('192.0.2.11') -KnownDcAddresses @('192.0.2.11', '192.0.2.12') -DcCount 2 -Config $dnsCfg).Status
+    [string](Get-AdfaDcDnsClientVerdict -DnsServers @('127.0.0.1') -SelfAddresses @('192.0.2.11') -KnownDcAddresses @('192.0.2.11') -DcCount 1 -DcCountIsForest $true -Config $dnsCfg).Status
+    [string](Get-AdfaDcDnsClientVerdict -DnsServers @('192.0.2.12', '127.0.0.1') -SelfAddresses @('192.0.2.11') -KnownDcAddresses @('192.0.2.11', '192.0.2.12') -DcCount 2 -Config $dnsCfg).Status
+    [string](Get-AdfaDcDnsClientVerdict -DnsServers $null -Cause 'Unreachable' -SelfAddresses @() -KnownDcAddresses @() -DcCount 2 -Config $dnsCfg).Status
+    [string](Get-AdfaDcDnsClientVerdict -DnsServers @('127.0.0.1') -SelfAddresses @('192.0.2.11') -KnownDcAddresses @('192.0.2.11') -DcCount 1 -Config $dnsCfg).Status
+)
+Assert-Equal 'Warning,Info,Info,Not Assessed,Not Assessed' ($dnsClient -join ',') 'C13 INV-016: one DNS server with more than one DC is a Warning (KB 4013), in a one-DC forest Info, two servers Info, not read Not Assessed, one DC known in a run that did not cover the forest Not Assessed (declared population: five cases)'
+$dnsMerged = Merge-AdfaDnsConfig -BaseConfig $dnsCfg -Override @{ NonsecureStatus = 'Warning'; RecordExportCap = 10 } -OverrideSource 'C:\cfg\dns.json'
+Assert-True ($dnsMerged['NonsecureStatus'] -eq 'Warning' -and $dnsMerged['RecordExportCap'] -eq 10 -and $dnsCfg['NonsecureStatus'] -eq 'Fail') 'C13 override: the statuses and the cap merge, the built-in table is unchanged'
+Assert-Throws { Merge-AdfaDnsConfig -BaseConfig $dnsCfg -Override @{ LocatorRecords = @() } } "unknown key 'LocatorRecords'" 'C13 override: the record names can never be set from a file'
+Assert-Throws { Merge-AdfaDnsConfig -BaseConfig $dnsCfg -Override @{ NonsecureStatus = 'Pass' } } 'Fail, Warning' 'C13 override: a status outside its set is refused'
+Assert-Throws { Merge-AdfaDnsConfig -BaseConfig $dnsCfg -Override @{ RecordExportCap = 0 } } '1 to 1000000' 'C13 override: a cap of zero is refused'
+Assert-Throws { Merge-AdfaDnsConfig -BaseConfig $dnsCfg -Override @{ } } 'empty object' 'C13 override: an empty object is refused'
+Assert-Throws { Merge-AdfaDnsConfig -BaseConfig $dnsCfg -Override @{ OneInstrumentStatus = $null } } 'null' 'C13 override: a null is refused'
+$dnsHostile = 'replication stale delegation secure dynamic zone transfer scavenging aging backup global catalog dcdiag NOT a pass'
+$dnsRecs = @(
+    Get-AdfaRecommendation -Section 'DNS Health' -Item 'Zone dynamic update: replication.contoso.com' -Detail $dnsHostile
+    Get-AdfaRecommendation -Section 'DNS Health' -Item 'Zone scavenging: contoso.com' -Detail $dnsHostile
+    Get-AdfaRecommendation -Section 'DNS vs AD Consistency' -Item 'DC locator records: dc1.contoso.com' -Detail $dnsHostile
+    Get-AdfaRecommendation -Section 'DNS vs AD Consistency' -Item 'Stale DC record: backup-dc.contoso.com' -Detail $dnsHostile
+    Get-AdfaRecommendation -Section 'DC DNS Client' -Item 'DNS client: dc1.contoso.com' -Detail $dnsHostile
+)
+Assert-True ($dnsRecs[0] -match 'Secure only' -and $dnsRecs[1] -match 'only one DNS server per zone' -and $dnsRecs[2] -match 'Netlogon\.dns' -and $dnsRecs[3] -match 'stale domain controllers' -and $dnsRecs[4] -match 'single point of failure' -and @($dnsRecs | Where-Object { $_ -notmatch 'changes nothing' }).Count -eq 0) 'C13 advice: each graded family gets its own advice whatever the Item and Detail say (declared population: five families)'
+Assert-Equal '' (Get-AdfaRecommendation -Section 'DNS Record Export' -Item 'Record export: total' -Detail $dnsHostile) 'C13 advice: the record export rows get no advice'
+# C13 independent review: the fixes, as pure logic.
+Assert-Equal 'Error,Error,Error,NotFound,NotFound' ((@('The network path was not found.', 'The specified domain either does not exist or could not be contacted.', 'x', 'Failed to get dc9 record. WIN32 9714', 'DNS record does not exist.') | ForEach-Object { $code = ''; if ($_ -eq 'x') { $code = 'NotFound' }; Get-AdfaDnsReadErrorClass -Message $_ -ErrorCode $code -Config $dnsCfg }) -join ',') 'C13 review: only Win32 9701/9714 is no such record; a transport failure, a domain failure and a bare CIM NotFound are failed reads (declared population: five messages)'
+Assert-Equal 'north,,' ((@((Get-AdfaDnsDelegationPoint -Relative '_ldap._tcp.dc._msdcs.north' -Delegations @('north')), (Get-AdfaDnsDelegationPoint -Relative 'dc1' -Delegations @('north')), (Get-AdfaDnsDelegationPoint -Relative 'dc1.xnorth' -Delegations @('north')))) -join ',') 'C13 review: a name below a delegation is found on a label boundary only (declared population: three names)'
+$dnsNoDc = Get-AdfaStaleDnsRecordVerdict -Candidates @([pscustomobject]@{ Name = '_ldap._tcp.dc._msdcs.contoso.com'; Type = 'SRV'; Target = 'dc1.contoso.com'; Server = 'dc1.contoso.com' }) -KnownDcHosts @() -Config $dnsCfg
+Assert-True ($dnsNoDc.Status -eq 'Not Assessed' -and @($dnsNoDc.Stale).Count -eq 0) 'C13 review: with no DC known, no SRV target is listed as stale'
+$dnsA2 = @(
+    [string](Get-AdfaDcARecordVerdict -ConfiguredIPv4 @('192.0.2.11') -Answers @([pscustomobject]@{ Server = 'dc1.contoso.com'; State = 'Present'; Addresses = @() }) -Config $dnsCfg).Status
+    [string](Get-AdfaDcARecordVerdict -ConfiguredIPv4 @('192.0.2.11') -Answers @([pscustomobject]@{ Server = 'dc1.contoso.com'; State = 'AbsentOne'; Addresses = @() }) -Config $dnsCfg).Status
+)
+Assert-Equal 'Not Assessed,Warning' ($dnsA2 -join ',') 'C13 review: an A record with no readable address is Not Assessed, one absent on one instrument is OneInstrumentStatus, never Pass (declared population: two cases)'
+$dnsScav2 = @(
+    [string](Get-AdfaDnsScavengingVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Aging $false), (& $dnsObs 'dc2.contoso.com' -Read $false)) -Config $dnsCfg).Status
+    [string](Get-AdfaDnsScavengingVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Scav $false)) -Config $dnsCfg -HostSetComplete $false).Status
+)
+Assert-Equal 'Warning,Not Assessed' ($dnsScav2 -join ',') 'C13 review: measured aging off stands with a server unread; no scavenging server on an incomplete hosting set is Not Assessed (declared population: two cases)'
+$dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Dyn 'NonsecureAndSecure')) -Config (Merge-AdfaDnsConfig -BaseConfig $dnsCfg -Override @{ NonsecureStatus = 'Warning' } -OverrideSource 'C:\cfg\dns.json')
+Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
