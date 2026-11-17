@@ -7321,7 +7321,11 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # of non-secret attributes (fSMORoleOwner, msDS-Behavior-Version, uPNSuffixes,
         # msDS-AllowedDNSSuffixes): five in Get-AdfaTopologyInventory, one in Get-AdfaTrustInventory, one in
         # Get-AdfaIdentityInventoryDepth and four in Get-AdfaGpoDirectoryInventory.
-        $script:C4PropertiesArgumentCount = 38
+        # 37 since v1.33.0: PORT-PLAN C4b removed the five "-Properties *" (Get-ADUser and Get-ADComputer of
+        # the Identity export, Get-ADTrust of the trust health rows, Get-ADReplicationSiteLink and
+        # Get-ADReplicationConnection) and added four declared lists: one in Get-AdfaTrustHealth, two in
+        # Get-AdfaTopologyObjectRaw and one call of the C15 seam in Get-AdfaIdentityExportRaw.
+        $script:C4PropertiesArgumentCount = 37
         # 7 since v1.22.0: PORT-PLAN C5 added $computerArgs.Properties = @('userCertificate') in
         # Get-AdfaDcCertificateDirectoryRaw.
         # 12 since v1.23.0: PORT-PLAN C6 added five splatted property lists, two in Get-AdfaRidManagerRaw and
@@ -7559,9 +7563,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
     }
 
@@ -7704,44 +7708,19 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         }
     }
 
-    Context 'The Identity export no longer writes a LAPS password to the CSV (mitigation; the full fix is PORT-PLAN C4b)' {
+    # Rewritten in v1.33.0 (PORT-PLAN C4b). Until then this context tested the C4 mitigation: the export
+    # asked for every attribute and left the seven names out of what it returned. The export now asks
+    # for a declared list, so the context asserts that the list sent holds none of the seven and no
+    # wildcard, and that nothing the directory hands back beyond the list reaches the CSV.
+    Context 'The Identity export asks for a declared list, never a LAPS password (C4b replaced the C4 mitigation)' {
         BeforeEach {
-            # Get-ADComputer -Filter * -Properties * as a privileged account sees it: every
-            # attribute, the secret ones included. The values are fixed strings, not passwords.
-            function Get-ADComputer {
-                param($Filter, [string[]]$Properties, [string]$Server, [pscredential]$Credential)
-                $ws = [pscustomobject]@{ Name = 'WS1'; DNSHostName = 'ws1.contoso.com'; OperatingSystem = 'Windows 11 Enterprise'; PasswordLastSet = $script:C4Now; pwdLastSet = 1 }
-                $ws | Add-Member -NotePropertyName 'msLAPS-PasswordExpirationTime' -NotePropertyValue 134000000000000000
-                $ws | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue 'STUB-CLEAR-TEXT-JSON'
-                $ws | Add-Member -NotePropertyName 'msLAPS-EncryptedPassword' -NotePropertyValue 'STUB-BLOB'
-                $ws | Add-Member -NotePropertyName 'msLAPS-EncryptedPasswordHistory' -NotePropertyValue @('STUB-BLOB-1', 'STUB-BLOB-2')
-                $ws | Add-Member -NotePropertyName 'msLAPS-CurrentPasswordVersion' -NotePropertyValue 'STUB-GUID'
-                $ws | Add-Member -NotePropertyName 'ms-Mcs-AdmPwd' -NotePropertyValue 'STUB-LEGACY-CLEAR-TEXT'
-                $ws | Add-Member -NotePropertyName 'ms-Mcs-AdmPwdExpirationTime' -NotePropertyValue 134000000000000001
-                $dc = [pscustomobject]@{ Name = 'DC1'; DNSHostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Standard' }
-                $dc | Add-Member -NotePropertyName 'msLAPS-EncryptedDSRMPassword' -NotePropertyValue 'STUB-DSRM-BLOB'
-                $dc | Add-Member -NotePropertyName 'msLAPS-EncryptedDSRMPasswordHistory' -NotePropertyValue @('STUB-DSRM-1')
-                @($ws, $dc)
-            }
-        }
-        It 'leaves each of the seven secret attributes out of the export, and keeps everything else' {
-            $rows = @(Get-AdfaComputerInventory -DomainName 'contoso.com')
-            # Declared population: the two computers the stub returns.
-            $rows.Count | Should -Be 2
-            $columns = @($rows[0].PSObject.Properties | ForEach-Object { $_.Name })
-            foreach ($name in $script:C4Secret) { $columns | Should -Not -Contain $name -Because "$name must not be exported" }
-            # Nothing of what the secret attributes held is anywhere in the rows.
-            (($rows | ConvertTo-Csv -NoTypeInformation) -join "`n") | Should -Not -Match 'STUB-'
-            # The two expiry attributes are not secret and stay, and so do the ordinary
-            # password-related attributes of a computer account.
-            foreach ($kept in @($script:C4Win, $script:C4Legacy, 'PasswordLastSet', 'pwdLastSet', 'Name', 'OperatingSystem')) { $columns | Should -Contain $kept }
-            [string]$rows[0].($script:C4Win) | Should -Be '134000000000000000'
-        }
-        It 'leaves a secret attribute out whatever case the answer spells its name in' {
-            function Get-ADComputer {
-                param($Filter, [string[]]$Properties, [string]$Server, [pscredential]$Credential)
-                $ws = [pscustomobject]@{ Name = 'WS2'; OperatingSystem = 'Windows 11 Enterprise' }
-                # Declared population: each of the seven names, in upper or lower case.
+            $script:C4ExportSent = @()
+            # What a privileged account could be handed if it asked for everything: the secret ones
+            # included, in odd case. The values are fixed strings, not passwords.
+            function Get-ADObject {
+                param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ResultSetSize, $Credential, $ErrorAction)
+                $script:C4ExportSent += (@($Properties) -join ',')
+                $ws = [pscustomobject]@{ DistinguishedName = 'CN=WS1,CN=Computers,DC=contoso,DC=com'; Name = 'WS1'; dNSHostName = 'ws1.contoso.com'; operatingSystem = 'Windows 11 Enterprise'; pwdLastSet = 1; userAccountControl = 4096 }
                 foreach ($name in $script:C4Secret) {
                     $odd = $name.ToUpperInvariant()
                     if ($name -match 'Encrypted') { $odd = $name.ToLowerInvariant() }
@@ -7749,25 +7728,34 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
                 }
                 $ws
             }
-            $rows = @(Get-AdfaComputerInventory -DomainName 'contoso.com')
-            $rows.Count | Should -Be 1
-            $columns = @($rows[0].PSObject.Properties | ForEach-Object { $_.Name })
-            @($columns | Where-Object { $script:C4Secret -contains $_ }).Count | Should -Be 0
-            (($rows | ConvertTo-Csv -NoTypeInformation) -join "`n") | Should -Not -Match 'STUB-ODD-CASE-'
-            # Non-vacuity: the stub did carry them, and the ordinary columns came through.
-            @(Get-AdfaComputerInventory -DomainName 'contoso.com' -NeverExport @())[0].PSObject.Properties.Name | Should -Contain 'MS-MCS-ADMPWD'
-            $columns | Should -Contain 'OperatingSystem'
         }
-        It 'takes the list of what is never exported from the Laps config table' {
-            $fn = @(Get-C4Function -Name 'Get-AdfaComputerInventory')
-            $fn.Count | Should -Be 1
-            $p = @($fn[0].Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'NeverExport' })
-            $p.Count | Should -Be 1
-            $p[0].DefaultValue.Extent.Text | Should -Be "@(`$script:Config.Laps['NeverRead'])"
-            # Non-vacuity: with nothing excluded the secret columns do come through, so the
-            # exclusion above is what removed them.
-            $all = @(Get-AdfaComputerInventory -DomainName 'contoso.com' -NeverExport @())
-            @($all[0].PSObject.Properties | ForEach-Object { $_.Name }) | Should -Contain 'ms-Mcs-AdmPwd'
+        It 'sends a computer list that holds none of the seven secret names and no wildcard' {
+            $raw = Get-AdfaIdentityExportRaw -DomainName 'contoso.com' -Kind Computer
+            $raw.Ok | Should -BeTrue
+            # Declared population: one read.
+            $script:C4ExportSent.Count | Should -Be 1
+            $sent = @($script:C4ExportSent[0] -split ',')
+            foreach ($name in $script:C4Secret) { $sent | Should -Not -Contain $name -Because "$name must never be requested" }
+            $script:C4ExportSent[0] | Should -Not -Match '\*'
+            $sent | Should -Contain 'operatingSystem'
+            $sent | Should -Contain 'pwdLastSet'
+        }
+        It 'writes none of the seven, whatever case the answer spells them in, and keeps the declared columns' {
+            $x = ConvertTo-AdfaIdentityExport -Kind Computer -Raw (Get-AdfaIdentityExportRaw -DomainName 'contoso.com' -Kind Computer) -Columns @($script:Config.DirectoryRead['ComputerExportProperties'])
+            @($x.Rows).Count | Should -Be 1
+            $columns = @($x.Rows[0].PSObject.Properties | ForEach-Object { $_.Name })
+            @($columns | Where-Object { $script:C4Secret -contains $_ }).Count | Should -Be 0
+            ((@($x.Rows) | ConvertTo-Csv -NoTypeInformation) -join "`n") | Should -Not -Match 'STUB-ODD-CASE-'
+            foreach ($kept in @('operatingSystem', 'pwdLastSet', 'dNSHostName', 'Enabled', 'ListComplete')) { $columns | Should -Contain $kept }
+            [string]$x.Rows[0].operatingSystem | Should -Be 'Windows 11 Enterprise'
+        }
+        It 'refuses, and sends nothing, if the computer list ever named one of the seven' {
+            foreach ($name in $script:C4Secret) {
+                $bad = @{} + $script:Config.DirectoryRead
+                $bad['ComputerExportProperties'] = @('name', $name)
+                (Get-AdfaIdentityExportRaw -DomainName 'contoso.com' -Kind Computer -Config $bad).Refused | Should -BeTrue -Because $name
+            }
+            $script:C4ExportSent.Count | Should -Be 0
         }
     }
 
@@ -9231,9 +9219,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
     }
 
@@ -10221,9 +10209,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
     }
 
@@ -11160,9 +11148,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
     }
 
@@ -12151,9 +12139,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
     }
 
@@ -13391,9 +13379,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
     }
 
@@ -14609,9 +14597,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
     }
 
@@ -16475,9 +16463,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17146,9 +17134,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.32.0 (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17299,9 +17287,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.32.0 in the script and the manifest (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries version 1.33.0 in the script and the manifest (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
     }
 
@@ -18629,9 +18617,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.32.0 in the script and the manifest (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries version 1.33.0 in the script and the manifest (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
     }
 
@@ -19764,9 +19752,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.32.0 in the script and the manifest (bumped by PORT-PLAN C15)' {
-            [string]$script:Config.Version | Should -Be '1.32.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.32.0'
+        It 'carries version 1.33.0 in the script and the manifest (bumped by PORT-PLAN C4b)' {
+            [string]$script:Config.Version | Should -Be '1.33.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
         }
     }
 
@@ -19775,7 +19763,8 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory'
             [string]$script:ConfigOverrideSections['Inventory']['Merge'] | Should -Be 'Merge-AdfaSpecConfig'
             [string]$script:ConfigOverrideSections['Inventory']['Section'] | Should -Be 'Identity'
-            (@($script:ConfigOverrideSections['Inventory']['AlsoUsedBy']) -join ',') | Should -Be 'Forest,Trusts,Gpo,DsEvents,TimeHierarchy'
+            # Topology since v1.33.0 (PORT-PLAN C4b): MaxObjects also caps the site link and connection reads.
+            (@($script:ConfigOverrideSections['Inventory']['AlsoUsedBy']) -join ',') | Should -Be 'Forest,Trusts,Gpo,DsEvents,TimeHierarchy,Topology'
         }
         It 'merges a valid override and cites the file only for what it supplied' {
             $m = Merge-AdfaSpecConfig -BaseConfig $script:C15Cfg -Override ([pscustomobject]@{ MaxObjects = 5000; EventGroupCap = 10 }) -OverrideSource 'C:\Scripts\inv.json'
@@ -20899,6 +20888,831 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             foreach ($p in @('Topology Inventory', 'Trust Inventory', 'Object Counts', 'Group Inventory', 'Stale disabled', 'GPO Directory Inventory', 'Event Inventory', 'Time Configuration')) { $sec | Should -Match $p -Because $p }
             $readme = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md') -Raw)
             foreach ($p in @('Topology Inventory', 'Trust Inventory', 'Object Counts', 'Group Inventory', 'Stale disabled', 'GPO Directory Inventory', 'Event Inventory', 'Time Configuration')) { $readme | Should -Match $p -Because $p }
+        }
+    }
+}
+
+Describe 'Declared property lists: no read of every attribute, no secret attribute in any list (C4b)' {
+    # PORT-PLAN C4b: the five "-Properties *" reads (the AllUsers_/AllComputers_ export, the trust health
+    # rows, the site links, the connection objects) replaced by the declared lists of the DirectoryRead
+    # table. No new -Sections value: the reads stay in Identity, Trusts and Topology. Every name below is
+    # fictional (contoso) and held in a variable.
+    BeforeAll {
+        $script:C4bDom1 = 'contoso.com'
+        $script:C4bDom2 = 'north.contoso.com'
+        $script:C4bCfg = $script:Config.DirectoryRead
+        $script:C4bInv = $script:Config.Inventory
+        # Declared population, held in the TEST so that a name taken out of the script's table is caught:
+        # the seven LAPS names (Laps.NeverRead) and the seventeen others (DirectoryRead.SecretNames).
+        $script:C4bLapsSecret = @('msLAPS-Password', 'msLAPS-EncryptedPassword', 'msLAPS-EncryptedPasswordHistory', 'msLAPS-EncryptedDSRMPassword',
+            'msLAPS-EncryptedDSRMPasswordHistory', 'msLAPS-CurrentPasswordVersion', 'ms-Mcs-AdmPwd')
+        $script:C4bOtherSecret = @('unicodePwd', 'dBCSPwd', 'ntPwdHistory', 'lmPwdHistory', 'supplementalCredentials', 'msDS-ManagedPassword',
+            'msTPM-OwnerInformation', 'msFVE-RecoveryPassword', 'msFVE-KeyPackage', 'trustAuthIncoming', 'trustAuthOutgoing',
+            'initialAuthIncoming', 'initialAuthOutgoing', 'currentValue', 'priorValue', 'userPassword', 'unixUserPassword')
+        $script:C4bSecret = @($script:C4bLapsSecret + $script:C4bOtherSecret)
+        # Declared population: the -Properties arguments of the script after C4b (38 before it; five
+        # "-Properties *" removed, three explicit lists added - Get-AdfaTrustHealth and the two cmdlet
+        # calls of Get-AdfaTopologyObjectRaw - and one call of the C15 seam in Get-AdfaIdentityExportRaw).
+        $script:C4bArgumentCount = 37
+        $script:C4bAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C4bMain = @($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
+        function Get-C4bFunction { param([string]$Name) @($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
+        function Get-C4bCall { param($Ast, [string]$Name) @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq $Name }.GetNewClosure(), $true)) }
+        function Get-C4bBranch { param([string]$Condition)
+            @($script:C4bMain[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq $Condition }.GetNewClosure(), $true)) }
+        function Get-C4bParameter { param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        # A parameter name PowerShell binds to -Properties: the full name, its documented alias Property
+        # (Learn get-adreplicationconnection, -Properties "Aliases: Property", read 2026-11-17; the
+        # other cmdlets' pages were not read for it, so it is assumed of every one), and any abbreviation of either down to two letters (-Pr, -Prop, -Propert).
+        # Exactly the name 'Properties' is what the C4 count pins; every other spelling is an alias.
+        function Test-C4bPropertyParameterName { param([string]$Name)
+            if ($Name.Length -lt 2) { return $false }
+            return ('Properties'.StartsWith($Name, [System.StringComparison]::OrdinalIgnoreCase) -or 'Property'.StartsWith($Name, [System.StringComparison]::OrdinalIgnoreCase))
+        }
+        function Get-C4bPropertyArgument { param($Call)
+            $found = @()
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and (Test-C4bPropertyParameterName -Name $e.ParameterName)) {
+                    if ($null -ne $e.Argument) { $found += $e.Argument }
+                    elseif (($i + 1) -lt $elements.Count) { $found += $elements[$i + 1] }
+                }
+            }
+            # Unrolled on purpose: the caller wraps the result in @().
+            return $found
+        }
+        # The guard of C4b over a parsed script. It reads, ANYWHERE: every argument of -Properties, of
+        # its alias -Property, or of an abbreviation of either (also -Name:<x>), on any command; every
+        # assignment to a .Properties / .Property or ['Properties'] / ['Property'] key; and every
+        # hashtable key named Property, Properties or ending in Properties (a splat, or a config table's
+        # list). It fails on a '*' in any of them, and on a whole name of the declared secret set. What
+        # it cannot see: a list assembled at run time from pieces - the seams refuse those
+        # (Get-AdfaRefusedPropertyName).
+        function Get-C4bPropertyHit { param($Ast, [string[]]$Secret)
+            $rx = '(?i)(?<![A-Za-z0-9-])(' + ((@($Secret) | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')(?![A-Za-z0-9-])'
+            $texts = @()
+            foreach ($c in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+                foreach ($a in @(Get-C4bPropertyArgument -Call $c)) {
+                    $texts += [pscustomobject]@{ Where = 'argument'; Line = $a.Extent.StartLineNumber; Text = $a.Extent.Text }
+                }
+            }
+            foreach ($s in @($Ast.FindAll({ param($n)
+                            $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and (
+                                ($n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Left.Member.Extent.Text -match '(?i)^[''"]?Propert(y|ies)[''"]?$') -or
+                                ($n.Left -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Left.Index.Extent.Text -match '(?i)^[''"]Propert(y|ies)[''"]$')) }, $true))) {
+                $texts += [pscustomobject]@{ Where = 'assignment'; Line = $s.Extent.StartLineNumber; Text = $s.Right.Extent.Text }
+            }
+            foreach ($h in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true))) {
+                foreach ($pair in @($h.KeyValuePairs)) {
+                    $key = ([string]$pair.Item1.Extent.Text).Trim('''', '"')
+                    if ($key -match '(?i)^\w*Properties$' -or (Test-C4bPropertyParameterName -Name $key)) { $texts += [pscustomobject]@{ Where = 'key'; Line = $pair.Item1.Extent.StartLineNumber; Text = $pair.Item2.Extent.Text } }
+                }
+            }
+            $hits = @()
+            foreach ($t in $texts) {
+                if ($t.Text -match '\*') { $hits += ("every property ({0}, line {1}): {2}" -f $t.Where, $t.Line, $t.Text) }
+                if (@($Secret).Count -gt 0 -and $t.Text -match $rx) { $hits += ("secret attribute ({0}, line {1}): {2}" -f $t.Where, $t.Line, $t.Text) }
+            }
+            return , @($hits)
+        }
+        function New-C4bRaw { param($Records = @(), [bool]$Ok = $true, [string]$ErrorText = '', [string]$ErrorType = '', [bool]$Capped = $false, [bool]$Refused = $false)
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = $ErrorType; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Capped; Filter = '(x)'; Identity = ''; Refused = $Refused } }
+        # One record in the shape the C15 seam hands on: DistinguishedName and Name first, then the listed
+        # LDAP names; a multi-valued attribute as an array; a value the directory did not return absent.
+        function New-C4bRecord { param([string]$Name, $Uac = 512, [string[]]$Spn = @(), [switch]$NoUac)
+            $r = [ordered]@{ DistinguishedName = ("CN={0},CN=Users,DC=contoso,DC=com" -f $Name); Name = $Name; sAMAccountName = $Name
+                objectSid = 'S-1-5-21-1004336348-1177238915-682003330-1105'; whenCreated = [datetime]'2026-01-02T03:04:05' }
+            if (-not $NoUac) { $r['userAccountControl'] = $Uac }
+            if (@($Spn).Count -gt 0) { $r['servicePrincipalName'] = @($Spn) }
+            [pscustomobject]$r }
+        function Get-C4bSummaryRow { param($Rows, [string]$Object) @($Rows | Where-Object { $_.Object -eq $Object }) }
+    }
+
+    Context 'Config table (Learn, read 2026-11-17)' {
+        It 'declares the DirectoryRead table with its read date, its sources and the cap it borrows, labelled a tool default' {
+            $script:C4bCfg | Should -Not -BeNullOrEmpty
+            $script:C4bCfg['ReadDate'] | Should -Be '2026-11-17'
+            [string]$script:C4bCfg['SourceUrl'] | Should -Match 'learn\.microsoft\.com/powershell/module/activedirectory/get-aduser'
+            [string]$script:C4bCfg['SourceUrl'] | Should -Match 'confidential-attributes-unexpected-behavior-using-windows-server-2025-dc'
+            [string]$script:C4bCfg['ThresholdSource'] | Should -Match 'Inventory\.MaxObjects, a tool default, not a Microsoft value'
+        }
+        It 'pins each declared list and each export filter exactly' {
+            (@($script:C4bCfg['UserExportProperties']) -join ',') | Should -Be 'sAMAccountName,userPrincipalName,name,displayName,givenName,sn,mail,description,distinguishedName,objectGUID,objectSid,userAccountControl,primaryGroupID,adminCount,servicePrincipalName,msDS-SupportedEncryptionTypes,pwdLastSet,accountExpires,lastLogonTimestamp,whenCreated,whenChanged'
+            (@($script:C4bCfg['ComputerExportProperties']) -join ',') | Should -Be 'sAMAccountName,name,dNSHostName,operatingSystem,operatingSystemVersion,operatingSystemServicePack,description,distinguishedName,objectGUID,objectSid,userAccountControl,primaryGroupID,servicePrincipalName,msDS-SupportedEncryptionTypes,pwdLastSet,lastLogonTimestamp,whenCreated,whenChanged'
+            (@($script:C4bCfg['TrustHealthProperties']) -join ',') | Should -Be 'Name,Source,Target,Direction,TrustType,IntraForest,ForestTransitive,SelectiveAuthentication,SIDFilteringQuarantined,SIDFilteringForestAware,TGTDelegation,UsesRC4Encryption,Created,Modified'
+            (@($script:C4bCfg['SiteLinkProperties']) -join ',') | Should -Be 'Name,Cost,ReplicationFrequencyInMinutes,InterSiteTransportProtocol,SitesIncluded'
+            (@($script:C4bCfg['ConnectionProperties']) -join ',') | Should -Be 'name,distinguishedName,fromServer,enabledConnection,options'
+            $script:C4bCfg['UserExportFilter'] | Should -Be '(&(objectCategory=person)(objectClass=user))'
+            # objectClass=computer keeps the managed service accounts in the export, as Get-ADComputer -Filter * did.
+            $script:C4bCfg['ComputerExportFilter'] | Should -Be '(objectClass=computer)'
+        }
+        It 'holds every secret name of the declared set, and the guard composes it with the seven LAPS names' {
+            # Declared population: the seventeen non-LAPS names, each in the table.
+            foreach ($n in $script:C4bOtherSecret) { @($script:C4bCfg['SecretNames']) | Should -Contain $n -Because $n }
+            @($script:C4bCfg['SecretNames']).Count | Should -Be $script:C4bOtherSecret.Count
+            # The LAPS names are kept in the Laps table only, not repeated here.
+            foreach ($n in $script:C4bLapsSecret) { @($script:C4bCfg['SecretNames']) | Should -Not -Contain $n -Because $n }
+            $all = @(Get-AdfaSecretAttributeName)
+            # Declared population: 7 + 17 = 24 names, each once.
+            $all.Count | Should -Be $script:C4bSecret.Count
+            foreach ($n in $script:C4bSecret) { $all | Should -Contain $n -Because $n }
+        }
+        It 'has no wildcard and no secret name in any list of any config table whose key ends in Properties' {
+            $lists = New-Object System.Collections.ArrayList
+            $walk = {
+                param($Table, [string]$Path)
+                foreach ($k in @($Table.Keys)) {
+                    $v = $Table[$k]
+                    if ($v -is [System.Collections.IDictionary]) { & $walk $v ("{0}.{1}" -f $Path, $k); continue }
+                    if ([string]$k -match '(?i)Properties$') { [void]$lists.Add([pscustomobject]@{ Path = ("{0}.{1}" -f $Path, $k); Values = @($v) }) }
+                }
+            }
+            & $walk $script:Config 'Config'
+            # Non-vacuity: the declared population includes the five lists of this row.
+            foreach ($p in @('UserExportProperties', 'ComputerExportProperties', 'TrustHealthProperties', 'SiteLinkProperties', 'ConnectionProperties')) {
+                @($lists | Where-Object { $_.Path -eq ("Config.DirectoryRead.{0}" -f $p) }).Count | Should -Be 1 -Because $p
+            }
+            foreach ($l in $lists) {
+                foreach ($v in @($l.Values)) {
+                    [string]$v | Should -Not -Match '[*?]' -Because $l.Path
+                    @($script:C4bSecret | Where-Object { [string]::Equals($_, [string]$v, [System.StringComparison]::OrdinalIgnoreCase) }).Count | Should -Be 0 -Because ("{0} names {1}" -f $l.Path, $v)
+                }
+            }
+        }
+    }
+
+    Context 'The guard (pure)' {
+        It 'refuses a wildcard, a partial wildcard, a blank, an empty list, and every secret name whatever its case' {
+            $secret = @(Get-AdfaSecretAttributeName)
+            foreach ($bad in @('*', 'msLAPS-*', 'name?', ' ')) {
+                @(Get-AdfaRefusedPropertyName -PropertyNames @('name', $bad) -SecretNames $secret).Count | Should -Be 1 -Because "'$bad'"
+            }
+            @(Get-AdfaRefusedPropertyName -PropertyNames @() -SecretNames $secret).Count | Should -Be 1
+            foreach ($n in $script:C4bSecret) {
+                (@(Get-AdfaRefusedPropertyName -PropertyNames @('name', $n) -SecretNames $secret) -join ',') | Should -Be $n -Because $n
+                @(Get-AdfaRefusedPropertyName -PropertyNames @($n.ToUpperInvariant()) -SecretNames $secret).Count | Should -Be 1 -Because "$n in upper case"
+                @(Get-AdfaRefusedPropertyName -PropertyNames @($n.ToLowerInvariant()) -SecretNames $secret).Count | Should -Be 1 -Because "$n in lower case"
+            }
+        }
+        It 'lets the ordinary password-related and LAPS expiry names through - it has no rule on the beginning of a name' {
+            $secret = @(Get-AdfaSecretAttributeName)
+            @(Get-AdfaRefusedPropertyName -PropertyNames @('pwdLastSet', 'PasswordLastSet', 'lastLogonTimestamp', 'msLAPS-PasswordExpirationTime', 'ms-Mcs-AdmPwdExpirationTime', 'badPwdCount') -SecretNames $secret).Count | Should -Be 0
+            foreach ($list in @('UserExportProperties', 'ComputerExportProperties', 'TrustHealthProperties', 'SiteLinkProperties', 'ConnectionProperties')) {
+                @(Get-AdfaRefusedPropertyName -PropertyNames @($script:C4bCfg[$list]) -SecretNames $secret).Count | Should -Be 0 -Because $list
+            }
+        }
+        It 'refuses everything when it has no secret list to check against' {
+            @(Get-AdfaRefusedPropertyName -PropertyNames @('name', 'cn') -SecretNames @()).Count | Should -Be 2
+        }
+        It 'refuses a secret name carrying an attribute option, and any name that is not a plain name (found by the independent review)' {
+            $secret = @(Get-AdfaSecretAttributeName)
+            # Declared population: the 24 secret names, each with an option.
+            foreach ($n in $script:C4bSecret) {
+                (@(Get-AdfaRefusedPropertyName -PropertyNames @('name', ("{0};binary" -f $n)) -SecretNames $secret) -join ',') | Should -Be ("{0};binary" -f $n) -Because "$n;binary"
+            }
+            # Not a plain name: a range, a dotted OID-shaped name, a space, an underscore, a leading hyphen.
+            foreach ($odd in @('member;range=0-1', '1.2.3.4', 'name ', ' name', 'display name', 'ms_Mcs_AdmPwd', '-name')) {
+                @(Get-AdfaRefusedPropertyName -PropertyNames @('name', $odd) -SecretNames $secret).Count | Should -Be 1 -Because "'$odd'"
+            }
+            # A plain name with digits and hyphens still passes.
+            @(Get-AdfaRefusedPropertyName -PropertyNames @('msDS-SupportedEncryptionTypes', 'sn', 'msDS-User-Account-Control-Computed') -SecretNames $secret).Count | Should -Be 0
+        }
+    }
+
+    Context 'No read of every attribute and no secret attribute, anywhere in the script (AST)' {
+        It 'finds no -Properties argument, Properties assignment or Properties key holding a * or a secret name' {
+            $hits = Get-C4bPropertyHit -Ast $script:C4bAst -Secret $script:C4bSecret
+            ($hits -join ' | ') | Should -Be ''
+            # Declared population: every -Properties argument of the script.
+            $propArgs = @(@($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) | ForEach-Object { Get-C4bParameter -Call $_ -Name 'Properties' } | Where-Object { $null -ne $_ })
+            $propArgs.Count | Should -Be $script:C4bArgumentCount
+        }
+        It 'the guard fails on: <Name>' -ForEach @(
+            @{ Name = 'Get-ADUser -Properties *'; Code = "function Get-X { Get-ADUser -Filter * -Properties * }" }
+            @{ Name = 'Get-ADComputer -Properties:*'; Code = "function Get-X { Get-ADComputer -Filter * -Properties:* }" }
+            @{ Name = 'a quoted *'; Code = "function Get-X { Get-ADTrust -Filter * -Properties '*' }" }
+            @{ Name = 'a * in a list'; Code = "function Get-X { Get-ADReplicationSiteLink -Filter * -Properties @('Cost', '*') }" }
+            @{ Name = 'a partial wildcard'; Code = "function Get-X { Get-ADObject -LDAPFilter '(x)' -Properties 'msLAPS-*' }" }
+            @{ Name = 'an assignment to .Properties'; Code = "function Get-X { `$q = @{}; `$q.Properties = @('*'); Get-ADObject @q }" }
+            @{ Name = 'an index assignment'; Code = "function Get-X { `$q = @{}; `$q['Properties'] = '*'; Get-ADObject @q }" }
+            @{ Name = 'a splat key'; Code = "function Get-X { `$q = @{ LDAPFilter = '(x)'; Properties = '*' }; Get-ADObject @q }" }
+            @{ Name = 'a config list with a *'; Code = "`$c = @{ DirectoryRead = @{ UserExportProperties = @('name', '*') } }" }
+            @{ Name = 'unicodePwd as an argument'; Code = "function Get-X { Get-ADUser -Filter * -Properties 'unicodePwd' }" }
+            @{ Name = 'the gMSA password in a list'; Code = "function Get-X { Get-ADObject -LDAPFilter '(x)' -Properties @('name', 'msDS-ManagedPassword') }" }
+            @{ Name = 'a trust secret in a config list'; Code = "`$c = @{ DirectoryRead = @{ TrustHealthProperties = @('Name', 'trustAuthIncoming') } }" }
+            @{ Name = 'a LAPS password in a splat'; Code = "function Get-X { `$q = @{ Properties = @('ms-Mcs-AdmPwd') }; Get-ADComputer @q }" }
+            @{ Name = 'a secret in another case'; Code = "function Get-X { Get-ADUser -Filter * -Properties 'SUPPLEMENTALCREDENTIALS' }" }
+            # Found by the independent review of C4b: the alias -Property and abbreviations passed the guard.
+            @{ Name = 'the alias -Property *'; Code = "function Get-X { Get-ADUser -Filter * -Property * }" }
+            @{ Name = 'the alias -property:*'; Code = "function Get-X { Get-ADComputer -Filter * -property:* }" }
+            @{ Name = 'an abbreviation -Prop *'; Code = "function Get-X { Get-ADTrust -Filter * -Prop * }" }
+            @{ Name = 'an abbreviation -Pr of two letters'; Code = "function Get-X { Get-ADReplicationConnection -Filter * -Pr '*' }" }
+            @{ Name = 'a LAPS password through -Property'; Code = "function Get-X { Get-ADComputer -Filter * -Property @('name', 'ms-Mcs-AdmPwd') }" }
+            @{ Name = 'a splat key Property'; Code = "function Get-X { `$q = @{ Filter = '*'; Property = '*' }; Get-ADUser @q }" }
+            @{ Name = 'an assignment to .Property'; Code = "function Get-X { `$q = @{}; `$q.Property = @('*'); Get-ADObject @q }" }
+            @{ Name = 'an index assignment Property'; Code = "function Get-X { `$q = @{}; `$q['Property'] = 'unicodePwd'; Get-ADObject @q }" }
+        ) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($Code, [ref]$null, [ref]$null)
+            # Assigned, not wrapped in @(): the helper returns its list with a leading comma, and @() of that is never empty.
+            $found = Get-C4bPropertyHit -Ast $ast -Secret $script:C4bSecret
+            $found.Count | Should -BeGreaterThan 0
+        }
+        It 'does not take a filter or an allowed list for a hit' {
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput("function Get-X { Get-ADUser -Filter * -Properties 'pwdLastSet'; Get-ADTrust -Filter * -Properties @('Name'); `$q = @{ Filter = '*'; Properties = @('msLAPS-PasswordExpirationTime') }; Get-ADComputer @q }", [ref]$null, [ref]$null)
+            $none = Get-C4bPropertyHit -Ast $ast -Secret $script:C4bSecret
+            $none.Count | Should -Be 0
+            # A -Property list that names neither a wildcard nor a secret (CIM, Select-Object) is no hit either.
+            $cim = [System.Management.Automation.Language.Parser]::ParseInput("function Get-X { Get-CimInstance -ClassName Win32_OperatingSystem -Property 'BuildNumber'; `$a | Sort-Object -Property Name }", [ref]$null, [ref]$null)
+            (Get-C4bPropertyHit -Ast $cim -Secret $script:C4bSecret).Count | Should -Be 0
+        }
+        It 'spells -Properties in full on every ActiveDirectory module command, so the count above is the whole population' {
+            # Declared population: every command of the script whose noun begins with AD (the module's
+            # cmdlets), not the script's own -Adfa functions. A -Property alias or an abbreviation on any
+            # of them would be outside the count of C4bArgumentCount; the guard reads it anyway.
+            $adCalls = @(@($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) |
+                    Where-Object { [string]$_.GetCommandName() -match '(?i)^[a-z]+-AD' -and [string]$_.GetCommandName() -notmatch '(?i)^[a-z]+-Adfa' })
+            # 87 at v1.33.0 (26 Get-ADObject, 17 Get-ADDomain, 8 Get-ADDomainController, 7 each of
+            # Get-ADComputer, Get-ADUser and Get-ADRootDSE, 4 Get-ADForest, 11 others once each).
+            $adCalls.Count | Should -Be 87
+            $short = @()
+            foreach ($c in $adCalls) {
+                foreach ($e in @($c.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] })) {
+                    if ((Test-C4bPropertyParameterName -Name $e.ParameterName) -and $e.ParameterName -cne 'Properties') { $short += ("line {0}: -{1}" -f $e.Extent.StartLineNumber, $e.ParameterName) }
+                }
+            }
+            ($short -join ' | ') | Should -Be ''
+            # Can fail: the same check over an injected alias.
+            $probe = [System.Management.Automation.Language.Parser]::ParseInput("function Get-X { Get-ADUser -Filter * -Property 'name' }", [ref]$null, [ref]$null)
+            $probeParams = @(@($probe.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] }, $true)) | Where-Object { (Test-C4bPropertyParameterName -Name $_.ParameterName) -and $_.ParameterName -cne 'Properties' })
+            $probeParams.Count | Should -Be 1
+        }
+        It 'names a non-LAPS secret attribute nowhere in the script outside the DirectoryRead table' {
+            $configAssign = @($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:Config' }, $true))
+            $configAssign.Count | Should -Be 1
+            $table = @($configAssign[0].Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $false))[0]
+            $pair = @($table.KeyValuePairs | Where-Object { $_.Item1.Extent.Text -eq 'DirectoryRead' })
+            $pair.Count | Should -Be 1
+            $from = $pair[0].Item2.Extent.StartOffset
+            $to = $pair[0].Item2.Extent.EndOffset
+            $rx = '(?i)(?<![A-Za-z0-9-])(' + (($script:C4bOtherSecret | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')(?![A-Za-z0-9-])'
+            $strings = @($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
+            $hits = @($strings | Where-Object { $_.Extent.Text -match $rx })
+            # Declared population: each of the seventeen names once, in SecretNames.
+            $hits.Count | Should -Be $script:C4bOtherSecret.Count
+            foreach ($h in $hits) { ($h.Extent.StartOffset -ge $from -and $h.Extent.EndOffset -le $to) | Should -BeTrue -Because "line $($h.Extent.StartLineNumber)" }
+        }
+        It 'keeps no function that read every attribute: Get-AdfaUserInventory and Get-AdfaComputerInventory are gone' {
+            @(Get-C4bFunction -Name 'Get-AdfaUserInventory').Count | Should -Be 0
+            @(Get-C4bFunction -Name 'Get-AdfaComputerInventory').Count | Should -Be 0
+        }
+    }
+
+    Context 'Identity export: the read' {
+        BeforeEach {
+            $script:C4bSent = @()
+            function Get-ADObject {
+                param([string]$Server, [string]$LDAPFilter, [string[]]$Properties, $ResultSetSize, [string]$SearchBase, $SearchScope, [string]$Identity, $Credential, $ErrorAction)
+                $script:C4bSent += [pscustomobject]@{ Server = $Server; Filter = $LDAPFilter; Properties = (@($Properties) -join ','); ResultSetSize = $ResultSetSize }
+                # What a privileged account could be handed: a secret attribute beside the asked ones. It
+                # must never reach a row, because a row holds the declared columns only.
+                $o = [pscustomobject]@{ DistinguishedName = ("CN=a,DC={0}" -f ($Server -replace '\.', ',DC=')); Name = 'a'; sAMAccountName = 'a'; userAccountControl = 512 }
+                $o | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue 'STUB-C4B-SECRET'
+                $o
+            }
+        }
+        It 'sends, per domain and per kind, -Server for that domain, the declared filter, exactly the declared list and the cap + 1' {
+            foreach ($d in @($script:C4bDom1, $script:C4bDom2)) {
+                foreach ($k in @('User', 'Computer')) {
+                    $raw = Get-AdfaIdentityExportRaw -DomainName $d -Kind $k -MaxObjects 50
+                    $raw.Ok | Should -BeTrue
+                    $raw.Refused | Should -BeFalse
+                }
+            }
+            # Declared population: two domains x two kinds.
+            $script:C4bSent.Count | Should -Be 4
+            $script:C4bSent[0].Server | Should -Be $script:C4bDom1
+            $script:C4bSent[2].Server | Should -Be $script:C4bDom2
+            foreach ($i in @(0, 2)) {
+                $script:C4bSent[$i].Filter | Should -Be $script:C4bCfg['UserExportFilter']
+                $script:C4bSent[$i].Properties | Should -Be (@($script:C4bCfg['UserExportProperties']) -join ',')
+            }
+            foreach ($i in @(1, 3)) {
+                $script:C4bSent[$i].Filter | Should -Be $script:C4bCfg['ComputerExportFilter']
+                $script:C4bSent[$i].Properties | Should -Be (@($script:C4bCfg['ComputerExportProperties']) -join ',')
+            }
+            foreach ($s in $script:C4bSent) { [int]$s.ResultSetSize | Should -Be 51 }
+        }
+        It 'refuses, and sends nothing, when a list names a secret attribute or a wildcard, or the filter is blank' {
+            foreach ($bad in @('unicodePwd', 'msDS-ManagedPassword', 'ms-Mcs-AdmPwd', '*')) {
+                $cfg = @{} + $script:C4bCfg
+                $cfg['ComputerExportProperties'] = @(@($script:C4bCfg['ComputerExportProperties']) + $bad)
+                $raw = Get-AdfaIdentityExportRaw -DomainName $script:C4bDom1 -Kind Computer -Config $cfg
+                $raw.Ok | Should -BeFalse -Because $bad
+                $raw.Refused | Should -BeTrue -Because $bad
+                [string]$raw.Error | Should -Match ([regex]::Escape($bad)) -Because $bad
+            }
+            $blank = @{} + $script:C4bCfg
+            $blank['UserExportFilter'] = ''
+            (Get-AdfaIdentityExportRaw -DomainName $script:C4bDom1 -Kind User -Config $blank).Refused | Should -BeTrue
+            $script:C4bSent.Count | Should -Be 0
+            # Non-vacuity: the unchanged table does reach the directory.
+            (Get-AdfaIdentityExportRaw -DomainName $script:C4bDom1 -Kind User).Refused | Should -BeFalse
+            $script:C4bSent.Count | Should -Be 1
+        }
+        It 'writes only the declared columns: a secret attribute the directory handed back reaches no row' {
+            $raw = Get-AdfaIdentityExportRaw -DomainName $script:C4bDom1 -Kind Computer
+            $x = ConvertTo-AdfaIdentityExport -Kind Computer -Raw $raw -Columns @($script:C4bCfg['ComputerExportProperties'])
+            @($x.Rows).Count | Should -Be 1
+            (@($x.Rows) | ConvertTo-Csv -NoTypeInformation) -join "`n" | Should -Not -Match 'STUB-C4B-SECRET'
+            @($x.Rows[0].PSObject.Properties.Name) | Should -Not -Contain 'msLAPS-Password'
+        }
+    }
+
+    Context 'Identity export: rows and summary (pure)' {
+        It 'normal data: one row per object, exactly the declared columns then Enabled and ListComplete, Enabled from ACCOUNTDISABLE' {
+            $props = @($script:C4bCfg['UserExportProperties'])
+            $raw = New-C4bRaw -Records @((New-C4bRecord -Name 'ann' -Uac 512 -Spn @('HTTP/a.contoso.com', 'HTTP/b.contoso.com')), (New-C4bRecord -Name 'bob' -Uac 514), (New-C4bRecord -Name 'cid' -NoUac))
+            $x = ConvertTo-AdfaIdentityExport -Kind User -Raw $raw -Columns $props
+            $x.Cause | Should -Be ''
+            # Declared population: the three records.
+            @($x.Rows).Count | Should -Be 3
+            (@($x.Rows[0].PSObject.Properties.Name) -join ',') | Should -Be ((@($props) + @('Enabled', 'ListComplete')) -join ',')
+            $x.Rows[0].Enabled | Should -BeTrue
+            $x.Rows[1].Enabled | Should -BeFalse
+            [string]$x.Rows[2].Enabled | Should -Be ''
+            $x.Rows[0].servicePrincipalName | Should -Be 'HTTP/a.contoso.com;HTTP/b.contoso.com'
+            $x.Rows[0].objectSid | Should -Be 'S-1-5-21-1004336348-1177238915-682003330-1105'
+            [string]$x.Rows[0].mail | Should -Be ''
+            @($x.Rows | Where-Object { $_.ListComplete -ne 'Yes' }).Count | Should -Be 0
+            $sum = @(Get-AdfaIdentitySummary -DomainName $script:C4bDom1 -Users $x.Rows -Computers @() -UsersError $x.Cause -ComputersError 'x')
+            $u = (Get-C4bSummaryRow $sum 'Users')[0]
+            $u.Status | Should -Be 'Info'
+            $u.Total | Should -Be 3
+            $u.Enabled | Should -Be 1
+            # The object with no userAccountControl is counted neither enabled nor disabled.
+            $u.Disabled | Should -Be 1
+            $u.Detail | Should -Match '1 object\(s\) returned no readable userAccountControl'
+            $u.Detail | Should -Match 'Declared attribute list \(DirectoryRead\.UserExportProperties\), not every attribute'
+        }
+        It 'empty data: a complete read that returned nothing is Not Assessed, never 0' {
+            $x = ConvertTo-AdfaIdentityExport -Kind Computer -Raw (New-C4bRaw -Records @()) -Columns @($script:C4bCfg['ComputerExportProperties'])
+            @($x.Rows).Count | Should -Be 0
+            $x.Cause | Should -Match 'returned no object'
+            $c = (Get-C4bSummaryRow @(Get-AdfaIdentitySummary -DomainName $script:C4bDom1 -Users @() -Computers @() -UsersError 'x' -ComputersError $x.Cause) 'Computers')[0]
+            $c.Status | Should -Be 'Not Assessed'
+            [string]$c.Total | Should -Be ''
+            $c.Status | Should -Not -Be 'Pass'
+        }
+        It 'an unreachable domain is Not Assessed with "unreachable", not access denied' {
+            $x = ConvertTo-AdfaIdentityExport -Kind User -Raw (New-C4bRaw -Ok $false -ErrorText 'Unable to contact the server.' -ErrorType 'Microsoft.ActiveDirectory.Management.ADServerDownException') -Columns @('name')
+            $x.Cause | Should -Match '\(unreachable\)'
+            $x.Cause | Should -Not -Match 'access denied'
+            @($x.Rows).Count | Should -Be 0
+            $u = (Get-C4bSummaryRow @(Get-AdfaIdentitySummary -DomainName $script:C4bDom1 -Users $x.Rows -Computers @() -UsersError $x.Cause -ComputersError 'x') 'Users')[0]
+            $u.Status | Should -Be 'Not Assessed'
+            [string]$u.Total | Should -Be ''
+        }
+        It 'access denied is Not Assessed with "access denied", not unreachable' {
+            $x = ConvertTo-AdfaIdentityExport -Kind User -Raw (New-C4bRaw -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException') -Columns @('name')
+            $x.Cause | Should -Match '\(access denied\)'
+            $x.Cause | Should -Not -Match 'unreachable'
+        }
+        It 'a capped read keeps at most MaxObjects rows, each marked ListComplete "No", and the summary is Not Assessed' {
+            $raw = New-C4bRaw -Records @((New-C4bRecord -Name 'a'), (New-C4bRecord -Name 'b'), (New-C4bRecord -Name 'c')) -Capped $true
+            $x = ConvertTo-AdfaIdentityExport -Kind User -Raw $raw -Columns @('sAMAccountName') -MaxObjects 2
+            @($x.Rows).Count | Should -Be 2
+            foreach ($r in @($x.Rows)) { $r.ListComplete | Should -BeLike 'No: the read reached its cap of 2 objects*' }
+            $x.Cause | Should -Match 'cap of 2 objects'
+            $u = (Get-C4bSummaryRow @(Get-AdfaIdentitySummary -DomainName $script:C4bDom1 -Users $x.Rows -Computers @() -UsersError $x.Cause -ComputersError 'x') 'Users')[0]
+            $u.Status | Should -Be 'Not Assessed'
+            [string]$u.Total | Should -Be ''
+            # One under the cap is complete.
+            $ok = ConvertTo-AdfaIdentityExport -Kind User -Raw (New-C4bRaw -Records @((New-C4bRecord -Name 'a'), (New-C4bRecord -Name 'b'))) -Columns @('sAMAccountName') -MaxObjects 2
+            $ok.Cause | Should -Be ''
+            @($ok.Rows).Count | Should -Be 2
+        }
+        It 'a refused read says nothing was sent' {
+            $x = ConvertTo-AdfaIdentityExport -Kind Computer -Raw (New-C4bRaw -Ok $false -Refused $true -ErrorText "the property list was refused before anything was sent, because it names unicodePwd") -Columns @('name')
+            $x.Cause | Should -Match 'was refused'
+            $x.Cause | Should -Match 'before anything was sent'
+        }
+        It 'mixed result over two domains: one counted, one Not Assessed, each with its own domain' {
+            $sum = @()
+            $reads = [ordered]@{
+                $script:C4bDom1 = (New-C4bRaw -Records @((New-C4bRecord -Name 'a'), (New-C4bRecord -Name 'b' -Uac 514)))
+                $script:C4bDom2 = (New-C4bRaw -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException')
+            }
+            foreach ($d in @($reads.Keys)) {
+                $x = ConvertTo-AdfaIdentityExport -Kind User -Raw $reads[$d] -Columns @('sAMAccountName')
+                $sum += Get-AdfaIdentitySummary -DomainName $d -Users $x.Rows -Computers @() -UsersError $x.Cause -ComputersError 'not part of this test'
+            }
+            $users = @($sum | Where-Object { $_.Object -eq 'Users' })
+            # Declared population: one users row per domain.
+            $users.Count | Should -Be 2
+            $users[0].Scope | Should -Be $script:C4bDom1
+            $users[0].Status | Should -Be 'Info'
+            $users[0].Total | Should -Be 2
+            $users[0].Disabled | Should -Be 1
+            $users[1].Scope | Should -Be $script:C4bDom2
+            $users[1].Status | Should -Be 'Not Assessed'
+            $users[1].Detail | Should -Match 'access denied'
+        }
+    }
+
+    Context 'Trust health: the declared list' {
+        BeforeEach {
+            $script:C4bTrustSent = @()
+            $script:C4bTrustCount = 1
+            $script:C4bTrustThrow = $null
+            $script:C4bTrustEmitted = 0
+            function Get-ADTrust {
+                param($Filter, [string[]]$Properties, [string]$Server, $Credential, $ErrorAction)
+                $script:C4bTrustSent += [pscustomobject]@{ Server = $Server; Properties = (@($Properties) -join ','); Filter = [string]$Filter }
+                if ($null -ne $script:C4bTrustThrow) { throw $script:C4bTrustThrow }
+                foreach ($i in 1..$script:C4bTrustCount) {
+                    # Counted as each object is handed down the pipeline, so a caller that stops early is seen.
+                    $script:C4bTrustEmitted++
+                    [pscustomobject]@{ Name = ("fabrikam{0}.com" -f $i); Source = $Server; Target = ("fabrikam{0}.com" -f $i); Direction = 'Bidirectional'; TrustType = 'Forest'
+                        IntraForest = $false; ForestTransitive = $true; SelectiveAuthentication = $false; SIDFilteringForestAware = $true
+                        SIDFilteringQuarantined = $true; TGTDelegation = $false; UsesRC4Encryption = $false; Created = [datetime]'2026-01-01'; Modified = [datetime]'2026-02-01' }
+                }
+            }
+        }
+        It 'asks each domain for exactly the declared list, and carries Created and Modified' {
+            foreach ($d in @($script:C4bDom1, $script:C4bDom2)) {
+                $rows = @(Get-AdfaTrustHealth -DomainName $d -AdParams @{ Server = $d } -SkipVerification)
+                $rows.Count | Should -Be 1
+                $rows[0].Created | Should -Be ([datetime]'2026-01-01')
+                $rows[0].Modified | Should -Be ([datetime]'2026-02-01')
+            }
+            # Declared population: one read per domain.
+            $script:C4bTrustSent.Count | Should -Be 2
+            $script:C4bTrustSent[0].Server | Should -Be $script:C4bDom1
+            $script:C4bTrustSent[1].Server | Should -Be $script:C4bDom2
+            foreach ($s in $script:C4bTrustSent) {
+                $s.Properties | Should -Be (@($script:C4bCfg['TrustHealthProperties']) -join ',')
+                $s.Properties | Should -Not -Match '\*'
+            }
+        }
+        It 'refuses, and sends nothing, when the list names a trust secret or a wildcard' {
+            foreach ($bad in @('trustAuthIncoming', 'trustAuthOutgoing', '*')) {
+                $rows = @(Get-AdfaTrustHealth -DomainName $script:C4bDom1 -SkipVerification -PropertyNames @('Name', $bad))
+                $rows.Count | Should -Be 1
+                $rows[0].TrustName | Should -Be '(enumeration refused)'
+                $rows[0].Health | Should -Be 'Not Assessed'
+                $rows[0].Detail | Should -Match ([regex]::Escape($bad))
+            }
+            $script:C4bTrustSent.Count | Should -Be 0
+        }
+        It 'an access-denied read is Not Assessed with "access denied"; an unreachable one with "unreachable"' {
+            $script:C4bTrustThrow = [System.UnauthorizedAccessException]'Access is denied'
+            $denied = @(Get-AdfaTrustHealth -DomainName $script:C4bDom1 -SkipVerification -WarningAction SilentlyContinue)
+            $denied[0].TrustName | Should -Be '(enumeration failed)'
+            $denied[0].Health | Should -Be 'Not Assessed'
+            $denied[0].Detail | Should -Match '\(access denied\)'
+            $script:C4bTrustThrow = 'Unable to contact the server. This may be because this server does not exist.'
+            $down = @(Get-AdfaTrustHealth -DomainName $script:C4bDom1 -SkipVerification -WarningAction SilentlyContinue)
+            $down[0].Detail | Should -Match '\(unreachable\)'
+            $down[0].Detail | Should -Not -Match 'access denied'
+        }
+        It 'a read with more trusts than the cap is Not Assessed, and one at the cap is graded' {
+            $script:C4bTrustCount = 3
+            $capped = @(Get-AdfaTrustHealth -DomainName $script:C4bDom1 -SkipVerification -MaxObjects 2)
+            $capped.Count | Should -Be 1
+            $capped[0].TrustName | Should -Be '(enumeration capped)'
+            $capped[0].Health | Should -Be 'Not Assessed'
+            $capped[0].Detail | Should -Match 'cap of 2 objects'
+            $atCap = @(Get-AdfaTrustHealth -DomainName $script:C4bDom1 -SkipVerification -MaxObjects 3)
+            # Declared population: the three trusts the stub returns.
+            $atCap.Count | Should -Be 3
+        }
+        It 'stops the read after MaxObjects + 1 trusts: the directory is not read to the end (found by the independent review)' {
+            $script:C4bTrustCount = 50
+            $capped = @(Get-AdfaTrustHealth -DomainName $script:C4bDom1 -SkipVerification -MaxObjects 2)
+            $capped[0].TrustName | Should -Be '(enumeration capped)'
+            # Declared population: the stub can hand 50 trusts; MaxObjects 2 must take 3 and stop.
+            $script:C4bTrustEmitted | Should -Be 3
+        }
+        It 'says where the cap came from: a tool default, or the -ConfigOverridePath file (found by the independent review)' {
+            $script:C4bTrustCount = 3
+            $default = @(Get-AdfaTrustHealth -DomainName $script:C4bDom1 -SkipVerification -MaxObjects 2)
+            $default[0].Detail | Should -Match 'cap of 2 objects \(Inventory\.MaxObjects, a tool default\)'
+            $merged = Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{ MaxObjects = 2 } -OverrideSource 'C:\cfg\c4b.json'
+            $source = Get-AdfaCapSource -Config $merged -BaseConfig $script:C4bInv -Key 'MaxObjects' -Label 'Inventory'
+            $file = @(Get-AdfaTrustHealth -DomainName $script:C4bDom1 -SkipVerification -MaxObjects ([int]$merged['MaxObjects']) -CapSource $source)
+            $file[0].Detail | Should -Match 'cap of 2 objects \(Inventory\.MaxObjects, set in the -ConfigOverridePath file\)'
+            $file[0].Detail | Should -Not -Match 'a tool default'
+        }
+        It 'a timed-out read is classed from the exception type, whatever its message says (found by the independent review)' {
+            $script:C4bTrustThrow = [System.TimeoutException]'The operation took longer than allowed.'
+            $late = @(Get-AdfaTrustHealth -DomainName $script:C4bDom1 -SkipVerification -WarningAction SilentlyContinue)
+            $late[0].Detail | Should -Match '\(timed out\)'
+        }
+    }
+
+    Context 'Topology: site links and connection objects' {
+        BeforeEach {
+            $script:C4bTopoSent = @()
+            $script:C4bLinkThrow = $null
+            $script:C4bConnThrow = $null
+            $script:C4bLinkCount = 2
+            $script:C4bConnCount = 1
+            $script:C4bLinkEmitted = 0
+            $script:C4bConnEmitted = 0
+            function Get-ADReplicationSite { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ Name = 'HQ'; Description = ''; WhenCreated = [datetime]'2026-01-01'; WhenChanged = [datetime]'2026-01-01' } }
+            function Get-ADReplicationSubnet { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ Name = '192.0.2.0/24'; Site = 'CN=HQ'; Location = ''; Description = '' } }
+            function Get-ADReplicationSiteLink {
+                param($Filter, [string[]]$Properties, [string]$Server, $Credential, $ErrorAction)
+                $script:C4bTopoSent += [pscustomobject]@{ Kind = 'SiteLink'; Properties = (@($Properties) -join ',') }
+                if ($null -ne $script:C4bLinkThrow) { throw $script:C4bLinkThrow }
+                foreach ($i in 1..$script:C4bLinkCount) {
+                    # Counted as each object is handed down the pipeline, so a caller that stops early is seen.
+                    $script:C4bLinkEmitted++
+                    [pscustomobject]@{ Name = ("HQ-BRANCH{0}" -f $i); Cost = 100; ReplicationFrequencyInMinutes = 180; InterSiteTransportProtocol = 'IP'; SitesIncluded = @('CN=HQ,CN=Sites', 'CN=BRANCH,CN=Sites') }
+                }
+            }
+            function Get-ADReplicationConnection {
+                param($Filter, [string[]]$Properties, [string]$Server, $Credential, $ErrorAction)
+                $script:C4bTopoSent += [pscustomobject]@{ Kind = 'Connection'; Properties = (@($Properties) -join ',') }
+                if ($null -ne $script:C4bConnThrow) { throw $script:C4bConnThrow }
+                foreach ($i in 1..$script:C4bConnCount) {
+                    $script:C4bConnEmitted++
+                    [pscustomobject]@{ Name = ('0f1e2d3c-0000-4000-8000-{0:D12}' -f $i); DistinguishedName = ('CN=0f1e2d3c-0000-4000-8000-{0:D12},CN=NTDS Settings,CN=DC1,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com' -f $i)
+                        fromServer = 'CN=NTDS Settings,CN=DC2,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com'; enabledConnection = $true; options = 1 }
+                }
+            }
+        }
+        It 'asks each cmdlet for exactly its declared list and maps the rows' {
+            $t = Get-AdfaReplicationTopology
+            # Declared population: one site link read and one connection read.
+            $script:C4bTopoSent.Count | Should -Be 2
+            (@($script:C4bTopoSent | Where-Object { $_.Kind -eq 'SiteLink' })[0]).Properties | Should -Be (@($script:C4bCfg['SiteLinkProperties']) -join ',')
+            (@($script:C4bTopoSent | Where-Object { $_.Kind -eq 'Connection' })[0]).Properties | Should -Be (@($script:C4bCfg['ConnectionProperties']) -join ',')
+            @($t.SiteLinks).Count | Should -Be 2
+            $t.SiteLinks[0].Name | Should -Be 'HQ-BRANCH1'
+            $t.SiteLinks[0].SitesIncluded | Should -Be 'CN=HQ,CN=Sites; CN=BRANCH,CN=Sites'
+            $t.SiteLinks[0].InterSiteTransportProtocol | Should -Be 'IP'
+            @($t.Connections).Count | Should -Be 1
+            $t.Connections[0].FromServer | Should -Match '^CN=NTDS Settings,CN=DC2,'
+            $t.Connections[0].DistinguishedName | Should -Match ',CN=NTDS Settings,CN=DC1,'
+            $t.Connections[0].Enabled | Should -BeTrue
+            $t.Connections[0].Options | Should -Be 1
+            (@($t.Connections[0].PSObject.Properties.Name) -join ',') | Should -Be 'Name,FromServer,DistinguishedName,Enabled,Options'
+        }
+        It 'a site link read refused by the directory is one Not Assessed row with "access denied", and the sites, subnets and connections survive' {
+            $script:C4bLinkThrow = [System.UnauthorizedAccessException]'Access is denied'
+            $t = Get-AdfaReplicationTopology
+            @($t.SiteLinks).Count | Should -Be 1
+            $t.SiteLinks[0].Status | Should -Be 'Not Assessed'
+            $t.SiteLinks[0].Item | Should -Be 'Site links'
+            $t.SiteLinks[0].Detail | Should -Match '\(access denied\)'
+            $t.SiteLinks[0].Detail | Should -Match 'not an empty list'
+            @($t.Sites).Count | Should -Be 1
+            @($t.Subnets).Count | Should -Be 1
+            @($t.Connections).Count | Should -Be 1
+            $t.Connections[0].PSObject.Properties['Status'] | Should -BeNullOrEmpty
+        }
+        It 'an unreachable connection read is Not Assessed with "unreachable", not access denied' {
+            $script:C4bConnThrow = 'Unable to contact the server.'
+            $t = Get-AdfaReplicationTopology
+            $t.Connections[0].Status | Should -Be 'Not Assessed'
+            $t.Connections[0].Detail | Should -Match '\(unreachable\)'
+            $t.Connections[0].Detail | Should -Not -Match 'access denied'
+            @($t.SiteLinks).Count | Should -Be 2
+        }
+        It 'more site links than the cap is Not Assessed; exactly the cap is listed' {
+            $t = Get-AdfaReplicationTopology -MaxObjects 1
+            @($t.SiteLinks).Count | Should -Be 1
+            $t.SiteLinks[0].Status | Should -Be 'Not Assessed'
+            $t.SiteLinks[0].Detail | Should -Match 'cap of 1 objects'
+            $t2 = Get-AdfaReplicationTopology -MaxObjects 2
+            @($t2.SiteLinks).Count | Should -Be 2
+            $t2.SiteLinks[0].PSObject.Properties['Status'] | Should -BeNullOrEmpty
+        }
+        It 'a list naming a wildcard or a secret is refused and the cmdlet is never called' {
+            foreach ($bad in @('*', 'unicodePwd')) {
+                $script:C4bTopoSent = @()
+                $cfg = @{} + $script:C4bCfg
+                $cfg['ConnectionProperties'] = @('name', $bad)
+                $t = Get-AdfaReplicationTopology -Config $cfg
+                $t.Connections[0].Status | Should -Be 'Not Assessed' -Because $bad
+                $t.Connections[0].Detail | Should -Match 'refused' -Because $bad
+                # Worded as refused, not as a failed read (found by the independent review).
+                $t.Connections[0].Detail | Should -Match '^Reading the replication connection objects was refused: the property list was refused before anything was sent' -Because $bad
+                $t.Connections[0].Detail | Should -Not -Match 'failed \(' -Because $bad
+                @($script:C4bTopoSent | Where-Object { $_.Kind -eq 'Connection' }).Count | Should -Be 0 -Because $bad
+                @($script:C4bTopoSent | Where-Object { $_.Kind -eq 'SiteLink' }).Count | Should -Be 1 -Because $bad
+            }
+        }
+        It 'stops each read after MaxObjects + 1 objects: the directory is not read to the end (found by the independent review)' {
+            $script:C4bLinkCount = 50
+            $script:C4bConnCount = 50
+            $t = Get-AdfaReplicationTopology -MaxObjects 2
+            $t.SiteLinks[0].Status | Should -Be 'Not Assessed'
+            $t.Connections[0].Status | Should -Be 'Not Assessed'
+            # Declared population: each stub can hand 50 objects; MaxObjects 2 must take 3 of each and stop.
+            $script:C4bLinkEmitted | Should -Be 3
+            $script:C4bConnEmitted | Should -Be 3
+        }
+        It 'a timed-out read is classed from the exception type; access denied too, whatever the language of the message (found by the independent review)' {
+            $script:C4bLinkThrow = [System.TimeoutException]'The operation took longer than allowed.'
+            $script:C4bConnThrow = [System.UnauthorizedAccessException]'Zugriff verweigert'
+            $t = Get-AdfaReplicationTopology
+            $t.SiteLinks[0].Status | Should -Be 'Not Assessed'
+            $t.SiteLinks[0].Detail | Should -Match '\(timed out\)'
+            $t.Connections[0].Detail | Should -Match '\(access denied\)'
+            $raw = Get-AdfaTopologyObjectRaw -Kind SiteLink -PropertyNames @('Name') -SecretNames @(Get-AdfaSecretAttributeName)
+            $raw.ErrorType | Should -Be 'System.TimeoutException'
+        }
+        It 'says where the cap came from: a tool default, or the -ConfigOverridePath file (found by the independent review)' {
+            $default = Get-AdfaReplicationTopology -MaxObjects 1
+            $default.SiteLinks[0].Detail | Should -Match 'cap of 1 objects \(Inventory\.MaxObjects, a tool default\)'
+            $merged = Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{ MaxObjects = 1 } -OverrideSource 'C:\cfg\c4b.json'
+            $t = Get-AdfaReplicationTopology -MaxObjects ([int]$merged['MaxObjects']) -CapSource (Get-AdfaCapSource -Config $merged -BaseConfig $script:C4bInv -Key 'MaxObjects' -Label 'Inventory')
+            $t.SiteLinks[0].Detail | Should -Match 'cap of 1 objects \(Inventory\.MaxObjects, set in the -ConfigOverridePath file\)'
+            $t.SiteLinks[0].Detail | Should -Not -Match 'a tool default'
+        }
+    }
+
+    Context 'Config override' {
+        It 'a valid Inventory MaxObjects caps the export, the trust and the topology reads' {
+            $merged = Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{ MaxObjects = 2 } -OverrideSource 'C:\cfg\c4b.json'
+            [int]$merged['MaxObjects'] | Should -Be 2
+            $x = ConvertTo-AdfaIdentityExport -Kind User -Raw (New-C4bRaw -Records @((New-C4bRecord -Name 'a'), (New-C4bRecord -Name 'b'), (New-C4bRecord -Name 'c')) -Capped $true) -Columns @('name') -MaxObjects ([int]$merged['MaxObjects'])
+            @($x.Rows).Count | Should -Be 2
+        }
+        It 'names the source of the cap from the recorded provenance (found by the independent review)' {
+            Get-AdfaCapSource -Config $script:C4bInv -BaseConfig $script:C4bInv -Key 'MaxObjects' -Label 'Inventory' | Should -Be 'Inventory.MaxObjects, a tool default'
+            # Merged with no file: still the built-in table.
+            $none = Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override $null
+            Get-AdfaCapSource -Config $none -BaseConfig $script:C4bInv -Key 'MaxObjects' -Label 'Inventory' | Should -Be 'Inventory.MaxObjects, a tool default'
+            $file = Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{ MaxObjects = 50 } -OverrideSource 'C:\cfg\c4b.json'
+            Get-AdfaCapSource -Config $file -BaseConfig $script:C4bInv -Key 'MaxObjects' -Label 'Inventory' | Should -Be 'Inventory.MaxObjects, set in the -ConfigOverridePath file'
+            # The file set another key only: MaxObjects is still the built-in value.
+            $other = Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{ NameListCap = 5 } -OverrideSource 'C:\cfg\c4b.json'
+            Get-AdfaCapSource -Config $other -BaseConfig $script:C4bInv -Key 'MaxObjects' -Label 'Inventory' | Should -Be 'Inventory.MaxObjects, a tool default'
+            # Both, from a path that itself holds " for ".
+            $both = Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{ NameListCap = 5; MaxObjects = 50 } -OverrideSource 'C:\cfg for test\c4b.json'
+            Get-AdfaCapSource -Config $both -BaseConfig $script:C4bInv -Key 'MaxObjects' -Label 'Inventory' | Should -Be 'Inventory.MaxObjects, set in the -ConfigOverridePath file'
+            # A provenance it cannot read is said to be so, never called a default.
+            $odd = @{} + $script:C4bInv
+            $odd['ThresholdSource'] = 'something else'
+            Get-AdfaCapSource -Config $odd -BaseConfig $script:C4bInv -Key 'MaxObjects' -Label 'Inventory' | Should -Match 'whose source was not recorded'
+        }
+        It 'an export capped by the file says so in ListComplete and in its cause, not "a tool default" (found by the independent review)' {
+            $merged = Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{ MaxObjects = 2 } -OverrideSource 'C:\cfg\c4b.json'
+            $source = Get-AdfaCapSource -Config $merged -BaseConfig $script:C4bInv -Key 'MaxObjects' -Label 'Inventory'
+            $x = ConvertTo-AdfaIdentityExport -Kind User -Raw (New-C4bRaw -Records @((New-C4bRecord -Name 'a'), (New-C4bRecord -Name 'b'), (New-C4bRecord -Name 'c')) -Capped $true) -Columns @('name') -MaxObjects ([int]$merged['MaxObjects']) -CapSource $source
+            # Declared population: the two rows kept under the cap of 2.
+            @($x.Rows).Count | Should -Be 2
+            foreach ($r in @($x.Rows)) {
+                $r.ListComplete | Should -Match '^No: the read reached its cap of 2 objects \(Inventory\.MaxObjects, set in the -ConfigOverridePath file\)'
+                $r.ListComplete | Should -Not -Match 'a tool default'
+            }
+            $x.Cause | Should -Match 'cap of 2 objects \(Inventory\.MaxObjects, set in the -ConfigOverridePath file\)'
+            # And the built-in cap keeps its words.
+            $d = ConvertTo-AdfaIdentityExport -Kind User -Raw (New-C4bRaw -Records @((New-C4bRecord -Name 'a'), (New-C4bRecord -Name 'b'), (New-C4bRecord -Name 'c')) -Capped $true) -Columns @('name') -MaxObjects 2
+            $d.Rows[0].ListComplete | Should -Match '\(Inventory\.MaxObjects, a tool default\)'
+            $d.Cause | Should -Match '\(Inventory\.MaxObjects, a tool default\)'
+        }
+        It 'refuses each declared list and the secret list as an Inventory key: <Key>' -ForEach @(
+            @{ Key = 'UserExportProperties' }, @{ Key = 'ComputerExportProperties' }, @{ Key = 'TrustHealthProperties' }
+            @{ Key = 'SiteLinkProperties' }, @{ Key = 'ConnectionProperties' }, @{ Key = 'SecretNames' }, @{ Key = 'UserExportFilter' }
+        ) {
+            { Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{ $Key = @('name') } -OverrideSource 'C:\cfg\c4b.json' } | Should -Throw -ExpectedMessage "*unknown key '$Key'*"
+        }
+        It 'refuses a malformed MaxObjects: <Name>' -ForEach @(
+            @{ Name = 'text'; Value = '5' }, @{ Name = 'zero'; Value = 0 }, @{ Name = 'over the range'; Value = 1000001 }, @{ Name = 'a fraction'; Value = 2.5 }, @{ Name = 'a list'; Value = @(5) }
+        ) {
+            { Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{ MaxObjects = $Value } -OverrideSource 'C:\cfg\c4b.json' } | Should -Throw
+        }
+        It 'refuses a null MaxObjects, an empty object and DirectoryRead as a section of the override file' {
+            { Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{ MaxObjects = $null } -OverrideSource 'C:\cfg\c4b.json' } | Should -Throw -ExpectedMessage '*null*'
+            { Merge-AdfaSpecConfig -BaseConfig $script:C4bInv -Override @{} -OverrideSource 'C:\cfg\c4b.json' } | Should -Throw -ExpectedMessage '*empty object*'
+            @($script:ConfigOverrideSections.Keys) | Should -Not -Contain 'DirectoryRead'
+            { Resolve-AdfaConfigOverride -Override ([pscustomobject]@{ DirectoryRead = [pscustomobject]@{ UserExportProperties = @('*') } }) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } | Should -Throw -ExpectedMessage '*DirectoryRead*'
+            # The Inventory key is also used by Topology now that MaxObjects caps its two reads.
+            @($script:ConfigOverrideSections['Inventory']['AlsoUsedBy']) | Should -Contain 'Topology'
+        }
+    }
+
+    Context 'Section wiring (AST)' {
+        It 'keeps the three sections: Identity, Trusts and Topology stay values of -Sections, and no new value was added for this row' {
+            $param = @($script:C4bAst.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Sections' })
+            $values = @(@($param[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })[0].PositionalArguments | ForEach-Object { $_.Value })
+            foreach ($v in @('Identity', 'Trusts', 'Topology')) { $values | Should -Contain $v }
+            $values | Should -Not -Contain 'DirectoryRead'
+        }
+        It 'reads users and computers of every scoped domain in the Identity branch, capped by the Inventory table' {
+            $branch = @(Get-C4bBranch -Condition "Test-SectionSelected 'Identity' `$Sections")
+            $branch.Count | Should -Be 1
+            $loops = @($branch[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.ForEachStatementAst] -and $n.Condition.Extent.Text -eq '$targetDomains' }, $true))
+            $loops.Count | Should -BeGreaterThan 0
+            $calls = @(Get-C4bCall -Ast $loops[0] -Name 'Get-AdfaIdentityExportRaw')
+            # Declared population: one read per kind.
+            $calls.Count | Should -Be 2
+            (@($calls | ForEach-Object { (Get-C4bParameter -Call $_ -Name 'Kind').Extent.Text }) -join ',') | Should -Be 'User,Computer'
+            foreach ($c in $calls) {
+                (Get-C4bParameter -Call $c -Name 'DomainName').Extent.Text | Should -Be '$d'
+                (Get-C4bParameter -Call $c -Name 'MaxObjects').Extent.Text | Should -Be '$exportMax'
+            }
+            $maxAssign = @($branch[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$exportMax' }, $true))
+            $maxAssign.Count | Should -Be 1
+            $maxAssign[0].Right.Extent.Text | Should -Be "[int]`$inventoryConfig['MaxObjects']"
+            @(Get-C4bCall -Ast $loops[0] -Name 'ConvertTo-AdfaIdentityExport').Count | Should -Be 2
+        }
+        It 'converts each kind with its own declared columns, the ACCOUNTDISABLE bit of the Inventory table and the cap source (found by the independent review)' {
+            $branch = @(Get-C4bBranch -Condition "Test-SectionSelected 'Identity' `$Sections")
+            $loops = @($branch[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.ForEachStatementAst] -and $n.Condition.Extent.Text -eq '$targetDomains' }, $true))
+            $calls = @(Get-C4bCall -Ast $loops[0] -Name 'ConvertTo-AdfaIdentityExport')
+            # Declared population: one conversion per kind, User then Computer.
+            $calls.Count | Should -Be 2
+            $cfgAssign = @($branch[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$exportConfig' }, $true))
+            $cfgAssign.Count | Should -Be 1
+            $cfgAssign[0].Right.Extent.Text | Should -Be '$script:Config.DirectoryRead'
+            foreach ($c in $calls) {
+                $kind = (Get-C4bParameter -Call $c -Name 'Kind').Extent.Text
+                $kind | Should -BeIn @('User', 'Computer')
+                (Get-C4bParameter -Call $c -Name 'Columns').Extent.Text | Should -Be ("@(`$exportConfig['{0}ExportProperties'])" -f $kind) -Because $kind
+                (Get-C4bParameter -Call $c -Name 'MaxObjects').Extent.Text | Should -Be '$exportMax' -Because $kind
+                (Get-C4bParameter -Call $c -Name 'CapSource').Extent.Text | Should -Be '$inventoryCapSource' -Because $kind
+                # The bit is read from the Inventory table by a key the table holds (a misspelt key reads
+                # as $null, [int] 0, and every account would be Enabled).
+                $bit = Get-C4bParameter -Call $c -Name 'AccountDisableBit'
+                $index = @($bit.FindAll({ param($n) $n -is [System.Management.Automation.Language.IndexExpressionAst] }, $true))
+                $index.Count | Should -Be 1 -Because $kind
+                $index[0].Target.Extent.Text | Should -Be '$inventoryConfig' -Because $kind
+                $index[0].Index.Value | Should -BeExactly 'AccountDisableBit' -Because $kind
+                $script:C4bInv.ContainsKey([string]$index[0].Index.Value) | Should -BeTrue -Because $kind
+                # The read inside -Raw is of the same kind.
+                $raw = Get-C4bParameter -Call $c -Name 'Raw'
+                $inner = @(Get-C4bCall -Ast $raw -Name 'Get-AdfaIdentityExportRaw')
+                $inner.Count | Should -Be 1 -Because $kind
+                (Get-C4bParameter -Call $inner[0] -Name 'Kind').Extent.Text | Should -Be $kind
+            }
+            (@($calls | ForEach-Object { (Get-C4bParameter -Call $_ -Name 'Kind').Extent.Text }) -join ',') | Should -Be 'User,Computer'
+            # Learn useraccountcontrol-manipulate-account-properties: ACCOUNTDISABLE is 0x2.
+            [int]$script:C4bInv['AccountDisableBit'] | Should -Be 2
+        }
+        It 'computes the cap source once from the Inventory table in force and passes it to the trust, topology and export reads (found by the independent review)' {
+            $assign = @($script:C4bMain[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$inventoryCapSource' }, $true))
+            $assign.Count | Should -Be 1
+            $src = @(Get-C4bCall -Ast $assign[0] -Name 'Get-AdfaCapSource')
+            $src.Count | Should -Be 1
+            (Get-C4bParameter -Call $src[0] -Name 'Config').Extent.Text | Should -Be '$inventoryConfig'
+            (Get-C4bParameter -Call $src[0] -Name 'BaseConfig').Extent.Text | Should -Be '$script:Config.Inventory'
+            (Get-C4bParameter -Call $src[0] -Name 'Key').Extent.Text | Should -Be "'MaxObjects'"
+            # After the Inventory table in force is chosen.
+            $cfg = @($script:C4bMain[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq "`$configOverrides.ContainsKey('Inventory')" }, $true))
+            $cfg.Count | Should -Be 1
+            $assign[0].Extent.StartOffset | Should -BeGreaterThan $cfg[0].Extent.EndOffset
+            # Declared population: Get-AdfaReplicationTopology, Get-AdfaTrustHealth and the two export conversions.
+            $users = @()
+            foreach ($name in @('Get-AdfaReplicationTopology', 'Get-AdfaTrustHealth', 'ConvertTo-AdfaIdentityExport')) {
+                foreach ($c in @(Get-C4bCall -Ast $script:C4bMain[0] -Name $name)) {
+                    $users += [pscustomobject]@{ Name = $name; Source = [string](Get-C4bParameter -Call $c -Name 'CapSource').Extent.Text }
+                }
+            }
+            $users.Count | Should -Be 4
+            foreach ($u in $users) { $u.Source | Should -Be '$inventoryCapSource' -Because $u.Name }
+        }
+        It 'passes the declared trust list and the cap to every scoped domain in the Trusts branch' {
+            $branch = @(Get-C4bBranch -Condition "Test-SectionSelected 'Trusts' `$Sections")
+            $branch.Count | Should -Be 1
+            $loop = @($branch[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.ForEachStatementAst] -and $n.Condition.Extent.Text -eq '$targetDomains' }, $true))
+            $calls = @(Get-C4bCall -Ast $loop[0] -Name 'Get-AdfaTrustHealth')
+            $calls.Count | Should -Be 1
+            (Get-C4bParameter -Call $calls[0] -Name 'PropertyNames').Extent.Text | Should -Be "@(`$script:Config.DirectoryRead['TrustHealthProperties'])"
+            (Get-C4bParameter -Call $calls[0] -Name 'MaxObjects').Extent.Text | Should -Be "([int]`$inventoryConfig['MaxObjects'])"
+        }
+        It 'passes the DirectoryRead table and the cap to the topology read' {
+            $branch = @(Get-C4bBranch -Condition "Test-SectionSelected 'Topology' `$Sections")
+            $calls = @(Get-C4bCall -Ast $branch[0] -Name 'Get-AdfaReplicationTopology')
+            $calls.Count | Should -Be 1
+            (Get-C4bParameter -Call $calls[0] -Name 'Config').Extent.Text | Should -Be '$script:Config.DirectoryRead'
+            (Get-C4bParameter -Call $calls[0] -Name 'MaxObjects').Extent.Text | Should -Be "([int]`$inventoryConfig['MaxObjects'])"
+        }
+        It 'documents the declared lists in the help and the README, and no longer points at C4b as open' {
+            $help = $script:C4bAst.GetHelpContent()
+            $desc = ([string]$help.Description -replace '\s+', ' ')
+            $desc | Should -Match 'DECLARED attribute list per object kind'
+            $desc | Should -Not -Match 'PORT-PLAN C4b'
+            $desc | Should -Not -Match '\(-Properties \*\)'
+            $readme = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md') -Raw)
+            $readme | Should -Not -Match 'still asks for every attribute'
+            $readme | Should -Not -Match 'still read `Get-ADTrust -Properties \*`'
+            $readme | Should -Match 'DirectoryRead'
         }
     }
 }

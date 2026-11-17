@@ -69,10 +69,11 @@
         - Object counts per domain (users, computers, groups, contacts, OUs, gMSA, sMSA; enabled
           and disabled) and a group inventory (scope, type, empty groups, direct member counts),
           from capped reads with listed properties
-        - Full user & computer export with ALL populated attributes (CSV; HTML shows a summary),
-          except the attributes that hold a LAPS password, which are left out of the computer
-          export since v1.21.0. The export still ASKS the directory for every attribute
-          (-Properties *), those included; replacing the wildcard is PORT-PLAN C4b
+        - User & computer export (CSV; HTML shows a summary) with a DECLARED attribute list per
+          object kind (the DirectoryRead table), never every attribute: since v1.33.0 no read of
+          this script asks the directory for every attribute, and none names a password, password
+          hash, LAPS password, trust secret or other secret attribute. The CSV columns are the
+          declared list plus Enabled and ListComplete; a capped read marks every row "No"
         - AD CS / PKI: enrolment CAs and ESC1-susceptible certificate templates
         - Dangerous ACLs, per scoped domain: principals outside an allowlist, matched by SID and
           never by name, that hold a replication (DCSync) right, WriteDacl, WriteOwner, write of
@@ -638,7 +639,9 @@
         { "SysvolEngine": { "FrsStatus": "Fail" } }
 
     And Inventory, used by the inventory rows of the Identity, Forest, Trusts, Gpo, DsEvents and
-    TimeHierarchy sections, whose keys are MaxObjects (objects per directory read, 1 to 1000000),
+    TimeHierarchy sections, and since v1.33.0 as the cap of the user and computer export, the trust
+    health read and the site link and connection reads (Topology), whose keys are MaxObjects
+    (objects per directory read, 1 to 1000000),
     NameListCap (names listed per row, 0 to 1000), EventMaxEvents (events read per log and DC, 1 to
     100000) and EventGroupCap (event ID groups listed per log and DC, 1 to 1000). All are tool
     defaults, not Microsoft values. The logs, the levels, the filters, the flag tables and labels,
@@ -885,7 +888,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.32.0'
+    Version                 = '1.33.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1810,6 +1813,96 @@ $script:Config = @{
             @{ MinBuild = 19041; MaxBuild = $null }
         )
         ExcludedClasses    = @('msDS-GroupManagedServiceAccount', 'msDS-ManagedServiceAccount')
+    }
+    # --- Declared property lists: no wildcard read, no secret attribute (PORT-PLAN C4b) ---
+    # Before v1.33.0 five reads asked for every attribute ("-Properties *"): the AllUsers_ and
+    # AllComputers_ exports (Get-ADUser / Get-ADComputer), the trust health rows (Get-ADTrust), the
+    # site links (Get-ADReplicationSiteLink) and the connection objects (Get-ADReplicationConnection).
+    # Each now asks for the list below, which is exactly what its consumers read (the export CSV
+    # columns are the list itself). Nothing here can be set from a file: a list from a file could name
+    # a secret attribute. The caps are Inventory.MaxObjects (a tool default, overridable there).
+    #
+    # Every URL below was read on 2026-11-17.
+    #   "-Properties": "To display all of the attributes that are set on the object, specify *
+    #   (asterisk)"; "For properties that are not default or extended properties, you must specify the
+    #   LDAP display name of the attribute"; -ResultSetSize caps a Get-ADObject/Get-ADUser search. The
+    #   default property sets are NOT published (Learn says to run Get-Member), so every column a
+    #   consumer reads is named here, even one that is probably returned by default:
+    #     https://learn.microsoft.com/powershell/module/activedirectory/get-aduser
+    #     https://learn.microsoft.com/powershell/module/activedirectory/get-adcomputer
+    #     https://learn.microsoft.com/powershell/module/activedirectory/get-adtrust
+    #   Why: searchFlags 0x80 "Mark attribute as confidential"; "only Administrators can read
+    #   confidential attributes" (so a Domain Admin running "-Properties *" receives them); a Windows
+    #   Server 2025 DC logs Directory Service event 3079 for a search of confidential attributes over
+    #   an unencrypted LDAP session and silently omits them ("User error: None"):
+    #     https://learn.microsoft.com/windows/win32/adschema/a-searchflags
+    #     https://learn.microsoft.com/troubleshoot/windows-server/windows-security/mark-attribute-as-confidential
+    #     https://learn.microsoft.com/troubleshoot/windows-server/windows-security/confidential-attributes-unexpected-behavior-using-windows-server-2025-dc
+    #   The export populations: users by the Inventory count filter; computers by objectClass=computer,
+    #   which, as Get-ADComputer -Filter * did, includes managed service accounts - a group managed
+    #   service account is a "Subclass of Computer":
+    #     https://learn.microsoft.com/windows/win32/adschema/c-msds-groupmanagedserviceaccount
+    #   Site links: Name, Cost, ReplicationFrequencyInMinutes, SitesIncluded and
+    #   InterSiteTransportProtocol are the names the cmdlet pages use (filters, examples, parameters):
+    #     https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationsitelink
+    #     https://learn.microsoft.com/powershell/module/activedirectory/new-adreplicationsitelink
+    #   Connections: the property names the old code selected (FromServer, ToServer, Enabled,
+    #   AutoGenerated) are NOT published, so the connection is read by LDAP display names of the
+    #   NTDS-Connection class, each mandatory there: fromServer ("The distinguished name of the
+    #   replication source server"), enabledConnection and options ("A bitfield, where the meaning of
+    #   the bits varies from objectClass to objectClass" - kept raw, not decoded); its possible
+    #   superior is NTDS-DSA. Searched for and not found on Learn: the bit of options that marks a
+    #   KCC-generated connection, so AutoGenerated and ToServer are no longer columns (PORT-PLAN C4b3):
+    #     https://learn.microsoft.com/windows/win32/adschema/c-ntdsconnection
+    #     https://learn.microsoft.com/windows/win32/adschema/a-fromserver
+    #     https://learn.microsoft.com/windows/win32/adschema/a-options
+    #   Trusts: the ADTrust property names the trust health rows read (Direction, TrustType,
+    #   SIDFilteringQuarantined, ...) are NOT published on Learn (the output type is only named); they
+    #   are the names the code has read since v1.0, now asked for by name. Measured on a real DC: no
+    #   (PORT-PLAN C4b2, with C17).
+    #
+    # SecretNames: never in a property list, whatever the object kind. Composed at use with
+    # Laps.NeverRead (the seven LAPS names, kept in one place). A name list, not the searchFlags bit:
+    # the gMSA password blob and the password hashes carry searchFlags 0. Read 2026-11-17:
+    #   msDS-ManagedPassword ("returns a blob that contains the clear-text previous and current
+    #   password", Search-Flags 0): https://learn.microsoft.com/windows/win32/adschema/a-msds-managedpassword
+    #   unicodePwd, dBCSPwd, ntPwdHistory, lmPwdHistory, supplementalCredentials ("Kerberos Keys,
+    #   WDigest"): https://learn.microsoft.com/windows-server/security/kerberos/passwords-technical-overview
+    #     and https://learn.microsoft.com/windows/win32/adschema/a-dbcspwd
+    #   msTPM-OwnerInformation (Search-Flags 0x298, confidential):
+    #     https://learn.microsoft.com/windows/win32/adschema/a-mstpm-ownerinformation
+    #   msFVE-RecoveryPassword (Search-Flags 0x298; on a child object, listed for defence in depth):
+    #     https://learn.microsoft.com/windows/win32/adschema/a-msfve-recoverypassword
+    #   trustAuthIncoming, trustAuthOutgoing ("Authentication information for the ... portion of a
+    #   trust") and initialAuthOutgoing, on Trusted-Domain:
+    #     https://learn.microsoft.com/windows/win32/adschema/a-trustauthincoming
+    #     https://learn.microsoft.com/windows/win32/adschema/a-trustauthoutgoing
+    #     https://learn.microsoft.com/windows/win32/adschema/a-initialauthoutgoing
+    #   currentValue, priorValue (secret objects, Search-Flags 0): adschema, read with a-dbcspwd.
+    # ADJACENT, NOT READ THIS SESSION (listed by analogy, refusing more is harmless): initialAuthIncoming,
+    # msFVE-KeyPackage, userPassword, unixUserPassword.
+    DirectoryRead           = @{
+        SourceUrl                = 'https://learn.microsoft.com/powershell/module/activedirectory/get-aduser and https://learn.microsoft.com/powershell/module/activedirectory/get-adtrust and https://learn.microsoft.com/windows/win32/adschema/a-searchflags and https://learn.microsoft.com/troubleshoot/windows-server/windows-security/confidential-attributes-unexpected-behavior-using-windows-server-2025-dc and https://learn.microsoft.com/windows/win32/adschema/c-ntdsconnection'
+        ReadDate                 = '2026-11-17'
+        ThresholdSource          = 'the caps are Inventory.MaxObjects, a tool default, not a Microsoft value'
+        UserExportFilter         = '(&(objectCategory=person)(objectClass=user))'
+        ComputerExportFilter     = '(objectClass=computer)'
+        # The AllUsers_<domain>.csv columns, in this order, then Enabled (from ACCOUNTDISABLE) and ListComplete.
+        UserExportProperties     = @('sAMAccountName', 'userPrincipalName', 'name', 'displayName', 'givenName', 'sn', 'mail', 'description',
+            'distinguishedName', 'objectGUID', 'objectSid', 'userAccountControl', 'primaryGroupID', 'adminCount', 'servicePrincipalName',
+            'msDS-SupportedEncryptionTypes', 'pwdLastSet', 'accountExpires', 'lastLogonTimestamp', 'whenCreated', 'whenChanged')
+        # The AllComputers_<domain>.csv columns, in this order, then Enabled and ListComplete.
+        ComputerExportProperties = @('sAMAccountName', 'name', 'dNSHostName', 'operatingSystem', 'operatingSystemVersion', 'operatingSystemServicePack',
+            'description', 'distinguishedName', 'objectGUID', 'objectSid', 'userAccountControl', 'primaryGroupID', 'servicePrincipalName',
+            'msDS-SupportedEncryptionTypes', 'pwdLastSet', 'lastLogonTimestamp', 'whenCreated', 'whenChanged')
+        # What Get-AdfaTrustHealth and Get-AdfaTrustSecurityWarning read, and nothing else.
+        TrustHealthProperties    = @('Name', 'Source', 'Target', 'Direction', 'TrustType', 'IntraForest', 'ForestTransitive', 'SelectiveAuthentication',
+            'SIDFilteringQuarantined', 'SIDFilteringForestAware', 'TGTDelegation', 'UsesRC4Encryption', 'Created', 'Modified')
+        SiteLinkProperties       = @('Name', 'Cost', 'ReplicationFrequencyInMinutes', 'InterSiteTransportProtocol', 'SitesIncluded')
+        ConnectionProperties     = @('name', 'distinguishedName', 'fromServer', 'enabledConnection', 'options')
+        SecretNames              = @('unicodePwd', 'dBCSPwd', 'ntPwdHistory', 'lmPwdHistory', 'supplementalCredentials', 'msDS-ManagedPassword',
+            'msTPM-OwnerInformation', 'msFVE-RecoveryPassword', 'msFVE-KeyPackage', 'trustAuthIncoming', 'trustAuthOutgoing',
+            'initialAuthIncoming', 'initialAuthOutgoing', 'currentValue', 'priorValue', 'userPassword', 'unixUserPassword')
     }
     # --- DC certificates: the certificate each DC presents on LDAPS, and those published for it (PORT-PLAN C5) ---
     # Two instruments. The LDAPS handshake (opt-in, -IncludeLdapsHandshake) reads the certificate a
@@ -4015,18 +4108,42 @@ function Get-AdfaTrustHealth {
         [int]$TimeoutSeconds = 90,
         [int]$Retries = 2,
         [int]$RetryDelaySeconds = 2,
-        [int]$RpcPortTimeoutMs = 1200
+        [int]$RpcPortTimeoutMs = 1200,
+        # PORT-PLAN C4b: the declared list (DirectoryRead.TrustHealthProperties) instead of every
+        # attribute, refused before anything is sent if it names a secret attribute or a wildcard,
+        # and a cap. Get-ADTrust has no -ResultSetSize on Learn, so the cap stops the pipeline after
+        # MaxObjects + 1 objects; a read that reached it is Not Assessed, never a short list.
+        [AllowNull()][AllowEmptyCollection()][string[]]$PropertyNames = @($script:Config.DirectoryRead['TrustHealthProperties']),
+        [AllowNull()][AllowEmptyCollection()][string[]]$SecretNames = @(Get-AdfaSecretAttributeName),
+        [ValidateRange(1, 1000000)][int]$MaxObjects = [int]$script:Config.Inventory['MaxObjects'],
+        # Where MaxObjects came from, in the row's words (Get-AdfaCapSource): the built-in value, or
+        # the -ConfigOverridePath file's.
+        [string]$CapSource = 'Inventory.MaxObjects, a tool default'
     )
 
     $results = @()
+    $refused = @(Get-AdfaRefusedPropertyName -PropertyNames $PropertyNames -SecretNames $SecretNames)
+    if ($refused.Count -gt 0) {
+        return @([pscustomobject]@{
+                Scope = $DomainName; TrustName = '(enumeration refused)'; Health = $script:Status.NotAssessed
+                Detail = ("The trusts were not read: the property list was refused before anything was sent, because it names {0}. This is a defect in the tool's DirectoryRead table, not in the directory." -f ($refused -join ', '))
+            })
+    }
     try {
-        $trusts = Get-ADTrust -Filter * -Properties * @AdParams -ErrorAction Stop
+        $trusts = @(Get-ADTrust -Filter * -Properties @($PropertyNames) @AdParams -ErrorAction Stop | Select-Object -First ($MaxObjects + 1))
     }
     catch {
         Write-Warning ("Trust enumeration failed for {0}: {1}" -f $DomainName, $_.Exception.Message)
+        $class = Get-AdfaDirectoryReadErrorClass -Message ([string]$_.Exception.Message) -TypeName ([string]$_.Exception.GetType().FullName)
         return @([pscustomobject]@{
                 Scope = $DomainName; TrustName = '(enumeration failed)'; Health = 'Not Assessed'
-                Detail = $_.Exception.Message
+                Detail = ("Reading the trusts of this domain failed ({0}): {1}" -f (Get-AdfaReadClassPhrase -Class $class), $_.Exception.Message)
+            })
+    }
+    if ($trusts.Count -gt $MaxObjects) {
+        return @([pscustomobject]@{
+                Scope = $DomainName; TrustName = '(enumeration capped)'; Health = $script:Status.NotAssessed
+                Detail = ("Reading the trusts of this domain reached its cap of {0} objects ({1}), so the list is incomplete and no trust was graded." -f $MaxObjects, $CapSource)
             })
     }
 
@@ -4097,8 +4214,8 @@ function Get-AdfaTrustHealth {
             InboundSecureChannel  = $inbound
             Health                = $verdict.Health
             Reasons               = ($verdict.Reasons -join ' | ')
-            Created               = $t.Created
-            Modified              = $t.Modified
+            Created               = (Get-AdfaConfigValue -Entry $t -Name 'Created')
+            Modified              = (Get-AdfaConfigValue -Entry $t -Name 'Modified')
             VerifyDetail          = (@($outboundDetail, $inboundDetail) | Where-Object { $_ } ) -join ' || '
         }
     }
@@ -4326,20 +4443,150 @@ function Get-AdfaReplicationHealth {
     return @($rows)
 }
 
-function Get-AdfaReplicationTopology {
+function Get-AdfaTopologyObjectRaw {
+    <#
+    .SYNOPSIS
+        The read seam of the site links and the connection objects (PORT-PLAN C4b): one
+        Get-ADReplicationSiteLink or Get-ADReplicationConnection call with the declared property
+        list, capped. Never throws.
+    .DESCRIPTION
+        The list is checked before anything is sent: a wildcard, a blank, an empty list or a secret
+        attribute name refuses the read (Refused). Neither cmdlet's Filter parameter set shows
+        -ResultSetSize on Learn, so the cap stops the pipeline after MaxObjects + 1 objects; a read
+        that returned more than MaxObjects is Capped, never a short list read as complete.
+    .OUTPUTS
+        [pscustomobject] Ok, Error, ErrorType, NotFound, Refused, Records, Count, Capped, Kind.
+    #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
-    param([hashtable]$AdParams = @{})
+    param(
+        [Parameter(Mandatory)][ValidateSet('SiteLink', 'Connection')][string]$Kind,
+        [AllowNull()][AllowEmptyCollection()][string[]]$PropertyNames = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$SecretNames = @(),
+        [ValidateRange(1, 1000000)][int]$MaxObjects = 100000,
+        [hashtable]$AdParams = @{}
+    )
+    $out = [pscustomobject]@{ Ok = $false; Error = ''; ErrorType = ''; NotFound = $false; Refused = $false; Records = @(); Count = 0; Capped = $false; Kind = $Kind }
+    $refused = @(Get-AdfaRefusedPropertyName -PropertyNames $PropertyNames -SecretNames $SecretNames)
+    if ($refused.Count -gt 0) {
+        $out.Refused = $true
+        $out.Error = ("the property list was refused before anything was sent, because it names {0}; this is a defect in the tool's DirectoryRead table, not in the directory" -f ($refused -join ', '))
+        return $out
+    }
+    try {
+        $records = @()
+        if ($Kind -eq 'SiteLink') {
+            $records = @(Get-ADReplicationSiteLink -Filter * -Properties @($PropertyNames) @AdParams -ErrorAction Stop | Select-Object -First ($MaxObjects + 1))
+        }
+        else {
+            $records = @(Get-ADReplicationConnection -Filter * -Properties @($PropertyNames) @AdParams -ErrorAction Stop | Select-Object -First ($MaxObjects + 1))
+        }
+        $out.Records = @($records | Where-Object { $null -ne $_ })
+        $out.Count = @($out.Records).Count
+        $out.Capped = ($out.Count -gt $MaxObjects)
+        $out.Ok = $true
+    }
+    catch {
+        $out.Error = [string]$_.Exception.Message
+        $out.ErrorType = [string]$_.Exception.GetType().FullName
+    }
+    return $out
+}
+
+function ConvertTo-AdfaTopologyListRow {
+    <#
+    .SYNOPSIS
+        Pure: the rows of 'Site Links' or 'Replication Connections' from one topology read
+        (PORT-PLAN C4b). Inventory rows, not graded.
+    .DESCRIPTION
+        A read that was refused, failed (unreachable, access denied, timed out told apart) or reached
+        its cap gives ONE row, Status Not Assessed with the cause - never an empty list, which would
+        read as "no site link". A complete read gives one row per object, with the columns the
+        sections have always had for site links, and for connections the raw LDAP values: FromServer
+        (fromServer, the source's NTDS Settings DN), DistinguishedName (its parent is the NTDS Settings
+        object of the DC that holds it), Enabled (enabledConnection) and Options (options, raw; its bits
+        are not decoded, PORT-PLAN C4b3).
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][ValidateSet('SiteLink', 'Connection')][string]$Kind,
+        [AllowNull()]$Raw,
+        [ValidateRange(1, 1000000)][int]$MaxObjects = 100000,
+        # Where MaxObjects came from, in the row's words (Get-AdfaCapSource).
+        [string]$CapSource = 'Inventory.MaxObjects, a tool default'
+    )
+    $what = 'the site links'
+    $item = 'Site links'
+    if ($Kind -eq 'Connection') { $what = 'the replication connection objects'; $item = 'Replication connections' }
+    $cause = ''
+    if ($null -ne $Raw -and [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Refused')) {
+        $cause = ("Reading {0} was refused: {1}." -f $what, ([string](Get-AdfaConfigValue -Entry $Raw -Name 'Error')).Trim().TrimEnd('.'))
+    }
+    else {
+        $cause = Get-AdfaInventoryReadCause -Raw $Raw -What $what -MaxObjects $MaxObjects -CapSource $CapSource
+    }
+    if (-not [string]::IsNullOrWhiteSpace($cause)) {
+        return @([pscustomobject]@{ Item = $item; Status = $script:Status.NotAssessed; Detail = ("{0} The list is not shown, and it is not an empty list." -f $cause) })
+    }
+    $rows = @()
+    foreach ($r in @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ })) {
+        if ($Kind -eq 'SiteLink') {
+            $sites = @(@(Get-AdfaConfigValue -Entry $r -Name 'SitesIncluded') | Where-Object { $null -ne $_ } | ForEach-Object { $_.ToString() })
+            $rows += [pscustomobject]@{
+                Name                          = [string](Get-AdfaConfigValue -Entry $r -Name 'Name')
+                Cost                          = (Get-AdfaConfigValue -Entry $r -Name 'Cost')
+                ReplicationFrequencyInMinutes = (Get-AdfaConfigValue -Entry $r -Name 'ReplicationFrequencyInMinutes')
+                InterSiteTransportProtocol    = [string](Get-AdfaConfigValue -Entry $r -Name 'InterSiteTransportProtocol')
+                SitesIncluded                 = ($sites -join '; ')
+            }
+        }
+        else {
+            $rows += [pscustomobject]@{
+                Name              = [string](Get-AdfaConfigValue -Entry $r -Name 'name')
+                FromServer        = [string](Get-AdfaConfigValue -Entry $r -Name 'fromServer')
+                DistinguishedName = [string](Get-AdfaConfigValue -Entry $r -Name 'distinguishedName')
+                Enabled           = (Get-AdfaConfigValue -Entry $r -Name 'enabledConnection')
+                Options           = (Get-AdfaConfigValue -Entry $r -Name 'options')
+            }
+        }
+    }
+    return @($rows)
+}
+
+function Get-AdfaReplicationTopology {
+    <#
+    .SYNOPSIS
+        Sites, subnets, site links and connection objects of the forest.
+    .DESCRIPTION
+        Since v1.33.0 (PORT-PLAN C4b) the site links and the connection objects are read with the
+        declared lists of the DirectoryRead table, each through its own never-throwing seam, so a
+        failed site link or connection read is a Not Assessed row of its own and no longer takes the
+        sites and subnets down with it. The site and subnet reads are unchanged.
+    .OUTPUTS
+        [pscustomobject] Sites, Subnets, SiteLinks, Connections.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [hashtable]$AdParams = @{},
+        [hashtable]$Config = $script:Config.DirectoryRead,
+        [AllowNull()][AllowEmptyCollection()][string[]]$SecretNames = @(Get-AdfaSecretAttributeName),
+        [ValidateRange(1, 1000000)][int]$MaxObjects = [int]$script:Config.Inventory['MaxObjects'],
+        # Where MaxObjects came from, in the row's words (Get-AdfaCapSource).
+        [string]$CapSource = 'Inventory.MaxObjects, a tool default'
+    )
     $out = [ordered]@{}
     $out.Sites = @(Get-ADReplicationSite -Filter * @AdParams |
         Select-Object Name, Description, WhenCreated, WhenChanged)
     $out.Subnets = @(Get-ADReplicationSubnet -Filter * @AdParams |
         Select-Object Name, Site, Location, Description)
-    $out.SiteLinks = @(Get-ADReplicationSiteLink -Filter * -Properties * @AdParams |
-        Select-Object Name, Cost, ReplicationFrequencyInMinutes, InterSiteTransportProtocol,
-        @{n = 'SitesIncluded'; e = { ($_.SitesIncluded | ForEach-Object { $_.ToString() }) -join '; ' } })
-    $out.Connections = @(Get-ADReplicationConnection -Filter * -Properties * @AdParams |
-        Select-Object Name, FromServer, ToServer, Enabled, AutoGenerated)
+    $linkRaw = Get-AdfaTopologyObjectRaw -Kind SiteLink -PropertyNames @($Config['SiteLinkProperties']) -SecretNames $SecretNames -MaxObjects $MaxObjects -AdParams $AdParams
+    $out.SiteLinks = @(ConvertTo-AdfaTopologyListRow -Kind SiteLink -Raw $linkRaw -MaxObjects $MaxObjects -CapSource $CapSource)
+    $connRaw = Get-AdfaTopologyObjectRaw -Kind Connection -PropertyNames @($Config['ConnectionProperties']) -SecretNames $SecretNames -MaxObjects $MaxObjects -AdParams $AdParams
+    $out.Connections = @(ConvertTo-AdfaTopologyListRow -Kind Connection -Raw $connRaw -MaxObjects $MaxObjects -CapSource $CapSource)
     return [pscustomobject]$out
 }
 
@@ -8894,57 +9141,225 @@ function Get-AdfaObjectPropertyUnion {
     return (@($set) | Sort-Object)
 }
 
-function Get-AdfaUserInventory {
+function Get-AdfaSecretAttributeName {
     <#
     .SYNOPSIS
-        Full user export (all populated attributes) for a domain, flattened for CSV.
-    .DESCRIPTION
-        Returns every user with the union of populated attributes (Get-ADUser -Properties *).
-        Intended for CSV export; the HTML report shows only a summary of this data.
+        Pure: every attribute name this tool never puts in a property list (PORT-PLAN C4b) - the seven
+        LAPS names of Laps.NeverRead and DirectoryRead.SecretNames, each once.
     .OUTPUTS
-        [pscustomobject[]]
+        [string[]]
     #>
     [CmdletBinding()]
-    [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
-    $srv = @{} + $AdParams; $srv.Server = $DomainName
-    $users = @(Get-ADUser -Filter * -Properties * @srv)
-    if ($users.Count -eq 0) { return @() }
-    $props = Get-AdfaObjectPropertyUnion -Objects $users
-    $flat = foreach ($u in $users) { ConvertTo-AdfaFlatObject -InputObject $u -Property $props }
-    return @($flat)
+    [OutputType([string[]])]
+    param(
+        [hashtable]$LapsConfig = $script:Config.Laps,
+        [hashtable]$Config = $script:Config.DirectoryRead
+    )
+    $names = @(@($LapsConfig['NeverRead']) + @($Config['SecretNames']) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim() })
+    return @($names | Sort-Object -Unique)
 }
 
-function Get-AdfaComputerInventory {
+function Get-AdfaRefusedPropertyName {
     <#
     .SYNOPSIS
-        Full computer export (all populated attributes) for a domain, flattened for CSV.
+        Pure: the names in a property list that must never be sent (PORT-PLAN C4b) - empty when the
+        list may be sent.
+    .DESCRIPTION
+        Refused: a list with no name at all, a blank name, any name holding a wildcard character
+        (* or ?; "-Properties *" asks for every attribute set on the object, and Learn documents no
+        partial wildcard), any name that is not a plain name - a letter, then only letters, digits
+        and hyphens - and any name equal, without regard to case, to a name of the secret list.
+        The plain-name rule is this tool's, not a Microsoft value: a name with an attribute option
+        or a range (";binary", ";range=0-1"), an OID, or a space could carry a secret attribute past
+        a by-name comparison ("ms-Mcs-AdmPwd;binary" is not equal to "ms-Mcs-AdmPwd"), so it is
+        refused rather than parsed. Whether the ActiveDirectory module would accept such a name in
+        -Properties was not measured. With no secret list to check against, every name is refused:
+        a guard that cannot check does not let a list through. Unlike Get-AdfaLapsRefusedProperty
+        there is no rule on the beginning of a name, so pwdLastSet and the LAPS expiry attributes
+        are allowed.
     .OUTPUTS
-        [pscustomobject[]]
+        [string[]]
     #>
     [CmdletBinding()]
-    [OutputType([pscustomobject[]])]
+    [OutputType([string[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()][string[]]$PropertyNames = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$SecretNames = @()
+    )
+    $secret = @(@($SecretNames) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ([string]$_).Trim() })
+    $names = @(@($PropertyNames) | Where-Object { $null -ne $_ })
+    $refused = New-Object System.Collections.Generic.List[string]
+    if ($names.Count -eq 0) { $refused.Add('(an empty list)') }
+    foreach ($n in $names) {
+        $s = [string]$n
+        if ([string]::IsNullOrWhiteSpace($s)) { $refused.Add('(a blank name)'); continue }
+        if ($s -match '[*?]') { $refused.Add($s); continue }
+        # A plain name only (tool rule): no option, range, OID or space can slip past the compare below.
+        if ($s -cnotmatch '^[A-Za-z][A-Za-z0-9-]*$') { $refused.Add($s); continue }
+        if ($secret.Count -eq 0) { $refused.Add($s); continue }
+        foreach ($x in $secret) {
+            if ([string]::Equals($s.Trim(), $x, [System.StringComparison]::OrdinalIgnoreCase)) { $refused.Add($s); break }
+        }
+    }
+    return $refused.ToArray()
+}
+
+function Get-AdfaCapSource {
+    <#
+    .SYNOPSIS
+        Pure: where a cap came from, in the words a row uses (PORT-PLAN C4b) - "<Label>.<Key>, a
+        tool default" or "<Label>.<Key>, set in the -ConfigOverridePath file".
+    .DESCRIPTION
+        Read from the provenance Merge-AdfaSpecConfig records: a table no file supplied keeps the
+        built-in ThresholdSource; a merged one names the file, then " for " and the keys the file
+        supplied, then "; ", the built-in source, ", for " and the other keys. The file's path is
+        not repeated in the phrase (it stays in the merged ThresholdSource): a row's text is what
+        the recommendation map matches. A provenance this function cannot read is said to be so,
+        never called a default.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$BaseConfig,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $name = ("{0}.{1}" -f $Label, $Key)
+    $base = [string]$BaseConfig['ThresholdSource']
+    $source = [string]$Config['ThresholdSource']
+    if ([string]::Equals($source, $base, [System.StringComparison]::Ordinal)) { return ("{0}, a tool default" -f $name) }
+    $head = $source
+    $builtIn = @()
+    $tail = ("; {0}, for " -f $base)
+    $at = $source.LastIndexOf($tail, [System.StringComparison]::Ordinal)
+    if ($at -ge 0) {
+        $head = $source.Substring(0, $at)
+        $builtIn = @($source.Substring($at + $tail.Length).Split(',') | ForEach-Object { $_.Trim() })
+    }
+    $for = $head.LastIndexOf(' for ', [System.StringComparison]::Ordinal)
+    if ($for -ge 0) {
+        $supplied = @($head.Substring($for + 5).Split(',') | ForEach-Object { $_.Trim() })
+        if (@($supplied | Where-Object { [string]::Equals($_, $Key, [System.StringComparison]::Ordinal) }).Count -gt 0) { return ("{0}, set in the -ConfigOverridePath file" -f $name) }
+        if (@($builtIn | Where-Object { [string]::Equals($_, $Key, [System.StringComparison]::Ordinal) }).Count -gt 0) { return ("{0}, a tool default" -f $name) }
+    }
+    return ("{0}, whose source was not recorded (see the {1} ThresholdSource)" -f $name, $Label)
+}
+
+function Get-AdfaIdentityExportRaw {
+    <#
+    .SYNOPSIS
+        The read of one domain's user or computer export (PORT-PLAN C4b): the C15 directory seam,
+        with the declared filter and property list of the DirectoryRead table. Never throws.
+    .DESCRIPTION
+        Replaces "Get-ADUser -Filter * -Properties *" and "Get-ADComputer -Filter * -Properties *".
+        The list is checked here before anything is sent (a wildcard, a blank, an empty list or a
+        secret attribute refuses the read, Refused), and again by Get-AdfaInventoryDirectoryRaw,
+        which refuses a wildcard. -Server is the domain, -ResultSetSize MaxObjects + 1, so a domain
+        with more objects than the cap is Capped, never read as complete.
+    .OUTPUTS
+        [pscustomobject] the seam's result (Ok, Error, ErrorType, NotFound, Records, Count, Capped,
+        Filter, Identity) plus Refused, Kind and Properties.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$DomainName,
-        [hashtable]$AdParams = @{},
-        # Attributes that are never written to the export, whatever the directory returned.
-        [AllowNull()][AllowEmptyCollection()][string[]]$NeverExport = @($script:Config.Laps['NeverRead'])
+        [Parameter(Mandatory)][ValidateSet('User', 'Computer')][string]$Kind,
+        [hashtable]$Config = $script:Config.DirectoryRead,
+        [AllowNull()][AllowEmptyCollection()][string[]]$SecretNames = @(Get-AdfaSecretAttributeName),
+        [ValidateRange(1, 1000000)][int]$MaxObjects = [int]$script:Config.Inventory['MaxObjects'],
+        [hashtable]$AdParams = @{}
     )
-    $srv = @{} + $AdParams; $srv.Server = $DomainName
-    $computers = @(Get-ADComputer -Filter * -Properties * @srv)
-    if ($computers.Count -eq 0) { return @() }
-    # Since v1.21.0 (PORT-PLAN C4). "-Properties *" asks for every attribute this account can
-    # read, and for an account with the rights that includes the attributes that hold a LAPS
-    # password - the legacy one in clear text. Before v1.21.0 they went into AllComputers_*.csv
-    # with everything else. They are now left out of what is returned, so they are never
-    # written to the CSV, by attribute name compared without regard to case, so a property the
-    # answer spells in another case is left out too (a test pins it). This does NOT stop them
-    # being requested:
-    # that needs the wildcard replaced by a list, which is PORT-PLAN C4b.
-    $never = @($NeverExport | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $props = @(Get-AdfaObjectPropertyUnion -Objects $computers | Where-Object { $never -notcontains $_ })
-    $flat = foreach ($c in $computers) { ConvertTo-AdfaFlatObject -InputObject $c -Property $props }
-    return @($flat)
+    $filter = [string]$Config['UserExportFilter']
+    $props = @($Config['UserExportProperties'])
+    if ($Kind -eq 'Computer') {
+        $filter = [string]$Config['ComputerExportFilter']
+        $props = @($Config['ComputerExportProperties'])
+    }
+    $refused = @(Get-AdfaRefusedPropertyName -PropertyNames $props -SecretNames $SecretNames)
+    if ([string]::IsNullOrWhiteSpace($filter)) { $refused += '(no LDAP filter)' }
+    if ($refused.Count -gt 0) {
+        return [pscustomobject]@{ Ok = $false; Error = ("the property list was refused before anything was sent, because it names {0}; this is a defect in the tool's DirectoryRead table, not in the directory" -f ($refused -join ', '))
+            ErrorType = ''; NotFound = $false; Records = @(); Count = 0; Capped = $false; Filter = $filter; Identity = ''; Refused = $true; Kind = $Kind; Properties = @($props)
+        }
+    }
+    $raw = Get-AdfaInventoryDirectoryRaw -Server $DomainName -LDAPFilter $filter -Properties $props -MaxObjects $MaxObjects -AdParams $AdParams
+    $raw | Add-Member -NotePropertyName 'Refused' -NotePropertyValue $false -Force
+    $raw | Add-Member -NotePropertyName 'Kind' -NotePropertyValue $Kind -Force
+    $raw | Add-Member -NotePropertyName 'Properties' -NotePropertyValue @($props) -Force
+    return $raw
+}
+
+function ConvertTo-AdfaIdentityExport {
+    <#
+    .SYNOPSIS
+        Pure: the AllUsers_ / AllComputers_ CSV rows of one domain, and why they cannot be counted
+        when they cannot (PORT-PLAN C4b).
+    .DESCRIPTION
+        One row per object: the declared columns in the order of the list (multi-valued joined with
+        ';'), then Enabled - True or False from the ACCOUNTDISABLE bit of userAccountControl, empty
+        when userAccountControl was not returned or is not a number - and ListComplete. Cause is ''
+        for a complete read, and otherwise names why the objects are not counted: refused (nothing
+        was sent), unreachable, access denied, timed out, read failed, a cap reached (the rows are
+        kept, at most MaxObjects, each marked ListComplete "No: ...", so the CSV never reads as the
+        domain's whole list) or a read that returned nothing (which cannot be told from a read that
+        saw nothing). The summary row is Not Assessed whenever Cause is set, never 0.
+    .OUTPUTS
+        [pscustomobject] Rows, Cause.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][ValidateSet('User', 'Computer')][string]$Kind,
+        [AllowNull()]$Raw,
+        # The declared list (DirectoryRead.UserExportProperties or ComputerExportProperties): the CSV columns.
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Columns,
+        [ValidateRange(1, 1000000)][int]$MaxObjects = 100000,
+        [int]$AccountDisableBit = 2,
+        # Where MaxObjects came from, in the row's words (Get-AdfaCapSource).
+        [string]$CapSource = 'Inventory.MaxObjects, a tool default'
+    )
+    $noun = 'users'
+    if ($Kind -eq 'Computer') { $noun = 'computers' }
+    $what = ("the {0} of this domain" -f $noun)
+    $out = [pscustomobject]@{ Rows = @(); Cause = '' }
+    if ($null -ne $Raw -and [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Refused')) {
+        $out.Cause = ("Reading {0} was refused: {1}." -f $what, ([string](Get-AdfaConfigValue -Entry $Raw -Name 'Error')).Trim().TrimEnd('.'))
+        return $out
+    }
+    if ($null -eq $Raw -or -not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Ok')) {
+        $out.Cause = Get-AdfaInventoryReadCause -Raw $Raw -What $what -MaxObjects $MaxObjects -CapSource $CapSource
+        return $out
+    }
+    $records = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ })
+    $complete = 'Yes'
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'Capped')) {
+        $out.Cause = Get-AdfaInventoryReadCause -Raw $Raw -What $what -MaxObjects $MaxObjects -CapSource $CapSource
+        $complete = ("No: the read reached its cap of {0} objects ({1}), so objects after it are not listed" -f $MaxObjects, $CapSource)
+        $records = @($records | Select-Object -First $MaxObjects)
+    }
+    elseif ($records.Count -eq 0) {
+        $out.Cause = ("Reading {0} returned no object. A read that returned nothing cannot be told from a read that saw nothing, so they were not counted." -f $what)
+        return $out
+    }
+    $rows = @()
+    foreach ($r in $records) {
+        $row = ConvertTo-AdfaFlatObject -InputObject $r -Property $Columns
+        $enabled = ''
+        $uac = Get-AdfaConfigValue -Entry $r -Name 'userAccountControl'
+        $uacNumber = [int64]0
+        if ($null -ne $uac -and [int64]::TryParse(([string]$uac), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$uacNumber)) {
+            $enabled = (($uacNumber -band [int64]$AccountDisableBit) -eq 0)
+        }
+        $row | Add-Member -NotePropertyName 'Enabled' -NotePropertyValue $enabled -Force
+        $row | Add-Member -NotePropertyName 'ListComplete' -NotePropertyValue $complete -Force
+        $rows += $row
+    }
+    $out.Rows = @($rows)
+    return $out
 }
 
 function Get-AdfaIdentitySummary {
@@ -8967,25 +9382,30 @@ function Get-AdfaIdentitySummary {
         [AllowNull()][AllowEmptyString()][string]$ComputersError = ''
     )
     $rows = @()
-    $u = @($Users)
-    $c = @($Computers)
-    $isEnabled = {
+    # PORT-PLAN C4b: Enabled and Disabled are each counted from a value that was read. An object whose
+    # Enabled is neither True nor False (userAccountControl not returned) is counted in neither, and
+    # the row says how many - before v1.33.0 it was counted as disabled.
+    $enabledOf = {
         param($o)
-        ($o.PSObject.Properties.Name -contains 'Enabled') -and ("$($o.Enabled)" -eq 'True')
+        if ($null -eq $o -or $null -eq $o.PSObject.Properties['Enabled']) { return '' }
+        return [string]$o.Enabled
     }
-    if (-not [string]::IsNullOrWhiteSpace($UsersError)) {
-        $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Users'; Total = ''; Enabled = ''; Disabled = ''; Status = $script:Status.NotAssessed; Detail = ("The user export failed, so the users of this domain were not counted - not zero: {0}" -f $UsersError.Trim()) }
-    }
-    else {
-        $enabledU = @($u | Where-Object { & $isEnabled $_ }).Count
-        $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Users'; Total = $u.Count; Enabled = $enabledU; Disabled = ($u.Count - $enabledU); Status = $script:Status.Info; Detail = 'Full attribute export in csv\AllUsers_*.csv' }
-    }
-    if (-not [string]::IsNullOrWhiteSpace($ComputersError)) {
-        $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Computers'; Total = ''; Enabled = ''; Disabled = ''; Status = $script:Status.NotAssessed; Detail = ("The computer export failed, so the computers of this domain were not counted - not zero: {0}" -f $ComputersError.Trim()) }
-    }
-    else {
-        $enabledC = @($c | Where-Object { & $isEnabled $_ }).Count
-        $rows += [pscustomobject]@{ Scope = $DomainName; Object = 'Computers'; Total = $c.Count; Enabled = $enabledC; Disabled = ($c.Count - $enabledC); Status = $script:Status.Info; Detail = 'Full attribute export in csv\AllComputers_*.csv' }
+    $kinds = @(
+        @{ Object = 'Users'; Noun = 'user'; Items = @($Users); Error = $UsersError; Csv = 'AllUsers'; List = 'UserExportProperties' }
+        @{ Object = 'Computers'; Noun = 'computer'; Items = @($Computers); Error = $ComputersError; Csv = 'AllComputers'; List = 'ComputerExportProperties' }
+    )
+    foreach ($k in $kinds) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$k.Error)) {
+            $rows += [pscustomobject]@{ Scope = $DomainName; Object = $k.Object; Total = ''; Enabled = ''; Disabled = ''; Status = $script:Status.NotAssessed; Detail = ("The {0} export could not be used, so the {0}s of this domain were not counted - not zero: {1}" -f $k.Noun, ([string]$k.Error).Trim()) }
+            continue
+        }
+        $items = @($k.Items | Where-Object { $null -ne $_ })
+        $on = @($items | Where-Object { (& $enabledOf $_) -eq 'True' }).Count
+        $off = @($items | Where-Object { (& $enabledOf $_) -eq 'False' }).Count
+        $unread = $items.Count - $on - $off
+        $detail = ("Declared attribute list (DirectoryRead.{0}), not every attribute, in csv\{1}_<domain>.csv." -f $k.List, $k.Csv)
+        if ($unread -gt 0) { $detail = ("{0} {1} object(s) returned no readable userAccountControl and are counted neither enabled nor disabled." -f $detail, $unread) }
+        $rows += [pscustomobject]@{ Scope = $DomainName; Object = $k.Object; Total = $items.Count; Enabled = $on; Disabled = $off; Status = $script:Status.Info; Detail = $detail }
     }
     return @($rows)
 }
@@ -20361,7 +20781,8 @@ $script:ConfigOverrideSections = [ordered]@{
     SysvolEngine   = @{ ConfigKey = 'SysvolEngine'; Section = 'Sysvol'; Merge = 'Merge-AdfaSpecConfig' }
     # PORT-PLAN C15: the inventory caps only (objects per read, names per row, events per log, event
     # groups per log); no log, level, filter, flag table, label, key or pattern.
-    Inventory      = @{ ConfigKey = 'Inventory'; Section = 'Identity'; AlsoUsedBy = @('Forest', 'Trusts', 'Gpo', 'DsEvents', 'TimeHierarchy'); Merge = 'Merge-AdfaSpecConfig' }
+    # PORT-PLAN C4b: MaxObjects also caps the site link and connection reads of Topology.
+    Inventory      = @{ ConfigKey = 'Inventory'; Section = 'Identity'; AlsoUsedBy = @('Forest', 'Trusts', 'Gpo', 'DsEvents', 'TimeHierarchy', 'Topology'); Merge = 'Merge-AdfaSpecConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -26127,7 +26548,12 @@ function Get-AdfaInventoryReadCause {
     #>
     [CmdletBinding()]
     [OutputType([string])]
-    param([AllowNull()]$Raw, [Parameter(Mandatory)][string]$What, [int]$MaxObjects = 100000)
+    param(
+        [AllowNull()]$Raw, [Parameter(Mandatory)][string]$What, [int]$MaxObjects = 100000,
+        # Where MaxObjects came from, in the row's words. The C15 callers keep the default; the C4b
+        # reads pass Get-AdfaCapSource's phrase (PORT-PLAN C4b4 for the C15 callers).
+        [string]$CapSource = 'MaxObjects, a tool default'
+    )
     if ($null -eq $Raw) {
         $lead = $What
         if ($lead.Length -gt 0) { $lead = $lead.Substring(0, 1).ToUpperInvariant() + $lead.Substring(1) }
@@ -26139,7 +26565,7 @@ function Get-AdfaInventoryReadCause {
         if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'NotFound')) { $class = 'NotFound' }
         return ("Reading {0} failed ({1}): {2}." -f $What, (Get-AdfaReadClassPhrase -Class $class), $err)
     }
-    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'Capped')) { return ("Reading {0} reached its cap of {1} objects (MaxObjects, a tool default), so the list is incomplete." -f $What, $MaxObjects) }
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'Capped')) { return ("Reading {0} reached its cap of {1} objects ({2}), so the list is incomplete." -f $What, $MaxObjects, $CapSource) }
     return ''
 }
 
@@ -29030,6 +29456,9 @@ function Invoke-Main {
     # domain, otherwise enumerated here, as the C14 block does.
     $inventoryConfig = $script:Config.Inventory
     if ($configOverrides.ContainsKey('Inventory')) { $inventoryConfig = $configOverrides['Inventory'] }
+    # PORT-PLAN C4b: the words the capped C4b rows use for where MaxObjects came from, read from the
+    # provenance the merge recorded, so a cap the file set is never called a tool default.
+    $inventoryCapSource = Get-AdfaCapSource -Config $inventoryConfig -BaseConfig $script:Config.Inventory -Key 'MaxObjects' -Label 'Inventory'
     $c15Targets = @($c14Targets)
     $c15Failures = @($c14Failures)
     $c14PerDomain = ($dcInventoryCollected -or (Test-SectionSelected 'PortMatrix' $Sections) -or (Test-SectionSelected 'Topology' $Sections))
@@ -29092,7 +29521,9 @@ function Invoke-Main {
         $topologyError = ''
         $siteRows = @()
         try {
-            $topology = Get-AdfaReplicationTopology -AdParams $adParams
+            # PORT-PLAN C4b: declared lists for the site links and connection objects, capped at the
+            # Inventory table's MaxObjects; each of those two reads fails on its own row.
+            $topology = Get-AdfaReplicationTopology -AdParams $adParams -Config $script:Config.DirectoryRead -MaxObjects ([int]$inventoryConfig['MaxObjects']) -CapSource $inventoryCapSource
             $sectionData['AD Sites'] = $topology.Sites
             $sectionData['AD Subnets'] = $topology.Subnets
             $sectionData['Site Links'] = $topology.SiteLinks
@@ -29130,7 +29561,8 @@ function Invoke-Main {
             $tp = @{} + $adParams; $tp.Server = $d
             $trustRows += Get-AdfaTrustHealth -DomainName $d -AdParams $tp -SkipVerification:$SkipTrustVerification -LiveVerify:$IncludeSecureChannelVerify `
                 -TimeoutSeconds $script:Config.ExternalToolTimeoutSec -Retries $script:Config.Retries `
-                -RetryDelaySeconds $script:Config.RetryDelaySeconds -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+                -RetryDelaySeconds $script:Config.RetryDelaySeconds -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                -PropertyNames @($script:Config.DirectoryRead['TrustHealthProperties']) -MaxObjects ([int]$inventoryConfig['MaxObjects']) -CapSource $inventoryCapSource
         }
         $sectionData['Trusts & Two-Way Health'] = $trustRows
         # PORT-PLAN C15 (INV-006): the trustedDomain objects of every scoped domain, read from that
@@ -29722,19 +30154,26 @@ function Invoke-Main {
             -DomainSummaries $sectionData['Domain Summary'] -DomainControllers $allDcInventory -SeConfig $seConfig
     }
 
-    # ---- Full identity export (all attributes) -> CSV; HTML gets a summary only ----
+    # ---- User and computer export (declared attribute lists) -> CSV; HTML gets a summary only ----
     if (Test-SectionSelected 'Identity' $Sections) {
-        Write-Stage 'Identity inventory (full user/computer export)'
+        Write-Stage 'Identity inventory (user/computer export, declared attribute lists)'
         $identitySummary = @()
+        # PORT-PLAN C4b: each domain's users and computers are read with the declared lists of the
+        # DirectoryRead table, never every attribute, capped at the Inventory table's MaxObjects (the
+        # table the file supplied where it supplied one). A failed, refused, empty or capped read is
+        # carried to the summary as its cause (PORT-PLAN C15: Not Assessed, never 0).
+        $exportConfig = $script:Config.DirectoryRead
+        $exportSecrets = @(Get-AdfaSecretAttributeName)
+        $exportMax = [int]$inventoryConfig['MaxObjects']
         foreach ($d in $targetDomains) {
-            $users = @(); $computers = @()
-            # PORT-PLAN C15: a failed export is carried to the summary, which says Not Assessed with the
-            # cause instead of 0 objects.
-            $usersError = ''; $computersError = ''
-            try { $users = Get-AdfaUserInventory -DomainName $d -AdParams $adParams }
-            catch { $usersError = [string]$_.Exception.Message; Write-Warning ("User export failed for {0}: {1}" -f $d, $_.Exception.Message) }
-            try { $computers = Get-AdfaComputerInventory -DomainName $d -AdParams $adParams }
-            catch { $computersError = [string]$_.Exception.Message; Write-Warning ("Computer export failed for {0}: {1}" -f $d, $_.Exception.Message) }
+            $userExport = ConvertTo-AdfaIdentityExport -Kind User -Columns @($exportConfig['UserExportProperties']) -MaxObjects $exportMax -AccountDisableBit ([int]$inventoryConfig['AccountDisableBit']) -CapSource $inventoryCapSource `
+                -Raw (Get-AdfaIdentityExportRaw -DomainName $d -Kind User -Config $exportConfig -SecretNames $exportSecrets -MaxObjects $exportMax -AdParams $adParams)
+            $computerExport = ConvertTo-AdfaIdentityExport -Kind Computer -Columns @($exportConfig['ComputerExportProperties']) -MaxObjects $exportMax -AccountDisableBit ([int]$inventoryConfig['AccountDisableBit']) -CapSource $inventoryCapSource `
+                -Raw (Get-AdfaIdentityExportRaw -DomainName $d -Kind Computer -Config $exportConfig -SecretNames $exportSecrets -MaxObjects $exportMax -AdParams $adParams)
+            $users = @($userExport.Rows); $computers = @($computerExport.Rows)
+            $usersError = [string]$userExport.Cause; $computersError = [string]$computerExport.Cause
+            if ($usersError) { Write-Warning ("User export for {0}: {1}" -f $d, $usersError) }
+            if ($computersError) { Write-Warning ("Computer export for {0}: {1}" -f $d, $computersError) }
 
             $safeDom = New-SafeFileName $d
             if (@($users).Count -gt 0) { Save-Csv -InputObject $users -Path (Join-Path $csvPath ("AllUsers_{0}.csv" -f $safeDom)) }
