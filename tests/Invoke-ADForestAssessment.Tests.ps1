@@ -3294,9 +3294,10 @@ Describe 'DC system: OS lifecycle and patch level (C1)' {
             { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ RpcPort = -1 } } | Should -Throw -ExpectedMessage '*RpcPort*'
             { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ RpcPort = 70000 } } | Should -Throw -ExpectedMessage '*RpcPort*'
         }
-        It 'goes on citing Microsoft when the override changes a port and leaves the dates alone' {
-            $m = Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ WsmanPort = 5986 } -OverrideSource 'C:\cfg\dcsystem.json'
-            $m.WsmanPort | Should -Be 5986
+        It 'refuses a port override, which the CIM session would not use (PORT-PLAN C3g), and leaves the dates and their source alone' {
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override @{ WsmanPort = 5986 } -OverrideSource 'C:\cfg\dcsystem.json' } | Should -Throw -ExpectedMessage '*cannot be set from a file*'
+            $m = Merge-AdfaDcSystemConfig -BaseConfig $script:Dsc -Override $null -OverrideSource 'C:\cfg\dcsystem.json'
+            $m.WsmanPort | Should -Be 5985
             [string]$m.SourceUrl | Should -Match '^https://learn\.microsoft\.com/'
             @($m.OsLifecycle).Count | Should -Be 6
         }
@@ -4328,18 +4329,18 @@ Describe 'DC disk space, and the generic config override (C2)' {
             $rows[0].Status | Should -Be 'Pass'
             $rows[0].Detail | Should -Match 'Read over Dcom'
         }
-        It 'uses only the transport whose port answered, and the ports the config names' {
+        It 'uses only the transport whose port answered, on the default ports the session connects to (PORT-PLAN C3g)' {
             $script:C2Probed = @()
-            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C2Probed += $Port; return ($Port -eq 1135) }
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C2Probed += $Port; return ($Port -eq 135) }
             function Get-AdfaDcDiskRaw {
                 param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec, $Paths)
                 $script:C2Reads += $Protocol
                 New-C2Raw -Paths (New-C2DefaultPaths) -Volumes @((New-C2Volume -Name 'C:\' -CapacityGB 120 -FreeGB 60)) -Protocol $Protocol
             }
-            $cfg = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WsmanPort = 5986; RpcPort = 1135 }
-            Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $cfg | Out-Null
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WsmanPort = 5986; RpcPort = 1135 } } | Should -Throw -ExpectedMessage '*cannot be set from a file*'
+            Get-AdfaDcDiskSpace -DomainControllers @($script:C2Dc1) -Config $script:Ddc | Out-Null
             ($script:C2Reads -join ',') | Should -Be 'Dcom'
-            (@($script:C2Probed | Sort-Object) -join ',') | Should -Be '1135,5986'
+            (@($script:C2Probed | Sort-Object) -join ',') | Should -Be '135,5985'
         }
         It 'hands the seam the registry values the config names' {
             function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
@@ -4397,7 +4398,8 @@ Describe 'DC disk space, and the generic config override (C2)' {
             $fn = @($script:C2Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AdfaDcDiskSpace' }, $true))
             $fn.Count | Should -Be 1
             $inner = @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
-            $inner | Should -Contain 'Test-AdfaDcPort'
+            # PORT-PLAN C1b: through the gate, which consults the reachability class, then the cache.
+            $inner | Should -Contain 'Get-AdfaDcProbeGate'
             $inner | Should -Not -Contain 'Test-TcpPort'
         }
         It 'gives a low-space row its own advice, which no later generic entry or file path can replace' {
@@ -4845,9 +4847,10 @@ Describe 'DC disk space, and the generic config override (C2)' {
             [string]$all.ThresholdSource | Should -Match 'C:\\cfg\\disk\.json'
             [string]$all.ThresholdSource | Should -Not -Match 'tool default'
         }
-        It 'goes on calling the thresholds tool defaults when the override changes only a port' {
-            $m = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WsmanPort = 5986 } -OverrideSource 'C:\cfg\disk.json'
-            $m.WsmanPort | Should -Be 5986
+        It 'refuses an override that changes only a port (PORT-PLAN C3g), and calls the thresholds tool defaults without one' {
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override @{ WsmanPort = 5986 } -OverrideSource 'C:\cfg\disk.json' } | Should -Throw -ExpectedMessage '*cannot be set from a file*'
+            $m = Merge-AdfaDcDiskConfig -BaseConfig $script:Ddc -Override $null -OverrideSource 'C:\cfg\disk.json'
+            $m.WsmanPort | Should -Be 5985
             [string]$m.ThresholdSource | Should -Be 'tool default, not a Microsoft value'
         }
         It 'returns the built-in table when there is no override' {
@@ -5327,8 +5330,10 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             $collector.Count | Should -Be 1
             $inside = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
             @($inside | Where-Object { $_ -eq 'Invoke-AdfaDcRemoteRead' }).Count | Should -Be 1
-            # Declared population: the WinRM port and the RPC port, each probed through the cache.
-            @($inside | Where-Object { $_ -eq 'Test-AdfaDcPort' }).Count | Should -Be 2
+            # Declared population: one gate call for the WinRM port and the RPC port together, through the
+            # reachability class and then the cache (PORT-PLAN C1b).
+            @($inside | Where-Object { $_ -eq 'Get-AdfaDcProbeGate' }).Count | Should -Be 1
+            @($inside | Where-Object { $_ -eq 'Test-AdfaDcPort' }).Count | Should -Be 0
             foreach ($banned in @('Test-TcpPort', 'Get-Service', 'Get-CimInstance', 'Invoke-CimMethod', 'New-CimSession')) {
                 $inside | Should -Not -Contain $banned -Because "the collector must not call $banned itself"
             }
@@ -7165,8 +7170,8 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             # Through the one override file, too.
             { Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "WsmanPort": 5986 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
                 Should -Throw -ExpectedMessage "*section 'DcHardening'*names 'WsmanPort'*cannot be set from a file*"
-            # DcDisk is unchanged by this: it still accepts the key (PORT-PLAN C3g).
-            (Merge-AdfaDcDiskConfig -BaseConfig $script:Config.DcDisk -Override @{ WsmanPort = 5986 })['WsmanPort'] | Should -Be 5986
+            # DcDisk refuses the key as well since v1.34.0 (PORT-PLAN C3g).
+            { Merge-AdfaDcDiskConfig -BaseConfig $script:Config.DcDisk -Override @{ WsmanPort = 5986 } } | Should -Throw -ExpectedMessage '*cannot be set from a file*'
         }
         It 'is reached through the one override file, beside DcDisk, and a bad section stops the load naming the section and the file' {
             $ovr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "LmCompatibilityLevel": { "ExpectedMinimum": 4 } } }, "DcDisk": { "FailBelowPercent": 5 } }' | ConvertFrom-Json) `
@@ -7563,9 +7568,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
     }
 
@@ -9152,7 +9157,8 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $collector = @(Get-C5Function -Name 'Get-AdfaDcCertificates')
             $collector.Count | Should -Be 1
             $inside = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
-            @($inside | Where-Object { $_ -eq 'Test-AdfaDcPort' }).Count | Should -Be 1
+            @($inside | Where-Object { $_ -eq 'Get-AdfaDcProbeGate' }).Count | Should -Be 1
+            @($inside | Where-Object { $_ -eq 'Test-AdfaDcPort' }).Count | Should -Be 0
             @($inside | Where-Object { $_ -eq 'Get-AdfaDcTlsCertificateRaw' }).Count | Should -Be 1
             @($inside | Where-Object { $_ -eq 'Get-AdfaDcCertificateDirectoryRaw' }).Count | Should -Be 1
             foreach ($banned in @('Test-TcpPort', 'Get-ADComputer', 'New-CimSession', 'Invoke-CimMethod', 'Get-CimInstance', 'Invoke-Command')) {
@@ -9219,9 +9225,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
     }
 
@@ -10209,9 +10215,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
     }
 
@@ -11148,9 +11154,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
     }
 
@@ -12057,12 +12063,13 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
                 $members += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true) | ForEach-Object { "{0}:{1}" -f $f.Name, [string]$_.Member.Extent.Text })
                 @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -match '(?i)^(Replace|Add|Remove|Clear|Instance)$' }, $true)).Count | Should -Be 0 -Because "$($f.Name) must not pass a write parameter"
                 $adCalls += @($names | Where-Object { $_ -match '(?i)^Get-AD(?!fa)' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
-                $probes += @($names | Where-Object { $_ -eq 'Test-AdfaDcPort' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
+                $probes += @($names | Where-Object { $_ -eq 'Test-AdfaDcPort' -or $_ -eq 'Get-AdfaDcProbeGate' } | ForEach-Object { "{0}:{1}" -f $f.Name, $_ })
             }
             # Declared population: the two directory reads, in the container seam.
             ($adCalls -join ',') | Should -Be 'Get-AdfaGpoContainerRaw:Get-ADDomain,Get-AdfaGpoContainerRaw:Get-ADObject'
-            # Declared population: one port probe, through the per-run cache, in the SYSVOL seam.
-            ($probes -join ',') | Should -Be 'Get-AdfaGpoSysvolRaw:Test-AdfaDcPort'
+            # Declared population: one port probe, through the gate (the reachability class, then the per-run
+            # cache; PORT-PLAN C1b), in the SYSVOL seam.
+            ($probes -join ',') | Should -Be 'Get-AdfaGpoSysvolRaw:Get-AdfaDcProbeGate'
             # A whitelist, not a blacklist: every command, every .NET method (static, with its type and
             # the function that calls it, and instance), every type literal and every New-Object type
             # the row's 18 functions use is pinned. Any addition - Set-Acl, [IO.File]::ReadAllBytes,
@@ -12081,7 +12088,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             $expectedCommands = @('&$asText', 'Add-Member', 'ConvertFrom-AdfaGptIniVersion', 'ConvertTo-AdfaGpoContainerRecord', 'ConvertTo-AdfaGpoVersionNumber', 'ConvertTo-AdfaOverrideTable', 'ForEach-Object',
                 'Get-ADDomain', 'Get-AdfaDirectoryReadErrorClass', 'Get-AdfaGpoContainerRaw', 'Get-AdfaGpoDomainFinding', 'Get-AdfaGpoDomainVerdict', 'Get-AdfaGpoFailureLead', 'Get-AdfaGpoFileFailure',
                 'Get-AdfaGpoFileReadErrorClass', 'Get-AdfaGpoSysvolPath', 'Get-AdfaGpoSysvolRaw', 'Get-AdfaGpoVersionVerdict', 'Get-AdfaGptIniRaw', 'Get-AdfaRemoteReadErrorClass', 'Get-AdfaSysvolPolicyFolderRaw',
-                'Get-ADObject', 'Get-Date', 'New-AdfaGpoVersionRow', 'New-Finding', 'New-Object', 'Split-AdfaGpoVersion', 'Test-AdfaDcPort', 'Where-Object')
+                'Get-ADObject', 'Get-Date', 'New-AdfaGpoVersionRow', 'New-Finding', 'New-Object', 'Split-AdfaGpoVersion', 'Get-AdfaDcProbeGate', 'Where-Object',
+                # PORT-PLAN C14c review: the rows of a PDC classified Unreachable name its class (pure text).
+                'Get-AdfaDcGateText')
             $expectedStatic = @('ConvertFrom-AdfaGptIniVersion:[System.Text.Encoding]::GetEncoding', 'ConvertTo-AdfaGpoVersionNumber:[int64]::TryParse',
                 'Get-AdfaGpoSysvolPath:[string]::Equals', 'Get-AdfaGptIniRaw:[System.IO.FileStream]::new',
                 'Get-AdfaSysvolPolicyFolderRaw:[System.IO.Directory]::GetDirectories', 'Get-AdfaSysvolPolicyFolderRaw:[System.IO.Path]::GetFileName',
@@ -12089,8 +12098,8 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
                 'Get-AdfaGpoFileReadErrorClass:[string]::IsNullOrWhiteSpace', 'Get-AdfaGpoSysvolPath:[string]::IsNullOrWhiteSpace', 'Get-AdfaGpoVersion:[string]::IsNullOrWhiteSpace',
                 'Merge-AdfaGpoConfig:[string]::IsNullOrWhiteSpace')
             $expectedInstance = @('.Add', '.ContainsKey', '.Dispose', '.GetString', '.GetType', '.Read', '.ToArray', '.ToString', '.ToUpperInvariant', '.Trim', '.TrimEnd')
-            # Declared population: these 29 commands, 13 static method calls (by function), 11 instance methods and 2 New-Object types.
-            $expectedCommands.Count | Should -Be 29
+            # Declared population: these 30 commands, 13 static method calls (by function), 11 instance methods and 2 New-Object types.
+            $expectedCommands.Count | Should -Be 30
             $expectedStatic.Count | Should -Be 13
             $expectedInstance.Count | Should -Be 11
             (@($commands | Sort-Object -Unique) -join ',') | Should -Be (@($expectedCommands | Sort-Object -Unique) -join ',')
@@ -12139,9 +12148,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
     }
 
@@ -13379,9 +13388,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
     }
 
@@ -14597,9 +14606,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
     }
 
@@ -16450,7 +16459,7 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $collector = @(Get-C11Function 'Get-AdfaDcDiagnostic')
             $collector.Count | Should -Be 1
             $names = @($collector[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
-            $names | Should -Contain 'Test-AdfaDcPort'
+            $names | Should -Contain 'Get-AdfaDcProbeGate'
             $names | Should -Not -Contain 'Test-TcpPort'
             $runs = @()
             foreach ($f in @('Get-AdfaDcDiagnostic', 'Invoke-AdfaDcdiagTest')) {
@@ -16463,9 +16472,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17134,9 +17143,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.33.0 (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17287,9 +17296,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.33.0 in the script and the manifest (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries version 1.34.0 in the script and the manifest (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
     }
 
@@ -18331,8 +18340,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
         It 'gives the Dns, DnsAdConsistency and DomainControllers branches the DNS config, the targets and the causes' {
             $expected = @(
                 @{ Cond = "Test-SectionSelected 'Dns' `$Sections"; Call = 'Get-AdfaDnsHealth'; Key = "`$sectionData['DNS Health']"; Params = @{ Config = '$dnsConfig'; DomainControllers = '$dnsTargets'; InventoryFailures = '$dnsFailures'; EnumerationError = '$script:DcEnumerationError'; ScopedDomains = '$targetDomains'; ForestComplete = '$dnsForestComplete' } }
-                @{ Cond = "Test-SectionSelected 'DnsAdConsistency' `$Sections"; Call = 'Get-AdfaDnsAdConsistency'; Key = "`$sectionData['DNS vs AD Consistency']"; Params = @{ Config = '$dnsConfig'; DsaInventory = '$dnsDsa'; DsaError = '$dnsDsaError'; ForestRoot = '$rootDomain'; DnsServers = '$dcNames' } }
-                @{ Cond = "Test-SectionSelected 'DomainControllers' `$Sections"; Call = 'Get-AdfaDcDnsClient'; Key = "`$sectionData['DC DNS Client']"; Params = @{ Config = '$dnsConfig'; DomainControllers = '$inv'; InventoryFailures = '$dcInventoryFailures'; ScopedDomains = '$targetDomains'; ForestComplete = '$scopeCoversForest' } }
+                @{ Cond = "Test-SectionSelected 'DnsAdConsistency' `$Sections"; Call = 'Get-AdfaDnsAdConsistency'; Key = "`$sectionData['DNS vs AD Consistency']"; Params = @{ Config = '$dnsConfig'; DsaInventory = '$dnsDsa'; DsaError = '$dnsDsaError'; ForestRoot = '$rootDomain'; DnsServers = '$perDcDnsServers' } }
+                # PORT-PLAN C14c: the adapters are read after the reachability classification, in a branch of their own.
+                @{ Cond = '$dcInventoryCollected'; Call = 'Get-AdfaDcDnsClient'; Key = "`$sectionData['DC DNS Client']"; Params = @{ Config = '$dnsConfig'; DomainControllers = '$allDcInventory'; InventoryFailures = '$dcInventoryFailures'; ScopedDomains = '$targetDomains'; ForestComplete = '$scopeCoversForest' } }
             )
             # The forest-coverage flag both take is computed once, from the forest's domains against
             # the scoped ones, and the DNS Health copy is cleared when it falls back to bare host names.
@@ -18617,9 +18627,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.33.0 in the script and the manifest (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries version 1.34.0 in the script and the manifest (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
     }
 
@@ -18749,8 +18759,10 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             $record = [pscustomobject]@{ HostName = $script:C14Dc2; Class = 'Unreachable'; Cause = 'Unresolved'; Addresses = @(); PortText = ''; Error = ''; SocketError = 'HostNotFound' }
             $row = Get-AdfaDcReachVerdict -HostName $script:C14Dc2 -Scope 'contoso.com' -Record $record -Config $script:Config.Reach
             $row.Detail | Should -Not -Match '(?i)every check'
-            $row.Detail | Should -Match 'Time Hierarchy and Site Health rows of this domain controller reuse this result'
-            $row.Detail | Should -Match 'port matrix rows and the other per-DC sections probe on their own'
+            # PORT-PLAN C14c: every section that connects to the DC now reuses the class; the directory rows do not need it.
+            $row.Detail | Should -Match 'The sections that connect to this domain controller reuse this result'
+            $row.Detail | Should -Match 'no port of it is probed again, the port matrix included'
+            $row.Detail | Should -Match 'Rows read from the directory about it .* are still graded'
         }
         It 'honours the statuses a file set' {
             $cfg = Merge-AdfaSpecConfig -BaseConfig $script:Config.Reach -Override @{ UnreachableStatus = 'Warning'; NotManageableStatus = 'Info' } -OverrideSource 'C:\cfg\c14.json'
@@ -19539,7 +19551,8 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
         It 'no longer probes the time hierarchy with the uncached Test-TcpPort' {
             $fn = @(Get-C14Function 'Get-AdfaTimeHierarchyHealth')
             @(Get-C14Call $fn[0] 'Test-TcpPort').Count | Should -Be 0
-            @(Get-C14Call $fn[0] 'Test-AdfaDcPort').Count | Should -Be 1
+            # PORT-PLAN C1b: through the gate, which reads the class before the cache.
+            @(Get-C14Call $fn[0] 'Get-AdfaDcProbeGate').Count | Should -Be 1
         }
         It 'probes through the C14 seams only: no new code calls Test-TcpPort' {
             foreach ($n in $script:C14Functions) { @(Get-C14Call (Get-C14Function $n)[0] 'Test-TcpPort').Count | Should -Be 0 -Because $n }
@@ -19752,9 +19765,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.33.0 in the script and the manifest (bumped by PORT-PLAN C4b)' {
-            [string]$script:Config.Version | Should -Be '1.33.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.33.0'
+        It 'carries version 1.34.0 in the script and the manifest (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
+            [string]$script:Config.Version | Should -Be '1.34.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
         }
     }
 
@@ -21713,6 +21726,847 @@ Describe 'Declared property lists: no read of every attribute, no secret attribu
             $readme | Should -Not -Match 'still asks for every attribute'
             $readme | Should -Not -Match 'still read `Get-ADTrust -Properties \*`'
             $readme | Should -Match 'DirectoryRead'
+        }
+    }
+}
+
+Describe 'Per-domain DC targets, one probe per port, the reachability class in every per-DC section, CIM ports refused (C2e, C1b, C14c, C3g)' {
+    BeforeAll {
+        # Fictional names only. Two DCs of contoso.com (one of them unreachable) and one of fabrikam.com.
+        $script:C2eDead = 'dc9.contoso.com'
+        $script:C2eLive = 'dc1.contoso.com'
+        $script:C2eOther = 'dc1.fabrikam.com'
+        $script:C2eDomainA = 'contoso.com'
+        $script:C2eDomainB = 'fabrikam.com'
+        $script:C2eAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C2eMain = @($script:C2eAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))[0]
+        function Get-C2eFunction {
+            param([string]$Name)
+            return @($script:C2eAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true))
+        }
+        function Get-C2eEnclosingFunction {
+            param($Node)
+            $f = $Node.Parent
+            while ($null -ne $f -and $f -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $f = $f.Parent }
+            if ($null -eq $f) { return '<top>' }
+            return [string]$f.Name
+        }
+        function Get-C2eParameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C2eGuard {
+            param($Node)
+            $g = $Node.Parent
+            while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+            if ($null -eq $g) { return '' }
+            return [string]$g.Clauses[0].Item1.Extent.Text
+        }
+        function Get-C2eItem {
+            param($Row)
+            foreach ($n in @('Item', 'DomainController')) {
+                $p = $Row.PSObject.Properties[$n]
+                if ($null -ne $p) { return [string]$p.Value }
+            }
+            return ''
+        }
+        function Get-C2eStatus {
+            param($Row)
+            foreach ($n in @('Status', 'Health')) {
+                $p = $Row.PSObject.Properties[$n]
+                if ($null -ne $p) { return [string]$p.Value }
+            }
+            return ''
+        }
+        function Get-C2eText {
+            param($Row)
+            return (@($Row.PSObject.Properties | ForEach-Object { [string]$_.Value }) -join ' | ')
+        }
+        function New-C2eTarget {
+            param([string]$HostName, [string]$Scope)
+            return [pscustomobject]@{ HostName = $HostName; Scope = $Scope }
+        }
+    }
+
+    # The per-DC collectors whose DC list moved from $dcNames to the per-domain targets, and the other
+    # per-DC sections that now consult the reachability class before any probe. Each is called with
+    # the unreachable DC FIRST and a live DC second, so a loop that stops after one DC is caught.
+    # Declared population of the table: fourteen collectors.
+    $c2eCases = @(
+        @{ Name = 'Replication'; Population = 'Replication health (population): '; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaReplicationHealth -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -RpcPortTimeoutMs 100 } }
+        @{ Name = 'Backup'; Population = 'Directory backup (population): '; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaBackupStatus -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -RpcPortTimeoutMs 100 } }
+        @{ Name = 'DcSystem patch level'; Population = 'Patch level (population): '; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaDcPatchLevel -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -Config $script:Config.DcSystem -PortTimeoutMs 100 } }
+        @{ Name = 'RestoreIntegrity'; Population = 'USN rollback marker (population): '; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaUsnRollbackForensics -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -RpcPortTimeoutMs 100 } }
+        @{ Name = 'DsEvents'; Population = 'Directory Service events (population): '; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaDsEventLog -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -RpcPortTimeoutMs 100 } }
+        @{ Name = 'DfsrEvents'; Population = 'DFS Replication events (population): '; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaDfsrEventLog -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -RpcPortTimeoutMs 100 } }
+        @{ Name = 'Sysvol shares'; Population = 'SYSVOL / NETLOGON shares (population): '; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaSysvolShareHealth -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -RpcPortTimeoutMs 100 } }
+        @{ Name = 'TimeHierarchy'; Population = 'Time hierarchy (population): '; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaTimeHierarchyHealth -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -RpcPortTimeoutMs 100 } }
+        @{ Name = 'PortMatrix'; Population = ''; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaPortMatrix -DomainControllers $T -RpcPortTimeoutMs 100 } }
+        @{ Name = 'DcDisk'; Population = ''; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaDcDiskSpace -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -Config $script:Config.DcDisk -PortTimeoutMs 100 } }
+        @{ Name = 'DcHardening'; Population = ''; Dependent = '.'; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaDcHardening -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -Config $script:Config.DcHardening -PortTimeoutMs 100 } }
+        @{ Name = 'Dns'; Population = ''; Dependent = '^DNS server: '; Allowed = @('Not Assessed')
+            Invoke = { param($T, $S, $F) Get-AdfaDnsHealth -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -Config $script:Config.Dns -PortTimeoutMs 100 } }
+        @{ Name = 'DcDiagnostics'; Population = ''; Dependent = '.'; Allowed = @('Not Assessed', 'Fail')
+            Invoke = { param($T, $S, $F) Get-AdfaDcDiagnostic -DomainControllers $T -ScopedDomains $S -InventoryFailures $F -Config $script:Config.DcDiag -RpcPortTimeoutMs 100 } }
+        @{ Name = 'DcSecureChannel'; Population = ''; Dependent = '^Secure channel: '; Allowed = @('Not Assessed')
+            Invoke = {
+                param($T, $S, $F)
+                function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
+                    foreach ($t in @($T)) { [pscustomobject]@{ HostName = [string]$t.HostName; Name = ([string]$t.HostName).Split('.')[0]; ComputerObjectDN = ('CN={0},OU=Domain Controllers,DC=contoso,DC=com' -f ([string]$t.HostName).Split('.')[0]) } } }
+                function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ PasswordLastSet = (Get-Date).AddDays(-3) } }
+                Get-AdfaDcSecureChannel -DomainName $script:C2eDomainA -RpcPortTimeoutMs 100
+            } }
+    )
+
+    Context 'The probe gate: the class first, then the shared cache (C1b, C14c)' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            $script:C2eProbes = @()
+            $script:C2eResolves = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C2eProbes += ('{0}:{1}' -f $ComputerName.ToLowerInvariant(), $Port); return ($Port -eq 445) }
+            function Resolve-AdfaHostAddress { param([string]$HostName, [int]$TimeoutMs)
+                $script:C2eResolves += $HostName.ToLowerInvariant()
+                if ($HostName -eq $script:C2eDead) { return [pscustomobject]@{ Ok = $false; Addresses = @(); SocketError = 'HostNotFound'; TimedOut = $false; Error = 'No such host is known.' } }
+                return [pscustomobject]@{ Ok = $true; Addresses = @('192.0.2.10'); SocketError = ''; TimedOut = $false; Error = '' } }
+            function Test-AdfaTcpAddress { param([string]$Address, [int]$Port, [int]$TimeoutMs)
+                $script:C2eProbes += ('{0}:{1}' -f $Address, $Port)
+                if ($Port -eq 389 -or $script:C2eManagementOpen) { return [pscustomobject]@{ Outcome = 'Open'; SocketError = ''; TimedOut = $false; Error = '' } }
+                return [pscustomobject]@{ Outcome = 'Failed'; SocketError = 'ConnectionRefused'; TimedOut = $false; Error = 'refused' } }
+            $script:C2eManagementOpen = $true
+        }
+        It 'probes nothing for a DC classified Unreachable, and returns the class as the cause' {
+            Get-AdfaDcReachability -HostName $script:C2eDead | Out-Null
+            $gate = Get-AdfaDcProbeGate -ComputerName $script:C2eDead -Ports @(5985, 135, 445) -TimeoutMs 100
+            [string]$gate.Cause | Should -Match '^Unreachable, classified once for this run by the reachability probe: the host name does not resolve'
+            @($gate.Open.Keys | Sort-Object) -join ',' | Should -Be '135,445,5985'
+            @($gate.Open.Values | Where-Object { $_ }).Count | Should -Be 0
+            @($script:C2eProbes).Count | Should -Be 0 -Because 'the classification probed no port of a name that does not resolve, and the gate probes nothing after it'
+            @($script:C2eResolves).Count | Should -Be 1
+            # The case of the name does not matter.
+            [string](Get-AdfaDcProbeGate -ComputerName $script:C2eDead.ToUpperInvariant() -Ports @(135) -TimeoutMs 100).Cause | Should -Match '^Unreachable, classified once'
+            @($script:C2eProbes).Count | Should -Be 0
+        }
+        It 'probes a DC that was not classified once per port, through the shared cache' {
+            $first = Get-AdfaDcProbeGate -ComputerName $script:C2eLive -Ports @(135, 445) -TimeoutMs 100
+            $second = Get-AdfaDcProbeGate -ComputerName $script:C2eLive -Ports @(445, 135) -TimeoutMs 100
+            [string]$first.Cause | Should -Be ''
+            [bool]$first.Open[445] | Should -BeTrue
+            [bool]$first.Open[135] | Should -BeFalse
+            [bool]$second.Open[445] | Should -BeTrue
+            (@($script:C2eProbes | Sort-Object) -join ',') | Should -Be ('{0}:135,{0}:445' -f $script:C2eLive)
+        }
+        It 'reuses the ports the classification measured for a reachable DC and probes only the others' {
+            Get-AdfaDcReachability -HostName $script:C2eLive | Out-Null
+            $before = @($script:C2eProbes).Count
+            $before | Should -Be 3 -Because 'LDAP, WinRM and RPC were probed once by the classification'
+            $gate = Get-AdfaDcProbeGate -ComputerName $script:C2eLive -Ports @(5985, 135, 445) -TimeoutMs 100
+            [string]$gate.Cause | Should -Be ''
+            [bool]$gate.Open[5985] | Should -BeTrue
+            [bool]$gate.Open[135] | Should -BeTrue
+            @($script:C2eProbes).Count | Should -Be ($before + 1)
+            $script:C2eProbes[-1] | Should -Be ('{0}:445' -f $script:C2eLive)
+        }
+        It 'does not call a DC with silent management ports unreachable: the class is not Unreachable, the ports are read from the cache' {
+            $script:C2eManagementOpen = $false
+            (Get-AdfaDcReachability -HostName $script:C2eLive).Class | Should -Be 'NotManageable'
+            $gate = Get-AdfaDcProbeGate -ComputerName $script:C2eLive -Ports @(5985, 135) -TimeoutMs 100
+            [string]$gate.Cause | Should -Be ''
+            [bool]$gate.Open[5985] | Should -BeFalse
+            [bool]$gate.Open[135] | Should -BeFalse
+            @($script:C2eProbes | Where-Object { $_ -like ('{0}:*' -f $script:C2eLive) }).Count | Should -Be 0 -Because 'both ports came from the classification'
+        }
+        It 'words the row of a gated DC as the class and what was not read' {
+            Get-AdfaDcGateText -Cause 'Unreachable, classified once for this run by the reachability probe: x.' -NotRead 'no event log was read.' |
+                Should -Be 'Unreachable, classified once for this run by the reachability probe: x, so no event log was read.'
+        }
+    }
+
+    Context 'Every per-DC section names the class of an unreachable DC and does not probe it again (C14c)' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            $script:C2eProbes = @()
+            $script:C2eResolves = @()
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C2eProbes += ('{0}:{1}' -f $ComputerName.ToLowerInvariant(), $Port); return $false }
+            function Resolve-AdfaHostAddress { param([string]$HostName, [int]$TimeoutMs)
+                $script:C2eResolves += $HostName.ToLowerInvariant()
+                if ($HostName -eq $script:C2eDead) { return [pscustomobject]@{ Ok = $false; Addresses = @(); SocketError = 'HostNotFound'; TimedOut = $false; Error = 'No such host is known.' } }
+                return [pscustomobject]@{ Ok = $true; Addresses = @('192.0.2.10'); SocketError = ''; TimedOut = $false; Error = '' } }
+            function Test-AdfaTcpAddress { param([string]$Address, [int]$Port, [int]$TimeoutMs) $script:C2eProbes += ('{0}:{1}' -f $Address, $Port); [pscustomobject]@{ Outcome = 'Open'; SocketError = ''; TimedOut = $false; Error = '' } }
+            function Test-CommandAvailable { param([string]$Name) return $true }
+            function Test-ModuleAvailable { param([string]$Name) return $true }
+            function Invoke-ExternalCommand { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: no external command may run for these DCs' }
+            function Get-WinEvent { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: no event log may be read for these DCs' }
+            function Get-AdfaUsnRollbackRaw { param([string]$ComputerName) throw 'STUB: no registry may be read for these DCs' }
+            # Classified once, as the run does before the first per-DC section.
+            Get-AdfaDcReachability -HostName $script:C2eDead | Out-Null
+            $script:C2eTargets = @((New-C2eTarget -HostName $script:C2eDead -Scope $script:C2eDomainA), (New-C2eTarget -HostName $script:C2eLive -Scope $script:C2eDomainA))
+        }
+        It '<Name>: every row of the unreachable DC is Not Assessed with the class, the live DC after it is still assessed, and the unreachable DC is never probed' -TestCases $c2eCases {
+            $rows = @(& $Invoke $script:C2eTargets @($script:C2eDomainA) @())
+            $dead = @($rows | Where-Object { (Get-C2eItem $_) -match [regex]::Escape($script:C2eDead) -and (Get-C2eItem $_) -match $Dependent })
+            $live = @($rows | Where-Object { (Get-C2eItem $_) -match [regex]::Escape($script:C2eLive) })
+            $dead.Count | Should -BeGreaterThan 0 -Because 'the unreachable DC has its own rows'
+            foreach ($row in $dead) {
+                $Allowed | Should -Contain (Get-C2eStatus $row)
+                (Get-C2eText $row) | Should -Match 'Unreachable, classified once for this run by the reachability probe: the host name does not resolve'
+            }
+            $live.Count | Should -BeGreaterThan 0 -Because 'the DC after the unreachable one is still handled (a loop over the first DC only fails here)'
+            @($live | Where-Object { (Get-C2eText $_) -match 'classified once for this run' }).Count | Should -Be 0 -Because 'only the classified DC carries the class'
+            @($script:C2eProbes | Where-Object { $_ -like ('{0}:*' -f $script:C2eDead) }).Count | Should -Be 0 -Because 'an unreachable DC is classified once and never probed again'
+            @($script:C2eResolves | Where-Object { $_ -eq $script:C2eDead }).Count | Should -Be 1 -Because 'its name was resolved once, by the classification'
+            @($script:C2eProbes | Where-Object { $_ -like ('{0}:*' -f $script:C2eLive) }).Count | Should -BeGreaterThan 0 -Because 'non-vacuity: the live DC was probed'
+        }
+        It 'probes nothing for an unreachable DC across all fourteen sections together: one name resolution, no port' -TestCases @(@{ Cases = $c2eCases }) {
+            foreach ($case in $Cases) { @(& $case.Invoke @((New-C2eTarget -HostName $script:C2eDead -Scope $script:C2eDomainA)) @($script:C2eDomainA) @()) | Out-Null }
+            @($Cases).Count | Should -Be 14
+            @($script:C2eResolves).Count | Should -Be 1
+            @($script:C2eProbes).Count | Should -Be 0
+        }
+        It 'probes a DC refused on LDAP once on 389 and on nothing else, in every section' -TestCases @(@{ Cases = $c2eCases }) {
+            Clear-AdfaDcPortCache
+            $script:C2eProbes = @()
+            $script:C2eResolves = @()
+            function Resolve-AdfaHostAddress { param([string]$HostName, [int]$TimeoutMs) $script:C2eResolves += $HostName; [pscustomobject]@{ Ok = $true; Addresses = @('192.0.2.99'); SocketError = ''; TimedOut = $false; Error = '' } }
+            function Test-AdfaTcpAddress { param([string]$Address, [int]$Port, [int]$TimeoutMs) $script:C2eProbes += ('{0}:{1}' -f $Address, $Port); [pscustomobject]@{ Outcome = 'Failed'; SocketError = 'ConnectionRefused'; TimedOut = $false; Error = 'refused' } }
+            (Get-AdfaDcReachability -HostName $script:C2eDead).Cause | Should -Be 'Refused'
+            foreach ($case in $Cases) {
+                $rows = @(& $case.Invoke @((New-C2eTarget -HostName $script:C2eDead -Scope $script:C2eDomainA)) @($script:C2eDomainA) @())
+                @($rows | Where-Object { (Get-C2eItem $_) -match [regex]::Escape($script:C2eDead) -and (Get-C2eItem $_) -match $case.Dependent -and (Get-C2eText $_) -match 'every address refused the connection on LDAP \(389\)' }).Count |
+                    Should -BeGreaterThan 0 -Because ('{0} names the refusal' -f $case.Name)
+            }
+            (@($script:C2eProbes) -join ',') | Should -Be '192.0.2.99:389'
+            @($script:C2eResolves).Count | Should -Be 1
+        }
+    }
+
+    Context 'Population rows per scoped domain and the unnamed DC (C2e)' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $false }
+            function Test-CommandAvailable { param([string]$Name) return $true }
+            function Invoke-ExternalCommand { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: no external command may run' }
+        }
+        It '<Name>: a scoped domain with no DC row gets its own Not Assessed row naming the cause; every DC row carries its domain' -TestCases @($c2eCases | Where-Object { $_.Population -ne '' }) {
+            $targets = @((New-C2eTarget -HostName $script:C2eLive -Scope $script:C2eDomainA), (New-C2eTarget -HostName $script:C2eOther -Scope $script:C2eDomainB))
+            $failures = @([pscustomobject]@{ Domain = 'tailspin.contoso.com'; Error = 'Access is denied.' })
+            $scoped = @($script:C2eDomainA, $script:C2eDomainB, 'tailspin.contoso.com', 'empty.fabrikam.com')
+            $rows = @(& $Invoke $targets $scoped $failures)
+            $pop = @($rows | Where-Object { (Get-C2eItem $_).StartsWith($Population) })
+            # Declared population of the gap: the two scoped domains no target carries.
+            (@($pop | ForEach-Object { (Get-C2eItem $_).Substring($Population.Length) } | Sort-Object) -join ',') | Should -Be 'empty.fabrikam.com,tailspin.contoso.com'
+            foreach ($row in $pop) { Get-C2eStatus $row | Should -Be 'Not Assessed' }
+            $failed = @($pop | Where-Object { (Get-C2eItem $_).EndsWith('tailspin.contoso.com') })[0]
+            (Get-C2eText $failed) | Should -Match 'could not be enumerated\. Cause: Access is denied\.'
+            [string]$failed.Scope | Should -Be 'tailspin.contoso.com'
+            $empty = @($pop | Where-Object { (Get-C2eItem $_).EndsWith('empty.fabrikam.com') })[0]
+            (Get-C2eText $empty) | Should -Match 'returned no domain controller for this domain'
+            # Every DC row carries the domain of its target.
+            $other = @($rows | Where-Object { (Get-C2eItem $_) -match [regex]::Escape($script:C2eOther) })
+            $other.Count | Should -BeGreaterThan 0
+            foreach ($row in $other) { [string]$row.Scope | Should -Be $script:C2eDomainB }
+            $mine = @($rows | Where-Object { (Get-C2eItem $_) -match [regex]::Escape($script:C2eLive) })
+            $mine.Count | Should -BeGreaterThan 0
+            foreach ($row in $mine) { [string]$row.Scope | Should -Be $script:C2eDomainA }
+        }
+        It '<Name>: a DC with no host name is a Not Assessed row of its own, never probed, never dropped' -TestCases @($c2eCases | Where-Object { $_.Population -ne '' }) {
+            $rows = @(& $Invoke @((New-C2eTarget -HostName '' -Scope $script:C2eDomainA), (New-C2eTarget -HostName $script:C2eLive -Scope $script:C2eDomainA)) @($script:C2eDomainA) @())
+            $unnamed = @($rows | Where-Object { (Get-C2eItem $_) -match '\(unnamed\)' })
+            $unnamed.Count | Should -BeGreaterThan 0
+            foreach ($row in $unnamed) {
+                Get-C2eStatus $row | Should -Be 'Not Assessed'
+                (Get-C2eText $row) | Should -Match 'no host name'
+                [string]$row.Scope | Should -Be $script:C2eDomainA
+            }
+            @($rows | Where-Object { (Get-C2eItem $_) -match [regex]::Escape($script:C2eLive) }).Count | Should -BeGreaterThan 0
+        }
+        It '<Name>: with no DC and no scoped domain the section is one Not Assessed row, as before' -TestCases @($c2eCases | Where-Object { $_.Population -ne '' }) {
+            # Backup falls back to the local repadmin /showbackup view with no DC list, as before.
+            function Invoke-ExternalCommand { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ StdOut = ''; Error = ''; Success = $true; ExitCode = 0 } }
+            $rows = @(& $Invoke @() @() @())
+            $rows.Count | Should -Be 1
+            Get-C2eStatus $rows[0] | Should -Be 'Not Assessed'
+        }
+        It 'keeps the Item text and status of a reachable DC row unchanged when it is given as a plain host name' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaUsnRollbackRaw { param([string]$ComputerName) [pscustomobject]@{ Readable = $true; Present = $false; Value = $null; Reason = ''; ErrorCode = '' } }
+            $rows = @(Get-AdfaUsnRollbackForensics -DomainControllers @($script:C2eLive) -RpcPortTimeoutMs 100)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be ('USN rollback marker on {0}' -f $script:C2eLive)
+            $rows[0].Status | Should -Be 'Pass'
+            [string]$rows[0].Scope | Should -Be ''
+        }
+    }
+
+    Context 'RestoreIntegrity: unreachable, access denied, absent key and a mixed result are told apart' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($ComputerName -ne $script:C2eOther) }
+        }
+        It 'reads the marker through the seam, one row per DC, each with its own result' {
+            $script:C2eSeamCalls = @()
+            function Get-AdfaUsnRollbackRaw { param([string]$ComputerName)
+                $script:C2eSeamCalls += $ComputerName
+                if ($ComputerName -eq $script:C2eLive) { return [pscustomobject]@{ Readable = $true; Present = $true; Value = 4; Reason = ''; ErrorCode = '' } }
+                # The shape the seam returns for a refusal (Get-AdfaRegistryReadErrorCode): ErrorCode 'AccessDenied'.
+                return [pscustomobject]@{ Readable = $false; Present = $null; Value = $null; Reason = 'Access is denied.'; ErrorCode = 'AccessDenied' } }
+            $targets = @((New-C2eTarget -HostName $script:C2eLive -Scope $script:C2eDomainA), (New-C2eTarget -HostName 'dc2.contoso.com' -Scope $script:C2eDomainA), (New-C2eTarget -HostName $script:C2eOther -Scope $script:C2eDomainB))
+            $rows = @(Get-AdfaUsnRollbackForensics -DomainControllers $targets -ScopedDomains @($script:C2eDomainA, $script:C2eDomainB) -RpcPortTimeoutMs 100)
+            $rows.Count | Should -Be 3
+            ($script:C2eSeamCalls -join ',') | Should -Be ('{0},dc2.contoso.com' -f $script:C2eLive) -Because 'the DC whose SMB port is silent is not read'
+            $rows[0].Status | Should -Be 'Fail'
+            $rows[1].Status | Should -Be 'Not Assessed'
+            $rows[1].Detail | Should -Match '^Access denied: '
+            $rows[1].Detail | Should -Not -Match '(?i)unreachable'
+            $rows[2].Status | Should -Be 'Not Assessed'
+            $rows[2].Detail | Should -Match 'SMB \(445\) not reachable'
+            $rows[2].Detail | Should -Not -Match '(?i)access denied'
+        }
+        It 'reports a key that does not exist as such, not as access denied and not as a pass' {
+            function Get-AdfaUsnRollbackRaw { param([string]$ComputerName) [pscustomobject]@{ Readable = $false; Present = $null; Value = $null; Reason = 'The NTDS Parameters key does not exist - is this host actually a domain controller?'; ErrorCode = '' } }
+            $rows = @(Get-AdfaUsnRollbackForensics -DomainControllers @($script:C2eLive) -RpcPortTimeoutMs 100)
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match 'does not exist'
+            $rows[0].Detail | Should -Not -Match '(?i)access denied'
+        }
+    }
+
+    Context 'C3g: the CIM ports of DcDisk and DcSystem cannot be set from a file' {
+        It '<Label> refuses <Key> whatever it holds, with the reason, and accepts every other key as before' -TestCases @(
+            @{ Label = 'DcDisk'; Key = 'WsmanPort'; Lead = 'DC disk config override' }
+            @{ Label = 'DcDisk'; Key = 'RpcPort'; Lead = 'DC disk config override' }
+            @{ Label = 'DcSystem'; Key = 'WsmanPort'; Lead = 'DC system config override' }
+            @{ Label = 'DcSystem'; Key = 'RpcPort'; Lead = 'DC system config override' }
+        ) {
+            foreach ($value in @(5985, 5986, 135, 1)) {
+                $thrown = $null
+                try {
+                    if ($Label -eq 'DcDisk') { Merge-AdfaDcDiskConfig -BaseConfig $script:Config.DcDisk -Override @{ $Key = $value } | Out-Null }
+                    else { Merge-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Override @{ $Key = $value } | Out-Null }
+                }
+                catch { $thrown = [string]$_.Exception.Message }
+                $thrown | Should -Match ("^{0} names '{1}'\. The ports of this section cannot be set from a file" -f $Lead, $Key) -Because "$Key = $value"
+                $thrown | Should -Match 'default WinRM port \(5985\)'
+                $thrown | Should -Match 'RPC endpoint mapper \(135\)'
+            }
+            # A key the section still takes is still taken.
+            if ($Label -eq 'DcDisk') { (Merge-AdfaDcDiskConfig -BaseConfig $script:Config.DcDisk -Override @{ WarnBelowPercent = 25 })['WarnBelowPercent'] | Should -Be 25 }
+            else { @((Merge-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Override @{ OsLifecycle = @($script:Config.DcSystem.OsLifecycle) })['OsLifecycle']).Count | Should -Be @($script:Config.DcSystem.OsLifecycle).Count }
+        }
+        It 'refuses the DcDisk ports through the one override file, naming the section' {
+            { Resolve-AdfaConfigOverride -Override ('{ "DcDisk": { "RpcPort": 1135 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections } |
+                Should -Throw -ExpectedMessage "*section 'DcDisk'*names 'RpcPort'*cannot be set from a file*"
+        }
+        It 'refuses the DcSystem ports from -DcSystemConfigPath' {
+            $file = Join-Path ([IO.Path]::GetTempPath()) ('adfa_c3g_{0}.json' -f [guid]::NewGuid().ToString('N'))
+            try {
+                Set-Content -LiteralPath $file -Value '{ "WsmanPort": 5986 }' -Encoding UTF8
+                { Import-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Path $file } | Should -Throw -ExpectedMessage "*names 'WsmanPort'*cannot be set from a file*"
+            }
+            finally { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }
+        }
+        It '<Name> opens its CIM session without a port, so the probed port and the connected port are the same default' -TestCases @(
+            @{ Name = 'Get-AdfaDcSystemRaw' }
+            @{ Name = 'Get-AdfaDcDiskRaw' }
+        ) {
+            $fn = @(Get-C2eFunction -Name $Name)
+            $fn.Count | Should -Be 1
+            $opens = @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'New-CimSession' }, $true))
+            $opens.Count | Should -Be 1
+            @($opens[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] }).Count | Should -Be 0
+            $splat = @($opens[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.VariableExpressionAst] -and $_.Splatted })
+            $splat.Count | Should -Be 1
+            $splatName = [string]$splat[0].VariablePath.UserPath
+            $keys = @()
+            foreach ($a in @($fn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true))) {
+                if ($a.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and [string]$a.Left.VariablePath.UserPath -eq $splatName) {
+                    foreach ($h in @($a.Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $false))) { $keys += @($h.KeyValuePairs | ForEach-Object { [string]$_.Item1.Extent.Text }) }
+                }
+                if ($a.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $a.Left.Expression -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                    [string]$a.Left.Expression.VariablePath.UserPath -eq $splatName) { $keys += [string]$a.Left.Member.Extent.Text }
+            }
+            # Declared population: the five things the session is opened with; no Port, no UseSsl.
+            (@($keys | Sort-Object) -join ',') | Should -Be 'ComputerName,Credential,ErrorAction,OperationTimeoutSec,SessionOption'
+        }
+        It 'documents the refusal in the help and the README, and no longer lists the ports as DcDisk or DcSystem keys' {
+            $help = (Get-Content -LiteralPath $script:Target -Raw)
+            $help | Should -Match 'WsmanPort and RpcPort are refused'
+            $readme = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md') -Raw)
+            $readme | Should -Match 'Since v1\.34\.0 `WsmanPort` and `RpcPort` are refused'
+            $readme | Should -Match '`DcDisk` and `-DcSystemConfigPath` refuse them'
+            $readme | Should -Not -Match '`DcDisk` still accepts the two keys'
+            $readme | Should -Not -Match '"WsmanPort": 5985'
+        }
+    }
+
+    Context 'Section wiring (AST)' {
+        It 'no command takes $dcNames: every reference in Invoke-Main is its definition, its emptiness check, or a last-resort fallback' {
+            $refs = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and [string]$n.VariablePath.UserPath -eq 'dcNames' }, $true))
+            $roles = @()
+            foreach ($r in $refs) {
+                $p = $r.Parent
+                if ($p -is [System.Management.Automation.Language.AssignmentStatementAst] -and $p.Left -eq $r) { $roles += 'define'; continue }
+                if ($p -is [System.Management.Automation.Language.MemberExpressionAst] -and [string]$p.Member.Extent.Text -eq 'Count' -and (Get-C2eGuard $r) -eq '$dcNames.Count -eq 0') { $roles += 'empty'; continue }
+                # @($dcNames) as the whole right-hand side of an assignment guarded by "<that variable> is empty".
+                $arr = $p
+                while ($null -ne $arr -and $arr -isnot [System.Management.Automation.Language.ArrayExpressionAst]) { $arr = $arr.Parent }
+                $assign = $null
+                if ($null -ne $arr) { $assign = $arr.Parent; while ($null -ne $assign -and $assign -isnot [System.Management.Automation.Language.AssignmentStatementAst]) { $assign = $assign.Parent } }
+                if ($null -ne $assign -and [string]$assign.Right.Extent.Text -eq '@($dcNames)') {
+                    $lhs = ([string]$assign.Left.Extent.Text).TrimStart('$')
+                    $guard = Get-C2eGuard $assign
+                    if ($guard -match '^@?\(?\$(\w+)\)?\.Count -eq 0$' -and $Matches[1] -eq $lhs) { $roles += ('fallback:{0}' -f $lhs); continue }
+                }
+                $roles += ('OTHER at line {0}: {1}' -f $r.Extent.StartLineNumber, $p.Extent.Text)
+            }
+            # Declared population: two definitions, two emptiness checks, and the last resort of each section
+            # whose targets are enumerated per domain. A new consumer of $dcNames lands in OTHER and fails here.
+            (@($roles | Sort-Object) -join "`n") | Should -Be ((@(
+                        'define', 'define', 'empty', 'empty',
+                        'fallback:c14Targets', 'fallback:c15Targets', 'fallback:dcCertificatesTargets', 'fallback:dcDiagTargets', 'fallback:dcDiskTargets',
+                        'fallback:dcHardeningTargets', 'fallback:dnsExportTargets', 'fallback:dnsTargets', 'fallback:perDcTargets', 'fallback:ridPoolTargets'
+                    ) | Sort-Object) -join "`n")
+            @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.Extent.Text -match '\$dcNames\b' }, $true)).Count | Should -Be 0
+        }
+        It 'takes the per-domain targets once: the C15 targets, its own enumeration only when no per-domain list exists, and the unscoped names last' {
+            $t = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$perDcTargets' }, $true))
+            $t.Count | Should -Be 3
+            $t[0].Right.Extent.Text | Should -Be '@($c15Targets)'
+            $t[1].Right.Extent.Text | Should -Be '@($perDcEnumeration.Targets)'
+            Get-C2eGuard $t[1] | Should -Match '^-not \$c15PerDomain -and '
+            $t[2].Right.Extent.Text | Should -Be '@($dcNames)'
+            Get-C2eGuard $t[2] | Should -Be '$perDcTargets.Count -eq 0'
+            $f = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$perDcFailures' }, $true))
+            $f.Count | Should -Be 2
+            $f[0].Right.Extent.Text | Should -Be '@($c15Failures)'
+            $f[1].Right.Extent.Text | Should -Be '@($perDcEnumeration.Failures)'
+            $own = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcTargetsByDomain' -and (Get-C2eGuard $n) -match '\$c15PerDomain' }, $true))
+            $own.Count | Should -Be 1
+            (Get-C2eGuard $own[0]) | Should -Match '^-not \$c15PerDomain -and '
+        }
+        It 'hands every moved section the per-domain targets, their failures and the scoped domains' {
+            # Declared population: the nine collectors that took $dcNames and now take the per-domain targets.
+            $moved = @('Get-AdfaReplicationHealth', 'Get-AdfaSysvolShareHealth', 'Get-AdfaDfsrEventLog', 'Get-AdfaDcPatchLevel', 'Get-AdfaBackupStatus',
+                'Get-AdfaTimeHierarchyHealth', 'Get-AdfaDsEventLog', 'Get-AdfaUsnRollbackForensics', 'Get-AdfaPortMatrix')
+            foreach ($name in $moved) {
+                $calls = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq $name }.GetNewClosure(), $true))
+                $calls.Count | Should -Be 1 -Because $name
+                (Get-C2eParameter -Call $calls[0] -Name 'DomainControllers').Extent.Text | Should -Be '$perDcTargets' -Because $name
+                if ($name -ne 'Get-AdfaPortMatrix') {
+                    (Get-C2eParameter -Call $calls[0] -Name 'InventoryFailures').Extent.Text | Should -Be '$perDcFailures' -Because $name
+                    (Get-C2eParameter -Call $calls[0] -Name 'ScopedDomains').Extent.Text | Should -Be '$targetDomains' -Because $name
+                }
+            }
+            # The DNS server set of the four DNS sections is the per-domain targets' host names.
+            foreach ($name in @('Get-AdfaDnsAdConsistency', 'Get-AdfaDsaGuidCname', 'Get-AdfaGcConsistency', 'Get-AdfaMsdcsDelegation')) {
+                $calls = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq $name }.GetNewClosure(), $true))
+                $calls.Count | Should -Be 1 -Because $name
+                (Get-C2eParameter -Call $calls[0] -Name 'DnsServers').Extent.Text | Should -Be '$perDcDnsServers' -Because $name
+            }
+        }
+        It 'probes a port only through the gate: Test-TcpPort in the cache and the trust-partner probes only, Test-AdfaDcPort in the gate only' {
+            $tcp = @($script:C2eAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-TcpPort' }, $true) | ForEach-Object { Get-C2eEnclosingFunction $_ })
+            # Declared population: the cache, and the probes of a trust: the trusted domain's own name (135, 389;
+            # not a DC host name) and its partner DC (135, and 5985 for the inbound check). The partner DC may be
+            # a DC of a scoped domain (an intra-forest trust), so both of its probes consult the class first.
+            (@($tcp | Sort-Object) -join ',') | Should -Be 'Get-AdfaTrustHealth,Get-AdfaTrustHealth,Get-AdfaTrustHealth,Test-AdfaDcPort,Test-AdfaRemoteSecureChannel'
+            foreach ($name in @('Get-AdfaTrustHealth', 'Test-AdfaRemoteSecureChannel')) {
+                $fn = @(Get-C2eFunction -Name $name)[0]
+                $cause = @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcReachCause' }, $true))
+                $cause.Count | Should -Be 1 -Because $name
+                $partnerProbe = @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-TcpPort' -and $n.Extent.Text -match '-ComputerName \$(probeHost|remoteHost)\b' }, $true))
+                $partnerProbe.Count | Should -Be 1 -Because $name
+                $cause[0].Extent.StartOffset | Should -BeLessThan $partnerProbe[0].Extent.StartOffset -Because ('{0} consults the class before probing the partner DC' -f $name)
+            }
+            $cached = @($script:C2eAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-AdfaDcPort' }, $true) | ForEach-Object { Get-C2eEnclosingFunction $_ })
+            (@($cached | Sort-Object -Unique) -join ',') | Should -Be 'Get-AdfaDcProbeGate'
+            $gate = @(Get-C2eFunction -Name 'Get-AdfaDcProbeGate')
+            $gate.Count | Should -Be 1
+            $reach = @($gate[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcReachCause' }, $true))
+            $probe = @($gate[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-AdfaDcPort' }, $true))
+            $reach.Count | Should -Be 1
+            $probe.Count | Should -Be 1
+            $reach[0].Extent.StartOffset | Should -BeLessThan $probe[0].Extent.StartOffset -Because 'the class is consulted before any probe'
+        }
+        It 'classifies the DCs before the first section that probes them: the DC DNS client rows are read after the reachability rows, in their old place in the report' {
+            $reachCall = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcReachabilityRows' }, $true))
+            $clientCall = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDcDnsClient' }, $true))
+            $reachCall.Count | Should -Be 1
+            $clientCall.Count | Should -Be 1
+            $clientCall[0].Extent.StartOffset | Should -BeGreaterThan $reachCall[0].Extent.StartOffset
+            $keys = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['DC DNS Client']" }, $true))
+            $keys.Count | Should -Be 2
+            $keys[0].Extent.StartOffset | Should -BeLessThan $reachCall[0].Extent.StartOffset -Because 'the key keeps its place after Domain Controllers'
+            $keys[0].Right.Extent.Text | Should -Be '@()'
+        }
+        It 'counts the DCs of the run from the per-domain targets' {
+            $dcCount = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true) | ForEach-Object { $_.KeyValuePairs } | Where-Object { [string]$_.Item1.Extent.Text -eq 'DcCount' })
+            $dcCount.Count | Should -Be 2
+            foreach ($kv in $dcCount) { $kv.Item2.Extent.Text | Should -Match '\$perDcHosts' }
+        }
+    }
+
+    Context 'Found by an independent review of the diff before commit (C2e, C1b, C14c)' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            $script:C2eProbes = @()
+            $script:C2eResolves = @()
+            # Every probe is recorded; only the domain name answers (a trust partner's domain).
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C2eProbes += ('{0}:{1}' -f $ComputerName.ToLowerInvariant(), $Port); return ($ComputerName -eq $script:C2eDomainB) }
+            # Any name beginning with dc9. does not resolve; every other name resolves and answers LDAP.
+            function Resolve-AdfaHostAddress { param([string]$HostName, [int]$TimeoutMs)
+                $script:C2eResolves += $HostName.ToLowerInvariant()
+                if ($HostName -like 'dc9.*') { return [pscustomobject]@{ Ok = $false; Addresses = @(); SocketError = 'HostNotFound'; TimedOut = $false; Error = 'No such host is known.' } }
+                return [pscustomobject]@{ Ok = $true; Addresses = @('192.0.2.10'); SocketError = ''; TimedOut = $false; Error = '' } }
+            function Test-AdfaTcpAddress { param([string]$Address, [int]$Port, [int]$TimeoutMs) $script:C2eProbes += ('{0}:{1}' -f $Address, $Port); [pscustomobject]@{ Outcome = 'Open'; SocketError = ''; TimedOut = $false; Error = '' } }
+            $script:C2eDeadB = 'dc9.fabrikam.com'
+            # Classified once, as the run does before the first per-DC section.
+            Get-AdfaDcReachability -HostName $script:C2eDead | Out-Null
+            Get-AdfaDcReachability -HostName $script:C2eDeadB | Out-Null
+            $script:C2eClass = 'Unreachable, classified once for this run by the reachability probe: the host name does not resolve'
+            function Get-C2eDeadProbes { @($script:C2eProbes | Where-Object { $_ -like 'dc9.*' }) }
+        }
+
+        It 'GPO: the SYSVOL read of a PDC classified Unreachable keeps the class, probes nothing, and every row names the class - never "did not answer"' {
+            $g1 = '{A1B2C3D4-0000-4000-8000-000000000003}'
+            $g2 = '{A1B2C3D4-0000-4000-8000-000000000004}'
+            $cfg = $script:Config.Gpo
+            $targets = @(
+                [pscustomobject]@{ Guid = $g1; IniPath = ("\\{0}\SYSVOL\contoso.com\Policies\{1}\GPT.INI" -f $script:C2eDead, $g1) }
+                [pscustomobject]@{ Guid = $g2; IniPath = ("\\{0}\SYSVOL\contoso.com\Policies\{1}\GPT.INI" -f $script:C2eDead, $g2) })
+            $s = Get-AdfaGpoSysvolRaw -Pdc $script:C2eDead -Domain $script:C2eDomainA -Targets $targets -Config $cfg
+            $s.PortOk | Should -BeFalse
+            [string]$s.ReachCause | Should -Match ('^' + [regex]::Escape($script:C2eClass))
+            @(Get-C2eDeadProbes).Count | Should -Be 0 -Because 'a PDC classified Unreachable is not probed on 445'
+            $containers = @($g1, $g2 | ForEach-Object { [pscustomobject]@{ Guid = $_; DisplayName = 'Policy'; Version = 65537; Flags = 0; Dn = ('CN={0},CN=Policies,CN=System,DC=contoso,DC=com' -f $_)
+                        FileSysPath = ("\\contoso.com\sysvol\contoso.com\Policies\{0}" -f $_) } })
+            $raw = [pscustomobject]@{ Ok = $true; Refused = $false; Error = ''; ErrorType = ''; Pdc = $script:C2eDead; PdcError = ''; PdcErrorType = ''; DomainDn = 'DC=contoso,DC=com'; Containers = $containers }
+            $rows = @(Get-AdfaGpoDomainFinding -Domain $script:C2eDomainA -Raw $raw -Sysvol $s -Config $cfg)
+            $listing = @($rows | Where-Object { $_.Item -eq ('GPO folder listing: {0}' -f $script:C2eDomainA) })
+            $versions = @($rows | Where-Object { $_.Item -like 'GPO version: {*' })
+            # Declared population: the listing row and one row per container (two).
+            $listing.Count | Should -Be 1
+            $versions.Count | Should -Be 2
+            foreach ($row in @($listing + $versions)) {
+                $row.Status | Should -Be 'Not Assessed'
+                $row.Detail | Should -Match ('^' + [regex]::Escape($script:C2eClass))
+                $row.Detail | Should -Match 'port 445 \(SMB\) of dc9\.contoso\.com was not probed'
+                $row.Detail | Should -Not -Match 'did not answer'
+            }
+            # Mixed: a PDC that was NOT classified and whose 445 is silent still says it did not answer.
+            $live = Get-AdfaGpoSysvolRaw -Pdc $script:C2eLive -Domain $script:C2eDomainA -Targets $targets -Config $cfg
+            [string]$live.ReachCause | Should -Be ''
+            $raw.Pdc = $script:C2eLive
+            $liveListing = @(@(Get-AdfaGpoDomainFinding -Domain $script:C2eDomainA -Raw $raw -Sysvol $live -Config $cfg) | Where-Object { $_.Item -like 'GPO folder listing: *' })[0]
+            $liveListing.Detail | Should -Match '^Unreachable: port 445 \(SMB\) of dc1\.contoso\.com did not answer'
+            @($script:C2eProbes | Where-Object { $_ -eq ('{0}:445' -f $script:C2eLive) }).Count | Should -Be 1 -Because 'non-vacuity: the live PDC was probed once'
+        }
+
+        It 'Trusts: a partner DC classified Unreachable is probed neither by the trust check nor by the inbound check, and the row names its class' {
+            function Get-ADTrust { param([Parameter(ValueFromRemainingArguments)]$a)
+                [pscustomobject]@{ Name = 'fabrikam.com'; Source = 'contoso.com'; Target = 'fabrikam.com'; Direction = 'Bidirectional'; TrustType = 'Uplevel'
+                    IntraForest = $true; ForestTransitive = $false; SelectiveAuthentication = $false; SIDFilteringForestAware = $false
+                    SIDFilteringQuarantined = $false; TGTDelegation = $false; UsesRC4Encryption = $false; Created = (Get-Date); Modified = (Get-Date) } }
+            function Test-CommandAvailable { param([string]$Name) return $true }
+            # nltest /dsgetdc names the partner domain's DC that the classification found unreachable.
+            function Invoke-ExternalCommand { param([string]$FilePath, [string]$Arguments, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
+                [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = ("           DC: \\{0}`r`n      Address: \\192.0.2.20" -f $script:C2eDeadB); Error = '' } }
+            function Test-AdfaSecureChannel { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ Result = 'Verified'; Tool = 'nltest'; Detail = 'outbound verified' } }
+            function Invoke-Command { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: nothing may be run on a DC classified Unreachable' }
+            # 1. The trusted domain's name does not answer either, so the reachability check reaches the
+            #    partner DC itself - which it must not probe.
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C2eProbes += ('{0}:{1}' -f $ComputerName.ToLowerInvariant(), $Port); return $false }
+            $down = @(Get-AdfaTrustHealth -DomainName $script:C2eDomainA -AdParams @{} -RpcPortTimeoutMs 100)
+            $down.Count | Should -Be 1
+            @(Get-C2eDeadProbes).Count | Should -Be 0 -Because 'the partner DC was classified Unreachable once and is probed by name on no port again'
+            (@($script:C2eProbes) -join ',') | Should -Be 'fabrikam.com:135,fabrikam.com:389' -Because 'non-vacuity: the trusted domain''s own name (not a DC host name) is still probed, as before'
+            $down[0].VerifyDetail | Should -Match ('Partner DC dc9\.fabrikam\.com: ' + [regex]::Escape($script:C2eClass))
+            $down[0].VerifyDetail | Should -Match 'it was not probed again by the trust check'
+            # 2. The trusted domain's name answers, so the inbound check runs - and names the class without a probe.
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C2eProbes += ('{0}:{1}' -f $ComputerName.ToLowerInvariant(), $Port); return ($ComputerName -eq $script:C2eDomainB) }
+            $script:C2eProbes = @()
+            $rows = @(Get-AdfaTrustHealth -DomainName $script:C2eDomainA -AdParams @{} -RpcPortTimeoutMs 100)
+            $rows.Count | Should -Be 1
+            @(Get-C2eDeadProbes).Count | Should -Be 0
+            $rows[0].InboundSecureChannel | Should -Be 'Not Assessed'
+            $rows[0].VerifyDetail | Should -Match ('Partner DC dc9\.fabrikam\.com: ' + [regex]::Escape($script:C2eClass))
+            $rows[0].VerifyDetail | Should -Match 'WinRM \(5985\) on dc9\.fabrikam\.com was not probed'
+            @($script:C2eProbes | Where-Object { $_ -eq 'fabrikam.com:135' }).Count | Should -Be 1
+            # Mixed: a partner DC that was not classified is still probed for the inbound check.
+            $live = Test-AdfaRemoteSecureChannel -PartnerDomain $script:C2eDomainB -VerifyDomain $script:C2eDomainA -PartnerDc $script:C2eOther -RpcPortTimeoutMs 100
+            $live.Result | Should -Be 'Not Assessed'
+            $live.Detail | Should -Match '^WinRM \(5985\) not reachable on dc1\.fabrikam\.com'
+            @($script:C2eProbes | Where-Object { $_ -eq ('{0}:5985' -f $script:C2eOther) }).Count | Should -Be 1
+        }
+
+        It 'DcCertificates: with the LDAPS handshake asked for, a DC classified Unreachable is not probed on 636 and its row names the class' {
+            $script:C2eTls = @()
+            function Get-AdfaDcTlsCertificateRaw { param([string]$ComputerName, [int]$Port, [int]$ConnectTimeoutMs, [int]$HandshakeTimeoutMs) $script:C2eTls += $ComputerName; throw 'STUB: no handshake in this test' }
+            function Get-AdfaDcCertificateDirectoryRaw { param([string]$HostName, [string]$Server, [hashtable]$AdParams)
+                [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Server = $Server; ObjectCount = 1; AttributeReturned = $false; Values = @() } }
+            $targets = @((New-C2eTarget -HostName $script:C2eDead -Scope $script:C2eDomainA), (New-C2eTarget -HostName $script:C2eLive -Scope $script:C2eDomainA))
+            $rows = @(Get-AdfaDcCertificates -DomainControllers $targets -Config $script:Config.DcCertificates -Now (Get-Date) -IncludeHandshake $true -ScopedDomains @($script:C2eDomainA) -PortTimeoutMs 100)
+            $dead = @($rows | Where-Object { $_.Item -eq ('LDAPS certificate: {0}' -f $script:C2eDead) })
+            $dead.Count | Should -Be 1
+            $dead[0].Status | Should -Be 'Not Assessed'
+            $dead[0].Detail | Should -Match ('^' + [regex]::Escape($script:C2eClass))
+            $dead[0].Detail | Should -Match 'port 636 was not probed and no handshake was attempted'
+            @(Get-C2eDeadProbes).Count | Should -Be 0
+            @($script:C2eTls).Count | Should -Be 0
+            # Mixed: the live DC's 636 is silent - the shared-probe wording, not the class.
+            $live = @($rows | Where-Object { $_.Item -eq ('LDAPS certificate: {0}' -f $script:C2eLive) })[0]
+            $live.Detail | Should -Match '^Unreachable: port 636 did not accept a TCP connection'
+            @($script:C2eProbes | Where-Object { $_ -eq ('{0}:636' -f $script:C2eLive) }).Count | Should -Be 1
+        }
+
+        It 'SYSVOL backlog: a peer classified Unreachable is not probed and its row names the class; the live peer after it is still handled' {
+            function Test-ModuleAvailable { param([string]$Name) return $true }
+            function Get-DfsrBacklog { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: no backlog may be read in this test' }
+            $rows = @(Get-AdfaSysvolBacklog -DomainName $script:C2eDomainA -ReferenceDc 'pdc.contoso.com' -DomainControllers @($script:C2eDead, $script:C2eLive) -RpcPortTimeoutMs 100)
+            $rows.Count | Should -Be 2
+            $dead = @($rows | Where-Object { $_.Item -eq ('Backlog with {0}' -f $script:C2eDead) })[0]
+            $dead.Status | Should -Be 'Not Assessed'
+            $dead.Detail | Should -Match ('^' + [regex]::Escape($script:C2eClass))
+            $dead.Detail | Should -Match 'neither direction could be measured'
+            @(Get-C2eDeadProbes).Count | Should -Be 0
+            $live = @($rows | Where-Object { $_.Item -eq ('Backlog with {0}' -f $script:C2eLive) })[0]
+            $live.Detail | Should -Be 'RPC (135) not reachable, so neither direction could be measured.'
+        }
+
+        It 'Lingering scan: a DC classified Unreachable is not probed and its row names the class; the reference DC is skipped and the live DC still handled' {
+            function Test-CommandAvailable { param([string]$Name) return $true }
+            function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; PDCEmulator = 'pdc.contoso.com' } }
+            function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
+                foreach ($h in @('pdc.contoso.com', $script:C2eDead, $script:C2eLive)) { [pscustomobject]@{ HostName = $h } } }
+            function Get-AdfaDsaInventory { param([hashtable]$AdParams) [pscustomobject]@{ DnsHostName = 'pdc.contoso.com'; DsaGuid = '11111111-2222-4333-8444-555555555555' } }
+            function Invoke-ExternalCommand { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: repadmin may not run in this test' }
+            $rows = @(Get-AdfaLingeringObjectScan -DomainName $script:C2eDomainA -AdParams @{} -RpcPortTimeoutMs 100)
+            # Declared population: the two DCs other than the reference.
+            (@($rows | ForEach-Object { $_.Item }) -join ',') | Should -Be ('Advisory scan: {0},Advisory scan: {1}' -f $script:C2eDead, $script:C2eLive)
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match ('^' + [regex]::Escape($script:C2eClass))
+            $rows[0].Detail | Should -Match 'the advisory scan was not run against it'
+            $rows[1].Detail | Should -Be 'DC not reachable (RPC/135).'
+            @(Get-C2eDeadProbes).Count | Should -Be 0
+        }
+
+        It 'DNS: the DC DNS client of a DC classified Unreachable names the class, and its adapters are not read' {
+            function Get-AdfaDcNetworkRaw { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: no adapter may be read in this test' }
+            $state = Get-AdfaDcNetworkState -ComputerName $script:C2eDead -Config $script:Config.Dns -PortTimeoutMs 100 -OperationTimeoutSec 5
+            $state.Status | Should -Be 'Unreachable'
+            $state.Cause | Should -Match ('^' + [regex]::Escape($script:C2eClass))
+            $state.Cause | Should -Match 'the adapters were not read'
+            $targets = @((New-C2eTarget -HostName $script:C2eDead -Scope $script:C2eDomainA), (New-C2eTarget -HostName $script:C2eLive -Scope $script:C2eDomainA))
+            $rows = @(Get-AdfaDcDnsClient -DomainControllers $targets -Config $script:Config.Dns -ScopedDomains @($script:C2eDomainA) -PortTimeoutMs 100 -OperationTimeoutSec 5)
+            $dead = @($rows | Where-Object { $_.Item -eq ('DNS client: {0}' -f $script:C2eDead) })[0]
+            $dead.Status | Should -Be 'Not Assessed'
+            $dead.Detail | Should -Match ('^' + [regex]::Escape($script:C2eClass))
+            $live = @($rows | Where-Object { $_.Item -eq ('DNS client: {0}' -f $script:C2eLive) })[0]
+            $live.Detail | Should -Match '^Unreachable: neither WinRM'
+            @(Get-C2eDeadProbes).Count | Should -Be 0
+        }
+
+        It 'DNS: the record export of a DC classified Unreachable names the class and exports nothing' {
+            function Test-ModuleAvailable { param([string]$Name) return $true }
+            function Import-Module { param([Parameter(ValueFromRemainingArguments)]$a) }
+            function Get-AdfaDnsServerZoneNames { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: no zone may be listed in this test' }
+            $csv = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $csv | Out-Null
+            $targets = @((New-C2eTarget -HostName $script:C2eDead -Scope $script:C2eDomainA), (New-C2eTarget -HostName $script:C2eLive -Scope $script:C2eDomainA))
+            $rows = @(Export-AdfaDnsRecord -DomainControllers $targets -Config $script:Config.Dns -CsvPath $csv -ScopedDomains @($script:C2eDomainA) -PortTimeoutMs 100)
+            $dead = @($rows | Where-Object { $_.Item -eq ('Record export (population): {0}' -f $script:C2eDead) })[0]
+            $dead.Status | Should -Be 'Not Assessed'
+            $dead.Detail | Should -Match ('^' + [regex]::Escape($script:C2eClass))
+            $dead.Detail | Should -Match 'nothing was exported'
+            $live = @($rows | Where-Object { $_.Item -eq ('Record export (population): {0}' -f $script:C2eLive) })[0]
+            $live.Detail | Should -Match '^Unreachable: RPC \(135\) did not answer'
+            @(Get-ChildItem -LiteralPath $csv).Count | Should -Be 0
+            @(Get-C2eDeadProbes).Count | Should -Be 0
+        }
+
+        It 'DNS: the locator CNAME read of a DNS server classified Unreachable names the class in the stale-record population row' {
+            function Test-ModuleAvailable { param([string]$Name) return $true }
+            function Import-Module { param([Parameter(ValueFromRemainingArguments)]$a) }
+            function Get-AdfaDnsServerRecord { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ Outcome = 'Absent'; Targets = @(); Cause = '' } }
+            function Get-AdfaDnsResolverRecord { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ Outcome = 'Absent'; Targets = @(); Cause = '' } }
+            function Resolve-AdfaDnsServerZone { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: no zone may be resolved in this test' }
+            $dsa = @([pscustomobject]@{ DnsHostName = $script:C2eLive; DsaGuid = '11111111-2222-4333-8444-555555555555' })
+            $rows = @(Get-AdfaDnsLocatorFinding -DomainName $script:C2eDomainA -ForestRoot $script:C2eDomainA -Dcs @() -DnsServers @($script:C2eDead, $script:C2eLive) -Config $script:Config.Dns -DsaInventory $dsa -PortTimeoutMs 100)
+            $pop = @($rows | Where-Object { $_.Item -eq ('Stale DC records (population): {0}' -f $script:C2eDomainA) })
+            $pop.Count | Should -Be 1
+            $text = Get-C2eText $pop[0]
+            $text | Should -Match ('CNAME on dc9\.contoso\.com: ' + [regex]::Escape($script:C2eClass))
+            $text | Should -Match 'CNAME on dc1\.contoso\.com: unreachable'
+            @(Get-C2eDeadProbes).Count | Should -Be 0
+        }
+
+        It 'RestoreIntegrity: access denied is told by the exception type, on a host whose messages are not in English' {
+            # The shapes RegistryKey reports a refusal in (Learn, read 2026-11-17), as PowerShell hands them on.
+            $plain = New-Object System.UnauthorizedAccessException -ArgumentList 'Acesso negado.'
+            $security = New-Object System.Security.SecurityException -ArgumentList 'Zugriff verweigert.'
+            $wrapped = New-Object System.Management.Automation.MethodInvocationException -ArgumentList 'Exception calling "OpenRemoteBaseKey" with "2" argument(s): "Acesso negado."', $plain
+            Get-AdfaRegistryReadErrorCode -Exception $plain | Should -Be 'AccessDenied'
+            Get-AdfaRegistryReadErrorCode -Exception $security | Should -Be 'AccessDenied'
+            Get-AdfaRegistryReadErrorCode -Exception $wrapped | Should -Be 'AccessDenied'
+            # Not a refusal: a host that is not found (IOException) and no exception at all.
+            Get-AdfaRegistryReadErrorCode -Exception (New-Object System.IO.IOException -ArgumentList 'Access is denied.') | Should -Be ''
+            Get-AdfaRegistryReadErrorCode -Exception $null | Should -Be ''
+            # The seam hands the helper's answer on as its ErrorCode (AST: the one assignment in its catch).
+            $seam = @(Get-C2eFunction -Name 'Get-AdfaUsnRollbackRaw')
+            $seam.Count | Should -Be 1
+            $assign = @($seam[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$out.ErrorCode' }, $true))
+            $assign.Count | Should -Be 1
+            $assign[0].Right.Extent.Text | Should -Be 'Get-AdfaRegistryReadErrorCode -Exception $_.Exception'
+            # And the collector reads that code: a localised refusal is "Access denied", not "unreachable".
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaUsnRollbackRaw { param([string]$ComputerName) [pscustomobject]@{ Readable = $false; Present = $null; Value = $null; Reason = 'Acesso negado.'; ErrorCode = 'AccessDenied' } }
+            $rows = @(Get-AdfaUsnRollbackForensics -DomainControllers @((New-C2eTarget -HostName $script:C2eLive -Scope $script:C2eDomainA), (New-C2eTarget -HostName 'dc2.contoso.com' -Scope $script:C2eDomainA)) -ScopedDomains @($script:C2eDomainA) -RpcPortTimeoutMs 100)
+            $rows.Count | Should -Be 2
+            foreach ($row in $rows) { $row.Status | Should -Be 'Not Assessed'; $row.Detail | Should -Match '^Access denied: ' }
+        }
+
+        It 'DcSecureChannel: a DC with no host name is one "Secure channel: (unnamed)" row, with no password row and no probe; the DC after it is still read' {
+            $script:C2eComputerCalls = @()
+            function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
+                [pscustomobject]@{ HostName = $null; Name = 'DC0'; ComputerObjectDN = 'CN=DC0,OU=Domain Controllers,DC=contoso,DC=com' }
+                [pscustomobject]@{ HostName = $script:C2eLive; Name = 'DC1'; ComputerObjectDN = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' } }
+            function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a) $script:C2eComputerCalls += (@($a) -join ' '); [pscustomobject]@{ PasswordLastSet = (Get-Date).AddDays(-3) } }
+            $rows = @(Get-AdfaDcSecureChannel -DomainName $script:C2eDomainA -AdParams @{} -RpcPortTimeoutMs 100)
+            # Declared population: the unnamed DC's one row, then the live DC's password and channel rows.
+            (@($rows | ForEach-Object { $_.Item }) -join ',') | Should -Be ('Secure channel: (unnamed),Machine-account password: {0},Secure channel: {0}' -f $script:C2eLive)
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match 'no host name'
+            @($script:C2eComputerCalls).Count | Should -Be 1 -Because 'only the named DC''s password is read'
+            @($script:C2eProbes | Where-Object { $_ -like ':*' }).Count | Should -Be 0 -Because 'an empty name is never probed'
+            @($script:C2eProbes | Where-Object { $_ -eq ('{0}:5985' -f $script:C2eLive) }).Count | Should -Be 1
+        }
+
+        It 'MsdcsDelegation: an NS host missing from an incomplete DC list is Not Assessed naming the domains left out, never "not a known DC"' {
+            $obs = @([pscustomobject]@{ Server = $script:C2eLive; SoaApex = @('_msdcs.contoso.com'); NsTargets = @($script:C2eLive, $script:C2eOther); GlueMissing = @(); GlueUnknown = @() })
+            $incomplete = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot $script:C2eDomainA -Observations $obs -AdDcHosts @($script:C2eLive) -IncompleteDomains @($script:C2eDomainB))
+            @($incomplete | Where-Object { $_.Item -like '*NS host not a known DC' }).Count | Should -Be 0
+            $na = @($incomplete | Where-Object { $_.Item -like '*NS hosts not cross-checked' })
+            $na.Count | Should -Be 1
+            $na[0].Status | Should -Be 'Not Assessed'
+            $na[0].Detail | Should -Match 'The domain controllers of fabrikam\.com could not be listed'
+            $na[0].Detail | Should -Match 'dc1\.fabrikam\.com'
+            # Complete list: the same stray is the Warning it was.
+            $complete = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot $script:C2eDomainA -Observations $obs -AdDcHosts @($script:C2eLive))
+            @($complete | Where-Object { $_.Item -like '*NS host not a known DC' -and $_.Status -eq 'Warning' }).Count | Should -Be 1
+            # Incomplete list but every NS host known: still a Pass, the known hosts suffice.
+            $known = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot $script:C2eDomainA -Observations $obs -AdDcHosts @($script:C2eLive, $script:C2eOther) -IncompleteDomains @('tailspin.contoso.com'))
+            @($known | Where-Object { $_.Item -like '*NS hosts are known DCs' -and $_.Status -eq 'Pass' }).Count | Should -Be 1
+            # Wiring: Invoke-Main hands the collector the gap, and the collector hands it to the verdict.
+            $call = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaMsdcsDelegation' }, $true))
+            $call.Count | Should -Be 1
+            (Get-C2eParameter -Call $call[0] -Name 'IncompleteDomains').Extent.Text | Should -Be '$perDcGapDomains'
+            $inner = @(@(Get-C2eFunction -Name 'Get-AdfaMsdcsDelegation')[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaMsdcsDelegationVerdict' }, $true))
+            $inner.Count | Should -Be 1
+            (Get-C2eParameter -Call $inner[0] -Name 'IncompleteDomains').Extent.Text | Should -Be '@($IncompleteDomains)'
+        }
+
+        It 'Get-AdfaDcHostSet: every DC once, in order, whatever domain lists it and in whatever case; no empty name' {
+            $targets = @(
+                (New-C2eTarget -HostName $script:C2eLive -Scope $script:C2eDomainA)
+                (New-C2eTarget -HostName $script:C2eLive -Scope 'north.contoso.com')
+                (New-C2eTarget -HostName ($script:C2eLive.ToUpperInvariant() + '.') -Scope 'south.contoso.com')
+                (New-C2eTarget -HostName '' -Scope $script:C2eDomainA)
+                $script:C2eOther
+                (New-C2eTarget -HostName $script:C2eOther -Scope $script:C2eDomainB))
+            # Declared population: two distinct DCs among six targets.
+            (@(Get-AdfaDcHostSet -Targets $targets) -join ',') | Should -Be ('{0},{1}' -f $script:C2eLive, $script:C2eOther)
+            @(Get-AdfaDcHostSet -Targets @()).Count | Should -Be 0
+            # Invoke-Main takes the DNS server set and the DC count from it.
+            $assign = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$perDcHosts' }, $true))
+            $assign.Count | Should -Be 1
+            $assign[0].Right.Extent.Text | Should -Be '@(Get-AdfaDcHostSet -Targets $perDcTargets)'
+        }
+
+        It 'Get-AdfaDomainDcHostName: one domain''s DCs only; another domain''s never stand in for a domain whose list failed' {
+            $targets = @((New-C2eTarget -HostName $script:C2eLive -Scope $script:C2eDomainA), (New-C2eTarget -HostName $script:C2eOther -Scope $script:C2eDomainB))
+            $failures = @([pscustomobject]@{ Domain = 'tailspin.contoso.com'; Error = 'STUB: ADWS unreachable' })
+            $scoped = @($script:C2eDomainA, $script:C2eDomainB, 'tailspin.contoso.com')
+            (@((Get-AdfaDomainDcHostName -Domain $script:C2eDomainB -Targets $targets -InventoryFailures $failures -ScopedDomains $scoped).HostNames) -join ',') | Should -Be $script:C2eOther
+            $failed = Get-AdfaDomainDcHostName -Domain 'tailspin.contoso.com' -Targets $targets -InventoryFailures $failures -ScopedDomains $scoped
+            @($failed.HostNames).Count | Should -Be 0
+            [bool]$failed.Gap.Failed | Should -BeTrue
+            [string]$failed.Gap.Error | Should -Be 'STUB: ADWS unreachable'
+            # The unscoped fallback names: a single scoped domain's own; on a multi-domain run, nobody's.
+            $unscoped = @($script:C2eLive, 'dc2.contoso.com')
+            (@((Get-AdfaDomainDcHostName -Domain $script:C2eDomainA -Targets $unscoped -ScopedDomains @($script:C2eDomainA)).HostNames) -join ',') | Should -Be ('{0},dc2.contoso.com' -f $script:C2eLive)
+            $multi = Get-AdfaDomainDcHostName -Domain $script:C2eDomainB -Targets $unscoped -ScopedDomains @($script:C2eDomainA, $script:C2eDomainB)
+            @($multi.HostNames).Count | Should -Be 0
+            [int]$multi.Gap.WithoutDomain | Should -Be 2
+            # Invoke-Main's backlog takes its peers from it, with the per-domain targets and their failures.
+            $call = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaDomainDcHostName' }, $true))
+            $call.Count | Should -Be 1
+            (Get-C2eParameter -Call $call[0] -Name 'Targets').Extent.Text | Should -Be '$perDcTargets'
+            (Get-C2eParameter -Call $call[0] -Name 'InventoryFailures').Extent.Text | Should -Be '$perDcFailures'
+            (Get-C2eParameter -Call $call[0] -Name 'ScopedDomains').Extent.Text | Should -Be '$targetDomains'
+        }
+
+        It 'enumerates per domain for every section that uses the per-domain targets: the list names each, and the guard names each switch' {
+            $assign = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$perDcSections' }, $true))
+            $assign.Count | Should -Be 1
+            $listed = @($assign[0].Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { [string]$_.Value })
+            # Declared population: the twelve sections whose branches take the per-domain targets.
+            (@($listed | Sort-Object) -join ',') | Should -Be 'Backup,DcSystem,DnsAdConsistency,DsaCname,DsEvents,GcConsistency,MsdcsDelegation,PortMatrix,Replication,RestoreIntegrity,Sysvol,TimeHierarchy'
+            $enumCall = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$perDcEnumeration' }, $true))
+            $enumCall.Count | Should -Be 1
+            $guard = $enumCall[0].Parent
+            while ($null -ne $guard -and $guard -isnot [System.Management.Automation.Language.IfStatementAst]) { $guard = $guard.Parent }
+            $guardVars = @($guard.Clauses[0].Item1.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { [string]$_.VariablePath.UserPath })
+            # Derived: every reference to the per-domain targets inside a section branch is covered by the list or the guard.
+            $perDcVars = @('perDcTargets', 'perDcFailures', 'perDcHosts', 'perDcDnsServers', 'perDcGapDomains')
+            $refs = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $perDcVars -contains [string]$n.VariablePath.UserPath }.GetNewClosure(), $true))
+            $checked = 0
+            foreach ($r in $refs) {
+                $conditions = @()
+                $p = $r.Parent
+                while ($null -ne $p -and $p -ne $script:C2eMain) {
+                    if ($p -is [System.Management.Automation.Language.IfStatementAst]) { $conditions += @($p.Clauses | ForEach-Object { $_.Item1 }) }
+                    $p = $p.Parent
+                }
+                $sections = @(); $switches = @()
+                foreach ($c in $conditions) {
+                    foreach ($cmd in @($c.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-SectionSelected' }, $true))) { $sections += [string]$cmd.CommandElements[1].Value }
+                    $switches += @($c.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and [string]$n.VariablePath.UserPath -like 'Include*' }, $true) | ForEach-Object { [string]$_.VariablePath.UserPath })
+                }
+                if (@($sections).Count -eq 0 -and @($switches).Count -eq 0) { continue }
+                $checked++
+                $covered = (@($sections | Where-Object { $listed -contains $_ }).Count -gt 0) -or (@($switches | Where-Object { $guardVars -contains $_ }).Count -gt 0)
+                $covered | Should -BeTrue -Because ('line {0} uses ${1} under sections [{2}] and switches [{3}]' -f $r.Extent.StartLineNumber, $r.VariablePath.UserPath, ($sections -join ','), ($switches -join ','))
+            }
+            $checked | Should -BeGreaterThan 15 -Because 'non-vacuity: the section branches that take the per-domain targets were found'
+            @('IncludeRepadmin', 'IncludeDcdiag' | Where-Object { $guardVars -notcontains $_ }).Count | Should -Be 0
+        }
+
+        It 'enumerates each domain once per run: the C15 enumeration marks its list per-domain, so the shared enumeration is skipped after it' {
+            $c15 = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$c15PerDomain' }, $true))
+            # Declared population: the C14 value, then $true where C15 enumerates per domain itself.
+            (@($c15 | ForEach-Object { $_.Right.Extent.Text }) -join ',') | Should -Be '$c14PerDomain,$true'
+            $own = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$c15Enumeration' }, $true))
+            $own.Count | Should -Be 1
+            (Get-C2eGuard $c15[1]) | Should -Be (Get-C2eGuard $own[0]) -Because 'the flag is set in the block that enumerates'
+            (Get-C2eGuard $own[0]) | Should -Match '^-not \$c14PerDomain -and '
         }
     }
 }

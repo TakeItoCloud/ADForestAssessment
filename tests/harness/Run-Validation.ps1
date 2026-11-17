@@ -1836,7 +1836,7 @@ Assert-Equal 25 ([double]$diskMerged.WarnBelowPercent) 'Disk override: a supplie
 Assert-Equal 10 ([double]$diskMerged.FailBelowPercent) 'Disk override: a threshold the file omits keeps its built-in value'
 Assert-True ([string]$diskMerged.ThresholdSource -match 'C:\\cfg\\disk\.json.* for WarnBelowPercent; tool default, not a Microsoft value, for FailBelowPercent') 'Disk override: the file is cited for the key it supplied and the rest stay labelled tool defaults'
 Assert-Equal 20 ([double]$diskCfg.WarnBelowPercent) 'Disk override: the built-in table is not modified by a merge'
-Assert-Equal 'tool default, not a Microsoft value' ([string](Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ RpcPort = 1135 } -OverrideSource 'C:\cfg\disk.json').ThresholdSource) 'Disk override: a file that changes only a port leaves the threshold label alone'
+Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @{ RpcPort = 1135 } -OverrideSource 'C:\cfg\disk.json' } "names 'RpcPort'. The ports of this section cannot be set from a file" 'Disk override: a port is refused since v1.34.0 - the CIM session always uses the default ports (PORT-PLAN C3g)'
 Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override 'abc' } 'single object' 'Disk override: a string is refused'
 Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override @(1, 2) } 'single object' 'Disk override: an array is refused'
 Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $diskCfg -Override ('{}' | ConvertFrom-Json) } 'empty object' 'Disk override: an empty object is refused'
@@ -3120,7 +3120,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.33.0' ([string]$script:Config.Version) 'C14: version 1.33.0 in the script (bumped by PORT-PLAN C4b)'
+Assert-Equal '1.34.0' ([string]$script:Config.Version) 'C14: version 1.34.0 in the script (bumped by PORT-PLAN C2e, C1b, C14c, C3g)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3186,7 +3186,7 @@ Assert-Equal 'Pass,Not Assessed,Not Assessed' ($c14PwdStatus -join ',') 'C14 rev
 Assert-Equal 'Not Assessed' ([string](Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Records = @((& $c14Pwd 'none' $null 512)) }) -Now $c14Now -Population (& $c14Pop)).Status) 'C14 review: a record with no pwdLastSet is Not Assessed, never skipped'
 Assert-Equal 'Not Assessed' ([string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Records = @([pscustomobject]@{ Name = 'odd'; HasLastLogon = $true; LastLogonUtc = 'x'; WhenCreatedUtc = $null; PwdLastSetRaw = $null }) }) -Interval $c14Int -StaleDays 90 -Now $c14Now -Population (& $c14Pop)).Status) 'C14 review: a returned account with an unreadable lastLogonTimestamp is Not Assessed, never skipped'
 $c14UnreachRow = Get-AdfaDcReachVerdict -HostName 'dc1.contoso.com' -Record ([pscustomobject]@{ Class = 'Unreachable'; Cause = 'Unresolved'; Addresses = @(); PortText = ''; TimeoutMs = 3000; Error = ''; SocketError = 'HostNotFound' }) -Config $c14Reach
-Assert-True ($c14UnreachRow.Detail -notmatch '(?i)every check' -and $c14UnreachRow.Detail -match 'Time Hierarchy and Site Health') 'C14 review: the Unreachable row names the sections that reuse it, and does not promise every check is Not Assessed'
+Assert-True ($c14UnreachRow.Detail -notmatch '(?i)every check' -and $c14UnreachRow.Detail -match 'The sections that connect to this domain controller reuse this result' -and $c14UnreachRow.Detail -match 'Rows read from the directory about it .* are still graded') 'C14 review (reworded by C14c): the Unreachable row says the sections that connect to the DC reuse it, and that the directory rows are still graded'
 Assert-Equal 'DFSR,FRS,Transitional,Unknown,Unknown' ((@(@('Present', 'Absent'), @('Absent', 'Present'), @('Present', 'Present'), @('Absent', 'Absent'), @('Present', 'Unread')) | ForEach-Object { Resolve-AdfaSysvolEngineDc -Dfsr $_[0] -Frs $_[1] }) -join ',') 'C14 SYSVOL: the engine of a DC from its two objects (declared population: five pairs)'
 $c14Dc = { param([string]$H, [string]$D, [string]$F, $Ro = $false) [pscustomobject]@{ HostName = $H; IsReadOnly = $Ro; ComputerDn = 'CN=X'; Dfsr = $D; DfsrError = 'x'; Frs = $F; FrsError = 'x' } }
 $c14Eng = { param($Dcs) @(Get-AdfaSysvolEngineVerdict -DomainName 'contoso.com' -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; DomainDn = 'DC=contoso,DC=com'; GlobalState = 'Present'; GlobalFlags = 48; GlobalError = ''; Dcs = @($Dcs) }) | Where-Object { $_.Item -eq 'SYSVOL replication engine: contoso.com' })[0].Status }
@@ -3213,7 +3213,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.33.0' ([string]$script:Config.Version) 'C15: version 1.33.0 in the script (bumped by PORT-PLAN C4b)'
+Assert-Equal '1.34.0' ([string]$script:Config.Version) 'C15: version 1.34.0 in the script (bumped by PORT-PLAN C2e, C1b, C14c, C3g)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3312,6 +3312,66 @@ Assert-True ($c15Partial.Count -eq 1 -and $c15Partial[0].Count -eq 'at least 2' 
 Assert-Equal '(not set)' ([string](Get-AdfaW32TimeConfigRow -ComputerName $c15Dc -Read (& $c15TimeRead @((& $c15Reg 'Type' 0 'NT5DS'), (& $c15Reg 'NtpServer' 1 ''), (& $c15Reg 'AnnounceFlags' 2 $null))) -Config $c15Cfg).AnnounceFlags) 'C15 review INV-015: a value whose key is absent (StdRegProv 2) is not set'
 $c15AllRows = @($c15Trust) + @($c15Counts) + @($c15Groups) + @($c15Dis) + @($c15Gpo) + @($c15EvRows) + @($c15Time) + @($c15Cross)
 Assert-Equal 0 @($c15AllRows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Status'] -and @('Info', 'Not Assessed') -notcontains [string]$_.Status }).Count 'C15: no inventory row is Pass, Warning or Fail'
+# --- PORT-PLAN C2e, C1b, C14c, C3g: the probe gate, the population rows, the refused CIM ports.
+$c2eDead = 'dc9.contoso.com'
+$c2eLive = 'dc1.contoso.com'
+Assert-Equal 'Unreachable, classified once for this run by the reachability probe: x, so nothing was read.' (Get-AdfaDcGateText -Cause 'Unreachable, classified once for this run by the reachability probe: x.' -NotRead 'nothing was read.') 'C14c: the gate text is the class, then what was not read'
+$c2eGate = & {
+    $script:C2eValProbes = @()
+    function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) $script:C2eValProbes += ('{0}:{1}' -f $ComputerName, $Port); return $true }
+    function Resolve-AdfaHostAddress { param([string]$HostName, [int]$TimeoutMs) [pscustomobject]@{ Ok = $false; Addresses = @(); SocketError = 'HostNotFound'; TimedOut = $false; Error = 'No such host is known.' } }
+    Clear-AdfaDcPortCache
+    Get-AdfaDcReachability -HostName $c2eDead | Out-Null
+    $dead = Get-AdfaDcProbeGate -ComputerName $c2eDead -Ports @(135, 445, 5985) -TimeoutMs 100
+    $live = Get-AdfaDcProbeGate -ComputerName $c2eLive -Ports @(135, 445) -TimeoutMs 100
+    $again = Get-AdfaDcProbeGate -ComputerName $c2eLive -Ports @(445) -TimeoutMs 100
+    Clear-AdfaDcPortCache
+    [pscustomobject]@{ Dead = $dead; Live = $live; Again = $again; Probes = @($script:C2eValProbes) }
+}
+Assert-True ([string]$c2eGate.Dead.Cause -match '^Unreachable, classified once for this run by the reachability probe: the host name does not resolve') 'C14c gate: a DC classified Unreachable returns the class as the cause'
+Assert-Equal 0 @($c2eGate.Dead.Open.Values | Where-Object { $_ }).Count 'C14c gate: every port of an unreachable DC is closed (declared population: 135, 445, 5985)'
+Assert-Equal '' ([string]$c2eGate.Live.Cause) 'C1b gate: a DC not classified has no cause'
+Assert-True ([bool]$c2eGate.Live.Open[135] -and [bool]$c2eGate.Live.Open[445] -and [bool]$c2eGate.Again.Open[445]) 'C1b gate: a DC not classified is probed and answers'
+Assert-Equal 'dc1.contoso.com:135,dc1.contoso.com:445' (@($c2eGate.Probes) -join ',') 'C1b/C14c gate: the unreachable DC is probed on no port, the other once per port in the run'
+$c2eTargets = @([pscustomobject]@{ HostName = $c2eLive; Scope = 'contoso.com' })
+$c2ePop = @(Get-AdfaDcPopulationRow -Targets $c2eTargets -InventoryFailures @([pscustomobject]@{ Domain = 'fabrikam.com'; Error = 'Access is denied.' }) -ScopedDomains @('contoso.com', 'fabrikam.com', 'north.contoso.com') -Area 'Backup' -Label 'Directory backup' -NothingRead 'Nothing was read.')
+Assert-Equal 'Directory backup (population): fabrikam.com|Not Assessed,Directory backup (population): north.contoso.com|Not Assessed' (@($c2ePop | ForEach-Object { "{0}|{1}" -f $_.Item, $_.Status }) -join ',') 'C2e: a population row for each scoped domain no target carries (declared population: fabrikam.com, north.contoso.com), none for contoso.com'
+Assert-True ([string]$c2ePop[0].Detail -match 'could not be enumerated\. Cause: Access is denied\.' -and [string]$c2ePop[1].Detail -match 'returned no domain controller') 'C2e: the failed enumeration and the empty one are told apart'
+$c2eRep = @(Get-AdfaDcPopulationRow -Targets @() -ScopedDomains @('contoso.com') -Area 'Replication' -Label 'Replication health' -NothingRead 'Nothing.' -Shape 'DomainController')
+Assert-True ($c2eRep.Count -eq 1 -and [string]$c2eRep[0].DomainController -eq 'Replication health (population): contoso.com' -and [string]$c2eRep[0].Scope -eq 'contoso.com' -and $null -ne $c2eRep[0].PSObject.Properties['PartnerCount']) 'C2e: the replication population row has the replication row shape'
+Assert-Equal 0 @(Get-AdfaDcPopulationRow -Targets $c2eTargets -ScopedDomains @('contoso.com') -Area 'Backup' -Label 'Directory backup' -NothingRead 'x').Count 'C2e: a domain a target carries needs no population row'
+foreach ($c3gKey in @('WsmanPort', 'RpcPort')) {
+    Assert-Throws { Merge-AdfaDcDiskConfig -BaseConfig $script:Config.DcDisk -Override @{ $c3gKey = 5985 } } ("names '{0}'. The ports of this section cannot be set from a file" -f $c3gKey) ("C3g: DcDisk refuses {0}, whatever it holds" -f $c3gKey)
+    Assert-Throws { Merge-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Override @{ $c3gKey = 135 } } ("names '{0}'. The ports of this section cannot be set from a file" -f $c3gKey) ("C3g: DcSystem refuses {0}, whatever it holds" -f $c3gKey)
+}
+Assert-Equal 25 ([double](Merge-AdfaDcDiskConfig -BaseConfig $script:Config.DcDisk -Override @{ WarnBelowPercent = 25 }).WarnBelowPercent) 'C3g: DcDisk still takes its thresholds'
+# --- Found by the independent review of the diff before commit (C2e, C14c).
+$c2eSet = @(Get-AdfaDcHostSet -Targets @([pscustomobject]@{ HostName = $c2eLive; Scope = 'contoso.com' }, [pscustomobject]@{ HostName = $c2eLive; Scope = 'north.contoso.com' }, 'DC1.CONTOSO.COM.', [pscustomobject]@{ HostName = ''; Scope = 'contoso.com' }, 'dc1.fabrikam.com'))
+Assert-Equal 'dc1.contoso.com,dc1.fabrikam.com' ($c2eSet -join ',') 'C2e review: the DC host set holds each DC once, whatever domain lists it and in whatever case (declared population: two DCs among five targets)'
+$c2eTwo = @([pscustomobject]@{ HostName = $c2eLive; Scope = 'contoso.com' }, [pscustomobject]@{ HostName = 'dc1.fabrikam.com'; Scope = 'fabrikam.com' })
+$c2ePeersFailed = Get-AdfaDomainDcHostName -Domain 'north.contoso.com' -Targets $c2eTwo -InventoryFailures @([pscustomobject]@{ Domain = 'north.contoso.com'; Error = 'ADWS unreachable' }) -ScopedDomains @('contoso.com', 'fabrikam.com', 'north.contoso.com')
+Assert-True (@($c2ePeersFailed.HostNames).Count -eq 0 -and [bool]$c2ePeersFailed.Gap.Failed -and [string]$c2ePeersFailed.Gap.Error -eq 'ADWS unreachable') 'C2e review: a domain whose DC list failed gets no other domain''s DCs, and its gap names the cause'
+Assert-Equal 'dc1.fabrikam.com' ((Get-AdfaDomainDcHostName -Domain 'fabrikam.com' -Targets $c2eTwo -ScopedDomains @('contoso.com', 'fabrikam.com')).HostNames -join ',') 'C2e review: a domain''s own DCs only'
+Assert-Equal 'dc1.contoso.com,dc2.contoso.com' ((Get-AdfaDomainDcHostName -Domain 'contoso.com' -Targets @($c2eLive, 'dc2.contoso.com') -ScopedDomains @('contoso.com')).HostNames -join ',') 'C2e review: on a single-domain run the unscoped names are that domain''s, as before'
+Assert-Equal 0 @((Get-AdfaDomainDcHostName -Domain 'fabrikam.com' -Targets @($c2eLive, 'dc2.contoso.com') -ScopedDomains @('contoso.com', 'fabrikam.com')).HostNames).Count 'C2e review: on a multi-domain run the unscoped names stand in for no domain'
+$c2eObs = @([pscustomobject]@{ Server = $c2eLive; SoaApex = @('_msdcs.contoso.com'); NsTargets = @($c2eLive, 'dc1.fabrikam.com'); GlueMissing = @(); GlueUnknown = @() })
+$c2eMsdcs = @(Get-AdfaMsdcsDelegationVerdict -ForestRoot 'contoso.com' -Observations $c2eObs -AdDcHosts @($c2eLive) -IncompleteDomains @('fabrikam.com'))
+Assert-True (@($c2eMsdcs | Where-Object { $_.Item -like '*NS hosts not cross-checked' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'fabrikam\.com could not be listed' }).Count -eq 1 -and @($c2eMsdcs | Where-Object { $_.Status -eq 'Warning' }).Count -eq 0) 'C2e review: an NS host missing from an incomplete DC list is Not Assessed naming the domain left out, never a Warning'
+Assert-Equal 'Warning' ([string]@(@(Get-AdfaMsdcsDelegationVerdict -ForestRoot 'contoso.com' -Observations $c2eObs -AdDcHosts @($c2eLive)) | Where-Object { $_.Item -like '*NS host not a known DC' })[0].Status) 'C2e review: with a complete DC list the same NS host is the Warning it was'
+Assert-Equal 'AccessDenied' (Get-AdfaRegistryReadErrorCode -Exception (New-Object System.Management.Automation.MethodInvocationException -ArgumentList 'Acesso negado.', (New-Object System.UnauthorizedAccessException -ArgumentList 'Acesso negado.'))) 'C14c review: a refused remote registry read is access denied by its exception type, in any language'
+Assert-Equal '' (Get-AdfaRegistryReadErrorCode -Exception (New-Object System.IO.IOException -ArgumentList 'Access is denied.')) 'C14c review: an exception of another type is not access denied, whatever its text'
+$c2eGpo = & {
+    function Resolve-AdfaHostAddress { param([string]$HostName, [int]$TimeoutMs) [pscustomobject]@{ Ok = $false; Addresses = @(); SocketError = 'HostNotFound'; TimedOut = $false; Error = 'No such host is known.' } }
+    function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) throw 'STUB: no probe' }
+    Clear-AdfaDcPortCache
+    Get-AdfaDcReachability -HostName $c2eDead | Out-Null
+    $sysvol = Get-AdfaGpoSysvolRaw -Pdc $c2eDead -Domain 'contoso.com' -Targets @() -Config $script:Config.Gpo
+    $raw = [pscustomobject]@{ Ok = $true; Refused = $false; Error = ''; ErrorType = ''; Pdc = $c2eDead; PdcError = ''; PdcErrorType = ''; DomainDn = 'DC=contoso,DC=com'; Containers = @() }
+    $rows = @(Get-AdfaGpoDomainFinding -Domain 'contoso.com' -Raw $raw -Sysvol $sysvol -Config $script:Config.Gpo)
+    Clear-AdfaDcPortCache
+    @($rows | Where-Object { $_.Item -eq 'GPO folder listing: contoso.com' })[0]
+}
+Assert-True ([string]$c2eGpo.Detail -match '^Unreachable, classified once for this run by the reachability probe: the host name does not resolve' -and [string]$c2eGpo.Detail -notmatch 'did not answer') 'C14c review: the GPO folder listing of a PDC classified Unreachable names the class, never a probe that was not made'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
