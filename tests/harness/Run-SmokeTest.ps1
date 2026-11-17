@@ -346,6 +346,22 @@ function Get-ADComputer {
         $certObject | Add-Member -NotePropertyName 'userCertificate' -NotePropertyValue @($script:SmokeCertValid.RawData, $script:SmokeCertExpired.RawData)
         return $certObject
     }
+    # C14 (STALE-001, review): the declared population, the enabled computers, told apart by the stale
+    # filter without its time term. The default property set (no -Properties); three computers.
+    if ($LDAPFilter -match '^\(&\(objectCategory=computer\)' -and $LDAPFilter -notmatch '<=') {
+        if ($PSBoundParameters.ContainsKey('Properties')) { throw 'STUB: the population read asked for a property list' }
+        $script:SmokePopulationCalls += ("computer {0}" -f $Server)
+        if ($script:SmokeStaleFail) { throw [System.UnauthorizedAccessException]'STUB: population read refused' }
+        return @(foreach ($n in @('DC1', 'WS-OLD', 'WS1')) { [pscustomobject]@{ SamAccountName = ("{0}$" -f $n); Name = $n; Enabled = $true; ObjectClass = 'computer' } })
+    }
+    # C14 (STALE-001): the stale computer read, told apart by its filter: one workstation with no logon
+    # for 200 days. Listed properties only.
+    if ($LDAPFilter -match 'lastLogonTimestamp<=') {
+        if (@($Properties) -contains '*' -or @($Properties).Count -eq 0) { throw 'STUB: the stale read asked for every property' }
+        $script:SmokeStaleCalls += ("computer {0}" -f $Server)
+        if ($script:SmokeStaleFail) { throw [System.UnauthorizedAccessException]'STUB: stale read refused' }
+        return [pscustomobject]@{ SamAccountName = 'WS-OLD$'; lastLogonTimestamp = [int64]$now.AddDays(-200).ToFileTimeUtc(); whenCreated = $now.AddDays(-900); userAccountControl = 4096 }
+    }
     if (-not [string]::IsNullOrWhiteSpace($LDAPFilter)) {
         if ($script:SmokeLapsFail -or $script:SmokeLapsComputerFail) { throw 'STUB: computer query refused' }
         foreach ($p in @($Properties)) {
@@ -528,6 +544,32 @@ function Get-ADGroupMember { param([Parameter(ValueFromRemainingArguments)]$a) t
 function Get-ADUser { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubUserNamed = ConvertTo-StubArgument -Given $a
     if ($script:SmokePrivFail -and [string]$stubUserNamed['LDAPFilter'] -match 'servicePrincipalName|4194304') { throw [System.UnauthorizedAccessException]'STUB: roast read refused' }
+    # C14 (STALE-001/002, review): the declared population, the enabled users, told apart by the stale
+    # filter without its time term. The default property set (no -Properties); five users.
+    if ([string]$stubUserNamed['LDAPFilter'] -match '^\(&\(objectCategory=person\)' -and [string]$stubUserNamed['LDAPFilter'] -notmatch '<=') {
+        if ($stubUserNamed.ContainsKey('Properties')) { throw 'STUB: the population read asked for a property list' }
+        if ([string]::IsNullOrWhiteSpace([string]$stubUserNamed['Server'])) { throw 'STUB: the population read must name its domain' }
+        $script:SmokePopulationCalls += ("user {0}" -f [string]$stubUserNamed['Server'])
+        if ($script:SmokeStaleFail) { throw [System.UnauthorizedAccessException]'STUB: population read refused' }
+        return @(foreach ($n in @('old.user', 'never.user', 'old.pwd', 'new.starter', 'recent.user')) { [pscustomobject]@{ SamAccountName = $n; Name = $n; Enabled = $true; ObjectClass = 'user' } })
+    }
+    # C14 (STALE-001/002): the stale reads, told apart by their filter. The property list must be the
+    # listed one, never every property, and the read must name its domain. Two users without a logon
+    # for a year (one never logged on, created two years ago) and, for the password read, one password
+    # set two years ago and one pwdLastSet 0. Times are raw FILETIME Int64, whenCreated a DateTime.
+    if ([string]$stubUserNamed['LDAPFilter'] -match 'lastLogonTimestamp<=|pwdLastSet<=') {
+        $staleAsked = @(@($stubUserNamed['Properties']) | ForEach-Object { [string]$_ })
+        if ($staleAsked -contains '*' -or $staleAsked.Count -eq 0) { throw 'STUB: the stale read asked for every property' }
+        if ([string]::IsNullOrWhiteSpace([string]$stubUserNamed['Server'])) { throw 'STUB: the stale read must name its domain' }
+        $script:SmokeStaleCalls += ("user {0}" -f [string]$stubUserNamed['Server'])
+        if ($script:SmokeStaleFail) { throw [System.UnauthorizedAccessException]'STUB: stale read refused' }
+        if ([string]$stubUserNamed['LDAPFilter'] -match 'pwdLastSet<=') {
+            return @([pscustomobject]@{ SamAccountName = 'old.pwd'; pwdLastSet = [int64]$now.AddDays(-730).ToFileTimeUtc(); userAccountControl = 512 }
+                [pscustomobject]@{ SamAccountName = 'new.starter'; pwdLastSet = [int64]0; userAccountControl = 512 })
+        }
+        return @([pscustomobject]@{ SamAccountName = 'old.user'; lastLogonTimestamp = [int64]$now.AddDays(-365).ToFileTimeUtc(); whenCreated = $now.AddDays(-900); userAccountControl = 512 }
+            [pscustomobject]@{ SamAccountName = 'never.user'; whenCreated = $now.AddDays(-730); userAccountControl = 512 })
+    }
     [pscustomobject]@{ PasswordLastSet=$now.AddDays(-30); SamAccountName='krbtgt' } }
 # C10 (PrivilegedAccounts, PrivilegedHygiene, Kerberos): one small directory per domain, keyed by the
 # -Server the read names. The Get-ADDomain stub gives every domain the same DN, so every object here
@@ -645,6 +687,16 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     }
     if ($script:SmokeDnsDsa -and [string]$stubNamed['Identity'] -eq 'CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,CN=Configuration,DC=contoso,DC=com') {
         return [pscustomobject]@{ DistinguishedName = [string]$stubNamed['Identity']; ObjectClass = 'server'; dNSHostName = 'dc1.contoso.com' }
+    }
+    # C14 (SYSVOL-004): the DFSR global settings (msDFSR-Flags 48, Eliminated), each DC's DFSR SYSVOL
+    # subscription (present) and its NTFRS subscriber (not found, thrown as the module's identity-not-
+    # found type), each read from the domain named by -Server, never without one.
+    $stubIdentity = [string]$stubNamed['Identity']
+    if ($stubIdentity -like 'CN=DFSR-GlobalSettings,CN=System,*' -or $stubIdentity -like 'CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,*' -or $stubIdentity -like 'CN=Domain System Volume (SYSVOL share),CN=NTFRS Subscriptions,*') {
+        if ([string]::IsNullOrWhiteSpace([string]$stubNamed['Server'])) { throw 'STUB: a SYSVOL engine object must be read from its own domain' }
+        if ($stubIdentity -like 'CN=Domain System Volume (SYSVOL share),*') { throw (New-Object SmokeStub.ADIdentityNotFoundException ("Cannot find an object with identity: '{0}'" -f $stubIdentity)) }
+        if ($stubIdentity -like 'CN=DFSR-GlobalSettings,*') { return [pscustomobject]@{ DistinguishedName = $stubIdentity; ObjectClass = 'msDFSR-GlobalSettings'; 'msDFSR-Flags' = 48 } }
+        return [pscustomobject]@{ DistinguishedName = $stubIdentity; ObjectClass = 'msDFSR-Subscription' }
     }
     # C10: told apart by what they ask for - the member and delegation property lists hold
     # primaryGroupID, no other section's does - and by the configuration searches under CN=Sites and
@@ -764,7 +816,7 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
 # C13: Resolve-DnsName is present only in the DNS scenario ($script:SmokeDnsResolver), so every other pass
 # keeps the shape it had: no DNS query tool on this host.
 $script:SmokeDnsResolver = $false
-function Test-CommandAvailable { param([string]$Name) return ($Name -eq 'dcdiag.exe' -or ($script:SmokeDnsResolver -and $Name -eq 'Resolve-DnsName')) }
+function Test-CommandAvailable { param([string]$Name) return ($Name -eq 'dcdiag.exe' -or ($script:SmokeDnsResolver -and $Name -eq 'Resolve-DnsName') -or ($script:SmokeW32tm -and $Name -eq 'w32tm.exe')) }
 # C11 (DcDiagnostics): dcdiag, answered in the shape the dcdiag command reference prints (Learn,
 # read 2026-11-16): a banner, the initial Connectivity block under "Testing server: <site>\<DC>",
 # then the test's own block. CheckSDRefDom and CrossRefValidation answer one verdict per partition
@@ -819,6 +871,19 @@ function New-StubDcdiagOutput { param([string]$Dc, [string]$Test, [string]$Mode)
 $script:SmokeDnsCells = 'PASS PASS PASS PASS PASS PASS n/a'
 function Invoke-ExternalCommand {
     param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
+    if ($script:SmokeW32tm -and $FilePath -eq 'w32tm.exe') {
+        # C14: read-only w32tm forms only; any other switch fails the run here.
+        if ($Arguments -notmatch '^/(stripchart|query) /computer:\S+') { throw ("STUB: w32tm asked for '{0}', which this harness does not answer" -f $Arguments) }
+        $script:SmokeW32tmCalls += $Arguments
+        $w32Out = 'time.contoso.com,0x8'
+        if ($Arguments -match '^/stripchart /computer:(\S+)') {
+            $w32Offset = '0.500'
+            if ($Matches[1] -like 'dc2.*') { $w32Offset = '400.500' }
+            $w32Out = ("Tracking {0} [192.0.2.10:123].`r`nRdtscStart,RdtscEnd,FileTime,RoundtripDelay,NtpOffset`r`n1,2,3,0.020,{1}`r`n1,2,3,0.020,{1}`r`n1,2,3,0.020,{1}" -f $Matches[1], $w32Offset)
+        }
+        elseif ($Arguments -match '/configuration') { $w32Out = "Type: NTP (Local)`r`nNtpServer: time.contoso.com,0x8 (Local)" }
+        return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; OutFile = $OutFile; StdOut = $w32Out }
+    }
     if ($FilePath -ne 'dcdiag.exe') { throw ("STUB: only dcdiag.exe is answered by this harness, not {0}" -f $FilePath) }
     $script:SmokeDcdiagCalls += [pscustomobject]@{ Arguments = $Arguments; Timeout = $TimeoutSeconds; Retries = $Retries }
     $test = ([regex]::Match($Arguments, '/test:(\S+)')).Groups[1].Value
@@ -889,6 +954,44 @@ function Resolve-DnsName { param([string]$Name, [string]$Type, [string]$Server, 
     if ($Type -eq 'A' -and $Name -eq 'dc1.contoso.com') { return [pscustomobject]@{ Name = $Name; Type = 'A'; IPAddress = '192.0.2.10' } }
     throw ("{0} : DNS name does not exist" -f $Name) }
 function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+# C14 (REACH-001/002): the two probe seams, so no pass makes a real DNS lookup or TCP connection. Every
+# DC resolves to 192.0.2.10 and answers every port ('Open'); 'Unresolved' answers HostNotFound, as the
+# resolver does for a name with no record; 'Refused' resolves and refuses every port. Every call is
+# recorded, so the harness can show each DC is classified once per run.
+$script:SmokeReachMode = 'Open'
+$script:SmokeReachCalls = @()
+function Resolve-AdfaHostAddress { param([string]$HostName, [int]$TimeoutMs)
+    $script:SmokeReachCalls += ("resolve {0}" -f $HostName)
+    if ($script:SmokeReachMode -eq 'Unresolved') { return [pscustomobject]@{ Ok = $false; Addresses = @(); SocketError = 'HostNotFound'; TimedOut = $false; Error = 'No such host is known.' } }
+    [pscustomobject]@{ Ok = $true; Addresses = @('192.0.2.10'); SocketError = ''; TimedOut = $false; Error = '' } }
+function Test-AdfaTcpAddress { param([string]$Address, [int]$Port, [int]$TimeoutMs)
+    $script:SmokeReachCalls += ("tcp {0}:{1}" -f $Address, $Port)
+    if ($script:SmokeReachMode -eq 'Refused') { return [pscustomobject]@{ Outcome = 'Failed'; SocketError = 'ConnectionRefused'; TimedOut = $false; Error = 'No connection could be made because the target machine actively refused it.' } }
+    [pscustomobject]@{ Outcome = 'Open'; SocketError = ''; TimedOut = $false; Error = '' } }
+# C14 (SITE-001): the netlogon.log file seam, in the shape Get-AdfaNetlogonLogRaw returns: the end of a
+# log holding one NO_CLIENT_SITE line, for a fictional client in 198.51.100.0/24, and one unrelated line.
+# $script:SmokeNetlogonDenied makes it refuse the read as access denied. Every path asked is recorded.
+$script:SmokeNetlogonDenied = $false
+$script:SmokeNetlogonCalls = @()
+function Get-AdfaNetlogonLogRaw { param([string]$Path, [int]$MaxBytes)
+    $script:SmokeNetlogonCalls += $Path
+    if ($script:SmokeNetlogonDenied) { return [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Text = ''; Error = 'Access to the path is denied.'; ErrorType = 'System.UnauthorizedAccessException'; HResult = -2147024891; Path = $Path; Partial = $false; BytesRead = 0; FileLength = [int64]0 } }
+    $text = "11/17 09:00:01 [SESSION] [1234] CONTOSO: NlSessionSetup: Try Session setup`r`n11/17 09:05:02 [MISC] [1234] CONTOSO: NO_CLIENT_SITE: WS77 198.51.100.77`r`n"
+    [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = $text; Error = ''; ErrorType = ''; HResult = 0; Path = $Path; Partial = $true; BytesRead = $text.Length; FileLength = [int64]20000000 } }
+# C14 (SYSVOL-004): the module's "identity not found" exception, by type name, for the NTFRS subscriber
+# that a DFSR-only DC does not have.
+if ($null -eq ('SmokeStub.ADIdentityNotFoundException' -as [type])) {
+    Add-Type -TypeDefinition 'namespace SmokeStub { public class ADIdentityNotFoundException : System.Exception { public ADIdentityNotFoundException(string m) : base(m) { } } }' -WarningAction SilentlyContinue
+}
+# C14 (STALE-001/002): the stale reads refused, for the failing-collectors pass.
+$script:SmokeStaleFail = $false
+$script:SmokeStaleCalls = @()
+# C14 review: the declared-population reads, kept apart from the stale reads.
+$script:SmokePopulationCalls = @()
+# C14 (TIME-001): w32tm answered only in the time pass ($script:SmokeW32tm), in the shape the /rdtsc CSV
+# documents: dc1 0.5 s and dc2 400.5 s from the host running the assessment.
+$script:SmokeW32tm = $false
+$script:SmokeW32tmCalls = @()
 # C5: the TLS handshake seam. Test-TcpPort above says every port answers, so without this stub a
 # run with -IncludeLdapsHandshake would make a real DNS lookup and a real TCP connection to
 # dc1.contoso.com:636. It answers in the shape the real seam returns: the valid certificate, as
@@ -1298,6 +1401,40 @@ else { Check $false 'Privileged Hygiene CSV exists' }
 # Site GC coverage is derived from the inventory alone, so it must produce a real verdict here.
 $gcRows = @($smokeFindings | Where-Object { $_.Section -eq 'Site Global Catalog Coverage' })
 Check (@($gcRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 1) 'Site GC coverage passes for a stub DC that is a writeable GC in its site'
+# C14: reachability classes, subnets and clients without a site, stale enabled objects, SYSVOL engine -
+# each wired into its existing section and graded from the stubs. The DC is classified once for the whole
+# run: one name resolution and three TCP probes (389, 5985, 135), although three sections read the class.
+$c14Reach = @($smokeFindings | Where-Object { $_.Section -eq 'Port Reachability' -and $_.Item -like 'DC reachability*' })
+Check (@($c14Reach | Where-Object { $_.Item -eq 'DC reachability: dc1.contoso.com' -and $_.Status -eq 'Pass' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'C14 REACH: the stub DC is classified Reachable and reported in Port Reachability, scoped to its domain'
+Check (@($script:SmokeReachCalls | Where-Object { $_ -eq 'resolve dc1.contoso.com' }).Count -eq 1 -and @($script:SmokeReachCalls | Where-Object { $_ -like 'tcp *' }).Count -eq 3) ("C14 REACH: the DC is resolved once and probed on 389, 5985 and 135 once each for the whole run ({0})" -f ($script:SmokeReachCalls -join ', '))
+Check (@($smokeFindings | Where-Object { $_.Section -eq 'Port Reachability' -and $_.Item -eq 'dc1.contoso.com' }).Count -eq 1) 'C14 REACH: the port matrix row is kept next to the reachability rows'
+$c14Site = @($smokeFindings | Where-Object { $_.Section -eq 'Site Health' })
+Check (@($c14Site | Where-Object { $_.Item -eq 'Subnets without a site: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C14 SITE: the stub subnet carries a site, so Subnets without a site passes'
+Check (@($c14Site | Where-Object { $_.Item -eq 'Clients without a site: dc1.contoso.com' -and $_.Status -eq 'Warning' -and $_.Scope -eq 'contoso.com' -and $_.Detail -notmatch '198\.51\.100' }).Count -eq 1) 'C14 SITE: the NO_CLIENT_SITE line of the stub log is a Warning, with the address kept out of the text'
+Check (@($script:SmokeNetlogonCalls) -join ',') -eq '\\dc1.contoso.com\ADMIN$\debug\netlogon.log' ("C14 SITE: netlogon.log is read once, over ADMIN$ of the DC ({0})" -f (@($script:SmokeNetlogonCalls) -join ','))
+$c14SiteCsv = Join-Path $result.CsvPath 'Site Health.csv'
+if (Test-Path $c14SiteCsv) { Check (@(Import-Csv $c14SiteCsv | Where-Object { $_.Item -eq 'Clients without a site: dc1.contoso.com' -and $_.Clients -eq 'WS77 198.51.100.77' }).Count -eq 1) 'C14 SITE: the client name and address are in the Clients column' }
+else { Check $false 'C14 SITE: Site Health CSV exists' }
+$c14Stale = @($smokeFindings | Where-Object { $_.Section -eq 'Stale Objects' })
+Check (@($c14Stale | Where-Object { $_.Item -eq 'Inactive enabled users' -and $_.Status -eq 'Warning' -and $_.Detail -match '^2 enabled user' -and $_.Detail -match '1 of them never logged on' -and $_.Detail -match 'msDS-LogonTimeSyncInterval is not set' }).Count -eq 1) 'C14 STALE: two stale users, one never logged on, with the logon-sync caveat'
+Check (@($c14Stale | Where-Object { $_.Item -eq 'Inactive enabled computers' -and $_.Status -eq 'Warning' -and $_.Detail -match '^1 enabled computer' }).Count -eq 1) 'C14 STALE: one stale computer'
+Check (@($c14Stale | Where-Object { $_.Item -eq 'Enabled users with an old password' -and $_.Status -eq 'Warning' -and $_.Detail -match '^1 enabled user' -and $_.Detail -match '1 more must change' }).Count -eq 1) 'C14 STALE: one old password, and pwdLastSet 0 counted as must-change, not graded'
+Check (@($c14Stale | Where-Object { $_.Detail -match 'old\.user|never\.user|old\.pwd' }).Count -eq 0) 'C14 STALE: no account name in any Detail'
+Check (@($script:SmokeStaleCalls | Where-Object { $_ -match ' contoso\.com$' }).Count -eq 3) ("C14 STALE: three stale reads, each sent to the domain ({0})" -f ($script:SmokeStaleCalls -join ', '))
+Check ((@($script:SmokePopulationCalls) -join ',') -eq 'user contoso.com,computer contoso.com') ("C14 STALE review: the enabled user and computer populations counted once each, from the domain ({0})" -f (@($script:SmokePopulationCalls) -join ', '))
+Check (@($c14Stale | Where-Object { $_.Item -eq 'Inactive enabled users' -and $_.Detail -match 'The read saw 5 enabled user account' }).Count -eq 1) 'C14 STALE review: the inactive users row states its declared population (five enabled users)'
+# The Population and AgeNotKnown columns are in the section CSV, not in the consolidated one.
+$c14StaleCsv = Join-Path $result.CsvPath 'Stale Objects.csv'
+if (Test-Path $c14StaleCsv) {
+    $c14StaleCols = @(Import-Csv $c14StaleCsv)
+    Check (@($c14StaleCols | Where-Object { $_.Item -eq 'Inactive enabled users' -and $_.Population -eq '5' }).Count -eq 1) 'C14 STALE review: the inactive users row carries its population (five enabled users) in the Population column'
+    Check (@($c14StaleCols | Where-Object { $_.Item -eq 'Inactive enabled computers' -and $_.Population -eq '3' }).Count -eq 1) 'C14 STALE review: the inactive computers row carries its population (three enabled computers)'
+    Check (@($c14StaleCols | Where-Object { $_.Item -eq 'Enabled users with an old password' -and $_.Population -eq '5' -and $_.AgeNotKnown -eq '0' -and $_.MustChangeAtNextLogon -eq '1' }).Count -eq 1) 'C14 STALE review: the password row carries its population, one must-change and no password of unknown age'
+}
+else { Check $false 'C14 STALE review: Stale Objects CSV exists' }
+$c14Sysvol = @($smokeFindings | Where-Object { $_.Section -eq 'SYSVOL / DFSR' })
+Check (@($c14Sysvol | Where-Object { $_.Item -eq 'SYSVOL replication engine: contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match 'Eliminated' }).Count -eq 1) 'C14 SYSVOL: the stub domain replicates SYSVOL with DFSR, corroborated by msDFSR-Flags 48'
+Check (@($c14Sysvol | Where-Object { $_.Item -eq 'SYSVOL engine: dc1.contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'C14 SYSVOL: the stub DC has its engine row'
 
 Write-Host ""
 Write-Host ("Output bundle: {0}" -f $result.OutputRoot)
@@ -1691,6 +1828,51 @@ if (Test-Path $result2.JsonPath) {
     Check ([string]$pp[0].Scope -eq 'contoso.com') ("JSON: section row value readable (Scope={0})" -f [string]$pp[0].Scope)
 }
 
+# C14, per scoped domain: one reachability row and one clients-without-a-site row per DC of each domain
+# (the stub gives every domain the same host name, so the DC is still probed only once), one stale row
+# per kind and one SYSVOL engine row per domain, each carrying its own domain and read from it.
+$c14Reach2 = @($findings2 | Where-Object { $_.Section -eq 'Port Reachability' -and $_.Item -eq 'DC reachability: dc1.contoso.com' })
+$c14Site2 = @($findings2 | Where-Object { $_.Section -eq 'Site Health' -and $_.Item -eq 'Clients without a site: dc1.contoso.com' })
+$c14Stale2 = @($findings2 | Where-Object { $_.Section -eq 'Stale Objects' -and $_.Item -eq 'Inactive enabled users' })
+$c14Sys2 = @($findings2 | Where-Object { $_.Section -eq 'SYSVOL / DFSR' -and $_.Item -like 'SYSVOL replication engine: *' })
+foreach ($d in $multiDomains) {
+    Check (@($c14Reach2 | Where-Object { $_.Scope -eq $d -and $_.Status -eq 'Pass' }).Count -eq 1) ("Multi-domain C14: the DC of '{0}' has its reachability row" -f $d)
+    Check (@($c14Site2 | Where-Object { $_.Scope -eq $d -and $_.Status -eq 'Warning' }).Count -eq 1) ("Multi-domain C14: the DC of '{0}' has its clients-without-a-site row" -f $d)
+    Check (@($c14Stale2 | Where-Object { $_.Scope -eq $d -and $_.Status -eq 'Warning' }).Count -eq 1) ("Multi-domain C14: '{0}' has its own inactive users row" -f $d)
+    Check (@($c14Sys2 | Where-Object { $_.Item -eq ("SYSVOL replication engine: {0}" -f $d) -and $_.Scope -eq $d -and $_.Status -eq 'Pass' }).Count -eq 1) ("Multi-domain C14: '{0}' has its own SYSVOL replication engine row" -f $d)
+    Check (@($script:SmokeStaleCalls | Where-Object { $_ -eq ("user {0}" -f $d) }).Count -ge 2) ("Multi-domain C14: the stale user reads of '{0}' went to that domain" -f $d)
+    Check (@($script:SmokePopulationCalls | Where-Object { $_ -eq ("user {0}" -f $d) }).Count -ge 1 -and @($script:SmokePopulationCalls | Where-Object { $_ -eq ("computer {0}" -f $d) }).Count -ge 1) ("Multi-domain C14 review: the enabled user and computer populations of '{0}' were counted from that domain" -f $d)
+    Check (@($c14Stale2 | Where-Object { $_.Scope -eq $d -and $_.Detail -match 'The read saw 5 enabled user account' }).Count -eq 1) ("Multi-domain C14 review: the inactive users row of '{0}' states its own population" -f $d)
+}
+Check (@($c14Reach2).Count -eq 3 -and @($c14Sys2).Count -eq 3) ("Multi-domain C14: three reachability rows and three domain SYSVOL rows ({0}, {1})" -f @($c14Reach2).Count, @($c14Sys2).Count)
+Check (@($findings2 | Where-Object { $_.Section -eq 'Site Health' -and $_.Item -eq 'Subnets without a site: contoso.com' }).Count -eq 1) 'Multi-domain C14: one subnet row for the forest'
+
+# C14 (TIME-001): TimeHierarchy with w32tm answering, for two DCs of the forest root domain - dc1, the
+# forest root PDC emulator, and dc2, 400 s away from it. Read-only w32tm forms only; the stub refuses any
+# other. dc1 is the reference (Info) and dc2 fails against it; its runner-relative row is kept.
+$smokeDcFunction = ${function:Get-ADDomainController}
+function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
+    [pscustomobject]@{ HostName = 'dc1.contoso.com'; Name = 'DC1'; Site = 'Default-First-Site-Name'; IPv4Address = '192.0.2.10'; IsGlobalCatalog = $true; IsReadOnly = $false; ComputerObjectDN = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' }
+    [pscustomobject]@{ HostName = 'dc2.contoso.com'; Name = 'DC2'; Site = 'Default-First-Site-Name'; IPv4Address = '192.0.2.11'; IsGlobalCatalog = $true; IsReadOnly = $false; ComputerObjectDN = 'CN=DC2,OU=Domain Controllers,DC=contoso,DC=com' } }
+$outT = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_time_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outT
+$script:AllDomains = $false
+$script:Sections = @('PortMatrix', 'TimeHierarchy')
+$script:SmokeW32tm = $true
+$script:SmokeW32tmCalls = @()
+$resultT = Invoke-Main
+$script:SmokeW32tm = $false
+${function:Get-ADDomainController} = $smokeDcFunction
+$timeT = @(@(Import-Csv $resultT.FindingsFile) | Where-Object { $_.Section -eq 'Time Hierarchy' })
+Check (@($timeT | Where-Object { $_.Item -eq 'Clock offset vs forest root PDC: dc1.contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'C14 TIME: the forest root PDC emulator is the reference, Info'
+Check (@($timeT | Where-Object { $_.Item -eq 'Clock offset vs forest root PDC: dc2.contoso.com' -and $_.Status -eq 'Fail' -and $_.Detail -match 'is 400 s' }).Count -eq 1) 'C14 TIME: a DC 400 s from the forest root PDC fails against it'
+Check (@($timeT | Where-Object { $_.Item -eq 'Clock offset on dc2.contoso.com' }).Count -eq 1) 'C14 TIME: the runner-relative row is kept'
+Check (@($script:SmokeW32tmCalls | Where-Object { $_ -match '^/stripchart ' }).Count -eq 2) ("C14 TIME: one stripchart per DC, the reference reused, not read twice ({0})" -f (@($script:SmokeW32tmCalls) -join ' | '))
+Remove-Item -Recurse -Force $outT -ErrorAction SilentlyContinue
+$script:OutputPath = $out2
+$script:AllDomains = $true
+$script:Sections = @('All')
+
 Write-Host ""
 Write-Host ("Multi-domain bundle: {0}" -f $result2.OutputRoot)
 
@@ -2043,6 +2225,11 @@ $script:SmokeAclFail = $true
 # C10: every privileged-group, adminCount, delegation and configuration read, and the two roast reads,
 # are refused (an access-denied exception); Get-ADDomain still answers.
 $script:SmokePrivFail = $true
+# C14: the stale reads do not use Get-ADDomainController either, so they are refused (access denied).
+$script:SmokeStaleFail = $true
+$script:SmokePopulationCalls = @()
+$script:SmokeReachCalls = @()
+$script:SmokeNetlogonCalls = @()
 
 $script:SmokeDcdiagCalls = @()
 $out3 =Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
@@ -2177,6 +2364,20 @@ Check (@($priv3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("
 Check (@($priv3 | Where-Object { $_.Item -match '^(Schema Admins members|Privileged group: Domain Admins|adminCount orphans|Unconstrained delegation): ' -and $_.Detail -match '^Access denied: ' -and $_.Detail -match 'STUB: privileged read refused' }).Count -eq 4) 'Failure mode: the C10 rows say Access denied, with the cause'
 Check (@($priv3 | Where-Object { $_.Item -eq 'Kerberoastable user accounts (SPN set)' -and $_.Detail -match '^Access denied: ' }).Count -eq 1) 'Failure mode: the Kerberoast row says Access denied too'
 Check (@($priv3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a C10 row that measured nothing carries no advice'
+# C14: no DC enumerated and the stale reads refused. Reachability, clients without a site and the SYSVOL
+# engine say why and probe or read nothing; the stale rows say access denied; nothing passes.
+$reach3 = @($findings3 | Where-Object { $_.Section -eq 'Port Reachability' -and $_.Item -like 'DC reachability*' })
+Check (@($reach3 | Where-Object { $_.Item -eq 'DC reachability' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode C14: DC reachability says no DC was enumerated, and why'
+Check (@($reach3 | Where-Object { $_.Item -eq 'DC reachability (population): contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'Failure mode C14: the domain whose DCs could not be enumerated has its own reachability row'
+Check (@($reach3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0 -and @($script:SmokeReachCalls).Count -eq 0) ("Failure mode C14: no reachability row passes and nothing is probed ({0} probes)" -f @($script:SmokeReachCalls).Count)
+$site3 = @($findings3 | Where-Object { $_.Section -eq 'Site Health' -and $_.Item -like 'Clients without a site*' })
+Check (@($site3).Count -eq 2 -and @($site3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0 -and @($script:SmokeNetlogonCalls).Count -eq 0) ("Failure mode C14: clients without a site is Not Assessed for the run and the domain, and no log is read ({0} rows)" -f @($site3).Count)
+$stale3 = @($findings3 | Where-Object { $_.Section -eq 'Stale Objects' -and $_.Item -match '^(Inactive enabled (users|computers)|Enabled users with an old password)$' })
+Check (@($stale3).Count -eq 3 -and @($stale3 | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match '\(access denied\)' -and $_.Detail -match 'not zero' }).Count -eq 3) ("Failure mode C14: the three stale rows are Not Assessed, say access denied and never zero ({0} rows)" -f @($stale3).Count)
+Check (@($script:SmokePopulationCalls).Count -eq 2 -and @($stale3 | Where-Object { $_.Status -eq 'Pass' -or $_.Detail -match 'The read saw' }).Count -eq 0) ("Failure mode C14 review: the two population counts were refused, no stale row passes and none states a population ({0} counts)" -f @($script:SmokePopulationCalls).Count)
+$sys3 = @($findings3 | Where-Object { $_.Section -eq 'SYSVOL / DFSR' -and $_.Item -like 'SYSVOL replication engine*' })
+Check (@($sys3).Count -eq 1 -and $sys3[0].Status -eq 'Not Assessed' -and $sys3[0].Detail -match 'ADWS unreachable') ("Failure mode C14: the SYSVOL engine of the domain is Not Assessed with the cause ({0} rows)" -f @($sys3).Count)
+$script:SmokeStaleFail = $false
 $script:SmokePrivFail = $false
 # The same reads unreachable, and then answered without a DACL, with Acl selected alone: each is its
 # own Not Assessed result, and nothing passes.

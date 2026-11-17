@@ -2128,7 +2128,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the eleven sections the file can carry (Dns since v1.30.0, DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the sixteen sections the file can carry (Reach, SiteCoverage, ClockSkew, Stale and SysvolEngine since v1.31.0, Dns since v1.30.0, DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -3073,6 +3073,100 @@ $dnsScav2 = @(
 Assert-Equal 'Warning,Not Assessed' ($dnsScav2 -join ',') 'C13 review: measured aging off stands with a server unread; no scavenging server on an incomplete hosting set is Not Assessed (declared population: two cases)'
 $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.contoso.com' -Dyn 'NonsecureAndSecure')) -Config (Merge-AdfaDnsConfig -BaseConfig $dnsCfg -Override @{ NonsecureStatus = 'Warning' } -OverrideSource 'C:\cfg\dns.json')
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
+
+Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
+Assert-Equal '1.31.0' ([string]$script:Config.Version) 'C14: version 1.31.0 in the script'
+$c14Reach = $script:Config.Reach
+$c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
+$c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
+$c14Classes = @(
+    (Resolve-AdfaDcReachClass -Resolve (& $c14Res $false @() 'HostNotFound') -LdapProbes @() -Config $c14Reach)
+    (Resolve-AdfaDcReachClass -Resolve (& $c14Res $false @() '' $true) -LdapProbes @() -Config $c14Reach)
+    (Resolve-AdfaDcReachClass -Resolve (& $c14Res) -LdapProbes @((& $c14Probe 'Failed' 'ConnectionRefused')) -Config $c14Reach)
+    (Resolve-AdfaDcReachClass -Resolve (& $c14Res) -LdapProbes @((& $c14Probe 'Failed' 'ConnectionRefused'), (& $c14Probe 'Failed' '' $true)) -Config $c14Reach)
+    (Resolve-AdfaDcReachClass -Resolve (& $c14Res) -LdapProbes @((& $c14Probe 'Failed' 'HostUnreachable')) -Config $c14Reach)
+    (Resolve-AdfaDcReachClass -Resolve (& $c14Res) -LdapProbes @((& $c14Probe)) -WinRm (& $c14Probe) -Rpc (& $c14Probe 'Failed' 'TimedOut') -Config $c14Reach)
+    (Resolve-AdfaDcReachClass -Resolve (& $c14Res) -LdapProbes @((& $c14Probe)) -WinRm (& $c14Probe 'Failed' 'TimedOut') -Rpc (& $c14Probe) -Config $c14Reach)
+    (Resolve-AdfaDcReachClass -Resolve (& $c14Res) -LdapProbes @((& $c14Probe)) -WinRm (& $c14Probe 'Failed' 'TimedOut') -Rpc (& $c14Probe 'Failed' 'ConnectionRefused') -Config $c14Reach)
+    (Resolve-AdfaDcReachClass -Resolve (& $c14Res) -LdapProbes @((& $c14Probe)) -Config $c14Reach)
+)
+Assert-Equal 'Unreachable/Unresolved,Unreachable/ResolveTimedOut,Unreachable/Refused,Unreachable/TimedOut,Unreachable/NetworkUnreachable,Reachable/,WinRmUnavailable/,NotManageable/ManagementPortsSilent,NotAssessed/NotProbed' (@($c14Classes | ForEach-Object { "{0}/{1}" -f $_.Class, $_.Cause }) -join ',') 'C14 REACH: the classifier tells name resolution, refused, timed out, no route, WinRM, DCOM, management ports silent and not probed apart (declared population: nine cases)'
+$c14Verdicts = @(foreach ($cl in @('Unreachable', 'NotManageable', 'Reachable', 'WinRmUnavailable', 'NotAssessed')) { [string](Get-AdfaDcReachVerdict -HostName 'dc1.contoso.com' -Record ([pscustomobject]@{ Class = $cl; Cause = 'Refused'; Addresses = @('192.0.2.21'); PortText = ''; TimeoutMs = 3000; Error = ''; SocketError = '' }) -Config $c14Reach).Status })
+Assert-Equal 'Fail,Warning,Pass,Pass,Not Assessed' ($c14Verdicts -join ',') 'C14 REACH: Unreachable Fail, not manageable Warning, LDAP with WinRM or with RPC Pass, not classified Not Assessed (declared population: five classes)'
+$c14Sub = @(
+    [string](Get-AdfaSubnetSiteVerdict -Subnets @([pscustomobject]@{ Name = '192.0.2.0/24'; Site = $null }) -ForestName 'contoso.com').Status
+    [string](Get-AdfaSubnetSiteVerdict -Subnets @([pscustomobject]@{ Name = '192.0.2.0/24'; Site = 'CN=HQ' }) -ForestName 'contoso.com').Status
+    [string](Get-AdfaSubnetSiteVerdict -Subnets @() -ForestName 'contoso.com').Status
+    [string](Get-AdfaSubnetSiteVerdict -Subnets @() -ReadError 'STUB: refused' -ForestName 'contoso.com').Status
+)
+Assert-Equal 'Warning,Pass,Not Assessed,Not Assessed' ($c14Sub -join ',') 'C14 SITE: a subnet with no site Warning, all assigned Pass, none read or a failed read Not Assessed (declared population: four cases)'
+$c14Parsed = ConvertFrom-AdfaNetlogonNoClientSite -Text "a NO_CLIENT_SITE: WS01 198.51.100.77`r`nb NO_CLIENT_SITE: WS01 198.51.100.77`r`nc NO_CLIENT_SITE: WS02 not-an-address`r`nd other"
+Assert-True ($c14Parsed.Lines -eq 3 -and $c14Parsed.Unparsed -eq 1 -and @($c14Parsed.Entries).Count -eq 1 -and $c14Parsed.Entries[0].Address -eq '198.51.100.77') 'C14 SITE: NO_CLIENT_SITE lines read as name then address, a repeat counted once, a line without an address unparsed'
+$c14Raw = [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = 'nothing here'; Error = ''; Path = 'x'; Partial = $false; BytesRead = 12 }
+Assert-Equal 'Info' ([string](Get-AdfaNoClientSiteVerdict -HostName 'dc1.contoso.com' -Raw $c14Raw).Status) 'C14 SITE: a log with no NO_CLIENT_SITE line is Info, never Pass'
+$c14Denied = Get-AdfaNoClientSiteVerdict -HostName 'dc1.contoso.com' -Raw ([pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Text = ''; Error = 'x'; Path = 'x'; Partial = $false; BytesRead = 0 })
+Assert-True ($c14Denied.Status -eq 'Not Assessed' -and $c14Denied.Detail -match 'access denied' -and $c14Denied.Detail -notmatch 'unreachable') 'C14 SITE: a refused log read says access denied, not unreachable'
+$c14S = { param([double[]]$O, [bool]$Q = $true) [pscustomobject]@{ Queried = $Q; Offsets = @($O); Delays = @(0.02); Error = 'x' } }
+$c14Time = @(foreach ($pair in @(@(59.9, 0.0), @(60.0, 0.0), @(-200.0, 100.0), @(500.0, 500.0))) { [string](Get-AdfaPdcClockOffsetVerdict -DomainController 'dc2.contoso.com' -ReferencePdc 'dc1.contoso.com' -Sample (& $c14S @($pair[0])) -ReferenceSample (& $c14S @($pair[1]))).Status })
+Assert-Equal 'Pass,Warning,Fail,Pass' ($c14Time -join ',') 'C14 TIME: graded on the difference to the forest root PDC: 59.9 s Pass, 60 s Warning, -300 s Fail, both 500 s off Pass (declared population: four pairs)'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaPdcClockOffsetVerdict -DomainController 'dc2.contoso.com' -ReferencePdc 'dc1.contoso.com' -Sample (& $c14S @(1.0)) -ReferenceSample (& $c14S @() $false)).Status) 'C14 TIME: an unmeasured reference is Not Assessed, never Pass'
+$c14Now = [datetime]::SpecifyKind([datetime]'2026-11-17 12:00:00', [System.DateTimeKind]::Utc)
+$c14Acc = { param([string]$N, $L, $C) [pscustomobject]@{ Name = $N; HasLastLogon = ($null -ne $L); LastLogonUtc = $L; WhenCreatedUtc = $C; PwdLastSetRaw = $null } }
+$c14StaleRaw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Records = @((& $c14Acc 'at.cutoff' $c14Now.AddDays(-90) $c14Now.AddDays(-900)), (& $c14Acc 'inside' $c14Now.AddDays(-89) $c14Now.AddDays(-900)), (& $c14Acc 'never.old' $null $c14Now.AddDays(-91)), (& $c14Acc 'never.new' $null $c14Now.AddDays(-10))) }
+$c14Int = [pscustomobject]@{ Ok = $true; Present = $false; Value = $null; Error = '' }
+$c14StaleRow = Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw $c14StaleRaw -Interval $c14Int -StaleDays 90 -Now $c14Now
+Assert-True ($c14StaleRow.Status -eq 'Warning' -and $c14StaleRow.Detail -match '^2 enabled user' -and $c14StaleRow.Detail -match '1 of them never logged on' -and $c14StaleRow.Detail -match 'msDS-LogonTimeSyncInterval') 'C14 STALE: at the cutoff counts, a day inside does not, never-logged-on counts once older than the cutoff, and the sync caveat is stated'
+$c14Na = @(
+    [string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw ([pscustomobject]@{ Ok = $false; Error = 'Insufficient access rights'; ErrorType = ''; Capped = $false; Records = @() }) -Interval $c14Int -StaleDays 90 -Now $c14Now).Status
+    [string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $true; Records = @() }) -Interval $c14Int -StaleDays 90 -Now $c14Now).Status
+    [string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw $c14StaleRaw -Interval ([pscustomobject]@{ Ok = $true; Present = $true; Value = 0; Error = '' }) -StaleDays 90 -Now $c14Now).Status
+    [string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw $c14StaleRaw -Interval $c14Int -StaleDays 14 -Now $c14Now).Status
+)
+Assert-Equal 'Not Assessed,Not Assessed,Not Assessed,Not Assessed' ($c14Na -join ',') 'C14 STALE: a failed read, a capped read, updates disabled and a threshold inside the sync window are Not Assessed, never zero (declared population: four cases)'
+# Review of C14 before commit: the declared population, the lag of at most the interval, pwdLastSet 0
+# with UF_DONT_EXPIRE_PASSWD, and an unclassifiable record.
+$c14Pop = { param([bool]$Ok = $true, [int]$N = 50) [pscustomobject]@{ Ok = $Ok; Count = $N; Capped = $false; Error = 'Insufficient access rights'; ErrorType = 'System.UnauthorizedAccessException'; Filter = '(x)' } }
+$c14Empty = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Records = @() }
+$c14PopStatus = @(
+    [string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw $c14Empty -Interval $c14Int -StaleDays 90 -Now $c14Now -Population (& $c14Pop)).Status
+    [string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw $c14Empty -Interval $c14Int -StaleDays 90 -Now $c14Now).Status
+    [string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'Computer' -Raw $c14Empty -Interval $c14Int -StaleDays 90 -Now $c14Now -Population (& $c14Pop $true 0)).Status
+    [string](Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw $c14Empty -Now $c14Now -Population (& $c14Pop $false)).Status
+)
+Assert-Equal 'Pass,Not Assessed,Not Assessed,Not Assessed' ($c14PopStatus -join ',') 'C14 review: an empty stale read passes only against a counted, non-empty population; uncounted, empty or refused is Not Assessed (declared population: four cases)'
+Assert-Equal 'Warning' ([string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw $c14StaleRaw -Interval $c14Int -StaleDays 15 -Now $c14Now -Population (& $c14Pop)).Status) 'C14 review: lastLogonTimestamp trails by at most the interval, so StaleDays 15 against 14 is graded'
+$c14Pwd = { param([string]$N, $Raw, $Uac) [pscustomobject]@{ Name = $N; HasLastLogon = $false; LastLogonUtc = $null; WhenCreatedUtc = $null; PwdLastSetRaw = $Raw; UserAccountControl = $Uac } }
+$c14PwdStatus = @(foreach ($uac in @(512, 66048, $null)) { [string](Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Records = @((& $c14Pwd 'zero' ([int64]0) $uac)) }) -Now $c14Now -Population (& $c14Pop)).Status })
+Assert-Equal 'Pass,Not Assessed,Not Assessed' ($c14PwdStatus -join ',') 'C14 review: pwdLastSet 0 is must-change only with UF_DONT_EXPIRE_PASSWD clear; set, or userAccountControl unread, never passes (declared population: three flags)'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Records = @((& $c14Pwd 'none' $null 512)) }) -Now $c14Now -Population (& $c14Pop)).Status) 'C14 review: a record with no pwdLastSet is Not Assessed, never skipped'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind 'User' -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Records = @([pscustomobject]@{ Name = 'odd'; HasLastLogon = $true; LastLogonUtc = 'x'; WhenCreatedUtc = $null; PwdLastSetRaw = $null }) }) -Interval $c14Int -StaleDays 90 -Now $c14Now -Population (& $c14Pop)).Status) 'C14 review: a returned account with an unreadable lastLogonTimestamp is Not Assessed, never skipped'
+$c14UnreachRow = Get-AdfaDcReachVerdict -HostName 'dc1.contoso.com' -Record ([pscustomobject]@{ Class = 'Unreachable'; Cause = 'Unresolved'; Addresses = @(); PortText = ''; TimeoutMs = 3000; Error = ''; SocketError = 'HostNotFound' }) -Config $c14Reach
+Assert-True ($c14UnreachRow.Detail -notmatch '(?i)every check' -and $c14UnreachRow.Detail -match 'Time Hierarchy and Site Health') 'C14 review: the Unreachable row names the sections that reuse it, and does not promise every check is Not Assessed'
+Assert-Equal 'DFSR,FRS,Transitional,Unknown,Unknown' ((@(@('Present', 'Absent'), @('Absent', 'Present'), @('Present', 'Present'), @('Absent', 'Absent'), @('Present', 'Unread')) | ForEach-Object { Resolve-AdfaSysvolEngineDc -Dfsr $_[0] -Frs $_[1] }) -join ',') 'C14 SYSVOL: the engine of a DC from its two objects (declared population: five pairs)'
+$c14Dc = { param([string]$H, [string]$D, [string]$F, $Ro = $false) [pscustomobject]@{ HostName = $H; IsReadOnly = $Ro; ComputerDn = 'CN=X'; Dfsr = $D; DfsrError = 'x'; Frs = $F; FrsError = 'x' } }
+$c14Eng = { param($Dcs) @(Get-AdfaSysvolEngineVerdict -DomainName 'contoso.com' -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; DomainDn = 'DC=contoso,DC=com'; GlobalState = 'Present'; GlobalFlags = 48; GlobalError = ''; Dcs = @($Dcs) }) | Where-Object { $_.Item -eq 'SYSVOL replication engine: contoso.com' })[0].Status }
+$c14EngStatus = @(
+    [string](& $c14Eng @((& $c14Dc 'dc1' 'Present' 'Absent'), (& $c14Dc 'dc2' 'Present' 'Absent')))
+    [string](& $c14Eng @((& $c14Dc 'dc1' 'Present' 'Absent'), (& $c14Dc 'dc2' 'Absent' 'Present')))
+    [string](& $c14Eng @((& $c14Dc 'dc1' 'Present' 'Absent'), (& $c14Dc 'dc2' 'Present' 'Unread')))
+    [string](& $c14Eng @((& $c14Dc 'rodc1' 'Absent' 'Present' $true)))
+)
+Assert-Equal 'Pass,Warning,Not Assessed,Not Assessed' ($c14EngStatus -join ',') 'C14 SYSVOL: every writable DC on DFSR Pass, one on FRS Warning, one unread Not Assessed, no writable DC Not Assessed (declared population: four domains)'
+Assert-Throws { Merge-AdfaSpecConfig -BaseConfig $script:Config.ClockSkew -Override @{ KerberosMaxSeconds = 600 } } "unknown key 'KerberosMaxSeconds'" 'C14 override: the Kerberos maximum can never be set from a file'
+Assert-Throws { Merge-AdfaSpecConfig -BaseConfig $script:Config.Reach -Override @{ ProbeTimeoutMs = 99 } } '100 to 60000' 'C14 override: a probe time-out below its range is refused'
+Assert-Throws { Merge-AdfaSpecConfig -BaseConfig $script:Config.SysvolEngine -Override @{ FrsStatus = 'Pass' } } 'Warning, Fail' 'C14 override: a status outside its set is refused'
+Assert-Throws { Merge-AdfaSpecConfig -BaseConfig $script:Config.Stale -Override @{ } } 'empty object' 'C14 override: an empty object is refused'
+$c14Merged = Merge-AdfaSpecConfig -BaseConfig $script:Config.Stale -Override @{ PasswordAgeDays = 180 } -OverrideSource 'C:\cfg\c14.json'
+Assert-True ($c14Merged['PasswordAgeDays'] -eq 180 -and $script:Config.Stale['PasswordAgeDays'] -eq 365 -and [string]$c14Merged['ThresholdSource'] -match 'c14\.json') 'C14 override: a valid value merges, cites the file, and leaves the built-in table unchanged'
+$c14Hostile = 'replication stale delegation does not resolve port not reachable time sync clock skew w32tm sysvol dfsr inactive'
+$c14Advice = @(
+    Get-AdfaRecommendation -Section 'Port Reachability' -Item 'DC reachability: dc2.contoso.com' -Detail $c14Hostile
+    Get-AdfaRecommendation -Section 'Site Health' -Item 'Clients without a site: dc1.contoso.com' -Detail $c14Hostile
+    Get-AdfaRecommendation -Section 'Time Hierarchy' -Item 'Clock offset vs forest root PDC: dc2.contoso.com' -Detail $c14Hostile
+    Get-AdfaRecommendation -Section 'Stale Objects' -Item 'Inactive enabled users' -Detail $c14Hostile
+    Get-AdfaRecommendation -Section 'SYSVOL / DFSR' -Item 'SYSVOL replication engine: contoso.com' -Detail $c14Hostile
+)
+Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
