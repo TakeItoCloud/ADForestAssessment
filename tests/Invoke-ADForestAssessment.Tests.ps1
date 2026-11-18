@@ -7588,9 +7588,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 
@@ -9245,9 +9245,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 
@@ -10235,9 +10235,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 
@@ -11174,9 +11174,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 
@@ -12168,9 +12168,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 
@@ -13408,9 +13408,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 
@@ -14626,9 +14626,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 
@@ -16492,9 +16492,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17163,9 +17163,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17316,9 +17316,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.36.0 in the script and the manifest (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries version 1.37.0 in the script and the manifest (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 
@@ -18647,9 +18647,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.36.0 in the script and the manifest (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries version 1.37.0 in the script and the manifest (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 
@@ -19785,9 +19785,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.36.0 in the script and the manifest (bumped by PORT-PLAN C16)' {
-            [string]$script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'carries version 1.37.0 in the script and the manifest (bumped by PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 
@@ -24107,9 +24107,741 @@ Describe 'Promise triage: the README and help promises the code did not keep (C1
     }
 
     Context 'Version' {
-        It 'is 1.36.0 in the script and the manifest' {
-            $script:Config.Version | Should -Be '1.36.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
+        It 'is 1.37.0 in the script and the manifest (bumped by PORT-PLAN H18, H20a, C1a)' {
+            $script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        }
+    }
+}
+Describe 'Functional level wording, the side-effect inventory of every command, and the update build revision (H18, H20a, C1a)' {
+    BeforeAll {
+        $script:H20Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:H20AuditPath = Join-Path $script:RepoRoot 'docs/SIDE-EFFECT-AUDIT.md'
+        $script:H20ReadmePath = Join-Path $script:RepoRoot 'README.md'
+        # Held in variables: PSAvoidUsingComputerNameHardcoded flags a literal -ComputerName.
+        $script:C1aDc1 = 'dc1.contoso.com'
+        $script:C1aDc2 = 'dc2.contoso.com'
+        $script:C1aDc3 = 'dc3.contoso.com'
+        $script:C1aDsc = $script:Config.DcSystem
+        $script:C1aUbrKey = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+        $script:H18Url = 'learn.microsoft.com/windows-server/identity/ad-ds/plan/lower-domain-forest-functional-levels'
+        # The verdicts docs/SIDE-EFFECT-AUDIT.md may use, and nothing else.
+        $script:H20Verdicts = @('documented read', 'documented change, opt-in', 'not documented', 'local output (by design)', 'in-process')
+        # The four dynamic invocations that are not a call of a script block assigned in the same
+        # function, each named with its function and variable. Anything else is a new, unaudited reach.
+        $script:H20DynamicExceptions = @('ConvertFrom-AdfaSidValue:reader', 'Get-AdfaAclObjectVerdict:NameResolver', 'Invoke-AdfaDcRemoteRead:ReadCommand', 'Resolve-AdfaConfigOverride:merge')
+
+        function Get-H20Argument {
+            param($Call, [string]$Name)
+            $els = @($Call.CommandElements)
+            for ($i = 1; $i -lt $els.Count; $i++) {
+                if ($els[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and $els[$i].ParameterName -eq $Name) {
+                    if ($null -ne $els[$i].Argument) { return $els[$i].Argument }
+                    if (($i + 1) -lt $els.Count) { return $els[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-H20Function {
+            param($Node)
+            $p = $Node
+            while ($null -ne $p -and -not ($p -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $p = $p.Parent }
+            return $p
+        }
+        # A command inside the script block given to -Filter of a Get-AD* cmdlet is AD filter syntax,
+        # not a command ("Enabled -eq $true" parses as a command named Enabled).
+        function Test-H20InAdFilter {
+            param($Node)
+            $p = $Node.Parent
+            while ($null -ne $p) {
+                if ($p -is [System.Management.Automation.Language.ScriptBlockExpressionAst] -and $p.Parent -is [System.Management.Automation.Language.CommandAst]) {
+                    $owner = $p.Parent
+                    $els = @($owner.CommandElements)
+                    $i = [array]::IndexOf($els, $p)
+                    if ($i -gt 0 -and $els[$i - 1] -is [System.Management.Automation.Language.CommandParameterAst] -and $els[$i - 1].ParameterName -eq 'Filter' -and [string]$owner.GetCommandName() -like 'Get-AD*') { return $true }
+                }
+                $p = $p.Parent
+            }
+            return $false
+        }
+        function Test-H20ScriptBlockAssignment {
+            param($Right)
+            if ($Right -is [System.Management.Automation.Language.CommandExpressionAst]) { return ($Right.Expression -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) }
+            if ($Right -is [System.Management.Automation.Language.PipelineAst] -and @($Right.PipelineElements).Count -eq 1) { return (Test-H20ScriptBlockAssignment -Right $Right.PipelineElements[0]) }
+            return $false
+        }
+        function Get-H20Literal {
+            # The literal text of an argument: a string constant, or the format string of "fmt" -f ...
+            param($Expr)
+            $e = $Expr
+            if ($e -is [System.Management.Automation.Language.ParenExpressionAst]) {
+                $pl = $e.Pipeline
+                if ($pl -is [System.Management.Automation.Language.PipelineAst] -and @($pl.PipelineElements).Count -eq 1) {
+                    $pe = $pl.PipelineElements[0]
+                    if ($pe -is [System.Management.Automation.Language.CommandExpressionAst]) { $e = $pe.Expression } else { $e = $pe }
+                }
+            }
+            if ($e -is [System.Management.Automation.Language.CommandExpressionAst]) { $e = $e.Expression }
+            if ($e -is [System.Management.Automation.Language.StringConstantExpressionAst]) { return [pscustomobject]@{ Kind = 'Literal'; Text = $e.Value; Node = $e } }
+            if ($e -is [System.Management.Automation.Language.BinaryExpressionAst] -and $e.Operator -eq 'Format' -and $e.Left -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                return [pscustomobject]@{ Kind = 'Literal'; Text = $e.Left.Value; Node = $e }
+            }
+            if ($e -is [System.Management.Automation.Language.CommandAst]) { return [pscustomobject]@{ Kind = 'Builder'; Text = [string]$e.GetCommandName(); Node = $e } }
+            if ($e -is [System.Management.Automation.Language.VariableExpressionAst]) { return [pscustomobject]@{ Kind = 'Variable'; Text = $e.VariablePath.UserPath; Node = $e } }
+            return [pscustomobject]@{ Kind = 'Unknown'; Text = ''; Node = $e }
+        }
+        # A statement reduced to its one expression or command: "$x = Get-Foo" and "Key = 'v'" hold a
+        # PipelineAst of one element; "$x = 'v'" holds a CommandExpressionAst.
+        function Get-H20Single {
+            param($Statement)
+            $s = $Statement
+            if ($s -is [System.Management.Automation.Language.PipelineAst]) {
+                if (@($s.PipelineElements).Count -ne 1) { return $null }
+                $s = $s.PipelineElements[0]
+            }
+            if ($s -is [System.Management.Automation.Language.CommandExpressionAst]) { return $s.Expression }
+            return $s
+        }
+        # The tool forms of every nltest argument Get-AdfaNltestScArgument can build for one call of it.
+        function Get-H20NltestForm {
+            param([string]$Exe, $BuilderCall)
+            $withServer = $null -ne (Get-H20Argument -Call $BuilderCall -Name 'Server')
+            $forms = @()
+            foreach ($lv in @($false, $true)) {
+                $forms += ('Tool:{0} {1}' -f $Exe, (Get-AdfaNltestScArgument -Domain '<domain>' -LiveVerify:$lv))
+                if ($withServer) { $forms += ('Tool:{0} {1}' -f $Exe, (Get-AdfaNltestScArgument -Domain '<domain>' -LiveVerify:$lv -Server '<dc>')) }
+            }
+            return $forms
+        }
+        # PORT-PLAN H20a review fix: a console tool started directly (& nltest.exe $a) is keyed by its
+        # tool form, as an Invoke-ExternalCommand call is. Its arguments must be literals, or the
+        # parameter of a script block whose ArgumentList, beside it in the same hashtable, is a literal
+        # or a variable assigned only from Get-AdfaNltestScArgument in the same function. Anything else
+        # is reported as Bad, never as the bare tool name.
+        function Get-H20DirectToolForm {
+            param($Call, [string]$Exe)
+            $out = [pscustomobject]@{ Keys = @(); Bad = '' }
+            $line = $Call.Extent.StartLineNumber
+            $argEls = @($Call.CommandElements | Select-Object -Skip 1)
+            if ($argEls.Count -eq 0) { $out.Keys = @(('Tool:{0}' -f $Exe)); return $out }
+            $lits = @($argEls | Where-Object { $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] })
+            if ($lits.Count -eq $argEls.Count) { $out.Keys = @(('Tool:{0} {1}' -f $Exe, (@($lits | ForEach-Object { $_.Value }) -join ' '))); return $out }
+            if ($argEls.Count -ne 1 -or -not ($argEls[0] -is [System.Management.Automation.Language.VariableExpressionAst])) {
+                $out.Bad = ('{0} started directly with arguments the test cannot name, line {1}' -f $Exe, $line); return $out
+            }
+            $vn = $argEls[0].VariablePath.UserPath
+            $sb = $Call.Parent
+            while ($null -ne $sb -and -not ($sb -is [System.Management.Automation.Language.ScriptBlockAst])) { $sb = $sb.Parent }
+            $params = @()
+            if ($null -ne $sb -and $null -ne $sb.ParamBlock) { $params = @($sb.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) }
+            $index = [array]::IndexOf($params, $vn)
+            if ($index -lt 0) { $out.Bad = ('{0} started directly with ${1}, which is not a parameter of its script block, line {2}' -f $Exe, $vn, $line); return $out }
+            $h = $sb.Parent
+            while ($null -ne $h -and -not ($h -is [System.Management.Automation.Language.HashtableAst])) {
+                if ($h -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $h = $null; break }
+                $h = $h.Parent
+            }
+            if ($null -eq $h) { $out.Bad = ('{0} started directly in a script block that is not the ScriptBlock of a splatted hashtable, line {1}' -f $Exe, $line); return $out }
+            $pair = @($h.KeyValuePairs | Where-Object { $_.Item1 -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $_.Item1.Value -eq 'ArgumentList' })
+            if ($pair.Count -ne 1) { $out.Bad = ('{0} started directly with no ArgumentList beside its script block, line {1}' -f $Exe, $line); return $out }
+            $value = Get-H20Single -Statement $pair[0].Item2
+            if ($value -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+                $els = @($value.Elements)
+                if ($index -ge $els.Count) { $out.Bad = ('{0}: ArgumentList has no element for ${1}, line {2}' -f $Exe, $vn, $line); return $out }
+                $value = $els[$index]
+            }
+            elseif ($index -ne 0) { $out.Bad = ('{0}: ArgumentList has no element for ${1}, line {2}' -f $Exe, $vn, $line); return $out }
+            if ($value -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $out.Keys = @(('Tool:{0} {1}' -f $Exe, $value.Value)); return $out }
+            if (-not ($value -is [System.Management.Automation.Language.VariableExpressionAst])) { $out.Bad = ('{0}: ArgumentList built in a way the test cannot name, line {1}' -f $Exe, $line); return $out }
+            $avn = $value.VariablePath.UserPath
+            $fn = Get-H20Function -Node $h
+            $scope = $null
+            if ($null -ne $fn) { $scope = $fn.Body }
+            if ($null -eq $scope) { $out.Bad = ('{0}: ArgumentList ${1} outside a function, line {2}' -f $Exe, $avn, $line); return $out }
+            $assigns = @($scope.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.Left.VariablePath.UserPath -eq $avn }, $true))
+            if ($assigns.Count -eq 0) { $out.Bad = ('{0}: ArgumentList ${1} is never assigned, line {2}' -f $Exe, $avn, $line); return $out }
+            $keys = @()
+            foreach ($a in $assigns) {
+                $r = Get-H20Single -Statement $a.Right
+                if ($r -is [System.Management.Automation.Language.CommandAst] -and [string]$r.GetCommandName() -eq 'Get-AdfaNltestScArgument') { $keys += @(Get-H20NltestForm -Exe $Exe -BuilderCall $r); continue }
+                if ($r -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $keys += ('Tool:{0} {1}' -f $Exe, $r.Value); continue }
+                $out.Bad = ('{0}: ArgumentList ${1} assigned from something other than Get-AdfaNltestScArgument or a literal, line {2}' -f $Exe, $avn, $a.Extent.StartLineNumber); return $out
+            }
+            $out.Keys = $keys
+            return $out
+        }
+        # The declared population of H20a: every command, external tool form (through
+        # Invoke-ExternalCommand or started directly), CIM class, CIM method, static .NET member,
+        # New-Object type and instance method name the script holds, as audit keys.
+        function Get-H20Population {
+            param($Ast)
+            $fnNames = @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
+            $keys = New-Object System.Collections.Generic.List[string]
+            $bad = New-Object System.Collections.Generic.List[string]
+            $dynamic = New-Object System.Collections.Generic.List[string]
+            foreach ($c in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+                $name = $c.GetCommandName()
+                if ($null -eq $name) {
+                    $first = $c.CommandElements[0]
+                    $fn = Get-H20Function -Node $c
+                    $fnName = '(script)'
+                    $scope = $Ast
+                    if ($null -ne $fn) { $fnName = $fn.Name; $scope = $fn.Body }
+                    if ($first -is [System.Management.Automation.Language.VariableExpressionAst]) {
+                        $vn = $first.VariablePath.UserPath
+                        $assigns = @($scope.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.Left.VariablePath.UserPath -eq $vn }, $true))
+                        $sb = @($assigns | Where-Object { Test-H20ScriptBlockAssignment -Right $_.Right })
+                        if ($assigns.Count -gt 0 -and $sb.Count -eq $assigns.Count) { continue }
+                        $dynamic.Add(('{0}:{1}' -f $fnName, $vn))
+                    }
+                    else { $dynamic.Add(('{0}:{1}' -f $fnName, $first.Extent.Text)) }
+                    continue
+                }
+                if ($name -eq 'Invoke-ExternalCommand') {
+                    $file = Get-H20Argument -Call $c -Name 'FilePath'
+                    if (-not ($file -is [System.Management.Automation.Language.StringConstantExpressionAst])) { $bad.Add(('Invoke-ExternalCommand with a FilePath that is not a literal, line {0}' -f $c.Extent.StartLineNumber)); continue }
+                    $exe = $file.Value
+                    $lit = Get-H20Literal -Expr (Get-H20Argument -Call $c -Name 'Arguments')
+                    if ($lit.Kind -eq 'Literal') { $keys.Add(('Tool:{0} {1}' -f $exe, $lit.Text)) }
+                    elseif ($lit.Kind -eq 'Builder' -and $lit.Text -eq 'Get-AdfaNltestScArgument') {
+                        foreach ($lv in @($false, $true)) {
+                            $keys.Add(('Tool:{0} {1}' -f $exe, (Get-AdfaNltestScArgument -Domain '<domain>' -LiveVerify:$lv)))
+                            $keys.Add(('Tool:{0} {1}' -f $exe, (Get-AdfaNltestScArgument -Domain '<domain>' -LiveVerify:$lv -Server '<dc>')))
+                        }
+                    }
+                    elseif ($lit.Kind -eq 'Builder' -and $lit.Text -eq 'Get-AdfaDcdiagArgument') {
+                        $dd = $script:Config.DcDiag
+                        foreach ($t in @(@($dd.PerDcTests) + @($dd.DomainTests) + @($dd.ForestTests) + @($dd.SiteTests))) {
+                            $keys.Add(('Tool:{0} {1}' -f $exe, (Get-AdfaDcdiagArgument -TestName ([string]$t.Test) -DomainController '<dc>')))
+                        }
+                    }
+                    elseif ($lit.Kind -eq 'Variable') {
+                        $fn = Get-H20Function -Node $c
+                        $vn = $lit.Text
+                        $assigns = @($fn.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.Left.VariablePath.UserPath -eq $vn }, $true))
+                        if ($assigns.Count -eq 0) { $bad.Add(('Invoke-ExternalCommand -Arguments ${0} is never assigned, line {1}' -f $vn, $c.Extent.StartLineNumber)) }
+                        foreach ($a in $assigns) {
+                            $r = Get-H20Literal -Expr $a.Right
+                            if ($r.Kind -ne 'Literal') { $bad.Add(('${0} assigned from something other than a literal, line {1}' -f $vn, $a.Extent.StartLineNumber)); continue }
+                            $keys.Add(('Tool:{0} ${1} = {2}' -f $exe, $vn, $r.Text))
+                        }
+                    }
+                    else { $bad.Add(('Invoke-ExternalCommand -Arguments of an unaudited form ({0}), line {1}' -f $lit.Kind, $c.Extent.StartLineNumber)) }
+                    continue
+                }
+                if ($name -match '(?i)\.exe$') {
+                    $direct = Get-H20DirectToolForm -Call $c -Exe $name
+                    if ($direct.Bad -ne '') { $bad.Add($direct.Bad) }
+                    foreach ($k in @($direct.Keys)) { $keys.Add($k) }
+                    continue
+                }
+                if ($fnNames -contains $name) { continue }
+                if (Test-H20InAdFilter -Node $c) { continue }
+                $keys.Add(('Command:{0}' -f $name))
+                if ($name -eq 'Get-CimInstance') {
+                    $cls = Get-H20Argument -Call $c -Name 'ClassName'
+                    if ($cls -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $keys.Add(('CimClass:{0}' -f $cls.Value)) }
+                    else { $bad.Add(('Get-CimInstance with a ClassName that is not a literal, line {0}' -f $c.Extent.StartLineNumber)) }
+                }
+                if ($name -eq 'Invoke-CimMethod') {
+                    $cls = Get-H20Argument -Call $c -Name 'ClassName'
+                    $met = Get-H20Argument -Call $c -Name 'MethodName'
+                    if ($cls -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $met -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $keys.Add(('CimMethod:{0}.{1}' -f $cls.Value, $met.Value)) }
+                    else { $bad.Add(('Invoke-CimMethod with a class or method that is not a literal, line {0}' -f $c.Extent.StartLineNumber)) }
+                }
+                if ($name -eq 'New-Object') {
+                    $typeArg = Get-H20Argument -Call $c -Name 'TypeName'
+                    if ($null -eq $typeArg) { $typeArg = $c.CommandElements[1] }
+                    $keys.Add(('NewObject:{0}' -f ($typeArg.Extent.Text.Trim("'", '"'))))
+                }
+            }
+            foreach ($m in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static }, $true))) {
+                if ($m.Expression -is [System.Management.Automation.Language.TypeExpressionAst] -and $m.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                    $keys.Add(('DotNet:[{0}]::{1}' -f $m.Expression.TypeName.FullName, $m.Member.Value))
+                }
+                else { $bad.Add(('A static call whose type or member is not a literal, line {0}' -f $m.Extent.StartLineNumber)) }
+            }
+            # PORT-PLAN H20a review fix: instance methods, keyed by name (the receiver's type is not
+            # known from the source). OpenSubKey is allowed only in its one-argument form, which Learn
+            # documents as "Retrieves a subkey as read-only".
+            foreach ($m in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and -not $n.Static }, $true))) {
+                if (-not ($m.Member -is [System.Management.Automation.Language.StringConstantExpressionAst])) { $bad.Add(('An instance method whose name is not a literal, line {0}' -f $m.Extent.StartLineNumber)); continue }
+                $keys.Add(('Method:{0}' -f $m.Member.Value))
+                if ($m.Member.Value -eq 'OpenSubKey' -and @($m.Arguments | Where-Object { $null -ne $_ }).Count -ne 1) {
+                    $bad.Add(('OpenSubKey with other than one argument (an overload that can open for writing), line {0}' -f $m.Extent.StartLineNumber))
+                }
+            }
+            return [pscustomobject]@{
+                Keys    = @($keys | Sort-Object -Unique)
+                Bad     = @($bad)
+                Dynamic = @($dynamic | Sort-Object -Unique)
+            }
+        }
+        function Get-H20AuditRow {
+            param([string]$Text)
+            $rows = @()
+            foreach ($line in @($Text -split "`r?`n")) {
+                $m = [regex]::Match($line, '^\|\s*`([^`]+)`\s*\|(.*)\|\s*$')
+                if (-not $m.Success) { continue }
+                $cells = @($m.Groups[2].Value -split '\s\|\s' | ForEach-Object { $_.Trim() })
+                $rows += [pscustomobject]@{ Key = $m.Groups[1].Value; Cells = $cells; Where = $cells[0]; Run = $cells[1]; Source = $cells[2]; Documents = $cells[3]; Verdict = $cells[$cells.Count - 1] }
+            }
+            return @($rows)
+        }
+        $script:H20Text = [System.IO.File]::ReadAllText($script:H20AuditPath)
+        $script:H20Rows = @(Get-H20AuditRow -Text $script:H20Text)
+        $script:H20Pop = Get-H20Population -Ast $script:H20Ast
+        $script:H20Params = @($script:H20Ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+    }
+
+    Context 'H18: the raise-level advice says what Learn says about lowering a level' {
+        BeforeAll {
+            $script:H18Entry = @($script:RecommendationMap | Where-Object { $_.ContainsKey('Section') -and $_.Section -eq '(?i)exchange se' -and $_.Match -eq '(?i)forest functional level' })
+            $script:H18Detail = 'Forest functional level Windows2012R2Forest (msDS-Behavior-Version 6) is below the levels Exchange Server SE supports. Supported: Windows2016Forest, Windows2025Forest.'
+            $script:H18Rec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Forest functional level' -Detail $script:H18Detail
+        }
+        It 'has exactly one raise-level entry, and it is the advice a below-level forest gets' {
+            $script:H18Entry.Count | Should -Be 1
+            $script:H18Rec | Should -Be ([string]$script:H18Entry[0].Text)
+        }
+        It 'no longer says the change is one-way or needs a forest recovery' {
+            $script:H18Rec | Should -Not -Match '(?i)one-way|forest recovery|cannot be reverted|irreversible'
+        }
+        It 'says what the Learn page says: raising is no longer permanent, and a level-tied feature blocks the rollback' {
+            $script:H18Rec | Should -Match 'no longer treats raising a level as permanent'
+            $script:H18Rec | Should -Match 'cannot roll back'
+            $script:H18Rec | Should -Match 'Windows Server 2016 while any Windows Server 2025 DC'
+            $script:H18Rec | Should -Match 'otherwise no lower than Windows Server 2008'
+            $script:H18Rec | Should -Match 'Enterprise Admins'
+            $script:H18Rec | Should -Match 'schema master'
+        }
+        It 'cites the page with its read date in the text, the help and the README' {
+            $script:H18Rec | Should -Match ([regex]::Escape($script:H18Url))
+            $script:H18Rec | Should -Match 'read 2026-11-18'
+            $help = $script:H20Ast.GetHelpContent()
+            ($help.Description + ' ' + (@($help.Parameters.Values) -join ' ')) | Should -Match ([regex]::Escape($script:H18Url))
+            [System.IO.File]::ReadAllText($script:H20ReadmePath) | Should -Match ([regex]::Escape($script:H18Url))
+        }
+        It 'still names Set-ADForestMode and no target mode of its own' {
+            $script:H18Rec | Should -Match 'Set-ADForestMode'
+            $script:H18Rec | Should -Not -Match 'Windows20\d\dForest'
+        }
+    }
+
+    Context 'H20a: every command the script can reach is in the audited inventory' {
+        It 'reads the inventory: every row has a verdict from the vocabulary and a run column' {
+            $script:H20Rows.Count | Should -BeGreaterThan 0
+            $badVerdict = @($script:H20Rows | Where-Object { $script:H20Verdicts -notcontains $_.Verdict } | ForEach-Object { '{0} -> {1}' -f $_.Key, $_.Verdict })
+            $badVerdict | Should -BeNullOrEmpty
+            @($script:H20Rows | Where-Object { $_.Run -notmatch '^(Default|Opt-in: -|Not run|Local)' } | ForEach-Object { $_.Key }) | Should -BeNullOrEmpty
+            @($script:H20Rows | Where-Object { @($_.Cells).Count -ne 5 } | ForEach-Object { $_.Key }) | Should -BeNullOrEmpty -Because 'every row has Where, Run, Source, What Learn documents and Verdict'
+        }
+        It 'lists no key twice' {
+            @($script:H20Rows | Group-Object Key | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
+        }
+        It 'recognises every external call form in the script (none is built in a way the inventory cannot name)' {
+            @($script:H20Pop.Bad) | Should -BeNullOrEmpty
+        }
+        It 'holds a row for every command, tool form, CIM class, CIM method and .NET entry point in the script' {
+            $doc = @($script:H20Rows | Where-Object { $_.Key -notlike 'Effect:*' } | ForEach-Object { $_.Key })
+            $missing = @($script:H20Pop.Keys | Where-Object { $doc -notcontains $_ })
+            $missing | Should -BeNullOrEmpty -Because 'a command the inventory does not hold has not been audited'
+        }
+        It 'holds no row the script no longer reaches (no stale row)' {
+            $stale = @($script:H20Rows | Where-Object { $_.Key -notlike 'Effect:*' -and $script:H20Pop.Keys -notcontains $_.Key } | ForEach-Object { $_.Key })
+            $stale | Should -BeNullOrEmpty
+        }
+        It 'declares its population: the exact counts of each kind, measured from the script' {
+            # Declared population of the script, measured on v1.37.0 after the review fix (each kind is
+            # counted from the parsed script, not from the inventory): 66 commands, 46 console tool forms
+            # (25 dcdiag /test: forms, the dcdiag /c capture, 4 nltest /sc_ forms, nltest /dsgetdc, netdom
+            # /Verify, 7 repadmin, 4 w32tm, dfsrmig, 2 nslookup), 5 CIM classes, 3 StdRegProv methods,
+            # 57 instance method names.
+            $byKind = @{}
+            foreach ($k in @($script:H20Pop.Keys)) { $kind = ($k -split ':', 2)[0]; if (-not $byKind.ContainsKey($kind)) { $byKind[$kind] = 0 }; $byKind[$kind]++ }
+            $byKind['Command'] | Should -Be 66 -Because 'declared population: the 66 commands of the script'
+            $byKind['Tool'] | Should -Be 46 -Because 'declared population: the 46 console tool forms of the script'
+            $byKind['Method'] | Should -Be 57 -Because 'declared population: the 57 instance method names of the script'
+            @($script:H20Pop.Keys | Where-Object { $_ -like 'Tool:nltest.exe *' }).Count | Should -Be 5 -Because 'declared population: /sc_query and /sc_verify with and without /server:, and /dsgetdc'
+            @($script:H20Pop.Keys | Where-Object { $_ -like 'CimClass:*' }) | Should -Be @('CimClass:Win32_NetworkAdapterConfiguration', 'CimClass:Win32_OperatingSystem', 'CimClass:Win32_QuickFixEngineering', 'CimClass:Win32_Service', 'CimClass:Win32_Volume')
+            @($script:H20Pop.Keys | Where-Object { $_ -like 'CimMethod:*' }) | Should -Be @('CimMethod:StdRegProv.GetDWORDValue', 'CimMethod:StdRegProv.GetExpandedStringValue', 'CimMethod:StdRegProv.GetStringValue')
+            # The dcdiag forms, from the script's own config: every test of the four scope lists, and as
+            # Default exactly those not in DcdiagActiveTests (declared population: 25 tests, 22 default).
+            $dd = $script:Config.DcDiag
+            $all = @(@($dd.PerDcTests) + @($dd.DomainTests) + @($dd.ForestTests) + @($dd.SiteTests) | ForEach-Object { [string]$_.Test } | Sort-Object -Unique)
+            $active = @($script:Config.DcdiagActiveTests | ForEach-Object { [string]$_.Test })
+            $all.Count | Should -Be 25
+            $defaultTests = @($all | Where-Object { $active -notcontains $_ })
+            $defaultTests.Count | Should -Be 22
+            $dcdiagRows = @($script:H20Rows | Where-Object { $_.Key -like 'Tool:dcdiag.exe /test:*' })
+            $docDefault = @($dcdiagRows | Where-Object { $_.Run -eq 'Default' } | ForEach-Object { ([regex]::Match($_.Key, '/test:(\w+)')).Groups[1].Value } | Sort-Object)
+            $docDefault | Should -Be @($defaultTests | Sort-Object) -Because 'the Run column says Default for exactly the tests the script runs without -IncludeDcdiagActiveTests'
+            @($dcdiagRows | Where-Object { $_.Run -ne 'Default' } | ForEach-Object { ([regex]::Match($_.Key, '/test:(\w+)')).Groups[1].Value } | Sort-Object) | Should -Be @($active | Sort-Object)
+        }
+        It 'keys a console tool started directly by its tool form, and holds no bare Command row for a .exe' {
+            @($script:H20Rows | Where-Object { $_.Key -match '(?i)^Command:.*\.exe$' } | ForEach-Object { $_.Key }) | Should -BeNullOrEmpty
+            @($script:H20Pop.Keys | Where-Object { $_ -match '(?i)^Command:.*\.exe$' }) | Should -BeNullOrEmpty
+            # Declared population: the two direct starts of nltest.exe (Test-AdfaRemoteSecureChannel and
+            # Get-AdfaDcSecureChannel), each giving /sc_query and /sc_verify with no /server:.
+            $direct = @($script:H20Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -match '(?i)\.exe$' }, $true))
+            $direct.Count | Should -Be 2
+            foreach ($d in $direct) {
+                $f = Get-H20DirectToolForm -Call $d -Exe ([string]$d.GetCommandName())
+                $f.Bad | Should -Be ''
+                @($f.Keys | Sort-Object -Unique) | Should -Be @('Tool:nltest.exe /sc_query:<domain>', 'Tool:nltest.exe /sc_verify:<domain>')
+            }
+            @($script:H20Rows | Where-Object { $_.Key -eq 'Tool:nltest.exe /sc_verify:<domain>' })[0].Run | Should -Be 'Opt-in: -IncludeSecureChannelVerify'
+        }
+        It 'fails on a state-changing verb started directly, by ArgumentList or in a script block (mutation shown red)' {
+            $orig = [System.IO.File]::ReadAllText($script:Target)
+            $doc = @($script:H20Rows | ForEach-Object { $_.Key })
+            # The reviewer's mutation: the ArgumentList beside the WinRM script block replaced by a reset verb.
+            $i = $orig.IndexOf('ArgumentList = $scArgument')
+            $i | Should -BeGreaterThan 0
+            $m1 = $orig.Substring(0, $i) + "ArgumentList = '/sc_reset:contoso.com'" + $orig.Substring($i + 'ArgumentList = $scArgument'.Length)
+            $p1 = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput($m1, [ref]$null, [ref]$null))
+            @($p1.Keys | Where-Object { $doc -notcontains $_ }) | Should -Be @('Tool:nltest.exe /sc_reset:contoso.com')
+            # A direct start with a literal verb, and one whose ArgumentList variable is not built by Get-AdfaNltestScArgument.
+            $m2 = $orig + "`r`nfunction Invoke-H20Direct { & nltest.exe /sc_reset:fabrikam.com }`r`nfunction Invoke-H20Indirect { `$v = Get-Date; `$icm = @{ ScriptBlock = { param(`$a) & nltest.exe `$a }; ArgumentList = `$v }; Invoke-Command @icm }`r`n"
+            $p2 = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput($m2, [ref]$null, [ref]$null))
+            @($p2.Keys | Where-Object { $doc -notcontains $_ }) | Should -Be @('Tool:nltest.exe /sc_reset:fabrikam.com')
+            @($p2.Bad | Where-Object { $_ -match 'nltest\.exe: ArgumentList \$v assigned from something other than' }).Count | Should -Be 1
+        }
+        It 'fails on a registry write through an instance method or a writable OpenSubKey (mutation shown red)' {
+            $orig = [System.IO.File]::ReadAllText($script:Target)
+            $doc = @($script:H20Rows | ForEach-Object { $_.Key })
+            # The reviewer's mutation M4, in Get-AdfaUsnRollbackRaw (RestoreIntegrity).
+            $from = "`$key = `$reg.OpenSubKey('SYSTEM\CurrentControlSet\Services\NTDS\Parameters')"
+            $i = $orig.IndexOf($from)
+            $i | Should -BeGreaterThan 0
+            $to = "`$key = `$reg.OpenSubKey('SYSTEM\CurrentControlSet\Services\NTDS\Parameters', `$true); if (`$null -ne `$key) { `$key.SetValue('AdfaProbe', 1) }"
+            $m = $orig.Substring(0, $i) + $to + $orig.Substring($i + $from.Length)
+            $p = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput($m, [ref]$null, [ref]$null))
+            @($p.Keys | Where-Object { $doc -notcontains $_ }) | Should -Be @('Method:SetValue')
+            @($p.Bad | Where-Object { $_ -match '^OpenSubKey with other than one argument' }).Count | Should -Be 1
+            # A method name the test cannot read.
+            $p3 = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput(($orig + "`r`nfunction Invoke-H20Dyn { `$n = 'DeleteValue'; `$x = 1; `$x.`$n() }`r`n"), [ref]$null, [ref]$null))
+            @($p3.Bad | Where-Object { $_ -match '^An instance method whose name is not a literal' }).Count | Should -Be 1
+        }
+        It 'allows only the four named dynamic invocations; every other one calls a script block of its own function' {
+            @($script:H20Pop.Dynamic) | Should -Be $script:H20DynamicExceptions
+        }
+        It 'never gives a default row a documented change, and names an existing switch for every opt-in row' {
+            @($script:H20Rows | Where-Object { $_.Verdict -eq 'documented change, opt-in' -and $_.Run -notlike 'Opt-in: -*' } | ForEach-Object { $_.Key }) | Should -BeNullOrEmpty
+            foreach ($r in @($script:H20Rows | Where-Object { $_.Run -like 'Opt-in: -*' })) {
+                foreach ($m in [regex]::Matches([string]$r.Run, '(?<![\w])-([A-Za-z]+)')) {
+                    $script:H20Params | Should -Contain $m.Groups[1].Value -Because ('the row {0} names -{1}' -f $r.Key, $m.Groups[1].Value)
+                }
+            }
+            # Declared population of documented changes: dcdiag DNS, SystemLog, Intersite and the /c capture,
+            # nltest /sc_verify in its two forms, repadmin /removelingeringobjects. netdom trust /Verify is opt-in
+            # by operator decision (H19), but Learn documents it only as verifying: it is not documented.
+            @($script:H20Rows | Where-Object { $_.Verdict -eq 'documented change, opt-in' }).Count | Should -Be 7
+            # Review fix: each opt-in dcdiag row cites the page the script's own config quotes for that
+            # test's effect (the DNS test record is on the verify-DNS page, not the dcdiag reference).
+            # Declared population: the three tests of DcdiagActiveTests.
+            $activeTests = @($script:Config.DcdiagActiveTests)
+            $activeTests.Count | Should -Be 3
+            foreach ($a in $activeTests) {
+                $row = @($script:H20Rows | Where-Object { $_.Key -like ('Tool:dcdiag.exe /test:{0} *' -f [string]$a.Test) })
+                $row.Count | Should -Be 1 -Because ('one inventory row for dcdiag /test:{0}' -f $a.Test)
+                $row[0].Source | Should -Match ([regex]::Escape([string]$a.Source)) -Because ('the {0} row cites {1}' -f $a.Test, $a.Source)
+            }
+        }
+        It 'says "not documented", never "no side effect", and cites Learn on every row that reaches beyond the process' {
+            $script:H20Text | Should -Not -Match '(?i)\bno side[- ]effects?\b'
+            @($script:H20Rows | Where-Object { @('documented read', 'documented change, opt-in', 'not documented') -contains $_.Verdict -and $_.Source -notmatch 'learn\.microsoft\.com|No Learn page' } | ForEach-Object { $_.Key }) | Should -BeNullOrEmpty
+            $script:H20Text | Should -Match 'Read 2026-11-18'
+        }
+        It 'fails on a command, a tool verb, a .NET reach or a dynamic call the inventory does not hold (mutation shown red)' {
+            $src = [System.IO.File]::ReadAllText($script:Target) + "`r`nfunction Invoke-H20Planted { Get-Service -Name 'Spooler'; Invoke-ExternalCommand -FilePath 'w32tm.exe' -Arguments '/resync'; [System.IO.File]::WriteAllText('x', 'y'); `$t = 'sc.exe'; & `$t }`r`n"
+            $planted = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null))
+            $doc = @($script:H20Rows | ForEach-Object { $_.Key })
+            $new = @($planted.Keys | Where-Object { $doc -notcontains $_ })
+            $new | Should -Be @('Command:Get-Service', 'DotNet:[System.IO.File]::WriteAllText', 'Tool:w32tm.exe /resync')
+            @($planted.Dynamic) | Should -Contain 'Invoke-H20Planted:t'
+        }
+        It 'summarises the inventory in the README with the counts the inventory holds, and drops the not-audited caveat' {
+            $readme = [System.IO.File]::ReadAllText($script:H20ReadmePath)
+            $readme | Should -Match 'docs/SIDE-EFFECT-AUDIT\.md'
+            $readme | Should -Not -Match 'have not each been audited'
+            $readme | Should -Not -Match 'that audit is PORT-PLAN H20a'
+            # Review fix: the README, the inventory and the plan row claim no Learn read for a page that
+            # was not read. Declared population: the default rows whose source says the page was not read.
+            # (Environment.GetFolderPath is unread too, but reads a local path only, so it is in-process.)
+            $unreadAll = @($script:H20Rows | Where-Object { $_.Run -eq 'Default' -and $_.Key -notlike 'Effect:*' -and $_.Source -match 'not read in this session' })
+            @($unreadAll | Where-Object { @('not documented', 'in-process') -notcontains $_.Verdict } | ForEach-Object { $_.Key }) | Should -BeNullOrEmpty
+            $unread = @($unreadAll | Where-Object { $_.Verdict -eq 'not documented' })
+            $unread.Count | Should -Be 38
+            $readme | Should -Match ('{0} default rows rest on a page\s+that was not read' -f $unread.Count)
+            $script:H20Text | Should -Match ('{0} default rows rest on a page that was not read' -f $unread.Count)
+            $readme | Should -Not -Match 'has been read on Microsoft Learn'
+            $readme | Should -Not -Match 'for the rest Learn says nothing either way'
+            $plan = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'PORT-PLAN.md'))
+            $plan | Should -Not -Match 'every command a default run invokes read on Microsoft Learn'
+            $script:H20Text | Should -Not -Match 'No command that a default run invokes is documented by Microsoft as changing state'
+            foreach ($v in $script:H20Verdicts) {
+                $n = @($script:H20Rows | Where-Object { $_.Verdict -eq $v }).Count
+                $readme | Should -Match ('\|\s*{0}\s*\|\s*{1}\s*\|' -f [regex]::Escape($v), $n) -Because ("the README summary row for '{0}' must state {1}" -f $v, $n)
+            }
+        }
+    }
+
+    Context 'C1a: the update build revision, pure' {
+        It 'shows the full build when the value was read' {
+            $r = Resolve-AdfaBuildRevision -BuildNumber '17763' -UbrRead ([pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 6532; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' }) -Key $script:C1aUbrKey -ValueName 'UBR'
+            $r.Kind | Should -Be 'Value'
+            $r.Number | Should -Be 6532
+            $r.FullBuild | Should -Be '17763.6532'
+            $r.Text | Should -Match 'display only'
+            $r.Text | Should -Match 'not graded'
+        }
+        It 'shows a revision of 0 that was read as read' {
+            $r = Resolve-AdfaBuildRevision -BuildNumber '20348' -UbrRead ([pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 0; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' }) -Key $script:C1aUbrKey -ValueName 'UBR'
+            $r.Kind | Should -Be 'Value'
+            $r.FullBuild | Should -Be '20348.0'
+        }
+        It 'shows no full build when the build number was not returned' {
+            $r = Resolve-AdfaBuildRevision -BuildNumber '' -UbrRead ([pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 6532; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' }) -Key $script:C1aUbrKey -ValueName 'UBR'
+            $r.Kind | Should -Be 'Value'
+            $r.FullBuild | Should -Be ''
+            $r.Text | Should -Match 'build number was not returned'
+        }
+        It 'never turns an unread revision into a number: <Name>' -ForEach @(
+            @{ Name = 'not set (1)'; Read = @{ Answered = $true; ReturnValue = 1; Value = $null; Error = ''; ErrorCode = '' }; Kind = 'NotSet'; Text = 'not set' }
+            @{ Name = 'key absent (2)'; Read = @{ Answered = $true; ReturnValue = 2; Value = $null; Error = ''; ErrorCode = '' }; Kind = 'KeyAbsent'; Text = 'Not found' }
+            @{ Name = 'access denied (5)'; Read = @{ Answered = $true; ReturnValue = 5; Value = $null; Error = ''; ErrorCode = '' }; Kind = 'AccessDenied'; Text = 'Access denied' }
+            @{ Name = 'access denied (thrown)'; Read = @{ Answered = $false; ReturnValue = $null; Value = $null; Error = 'Acesso negado.'; ErrorCode = 'AccessDenied' }; Kind = 'AccessDenied'; Text = 'Access denied' }
+            @{ Name = 'not a REG_DWORD'; Read = @{ Answered = $true; ReturnValue = 2147749893; Value = $null; Error = ''; ErrorCode = '' }; Kind = 'TypeMismatch'; Text = 'not a REG_DWORD' }
+            @{ Name = 'another code'; Read = @{ Answered = $true; ReturnValue = 87; Value = $null; Error = ''; ErrorCode = '' }; Kind = 'ReadFailed'; Text = 'returned 87' }
+            @{ Name = 'success with no value'; Read = @{ Answered = $true; ReturnValue = 0; Value = $null; Error = ''; ErrorCode = '' }; Kind = 'ReadFailed'; Text = 'no value' }
+            @{ Name = 'the call failed'; Read = @{ Answered = $false; ReturnValue = $null; Value = $null; Error = 'The RPC server is unavailable.'; ErrorCode = 'Failed' }; Kind = 'ReadFailed'; Text = 'RPC server is unavailable' }
+        ) {
+            $read = [pscustomobject]$Read
+            $r = Resolve-AdfaBuildRevision -BuildNumber '17763' -UbrRead $read -Key $script:C1aUbrKey -ValueName 'UBR'
+            $r.Kind | Should -Be $Kind
+            $r.Number | Should -BeNullOrEmpty
+            $r.FullBuild | Should -Be ''
+            $r.Text | Should -Match '^Update build revision not read'
+            $r.Text | Should -Match $Text
+            $r.Text | Should -Not -Match '17763\.\d'
+        }
+        It 'says on a type mismatch that Microsoft does not publish the registry type' {
+            # PORT-PLAN C1a review fix: the disclosure was promised by the row, the README and the help,
+            # and no test pinned it.
+            $r = Resolve-AdfaBuildRevision -BuildNumber '17763' -UbrRead ([pscustomobject]@{ Answered = $true; ReturnValue = 2147749893; Value = $null; Error = ''; ErrorCode = '' }) -Key $script:C1aUbrKey -ValueName 'UBR'
+            $r.Kind | Should -Be 'TypeMismatch'
+            $r.Text | Should -Match 'not a REG_DWORD'
+            $r.Text | Should -Match ([regex]::Escape('Microsoft documents the value only as compared as an integer; its registry type is not published.'))
+            # And only there: no other kind claims anything about the type.
+            $n = Resolve-AdfaBuildRevision -BuildNumber '17763' -UbrRead ([pscustomobject]@{ Answered = $true; ReturnValue = 2; Value = $null; Error = ''; ErrorCode = '' }) -Key $script:C1aUbrKey -ValueName 'UBR'
+            $n.Text | Should -Not -Match 'registry type is not published'
+        }
+        It 'says the read was not attempted when there is no read at all' {
+            $r = Resolve-AdfaBuildRevision -BuildNumber '17763' -UbrRead $null -Key $script:C1aUbrKey -ValueName 'UBR'
+            $r.Kind | Should -Be 'NotAttempted'
+            $r.Number | Should -BeNullOrEmpty
+            $r.FullBuild | Should -Be ''
+            $r.Text | Should -Match 'not attempted'
+        }
+        It 'names the value and the key it reads, from the config table' {
+            $script:C1aDsc['UbrKey'] | Should -Be $script:C1aUbrKey
+            $script:C1aDsc['UbrValueName'] | Should -Be 'UBR'
+            $script:C1aDsc['UbrSourceUrl'] | Should -Match 'learn\.microsoft\.com/intune/app-management/deployment/deploy-win32-update-package'
+            $script:C1aDsc['UbrReadDate'] | Should -Be '2026-11-18'
+        }
+    }
+
+    Context 'C1a: the read through the CIM seam' {
+        BeforeAll {
+            function New-CimSessionOption { param([string]$Protocol) [pscustomobject]@{ Protocol = $Protocol } }
+            function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) }
+            function New-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ ComputerName = 'x' } }
+        }
+        It 'reads UBR once, with the key and value name of the config table, in the same session, and carries the raw result' {
+            function Get-CimInstance {
+                param($CimSession, [string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $ErrorAction)
+                if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [datetime]'2026-11-01'; BuildNumber = '17763'; Version = '10.0.17763' } }
+                return @()
+            }
+            Mock Get-AdfaStdRegDwordValue { [pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 6532; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' } }
+            $r = Get-AdfaDcSystemRaw -ComputerName $script:C1aDc1 -Protocol 'Wsman' -OperationTimeoutSec 30
+            Should -Invoke Get-AdfaStdRegDwordValue -Times 1 -Exactly -ParameterFilter { $Key -eq 'SOFTWARE\Microsoft\Windows NT\CurrentVersion' -and $ValueName -eq 'UBR' -and $null -ne $CimSession }
+            $r.Ok | Should -BeTrue
+            $r.UbrRead.Value | Should -Be 6532
+        }
+        It 'keeps Ok when only the UBR read fails' {
+            function Get-CimInstance {
+                param($CimSession, [string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $ErrorAction)
+                if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [datetime]'2026-11-01'; BuildNumber = '17763'; Version = '10.0.17763' } }
+                return @()
+            }
+            Mock Get-AdfaStdRegDwordValue { [pscustomobject]@{ Answered = $true; ReturnValue = 5; Value = $null; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' } }
+            $r = Get-AdfaDcSystemRaw -ComputerName $script:C1aDc1 -Protocol 'Dcom' -OperationTimeoutSec 30
+            $r.Ok | Should -BeTrue
+            $r.UbrRead.ReturnValue | Should -Be 5
+        }
+        It 'keeps Ok and records an unread revision, never 0, when the UBR seam throws' {
+            # PORT-PLAN C1a review fix: the catch around the seam was reached by no test. A seam that
+            # throws must leave the OS half read (Ok, no Error) and give UbrRead Answered = $false with
+            # no value and the thrown text, which the row then shows as not read.
+            function Get-CimInstance {
+                param($CimSession, [string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $ErrorAction)
+                if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ LastBootUpTime = [datetime]'2026-11-01'; BuildNumber = '17763'; Version = '10.0.17763' } }
+                return @()
+            }
+            Mock Get-AdfaStdRegDwordValue { throw 'The WinRM client cannot process the request.' }
+            $r = Get-AdfaDcSystemRaw -ComputerName $script:C1aDc1 -Protocol 'Wsman' -OperationTimeoutSec 30
+            Should -Invoke Get-AdfaStdRegDwordValue -Times 1 -Exactly
+            $r.Ok | Should -BeTrue
+            $r.Error | Should -Be ''
+            $r.BuildNumber | Should -Be '17763'
+            $r.UbrRead | Should -Not -BeNullOrEmpty
+            $r.UbrRead.Answered | Should -BeFalse
+            $r.UbrRead.Value | Should -BeNullOrEmpty
+            $r.UbrRead.ReturnValue | Should -BeNullOrEmpty
+            $r.UbrRead.Error | Should -Match 'cannot process the request'
+            $rev = Resolve-AdfaBuildRevision -BuildNumber $r.BuildNumber -UbrRead $r.UbrRead -Key $script:C1aUbrKey -ValueName 'UBR'
+            $rev.Kind | Should -Be 'ReadFailed'
+            $rev.Number | Should -BeNullOrEmpty
+            $rev.FullBuild | Should -Be ''
+            $rev.Text | Should -Match '^Update build revision not read'
+            $rev.Text | Should -Match 'cannot process the request'
+        }
+        It 'does not read UBR when the OS class could not be read' {
+            function Get-CimInstance { param($CimSession, [string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $ErrorAction) throw 'Access is denied.' }
+            Mock Get-AdfaStdRegDwordValue { throw 'must not be called' }
+            $r = Get-AdfaDcSystemRaw -ComputerName $script:C1aDc1 -Protocol 'Wsman' -OperationTimeoutSec 30
+            $r.Ok | Should -BeFalse
+            $r.UbrRead | Should -BeNullOrEmpty
+            Should -Invoke Get-AdfaStdRegDwordValue -Times 0 -Exactly
+        }
+        It 'is named, with every other section that calls a CIM method, in the help and the README (AST)' {
+            # Review fix: the help and the README said only DcDisk and DcHardening call a CIM method.
+            # Declared population: the functions that call a StdRegProv seam, and the section each serves.
+            $sectionOf = @{ 'Get-AdfaDcDiskRaw' = 'DcDisk'; 'Get-AdfaDcHardeningRaw' = 'DcHardening'; 'Get-AdfaDcW32TimeRaw' = 'TimeHierarchy'; 'Get-AdfaDcSystemRaw' = 'DcSystem' }
+            $callers = @($script:H20Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and @('Get-AdfaStdRegDwordValue', 'Get-AdfaStdRegStringValue') -contains [string]$n.GetCommandName() }, $true) | ForEach-Object { (Get-H20Function -Node $_).Name } | Sort-Object -Unique)
+            $callers | Should -Be @($sectionOf.Keys | Sort-Object)
+            $help = $script:H20Ast.GetHelpContent()
+            $helpText = ($help.Description + ' ' + (@($help.Parameters.Values) -join ' ')) -replace '\s+', ' '
+            $helpText | Should -Not -Match 'they are the only ones in the script'
+            $helpText | Should -Match 'Four sections make CIM METHOD calls; no other section does'
+            $readme = [System.IO.File]::ReadAllText($script:H20ReadmePath) -replace '\s+', ' '
+            $readme | Should -Not -Match 'Only this section and `DcHardening` make any'
+            $readme | Should -Not -Match 'Two of those remote reads are CIM method calls'
+            $readme | Should -Match 'Four sections make one: this section, `DcHardening`, `TimeHierarchy`'
+            foreach ($s in @($sectionOf.Values)) {
+                $helpText | Should -Match ('\b{0}\b[^.]*\b(GetDWORDValue|GetStringValue)' -f $s) -Because ('the help names {0} with the method it calls' -f $s)
+                $readme | Should -Match ('`{0}` reads[^.]*`(GetDWORDValue|GetStringValue)' -f $s) -Because ('the README names {0} with the method it calls' -f $s)
+            }
+        }
+        It 'credits each UBR fact to the page that states it, in the help and the README' {
+            # Review fix: "the revision number of windows" is on the OEM deployment page, not the Intune page.
+            $help = $script:H20Ast.GetHelpContent()
+            $helpText = (@($help.Parameters.Values) -join ' ') -replace '\s+', ' '
+            $readme = [System.IO.File]::ReadAllText($script:H20ReadmePath) -replace '\s+', ' '
+            foreach ($t in @($helpText, $readme)) {
+                $t | Should -Not -Match 'documents as the revision number of Windows \(learn\.microsoft\.com/intune'
+                $t | Should -Match 'the revision number of windows" \(?\[?[^)]*oem-deployment-of-windows-desktop-editions'
+            }
+        }
+        It 'reaches the registry only through the shared seam: no Invoke-CimMethod of its own, one seam call (AST)' {
+            $fn = @($script:H20Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AdfaDcSystemRaw' }, $true))[0]
+            @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-CimMethod' }, $true)).Count | Should -Be 0
+            @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaStdRegDwordValue' }, $true)).Count | Should -Be 1
+            # The script-wide population of Invoke-CimMethod call sites is unchanged: the three StdRegProv Get methods.
+            @($script:H20Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-CimMethod' }, $true)).Count | Should -Be 3
+            $patch = @($script:H20Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AdfaDcPatchLevel' }, $true))[0]
+            @($patch.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Resolve-AdfaBuildRevision' }, $true)).Count | Should -Be 1
+        }
+    }
+
+    Context 'C1a: the OS build row' {
+        BeforeEach { Clear-AdfaDcPortCache }
+        It 'per DC over three DCs: read, refused and unreachable each keep their own result' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($ComputerName -ne $script:C1aDc3) }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                $ubr = [pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 6532; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' }
+                if ($ComputerName -eq $script:C1aDc2) { $ubr = [pscustomobject]@{ Answered = $true; ReturnValue = 5; Value = $null; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' } }
+                [pscustomobject]@{ Ok = $true; Protocol = $Protocol; LastBootUpTime = [datetime]'2026-11-12'; BuildNumber = '17763'; Version = '10.0.17763'
+                    HotfixOk = $true; InstalledOn = @('2026-11-10'); Error = ''; ErrorCode = ''; HotfixError = ''; UbrRead = $ubr }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @($script:C1aDc1, $script:C1aDc2, $script:C1aDc3) -Config $script:C1aDsc -Now ([datetime]'2026-11-18'))
+            $os1 = @($rows | Where-Object { $_.Item -eq ('OS build and uptime: {0}' -f $script:C1aDc1) })
+            $os2 = @($rows | Where-Object { $_.Item -eq ('OS build and uptime: {0}' -f $script:C1aDc2) })
+            $os1.Count | Should -Be 1
+            $os2.Count | Should -Be 1
+            $os1[0].Status | Should -Be 'Info'
+            $os1[0].Detail | Should -Match 'Build 17763\.6532 \(version 10\.0\.17763\)'
+            $os2[0].Status | Should -Be 'Info'
+            $os2[0].Detail | Should -Match 'Build 17763 \(version'
+            $os2[0].Detail | Should -Match 'Update build revision not read: Access denied'
+            $os2[0].Detail | Should -Not -Match '17763\.\d'
+            $un = @($rows | Where-Object { $_.Item -eq ('Patch level: {0}' -f $script:C1aDc3) -and $_.Status -eq 'Not Assessed' })
+            $un.Count | Should -Be 1
+            # Unreachable, worded as such, and never a read failure or a refusal: no read was attempted.
+            $un[0].Detail | Should -Match '^Unreachable'
+            $un[0].Detail | Should -Match 'no read was attempted'
+            # Declared population: two rows for each of the two DCs read, one for the unreachable DC.
+            $rows.Count | Should -Be 5
+            @($rows | Where-Object { @('Info', 'Not Assessed') -notcontains [string]$_.Status }).Count | Should -Be 0
+        }
+        It 'is Info when only the revision was measured, and Not Assessed when nothing was' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                $ubr = [pscustomobject]@{ Answered = $true; ReturnValue = 2; Value = $null; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' }
+                if ($ComputerName -eq $script:C1aDc1) { $ubr = [pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 4321; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' } }
+                [pscustomobject]@{ Ok = $true; Protocol = $Protocol; LastBootUpTime = $null; BuildNumber = ''; Version = ''
+                    HotfixOk = $true; InstalledOn = @('2026-11-10'); Error = ''; ErrorCode = ''; HotfixError = ''; UbrRead = $ubr }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @($script:C1aDc1, $script:C1aDc2) -Config $script:C1aDsc -Now ([datetime]'2026-11-18'))
+            $os1 = @($rows | Where-Object { $_.Item -eq ('OS build and uptime: {0}' -f $script:C1aDc1) })[0]
+            $os2 = @($rows | Where-Object { $_.Item -eq ('OS build and uptime: {0}' -f $script:C1aDc2) })[0]
+            $os1.Status | Should -Be 'Info'
+            $os1.Detail | Should -Match 'Update build revision 4321'
+            $os2.Status | Should -Be 'Not Assessed'
+            $os2.Detail | Should -Match 'Update build revision not read: Not found'
+        }
+        It 'still reads a raw result that carries no UbrRead (an older seam) as not attempted' {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDcSystemRaw {
+                param([string]$ComputerName, [string]$Protocol, [pscredential]$Credential, [int]$OperationTimeoutSec)
+                [pscustomobject]@{ Ok = $true; Protocol = $Protocol; LastBootUpTime = [datetime]'2026-11-12'; BuildNumber = '20348'; Version = '10.0.20348'
+                    HotfixOk = $true; InstalledOn = @('2026-11-10'); Error = ''; ErrorCode = ''; HotfixError = '' }
+            }
+            $rows = @(Get-AdfaDcPatchLevel -DomainControllers @($script:C1aDc1) -Config $script:C1aDsc -Now ([datetime]'2026-11-18'))
+            $os = @($rows | Where-Object { $_.Item -eq ('OS build and uptime: {0}' -f $script:C1aDc1) })[0]
+            $os.Status | Should -Be 'Info'
+            $os.Detail | Should -Match 'Build 20348 \(version'
+            $os.Detail | Should -Match 'Update build revision not read: the registry read was not attempted'
+        }
+    }
+
+    Context 'C1a: config override' {
+        It 'keeps the UBR key, value name and their Learn provenance when a valid file replaces the lifecycle table' {
+            $o = '{ "OsLifecycle": [ { "Label": "Windows Server 2099", "Build": 99999, "Pattern": "(?i)windows server\\s*2099", "ExtendedEnd": "2099-01-01", "EsuEnd": null } ] }' | ConvertFrom-Json
+            $m = Merge-AdfaDcSystemConfig -BaseConfig $script:C1aDsc -Override $o -OverrideSource 'C:\cfg\dcsystem.json'
+            $m['UbrKey'] | Should -Be $script:C1aUbrKey
+            $m['UbrValueName'] | Should -Be 'UBR'
+            $m['UbrSourceUrl'] | Should -Match 'learn\.microsoft\.com'
+            $m['SourceUrl'] | Should -Be 'C:\cfg\dcsystem.json'
+        }
+        It 'refuses a file that names <Key>' -ForEach @(
+            @{ Key = 'UbrKey'; Json = '{ "UbrKey": "SOFTWARE\\Contoso" }' }
+            @{ Key = 'UbrValueName'; Json = '{ "UbrValueName": "CurrentBuildNumber" }' }
+            @{ Key = 'UbrSourceUrl'; Json = '{ "UbrSourceUrl": "https://example.invalid" }' }
+            @{ Key = 'UbrValueName null'; Json = '{ "UbrValueName": null }' }
+        ) {
+            { Merge-AdfaDcSystemConfig -BaseConfig $script:C1aDsc -Override ($Json | ConvertFrom-Json) -OverrideSource 'C:\cfg\dcsystem.json' } | Should -Throw
+        }
+    }
+
+    Context 'Version' {
+        It 'is 1.37.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a)' {
+            [string]$script:Config.Version | Should -Be '1.37.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
         }
     }
 }

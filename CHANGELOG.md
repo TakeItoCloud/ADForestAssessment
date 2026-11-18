@@ -10,6 +10,102 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-18 (Functional level wording, side-effect audit of every command, update build revision, tool v1.37.0)
+
+**PORT-PLAN H18, H20a and C1a, in one change. No new `-Sections` value and no new section key.**
+**Run against stubs only** - nothing in this entry has been run against a real directory or DC.
+What was not verified: what `UBR` holds on a real domain controller and its registry type (C17);
+every `not documented` row of the side-effect inventory, and the four effects no Learn page read
+covers (H20b); the Learn pages of the ActiveDirectory Get cmdlets other than `Get-ADObject`,
+`Remove-CimSession`, most of the .NET entry points and the instance methods with reach, which were
+not read (38 default rows, H20c); the type of the object each instance method is called on (H20d).
+
+- **H18, functional level wording.** The advice for a forest below the Exchange SE levels said
+  raising the level "is a one-way change and cannot be reverted without a forest recovery". It
+  now says what Learn says: raising is no longer permanent; the forest can be lowered with
+  `Set-ADForestMode` (no lower than Windows Server 2016 while any Windows Server 2025 DC is in the
+  forest, otherwise Windows Server 2008) unless a feature tied to the new level has been enabled,
+  and lowering needs Enterprise Admins and the schema master. The URL and read date are in the
+  text, the help of `-ExchangeSeConfigPath` and the README. The Recycle Bin is not named: the
+  lowering page does not name it. KB 322692 (Windows Server 2003) still says a raised level can
+  only be changed back by a forest recovery; the newer, specific page was taken.
+- **H20a, side-effect audit.** New docs/SIDE-EFFECT-AUDIT.md: every command, console tool form,
+  CIM class, StdRegProv method, static .NET member, `New-Object` type and instance method name the
+  script holds, each with where it runs, default or opt-in, its Learn source and what Learn
+  documents, and one of five verdicts - documented read 56, documented change and opt-in 7, not
+  documented 54, local output 6, in-process 127 - plus four `Effect:` rows. Not every page was
+  read: 38 default rows rest on a page not read on 2026-11-18 and say `not documented`. Of the
+  pages read, none documents a change for anything a default run invokes, and nothing had to
+  move behind a new switch; nothing is claimed for the pages not read. A Pester test parses
+  the script and fails on any command the inventory does not hold, on a stale row, on a tool name
+  or argument it cannot read, on a dynamic call outside four named ones, on a default row with a
+  documented change and on an opt-in row naming a switch the script lacks. The smoke harness
+  records every console tool a default pass starts. The README claim ("the other commands a
+  default run invokes have not each been audited") is replaced by the claim the audit supports,
+  with the counts.
+- **C1a, update build revision.** The `DcSystem` OS build row shows the full build, for example
+  `Build 17763.6532`: the fourth part is the registry value `UBR`, read with the existing
+  `StdRegProv` `GetDWORDValue` seam in the CIM session the row already opens (the
+  `Invoke-CimMethod` call sites stay three). Display only, never graded. A revision that was not
+  read is "Update build revision not read" with its cause, never `.0`; a UBR failure never fails
+  the OS read. The key and value name are in the `DcSystem` table and cannot be set from
+  `-DcSystemConfigPath`. `DcSystem` now makes one CIM method call per DC; the help and the README
+  name the four sections that do (DcDisk, DcHardening, TimeHierarchy, DcSystem).
+
+**Found by an independent review of the diff before commit, and fixed in it.** (1, 2) The help
+and the README still said only `DcDisk` and `DcHardening` make CIM method calls; C1a adds
+`DcSystem`, and `TimeHierarchy` (C15) was already missing. Both now name the four, and a test
+derives the callers of the two StdRegProv seams from the parsed script and checks each is named.
+(3) The population test keyed a direct `& nltest.exe $a` (the script block run over WinRM) by its
+bare name, `Command:nltest.exe`, so an `ArgumentList` of `/sc_reset:contoso.com` or a planted
+`& nltest.exe /sc_reset:...` passed. A direct start is now keyed by its tool form, its argument
+traced to the literal or the `Get-AdfaNltestScArgument` call behind the `ArgumentList` beside its
+script block (anything else is a failure), the `Command:nltest.exe` row is gone, and both
+mutations are shown red in-test. The smoke harness now also records the WinRM script blocks (a
+stub `Invoke-Command`, which throws as an unanswered endpoint did) and any tool started directly,
+in the single-domain, three-domain and failing-collector passes. (4, 5) The README, the plan row
+and the inventory said every default command had been read on Learn; 38 default rows rest on pages
+not read. The text now says what was read and what was not, a test pins the count, and the
+inventory's result is "of the pages read, none documents a change". (6) The catch around the UBR
+seam was reached by no test; a seam that throws is now tested (Ok kept, Error empty, revision not
+read with the thrown text, never 0), which fails under the reviewer's mutations M5 and M6. (7) The
+population test could not see instance methods, so `OpenSubKey(path, $true)` plus `SetValue` in
+RestoreIntegrity passed. Every instance method name is now keyed and audited (57 names), and
+`OpenSubKey` is allowed only with one argument, which Learn documents as "Retrieves a subkey as
+read-only"; the mutation is shown red in-test. The receiver's type is still not known (H20d). (8)
+The inventory's dcdiag DNS row cited the dcdiag reference for the test record; that page says only
+that `/DnsDynamicUpdate` "determines if dynamic update is enabled". The row now cites the verify-DNS
+page that documents the `_dcdiag_test_record` registration. (9) The help and the README credited
+"the revision number of windows" to the Intune page; it is on the OEM deployment page, and both
+now say so. (10) The type-mismatch wording ("its registry type is not published") is pinned by a
+test. (11) The population test's comment gave wrong counts and asserted none; it now asserts 66
+commands, 46 tool forms and 57 method names counted from the script, and the default dcdiag tests
+from `DcdiagActiveTests`, not from the inventory's own Run column.
+
+Tests: a new Pester Describe (62 tests, seven of them added by the review fixes); two harness checks changed - the Run-Validation assertion
+that the advice "warns the change is irreversible" now asserts the opposite (H18), and the version
+pins moved to 1.37.0. New Run-Validation and smoke assertions for C1a and H20a.
+
+Sources, all read 2026-11-18 unless stated:
+
+- https://learn.microsoft.com/windows-server/identity/ad-ds/plan/lower-domain-forest-functional-levels (in full)
+- https://learn.microsoft.com/troubleshoot/windows-server/active-directory/raise-active-directory-domain-forest-functional-levels (the conflicting KB 322692, from the research brief)
+- https://learn.microsoft.com/intune/app-management/deployment/deploy-win32-update-package (in full)
+- https://learn.microsoft.com/windows-hardware/manufacture/desktop/oem-deployment-of-windows-desktop-editions and https://learn.microsoft.com/windows-hardware/manufacture/desktop/add-update-to-winre (search excerpts)
+- https://learn.microsoft.com/windows/win32/cimwin32prov/win32-operatingsystem and https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getdwordvalue-method-in-class-stdregprov
+- https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag (in full)
+- https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc731935(v=ws.11) (nltest, in full)
+- https://learn.microsoft.com/windows-server/administration/windows-commands/netdom-trust
+- https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc770963(v=ws.11), cc835092(v=ws.11) and cc742066(v=ws.11) (repadmin)
+- https://learn.microsoft.com/troubleshoot/windows-server/active-directory/active-directory-replication-event-id-1388-1988 (`/advisory_mode`)
+- https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings (w32tm)
+- https://learn.microsoft.com/windows-server/administration/windows-commands/dfsrmig and https://learn.microsoft.com/windows-server/administration/windows-commands/nslookup
+- https://learn.microsoft.com/powershell/module/dnsclient/resolve-dnsname, cimcmdlets/get-ciminstance, cimcmdlets/new-cimsession, cimcmdlets/invoke-cimmethod, smbshare/get-smbserverconfiguration, microsoft.powershell.diagnostics/get-winevent, microsoft.powershell.core/invoke-command, dnsserver/get-dnsserverzone, dnsserver/get-dnsserverforwarder, dnsserver/get-dnsserverresourcerecord, grouppolicy/get-gpo, dfsr/get-dfsrbacklog, activedirectory/get-adobject
+- https://learn.microsoft.com/windows-server/networking/dns/configure-aging-scavenging
+- https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.openremotebasekey and https://learn.microsoft.com/troubleshoot/windows-client/performance/memory-leak-remote-registry-service
+- https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.opensubkey (in full; review fix)
+- https://learn.microsoft.com/windows-server/identity/ad-ds/manage/troubleshoot/verify-dns-functionality-to-support-directory-replication (in full, re-read; review fix)
+
 ### Fixed - 2026-11-18 (Promise triage: the README and help promises the code did not keep, GAP-P1..P30, tool v1.36.0)
 
 **PORT-PLAN C16. No new `-Sections` value and no new section key.** **Run against stubs only** - nothing in

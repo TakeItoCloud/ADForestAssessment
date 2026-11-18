@@ -519,6 +519,8 @@ function Invoke-CimMethod {
         'SYSTEM\CurrentControlSet\Control\Lsa|LmCompatibilityLevel'                         = [uint32]5
         # C15 (INV-015): AnnounceFlags 10, the documented default for domain members.
         'SYSTEM\CurrentControlSet\Services\W32Time\Config|AnnounceFlags'                    = [uint32]10
+        # C1a: the update build revision of the stub DC (build 17763), as GetDWORDValue returns it.
+        'SOFTWARE\Microsoft\Windows NT\CurrentVersion|UBR'                                  = [uint32]6532
     }
     # Keys that exist although the stub holds no value under them.
     $stubEmptyKeys = @('SYSTEM\CurrentControlSet\Services\LanManWorkstation\Parameters')
@@ -1058,8 +1060,31 @@ function New-StubDcdiagOutput { param([string]$Dc, [string]$Test, [string]$Mode)
 }
 # C12: the cells of the stub DC's row in the DNS summary table, in the column order of Learn's sample.
 $script:SmokeDnsCells = 'PASS PASS PASS PASS PASS PASS n/a'
+# PORT-PLAN H20a (review fix): the script also starts nltest.exe directly, inside the script block it
+# runs on a DC over WinRM, and that path never reaches the Invoke-ExternalCommand stub. Invoke-Command is
+# stubbed to record the script block and its ArgumentList, then to throw as an unanswered WinRM endpoint
+# does - which is what the real cmdlet did against these fictional names before this stub existed, so no
+# row changes. Each console tool is also stubbed as a function, so a tool started directly in this
+# process is recorded instead of run.
+$script:SmokeRemoteCalls = @()
+function Invoke-Command {
+    param([string]$ComputerName, [scriptblock]$ScriptBlock, [object[]]$ArgumentList, [pscredential]$Credential, $ErrorAction)
+    $script:SmokeRemoteCalls += [pscustomobject]@{ ComputerName = $ComputerName; ScriptBlock = ([string]$ScriptBlock).Trim(); Arguments = (@($ArgumentList) -join ' ') }
+    throw ("STUB: WinRM on {0} is not answered by this harness" -f $ComputerName)
+}
+$script:SmokeDirectToolCalls = @()
+function nltest.exe { $script:SmokeDirectToolCalls += ('nltest.exe {0}' -f ($args -join ' ')) }
+function dcdiag.exe { $script:SmokeDirectToolCalls += ('dcdiag.exe {0}' -f ($args -join ' ')) }
+function repadmin.exe { $script:SmokeDirectToolCalls += ('repadmin.exe {0}' -f ($args -join ' ')) }
+function w32tm.exe { $script:SmokeDirectToolCalls += ('w32tm.exe {0}' -f ($args -join ' ')) }
+function dfsrmig.exe { $script:SmokeDirectToolCalls += ('dfsrmig.exe {0}' -f ($args -join ' ')) }
+function nslookup.exe { $script:SmokeDirectToolCalls += ('nslookup.exe {0}' -f ($args -join ' ')) }
+function netdom.exe { $script:SmokeDirectToolCalls += ('netdom.exe {0}' -f ($args -join ' ')) }
+$script:SmokeExternalCalls = @()
 function Invoke-ExternalCommand {
     param([string]$FilePath, [string]$Arguments, [string]$OutFile, [int]$TimeoutSeconds, [int]$Retries, [int]$RetryDelaySeconds)
+    # H20a: every external tool a pass asks for, answered or not, recorded before anything else.
+    $script:SmokeExternalCalls += ('{0} {1}' -f $FilePath, $Arguments)
     if ($script:SmokeW32tm -and $FilePath -eq 'w32tm.exe') {
         # C14: read-only w32tm forms only; any other switch fails the run here.
         # PORT-PLAN C14c: the local read-only queries of the TimeSync section are answered too, and not
@@ -1278,7 +1303,13 @@ $script:Server = $null
 $script:Credential = $null
 
 Write-Host "== Running Invoke-Main against stubbed AD ==" -ForegroundColor Cyan
+$script:SmokeExternalCalls = @()
+$script:SmokeRemoteCalls = @()
+$script:SmokeDirectToolCalls = @()
 $result = Invoke-Main
+$smokeDefaultCalls = @($script:SmokeExternalCalls)
+$smokeDefaultRemote = @($script:SmokeRemoteCalls)
+$smokeDefaultDirect = @($script:SmokeDirectToolCalls)
 
 Check ($null -ne $result) 'Invoke-Main returned a summary object'
 Check (Test-Path $result.ReportPath) 'HTML report written'
@@ -1435,6 +1466,22 @@ Check (@($lifeRows).Count -eq 1 -and $lifeRows[0].Status -eq 'Pass' -and $lifeRo
 Check ([string]$lifeRows[0].Scope -eq 'contoso.com') 'DC System: the lifecycle row carries its domain as Scope'
 $osRow = @($dcsRows | Where-Object { $_.Item -like 'OS build and uptime:*' })
 Check (@($osRow).Count -eq 1 -and $osRow[0].Status -eq 'Info' -and $osRow[0].Detail -match 'Build 17763' -and $osRow[0].Detail -match 'up 9 day') 'DC System: build and uptime are read through the CIM stub and reported as Info'
+# C1a: the update build revision is read through the StdRegProv stub in the same session and shown as the fourth part.
+Check (@($osRow).Count -eq 1 -and $osRow[0].Detail -match 'Build 17763\.6532 \(version' -and $osRow[0].Detail -match 'Update build revision 6532 from the registry value UBR' -and $osRow[0].Detail -match 'not graded') 'C1a: the OS build row shows the full build 17763.6532, display only'
+# H20a: the default run asked for no console tool form Microsoft documents as changing state, and only for forms the inventory
+# lists as Default (declared population: the tools this harness answers or refuses - dcdiag, repadmin, w32tm, nltest, dfsrmig, nslookup).
+$h20aChange = @($smokeDefaultCalls | Where-Object { $_ -match '(?i)/sc_verify|^netdom|/removelingeringobjects|/test:(DNS|SystemLog|Intersite|CutoffServers)\b|\s/c\s|/resync|/config\b|/register|/unregister|/setglobalstate|/createglobalobjects|/delete|/replicate|/syncall|/kcc|/fix\b' })
+Check (@($h20aChange).Count -eq 0) ("H20a: the default run invoked no command Microsoft documents as changing state (found: {0})" -f ($h20aChange -join '; '))
+$h20aTools = @($smokeDefaultCalls | ForEach-Object { ($_ -split ' ')[0] } | Sort-Object -Unique)
+Check (@($smokeDefaultCalls | Where-Object { $_ -like 'dcdiag.exe /test:*' }).Count -gt 0 -and @($h20aTools | Where-Object { @('dcdiag.exe', 'repadmin.exe', 'w32tm.exe', 'nltest.exe', 'dfsrmig.exe', 'nslookup.exe') -notcontains $_ }).Count -eq 0) ("H20a: the default run started only audited console tools, dcdiag among them (tools: {0})" -f ($h20aTools -join ', '))
+$h20aDcdiag = @($smokeDefaultCalls | Where-Object { $_ -like 'dcdiag.exe /test:*' } | ForEach-Object { ([regex]::Match($_, '/test:(\S+)')).Groups[1].Value } | Sort-Object -Unique)
+Check (@($h20aDcdiag).Count -eq 22) ("H20a: the default run ran the 22 default dcdiag tests and no other (declared population: 19 per-DC, Topology, CheckSDRefDom, CrossRefValidation; got {0}: {1})" -f @($h20aDcdiag).Count, ($h20aDcdiag -join ', '))
+# H20a (review fix): the direct start of nltest.exe in the WinRM script block. Declared population: the
+# DcSecureChannel read of the stub DC (dc1.contoso.com), at least; every one runs the audited script block
+# with /sc_query only, and no console tool is started directly in this process.
+$h20aRemoteBad = @($smokeDefaultRemote | Where-Object { $_.ScriptBlock -notmatch '^param\(\$a\) & nltest\.exe \$a\b' -or $_.Arguments -notmatch '^/sc_query:\S+$' } | ForEach-Object { '{0}: {1} [{2}]' -f $_.ComputerName, $_.ScriptBlock, $_.Arguments })
+Check (@($smokeDefaultRemote | Where-Object { $_.ComputerName -eq 'dc1.contoso.com' }).Count -ge 1 -and @($h20aRemoteBad).Count -eq 0) ("H20a: every WinRM script block of the default run starts nltest.exe with /sc_query only, the stub DC's among them ({0} calls; not so: {1})" -f @($smokeDefaultRemote).Count, ($h20aRemoteBad -join '; '))
+Check (@($smokeDefaultDirect).Count -eq 0) ("H20a: the default run started no console tool directly in this process ({0})" -f (@($smokeDefaultDirect) -join '; '))
 $hfRow = @($dcsRows | Where-Object { $_.Item -like 'Last update installed:*' })
 Check (@($hfRow).Count -eq 1 -and $hfRow[0].Status -eq 'Info' -and $hfRow[0].Detail -match '2026-11-10') 'DC System: the latest update date is the later of the two stub records, with the day/month order proven by the set'
 Check (@($dcsRows | Where-Object { $_.Status -eq 'Pass' -and $_.Item -notlike 'OS lifecycle:*' }).Count -eq 0) 'DC System: no patch-level row is ever a Pass - it is inventory'
@@ -1930,8 +1977,18 @@ $script:SmokeExportCalls = @()
 $script:SmokeC4bCalls = @()
 # C3f: the Get-SmbServerConfiguration calls of this pass alone.
 $script:SmokeSmbCalls = @()
+$script:SmokeRemoteCalls = @()
+$script:SmokeDirectToolCalls = @()
 $result2 = Invoke-Main
 $script:SmokeDcdiagMode = 'Pass'
+# H20a (review fix): over three domains, every WinRM script block starts nltest.exe with /sc_query only,
+# and no tool is started directly in this process. Declared population: the DcSecureChannel query of
+# each of the three domains (the stub DC answers for all three, so the domains are told apart by the
+# /sc_query argument, not by the host name).
+$h20aRemote2 = @($script:SmokeRemoteCalls)
+$h20aRemote2Bad = @($h20aRemote2 | Where-Object { $_.ScriptBlock -notmatch '^param\(\$a\) & nltest\.exe \$a\b' -or $_.Arguments -notmatch '^/sc_query:\S+$' })
+$h20aRemote2Domains = @($h20aRemote2 | Where-Object { $_.Arguments -match '^/sc_query:(\S+)$' } | ForEach-Object { ([regex]::Match($_.Arguments, '^/sc_query:(\S+)$')).Groups[1].Value } | Sort-Object -Unique)
+Check (@($multiDomains | Where-Object { $h20aRemote2Domains -notcontains $_ }).Count -eq 0 -and @($h20aRemote2Bad).Count -eq 0 -and @($script:SmokeDirectToolCalls).Count -eq 0) ("Multi-domain H20a: every WinRM nltest start is /sc_query, for each of the three domains, and none is direct ({0} calls; domains queried: {1})" -f @($h20aRemote2).Count, ($h20aRemote2Domains -join ', '))
 
 Check ($null -ne $result2) 'Multi-domain: Invoke-Main returned a summary object'
 Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scoped ({0})" -f @($result2.DomainsScoped).Count)
@@ -1979,6 +2036,9 @@ Check (@($dd2DnsNotRun).Count -eq 3 -and @($dd2DnsNotRun | Where-Object { $_.Sta
 # C1: one lifecycle row per DC per domain, each carrying its own domain - not three copies of
 # the first domain, and not one row for the forest.
 $life2 = @($findings2 | Where-Object { $_.Section -eq 'DC System' -and $_.Item -like 'OS lifecycle:*' })
+# C1a: the OS build row of each domain's DC carries the full build and its own domain (declared population: three domains).
+$os2 = @($findings2 | Where-Object { $_.Section -eq 'DC System' -and $_.Item -like 'OS build and uptime:*' })
+Check (@($os2).Count -eq 3 -and @($os2 | Where-Object { $_.Status -ne 'Info' -or $_.Detail -notmatch 'Build 17763\.6532 \(version' }).Count -eq 0 -and @($os2 | ForEach-Object { $_.Scope } | Sort-Object -Unique).Count -eq 3) ("Multi-domain C1a: one OS build row per domain's DC, each with build 17763.6532 and its own scope ({0} rows)" -f @($os2).Count)
 Check (@($life2).Count -eq 3) ("Multi-domain: DC System has one OS lifecycle row per domain's DC ({0})" -f @($life2).Count)
 foreach ($d in $multiDomains) {
     Check (@($life2 | Where-Object { $_.Scope -eq $d }).Count -eq 1) ("Multi-domain: DC System lifecycle row carries scope '{0}'" -f $d)
@@ -2637,6 +2697,19 @@ $script:Sections = @('DomainControllers', 'DcDisk')
 $script:SmokeAbsentValues = @('SysVol')
 $resultA = Invoke-Main
 $script:SmokeAbsentValues = @()
+# C1a: the same DC with no UBR value under a key that exists (the stub answers 1). The OS build row must say the revision
+# was not read, show the build without it, and stay Info on the build and uptime it did read - never a revision of 0.
+$outU1 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_ubr_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outU1
+$script:Sections = @('DomainControllers', 'DcSystem')
+$script:SmokeAbsentValues = @('UBR')
+$resultU1 = Invoke-Main
+$script:SmokeAbsentValues = @()
+$osU1 = @(@(Import-Csv $resultU1.FindingsFile) | Where-Object { $_.Section -eq 'DC System' -and $_.Item -like 'OS build and uptime:*' })
+Check (@($osU1).Count -eq 1 -and $osU1[0].Status -eq 'Info' -and $osU1[0].Detail -match 'Build 17763 \(version' -and $osU1[0].Detail -match 'Update build revision not read: the registry value UBR' -and $osU1[0].Detail -match 'is not set on this DC' -and $osU1[0].Detail -notmatch '17763\.\d') 'Absent value C1a: a DC with no UBR value shows the build without a revision, says why, and is never given .0'
+Remove-Item -Recurse -Force $outU1 -ErrorAction SilentlyContinue
+$script:OutputPath = $outA
+$script:Sections = @('DomainControllers', 'DcDisk')
 $diskA = @(@(Import-Csv $resultA.FindingsFile) | Where-Object { $_.Section -eq 'DC Disk Space' })
 Check (@($diskA).Count -eq 3) ("Absent value: one row for each volume and one for the role that could not be placed ({0}, expected 3)" -f @($diskA).Count)
 $absentRow = @($diskA | Where-Object { $_.Item -eq 'Disk space: dc1.contoso.com - SYSVOL path' })
@@ -2892,8 +2965,13 @@ $script:OutputPath = $out3
 $script:AllDomains = $false
 # PORT-PLAN C2e review: the SYSVOL backlog too, which must not measure DCs it cannot attribute to the domain.
 $script:IncludeSysvolBacklog = $true
+$script:SmokeRemoteCalls = @()
+$script:SmokeDirectToolCalls = @()
 $result3 = Invoke-Main
 $script:IncludeSysvolBacklog = $false
+# H20a (review fix): with failing collectors, no WinRM script block runs anything but /sc_query and no
+# console tool is started directly in this process.
+Check (@($script:SmokeRemoteCalls | Where-Object { $_.Arguments -notmatch '^/sc_query:\S+$' }).Count -eq 0 -and @($script:SmokeDirectToolCalls).Count -eq 0) ("Failure mode H20a: no WinRM nltest start other than /sc_query, none direct ({0} remote calls)" -f @($script:SmokeRemoteCalls).Count)
 
 Check ($null -ne $result3) 'Failure mode: Invoke-Main still returns a summary rather than dying'
 Check (Test-Path $result3.FindingsFile) 'Failure mode: consolidated findings still written'
@@ -2939,6 +3017,8 @@ $dcs3 = @($findings3 | Where-Object { $_.Section -eq 'DC System' })
 Check (@($dcs3 | Where-Object { $_.Item -eq 'OS lifecycle' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode: DC System reports the OS lifecycle check as Not Assessed when there is no DC inventory'
 Check (@($dcs3 | Where-Object { $_.Item -eq 'Patch level' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode: DC System reports patch level as Not Assessed when no DC was enumerated'
 Check (@($dcs3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC System reports nothing but Not Assessed ({0} rows)" -f @($dcs3).Count)
+# C1a: with no DC enumerated no revision was read, and none is shown or invented: no OS build row, no build number.
+Check (@($dcs3 | Where-Object { $_.Item -like 'OS build and uptime:*' -or $_.Detail -match '17763\.\d' }).Count -eq 0) 'Failure mode C1a: no OS build row and no update build revision when no DC was enumerated'
 # C13: with DC enumeration failing, DNS Health and DC DNS Client say so, give the domain whose inventory
 # failed its own row, and pass nothing; DNS vs AD gives no per-DC row a Pass.
 $dns3 = @($findings3 | Where-Object { $_.Section -eq 'DNS Health' })

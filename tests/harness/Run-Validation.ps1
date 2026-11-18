@@ -598,7 +598,11 @@ Assert-Equal 'Fail' ([string](Get-SeRow $rStrict 'Forest functional level').Stat
 $fflRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Forest functional level' `
     -Detail ([string](Get-SeRow $rFflBad 'Forest functional level').Detail)
 Assert-True ($fflRec -match 'Set-ADForestMode') 'SE remediation: forest level fix names the cmdlet'
-Assert-True ($fflRec -match 'one-way|cannot be reverted') 'SE remediation: warns the change is irreversible'
+# PORT-PLAN H18: until v1.37.0 this asserted the advice called the raise irreversible (KB 322692, Windows Server 2003).
+# Learn's 'Lower domain and forest functional levels' page (read 2026-11-18) says it no longer is.
+Assert-True ($fflRec -match 'no longer treats raising a level as permanent' -and $fflRec -match 'cannot roll back') 'SE remediation (H18): says the raise can be lowered again unless a level-tied feature was enabled'
+Assert-True ($fflRec -notmatch '(?i)one-way|forest recovery|cannot be reverted') 'SE remediation (H18): no longer calls the raise irreversible'
+Assert-True ($fflRec -match 'lower-domain-forest-functional-levels' -and $fflRec -match 'read 2026-11-18') 'SE remediation (H18): cites the Learn page with its read date'
 $osRec = Get-AdfaRecommendation -Section 'Exchange SE Compatibility' -Item 'Domain controller operating systems' `
     -Detail '1 of 2 DC(s) run an OS not supported for Exchange Server SE: dc2 (Windows Server 2012 Standard).'
 Assert-True ($osRec -match 'Every domain controller in the forest') 'SE remediation: OS fix states the forest-wide scope'
@@ -3181,7 +3185,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.36.0' ([string]$script:Config.Version) 'C14: version 1.36.0 in the script (bumped by PORT-PLAN C16)'
+Assert-Equal '1.37.0' ([string]$script:Config.Version) 'C14: version 1.37.0 in the script (bumped by PORT-PLAN H18, H20a, C1a)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3274,7 +3278,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.36.0' ([string]$script:Config.Version) 'C15: version 1.36.0 in the script (bumped by PORT-PLAN C16)'
+Assert-Equal '1.37.0' ([string]$script:Config.Version) 'C15: version 1.37.0 in the script (bumped by PORT-PLAN H18, H20a, C1a)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3498,7 +3502,40 @@ $c16Src2 = & {
     Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
 }
 Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
-Assert-Equal '1.36.0' ([string]$script:Config.Version) 'C16: version 1.36.0 in the script'
+Assert-Equal '1.37.0' ([string]$script:Config.Version) 'C16: version 1.37.0 in the script (bumped by PORT-PLAN H18, H20a, C1a)'
+
+# ---- PORT-PLAN C1a: the update build revision (pure) -----------------------------------------
+$c1aKey = [string]$script:Config.DcSystem['UbrKey']
+Assert-Equal 'SOFTWARE\Microsoft\Windows NT\CurrentVersion' $c1aKey 'C1a: the UBR key is the one Learn documents'
+Assert-Equal 'UBR' ([string]$script:Config.DcSystem['UbrValueName']) 'C1a: the value name is UBR'
+$c1aRead = Resolve-AdfaBuildRevision -BuildNumber '20348' -UbrRead ([pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 4405; Error = ''; ErrorCode = '' }) -Key $c1aKey -ValueName 'UBR'
+Assert-True ($c1aRead.Kind -eq 'Value' -and $c1aRead.FullBuild -eq '20348.4405' -and $c1aRead.Text -match 'not graded') 'C1a: a read revision is the fourth part of the build, display only'
+$c1aZero = Resolve-AdfaBuildRevision -BuildNumber '20348' -UbrRead ([pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 0; Error = ''; ErrorCode = '' }) -Key $c1aKey -ValueName 'UBR'
+Assert-Equal '20348.0' ([string]$c1aZero.FullBuild) 'C1a: a revision of 0 that was read is shown as read'
+# Declared population: the six ways a read can fail to give a number (NotSet, KeyAbsent, AccessDenied, TypeMismatch, ReadFailed, NotAttempted).
+$c1aFail = @(
+    @{ Kind = 'NotSet'; Read = [pscustomobject]@{ Answered = $true; ReturnValue = 1; Value = $null; Error = ''; ErrorCode = '' } }
+    @{ Kind = 'KeyAbsent'; Read = [pscustomobject]@{ Answered = $true; ReturnValue = 2; Value = $null; Error = ''; ErrorCode = '' } }
+    @{ Kind = 'AccessDenied'; Read = [pscustomobject]@{ Answered = $true; ReturnValue = 5; Value = $null; Error = ''; ErrorCode = '' } }
+    @{ Kind = 'TypeMismatch'; Read = [pscustomobject]@{ Answered = $true; ReturnValue = 2147749893; Value = $null; Error = ''; ErrorCode = '' } }
+    @{ Kind = 'ReadFailed'; Read = [pscustomobject]@{ Answered = $false; ReturnValue = $null; Value = $null; Error = 'The RPC server is unavailable.'; ErrorCode = 'Failed' } }
+    @{ Kind = 'NotAttempted'; Read = $null })
+Assert-Equal 6 @($c1aFail).Count 'C1a: declared population of unread kinds is six'
+foreach ($c in $c1aFail) {
+    $r = Resolve-AdfaBuildRevision -BuildNumber '20348' -UbrRead $c.Read -Key $c1aKey -ValueName 'UBR'
+    Assert-True ($r.Kind -eq $c.Kind -and $null -eq $r.Number -and $r.FullBuild -eq '' -and $r.Text -match '^Update build revision not read' -and $r.Text -notmatch '20348\.\d') ("C1a: {0} is not read, never a number" -f $c.Kind)
+}
+# Review fix: the type-mismatch text says the registry type is not published, and only that kind says so.
+$c1aType = Resolve-AdfaBuildRevision -BuildNumber '20348' -UbrRead $c1aFail[3].Read -Key $c1aKey -ValueName 'UBR'
+Assert-True ($c1aType.Text -match 'its registry type is not published' -and $c1aType.Text -match 'compared as an integer') 'C1a: a type mismatch says Microsoft does not publish the registry type'
+Assert-True (@($c1aFail | Where-Object { $_.Kind -ne 'TypeMismatch' } | Where-Object { (Resolve-AdfaBuildRevision -BuildNumber '20348' -UbrRead $_.Read -Key $c1aKey -ValueName 'UBR').Text -match 'registry type is not published' }).Count -eq 0) 'C1a: no other unread kind claims anything about the registry type'
+$c1aMerged = Merge-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Override $null
+Assert-Equal $c1aKey ([string]$c1aMerged['UbrKey']) 'C1a: the merged table keeps the UBR key'
+Assert-Throws { Merge-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Override @{ UbrValueName = 'CurrentBuildNumber' } | Out-Null } 'unknown key' 'C1a: a file cannot rename the UBR value'
+# PORT-PLAN H20a: the inventory exists and states its read date.
+$h20aDoc = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'docs\SIDE-EFFECT-AUDIT.md'
+Assert-True ((Test-Path -LiteralPath $h20aDoc) -and ([System.IO.File]::ReadAllText($h20aDoc) -match 'Read 2026-11-18')) 'H20a: docs/SIDE-EFFECT-AUDIT.md exists with its read date'
+Assert-True ([System.IO.File]::ReadAllText($h20aDoc) -notmatch '(?i)\bno side[- ]effects?\b') 'H20a: the inventory never says "no side effect"'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue

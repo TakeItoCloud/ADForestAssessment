@@ -213,21 +213,31 @@
     actually replicating changes", and RidManager is described as checks only (it is accessible,
     holds the proper information, can be contacted, has valid RID pool values) - Learn does not
     say in so many words that it never requests a pool. FsmoCheck is not in that reference at all
-    (PORT-PLAN C11c). The other commands a default run invokes (repadmin, w32tm, nltest /sc_query
-    and /dsgetdc, dfsrmig, nslookup, and remote reads over WinRM, CIM, the remote registry, the
-    DNS cmdlets and the event log) are used as queries, but have not each been audited for a
-    documented side effect. PORT-PLAN H20a.
+    (PORT-PLAN C11c). Since v1.37.0 (PORT-PLAN H20a) every command, console tool form (started
+    through Invoke-ExternalCommand or directly), CIM class and method, static .NET member,
+    New-Object type and instance method name the script holds is listed in
+    docs/SIDE-EFFECT-AUDIT.md with what Microsoft Learn documents about it, and a test fails on
+    any the list does not hold. Not every page was read: rows whose page was not read on
+    2026-11-18 (the ActiveDirectory Get cmdlets other than Get-ADObject, Remove-CimSession, and
+    most of the .NET entry points and instance methods) are recorded as "not documented", and
+    reading them is PORT-PLAN H20c. Of the pages that were read, none documents a change of state for
+    anything a default run invokes; that is not a claim about the pages not read, and none of
+    them is recorded as harmless. Not covered by any page read: logon auditing on each DC,
+    whether reading the remote registry starts the Remote Registry service, and the DNS client
+    cache of the host running the assessment.
 
-    Two sections make CIM METHOD calls, and they are the only ones in the script. Both read
-    the registry of each DC through the WMI registry provider, StdRegProv, which exposes no
-    instances and can be read only by calling a method. DcDisk reads three values with
-    GetStringValue and, where that gives nothing usable, GetExpandedStringValue - the two
-    methods Microsoft documents as getting a string value. DcHardening reads six values with
-    GetDWORDValue, which Microsoft documents as returning the data of a REG_DWORD value. Each
-    of the three is named literally in the source, and no other method is called. StdRegProv's
-    writing methods (Create*, Delete*, Set*) are never called. Microsoft does not state in so
-    many words that the Get* methods have no side effect; the decision rests on their
-    documented purpose and signature.
+    Four sections make CIM METHOD calls; no other section does. Each reads the registry of
+    each DC through the WMI registry provider, StdRegProv, which exposes no instances and can
+    be read only by calling a method. DcDisk reads three values with GetStringValue and, where
+    that gives nothing usable, GetExpandedStringValue - the two methods Microsoft documents as
+    getting a string value. DcHardening reads six values with GetDWORDValue, which Microsoft
+    documents as returning the data of a REG_DWORD value. TimeHierarchy reads the W32Time Type,
+    NtpServer and AnnounceFlags values with GetStringValue and GetDWORDValue (PORT-PLAN C15,
+    since v1.32.0). DcSystem reads one value, UBR, with GetDWORDValue (PORT-PLAN C1a, since
+    v1.37.0). Each of the three methods is named literally in the source, and no
+    other method is called. StdRegProv's writing methods (Create*, Delete*, Set*) are never
+    called. Microsoft does not state in so many words that the Get* methods have no side
+    effect; the decision rests on their documented purpose and signature.
 
 .PARAMETER OutputPath
     Root folder for the assessment bundle. A timestamped sub-folder is always created inside it.
@@ -255,7 +265,16 @@
     -Sections DomainControllers,DnsAdConsistency,DsaCname,GcConsistency,MsdcsDelegation,PortMatrix,Replication,Trusts,DcSecureChannel,DsEvents,RestoreIntegrity,TimeSync,TimeHierarchy,SiteGc,Sysvol,Backup
 
     DcSystem judges each DC's operating system against Microsoft's lifecycle dates and lists
-    its build, uptime and latest update install date. The lifecycle verdict reads the DC
+    its build, uptime and latest update install date. Since v1.37.0 (PORT-PLAN C1a) the build is
+    shown in full, for example 20348.<UBR>: the update build revision is the registry value UBR
+    under HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion. Learn names that value and key and
+    compares it as an integer (learn.microsoft.com/intune/app-management/deployment/
+    deploy-win32-update-package, read in full 2026-11-18), and calls it "the revision number of
+    windows" (learn.microsoft.com/windows-hardware/manufacture/desktop/
+    oem-deployment-of-windows-desktop-editions, a search excerpt, 2026-11-18). It is read with
+    StdRegProv GetDWORDValue in the same CIM session, which makes DcSystem one of the four
+    sections that call a CIM method. Display only, never graded; a revision that was not read is
+    shown as not read with its cause, never as 0. The lifecycle verdict reads the DC
     inventory, so name DomainControllers with it: -Sections DomainControllers,DcSystem
 
     DcDisk judges the free space on each DC's NTDS database, NTDS log and SYSVOL volumes. It
@@ -823,7 +842,12 @@
     forest functional levels and DC operating systems), so a revision of Microsoft's supportability
     matrix is a config edit. Keys omitted keep their built-in value; a missing or malformed file is a
     terminating error, never a silent fall back. The DC gate reads the DC inventory, so name
-    DomainControllers with ExchangeSeReadiness, and it passes only with -AllDomains.
+    DomainControllers with ExchangeSeReadiness, and it passes only with -AllDomains. A forest
+    below the supported levels is told to raise its level; since v1.37.0 (PORT-PLAN H18) the
+    advice says what Microsoft now documents: raising is no longer permanent, the forest can be
+    lowered to a supported earlier level unless a feature tied to the new level was enabled
+    (learn.microsoft.com/windows-server/identity/ad-ds/plan/lower-domain-forest-functional-levels,
+    read 2026-11-18).
 
 .PARAMETER EventLookbackDays
     How far back, in days (1 to 365), the Directory Service and DFS Replication event scans and the
@@ -956,7 +980,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.36.0'
+    Version                 = '1.37.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1422,6 +1446,29 @@ $script:Config = @{
         #   Dcom, Default or Wsman; no port option in either parameter set). Read: 2026-11-17.
         WsmanPort   = 5985
         RpcPort     = 135
+        # PORT-PLAN C1a: the update build revision (UBR), the fourth part of a build such as
+        # 17763.6532. Win32_OperatingSystem does not carry it: BuildNumber is the build alone and
+        # Version is major.minor.build (Learn, win32-operatingsystem, read 2026-11-18). Learn names
+        # the value, its key and its meaning:
+        #   "Value name: UBR", key path HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion,
+        #   "Registry key requirement: Integer comparison", under "Update Build Revision (UBR)":
+        #     https://learn.microsoft.com/intune/app-management/deployment/deploy-win32-update-package
+        #     (read in full 2026-11-18)
+        #   "You can find the revision number of windows in the following registry key:
+        #    HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\UBR":
+        #     https://learn.microsoft.com/windows-hardware/manufacture/desktop/oem-deployment-of-windows-desktop-editions
+        #   "full version number for that update is 22621.819" (build.UBR):
+        #     https://learn.microsoft.com/windows-hardware/manufacture/desktop/add-update-to-winre
+        #     (both as search excerpts, 2026-11-18)
+        # NOT PUBLISHED: the registry type. Learn says "Integer comparison", not REG_DWORD; the value
+        # is read with GetDWORDValue, and a value of another type comes back as a type mismatch and is
+        # shown as not read, never as 0. Neither page is a Windows Server page. Display only: no
+        # threshold exists, so it is never graded. Not replaceable from -DcSystemConfigPath (refused
+        # as an unknown key): the value name is a vendor fact, not an operator setting.
+        UbrKey       = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+        UbrValueName = 'UBR'
+        UbrSourceUrl = 'https://learn.microsoft.com/intune/app-management/deployment/deploy-win32-update-package and https://learn.microsoft.com/windows-hardware/manufacture/desktop/oem-deployment-of-windows-desktop-editions'
+        UbrReadDate  = '2026-11-18'
         OsLifecycle = @(
             @{ Label = 'Windows Server 2025';    Build = 26100; Pattern = '(?i)windows server\s*2025';             ExtendedEnd = '2034-11-14'; EsuEnd = $null }
             @{ Label = 'Windows Server 2022';    Build = 20348; Pattern = '(?i)windows server\s*2022';             ExtendedEnd = '2031-10-14'; EsuEnd = $null }
@@ -13880,21 +13927,30 @@ function Get-AdfaExceptionErrorCode {
 function Get-AdfaDcSystemRaw {
     <#
     .SYNOPSIS
-        The one place C1 touches a DC: two read-only CIM queries in one bounded session.
+        The one place C1 touches a DC: two read-only CIM queries and one registry read in one
+        bounded session.
     .DESCRIPTION
         Win32_OperatingSystem for LastBootUpTime, BuildNumber and Version, then
-        Win32_QuickFixEngineering for InstalledOn. Nothing is written and no method is invoked.
+        Win32_QuickFixEngineering for InstalledOn, then (PORT-PLAN C1a) the registry value UBR
+        under HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion through the shared StdRegProv
+        GetDWORDValue seam, Get-AdfaStdRegDwordValue: the one CIM method this function causes to
+        be invoked, a literal Get method (see that function for the read-only decision). The key
+        and value name come from $script:Config.DcSystem (UbrKey, UbrValueName), with the Learn
+        source next to them. Nothing is written.
 
         Never throws. A failure to open the session or read the OS class comes back as Ok =
-        $false with the error text; a failure of the update query alone comes back as Ok = $true
-        with HotfixOk = $false, so one half is not thrown away because the other failed.
+        $false with the error text, and the registry is then not read (UbrRead $null); a failure
+        of the update query alone comes back as Ok = $true with HotfixOk = $false, and a failed UBR
+        read as Ok = $true with the failure in UbrRead, so one part is not thrown away because
+        another failed.
 
         The timeout is the caller's. Learn notes that a value under three minutes means a
         network failure longer than the timeout is not recovered from - which is the intended
         behaviour here: a DC that does not answer is reported, not waited for.
     .OUTPUTS
         [pscustomobject] Ok, Protocol, LastBootUpTime, BuildNumber, Version, HotfixOk,
-        InstalledOn (one entry per record, $null where the record carries none), Error, HotfixError.
+        InstalledOn (one entry per record, $null where the record carries none), Error, HotfixError,
+        UbrRead (the Get-AdfaStdRegDwordValue result, or $null when the read was not attempted).
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -13906,7 +13962,7 @@ function Get-AdfaDcSystemRaw {
     )
     $out = [pscustomobject]@{
         Ok = $false; Protocol = $Protocol; LastBootUpTime = $null; BuildNumber = ''; Version = ''
-        HotfixOk = $false; InstalledOn = @(); Error = ''; ErrorCode = ''; HotfixError = ''
+        HotfixOk = $false; InstalledOn = @(); Error = ''; ErrorCode = ''; HotfixError = ''; UbrRead = $null
     }
     $session = $null
     try {
@@ -13953,6 +14009,16 @@ function Get-AdfaDcSystemRaw {
             $out.HotfixOk = $true
         }
         catch { $out.HotfixError = $_.Exception.Message }
+
+        # PORT-PLAN C1a: the update build revision, through the shared seam (it never throws; the
+        # catch only keeps a defect in it from taking the OS half down). Its failure never sets Ok.
+        $dsc = $script:Config.DcSystem
+        try {
+            $out.UbrRead = Get-AdfaStdRegDwordValue -CimSession $session -Key ([string]$dsc['UbrKey']) -ValueName ([string]$dsc['UbrValueName']) -OperationTimeoutSec $OperationTimeoutSec
+        }
+        catch {
+            $out.UbrRead = [pscustomobject]@{ Answered = $false; ReturnValue = $null; Value = $null; Method = 'GetDWORDValue'; Error = [string]$_.Exception.Message; ErrorCode = '' }
+        }
     }
     catch {
         $out.Error = $_.Exception.Message
@@ -13970,10 +14036,68 @@ function Get-AdfaDcSystemRaw {
     return $out
 }
 
+function Resolve-AdfaBuildRevision {
+    <#
+    .SYNOPSIS
+        Pure: the update build revision (UBR) read, as the fourth part of the build or as the
+        named reason it was not read. PORT-PLAN C1a.
+    .DESCRIPTION
+        Display only, never graded: Microsoft publishes no threshold for it. Kind is one of the
+        Resolve-AdfaHardeningRead kinds (Value, NotSet, KeyAbsent, AccessDenied, TypeMismatch,
+        ReadFailed) or NotAttempted when there is no read at all (the OS class failed first, or a
+        seam that predates C1a).
+
+        Number is $null and FullBuild is '' for every Kind but Value, so a revision that was not
+        read can never be shown as 0. A revision of 0 that WAS read is shown as read. FullBuild is
+        also '' when the build number was not returned: a revision alone is not a build.
+
+        The value name, its key and its meaning are Learn's (see $script:Config.DcSystem, UbrKey);
+        its registry type is not published, and the text says so where a type mismatch is reported.
+    .OUTPUTS
+        [pscustomobject] Kind, Number ([int64] or $null), FullBuild, Text.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$BuildNumber = '',
+        [AllowNull()]$UbrRead,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$ValueName
+    )
+    $out = [pscustomobject]@{ Kind = 'NotAttempted'; Number = $null; FullBuild = ''; Text = '' }
+    $where = ("the registry value {0} under HKLM\{1}" -f $ValueName, $Key)
+    if ($null -eq $UbrRead) {
+        $out.Text = ("Update build revision not read: the registry read was not attempted, so {0} is unknown." -f $where)
+        return $out
+    }
+    $read = Resolve-AdfaHardeningRead -Entry $UbrRead
+    $out.Kind = [string]$read.Kind
+    if ($out.Kind -eq 'Value') {
+        $out.Number = [int64]$read.Number
+        $build = ([string]$BuildNumber).Trim()
+        if ($build -eq '') {
+            $out.Text = ("Update build revision {0} read from {1}, but the build number was not returned, so no full build is shown. Display only, not graded." -f $out.Number, $where)
+            return $out
+        }
+        $out.FullBuild = ("{0}.{1}" -f $build, $out.Number)
+        $out.Text = ("Update build revision {0} from {1}, which Microsoft documents as the revision number of Windows; shown as the fourth part of the build, display only and not graded." -f $out.Number, $where)
+        return $out
+    }
+    if ($out.Kind -eq 'NotSet') {
+        $out.Text = ("Update build revision not read: {0} is not set on this DC (StdRegProv returned 1; that reading of 1 is measured, not published by Microsoft). No revision is assumed." -f $where)
+        return $out
+    }
+    $cause = [string]$read.Cause
+    if ($out.Kind -eq 'TypeMismatch') { $cause = ("{0} Microsoft documents the value only as compared as an integer; its registry type is not published." -f $cause) }
+    $out.Text = ("Update build revision not read: {0}" -f $cause)
+    return $out
+}
+
 function Get-AdfaDcPatchLevel {
     <#
     .SYNOPSIS
-        Per-DC patch-level inventory: OS build, uptime, and the latest update install date.
+        Per-DC patch-level inventory: OS build with its update build revision (C1a), uptime, and
+        the latest update install date.
     .DESCRIPTION
         Inventory, not a verdict: every row is Info or Not Assessed, never Pass. Microsoft
         publishes no maximum uptime and no maximum age of the last update for a domain
@@ -14077,14 +14201,31 @@ function Get-AdfaDcPatchLevel {
                 $boot = ("Last boot {0:yyyy-MM-dd HH:mm}; up {1} day(s), measured against the clock of the host running the assessment." -f [datetime]$raw.LastBootUpTime, [int][math]::Floor($span.TotalDays))
             }
         }
+        # PORT-PLAN C1a: the update build revision, read in the same session. A raw result without
+        # the property (a seam from before C1a) is a read that was not attempted.
+        $ubrRead = $null
+        $ubrProp = $raw.PSObject.Properties['UbrRead']
+        if ($null -ne $ubrProp) { $ubrRead = $ubrProp.Value }
+        # The names come from the table the raw read used; a table without them (a caller's own)
+        # falls back to the built-in one, which is where Get-AdfaDcSystemRaw reads them.
+        $ubrKey = [string]$Config['UbrKey']
+        if ($ubrKey -eq '') { $ubrKey = [string]$script:Config.DcSystem['UbrKey'] }
+        $ubrName = [string]$Config['UbrValueName']
+        if ($ubrName -eq '') { $ubrName = [string]$script:Config.DcSystem['UbrValueName'] }
+        $revision = Resolve-AdfaBuildRevision -BuildNumber ([string]$raw.BuildNumber) -UbrRead $ubrRead -Key $ubrKey -ValueName $ubrName
         $build = 'Build number was not returned.'
         $hasBuild = (-not [string]::IsNullOrWhiteSpace([string]$raw.BuildNumber))
-        if ($hasBuild) { $build = ("Build {0} (version {1})." -f [string]$raw.BuildNumber, [string]$raw.Version) }
-        # The class answered but gave neither value: nothing was measured, so it is not Info.
+        if ($hasBuild) {
+            $shownBuild = [string]$raw.BuildNumber
+            if ([string]$revision.FullBuild -ne '') { $shownBuild = [string]$revision.FullBuild }
+            $build = ("Build {0} (version {1})." -f $shownBuild, [string]$raw.Version)
+        }
+        # The class answered but gave neither value, and no revision was read: nothing was
+        # measured, so it is not Info.
         $osStatus = $script:Status.Info
-        if (-not $hasBuild -and -not ($raw.LastBootUpTime -is [datetime])) { $osStatus = $script:Status.NotAssessed }
+        if (-not $hasBuild -and -not ($raw.LastBootUpTime -is [datetime]) -and [string]$revision.Kind -ne 'Value') { $osStatus = $script:Status.NotAssessed }
         $rows += New-Finding -Scope $scope -Area 'DcSystem' -Item ("OS build and uptime: {0}" -f $dc) -Status $osStatus `
-            -Detail ("{0} {1} The update revision within the build is not part of this read. Read over {2}." -f $build, $boot, [string]$raw.Protocol)
+            -Detail ("{0} {1} {2} Read over {3}." -f $build, $boot, [string]$revision.Text, [string]$raw.Protocol)
 
         # ---- Latest update install date ----
         $hfItem = ("Last update installed: {0}" -f $dc)
@@ -16482,7 +16623,9 @@ function Get-AdfaStdRegDwordValue {
     <#
     .SYNOPSIS
         Reads ONE REG_DWORD value from HKEY_LOCAL_MACHINE on a DC through the WMI registry
-        provider. The third and last CIM method this script invokes.
+        provider. The third and last CIM method this script invokes. Its callers are
+        DcHardening (six values), TimeHierarchy (AnnounceFlags, PORT-PLAN C15) and DcSystem
+        (UBR, PORT-PLAN C1a).
     .DESCRIPTION
         READ-ONLY DECISION (PORT-PLAN C3), on the same footing as Get-AdfaStdRegStringValue,
         which records the decision in full. GetDWORDValue "returns the data value for a named
@@ -30093,8 +30236,21 @@ $script:RecommendationMap = @(
        Text  = '' }
     # The target mode is not named: the supported set can be overridden, so the finding's own
     # "Supported:" list is the only place that knows which level to raise to.
+    # PORT-PLAN H18: until v1.37.0 this said the raise "is a one-way change and cannot be reverted
+    # without a forest recovery". That came from KB 322692 (troubleshoot/windows-server/active-directory/
+    # raise-active-directory-domain-forest-functional-levels, "Applies to: Windows Server 2003"), which
+    # still says a raised level "can only be changed back to an older level by using a forest recovery".
+    # The newer, specific page governs, read in full 2026-11-18:
+    #   https://learn.microsoft.com/windows-server/identity/ad-ds/plan/lower-domain-forest-functional-levels
+    #   "Raising a level is no longer permanent, so you can lower a domain or forest back to a
+    #    supported earlier level." Rollback floor: Windows Server 2008 with only Windows Server 2022
+    #   or earlier DCs, Windows Server 2016 with any Windows Server 2025 DC. Forest prerequisites:
+    #   "After you enable a feature tied to a specific forest functional level, you can't roll back
+    #   to a lower level", access to the schema master, Enterprise Admins.
+    # That page does not name the Recycle Bin, so no feature is named here (the Recycle Bin page says
+    # enabling it is irreversible, a different claim from "it blocks a rollback").
     @{ Section = '(?i)exchange se'; Match = '(?i)forest functional level'
-       Text  = 'Raise the forest functional level before Setup: confirm every DC is on a supported OS first, then "Set-ADForestMode -Identity <forest> -ForestMode <mode>", using one of the supported modes this finding lists (raise each domain with Set-ADDomainMode first where needed). This is a one-way change and cannot be reverted without a forest recovery, so take a verified system-state backup of two DCs per domain and confirm replication is healthy beforehand.' }
+       Text  = 'Raise the forest functional level before Setup: confirm every DC is on a supported OS first, then "Set-ADForestMode -Identity <forest> -ForestMode <mode>", using one of the supported modes this finding lists (raise each domain with Set-ADDomainMode first where needed). Microsoft no longer treats raising a level as permanent: the forest can be lowered again with Set-ADForestMode to a supported earlier level (no lower than Windows Server 2016 while any Windows Server 2025 DC is in the forest, otherwise no lower than Windows Server 2008), but only while the forest uses no forest-level feature exclusive to the new level - after such a feature is enabled the forest cannot roll back - and lowering needs Enterprise Admins and access to the schema master (Lower domain and forest functional levels, learn.microsoft.com/windows-server/identity/ad-ds/plan/lower-domain-forest-functional-levels, read 2026-11-18). Take a verified system-state backup of two DCs per domain and confirm replication is healthy beforehand.' }
     @{ Section = '(?i)exchange se'; Match = '(?i)not supported for|not readable|unverified, not compatible'
        Text  = 'Every domain controller in the forest must run a supported Windows Server version, not only the ones in the Exchange site. Upgrade or decommission the named DCs before Setup, transferring any FSMO roles they hold first. Where the OS could not be read, re-run with credentials able to read the DC computer objects - an unreadable value is not a pass.' }
     @{ Section = '(?i)exchange se'; Match = '(?i)read-only domain controller'
