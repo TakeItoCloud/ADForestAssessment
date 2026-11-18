@@ -24922,7 +24922,7 @@ Describe 'House rules: one output folder per run, the closing log lines, exit co
             $script:H21Out['StampFormat'] | Should -Be 'yyyyMMdd-HHmmss'
             [int]$script:H21Out['MaxRunFolderAttempts'] | Should -Be 99
         }
-        It 'computes the default run folder exactly as CLAUDE.md says, with no -OutputPath' {
+        It 'computes the default run folder exactly as CLAUDE.md says, with no -OutputPath' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
             $root = Resolve-AdfaOutputRoot -OutputPath '' -Config $script:H21Out
             $root.Root | Should -Be 'C:\Scripts\Securnet\Reports'
             $root.FromDefault | Should -BeTrue
@@ -24935,11 +24935,11 @@ Describe 'House rules: one output folder per run, the closing log lines, exit co
             $p.CsvPath | Should -Be (Join-Path $script:H21DefaultRunRoot 'csv')
             $p.RawPath | Should -Be (Join-Path $script:H21DefaultRunRoot 'raw')
         }
-        It 'stamps the hour on the 24-hour clock' {
+        It 'stamps the hour on the 24-hour clock' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
             $p = Get-AdfaRunFolderPath -Root 'C:\Scripts\Securnet\Reports' -Now ([datetime]::new(2026, 11, 18, 21, 5, 9)) -Config $script:H21Out
             $p.Stamp | Should -Be '20261118-210509'
         }
-        It 'review fix (M5): the stamp does not depend on the culture of the host - th-TH, whose calendar is Buddhist' {
+        It 'review fix (M5): the stamp does not depend on the culture of the host - th-TH, whose calendar is Buddhist' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
             $saved = [System.Threading.Thread]::CurrentThread.CurrentCulture
             try {
                 [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('th-TH')
@@ -24949,7 +24949,7 @@ Describe 'House rules: one output folder per run, the closing log lines, exit co
             }
             finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $saved }
         }
-        It 'computes the default folder without creating anything (Select-AdfaRunFolder with no -OutputPath)' {
+        It 'computes the default folder without creating anything (Select-AdfaRunFolder with no -OutputPath)' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
             Mock New-Item { throw 'H21: New-Item must not be called' }
             Mock Out-File { throw 'H21: Out-File must not be called' }
             Mock Add-Content { throw 'H21: Add-Content must not be called' }
@@ -25001,6 +25001,8 @@ Describe 'House rules: one output folder per run, the closing log lines, exit co
             @{ Name = 'the variable drive'; Path = 'Variable:\AdfaH21'; Expect = 'Variable' }
             @{ Name = 'a drive that does not exist'; Path = 'AdfaNoSuchDrive:\out'; Expect = 'AdfaNoSuchDrive' }
         ) {
+            # The registry provider exists on Windows only; the tool runs on Windows only (CI runs on Linux).
+            if ($Expect -eq 'Registry' -and -not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) { Set-ItResult -Skipped -Because 'the Registry provider exists on Windows only'; return }
             Mock New-Item { throw 'H21: New-Item must not be called' }
             { Select-AdfaRunFolder -OutputPath $Path -Now $script:H21Now -Config $script:H21Out } | Should -Throw ('*{0}*' -f $Expect)
             Should -Invoke New-Item -Times 0 -Exactly

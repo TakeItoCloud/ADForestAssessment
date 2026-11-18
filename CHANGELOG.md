@@ -131,6 +131,10 @@ Found by an independent review of the diff before commit, and fixed in it:
   Existing tests changed because behaviour changed: the AST test that Invoke-Main calls
   Select-AdfaRunFolder now asserts New-AdfaRunFolder (which calls it), the help population is 449
   functions and 1670 parameters (was 447 and 1666), and the list of new H21 functions is eight.
+- Found by CI: CI runs on Linux, where the `C:\` default root, the `\` separator and the Registry
+  provider do not exist. Five H21 tests (the default folder, the 24-hour stamp, the th-TH stamp,
+  the no-create check and the registry-key refusal) now skip off Windows, by the same platform test
+  the ACL tests use. They run, and pass, under both local Windows gates; CI does not cover them.
 
 ### Changed - 2026-11-18 (Functional level wording, side-effect audit of every command, update build revision, tool v1.37.0)
 
