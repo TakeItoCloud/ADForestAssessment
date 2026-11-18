@@ -18,15 +18,15 @@ The script writes nothing to the directory itself. Since v1.37.0 every command, 
 form (started through `Invoke-ExternalCommand` or directly), CIM class and method, static .NET
 member, `New-Object` type and instance method name the script holds is listed in
 [docs/SIDE-EFFECT-AUDIT.md](docs/SIDE-EFFECT-AUDIT.md), and a test fails on any the list does
-not hold (PORT-PLAN H20a). Not every row rests on a page that was read: where the Learn page
-was read (2026-11-18, or the earlier date the row gives), the row says what it documents; where
-it was not read, or there is none, the row says `not documented`, and reading the unread pages
-is PORT-PLAN H20c. Of the pages that were read, none documents a change of state for anything a
-default run invokes, and everything Microsoft documents as changing state is off unless you
-give its switch. That is not a claim about the pages not read, and it is not a statement that a
-default run leaves no trace: logon auditing on each DC, whether reading the remote registry
-starts the Remote Registry service, and the DNS client cache of the host running the assessment
-are not covered by any page read. See [What a run can change](#what-a-run-can-change).
+not hold (PORT-PLAN H20a). Since v1.39.0 every row that names a Learn page rests on a page read
+on 2026-11-18 (or the earlier date the row gives), and says what it documents (PORT-PLAN H20c);
+where Learn says nothing either way, or there is no page, the row says `not documented`. Of the
+pages read, none documents a change of state on a DC or any other computer for anything a default
+run invokes, and everything Microsoft documents as changing state is off unless you give its
+switch. That is not a statement that a default run leaves no trace: logon auditing on each DC,
+whether reading the remote registry starts the Remote Registry service, and the DNS client cache
+of the host running the assessment are not covered by any page read. See
+[What a run can change](#what-a-run-can-change).
 
 Extracted from
 `infra-scripting-suite/powershell/Assessments/ActiveDirectory/Invoke-ADForestAssessment.ps1`.
@@ -1475,31 +1475,52 @@ Everything a default run invokes is listed in
 [docs/SIDE-EFFECT-AUDIT.md](docs/SIDE-EFFECT-AUDIT.md) (PORT-PLAN H20a), one row per command,
 console tool form (through `Invoke-ExternalCommand` or started directly, as `nltest.exe` is in the
 script block run over WinRM), CIM class and method, static .NET member, `New-Object` type and
-instance method name. Not every row was read on Microsoft Learn: 38 default rows rest on a page
-that was not read on 2026-11-18 (the ActiveDirectory Get cmdlets other than `Get-ADObject`,
-`Remove-CimSession`, most of the .NET entry points and the instance methods with reach), so they
-say `not documented`, and reading them is PORT-PLAN H20c. A test parses the script and fails on any
-command, tool form or instance method name the inventory does not hold, on a row the script no
-longer reaches, on a tool started with a name or arguments the test cannot read (a direct start is
-keyed by its tool form, never by the bare tool name), on `OpenSubKey` with more than one argument,
-on a method name it cannot read, on a dynamic call outside four named ones, and on a default row
-that carries a documented change. What it cannot see: the object an instance method is called on
-(a listed name called on another object passes), property assignments, and what a tool does that
-its page does not say. The result: of the pages read, none documents a change of state for anything
-a default run invokes, and no command had to be moved behind a new switch; nothing is claimed for
-the pages not read. The rows, by verdict:
+instance method. Since v1.39.0 (PORT-PLAN H20c) every Learn page a row names was read on
+2026-11-18: 0 default rows rest on a page that was not read, and 3 default rows rest on no Learn
+page, each naming why (`dcdiag /test:FsmoCheck` and the two forms of `repadmin /showbackup`). The
+pages H20c read document local changes only: `Remove-CimSession` removes the session "from the
+local PowerShell session", `Process.Start` and `Process.Kill` act on the console tool the script
+started on the host running the assessment ("You cannot cause processes on remote computers to
+exit"), and `RegistryKey.Close` flushes a key only "if its contents have been modified", which a key
+opened read-only is not. A test parses the script and fails on any command, tool form or instance
+method the inventory does not hold, on a row the script no longer reaches, on a tool started with a
+name or arguments the test cannot read (a direct start is keyed by its tool form, never by the bare
+tool name), on `OpenSubKey` with more than one argument, on a method name it cannot read, on a
+dynamic call outside four named ones, and on a default row that carries a documented change. Since
+v1.39.0 (PORT-PLAN H20d) an instance method is keyed by the type of the object it is called on where
+the source shows it (`Method:[System.Net.Sockets.TcpClient].Close`), a call on an object of unknown
+type by its function and receiver, and only 24 generic names (`Trim`, `ToString`, `ContainsKey`
+...) by name alone, so a listed method called on a new kind of object fails (`Add` is not one of
+them: Learn's ADSI "Adding Users to a Group" adds a member with `Add` alone); every property set on
+the process the script starts is keyed with its value, so `FileName = 'sc.exe'` fails, and the test
+fails on any way of setting one that no assignment shows (a cast, `New-Object -Property`, a
+constructor value, a second name such as `$s = $p.StartInfo`); and the test also fails on a Process
+built outside `Invoke-ExternalCommand`, a `TcpClient` built with any value but one AddressFamily
+(two values, `@(host, port)` or an array variable could be the overload Learn documents as
+connecting), a `FileStream` opened other than for reading with exactly four arguments (a later one
+could be `FileOptions.DeleteOnClose`), and `-ForceDiscover` or `-Discover` in any form PowerShell
+binds (`-ForceDisc`, `@{ ForceDisc = $true }`, `$dcArgs.ForceDiscover = $true`). These forms were
+found by an independent review of the v1.39.0 diff before commit. What it cannot see: the type of an
+object the source does not show (one of the 24 generic names called on it passes), property
+assignments on any other object, the arguments of a listed command other than the guarded ones (an
+`Out-File` pointed elsewhere keeps its key, PORT-PLAN H20e), a name built at run time from parts
+the parser does not hold, and what a tool does that its page does not say. The result: of the pages read, none documents a change of state on a DC
+or any other computer for anything a default run invokes, and no command had to be moved behind a new
+switch. The rows, by verdict:
 
 | Verdict | Rows |
 | --- | --- |
-| documented read | 56 |
+| documented read | 81 |
 | documented change, opt-in | 7 |
-| not documented | 54 |
+| not documented | 22 |
 | local output (by design) | 7 |
-| in-process | 127 |
+| in-process | 181 |
 
 `documented read` means Learn describes it as a query, read or display; `not documented` means
-Learn says nothing either way, the page was not read in this session, or there is no page - never
-that nothing happens. `repadmin /showbackup` has no Learn reference page and `dcdiag
+the page was read and says nothing either way about the computer reached, or there is no page -
+never that nothing happens. Connecting and closing (`TcpClient.BeginConnect`, `EndConnect`,
+`Close`, `RegistryKey.Close`, `FileStream.Dispose`) are not reads, so they stay `not documented`
+with their page read. `repadmin /showbackup` has no Learn reference page and `dcdiag
 /test:FsmoCheck` is not in Learn's dcdiag reference (PORT-PLAN C11c); both stay in the default run
 as `not documented`. `repadmin /showrepl * /csv` contacts every DC of the forest, and Learn warns
 that the wildcard can cause "a significant increase in network traffic". Four effects no page read

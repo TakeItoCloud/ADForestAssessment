@@ -222,12 +222,16 @@
     through Invoke-ExternalCommand or directly), CIM class and method, static .NET member,
     New-Object type and instance method name the script holds is listed in
     docs/SIDE-EFFECT-AUDIT.md with what Microsoft Learn documents about it, and a test fails on
-    any the list does not hold. Not every page was read: rows whose page was not read on
-    2026-11-18 (the ActiveDirectory Get cmdlets other than Get-ADObject, Remove-CimSession, and
-    most of the .NET entry points and instance methods) are recorded as "not documented", and
-    reading them is PORT-PLAN H20c. Of the pages that were read, none documents a change of state for
-    anything a default run invokes; that is not a claim about the pages not read, and none of
-    them is recorded as harmless. Not covered by any page read: logon auditing on each DC,
+    any the list does not hold. Since v1.39.0 every Learn page a row names was read on 2026-11-18
+    (PORT-PLAN H20c), including the ActiveDirectory Get cmdlets, Remove-CimSession and the .NET
+    entry points and instance methods with reach; three default rows rest on no Learn page and say
+    why (dcdiag /test:FsmoCheck, repadmin /showbackup in two forms). Since v1.39.0 the test also
+    keys an instance method by the type of the object it is called on where the source shows it,
+    and every property set on the process Invoke-ExternalCommand starts (PORT-PLAN H20d). Of the
+    pages read, none documents a change of state on a DC or any other computer for anything a
+    default run invokes; Process.Start and Process.Kill act on the console tool the script started
+    on the host running the assessment, and where a page says nothing either way the row says "not
+    documented", never harmless. Not covered by any page read: logon auditing on each DC,
     whether reading the remote registry starts the Remote Registry service, and the DNS client
     cache of the host running the assessment.
 
@@ -906,7 +910,7 @@
 
 .NOTES
     Owner: Carlos Annes (TakeItToCloud)
-    Version: 1.38.0
+    Version: 1.39.0
     Created: 2026-07-22
     Last updated: 2026-11-18
     Requires: Windows PowerShell 5.1 or PowerShell 7+ (5.1 because the script runs on a stock domain controller); RSAT ActiveDirectory module (no minimum version set); DnsServer, GroupPolicy and DFSR modules optional; domain read access; administrative rights on the domain controllers for trust verification, dcdiag and the remote CIM sections; Enterprise Admins for the opt-in dcdiag DNS test (Microsoft's statement).
@@ -1019,7 +1023,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.38.0'
+    Version                 = '1.39.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs

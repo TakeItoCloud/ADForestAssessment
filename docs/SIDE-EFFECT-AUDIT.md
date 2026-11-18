@@ -1,6 +1,6 @@
 # Side-effect audit of every command the script can run
 
-PORT-PLAN H20a, v1.37.0; updated by H21, v1.38.0. Read 2026-11-18 on Microsoft Learn unless a row says otherwise.
+PORT-PLAN H20a, v1.37.0; updated by H21, v1.38.0, and by H20c and H20d, v1.39.0. Read 2026-11-18 on Microsoft Learn unless a row says otherwise.
 
 This file is the inventory of everything `src/ADForestAssessment/Invoke-ADForestAssessment.ps1`
 can reach outside its own PowerShell process, and of every command, type and static member it
@@ -8,8 +8,33 @@ uses inside it. A Pester test (`H20a` in `tests/Invoke-ADForestAssessment.Tests.
 script and fails when:
 
 - the script holds a command, an external tool form, a CIM class, a CIM method, a static .NET
-  member, a `New-Object` type or an instance method name that has no row here (a new reach has
-  not been audited);
+  member, a `New-Object` type, an instance method or a property set on the process it starts that
+  has no row here (a new reach has not been audited). Since v1.39.0 (PORT-PLAN H20d) an instance
+  method is keyed by the type of its receiver where the source of the same function shows it
+  (`Method:[System.Net.Sockets.TcpClient].Close`), a call on a receiver of unknown type by its
+  function and receiver (`Untyped:Test-TcpPort:$iar.AsyncWaitHandle.WaitOne`), and only the 24
+  generic names of their own table by name alone (`Method:Trim`); so a listed method called on a
+  new object is a new key;
+- a property of the `ProcessStartInfo` or `Process` the script builds is set to a value with no row
+  (`Property:[System.Diagnostics.ProcessStartInfo].FileName = $FilePath`); either type is built
+  outside `Invoke-ExternalCommand`, by a cast (`[System.Diagnostics.Process]@{ ... }`), with a
+  constructor value or `-Property`, or other than straight into a variable the test types as that
+  type; a variable of either type is used other than as a method receiver, the root of a property
+  set, the value of a property set on one of them (`$p.StartInfo = $psi`) or a read of
+  `Process.ExitCode` (so `$s = $p.StartInfo`, `$alias = @($psi)[0]` and
+  `$ev = $psi.EnvironmentVariables` fail); or a method is called on one of their properties by name
+  alone;
+- a `TcpClient` is built with any value but one `$x.AddressFamily` (a host and a port, `@(...)` or
+  an array in a variable could be the overload Learn documents as connecting); a `FileStream` is
+  opened other than as `FileStream(path, FileMode.Open, FileAccess.Read, <FileShare members>)` with
+  exactly those four arguments (a fifth or sixth could be `FileOptions.DeleteOnClose`);
+  `Get-ADDomainController` is given any prefix of `-ForceDiscover` or `-Discover` (`-ForceDisc`,
+  `-Disc`), `-ForceDiscover` or `-Discover` appears as a parameter anywhere, any string the parser
+  holds is a prefix of two or more letters of either name (a splatted key `@{ ForceDisc = $true }`,
+  a member set `$dcArgs.ForceDiscover = $true`, an index `$dcArgs['Disc']`, an `Add('Force', ...)`
+  argument), or `Get-ADDomainController` splats `@args` or `@PSBoundParameters`; `New-Object` is
+  given `-Property` or a parameter the test does not read; the script holds a `using` statement;
+  or one variable is assigned two types;
 - a row names something the script no longer holds (a stale row);
 - `Invoke-ExternalCommand` is given a tool name that is not a literal, or arguments built in a
   way the test cannot name (only a literal, a `"format" -f ...` literal, a variable assigned from
@@ -32,11 +57,28 @@ script and fails when:
 - a row's verdict is outside the vocabulary below, a default row carries a documented change, or
   an opt-in row names a switch the script does not have.
 
-What that test cannot see: the receiver of an instance method. Instance methods are keyed by
-name only (`Method:SetValue`), because the type of `$x` in `$x.SetValue()` is not known from the
-source; a new method name fails the test, but a name already listed, called on a different
-object, does not. Property reads and property assignments are not keyed at all. Nor can it see
-anything a vendor tool does that its Learn page does not say.
+What that test cannot see: the type of a receiver the source does not show. A receiver is typed
+only when every binding of the variable in its function is an assignment from `New-Object`,
+`[<type>]::new(...)`, a cast, or a member of the test's return-type table (each entry citing the
+Learn page that documents its return type); a parameter, a `foreach` variable, a property of another
+object or a hashtable element is not typed. A variable bound by a common parameter (`-OutVariable`,
+`-ErrorVariable`, `-WarningVariable`, `-InformationVariable`, `-PipelineVariable`, any prefix or
+alias of them) or by `Set-Variable`/`New-Variable` counts as one more binding of unknown type, so it
+is untyped; a name such a binding takes that the test cannot read fails it. A variable bound
+anywhere else (a scope-qualified `$script:x` set in another function, a call such as
+`$ExecutionContext.SessionState.PSVariable.Set(...)`, which is itself an `Untyped:` key with no row)
+is not followed. The 24 generic names are keyed by name alone on an untyped receiver, so one of
+them called on a new kind of object passes: the key cannot tell which object a name is called on.
+Every other name on such a receiver is a row of its own, by function and receiver text. Property
+reads are not keyed, and property assignments only on `ProcessStartInfo` and `Process` (every other
+assignment the script makes is to an object it built from data: a `[pscustomobject]`, a hashtable, a
+TcpClient time-out). The arguments of a listed command or member are not keyed, except where this
+file names a guard (`OpenSubKey`, `FileStream`, `TcpClient`, `Get-ADDomainController` discovery, the
+console tool forms): a second call of a listed member with other arguments, such as `Out-File` or
+`[System.IO.File]::Open` pointed at a path outside the run folder, keeps its key and passes
+(PORT-PLAN H20e). A name built at run time from parts the parser does not hold as one string (for
+example from `[char]` codes) is not seen by the discovery guard. Nor can the test see anything a
+vendor tool or API does that its Learn page does not say.
 
 ## Verdicts
 
@@ -44,21 +86,27 @@ anything a vendor tool does that its Learn page does not say.
 | --- | --- |
 | documented read | Learn describes the command, verb or method as a query, read, retrieval or display. Learn does not say in so many words that it leaves no trace; the verdict rests on the documented purpose. |
 | documented change, opt-in | Learn documents a change of state (a write, a replication, an event logged, a channel rebuilt). Every such row runs only behind the switch in its Run column. |
-| not documented | Learn says nothing either way, the page was not read in this session, or there is no Learn page. This is never a claim that nothing happens. |
+| not documented | The page was read and says nothing either way about a change of state on the computer reached, or there is no Learn page (the Source names why). This is never a claim that nothing happens. |
 | local output (by design) | Writes the run's own output folder on the host running the assessment. |
-| in-process | Runs inside the PowerShell process, or reads the local computer only; reaches no DC and no other computer. |
+| in-process | Runs inside the PowerShell process, reads the local computer only, or acts only on the host running the assessment (an object, or a child process the script started, whose console tool is audited in its own Tool rows); reaches no DC and no other computer itself. |
 
 The Run column says when the row runs: `Default` (a run with no switch, `-Sections All`), or
 `Opt-in: -Switch`.
 
 ## Result
 
-Of the Learn pages read, none documents a change of state for anything a default run invokes.
-That claim covers only the pages read: 38 default rows rest on a page that was not read in this
-session (the ActiveDirectory Get cmdlets other than `Get-ADObject`, `Remove-CimSession`, most of
-the .NET entry points and the instance methods with reach), and reading them is PORT-PLAN H20c;
-what Learn would say on them is not known. Every command Microsoft documents as changing state
-is opt-in, behind the switch named in its row:
+Of the Learn pages read, none documents a change of state on a DC or any other computer for
+anything a default run invokes. Since v1.39.0 (PORT-PLAN H20c) every row that names a page rests on
+a page read on 2026-11-18 (or the earlier date the row gives): 0 default rows rest on a page that
+was not read. 3 default rows rest on no Learn page, each naming why: `dcdiag /test:FsmoCheck`
+(not in Learn's dcdiag reference) and the two forms of `repadmin /showbackup` (no reference page).
+The pages H20c read document local changes only: `Remove-CimSession` removes the session object
+"from the local PowerShell session", `Process.Start` and `Process.Kill` act on the child process
+the script started on the host running the assessment (Learn: "You cannot cause processes on
+remote computers to exit"), and `RegistryKey.Close` flushes a key only "if its contents have been
+modified", which a key opened read-only and never written is not. No row had to be moved behind a
+switch. Every command Microsoft documents as changing state is opt-in, behind the switch named in
+its row:
 `dcdiag /test:DNS /DnsAll`, `/test:SystemLog` and `/test:Intersite /a`
 (`-IncludeDcdiagActiveTests`), the raw `dcdiag /c /v` capture (`-IncludeDcdiag`),
 `nltest /sc_verify` in both forms (`-IncludeSecureChannelVerify`) and
@@ -80,21 +128,57 @@ Decisions taken where Learn was silent:
   does not list it, so its verdict is `not documented`.
 - `repadmin /showbackup` has no Learn reference page; Learn mentions it only as the command that
   checks backup status. It stays in the default run as `not documented`.
-- The ActiveDirectory module's Get cmdlets other than `Get-ADObject`, most of the .NET entry
-  points and instance methods, and `Remove-CimSession` are `not documented`: their pages were
-  not read in this session (PORT-PLAN H20c).
 - `OpenSubKey` is `documented read` only in its one-argument form, which Learn documents as
   "Retrieves a subkey as read-only" (read 2026-11-18); the test refuses any other form.
+- PORT-PLAN H20c (v1.39.0). The 17 ActiveDirectory Get cmdlets are `documented read` from the
+  Description of each page, read whole; none of the pages says what the DC records of a request
+  (Effect:logon-audit). `Get-ADDomainController` is a read without `-ForceDiscover`, which Learn
+  documents as clearing cached DC information; the test refuses it and `-Discover`, including any
+  prefix PowerShell binds to either on the command line or from a splatted hashtable (independent
+  review of the diff).
+- `Remove-CimSession` stays `not documented`: Learn says it removes the session "from the local
+  PowerShell session" and nothing about the remote end. It was not made `in-process`, because that
+  verdict says the call reaches no other computer, which the page does not say.
+- `Process.Start`, `Process.Kill` and `WaitForExit` are `in-process`: they act on the child process
+  `Invoke-ExternalCommand` started on the host running the assessment, which is the only place a
+  Process is built (a test fails on a `New-Object` or a cast of it anywhere else, and on any use of
+  the variable that holds it that the test does not key); what the console tool does is its Tool
+  rows'.
+- Connecting, closing and disposing are not reads: `TcpClient.BeginConnect`, `EndConnect` and
+  `Close`, `RegistryKey.Close`, `FileStream.Seek` and `Dispose`, `SslStream.Dispose` and
+  `AuthenticateAsClient` stay `not documented` with their page read, because each page describes
+  the operation and says nothing either way about the computer reached.
+- `SecurityIdentifier.Translate` stays `not documented`: its page does not say how or where the
+  name is looked up.
+- `Gpo.GenerateReport` is `documented read`: the archived class-library page says it "Generates a
+  report" and "Returns String"; the script keeps the string in memory.
+- The constructors of `TcpClient`, `SslStream`, `Process`, `ProcessStartInfo`, `[powershell]::Create`
+  and `IPGlobalProperties.GetIPGlobalProperties` are `in-process` from their pages; the TcpClient row
+  holds only because the test refuses every constructor value but one `$x.AddressFamily`, so the
+  overload that connects cannot be reached through `@(...)` or an array variable either.
+- `FileStream::new` is `documented read` only as called with exactly four arguments, the fourth only
+  `FileShare` members: Learn's FileOptions page documents `DeleteOnClose` as "a file is automatically
+  deleted when it is no longer in use" (https://learn.microsoft.com/dotnet/api/system.io.fileoptions,
+  read 2026-11-18), and that value can only be passed as a later argument. The `FileShare.Delete` the
+  script passes "Allows subsequent deleting of a file" by others
+  (https://learn.microsoft.com/dotnet/api/system.io.fileshare, read 2026-11-18); it deletes nothing.
+- `Add` is no longer a generic name (independent review of the diff): Learn's "Adding Users to a
+  Group" (https://learn.microsoft.com/windows/win32/adsi/adding-users-to-a-group, read 2026-11-18)
+  adds a group member with `grp.Add("LDAP://...")` alone, with no `SetInfo` or `CommitChanges`, so
+  a name-only key could let a directory write through. The four untyped `Add` calls of the script
+  are rows of their own.
+- The four opt-in rows of the LDAPS handshake whose pages H20a had not read (`SslStream`,
+  `[powershell]::Create`, `GetStream`, `AuthenticateAsClient`) were read in the same pass.
 
 ## Summary
 
 | Verdict | Rows |
 | --- | --- |
-| documented read | 56 |
+| documented read | 81 |
 | documented change, opt-in | 7 |
-| not documented | 54 |
+| not documented | 22 |
 | local output (by design) | 7 |
-| in-process | 127 |
+| in-process | 181 |
 
 ## External console tools: every form the script can start
 
@@ -154,7 +238,7 @@ Decisions taken where Learn was silent:
 | `Command:Invoke-Command` | Test-AdfaRemoteSecureChannel and Get-AdfaDcSecureChannel, over WinRM | Default | https://learn.microsoft.com/powershell/module/microsoft.powershell.core/invoke-command | Runs commands on a local or remote computer and returns all output from the commands. The effect is that of the command run (Tool:nltest.exe /sc_query:<domain>, or /sc_verify only with -IncludeSecureChannelVerify). Learn says nothing either way about a trace of the session itself; see Effect:logon-audit. | not documented |
 | `Command:Get-CimInstance` | Every CIM read (DcSystem, DcDisk, DcHardening, DC DNS Client) | Default | https://learn.microsoft.com/powershell/module/cimcmdlets/get-ciminstance | Returns one or more CIM instance objects representing a snapshot of the CIM instances present on the CIM server. | documented read |
 | `Command:New-CimSession` | Get-AdfaDcSystemRaw, Get-AdfaDcDiskRaw, Get-AdfaDcHardeningRaw, Get-AdfaDcNetworkRaw, Get-AdfaDcW32TimeRaw | Default | https://learn.microsoft.com/powershell/module/cimcmdlets/new-cimsession | A CIM session is a client-side object representing a connection to a local computer or a remote computer (WSMan by default, DCOM by option). What the remote side records of the connection is not described; see Effect:logon-audit. | not documented |
-| `Command:Remove-CimSession` | The same five functions, in finally | Default | API reference not read in this session (No Learn page read for a side effect) | Closes the client-side session opened above. | not documented |
+| `Command:Remove-CimSession` | The same five functions, in finally | Default | https://learn.microsoft.com/powershell/module/cimcmdlets/remove-cimsession (whole page read 2026-11-18) | "The Remove-CimSession cmdlet removes one or more CIM session objects from the local PowerShell session." The page says nothing about the remote end of the session it closes; see Effect:logon-audit. | not documented |
 | `Command:Invoke-CimMethod` | Get-AdfaStdRegStringValue, Get-AdfaStdRegDwordValue | Default | https://learn.microsoft.com/powershell/module/cimcmdlets/invoke-cimmethod | Invokes a method of a CIM class. Learn's own example calls Win32_Process Create, so the cmdlet is audited per method: the three CimMethod rows, each a literal StdRegProv Get method (a test fails on any other). | not documented |
 | `CimMethod:StdRegProv.GetDWORDValue` | Get-AdfaStdRegDwordValue (DcHardening, TimeHierarchy, DcSystem UBR since v1.37.0) | Default | https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getdwordvalue-method-in-class-stdregprov | The GetDWORDValue method returns the data value for a named value whose data type is REG_DWORD. Microsoft names the Set methods separately as the ones that create or change values. | documented read |
 | `CimMethod:StdRegProv.GetStringValue` | Get-AdfaStdRegStringValue (DcDisk, TimeHierarchy) | Default | https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getstringvalue-method-in-class-stdregprov (read 2026-11-13, PORT-PLAN C2; not re-read) | Returns the data value for a named value whose data type is REG_SZ. | documented read |
@@ -175,104 +259,154 @@ Decisions taken where Learn was silent:
 | `Command:Get-GPO` | GPO inventory (Gpo) | Default | https://learn.microsoft.com/powershell/module/grouppolicy/get-gpo | The Get-GPO cmdlet gets one Group Policy Object (GPO) or all the GPOs in a domain. | documented read |
 | `Command:Get-DfsrBacklog` | SYSVOL backlog | Opt-in: -IncludeSysvolBacklog | https://learn.microsoft.com/powershell/module/dfsr/get-dfsrbacklog | Retrieves pending updates between two computers that participate in DFS Replication. | documented read |
 | `Command:Get-ADObject` | Most directory reads (the C15 seam and others) | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adobject | Gets an Active Directory object or performs a search to get multiple objects. | documented read |
-| `Command:Get-ADComputer` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adcomputer (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADDefaultDomainPasswordPolicy` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-addefaultdomainpasswordpolicy (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADDomain` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-addomain (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADDomainController` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-addomaincontroller (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADFineGrainedPasswordPolicy` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adfinegrainedpasswordpolicy (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADForest` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adforest (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADOptionalFeature` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adoptionalfeature (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADReplicationConnection` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationconnection (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADReplicationFailure` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationfailure (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADReplicationPartnerMetadata` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationpartnermetadata (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADReplicationQueueOperation` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationqueueoperation (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADReplicationSite` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationsite (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADReplicationSiteLink` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationsitelink (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADReplicationSubnet` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationsubnet (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADRootDSE` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adrootdse (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADTrust` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adtrust (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
-| `Command:Get-ADUser` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-aduser (API reference not read in this session (No Learn page read for a side effect)) | A Get cmdlet of the ActiveDirectory module, which, as Get-ADObject, reads over AD Web Services. Its own page was not read on 2026-11-18, so nothing is claimed from it. | not documented |
+| `Command:Get-ADComputer` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adcomputer (whole page read 2026-11-18) | "The Get-ADComputer cmdlet gets a computer or performs a search to retrieve multiple computers." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADDefaultDomainPasswordPolicy` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-addefaultdomainpasswordpolicy (whole page read 2026-11-18) | "The Get-ADDefaultDomainPasswordPolicy cmdlet gets the default password policy for a domain." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADDomain` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-addomain (whole page read 2026-11-18) | "The Get-ADDomain cmdlet gets the Active Directory domain specified by the parameters." With -Current and no -Server, "a server is located in this domain". No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADDomainController` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-addomaincontroller (whole page read 2026-11-18) | "The Get-ADDomainController cmdlet gets the domain controllers specified by the parameters." Its one sentence about state is on -ForceDiscover, which "clears any cached domain controller information and perform[s] a new discovery"; the script passes neither -ForceDiscover nor -Discover (a test fails on either name, any prefix PowerShell binds to it on Get-ADDomainController, and any string of two or more letters that is a prefix of it: a splatted key, a member or index set on a splat hashtable, an Add argument). No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADFineGrainedPasswordPolicy` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adfinegrainedpasswordpolicy (whole page read 2026-11-18) | "The Get-ADFineGrainedPasswordPolicy cmdlet gets a fine-grained password policy or performs a search to retrieve multiple fine-grained password policies." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADForest` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adforest (whole page read 2026-11-18) | "The Get-ADForest cmdlet gets the specified Active Directory forest." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADOptionalFeature` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adoptionalfeature (whole page read 2026-11-18) | "The Get-ADOptionalFeature cmdlet gets an optional feature or performs a search to retrieve multiple optional features from an Active Directory." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADReplicationConnection` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationconnection (whole page read 2026-11-18) | "The Get-ADReplicationConnection cmdlet returns a specific Active Directory replication connection or a set of Active Directory replication connection objects based on a specified filter." Its sentence on the KCC deleting and creating connections describes the KCC, not the cmdlet. No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADReplicationFailure` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationfailure (whole page read 2026-11-18) | "The Get-ADReplicationFailure cmdlet returns all failures currently associated with a given domain controller or Active Directory Lightweight Directory Services (AD LDS) instance." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADReplicationPartnerMetadata` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationpartnermetadata (whole page read 2026-11-18) | "The Get-ADReplicationPartnerMetadata cmdlet returns an Active Directory replication partner metadata object for each of its replication partners which contains all of the relevant replication data for the partners involved." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADReplicationQueueOperation` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationqueueoperation (whole page read 2026-11-18) | "The Get-ADReplicationQueueOperation cmdlet returns all of the pending operations in the replication queue." The page describes how the DC fills its queue, not a change by the cmdlet. No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADReplicationSite` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationsite (whole page read 2026-11-18) | "The Get-ADReplicationSite cmdlet returns a specific Active Directory replication site or a set of replication site objects based on a specified filter." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADReplicationSiteLink` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationsitelink (whole page read 2026-11-18) | "The Get-ADReplicationSiteLink cmdlet can be used to return a specific Active Directory site link or a set of site links based on a specified filter." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADReplicationSubnet` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationsubnet (whole page read 2026-11-18) | "The Get-ADReplicationSubnet cmdlet gets a specific Active Directory subnet or a set of subnets based on a specified filter." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADRootDSE` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adrootdse (whole page read 2026-11-18) | "The Get-ADRootDSE cmdlet gets the object that represents the root of the directory information tree of a directory server." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADTrust` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-adtrust (whole page read 2026-11-18) | "The Get-ADTrust cmdlet returns all of the trusted domain objects in the directory." It does not describe verifying a trust. No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
+| `Command:Get-ADUser` | Directory reads | Default | https://learn.microsoft.com/powershell/module/activedirectory/get-aduser (whole page read 2026-11-18) | "The Get-ADUser cmdlet gets a specified user object or performs a search to get multiple user objects." No sentence on the page describes a change of state made by the cmdlet, and it does not say what the DC records of the request (see Effect:logon-audit). | documented read |
 
 ## .NET entry points with network, file or process reach
 
 | Key | Where | Run | Learn source (read 2026-11-18 unless stated) | What Learn documents | Verdict |
 | --- | --- | --- | --- | --- | --- |
 | `DotNet:[Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey` | Get-AdfaUsnRollbackRaw, per DC (RestoreIntegrity) | Default | https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.openremotebasekey | Opens a new RegistryKey that represents the requested key on a remote machine; both machines must be running the remote registry service, and have remote administration enabled. Whether the call starts a stopped service is not stated; see Effect:remote-registry-service. | not documented |
-| `DotNet:[System.IO.Directory]::GetDirectories` | The SYSVOL Policies listing, \\<domain>\SYSVOL\<domain>\Policies (Gpo) | Default | API reference not read in this session (No Learn page read for a side effect) | Lists folders over SMB. | not documented |
-| `DotNet:[System.IO.FileStream]::new` | GPT.INI per GPO, and netlogon.log on \\<dc>\ADMIN$, opened with FileAccess Read and sharing read, write and delete | Default | API reference not read in this session (No Learn page read for a side effect) | Opens a file over SMB for reading. | not documented |
-| `DotNet:[System.Net.Dns]::BeginGetHostAddresses` | Name resolution of each DC (PortMatrix reachability class) | Default | API reference not read in this session (No Learn page read for a side effect) | Resolves a name with the runner's resolver; see Effect:dns-client-cache. | not documented |
-| `DotNet:[System.Net.Dns]::EndGetHostAddresses` | As the row above | Default | API reference not read in this session (No Learn page read for a side effect) | Completes the resolution started above. | not documented |
-| `NewObject:System.Net.Sockets.TcpClient` | Test-TcpPort, the reachability probe, and the LDAPS handshake | Default | API reference not read in this session (No Learn page read for a side effect) | Opens one TCP connection to a port and sends no data (the LDAPS handshake, opt-in, is in its own row). | not documented |
-| `NewObject:System.Net.Security.SslStream` | The LDAPS certificate read (DcCertificates) | Opt-in: -IncludeLdapsHandshake | API reference not read in this session (No Learn page read for a side effect) | One TLS handshake to port 636, no LDAP request and no bind. A DC that cannot complete it may log a Schannel event; see Effect:schannel. | not documented |
-| `DotNet:[powershell]::Create` | The bounded runspace of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | API reference not read in this session (No Learn page read for a side effect) | A runspace inside this process that runs the handshake above with a time bound. | not documented |
-| `NewObject:System.Diagnostics.Process` | Invoke-ExternalCommand only | Default | API reference not read in this session (No Learn page read for a side effect) | Starts the console tools named in the Tool rows, and nothing else (a test fails on a FilePath that is not a literal). | not documented |
-| `NewObject:System.Diagnostics.ProcessStartInfo` | Invoke-ExternalCommand only | Default | API reference not read in this session (No Learn page read for a side effect) | The start settings of the process above. | not documented |
-| `DotNet:[System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties` | The domain of the host running the assessment (Sysvol) | Default | API reference not read in this session (No Learn page read for a side effect) | Reads the local computer's network properties. | not documented |
+| `DotNet:[System.IO.Directory]::GetDirectories` | The SYSVOL Policies listing, \\<domain>\SYSVOL\<domain>\Policies (Gpo); one argument, the path | Default | https://learn.microsoft.com/dotnet/api/system.io.directory.getdirectories (whole page read 2026-11-18) | "Returns the names of subdirectories (including their paths) in the specified directory." Nothing on the page describes creating, changing or opening anything. | documented read |
+| `DotNet:[System.IO.FileStream]::new` | GPT.INI per GPO, and netlogon.log on \\<dc>\ADMIN$, opened with [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read and sharing read, write and delete, as exactly four arguments (a test fails on any other mode or access, on a fifth or sixth argument, and on a share value that is not only FileShare members) | Default | https://learn.microsoft.com/dotnet/api/system.io.filestream.-ctor, https://learn.microsoft.com/dotnet/api/system.io.filemode, https://learn.microsoft.com/dotnet/api/system.io.fileaccess and https://learn.microsoft.com/dotnet/api/system.io.fileshare (whole page read 2026-11-18) | The constructor: "Initializes a new instance of the FileStream class with the specified path, creation mode, read/write permission, and sharing permission." FileMode.Open: "Specifies that the operating system should open an existing file." FileAccess.Read: "Read access to the file. Data can be read from the file." FileShare.Delete: "Allows subsequent deleting of a file." No file is created and none is opened for writing. The FileOptions overloads are not used: FileOptions.DeleteOnClose "Indicates that a file is automatically deleted when it is no longer in use" (https://learn.microsoft.com/dotnet/api/system.io.fileoptions, read 2026-11-18). | documented read |
+| `DotNet:[System.Net.Dns]::BeginGetHostAddresses` | Name resolution of each DC (PortMatrix reachability class) | Default | https://learn.microsoft.com/dotnet/api/system.net.dns.begingethostaddresses (whole page read 2026-11-18) | "The BeginGetHostAddresses method asynchronously queries a DNS server for the IP addresses that are associated with a host name. If hostNameOrAddress is an IP address, this address is returned without querying the DNS server." Whether the answer is cached on the host running the assessment is not stated; see Effect:dns-client-cache. | documented read |
+| `DotNet:[System.Net.Dns]::EndGetHostAddresses` | As the row above | Default | https://learn.microsoft.com/dotnet/api/system.net.dns.endgethostaddresses (whole page read 2026-11-18) | "Ends an asynchronous request for DNS information." It completes the query of the row above. | documented read |
+| `NewObject:System.Net.Sockets.TcpClient` | Test-TcpPort (no value), Test-AdfaTcpAddress (an AddressFamily) and the LDAPS handshake (no value); the connection is made by BeginConnect, its own row | Default | https://learn.microsoft.com/dotnet/api/system.net.sockets.tcpclient.-ctor (whole page read 2026-11-18) | The parameterless constructor "creates a new TcpClient and allows the underlying service provider to assign the most appropriate local IP address and port number. You must first call the Connect method before sending and receiving data." The AddressFamily overload: "Initializes a new instance of the TcpClient class with the specified family." Only the host-and-port overload "connects to the specified port on the specified host", and a test fails on a New-Object TcpClient with any value but one $x.AddressFamily (two values, @(...) or an array variable). | in-process |
+| `NewObject:System.Net.Security.SslStream` | The LDAPS certificate read (DcCertificates), over the stream of the TcpClient | Opt-in: -IncludeLdapsHandshake | https://learn.microsoft.com/dotnet/api/system.net.security.sslstream.-ctor (whole page read 2026-11-18) | The constructor wraps the stream the caller gives it. ".NET caches SSL sessions as they are created and attempts to reuse a cached session for subsequent requests, if possible": a cache of the host running the assessment. The handshake is AuthenticateAsClient, its own row. | in-process |
+| `DotNet:[powershell]::Create` | The bounded runspace of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | https://learn.microsoft.com/dotnet/api/system.management.automation.powershell.create (whole page read 2026-11-18) | "Constructs an empty PowerShell instance; a script or command must be added before invoking this instance." A runspace inside this process that runs the time bound of the handshake. | in-process |
+| `NewObject:System.Diagnostics.Process` | Invoke-ExternalCommand only, with no value and straight into $p (a test fails on a construction or a cast anywhere else, on a value or -Property, and on a use of $p it does not key) | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.process (whole page read 2026-11-18) | The Process class "Provides access to local and remote processes and enables you to start and stop local system processes." The object is the child process the script starts on the host running the assessment; what the console tool it runs does is in the Tool rows. | in-process |
+| `NewObject:System.Diagnostics.ProcessStartInfo` | Invoke-ExternalCommand only, with no value and straight into $psi (a test fails on a construction or a cast anywhere else, on a value or -Property, and on a use of $psi it does not key); each property set on it is a Property row | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.processstartinfo (whole page read 2026-11-18) | "Specifies a set of values that are used when you start a process." "You can change the value of any ProcessStartInfo property up to the time that the process starts. After you start the process, changing these values has no effect." | in-process |
+| `DotNet:[System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties` | The domain of the host running the assessment (Sysvol) | Default | https://learn.microsoft.com/dotnet/api/system.net.networkinformation.ipglobalproperties.getipglobalproperties (whole page read 2026-11-18) | "Gets an object that provides information about the local computer's network connectivity and traffic statistics." | in-process |
 
-## Instance methods, by name
+## Instance methods with reach, by receiver type
 
-Keyed by method name only: the test cannot tell the type of the object a method is called on
-(see above). A row with reach names the object it is called on in this script today.
+Since v1.39.0 (PORT-PLAN H20d) an instance method is keyed by the type of the object it is called
+on, where the source of the same function shows that type: a variable assigned only from
+`New-Object <type>`, `[<type>]::new(...)`, a cast, or a member whose return type Learn documents
+(`RegistryKey.OpenRemoteBaseKey` and `OpenSubKey`, `File.Open`, `PowerShell.Create`, `AddScript` and
+`AddArgument`, `Stopwatch.StartNew`). The rows below are the ones that reach beyond the process or act
+on a child process; the typed in-process ones are under [In-process](#in-process-commands-types-and-members).
 
 | Key | Where | Run | Learn source (read 2026-11-18 unless stated) | What Learn documents | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| `Method:OpenSubKey` | Get-AdfaUsnRollbackRaw, per DC, on the remote key OpenRemoteBaseKey opened (RestoreIntegrity) | Default | https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.opensubkey | OpenSubKey(String): Retrieves a subkey as read-only. The overloads that take a Boolean, a RegistryKeyPermissionCheck or RegistryRights can open it for writing; a test fails on any call with more than one argument. | documented read |
-| `Method:GetValue` | Get-AdfaUsnRollbackRaw, per DC, on the remote key above (RestoreIntegrity) | Default | API reference not read in this session (No Learn page read for a side effect) | Reads one value of the key opened read-only above. | not documented |
-| `Method:GetValueNames` | Get-AdfaUsnRollbackRaw, per DC, on the remote key above (RestoreIntegrity) | Default | API reference not read in this session (No Learn page read for a side effect) | Lists the value names of the key opened read-only above. | not documented |
-| `Method:Close` | The remote registry keys of Get-AdfaUsnRollbackRaw and the TcpClient of Test-TcpPort, Test-AdfaTcpAddress and the LDAPS handshake | Default | API reference not read in this session (No Learn page read for a side effect) | Closes a key or a connection this script opened. | not documented |
-| `Method:Dispose` | The FileStream of GPT.INI and netlogon.log, the empty log file New-AdfaRunFolder creates to claim the run folder (since v1.38.0, PORT-PLAN H21), and the runspace, event and SslStream of the opt-in LDAPS handshake | Default | API reference not read in this session (No Learn page read for a side effect) | Releases an object this script created. | not documented |
-| `Method:BeginConnect` | The TcpClient of Test-TcpPort, Test-AdfaTcpAddress and the LDAPS handshake | Default | API reference not read in this session (No Learn page read for a side effect) | Starts the one TCP connection of the TcpClient row. | not documented |
-| `Method:EndConnect` | As the row above | Default | API reference not read in this session (No Learn page read for a side effect) | Completes the connection started above. | not documented |
-| `Method:Read` | The FileStream of GPT.INI (Gpo) and netlogon.log (Site Health), opened for reading | Default | API reference not read in this session (No Learn page read for a side effect) | Reads bytes from a file opened over SMB for reading. | not documented |
-| `Method:Seek` | The FileStream of netlogon.log (Site Health) | Default | API reference not read in this session (No Learn page read for a side effect) | Moves the read position to the last 4 MB of the file. | not documented |
-| `Method:GenerateReport` | Get-AdfaGpoInventory, on each GPO Get-GPO returned (Gpo) | Default | API reference not read in this session (No Learn page read for a side effect) | Builds the report of one GPO from the domain. | not documented |
-| `Method:Translate` | Resolve-AdfaAclSidName, a SecurityIdentifier turned into an account name (DangerousRights) | Default | API reference not read in this session (No Learn page read for a side effect) | Looks up the name of a SID. | not documented |
-| `Method:Start` | Invoke-ExternalCommand only, the Process of the NewObject:System.Diagnostics.Process row | Default | API reference not read in this session (No Learn page read for a side effect) | Starts the console tools named in the Tool rows, and nothing else. | not documented |
-| `Method:Kill` | Invoke-ExternalCommand only, on time-out, the process it started | Default | API reference not read in this session (No Learn page read for a side effect) | Stops the console tool this script started on the host running the assessment. What that tool leaves half done on a DC is not documented. | not documented |
-| `Method:GetStream` | The TcpClient of the LDAPS handshake (DcCertificates) | Opt-in: -IncludeLdapsHandshake | API reference not read in this session (No Learn page read for a side effect) | The stream the TLS handshake runs over. | not documented |
-| `Method:AuthenticateAsClient` | The SslStream of the LDAPS handshake (DcCertificates) | Opt-in: -IncludeLdapsHandshake | API reference not read in this session (No Learn page read for a side effect) | The one TLS handshake of the SslStream row; see Effect:schannel. | not documented |
-| `Method:AddArgument` | The bounded runspace of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:AddScript` | The bounded runspace of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:BeginInvoke` | The bounded runspace of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:EndInvoke` | The bounded runspace of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Set` | The time-out event of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Stop` | The stopwatch of the run in Invoke-Main's finally (every run, since v1.38.0, PORT-PLAN H21) and the stopwatch of the LDAPS handshake | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Add` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:AddDays` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Append` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:AppendLine` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Contains` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:ContainsKey` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Dequeue` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:EndsWith` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Enqueue` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Format` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:GetSecurityDescriptorBinaryForm` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:GetString` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:GetType` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:IndexOf` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:LastIndexOf` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:ReadToEndAsync` | In-process helper (the output of the console tool Invoke-ExternalCommand started) | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:RemoveAt` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Replace` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Reset` | In-process helper (an X509Certificate2 copy) | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Split` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:StartsWith` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Substring` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:ToArray` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:ToCharArray` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:ToFileTimeUtc` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:ToLower` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:ToLowerInvariant` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:ToString` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:ToUniversalTime` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:ToUpperInvariant` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Trim` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:TrimEnd` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:TrimStart` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Wait` | In-process helper (the output tasks of Invoke-ExternalCommand) | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:WaitForExit` | In-process helper (the process Invoke-ExternalCommand started) | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:WaitOne` | In-process helper (a wait handle of a connection or name resolution) | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[Microsoft.Win32.RegistryKey].OpenSubKey` | Get-AdfaUsnRollbackRaw, per DC, on the remote key OpenRemoteBaseKey opened (RestoreIntegrity) | Default | https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.opensubkey (whole page read 2026-11-18) | OpenSubKey(String): "Retrieves a subkey as read-only." The overloads that take a Boolean, a RegistryKeyPermissionCheck or RegistryRights can open it for writing; a test fails on any call with more than one argument. | documented read |
+| `Method:[Microsoft.Win32.RegistryKey].GetValue` | Get-AdfaUsnRollbackRaw, per DC, on the remote key OpenRemoteBaseKey opened and its subkey (RestoreIntegrity) | Default | https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.getvalue (whole page read 2026-11-18) | "Retrieves the value associated with the specified name." Called on the subkey opened read-only above. | documented read |
+| `Method:[Microsoft.Win32.RegistryKey].GetValueNames` | Get-AdfaUsnRollbackRaw, per DC, on the remote key OpenRemoteBaseKey opened and its subkey (RestoreIntegrity) | Default | https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.getvaluenames (whole page read 2026-11-18) | "Retrieves an array of strings that contains all the value names associated with this key." | documented read |
+| `Method:[Microsoft.Win32.RegistryKey].Close` | Get-AdfaUsnRollbackRaw, per DC, on the remote key OpenRemoteBaseKey opened and its subkey (RestoreIntegrity) | Default | https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.close (whole page read 2026-11-18) | "Closes the key and flushes it to disk if its contents have been modified." The subkey is opened read-only and the script calls no RegistryKey member that modifies a key (a new one is a new key of this table and fails the test), so by Learn's own condition there is nothing to flush; what closing the remote handle records on the DC is not described. | not documented |
+| `Method:[System.Net.Sockets.TcpClient].BeginConnect` | Test-TcpPort and Test-AdfaTcpAddress (the reachability probes), and the LDAPS handshake (opt-in) | Default | https://learn.microsoft.com/dotnet/api/system.net.sockets.tcpclient.beginconnect (whole page read 2026-11-18) | "Begins an asynchronous request for a remote host connection." A connection, not a read; the page says nothing either way about what the remote host records. No data is sent. | not documented |
+| `Method:[System.Net.Sockets.TcpClient].EndConnect` | Test-TcpPort and Test-AdfaTcpAddress (the reachability probes), and the LDAPS handshake (opt-in) | Default | https://learn.microsoft.com/dotnet/api/system.net.sockets.tcpclient.endconnect (whole page read 2026-11-18) | "Ends a pending asynchronous connection attempt." | not documented |
+| `Method:[System.Net.Sockets.TcpClient].Close` | Test-TcpPort and Test-AdfaTcpAddress (the reachability probes), and the LDAPS handshake (opt-in) | Default | https://learn.microsoft.com/dotnet/api/system.net.sockets.tcpclient.close (whole page read 2026-11-18) | "Disposes this TcpClient instance and requests that the underlying TCP connection be closed." Nothing about the remote host. | not documented |
+| `Method:[System.Net.Sockets.TcpClient].GetStream` | The TcpClient of the LDAPS handshake (DcCertificates) | Opt-in: -IncludeLdapsHandshake | https://learn.microsoft.com/dotnet/api/system.net.sockets.tcpclient.getstream (whole page read 2026-11-18) | "Returns the NetworkStream used to send and receive data." Data is sent by the stream's Write method, which the script does not call; the handshake over it is AuthenticateAsClient, its own row. | in-process |
+| `Method:[System.IO.FileStream].Read` | The FileStream of GPT.INI (Gpo) and netlogon.log (Site Health), opened for reading over SMB | Default | https://learn.microsoft.com/dotnet/api/system.io.filestream.read (whole page read 2026-11-18) | "Reads a block of bytes from the stream and writes the data in a given buffer." The buffer is the script's own. | documented read |
+| `Method:[System.IO.FileStream].Seek` | The FileStream of netlogon.log (Site Health): moves to the last 4 MB | Default | https://learn.microsoft.com/dotnet/api/system.io.filestream.seek (whole page read 2026-11-18) | "Sets the current position of this stream to the given value." The page says nothing about the file or the server it is on. | not documented |
+| `Method:[System.IO.FileStream].Dispose` | The two FileStreams above, and the empty log file New-AdfaRunFolder creates to claim the run folder (local output) | Default | https://learn.microsoft.com/dotnet/api/system.io.stream.dispose (whole page read 2026-11-18) | "This method disposes the stream, by writing any changes to the backing store and closing the stream to release resources." The two SMB streams are opened with FileAccess.Read (a test fails on any other access) and nothing is written to them; what closing a file over SMB records on the server is not described. | not documented |
+| `Method:[System.Diagnostics.Process].Start` | Invoke-ExternalCommand only, on the Process of the NewObject:System.Diagnostics.Process row | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.process.start and https://learn.microsoft.com/dotnet/api/system.diagnostics.process (whole page read 2026-11-18) | Start(): "Starts (or reuses) the process resource that is specified by the StartInfo property of this Process component and associates it with the component." The class "enables you to start and stop local system processes". It starts one local child process on the host running the assessment, its FileName and Arguments fixed by the Property rows; what that console tool does is in its Tool rows. | in-process |
+| `Method:[System.Diagnostics.Process].Kill` | Invoke-ExternalCommand only, on time-out, on the process it started | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.process.kill (whole page read 2026-11-18) | "You can call Kill and CloseMainWindow only for processes that are running on the local computer. You cannot cause processes on remote computers to exit." Learn also warns: "Data edited by the process or resources allocated to the process can be lost if you call Kill." What the killed console tool leaves half done on a DC is not documented. | in-process |
+| `Method:[System.Diagnostics.Process].WaitForExit` | Invoke-ExternalCommand only, on the Process of the NewObject:System.Diagnostics.Process row | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.process.waitforexit (whole page read 2026-11-18) | Waits for the process to exit; it is "available only for processes that are running on the local computer". | in-process |
+| `Method:[System.Net.Security.SslStream].AuthenticateAsClient` | The SslStream of the LDAPS handshake (DcCertificates) | Opt-in: -IncludeLdapsHandshake | https://learn.microsoft.com/dotnet/api/system.net.security.sslstream.authenticateasclient (whole page read 2026-11-18) | "Called by clients to authenticate the server and optionally the client in a client-server connection." The one TLS handshake; the page says nothing about what the server logs; see Effect:schannel. | not documented |
+| `Method:[System.Net.Security.SslStream].Dispose` | The SslStream of the LDAPS handshake (DcCertificates) | Opt-in: -IncludeLdapsHandshake | https://learn.microsoft.com/dotnet/api/system.net.security.sslstream.dispose (whole page read 2026-11-18) | "Releases the unmanaged resources used by the SslStream and optionally releases the managed resources." Nothing about the remote host. | not documented |
+| `Method:[System.Security.Principal.SecurityIdentifier].Translate` | Resolve-AdfaAclSidName, a SecurityIdentifier turned into an account name (DangerousRights) | Default | https://learn.microsoft.com/dotnet/api/system.security.principal.securityidentifier.translate (whole page read 2026-11-18) | "Translates the account name represented by the SecurityIdentifier object into another IdentityReference-derived type." It throws IdentityNotMappedException when "Some or all identity references could not be translated". The page does not say how or where the name is looked up. | not documented |
+
+## Instance methods whose receiver is not statically typed
+
+Each call whose receiver the source does not type (a parameter, a `foreach` variable, a property of
+another object, an element of a hashtable), and whose name is not one of the generic names of the
+next table, is a row of its own, keyed `Untyped:<function>:<receiver>.<method>` (PORT-PLAN H20d). A new
+such call, or a known one moved to another function or receiver, fails the test.
+
+| Key | Where | Run | Learn source (read 2026-11-18 unless stated) | What Learn documents | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| `Untyped:Get-AdfaGpoInventory:$g.GenerateReport` | Get-AdfaGpoInventory, on each GPO Get-GPO returned (a foreach variable) (Gpo) | Default | https://learn.microsoft.com/previous-versions/windows/desktop/wmi_v2/class-library/gpo-generatereport-method-reporttype-microsoft-grouppolicy (whole page read 2026-11-18) | Gpo.GenerateReport(ReportType): "Generates a report for the Group Policy object (GPO) in the specified format." It "Returns String. The report." The archived page has no remarks; it does not say where the data is read. The script writes the string nowhere but its own XML parse. | documented read |
+| `Untyped:Test-TcpPort:$iar.AsyncWaitHandle.WaitOne` | Test-TcpPort: waits for the connection BeginConnect started | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Test-AdfaTcpAddress:$iar.AsyncWaitHandle.WaitOne` | Test-AdfaTcpAddress: waits for the connection BeginConnect started | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Resolve-AdfaHostAddress:$iar.AsyncWaitHandle.WaitOne` | Resolve-AdfaHostAddress: waits for the name resolution BeginGetHostAddresses started | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Get-AdfaDcTlsCertificateRaw:$pending.AsyncWaitHandle.WaitOne` | Get-AdfaDcTlsCertificateRaw: waits for the connection of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Get-AdfaDcTlsCertificateRaw:$seen['Certificate'].Reset` | Get-AdfaDcTlsCertificateRaw: the certificate copy the validation callback kept, only when it -is an X509Certificate2 (the same line) | Opt-in: -IncludeLdapsHandshake | https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509certificate.reset (whole page read 2026-11-18) | "Resets the state of the X509Certificate2 object." A copy held in this process. | in-process |
+| `Untyped:Invoke-ExternalCommand:$p.StandardOutput.ReadToEndAsync` | Invoke-ExternalCommand: the redirected output of the child process it started | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Invoke-ExternalCommand:$p.StandardError.ReadToEndAsync` | Invoke-ExternalCommand: the redirected error output of the child process it started | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Invoke-ExternalCommand:$stdOutTask.Wait` | Invoke-ExternalCommand: waits for the read of the output above | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Invoke-ExternalCommand:$stdErrTask.Wait` | Invoke-ExternalCommand: waits for the read of the error output above | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Get-AdfaDnsHealth:$byDomain[$domainKey].Servers.Add` | Get-AdfaDnsHealth: adds a DC's DNS read to the Servers ArrayList of the [pscustomobject] the function stored under its domain in an ordered hashtable (since v1.39.0 Add is not a generic name) | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Find-AdfaDuplicateSpn:$map[$key].Add` | Find-AdfaDuplicateSpn: adds an account name to the List[string] the function stored under one SPN | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Get-AdfaSidHistoryHolderText:$byHolder[$key].Add` | Get-AdfaSidHistoryHolderText: adds a text to the ArrayList the function stored under one holder | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Get-AdfaDcReachabilityRows:$byDomain[$domainKey].Add` | Get-AdfaDcReachabilityRows: adds a reachability class to the ArrayList the function stored under one domain | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:ConvertTo-AdfaAclDescriptor:$Value.GetSecurityDescriptorBinaryForm` | ConvertTo-AdfaAclDescriptor: the security descriptor an AD read returned (a parameter) | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Untyped:Resolve-AdfaOutputRoot:$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath` | Resolve-AdfaOutputRoot: resolves -OutputPath, or the default root, to a provider path and its provider, to refuse any provider but FileSystem (since v1.38.0, PORT-PLAN H21) | Default | https://learn.microsoft.com/dotnet/api/system.management.automation.pathintrinsics.getunresolvedproviderpathfrompspath | Converts a drive or provider qualified absolute or relative path into a provider-internal path, without resolving wildcards; throws DriveNotFoundException for a drive that cannot be found. Nothing about a change of state. | in-process |
+
+## Generic instance methods, by name
+
+These 24 names are keyed by name alone when their receiver is not statically typed: members of
+strings, numbers, dates, collections and the type system, whose receivers in this script come from
+data. A name-only key cannot tell which object a name is called on, so a name that also belongs to a
+member that writes, called on a new kind of object, would pass. `Add` was such a name and is no
+longer in the table (independent review of the H20c/H20d diff): Learn's "Adding Users to a Group"
+(https://learn.microsoft.com/windows/win32/adsi/adding-users-to-a-group, read 2026-11-18) adds a
+member to a directory group with `grp.Add("LDAP://...")` alone, with no `SetInfo` or
+`CommitChanges`; the four untyped `Add` calls of the script are `Untyped:` rows above. Any name not
+in this table on an untyped receiver is an `Untyped:` key that needs a row. The same names called on
+a typed receiver are keyed by that type.
+
+| Key | Where | Run | Learn source (read 2026-11-18 unless stated) | What Learn documents | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| `Method:AddDays` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:Contains` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:ContainsKey` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:EndsWith` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:Format` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:GetString` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:GetType` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:IndexOf` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:LastIndexOf` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:Replace` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:Split` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:StartsWith` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:Substring` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:ToArray` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:ToCharArray` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:ToFileTimeUtc` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:ToLower` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:ToLowerInvariant` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:ToString` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:ToUniversalTime` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:ToUpperInvariant` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:Trim` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:TrimEnd` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:TrimStart` | In-process helper, receiver not statically typed | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+
+## Properties set on the process the script starts
+
+Every assignment to a property of the `ProcessStartInfo` or `Process` the script builds, keyed with its
+value (PORT-PLAN H20d). `$FilePath` and `$Arguments` are the parameters of `Invoke-ExternalCommand`, whose
+call sites the Tool rows key; a literal or any other value here is a new key and fails the test. Since
+the independent review of the diff, a property cannot be set where no assignment shows it: a cast
+(`[System.Diagnostics.ProcessStartInfo]@{ FileName = ... }`), `New-Object -Property`, a constructor
+value, or a second name for the object or one of its parts (`$s = $p.StartInfo`,
+`$alias = @($psi)[0]`, `$ev = $psi.EnvironmentVariables`) each fails the test.
+
+| Key | Where | Run | Learn source (read 2026-11-18 unless stated) | What Learn documents | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| `Property:[System.Diagnostics.ProcessStartInfo].FileName = $FilePath` | Invoke-ExternalCommand: the tool, a literal at every call site (the Tool rows) | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.processstartinfo (whole page read 2026-11-18) | "Specifies a set of values that are used when you start a process." Set in Invoke-ExternalCommand, before Start, on the host running the assessment. | in-process |
+| `Property:[System.Diagnostics.ProcessStartInfo].Arguments = $Arguments` | Invoke-ExternalCommand: the arguments, keyed at every call site (the Tool rows) | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.processstartinfo (whole page read 2026-11-18) | "Specifies a set of values that are used when you start a process." Set in Invoke-ExternalCommand, before Start, on the host running the assessment. | in-process |
+| `Property:[System.Diagnostics.ProcessStartInfo].UseShellExecute = $false` | Invoke-ExternalCommand | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.processstartinfo (whole page read 2026-11-18) | "Specifies a set of values that are used when you start a process." Set in Invoke-ExternalCommand, before Start, on the host running the assessment. | in-process |
+| `Property:[System.Diagnostics.ProcessStartInfo].RedirectStandardOutput = $true` | Invoke-ExternalCommand | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.processstartinfo (whole page read 2026-11-18) | "Specifies a set of values that are used when you start a process." Set in Invoke-ExternalCommand, before Start, on the host running the assessment. | in-process |
+| `Property:[System.Diagnostics.ProcessStartInfo].RedirectStandardError = $true` | Invoke-ExternalCommand | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.processstartinfo (whole page read 2026-11-18) | "Specifies a set of values that are used when you start a process." Set in Invoke-ExternalCommand, before Start, on the host running the assessment. | in-process |
+| `Property:[System.Diagnostics.ProcessStartInfo].CreateNoWindow = $true` | Invoke-ExternalCommand | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.processstartinfo (whole page read 2026-11-18) | "Specifies a set of values that are used when you start a process." Set in Invoke-ExternalCommand, before Start, on the host running the assessment. | in-process |
+| `Property:[System.Diagnostics.Process].StartInfo = $psi` | Invoke-ExternalCommand: the start settings above | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.process (whole page read 2026-11-18) | The Process class "enables you to start and stop local system processes"; StartInfo holds the settings of the process Start starts. | in-process |
 
 ## Local output of the run
 
@@ -290,7 +424,6 @@ Keyed by method name only: the test cannot tell the type of the object a method 
 
 | Key | Where | Run | Learn source (read 2026-11-18 unless stated) | What Learn documents | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| `Method:GetUnresolvedProviderPathFromPSPath` | Resolve-AdfaOutputRoot: resolves -OutputPath, or the default root, to a provider path and its provider, to refuse any provider but FileSystem (since v1.38.0, PORT-PLAN H21) | Default | https://learn.microsoft.com/dotnet/api/system.management.automation.pathintrinsics.getunresolvedproviderpathfrompspath | Converts a drive or provider qualified absolute or relative path into a provider-internal path, without resolving wildcards; throws DriveNotFoundException for a drive that cannot be found. Nothing about a change of state. | in-process |
 | `Command:Add-Member` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `Command:ConvertFrom-Csv` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `Command:ConvertFrom-Json` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
@@ -375,13 +508,54 @@ Keyed by method name only: the test cannot tell the type of the object a method 
 | `NewObject:System.Security.Principal.SecurityIdentifier` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `NewObject:System.Text.StringBuilder` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `NewObject:System.Threading.ManualResetEvent` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.ArrayList].Add` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.ArrayList].Contains` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.ArrayList].RemoveAt` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.ArrayList].ToArray` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Generic.HashSet[string]].Add` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Generic.List[object]].Add` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Generic.List[object]].ToArray` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Generic.List[string]].Add` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Generic.List[string]].Contains` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Generic.List[string]].ToArray` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Generic.List[uint32]].Add` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Generic.List[uint32]].ToArray` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Queue].Dequeue` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Queue].Enqueue` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Collections.Specialized.OrderedDictionary].Contains` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.DateTime].ToString` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.DateTime].ToUniversalTime` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Double].ToString` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Guid].ToString` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Int32].ToString` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Int64].ToString` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.String].LastIndexOf` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.String].Substring` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.String].ToLowerInvariant` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.String].ToUpperInvariant` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.String].Trim` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.String].TrimEnd` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Text.StringBuilder].Append` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Text.StringBuilder].AppendLine` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Text.StringBuilder].ToString` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.UInt32].ToString` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.UInt64].ToString` | In-process helper, typed receiver | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Diagnostics.Stopwatch].Stop` | The stopwatch of the run in Invoke-Main's finally (every run, since v1.38.0) and the stopwatch of the LDAPS handshake | Default | https://learn.microsoft.com/dotnet/api/system.diagnostics.stopwatch.startnew (whole page read 2026-11-18) | "Initializes a new Stopwatch instance, sets the elapsed time property to zero, and starts measuring elapsed time." Stop ends that measurement. | in-process |
+| `Method:[System.Management.Automation.PowerShell].AddArgument` | The bounded runspace of the LDAPS handshake ([powershell]::Create) | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Management.Automation.PowerShell].AddScript` | The bounded runspace of the LDAPS handshake ([powershell]::Create) | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Management.Automation.PowerShell].BeginInvoke` | The bounded runspace of the LDAPS handshake ([powershell]::Create) | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Management.Automation.PowerShell].EndInvoke` | The bounded runspace of the LDAPS handshake ([powershell]::Create) | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Management.Automation.PowerShell].Dispose` | The bounded runspace of the LDAPS handshake ([powershell]::Create) | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:[System.Threading.ManualResetEvent].Set` | The time-out event of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | https://learn.microsoft.com/dotnet/api/system.threading.eventwaithandle.set (whole page read 2026-11-18) | "Sets the state of the event to signaled, allowing one or more waiting threads to proceed." | in-process |
+| `Method:[System.Threading.ManualResetEvent].Dispose` | The time-out event of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | https://learn.microsoft.com/dotnet/api/system.threading.waithandle.dispose (whole page read 2026-11-18) | "Releases all resources used by the current instance of the WaitHandle class." | in-process |
+| `Method:[System.Security.Cryptography.X509Certificates.X509Certificate2].Reset` | ConvertTo-AdfaCertificateRecord: the copy of a certificate read from the directory or the handshake (DcCertificates) | Default | https://learn.microsoft.com/dotnet/api/system.security.cryptography.x509certificates.x509certificate.reset (whole page read 2026-11-18) | "Resets the state of the X509Certificate2 object." A copy held in this process. | in-process |
 
 ## Effects that cross every row
 
 | Key | Where | Run | Learn source (read 2026-11-18 unless stated) | What Learn documents | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| `Effect:logon-audit` | Every authenticated connection to a DC: LDAP, ADWS, RPC, SMB, WinRM, DCOM | Default | No Learn page read in this session for this effect | Whether the DC's audit policy logs these logons (for example in its Security log) depends on that policy. Not documented by the pages read. For the operator to decide. | not documented |
+| `Effect:logon-audit` | Every authenticated connection to a DC: LDAP, ADWS, RPC, SMB, WinRM, DCOM | Default | No Learn page: no page read in this audit documents this effect (PORT-PLAN H20b) | Whether the DC's audit policy logs these logons (for example in its Security log) depends on that policy. Not documented by the pages read. For the operator to decide. | not documented |
 | `Effect:remote-registry-service` | OpenRemoteBaseKey (RestoreIntegrity) | Default | https://learn.microsoft.com/dotnet/api/microsoft.win32.registrykey.openremotebasekey and https://learn.microsoft.com/troubleshoot/windows-client/performance/memory-leak-remote-registry-service | Both machines must be running the remote registry service; the Remote Registry service is designed to stop running after the connection has been idle for 10 minutes. No page read says whether a connection starts a stopped service. For the operator to decide. | not documented |
 | `Effect:dns-client-cache` | Resolve-DnsName, nslookup, nltest /dsgetdc, Dns.BeginGetHostAddresses on the host running the assessment | Default | https://learn.microsoft.com/powershell/module/dnsclient/resolve-dnsname and https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc731935(v=ws.11) | Learn documents that a DC locator cache is consulted without /FORCE; whether these queries add entries to the runner's DNS client cache is not stated. | not documented |
-| `Effect:schannel` | The LDAPS handshake | Opt-in: -IncludeLdapsHandshake | No Learn page read in this session for this effect (the README row was read 2026-11-16) | A DC that cannot complete the handshake may log a Schannel error event in its System log. | not documented |
+| `Effect:schannel` | The LDAPS handshake | Opt-in: -IncludeLdapsHandshake | No Learn page: no page read in this audit documents this effect for this handshake (the README row was read 2026-11-16) | A DC that cannot complete the handshake may log a Schannel error event in its System log. | not documented |
 

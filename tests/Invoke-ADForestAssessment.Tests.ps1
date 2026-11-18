@@ -7588,9 +7588,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 
@@ -9245,9 +9245,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 
@@ -10235,9 +10235,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 
@@ -11174,9 +11174,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 
@@ -12168,9 +12168,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 
@@ -13408,9 +13408,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 
@@ -14626,9 +14626,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 
@@ -16492,9 +16492,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17163,9 +17163,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17316,9 +17316,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.38.0 in the script and the manifest (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries version 1.39.0 in the script and the manifest (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 
@@ -18647,9 +18647,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.38.0 in the script and the manifest (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries version 1.39.0 in the script and the manifest (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 
@@ -19785,9 +19785,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.38.0 in the script and the manifest (bumped by PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'carries version 1.39.0 in the script and the manifest (bumped by PORT-PLAN H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 
@@ -24107,13 +24107,13 @@ Describe 'Promise triage: the README and help promises the code did not keep (C1
     }
 
     Context 'Version' {
-        It 'is 1.38.0 in the script and the manifest (bumped by PORT-PLAN H21)' {
-            $script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'is 1.39.0 in the script and the manifest (bumped by PORT-PLAN H20c and H20d)' {
+            $script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 }
-Describe 'Functional level wording, the side-effect inventory of every command, and the update build revision (H18, H20a, C1a)' {
+Describe 'Functional level wording, the side-effect inventory of every command, and the update build revision (H18, H20a, H20c, H20d, C1a)' {
     BeforeAll {
         $script:H20Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
         $script:H20AuditPath = Join-Path $script:RepoRoot 'docs/SIDE-EFFECT-AUDIT.md'
@@ -24270,15 +24270,319 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
             $out.Keys = $keys
             return $out
         }
+        # PORT-PLAN H20d: an instance method is keyed by the type of its receiver where the source
+        # shows it. Accelerators the script writes, mapped to their full name. No type is loaded, so
+        # the keys are the same on the Linux CI runner and on Windows.
+        $script:H20TypeAlias = @{
+            'bool' = 'System.Boolean'; 'byte[]' = 'System.Byte[]'; 'datetime' = 'System.DateTime'; 'decimal' = 'System.Decimal'; 'double' = 'System.Double'
+            'guid' = 'System.Guid'; 'hashtable' = 'System.Collections.Hashtable'; 'int' = 'System.Int32'; 'int64' = 'System.Int64'; 'long' = 'System.Int64'
+            'ordered' = 'System.Collections.Specialized.OrderedDictionary'; 'powershell' = 'System.Management.Automation.PowerShell'
+            'pscustomobject' = 'System.Management.Automation.PSObject'; 'psobject' = 'System.Management.Automation.PSObject'; 'regex' = 'System.Text.RegularExpressions.Regex'
+            'string' = 'System.String'; 'string[]' = 'System.String[]'; 'timespan' = 'System.TimeSpan'; 'uint32' = 'System.UInt32'; 'uint64' = 'System.UInt64'; 'xml' = 'System.Xml.XmlDocument'
+        }
+        # Members whose return type Learn documents (read 2026-11-18): RegistryKey.OpenRemoteBaseKey
+        # "Opens a new RegistryKey", RegistryKey.OpenSubKey "Retrieves a subkey" (a RegistryKey),
+        # File.Open "Opens a FileStream", PowerShell.Create, AddScript and AddArgument return
+        # System.Management.Automation.PowerShell, Stopwatch.StartNew "Initializes a new Stopwatch instance".
+        $script:H20Factory = @{
+            'Microsoft.Win32.RegistryKey::OpenRemoteBaseKey'          = 'Microsoft.Win32.RegistryKey'
+            'Microsoft.Win32.RegistryKey.OpenSubKey'                  = 'Microsoft.Win32.RegistryKey'
+            'System.IO.File::Open'                                    = 'System.IO.FileStream'
+            'System.Management.Automation.PowerShell::Create'         = 'System.Management.Automation.PowerShell'
+            'System.Management.Automation.PowerShell.AddScript'       = 'System.Management.Automation.PowerShell'
+            'System.Management.Automation.PowerShell.AddArgument'     = 'System.Management.Automation.PowerShell'
+            'System.Diagnostics.Stopwatch::StartNew'                  = 'System.Diagnostics.Stopwatch'
+        }
+        # Method names keyed by name alone (Method:<name>) when the receiver is not statically typed:
+        # members of strings, numbers, dates, collections and the type system, whose receivers in this
+        # script come from data. A name-only key cannot tell which object a name is called on, so a
+        # name that also belongs to a writing member of another object would let that write through.
+        # 'Add' was one until the independent review of the H20c/H20d diff: Learn's "Adding Users to
+        # a Group" (windows/win32/adsi/adding-users-to-a-group, read 2026-11-18) adds a member with
+        # grp.Add("LDAP://...") alone, no SetInfo; so Add on an untyped receiver is now an Untyped row
+        # of its own. Any other name called on a receiver of unknown type is keyed
+        # Untyped:<function>:<receiver>.<name> and needs a row of its own.
+        $script:H20GenericMethods = @('AddDays', 'Contains', 'ContainsKey', 'EndsWith', 'Format', 'GetString', 'GetType', 'IndexOf', 'LastIndexOf', 'Replace', 'Split', 'StartsWith', 'Substring', 'ToArray', 'ToCharArray', 'ToFileTimeUtc', 'ToLower', 'ToLowerInvariant', 'ToString', 'ToUniversalTime', 'ToUpperInvariant', 'Trim', 'TrimEnd', 'TrimStart')
+        # The two types whose property assignments decide which process is started: every property set on
+        # them is keyed with its value (Property:[<type>].<name> = <value>), they may be constructed only in
+        # Invoke-ExternalCommand, by New-Object with no value and no -Property and straight into a variable
+        # the test types as that type, never by a cast; a variable of either type may be used only as a
+        # method receiver, the root of a property set, the value of a property set on one of them, or
+        # read for the members of $script:H20ProcessValueReads; and a method on one of their properties is
+        # never keyed by name alone.
+        $script:H20PropertyTypes = @('System.Diagnostics.ProcessStartInfo', 'System.Diagnostics.Process')
+        # The members that may be read off them into a value: Process.ExitCode, an int (Learn
+        # system.diagnostics.process.exitcode: "Gets the value that the associated process specified
+        # when it terminated", read 2026-11-18). Any other read (StartInfo, EnvironmentVariables, ...)
+        # would hand out an object whose later changes the test could not key.
+        $script:H20ProcessValueReads = @('ExitCode')
+        # The common parameters that bind a variable outside an assignment, and their aliases.
+        $script:H20VariableParams = @('outvariable', 'errorvariable', 'warningvariable', 'informationvariable', 'pipelinevariable')
+        $script:H20VariableParamAliases = @('ov', 'ev', 'wv', 'iv', 'pv')
+        $script:H20AutomaticVariables = @('_', 'PSItem', 'this', 'args', 'input', 'true', 'false', 'null', 'ExecutionContext', 'Matches', 'PSBoundParameters', 'Error', 'LASTEXITCODE', 'Host', 'PSCmdlet', 'MyInvocation')
+
+        function Get-H20Unwrapped {
+            param($Expr)
+            $e = $Expr
+            for ($i = 0; $i -lt 16; $i++) {
+                if ($e -is [System.Management.Automation.Language.PipelineAst]) {
+                    if (@($e.PipelineElements).Count -ne 1) { return $e }
+                    $e = $e.PipelineElements[0]; continue
+                }
+                if ($e -is [System.Management.Automation.Language.CommandExpressionAst]) { $e = $e.Expression; continue }
+                if ($e -is [System.Management.Automation.Language.ParenExpressionAst]) { $e = $e.Pipeline; continue }
+                break
+            }
+            return $e
+        }
+        function ConvertTo-H20TypeName {
+            param([string]$Name)
+            $t = $Name.Trim().Trim("'", '"')
+            $k = $t.ToLowerInvariant()
+            if ($script:H20TypeAlias.ContainsKey($k)) { return [string]$script:H20TypeAlias[$k] }
+            # PowerShell resolves a type written without its leading "System." ([Diagnostics.Process]).
+            if ($t -notmatch '^(?i)System\.' -and $t -match '^(?i)(Diagnostics|IO|Net|Security|Collections|Text|Management|Threading)\.') { $t = 'System.' + $t }
+            return $t
+        }
+        function Test-H20ProcessType {
+            param([string]$Name)
+            return ($script:H20PropertyTypes -contains $Name)
+        }
+        # The type of a New-Object call (positional or -TypeName), the constructor values it passes
+        # (each element of an array literal is one value; any other expression is one value whose
+        # content the test cannot see), whether it sets -Property, and any parameter the test does not
+        # read. A parameter is matched by any prefix PowerShell would bind (-Arg, -Type, -Prop).
+        function Get-H20NewObject {
+            param($Call)
+            $els = @($Call.CommandElements)
+            $type = $null
+            $ctor = @()
+            $hasProperty = $false
+            $unknown = @()
+            for ($i = 1; $i -lt $els.Count; $i++) {
+                $el = $els[$i]
+                if ($el -is [System.Management.Automation.Language.CommandParameterAst]) {
+                    $pn = $el.ParameterName.ToLowerInvariant()
+                    $isSwitch = ($pn -ne '' -and ('strict'.StartsWith($pn) -or 'verbose'.StartsWith($pn) -or 'debug'.StartsWith($pn)))
+                    $val = $el.Argument
+                    if (-not $isSwitch -and $null -eq $val -and ($i + 1) -lt $els.Count) { $i++; $val = $els[$i] }
+                    if ($pn -ne '' -and 'typename'.StartsWith($pn)) { $type = $val }
+                    elseif (($pn -ne '' -and 'argumentlist'.StartsWith($pn)) -or $pn -eq 'args') { $ctor += @($val) }
+                    elseif ($pn -ne '' -and 'property'.StartsWith($pn)) { $hasProperty = $true }
+                    elseif (-not $isSwitch) { $unknown += $el.ParameterName }
+                    continue
+                }
+                if ($null -eq $type) { $type = $el } else { $ctor += @($el) }
+            }
+            $values = @()
+            foreach ($c in $ctor) {
+                $u = Get-H20Unwrapped -Expr $c
+                if ($u -is [System.Management.Automation.Language.ArrayLiteralAst]) { foreach ($x in @($u.Elements)) { $values += @(Get-H20Unwrapped -Expr $x) } } else { $values += @($u) }
+            }
+            $name = $null
+            if ($null -ne $type) { $name = ConvertTo-H20TypeName -Name $type.Extent.Text }
+            return [pscustomobject]@{ Type = $name; Count = $values.Count; Values = $values; HasProperty = $hasProperty; Unknown = $unknown }
+        }
+        # Whether an expression can only be a FileShare value: [System.IO.FileShare]::<member>, a -bor of
+        # such members, or a variable every binding of which in its function is one of those.
+        function Test-H20FileShareExpr {
+            param($Expr, $State, [int]$Depth = 0)
+            if ($Depth -gt 6) { return $false }
+            $e = Get-H20Unwrapped -Expr $Expr
+            if ($e -is [System.Management.Automation.Language.MemberExpressionAst] -and -not ($e -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) -and $e.Static -and $e.Expression -is [System.Management.Automation.Language.TypeExpressionAst]) {
+                return ((ConvertTo-H20TypeName -Name $e.Expression.TypeName.FullName) -eq 'System.IO.FileShare')
+            }
+            if ($e -is [System.Management.Automation.Language.BinaryExpressionAst] -and [string]$e.Operator -eq 'Bor') {
+                return ((Test-H20FileShareExpr -Expr $e.Left -State $State -Depth ($Depth + 1)) -and (Test-H20FileShareExpr -Expr $e.Right -State $State -Depth ($Depth + 1)))
+            }
+            if ($e -is [System.Management.Automation.Language.VariableExpressionAst]) {
+                $fn = Get-H20Function -Node $e
+                if ($null -eq $fn -or -not $e.VariablePath.IsUnqualified) { return $false }
+                $map = Get-H20Binding -Scope $fn.Body -Function $fn -State $State -ScopeKey ('{0}@{1}' -f $fn.Name, $fn.Extent.StartOffset)
+                $k = $e.VariablePath.UserPath.ToLowerInvariant()
+                if (-not $map.ContainsKey($k)) { return $false }
+                foreach ($b in $map[$k]) {
+                    if ($b.Kind -ne 'Assign') { return $false }
+                    if (-not (Test-H20FileShareExpr -Expr $b.Right -State $State -Depth ($Depth + 1))) { return $false }
+                }
+                return $true
+            }
+            return $false
+        }
+        # Every place a variable of one function (or of the script outside any function) is bound, by
+        # lower-case name: an assignment, a cast on the left, a foreach variable, a parameter, a [ref],
+        # and (independent review of the H20d diff) a common parameter that binds a variable
+        # (-OutVariable, -ErrorVariable, -WarningVariable, -InformationVariable, -PipelineVariable, any
+        # prefix or alias of them) and Set-Variable/New-Variable. The last two make the variable untyped;
+        # a variable name they take that the test cannot read is reported as Bad.
+        function Get-H20Binding {
+            param($Scope, $Function, $State, [string]$ScopeKey)
+            if ($State.Bindings.ContainsKey($ScopeKey)) { return $State.Bindings[$ScopeKey] }
+            $map = @{}
+            $nodes = @($Scope.FindAll({ param($n) ($n -is [System.Management.Automation.Language.AssignmentStatementAst]) -or ($n -is [System.Management.Automation.Language.ForEachStatementAst]) -or ($n -is [System.Management.Automation.Language.ParameterAst]) -or ($n -is [System.Management.Automation.Language.ConvertExpressionAst] -and $n.Type.TypeName.Name -eq 'ref') -or ($n -is [System.Management.Automation.Language.CommandAst]) }, $true))
+            foreach ($n in $nodes) {
+                if (-not [object]::ReferenceEquals((Get-H20Function -Node $n), $Function)) { continue }
+                $found = @()
+                if ($n -is [System.Management.Automation.Language.AssignmentStatementAst]) {
+                    $left = $n.Left
+                    if ($left -is [System.Management.Automation.Language.ConvertExpressionAst] -and $left.Child -is [System.Management.Automation.Language.VariableExpressionAst]) {
+                        $found += [pscustomobject]@{ Name = $left.Child.VariablePath.UserPath; Kind = 'Cast'; Type = (ConvertTo-H20TypeName -Name $left.Type.TypeName.FullName); Right = $null }
+                    }
+                    elseif ($left -is [System.Management.Automation.Language.VariableExpressionAst]) {
+                        $kind = 'Assign'
+                        if ($n.Operator -ne 'Equals') { $kind = 'Untyped' }
+                        $found += [pscustomobject]@{ Name = $left.VariablePath.UserPath; Kind = $kind; Type = $null; Right = $n.Right }
+                    }
+                    elseif ($left -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+                        foreach ($el in @($left.Elements)) { if ($el -is [System.Management.Automation.Language.VariableExpressionAst]) { $found += [pscustomobject]@{ Name = $el.VariablePath.UserPath; Kind = 'Untyped'; Type = $null; Right = $null } } }
+                    }
+                }
+                elseif ($n -is [System.Management.Automation.Language.ForEachStatementAst]) { $found += [pscustomobject]@{ Name = $n.Variable.VariablePath.UserPath; Kind = 'Untyped'; Type = $null; Right = $null } }
+                elseif ($n -is [System.Management.Automation.Language.ParameterAst]) { $found += [pscustomobject]@{ Name = $n.Name.VariablePath.UserPath; Kind = 'Untyped'; Type = $null; Right = $null } }
+                elseif ($n -is [System.Management.Automation.Language.CommandAst]) {
+                    $els = @($n.CommandElements)
+                    $line = $n.Extent.StartLineNumber
+                    for ($i = 1; $i -lt $els.Count; $i++) {
+                        $el = $els[$i]
+                        if (-not ($el -is [System.Management.Automation.Language.CommandParameterAst])) { continue }
+                        $pn = $el.ParameterName.ToLowerInvariant()
+                        $isVar = ($script:H20VariableParamAliases -contains $pn)
+                        if (-not $isVar -and $pn.Length -ge 2) { foreach ($full in $script:H20VariableParams) { if ($full.StartsWith($pn)) { $isVar = $true } } }
+                        if (-not $isVar) { continue }
+                        $arg = $el.Argument
+                        if ($null -eq $arg -and ($i + 1) -lt $els.Count) { $arg = $els[$i + 1] }
+                        if ($arg -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $found += [pscustomobject]@{ Name = ([string]$arg.Value).TrimStart('+'); Kind = 'Untyped'; Type = $null; Right = $null } }
+                        else { $State.Bad.Add(('-{0} with a variable name the test cannot read, line {1}' -f $el.ParameterName, $line)) }
+                    }
+                    $cn = ([string]$n.GetCommandName()).ToLowerInvariant()
+                    if (@('set-variable', 'new-variable', 'sv', 'nv') -contains $cn) {
+                        $named = $null
+                        $positional = $null
+                        for ($i = 1; $i -lt $els.Count; $i++) {
+                            $el = $els[$i]
+                            if ($el -is [System.Management.Automation.Language.CommandParameterAst]) {
+                                $pn = $el.ParameterName.ToLowerInvariant()
+                                if ($pn -ne '' -and ('force'.StartsWith($pn) -or 'passthru'.StartsWith($pn))) { continue }
+                                $val = $el.Argument
+                                if ($null -eq $val -and ($i + 1) -lt $els.Count) { $i++; $val = $els[$i] }
+                                if ($pn -ne '' -and 'name'.StartsWith($pn)) { $named = $val }
+                                continue
+                            }
+                            if ($null -eq $positional) { $positional = $el }
+                        }
+                        $nameEl = $named
+                        if ($null -eq $nameEl) { $nameEl = $positional }
+                        if ($nameEl -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $found += [pscustomobject]@{ Name = [string]$nameEl.Value; Kind = 'Untyped'; Type = $null; Right = $null } }
+                        else { $State.Bad.Add(('{0} with a variable name the test cannot read, line {1}' -f $n.GetCommandName(), $line)) }
+                    }
+                }
+                elseif ($n.Child -is [System.Management.Automation.Language.VariableExpressionAst]) { $found += [pscustomobject]@{ Name = $n.Child.VariablePath.UserPath; Kind = 'Untyped'; Type = $null; Right = $null } }
+                foreach ($f in $found) {
+                    $k = $f.Name.ToLowerInvariant()
+                    if (-not $map.ContainsKey($k)) { $map[$k] = New-Object System.Collections.Generic.List[object] }
+                    $map[$k].Add($f)
+                }
+            }
+            $State.Bindings[$ScopeKey] = $map
+            return $map
+        }
+        # The type of a variable: the one type every binding of it in its function gives, ignoring
+        # "= $null". A parameter, a foreach variable, a [ref], a compound assignment or any assignment
+        # whose type is unknown makes it untyped ($null); two different types are reported as Bad.
+        function Get-H20VariableType {
+            param($Variable, $State, [int]$Depth = 0)
+            $vp = $Variable.VariablePath
+            if (-not $vp.IsUnqualified) { return $null }
+            $name = $vp.UserPath
+            if ($script:H20AutomaticVariables -contains $name) { return $null }
+            $fn = Get-H20Function -Node $Variable
+            $scope = $State.Ast
+            $scopeKey = '(script)'
+            if ($null -ne $fn) { $scope = $fn.Body; $scopeKey = ('{0}@{1}' -f $fn.Name, $fn.Extent.StartOffset) }
+            $cacheKey = ('{0}|{1}' -f $scopeKey, $name.ToLowerInvariant())
+            if ($State.Types.ContainsKey($cacheKey)) { return $State.Types[$cacheKey] }
+            # A self-referencing assignment ($x = $x.Foo()) is read as untyped.
+            $State.Types[$cacheKey] = $null
+            $map = Get-H20Binding -Scope $scope -Function $fn -State $State -ScopeKey $scopeKey
+            $result = $null
+            $lowerName = $name.ToLowerInvariant()
+            if ($map.ContainsKey($lowerName)) {
+                $types = @()
+                $untyped = $false
+                $varBindings = $map[$lowerName]
+                foreach ($b in $varBindings) {
+                    if ($b.Kind -eq 'Untyped') { $untyped = $true; break }
+                    if ($b.Kind -eq 'Cast') { $types += $b.Type; continue }
+                    $r = Get-H20Unwrapped -Expr $b.Right
+                    if ($r -is [System.Management.Automation.Language.VariableExpressionAst] -and $r.VariablePath.UserPath -eq 'null') { continue }
+                    $t = Get-H20ExprType -Expr $b.Right -State $State -Depth ($Depth + 1)
+                    if ($null -eq $t) { $untyped = $true; break }
+                    $types += $t
+                }
+                $u = @($types | Sort-Object -Unique)
+                if (-not $untyped -and $u.Count -eq 1) { $result = [string]$u[0] }
+                if (-not $untyped -and $u.Count -gt 1) {
+                    $fnName = '(script)'
+                    if ($null -ne $fn) { $fnName = $fn.Name }
+                    $State.Bad.Add(('Receiver ${0} in {1} is assigned more than one type ({2})' -f $name, $fnName, ($u -join ', ')))
+                }
+            }
+            $State.Types[$cacheKey] = $result
+            return $result
+        }
+        # The type of an expression, where the source shows it: a cast, New-Object, [T]::new(), a
+        # factory of $script:H20Factory, or a variable typed by Get-H20VariableType. $null otherwise.
+        function Get-H20ExprType {
+            param($Expr, $State, [int]$Depth = 0)
+            if ($Depth -gt 12) { return $null }
+            $e = Get-H20Unwrapped -Expr $Expr
+            if ($e -is [System.Management.Automation.Language.ConvertExpressionAst]) {
+                if ($e.Type.TypeName.Name -eq 'ref') { return $null }
+                return (ConvertTo-H20TypeName -Name $e.Type.TypeName.FullName)
+            }
+            if ($e -is [System.Management.Automation.Language.CommandAst]) {
+                if ([string]$e.GetCommandName() -eq 'New-Object') { return (Get-H20NewObject -Call $e).Type }
+                return $null
+            }
+            if ($e -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $e.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                if ($e.Static) {
+                    if (-not ($e.Expression -is [System.Management.Automation.Language.TypeExpressionAst])) { return $null }
+                    $tn = ConvertTo-H20TypeName -Name $e.Expression.TypeName.FullName
+                    if ($e.Member.Value -eq 'new') { return $tn }
+                    $k = ('{0}::{1}' -f $tn, $e.Member.Value)
+                    if ($script:H20Factory.ContainsKey($k)) { return [string]$script:H20Factory[$k] }
+                    return $null
+                }
+                $rt = Get-H20ExprType -Expr $e.Expression -State $State -Depth ($Depth + 1)
+                if ($null -eq $rt) { return $null }
+                $k = ('{0}.{1}' -f $rt, $e.Member.Value)
+                if ($script:H20Factory.ContainsKey($k)) { return [string]$script:H20Factory[$k] }
+                return $null
+            }
+            if ($e -is [System.Management.Automation.Language.VariableExpressionAst]) { return (Get-H20VariableType -Variable $e -State $State -Depth ($Depth + 1)) }
+            return $null
+        }
+        # The variable at the root of a member or index chain ($psi.Environment['x'] -> $psi).
+        function Get-H20ChainRoot {
+            param($Expr)
+            $r = $Expr
+            while ($r -is [System.Management.Automation.Language.MemberExpressionAst] -or $r -is [System.Management.Automation.Language.IndexExpressionAst]) {
+                if ($r -is [System.Management.Automation.Language.MemberExpressionAst]) { $r = $r.Expression } else { $r = $r.Target }
+            }
+            return $r
+        }
         # The declared population of H20a: every command, external tool form (through
         # Invoke-ExternalCommand or started directly), CIM class, CIM method, static .NET member,
-        # New-Object type and instance method name the script holds, as audit keys.
+        # New-Object type and instance method the script holds, as audit keys; since H20d the
+        # instance methods by receiver type where the source shows it, and the properties set on the
+        # process the script starts.
         function Get-H20Population {
             param($Ast)
             $fnNames = @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
             $keys = New-Object System.Collections.Generic.List[string]
             $bad = New-Object System.Collections.Generic.List[string]
             $dynamic = New-Object System.Collections.Generic.List[string]
+            $state = [pscustomobject]@{ Ast = $Ast; Types = @{}; Bindings = @{}; Bad = $bad }
             foreach ($c in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
                 $name = $c.GetCommandName()
                 if ($null -eq $name) {
@@ -24353,23 +24657,176 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
                     $typeArg = Get-H20Argument -Call $c -Name 'TypeName'
                     if ($null -eq $typeArg) { $typeArg = $c.CommandElements[1] }
                     $keys.Add(('NewObject:{0}' -f ($typeArg.Extent.Text.Trim("'", '"'))))
+                    # PORT-PLAN H20d: the process the script starts is built only in Invoke-ExternalCommand,
+                    # where its FileName and Arguments are keyed below; and a TcpClient is built with no
+                    # value or one AddressFamily (Learn: the overload with a host and a port "connects to
+                    # the specified port on the specified host"; the parameterless and AddressFamily ones
+                    # do not). Independent review of the H20d diff: a value the test cannot see into
+                    # (@(host, port), an array held in a variable) is refused, not counted as one; a
+                    # Process or ProcessStartInfo built with a value or -Property, or held anywhere but a
+                    # variable the test types as one, is refused; -Property is refused on any type.
+                    $no = Get-H20NewObject -Call $c
+                    $own = Get-H20Function -Node $c
+                    $ownName = '(script)'
+                    if ($null -ne $own) { $ownName = $own.Name }
+                    $line = $c.Extent.StartLineNumber
+                    foreach ($u in @($no.Unknown)) { $bad.Add(('New-Object with -{0}, a parameter the test does not read, line {1}' -f $u, $line)) }
+                    if ($no.HasProperty) { $bad.Add(('New-Object -Property sets properties the test does not key, line {0}' -f $line)) }
+                    if (Test-H20ProcessType -Name $no.Type) {
+                        if ($ownName -ne 'Invoke-ExternalCommand') { $bad.Add(('{0} constructed outside Invoke-ExternalCommand ({1}), line {2}' -f $no.Type, $ownName, $line)) }
+                        if ($no.Count -gt 0) { $bad.Add(('{0} constructed with constructor values (ProcessStartInfo(String, String) sets the file and its arguments), line {1}' -f $no.Type, $line)) }
+                        $holder = $null
+                        $pl = $c.Parent
+                        if ($pl -is [System.Management.Automation.Language.PipelineAst] -and @($pl.PipelineElements).Count -eq 1 -and $pl.Parent -is [System.Management.Automation.Language.AssignmentStatementAst] -and [object]::ReferenceEquals($pl.Parent.Right, $pl) -and [string]$pl.Parent.Operator -eq 'Equals' -and $pl.Parent.Left -is [System.Management.Automation.Language.VariableExpressionAst]) { $holder = $pl.Parent.Left }
+                        if ($null -eq $holder) { $bad.Add(('{0} not assigned straight to a variable, line {1}' -f $no.Type, $line)) }
+                        elseif ((Get-H20VariableType -Variable $holder -State $state) -ne $no.Type) { $bad.Add(('{0} held in ${1}, which the test cannot type as one (another binding gives it another type or none), line {2}' -f $no.Type, $holder.VariablePath.UserPath, $line)) }
+                    }
+                    if ($no.Type -eq 'System.Net.Sockets.TcpClient') {
+                        $tv = @($no.Values)
+                        if ($tv.Count -gt 1) { $bad.Add(('TcpClient constructed with {0} values (the overload that connects), line {1}' -f $tv.Count, $line)) }
+                        elseif ($tv.Count -eq 1 -and -not ($tv[0] -is [System.Management.Automation.Language.MemberExpressionAst] -and -not ($tv[0] -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) -and -not $tv[0].Static -and $tv[0].Member.Extent.Text -eq 'AddressFamily')) {
+                            $bad.Add(('TcpClient constructed with a value other than an AddressFamily read ($x.AddressFamily), which may hold the host and port of the overload that connects, line {0}' -f $line))
+                        }
+                    }
                 }
             }
             foreach ($m in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static }, $true))) {
                 if ($m.Expression -is [System.Management.Automation.Language.TypeExpressionAst] -and $m.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
                     $keys.Add(('DotNet:[{0}]::{1}' -f $m.Expression.TypeName.FullName, $m.Member.Value))
+                    # PORT-PLAN H20c: the FileStream row is a documented read only as called: FileMode.Open
+                    # ("open an existing file") and FileAccess.Read ("Data can be read from the file").
+                    # Independent review of the H20c diff: and with exactly four arguments, the fourth only
+                    # FileShare members, because a later argument can be FileOptions.DeleteOnClose ("a file
+                    # is automatically deleted when it is no longer in use", Learn system.io.fileoptions,
+                    # read 2026-11-18).
+                    if ((ConvertTo-H20TypeName -Name $m.Expression.TypeName.FullName) -eq 'System.IO.FileStream' -and $m.Member.Value -eq 'new') {
+                        $fargs = @($m.Arguments | Where-Object { $null -ne $_ })
+                        $fa = @($fargs | ForEach-Object { $_.Extent.Text -replace '\s', '' })
+                        $fsOk = ($fa.Count -eq 4 -and $fa[1] -eq '[System.IO.FileMode]::Open' -and $fa[2] -eq '[System.IO.FileAccess]::Read')
+                        if ($fsOk) { $fsOk = Test-H20FileShareExpr -Expr $fargs[3] -State $state }
+                        if (-not $fsOk) { $bad.Add(('FileStream opened other than with [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read and FileShare members only, as exactly four arguments (a later one can be FileOptions.DeleteOnClose), line {0}' -f $m.Extent.StartLineNumber)) }
+                    }
                 }
                 else { $bad.Add(('A static call whose type or member is not a literal, line {0}' -f $m.Extent.StartLineNumber)) }
             }
-            # PORT-PLAN H20a review fix: instance methods, keyed by name (the receiver's type is not
-            # known from the source). OpenSubKey is allowed only in its one-argument form, which Learn
-            # documents as "Retrieves a subkey as read-only".
+            # PORT-PLAN H20a review fix, keyed by receiver since H20d: an instance method on a receiver
+            # whose type the source shows is Method:[<type>].<name>; on any other receiver a name of
+            # $script:H20GenericMethods is Method:<name>, and every other name is
+            # Untyped:<function>:<receiver>.<name>, so a listed name called on a new object fails.
+            # OpenSubKey is allowed only in its one-argument form, which Learn documents as
+            # "Retrieves a subkey as read-only".
             foreach ($m in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and -not $n.Static }, $true))) {
                 if (-not ($m.Member -is [System.Management.Automation.Language.StringConstantExpressionAst])) { $bad.Add(('An instance method whose name is not a literal, line {0}' -f $m.Extent.StartLineNumber)); continue }
-                $keys.Add(('Method:{0}' -f $m.Member.Value))
-                if ($m.Member.Value -eq 'OpenSubKey' -and @($m.Arguments | Where-Object { $null -ne $_ }).Count -ne 1) {
+                $mn = $m.Member.Value
+                $rt = Get-H20ExprType -Expr $m.Expression -State $state
+                $rootType = $null
+                $root = Get-H20ChainRoot -Expr $m.Expression
+                if (-not [object]::ReferenceEquals($root, $m.Expression)) { $rootType = Get-H20ExprType -Expr $root -State $state }
+                if ($null -ne $rt) { $keys.Add(('Method:[{0}].{1}' -f $rt, $mn)) }
+                elseif ($script:H20GenericMethods -contains $mn -and $script:H20PropertyTypes -notcontains $rootType) { $keys.Add(('Method:{0}' -f $mn)) }
+                else {
+                    $own = Get-H20Function -Node $m
+                    $ownName = '(script)'
+                    if ($null -ne $own) { $ownName = $own.Name }
+                    $keys.Add(('Untyped:{0}:{1}.{2}' -f $ownName, ($m.Expression.Extent.Text -replace '\s+', ' ').Trim(), $mn))
+                }
+                if ($mn -eq 'OpenSubKey' -and @($m.Arguments | Where-Object { $null -ne $_ }).Count -ne 1) {
                     $bad.Add(('OpenSubKey with other than one argument (an overload that can open for writing), line {0}' -f $m.Extent.StartLineNumber))
                 }
+            }
+            # PORT-PLAN H20c: Get-ADDomainController is a documented read without -ForceDiscover, which
+            # Learn documents as clearing "any cached domain controller information"; it and -Discover
+            # are refused. Independent review of the H20c diff: PowerShell binds any unique prefix of a
+            # parameter name, on the command line and from a splatted hashtable (-ForceDisc, -Fo,
+            # -Disc, @{ ForceDisc = $true }), and the script builds its splats by member assignment
+            # ($dcArgs.Filter = '*'). So: on Get-ADDomainController, any parameter that is a prefix of
+            # either name; anywhere, the exact name as a parameter; and anywhere, any string the
+            # parser holds (a hashtable key, a member name in $h.ForceDiscover = ..., an index
+            # $h['Disc'], an Add('Force', ...) argument, a quoted string) that is a prefix of two or
+            # more letters of either name. One letter ('F', 'D') is ambiguous on Get-ADDomainController
+            # (-Filter, -DomainName), which PowerShell refuses. And a Get-ADDomainController call may
+            # not splat @args or @PSBoundParameters, whose keys the test cannot see.
+            foreach ($n in @($Ast.FindAll({ param($x) $x -is [System.Management.Automation.Language.CommandParameterAst] }, $true))) {
+                $pn = $n.ParameterName.ToLowerInvariant()
+                $onDc = ($n.Parent -is [System.Management.Automation.Language.CommandAst] -and [string]$n.Parent.GetCommandName() -eq 'Get-ADDomainController')
+                if (@('forcediscover', 'discover') -contains $pn -or ($onDc -and $pn -ne '' -and ('forcediscover'.StartsWith($pn) -or 'discover'.StartsWith($pn)))) {
+                    $bad.Add(('-{0} (Get-ADDomainController discovery), line {1}' -f $n.ParameterName, $n.Extent.StartLineNumber))
+                }
+            }
+            foreach ($s in @($Ast.FindAll({ param($x) $x -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true))) {
+                $sv = ([string]$s.Value).ToLowerInvariant()
+                if ($sv.Length -ge 2 -and ('forcediscover'.StartsWith($sv) -or 'discover'.StartsWith($sv))) { $bad.Add(('{0} as a splatted key, member name or string (Get-ADDomainController binds it to -ForceDiscover or -Discover), line {1}' -f $s.Value, $s.Extent.StartLineNumber)) }
+            }
+            foreach ($c in @($Ast.FindAll({ param($x) $x -is [System.Management.Automation.Language.CommandAst] -and [string]$x.GetCommandName() -eq 'Get-ADDomainController' }, $true))) {
+                foreach ($el in @($c.CommandElements)) {
+                    if ($el -is [System.Management.Automation.Language.VariableExpressionAst] -and $el.Splatted -and @('args', 'psboundparameters') -contains $el.VariablePath.UserPath.ToLowerInvariant()) { $bad.Add(('Get-ADDomainController splats @{0}, whose keys the test cannot see, line {1}' -f $el.VariablePath.UserPath, $c.Extent.StartLineNumber)) }
+                }
+            }
+            # Independent review of the H20d diff: a Process or ProcessStartInfo is never built or typed
+            # by a cast ([System.Diagnostics.Process]@{ StartInfo = ... } sets properties no
+            # assignment shows), and the script holds no "using namespace", which would let a type be
+            # written without its namespace.
+            foreach ($cv in @($Ast.FindAll({ param($x) $x -is [System.Management.Automation.Language.ConvertExpressionAst] }, $true))) {
+                $ct = ConvertTo-H20TypeName -Name $cv.Type.TypeName.FullName
+                if (Test-H20ProcessType -Name $ct) { $bad.Add(('{0} built or typed by a cast, line {1}' -f $ct, $cv.Extent.StartLineNumber)) }
+            }
+            if (@($Ast.UsingStatements).Count -gt 0) { $bad.Add('A using statement: a type may be written without its namespace') }
+            # PORT-PLAN H20d: every property set on the process the script starts, with its value.
+            foreach ($a in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and ($n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -or $n.Left -is [System.Management.Automation.Language.IndexExpressionAst]) }, $true))) {
+                $root = Get-H20ChainRoot -Expr $a.Left
+                $rt = Get-H20ExprType -Expr $root -State $state
+                if ($script:H20PropertyTypes -notcontains $rt) { continue }
+                $op = '='
+                if ($a.Operator -ne 'Equals') { $op = [string]$a.Operator }
+                $keys.Add(('Property:[{0}]{1} {2} {3}' -f $rt, $a.Left.Extent.Text.Substring($root.Extent.Text.Length), $op, ($a.Right.Extent.Text -replace '\s+', ' ').Trim()))
+            }
+            # Independent review of the H20d diff: a property set through another name for the same
+            # object ($s = $p.StartInfo; $s.FileName = ..., $alias = @($psi)[0], $ev =
+            # $psi.EnvironmentVariables) has an untyped root and would not be keyed. So every use of a
+            # variable the test types as Process or ProcessStartInfo must be one the test keys: its own
+            # binding, a method call on it or on a member of it (keyed by the loop above), the root of a
+            # property set (keyed here), the value of a property set on one of them ($p.StartInfo =
+            # $psi, keyed with that value), or a read of a member of $script:H20ProcessValueReads.
+            # Anything else hands the object, or a part of it, to a name the test does not follow.
+            # A variable can be typed as either only where a New-Object or a cast of the type is written,
+            # or where one is copied from such a variable; a copy into another function goes through a
+            # use this loop refuses. So the loop scans the functions that name the type, and the
+            # statements of the script outside any function.
+            $procScopes = @($Ast.FindAll({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Extent.Text -match '(?i)Diagnostics\.Process' }, $true))
+            foreach ($blk in @($Ast.BeginBlock, $Ast.ProcessBlock, $Ast.EndBlock)) {
+                if ($null -eq $blk) { continue }
+                $procScopes += @($blk.Statements | Where-Object { -not ($_ -is [System.Management.Automation.Language.FunctionDefinitionAst]) })
+            }
+            $procVars = @()
+            foreach ($scopeNode in $procScopes) { $procVars += @($scopeNode.FindAll({ param($x) $x -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) }
+            foreach ($v in $procVars) {
+                if (-not $v.VariablePath.IsUnqualified -or $script:H20AutomaticVariables -contains $v.VariablePath.UserPath) { continue }
+                $vt = Get-H20VariableType -Variable $v -State $state
+                if (-not (Test-H20ProcessType -Name $vt)) { continue }
+                $vline = $v.Extent.StartLineNumber
+                $par = $v.Parent
+                if ($par -is [System.Management.Automation.Language.AssignmentStatementAst] -and [object]::ReferenceEquals($par.Left, $v)) { continue }
+                $top = $v
+                while ($true) {
+                    $pp = $top.Parent
+                    if ($pp -is [System.Management.Automation.Language.MemberExpressionAst] -and [object]::ReferenceEquals($pp.Expression, $top)) { $top = $pp; continue }
+                    if ($pp -is [System.Management.Automation.Language.IndexExpressionAst] -and [object]::ReferenceEquals($pp.Target, $top)) { $top = $pp; continue }
+                    break
+                }
+                if (-not [object]::ReferenceEquals($top, $v)) {
+                    if ($top -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) { continue }
+                    if ($top.Parent -is [System.Management.Automation.Language.AssignmentStatementAst] -and [object]::ReferenceEquals($top.Parent.Left, $top)) { continue }
+                    if ([object]::ReferenceEquals($top, $par) -and $par -is [System.Management.Automation.Language.MemberExpressionAst] -and $script:H20ProcessValueReads -contains $par.Member.Extent.Text) { continue }
+                    $bad.Add(('{0} read off ${1} ({2}) into a value the test cannot follow, line {3}' -f ($top.Extent.Text -replace '\s+', ' '), $v.VariablePath.UserPath, $vt, $vline))
+                    continue
+                }
+                if ($par -is [System.Management.Automation.Language.CommandExpressionAst] -and $par.Parent -is [System.Management.Automation.Language.AssignmentStatementAst] -and [object]::ReferenceEquals($par.Parent.Right, $par)) {
+                    $tl = $par.Parent.Left
+                    if ($tl -is [System.Management.Automation.Language.MemberExpressionAst] -or $tl -is [System.Management.Automation.Language.IndexExpressionAst]) {
+                        if (Test-H20ProcessType -Name (Get-H20ExprType -Expr (Get-H20ChainRoot -Expr $tl) -State $state)) { continue }
+                    }
+                }
+                $bad.Add(('${0} ({1}) used as a value the test cannot follow, line {2}' -f $v.VariablePath.UserPath, $vt, $vline))
             }
             return [pscustomobject]@{
                 Keys    = @($keys | Sort-Object -Unique)
@@ -24452,16 +24909,22 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
             $stale | Should -BeNullOrEmpty
         }
         It 'declares its population: the exact counts of each kind, measured from the script' {
-            # Declared population of the script, measured on v1.38.0 (H21 added the instance method GetUnresolvedProviderPathFromPSPath; each kind is
-            # counted from the parsed script, not from the inventory): 66 commands, 46 console tool forms
-            # (25 dcdiag /test: forms, the dcdiag /c capture, 4 nltest /sc_ forms, nltest /dsgetdc, netdom
-            # /Verify, 7 repadmin, 4 w32tm, dfsrmig, 2 nslookup), 5 CIM classes, 3 StdRegProv methods,
-            # 58 instance method names.
+            # Declared population of the script, measured on v1.39.0 (each kind is counted from the parsed
+            # script, not from the inventory): 66 commands, 46 console tool forms (25 dcdiag /test: forms,
+            # the dcdiag /c capture, 4 nltest /sc_ forms, nltest /dsgetdc, netdom /Verify, 7 repadmin,
+            # 4 w32tm, dfsrmig, 2 nslookup), 5 CIM classes, 3 StdRegProv methods; since H20d 82 Method
+            # keys (58 on a typed receiver, 24 generic names on an untyped one), 16 Untyped call sites
+            # (12, and since the independent review the 4 untyped Add calls) and 7 properties set on the
+            # process the script starts.
             $byKind = @{}
             foreach ($k in @($script:H20Pop.Keys)) { $kind = ($k -split ':', 2)[0]; if (-not $byKind.ContainsKey($kind)) { $byKind[$kind] = 0 }; $byKind[$kind]++ }
             $byKind['Command'] | Should -Be 66 -Because 'declared population: the 66 commands of the script'
             $byKind['Tool'] | Should -Be 46 -Because 'declared population: the 46 console tool forms of the script'
-            $byKind['Method'] | Should -Be 58 -Because 'declared population: the 58 instance method names of the script'
+            $byKind['Method'] | Should -Be 82 -Because 'declared population: the 58 typed instance methods and the 24 generic names of the script'
+            @($script:H20Pop.Keys | Where-Object { $_ -like 'Method:`[*' }).Count | Should -Be 58 -Because 'declared population: the 58 instance methods on a receiver of known type'
+            $byKind['Untyped'] | Should -Be 16 -Because 'declared population: the 16 call sites whose receiver is not statically typed (4 of them Add)'
+            @($script:H20Pop.Keys | Where-Object { $_ -like 'Untyped:*.Add' }).Count | Should -Be 4 -Because 'declared population: the 4 untyped Add calls (Get-AdfaDnsHealth, Find-AdfaDuplicateSpn, Get-AdfaSidHistoryHolderText, Get-AdfaDcReachabilityRows)'
+            $byKind['Property'] | Should -Be 7 -Because 'declared population: the 6 ProcessStartInfo properties and Process.StartInfo set in Invoke-ExternalCommand'
             @($script:H20Pop.Keys | Where-Object { $_ -like 'Tool:nltest.exe *' }).Count | Should -Be 5 -Because 'declared population: /sc_query and /sc_verify with and without /server:, and /dsgetdc'
             @($script:H20Pop.Keys | Where-Object { $_ -like 'CimClass:*' }) | Should -Be @('CimClass:Win32_NetworkAdapterConfiguration', 'CimClass:Win32_OperatingSystem', 'CimClass:Win32_QuickFixEngineering', 'CimClass:Win32_Service', 'CimClass:Win32_Volume')
             @($script:H20Pop.Keys | Where-Object { $_ -like 'CimMethod:*' }) | Should -Be @('CimMethod:StdRegProv.GetDWORDValue', 'CimMethod:StdRegProv.GetExpandedStringValue', 'CimMethod:StdRegProv.GetStringValue')
@@ -24517,7 +24980,8 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
             $to = "`$key = `$reg.OpenSubKey('SYSTEM\CurrentControlSet\Services\NTDS\Parameters', `$true); if (`$null -ne `$key) { `$key.SetValue('AdfaProbe', 1) }"
             $m = $orig.Substring(0, $i) + $to + $orig.Substring($i + $from.Length)
             $p = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput($m, [ref]$null, [ref]$null))
-            @($p.Keys | Where-Object { $doc -notcontains $_ }) | Should -Be @('Method:SetValue')
+            # Since H20d keyed by its receiver: $key is assigned from $reg.OpenSubKey(...), a RegistryKey.
+            @($p.Keys | Where-Object { $doc -notcontains $_ }) | Should -Be @('Method:[Microsoft.Win32.RegistryKey].SetValue')
             @($p.Bad | Where-Object { $_ -match '^OpenSubKey with other than one argument' }).Count | Should -Be 1
             # A method name the test cannot read.
             $p3 = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput(($orig + "`r`nfunction Invoke-H20Dyn { `$n = 'DeleteValue'; `$x = 1; `$x.`$n() }`r`n"), [ref]$null, [ref]$null))
@@ -24572,9 +25036,10 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
             $unreadAll = @($script:H20Rows | Where-Object { $_.Run -eq 'Default' -and $_.Key -notlike 'Effect:*' -and $_.Source -match 'not read in this session' })
             @($unreadAll | Where-Object { @('not documented', 'in-process') -notcontains $_.Verdict } | ForEach-Object { $_.Key }) | Should -BeNullOrEmpty
             $unread = @($unreadAll | Where-Object { $_.Verdict -eq 'not documented' })
-            $unread.Count | Should -Be 38
-            $readme | Should -Match ('{0} default rows rest on a page\s+that was not read' -f $unread.Count)
-            $script:H20Text | Should -Match ('{0} default rows rest on a page that was not read' -f $unread.Count)
+            # PORT-PLAN H20c read every page: 38 before v1.39.0, none since (the H20c Context below pins it).
+            $unread.Count | Should -Be 0
+            $readme | Should -Match ('{0} default rows rest on a page\s+that\s+was\s+not\s+read' -f $unread.Count)
+            $script:H20Text | Should -Match ('{0} default rows rest on a page\s+that\s+was\s+not\s+read' -f $unread.Count)
             $readme | Should -Not -Match 'has been read on Microsoft Learn'
             $readme | Should -Not -Match 'for the rest Learn says nothing either way'
             $plan = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'PORT-PLAN.md'))
@@ -24584,6 +25049,240 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
                 $n = @($script:H20Rows | Where-Object { $_.Verdict -eq $v }).Count
                 $readme | Should -Match ('\|\s*{0}\s*\|\s*{1}\s*\|' -f [regex]::Escape($v), $n) -Because ("the README summary row for '{0}' must state {1}" -f $v, $n)
             }
+        }
+    }
+
+    Context 'H20c and H20d: every Learn page read, and instance methods keyed by the type of their receiver' {
+        BeforeAll {
+            # Declared population of H20c: the 38 default rows H20a left on a page not read, under their
+            # v1.39.0 keys (39: Method:Close is now two rows, RegistryKey and TcpClient), and the four opt-in
+            # rows of the LDAPS handshake read in the same pass, each with the verdict its page supports
+            # (read 2026-11-18).
+            $script:H20cVerdicts = [ordered]@{
+                'Command:Get-ADComputer' = 'documented read'; 'Command:Get-ADDefaultDomainPasswordPolicy' = 'documented read'; 'Command:Get-ADDomain' = 'documented read'
+                'Command:Get-ADDomainController' = 'documented read'; 'Command:Get-ADFineGrainedPasswordPolicy' = 'documented read'; 'Command:Get-ADForest' = 'documented read'
+                'Command:Get-ADOptionalFeature' = 'documented read'; 'Command:Get-ADReplicationConnection' = 'documented read'; 'Command:Get-ADReplicationFailure' = 'documented read'
+                'Command:Get-ADReplicationPartnerMetadata' = 'documented read'; 'Command:Get-ADReplicationQueueOperation' = 'documented read'; 'Command:Get-ADReplicationSite' = 'documented read'
+                'Command:Get-ADReplicationSiteLink' = 'documented read'; 'Command:Get-ADReplicationSubnet' = 'documented read'; 'Command:Get-ADRootDSE' = 'documented read'
+                'Command:Get-ADTrust' = 'documented read'; 'Command:Get-ADUser' = 'documented read'
+                'Command:Remove-CimSession' = 'not documented'
+                'DotNet:[System.IO.Directory]::GetDirectories' = 'documented read'; 'DotNet:[System.IO.FileStream]::new' = 'documented read'
+                'DotNet:[System.Net.Dns]::BeginGetHostAddresses' = 'documented read'; 'DotNet:[System.Net.Dns]::EndGetHostAddresses' = 'documented read'
+                'NewObject:System.Net.Sockets.TcpClient' = 'in-process'; 'NewObject:System.Diagnostics.Process' = 'in-process'; 'NewObject:System.Diagnostics.ProcessStartInfo' = 'in-process'
+                'DotNet:[System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties' = 'in-process'
+                'Method:[Microsoft.Win32.RegistryKey].GetValue' = 'documented read'; 'Method:[Microsoft.Win32.RegistryKey].GetValueNames' = 'documented read'
+                'Method:[Microsoft.Win32.RegistryKey].Close' = 'not documented'; 'Method:[System.Net.Sockets.TcpClient].Close' = 'not documented'
+                'Method:[System.IO.FileStream].Dispose' = 'not documented'
+                'Method:[System.Net.Sockets.TcpClient].BeginConnect' = 'not documented'; 'Method:[System.Net.Sockets.TcpClient].EndConnect' = 'not documented'
+                'Method:[System.IO.FileStream].Read' = 'documented read'; 'Method:[System.IO.FileStream].Seek' = 'not documented'
+                'Untyped:Get-AdfaGpoInventory:$g.GenerateReport' = 'documented read'; 'Method:[System.Security.Principal.SecurityIdentifier].Translate' = 'not documented'
+                'Method:[System.Diagnostics.Process].Start' = 'in-process'; 'Method:[System.Diagnostics.Process].Kill' = 'in-process'
+                'NewObject:System.Net.Security.SslStream' = 'in-process'; 'DotNet:[powershell]::Create' = 'in-process'
+                'Method:[System.Net.Sockets.TcpClient].GetStream' = 'in-process'; 'Method:[System.Net.Security.SslStream].AuthenticateAsClient' = 'not documented'
+            }
+            # The three default rows that rest on no Learn page, each naming why.
+            $script:H20cNoPage = @('Tool:dcdiag.exe /test:FsmoCheck /s:<dc>', 'Tool:repadmin.exe /showbackup', 'Tool:repadmin.exe /showbackup {0}')
+            $script:H20dHostName = 'dc1.contoso.com'
+            # One planted source for the H20d mutations, so the population is measured once: a listed
+            # method name on a new typed object (a cast and a constructor), a reach name on an untyped
+            # receiver, a known untyped call moved to another function, a variable given two types, a
+            # second Process outside Invoke-ExternalCommand, a TcpClient built with a host and a port,
+            # a FileStream opened for writing, Get-ADDomainController discovery, and, in
+            # Invoke-ExternalCommand, a literal FileName, a new ProcessStartInfo property, a property of
+            # Process.StartInfo and a method on a ProcessStartInfo property.
+            $orig = [System.IO.File]::ReadAllText($script:Target)
+            $src = $orig
+            foreach ($swap in @(
+                    @('$psi.FileName = $FilePath', "`$psi.FileName = 'sc.exe'; `$psi.Verb = 'runas'; `$psi.ArgumentList.Add('/x')"),
+                    @('$p.StartInfo = $psi', "`$p.StartInfo = `$psi; `$p.StartInfo.Arguments = 'stop spooler'"),
+                    @('[System.IO.FileAccess]::Read, $share)', '[System.IO.FileAccess]::ReadWrite, $share)'))) {
+                $i = $src.IndexOf($swap[0])
+                if ($i -lt 0) { throw ('H20d planted source: {0} not found' -f $swap[0]) }
+                $src = $src.Substring(0, $i) + $swap[1] + $src.Substring($i + $swap[0].Length)
+            }
+            $src += "`r`nfunction Invoke-H20dCast { param(`$s) `$svc = [System.ServiceProcess.ServiceController]`$s; `$svc.Stop() }"
+            $src += "`r`nfunction Invoke-H20dWeb { `$w = New-Object System.Net.WebClient; `$w.Dispose() }"
+            $src += "`r`nfunction Invoke-H20dUntyped { param(`$o) `$o.Kill(); `$o.Trim() }"
+            $src += "`r`nfunction Invoke-H20dMoved { param(`$g) `$g.GenerateReport('Html') }"
+            $src += "`r`nfunction Invoke-H20dConflict { `$c = New-Object System.Net.Sockets.TcpClient; `$c = [System.IO.File]::Open('x', 'Open'); `$c.Close() }"
+            $src += "`r`nfunction Invoke-H20dProcess { `$q = New-Object System.Diagnostics.Process; `$q.Start() }"
+            $src += "`r`nfunction Invoke-H20dConnect { `$t = New-Object System.Net.Sockets.TcpClient('" + $script:H20dHostName + "', 389); `$t.Close() }"
+            $src += "`r`nfunction Invoke-H20dDiscover { Get-ADDomainController -Discover -ForceDiscover; `$d = @{ ForceDiscover = `$true } }`r`n"
+            $script:H20dPlanted = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null))
+            $script:H20dDoc = @($script:H20Rows | ForEach-Object { $_.Key })
+            $script:H20dNew = @($script:H20dPlanted.Keys | Where-Object { $script:H20dDoc -notcontains $_ })
+        }
+        It 'H20c: no row rests on a page that was not read, and every page H20c read is cited with its date' {
+            @($script:H20Rows | Where-Object { $_.Source -match '(?i)not read in this session|API reference not read' } | ForEach-Object { $_.Key }) | Should -BeNullOrEmpty
+            $script:H20cVerdicts.Count | Should -Be 43 -Because 'declared population: the 38 default rows H20a left unread (39 keys since H20d) and the 4 opt-in rows of the LDAPS handshake'
+            @($script:H20cVerdicts.Keys | Where-Object { $script:H20Pop.Keys -notcontains $_ }) | Should -BeNullOrEmpty -Because 'every H20c key is one the script holds'
+            foreach ($k in $script:H20cVerdicts.Keys) {
+                $row = @($script:H20Rows | Where-Object { $_.Key -eq $k })
+                $row.Count | Should -Be 1 -Because ('one row for {0}' -f $k)
+                $row[0].Source | Should -Match 'https://learn\.microsoft\.com/\S+' -Because ('{0} cites its Learn page' -f $k)
+                $row[0].Source | Should -Match 'read 2026-11-18' -Because ('{0} gives the read date' -f $k)
+                $row[0].Verdict | Should -Be $script:H20cVerdicts[$k] -Because ('{0}: the verdict its page supports' -f $k)
+            }
+            $runs = @($script:H20cVerdicts.Keys | ForEach-Object { $k = $_; @($script:H20Rows | Where-Object { $_.Key -eq $k })[0].Run })
+            @($runs | Where-Object { $_ -eq 'Default' }).Count | Should -Be 39 -Because 'the 38 default rows H20a left unread, Method:Close now keyed as two'
+            @($runs | Where-Object { $_ -eq 'Opt-in: -IncludeLdapsHandshake' }).Count | Should -Be 4 -Because 'the 4 opt-in rows of the LDAPS handshake'
+        }
+        It 'H20c: names why for every row that rests on no Learn page, and states the counts in the inventory and the README' {
+            @($script:H20Rows | Where-Object { $_.Source -match 'No Learn page' -and $_.Source -notmatch 'No Learn page: \S' } | ForEach-Object { $_.Key }) | Should -BeNullOrEmpty
+            $noPage = @($script:H20Rows | Where-Object { $_.Run -eq 'Default' -and $_.Key -notlike 'Effect:*' -and $_.Source -match 'No Learn page' } | ForEach-Object { $_.Key } | Sort-Object)
+            $noPage | Should -Be @($script:H20cNoPage | Sort-Object) -Because 'declared population: FsmoCheck and the two forms of repadmin /showbackup'
+            $readme = [System.IO.File]::ReadAllText($script:H20ReadmePath)
+            $script:H20Text | Should -Match ('{0} default rows rest on no Learn page' -f $noPage.Count)
+            $readme | Should -Match ('{0} default rows rest\s+on\s+no\s+Learn\s+page' -f $noPage.Count)
+            $readme | Should -Not -Match 'reading\s+(the\s+unread\s+pages|them)\s+is\s+PORT-PLAN\s+H20c'
+        }
+        It 'H20c: the inventory summary states the count of each verdict the rows hold' {
+            foreach ($v in $script:H20Verdicts) {
+                $n = @($script:H20Rows | Where-Object { $_.Verdict -eq $v }).Count
+                $script:H20Text | Should -Match ('\|\s*{0}\s*\|\s*{1}\s*\|' -f [regex]::Escape($v), $n) -Because ("the inventory summary row for '{0}' must state {1}" -f $v, $n)
+            }
+        }
+        It 'H20c: the help and the README no longer say the pages are unread' {
+            $help = $script:H20Ast.GetHelpContent()
+            $help.Description | Should -Not -Match 'reading\s+them\s+is\s+PORT-PLAN\s+H20c'
+            $help.Description | Should -Match 'PORT-PLAN H20c'
+            $help.Description | Should -Match 'PORT-PLAN H20d'
+        }
+        It 'H20d: keys an instance method by its receiver type where the source shows it, and only the generic names by name alone' {
+            foreach ($k in @('Method:[System.Net.Sockets.TcpClient].Close', 'Method:[Microsoft.Win32.RegistryKey].Close', 'Method:[System.IO.FileStream].Dispose', 'Method:[System.Management.Automation.PowerShell].Dispose', 'Method:[System.Diagnostics.Process].Kill', 'Method:[Microsoft.Win32.RegistryKey].GetValue')) {
+                $script:H20Pop.Keys | Should -Contain $k
+            }
+            $nameOnly = @($script:H20Pop.Keys | Where-Object { $_ -like 'Method:*' -and $_ -notlike 'Method:`[*' } | ForEach-Object { $_.Substring(7) } | Sort-Object)
+            $nameOnly | Should -Be @($script:H20GenericMethods | Sort-Object) -Because 'declared population: the 24 generic names, each used on an untyped receiver, and no other name keyed alone'
+            @($script:H20GenericMethods).Count | Should -Be 24
+            @($script:H20Pop.Keys | Where-Object { $_ -match '^Method:(Add|Close|Dispose|Read|Seek|Start|Kill|Stop|Translate|GenerateReport)$' }) | Should -BeNullOrEmpty
+            @($script:H20Pop.Bad) | Should -BeNullOrEmpty
+        }
+        It 'H20d: fails on a listed method name called on a new typed object (mutation shown red)' {
+            $script:H20dNew | Should -Contain 'Method:[System.ServiceProcess.ServiceController].Stop'
+            $script:H20dNew | Should -Contain 'Method:[System.Net.WebClient].Dispose'
+            $script:H20dNew | Should -Contain 'NewObject:System.Net.WebClient'
+        }
+        It 'H20d: fails on a reach name called on an untyped receiver, or a known untyped call moved (mutation shown red)' {
+            $script:H20dNew | Should -Contain 'Untyped:Invoke-H20dUntyped:$o.Kill'
+            $script:H20dNew | Should -Contain 'Untyped:Invoke-H20dMoved:$g.GenerateReport'
+            # The stated limit: a generic name on an untyped receiver is keyed by name alone and passes.
+            $script:H20dNew | Should -Not -Contain 'Untyped:Invoke-H20dUntyped:$o.Trim'
+            $script:H20dPlanted.Keys | Should -Contain 'Method:Trim'
+        }
+        It 'H20d: fails on a property of the started process set to a new value, and on a method of one of its properties (mutation shown red)' {
+            $script:H20dNew | Should -Contain "Property:[System.Diagnostics.ProcessStartInfo].FileName = 'sc.exe'"
+            $script:H20dNew | Should -Contain "Property:[System.Diagnostics.ProcessStartInfo].Verb = 'runas'"
+            $script:H20dNew | Should -Contain "Property:[System.Diagnostics.Process].StartInfo.Arguments = 'stop spooler'"
+            $script:H20dNew | Should -Contain 'Untyped:Invoke-ExternalCommand:$psi.ArgumentList.Add'
+            $script:H20dPlanted.Keys | Should -Not -Contain 'Property:[System.Diagnostics.ProcessStartInfo].FileName = $FilePath'
+        }
+        It 'H20d: fails on a Process built outside Invoke-ExternalCommand, a TcpClient that connects, a FileStream for writing, DC discovery and a two-type receiver (mutation shown red)' {
+            $bad = @($script:H20dPlanted.Bad)
+            @($bad | Where-Object { $_ -like 'System.Diagnostics.Process constructed outside Invoke-ExternalCommand (Invoke-H20dProcess)*' }).Count | Should -Be 1
+            @($bad | Where-Object { $_ -like 'TcpClient constructed with 2 values*' }).Count | Should -Be 1
+            @($bad | Where-Object { $_ -like 'FileStream opened other than with*' }).Count | Should -Be 1 -Because 'one of the two FileStream calls was planted with ReadWrite'
+            @($bad | Where-Object { $_ -like '-Discover (Get-ADDomainController discovery)*' }).Count | Should -Be 1
+            @($bad | Where-Object { $_ -like '-ForceDiscover (Get-ADDomainController discovery)*' }).Count | Should -Be 1
+            @($bad | Where-Object { $_ -like 'ForceDiscover as a splatted key*' }).Count | Should -Be 1
+            @($bad | Where-Object { $_ -like 'Receiver $c in Invoke-H20dConflict is assigned more than one type*' }).Count | Should -Be 1
+            $script:H20dNew | Should -Contain 'Untyped:Invoke-H20dConflict:$c.Close'
+            $bad.Count | Should -Be 7 -Because 'declared population: the seven planted guards and nothing else'
+        }
+    }
+
+    Context 'H20c and H20d review fixes: the guards hold for the forms the independent review planted' {
+        BeforeAll {
+            # The reviewer's mutations, in one planted source so the population is measured once. Each
+            # survived the v1.39.0 diff before the review fix (new=[] bad=[]); each must now fail.
+            $script:H20rHost = 'dc1.contoso.com'
+            $script:H20rScriptHash = (Get-FileHash -Path $script:Target -Algorithm SHA256).Hash
+            $orig = [System.IO.File]::ReadAllText($script:Target)
+            $src = $orig
+            foreach ($swap in @(
+                    # Findings 1, 7, 14: Test-TcpPort builds the host-and-port TcpClient through an array variable.
+                    @('$client = New-Object System.Net.Sockets.TcpClient', ("`$tcpArgs = '{0}', 389; `$client = New-Object System.Net.Sockets.TcpClient -ArgumentList `$tcpArgs" -f $script:H20rHost)),
+                    # Findings 3, 6: a second name for Process.StartInfo, its FileName set through it.
+                    @('[void]$p.Start()', "`$s = `$p.StartInfo; `$s.FileName = 'sc.exe'; [void]`$p.Start()"),
+                    # Findings 11, 13: the ProcessStartInfo through @(...)[0], and EnvironmentVariables.Add through a variable.
+                    @('$psi.CreateNoWindow = $true', "`$psi.CreateNoWindow = `$true; `$alias = @(`$psi)[0]; `$alias.Arguments = 'stop spooler'; `$ev = `$psi.EnvironmentVariables; `$ev.Add('COMSPEC', 'sc.exe')"),
+                    # Finding 9: GPT.INI opened with FileOptions.DeleteOnClose as a sixth argument.
+                    @('[System.IO.FileAccess]::Read, $share)', '[System.IO.FileAccess]::Read, $share, 4096, [System.IO.FileOptions]::DeleteOnClose)'),
+                    # Finding 10: -ForceDiscover set on the splat by member and by index, and abbreviated.
+                    @('$dcs = @(Get-ADDomainController @dcArgs)', "`$dcArgs.ForceDiscover = `$true; `$dcArgs['Disc'] = `$true; `$dcs = @(Get-ADDomainController @dcArgs -ForceDisc)"))) {
+                $i = $src.IndexOf($swap[0])
+                if ($i -lt 0) { throw ('H20 review planted source: {0} not found' -f $swap[0]) }
+                $src = $src.Substring(0, $i) + $swap[1] + $src.Substring($i + $swap[0].Length)
+            }
+            # Findings 1, 7: @(host, port) as -ArgumentList.
+            $src += ("`r`nfunction Invoke-H20rTcp {{ `$t = New-Object System.Net.Sockets.TcpClient -ArgumentList @('{0}', 389); `$t.Close() }}" -f $script:H20rHost)
+            # Findings 2, 5, 11: a Process and its start settings built by a hashtable cast.
+            $src += "`r`nfunction Invoke-H20rCast { `$q = [System.Diagnostics.Process]@{ StartInfo = [System.Diagnostics.ProcessStartInfo]@{ FileName = 'sc.exe'; Arguments = 'stop spooler' } }; [void]`$q.Start() }"
+            # Finding 3: New-Object -Property.
+            $src += "`r`nfunction Invoke-H20rProperty { `$o = New-Object System.Net.WebClient -Property @{ BaseAddress = 'x' }; `$o.Dispose() }"
+            # Findings 4, 8: an abbreviated splat key and an abbreviated parameter.
+            $src += "`r`nfunction Invoke-H20rSplat { `$h = @{ ForceDisc = `$true; Service = 'PrimaryDC' }; Get-ADDomainController @h -Fo }"
+            # Finding 12: Add on an untyped receiver (an ADSI group in the reviewer's caller).
+            $src += "`r`nfunction Add-H20rMember { param(`$Group) `$Group.Add('LDAP://CN=u1,DC=contoso,DC=com') }"
+            # Finding 15: a typed variable rebound by -OutVariable, and one by Set-Variable.
+            $src += "`r`nfunction Invoke-H20rOutVar { `$w = New-Object System.Net.Sockets.TcpClient; Get-Date -OutVariable w | Out-Null; `$w.Close() }"
+            $src += "`r`nfunction Invoke-H20rSetVar { `$y = New-Object System.Net.Sockets.TcpClient; Set-Variable -Name y -Value 1; `$y.Close() }`r`n"
+            $script:H20rPlanted = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null))
+            $script:H20rDoc = @($script:H20Rows | ForEach-Object { $_.Key })
+            $script:H20rNew = @($script:H20rPlanted.Keys | Where-Object { $script:H20rDoc -notcontains $_ })
+            $script:H20rBad = @($script:H20rPlanted.Bad)
+        }
+        It 'leaves the script it parsed unchanged (the mutations are in memory)' {
+            (Get-FileHash -Path $script:Target -Algorithm SHA256).Hash | Should -Be $script:H20rScriptHash
+        }
+        It 'findings 1, 7, 14: refuses a TcpClient whose value is @(host, port) or an array variable (mutation shown red)' {
+            @($script:H20rBad | Where-Object { $_ -like 'TcpClient constructed with a value other than an AddressFamily read*' }).Count | Should -Be 2 -Because 'the @(...) form in Invoke-H20rTcp and the variable form in Test-TcpPort'
+            # The three TcpClient constructions of the script pass: none, none and one $ip.AddressFamily.
+            @($script:H20Pop.Bad | Where-Object { $_ -like 'TcpClient*' }) | Should -BeNullOrEmpty
+        }
+        It 'findings 2, 5, 11: refuses a Process or ProcessStartInfo built by a cast (mutation shown red)' {
+            @($script:H20rBad | Where-Object { $_ -like 'System.Diagnostics.Process built or typed by a cast*' }).Count | Should -Be 1
+            @($script:H20rBad | Where-Object { $_ -like 'System.Diagnostics.ProcessStartInfo built or typed by a cast*' }).Count | Should -Be 1
+        }
+        It 'finding 3: refuses New-Object -Property, and a Process or ProcessStartInfo built with a value (mutation shown red)' {
+            @($script:H20rBad | Where-Object { $_ -like 'New-Object -Property sets properties the test does not key*' }).Count | Should -Be 1
+            $one = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput(([System.IO.File]::ReadAllText($script:Target).Replace('$psi = New-Object System.Diagnostics.ProcessStartInfo', "`$psi = New-Object System.Diagnostics.ProcessStartInfo 'sc.exe', 'stop spooler'")), [ref]$null, [ref]$null))
+            @($one.Bad | Where-Object { $_ -like 'System.Diagnostics.ProcessStartInfo constructed with constructor values*' }).Count | Should -Be 1
+        }
+        It 'findings 3, 6, 11, 13: refuses a second name for the started process or a part of it (mutation shown red)' {
+            @($script:H20rBad | Where-Object { $_ -like '$p.StartInfo read off $p (System.Diagnostics.Process) into a value the test cannot follow*' }).Count | Should -Be 1
+            @($script:H20rBad | Where-Object { $_ -like '$psi.EnvironmentVariables read off $psi (System.Diagnostics.ProcessStartInfo)*' }).Count | Should -Be 1
+            @($script:H20rBad | Where-Object { $_ -like '$psi (System.Diagnostics.ProcessStartInfo) used as a value the test cannot follow*' }).Count | Should -Be 1 -Because 'the @($psi)[0] alias'
+            # And the script's own uses pass: $p.ExitCode, $p.StartInfo = $psi, the method calls.
+            @($script:H20Pop.Bad | Where-Object { $_ -match 'cannot follow' }) | Should -BeNullOrEmpty
+        }
+        It 'finding 9: refuses a FileStream with a fifth or sixth argument (mutation shown red)' {
+            @($script:H20rBad | Where-Object { $_ -like 'FileStream opened other than with*' }).Count | Should -Be 1
+            $one = Get-H20Population -Ast ([System.Management.Automation.Language.Parser]::ParseInput(([System.IO.File]::ReadAllText($script:Target).Replace('$share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete', '$share = [System.IO.FileOptions]::DeleteOnClose')), [ref]$null, [ref]$null))
+            @($one.Bad | Where-Object { $_ -like 'FileStream opened other than with*' }).Count | Should -Be 2 -Because 'both FileStream calls take $share, now not a FileShare value'
+        }
+        It 'findings 4, 8, 10: refuses an abbreviated discovery parameter, an abbreviated splat key, and a member or index set on the splat (mutation shown red)' {
+            @($script:H20rBad | Where-Object { $_ -like '-ForceDisc (Get-ADDomainController discovery)*' }).Count | Should -Be 1
+            @($script:H20rBad | Where-Object { $_ -like '-Fo (Get-ADDomainController discovery)*' }).Count | Should -Be 1
+            @($script:H20rBad | Where-Object { $_ -like 'ForceDisc as a splatted key*' }).Count | Should -Be 1
+            @($script:H20rBad | Where-Object { $_ -like 'ForceDiscover as a splatted key*' }).Count | Should -Be 1 -Because 'the member set $dcArgs.ForceDiscover'
+            @($script:H20rBad | Where-Object { $_ -like 'Disc as a splatted key*' }).Count | Should -Be 1 -Because "the index set `$dcArgs['Disc']"
+            # The script itself holds no such string, and -Filter, -Force and one letter do not match.
+            @($script:H20Pop.Bad | Where-Object { $_ -match 'Get-ADDomainController' }) | Should -BeNullOrEmpty
+        }
+        It 'finding 12: Add on an untyped receiver is a row of its own, not Method:Add (mutation shown red)' {
+            $script:H20rNew | Should -Contain 'Untyped:Add-H20rMember:$Group.Add'
+            $script:H20rPlanted.Keys | Should -Not -Contain 'Method:Add'
+        }
+        It 'finding 13: a method on a variable taken from a ProcessStartInfo property is keyed by its receiver (mutation shown red)' {
+            $script:H20rNew | Should -Contain 'Untyped:Invoke-ExternalCommand:$ev.Add'
+        }
+        It 'finding 15: a variable rebound by -OutVariable or Set-Variable is untyped (mutation shown red)' {
+            $script:H20rNew | Should -Contain 'Untyped:Invoke-H20rOutVar:$w.Close'
+            $script:H20rNew | Should -Contain 'Untyped:Invoke-H20rSetVar:$y.Close'
+        }
+        It 'declares the planted population: every review mutation fails, and nothing else' {
+            $script:H20rBad.Count | Should -Be 14 -Because 'declared population: 2 TcpClient, 2 casts, 1 -Property, 3 aliases, 1 FileStream, 2 abbreviated parameters, 3 strings (ForceDisc, ForceDiscover, Disc)'
         }
     }
 
@@ -24839,9 +25538,9 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
     }
 
     Context 'Version' {
-        It 'is 1.38.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a; bumped by H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'is 1.39.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 }
@@ -25569,9 +26268,9 @@ exit $LASTEXITCODE
     }
 
     Context 'Version' {
-        It 'is 1.38.0 in the script and the manifest (PORT-PLAN H21)' {
-            [string]$script:Config.Version | Should -Be '1.38.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        It 'is 1.39.0 in the script and the manifest (PORT-PLAN H21; bumped by H20c and H20d)' {
+            [string]$script:Config.Version | Should -Be '1.39.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
         }
     }
 }

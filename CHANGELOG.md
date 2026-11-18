@@ -10,6 +10,127 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-18 (Side-effect audit: every Learn page read, instance methods keyed by receiver type, tool v1.39.0)
+
+**PORT-PLAN H20c and H20d.** No new `-Sections` value, no section key, no finding Item text or
+status changed, and nothing the script runs changed: the script's help and version moved, the rest
+is docs/SIDE-EFFECT-AUDIT.md, the README and the tests. **Run against stubs only** - nothing in this
+entry has been run against a real directory or DC. What was not verified: what a DC records of any
+call these rows describe (logon auditing, the Remote Registry service, the DNS client cache and
+Schannel stay the `Effect:` rows of H20b); how `SecurityIdentifier.Translate` looks a name up (its
+page does not say); whether closing a TCP connection, a remote registry key or a file over SMB
+leaves anything on the DC (the pages describe the operation only); the archived
+`Gpo.GenerateReport` page has no remarks on where it reads.
+
+- **Every Learn page read (H20c).** The 38 default rows H20a left on a page not read, and the four
+  opt-in rows of the LDAPS handshake, now cite the page, the read date and what it says. 0 default
+  rows rest on a page that was not read; 3 rest on no Learn page and say why (`dcdiag
+  /test:FsmoCheck`, `repadmin /showbackup` in two forms). `documented read`: the 17 ActiveDirectory
+  Get cmdlets, `Directory.GetDirectories`, the `FileStream` constructor as called (`FileMode.Open`,
+  `FileAccess.Read`), `FileStream.Read`, `Dns.BeginGetHostAddresses`/`EndGetHostAddresses`,
+  `RegistryKey.GetValue`/`GetValueNames`, `Gpo.GenerateReport`. `not documented`, page read:
+  `Remove-CimSession` (it removes the session "from the local PowerShell session"; nothing about the
+  remote end), `TcpClient.BeginConnect`/`EndConnect`/`Close`, `RegistryKey.Close` (it "flushes it to
+  disk if its contents have been modified"; the key is opened read-only), `FileStream.Seek`/`Dispose`,
+  `SslStream.AuthenticateAsClient`/`Dispose`, `SecurityIdentifier.Translate`. `in-process`:
+  `Process.Start`, `Kill` and `WaitForExit` act on the console tool `Invoke-ExternalCommand` started
+  on the host running the assessment (Learn: "You cannot cause processes on remote computers to
+  exit"; Learn also warns that a killed process can lose data it was editing, and what a killed tool
+  leaves half done on a DC is not documented), and the `TcpClient`, `SslStream`, `Process`,
+  `ProcessStartInfo`, `[powershell]::Create` and `IPGlobalProperties` constructors and `GetStream`.
+  No page documents a change of state on a DC or any other computer for a default row, so no row
+  moved behind a switch. The verdict meanings were narrowed accordingly (`not documented`: the page
+  was read and says nothing either way, or there is no page). Counts: documented read 81, documented
+  change opt-in 7, not documented 22, local output 7, in-process 181.
+- **Guards for verdicts that rest on how an API is called (H20c).** The population test fails on a
+  `FileStream` opened other than with `FileMode.Open`, `FileAccess.Read` and only `FileShare`
+  members as exactly four arguments, a `TcpClient` built with any value but one `$x.AddressFamily`
+  (the overload Learn documents as connecting), and `-ForceDiscover` or `-Discover` in any form
+  PowerShell binds (Learn: it "clears any cached domain controller information").
+- **Instance methods keyed by receiver type (H20d).** `Method:[<type>].<name>` where the same
+  function shows the type (`New-Object`, `[<type>]::new`, a cast, or a member whose return type
+  Learn documents); `Untyped:<function>:<receiver>.<name>` for any other receiver, except 24 generic
+  names keyed by name alone; a variable given two types fails. Every property set on the
+  `ProcessStartInfo` or `Process` the script builds is keyed with its value, both may be built only
+  in `Invoke-ExternalCommand`, and a method on one of their properties is never keyed by name alone:
+  `$psi.FileName = 'sc.exe'` passed v1.38.0 and fails now. Shown red in-test on one planted source
+  (13 plantings). The existing H20a registry-write mutation now expects
+  `Method:[Microsoft.Win32.RegistryKey].SetValue` instead of `Method:SetValue`, and the unread-count
+  test expects 0 instead of 38. Left open: H20e.
+- **Found by an independent review of the diff before commit, and fixed in it.** Fifteen
+  confirmed findings, each reproduced by the reviewer on a copy of the script under Windows
+  PowerShell 5.1 and each surviving the first form of the test (no new key, no failure); all are
+  test or documentation defects, and nothing the script runs changed. (1, 7, 14) The `TcpClient`
+  guard counted `-ArgumentList @('dc1.contoso.com', 389)` and an array held in a variable as one
+  value, so the host-and-port overload that connects passed; it now accepts no value or one
+  `$x.AddressFamily` and refuses anything else. (2, 5, 11) A `Process` or `ProcessStartInfo` built
+  by a hashtable cast (`[System.Diagnostics.Process]@{ StartInfo = ... FileName = 'sc.exe' }`)
+  passed both the "only in `Invoke-ExternalCommand`" guard and the property keys; a cast to either
+  type now fails, and `New-Object` of either must have no value and no `-Property` and go straight
+  into a variable the test types as that type. (3, 6, 11, 13) A property set through a second name
+  (`$s = $p.StartInfo; $s.FileName = 'sc.exe'`, `$alias = @($psi)[0]`,
+  `$ev = $psi.EnvironmentVariables; $ev.Add(...)`) or through `New-Object -Property` was not keyed;
+  every use of a variable typed as either is now one the test keys (a method call, a property set,
+  the value of `$p.StartInfo = $psi`, or a read of `ExitCode`), `-Property` fails on any type, and
+  `New-Object` parameters are matched by prefix. (4, 8, 10) The discovery guard matched only the
+  exact names as a parameter or a literal hashtable key; PowerShell binds a unique prefix on the
+  command line and from a splat (checked here on a local function: `@{ ForceDisc = $true }` and
+  `-Fo` bind `-ForceDiscover`, `-F` is refused as ambiguous), and the script builds its splats by
+  member assignment. The test now refuses any prefix on `Get-ADDomainController`, either exact name
+  anywhere, any string of two or more letters that is a prefix of either (key, member, index, `Add`
+  argument), and `@args`/`@PSBoundParameters` splatted into it. (9) The `FileStream` guard read only
+  arguments 2 and 3, so a sixth argument `FileOptions.DeleteOnClose` (which Learn documents as
+  deleting the file when it is no longer in use, and the reviewer showed deleting a scratch file)
+  passed; the test now requires exactly four arguments, the fourth only `FileShare` members.
+  (12) `Add` was a generic name keyed alone; Learn's ADSI "Adding Users to a Group" adds a member
+  with `grp.Add(...)` alone, so the inventory's claim that a .NET directory write needs
+  `CommitChanges`, `SetValue` or `Put` was wrong. `Add` is no longer generic; the four untyped `Add`
+  calls are `Untyped:` rows (Method keys 83 to 82, generic names 25 to 24, Untyped rows 12 to 16,
+  in-process rows 178 to 181), and the claim is gone. (15) A variable bound by `-OutVariable` (or
+  `Set-Variable`) kept the type of its visible assignment; a common parameter that binds a variable,
+  any prefix or alias of it, and `Set-Variable`/`New-Variable` are now untyped bindings. Each
+  mutation is shown red in a new Context of the population test, on one planted source, and the
+  script file's hash is checked unchanged after it. Left open and recorded as PORT-PLAN H20e: the
+  arguments of an unguarded listed command (an `Out-File` pointed outside the run folder keeps its
+  key), and a name built at run time from parts the parser does not hold.
+- **Version** 1.39.0 in the script and the manifest; every version pin of the tests and the
+  validation harness moved.
+- **Sources** (all read 2026-11-18, whole page, on Microsoft Learn):
+  https://learn.microsoft.com/powershell/module/activedirectory/get-adcomputer,
+  get-addefaultdomainpasswordpolicy, get-addomain, get-addomaincontroller,
+  get-adfinegrainedpasswordpolicy, get-adforest, get-adoptionalfeature, get-adreplicationconnection,
+  get-adreplicationfailure, get-adreplicationpartnermetadata, get-adreplicationqueueoperation,
+  get-adreplicationsite, get-adreplicationsitelink, get-adreplicationsubnet, get-adrootdse,
+  get-adtrust, get-aduser (same path);
+  https://learn.microsoft.com/powershell/module/cimcmdlets/remove-cimsession;
+  https://learn.microsoft.com/dotnet/api/system.io.directory.getdirectories,
+  system.io.filestream.-ctor, system.io.filestream.read, system.io.filestream.seek,
+  system.io.stream.dispose, system.io.filemode, system.io.fileaccess, system.io.fileshare,
+  system.io.file.open, system.net.dns.begingethostaddresses, system.net.dns.endgethostaddresses,
+  system.net.sockets.tcpclient.-ctor, system.net.sockets.tcpclient.beginconnect,
+  system.net.sockets.tcpclient.endconnect, system.net.sockets.tcpclient.getstream,
+  system.net.sockets.tcpclient.close, system.net.security.sslstream.-ctor,
+  system.net.security.sslstream.authenticateasclient, system.net.security.sslstream.dispose,
+  system.net.networkinformation.ipglobalproperties.getipglobalproperties,
+  microsoft.win32.registrykey.getvalue, microsoft.win32.registrykey.getvaluenames,
+  microsoft.win32.registrykey.opensubkey, microsoft.win32.registrykey.close,
+  microsoft.win32.registrykey.openremotebasekey, system.diagnostics.process,
+  system.diagnostics.process.start, system.diagnostics.process.kill,
+  system.diagnostics.process.waitforexit, system.diagnostics.processstartinfo,
+  system.diagnostics.stopwatch.startnew, system.security.principal.securityidentifier.translate,
+  system.security.cryptography.x509certificates.x509certificate.reset,
+  system.threading.eventwaithandle.set, system.threading.waithandle.dispose (same path,
+  view netframework-4.8.1); system.management.automation.powershell.create, .addscript and
+  .addargument (view powershellsdk-7.4.0);
+  https://learn.microsoft.com/previous-versions/windows/desktop/wmi_v2/class-library/gpo-generatereport-method-reporttype-microsoft-grouppolicy;
+  https://learn.microsoft.com/powershell/module/grouppolicy/get-gporeport (adjacent).
+  Read 2026-11-18 for the review fix: https://learn.microsoft.com/dotnet/api/system.io.fileoptions,
+  https://learn.microsoft.com/dotnet/api/system.io.fileshare (re-read),
+  https://learn.microsoft.com/dotnet/api/system.diagnostics.process.exitcode,
+  https://learn.microsoft.com/powershell/module/activedirectory/get-addomaincontroller (re-read: the
+  parameter list, -Discover, -DomainName, -Filter, -ForceDiscover),
+  https://learn.microsoft.com/windows/win32/adsi/adding-users-to-a-group.
+
 ### Changed - 2026-11-18 (House rules: one output folder per run, closing log lines, exit codes 0/1/2, help of every function, tool v1.38.0)
 
 **PORT-PLAN H21, closing GAP-P7. BREAKING: the default output folder moves, the log and transcript

@@ -3185,7 +3185,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.38.0' ([string]$script:Config.Version) 'C14: version 1.38.0 in the script (bumped by PORT-PLAN H21)'
+Assert-Equal '1.39.0' ([string]$script:Config.Version) 'C14: version 1.39.0 in the script (bumped by PORT-PLAN H20c and H20d)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3278,7 +3278,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.38.0' ([string]$script:Config.Version) 'C15: version 1.38.0 in the script (bumped by PORT-PLAN H21)'
+Assert-Equal '1.39.0' ([string]$script:Config.Version) 'C15: version 1.39.0 in the script (bumped by PORT-PLAN H20c and H20d)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3502,7 +3502,7 @@ $c16Src2 = & {
     Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
 }
 Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
-Assert-Equal '1.38.0' ([string]$script:Config.Version) 'C16: version 1.38.0 in the script (bumped by PORT-PLAN H21)'
+Assert-Equal '1.39.0' ([string]$script:Config.Version) 'C16: version 1.39.0 in the script (bumped by PORT-PLAN H20c and H20d)'
 
 # ---- PORT-PLAN C1a: the update build revision (pure) -----------------------------------------
 $c1aKey = [string]$script:Config.DcSystem['UbrKey']
@@ -3536,6 +3536,20 @@ Assert-Throws { Merge-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Ov
 $h20aDoc = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'docs\SIDE-EFFECT-AUDIT.md'
 Assert-True ((Test-Path -LiteralPath $h20aDoc) -and ([System.IO.File]::ReadAllText($h20aDoc) -match 'Read 2026-11-18')) 'H20a: docs/SIDE-EFFECT-AUDIT.md exists with its read date'
 Assert-True ([System.IO.File]::ReadAllText($h20aDoc) -notmatch '(?i)\bno side[- ]effects?\b') 'H20a: the inventory never says "no side effect"'
+# PORT-PLAN H20c: every row's Learn page was read; a row on no page names why. Declared population:
+# the inventory rows (each a markdown table line whose first cell is a backticked key).
+$h20cRows = @([regex]::Matches([System.IO.File]::ReadAllText($h20aDoc), '(?m)^\|\s*`([^`]+)`\s*\|([^\r\n]*)\|\s*$') | ForEach-Object {
+        $cells = @($_.Groups[2].Value -split '\s\|\s' | ForEach-Object { $_.Trim() })
+        [pscustomobject]@{ Key = $_.Groups[1].Value; Run = $cells[1]; Source = $cells[2] }
+    })
+Assert-True ($h20cRows.Count -gt 250) ('H20c: the inventory rows were read (declared population: every keyed row; got {0})' -f $h20cRows.Count)
+Assert-True (@($h20cRows | Where-Object { $_.Source -match '(?i)not read in this session|API reference not read' }).Count -eq 0) 'H20c: no inventory row rests on a page that was not read'
+Assert-True (@($h20cRows | Where-Object { $_.Source -match 'No Learn page' -and $_.Source -notmatch 'No Learn page: \S' }).Count -eq 0) 'H20c: every row on no Learn page names why'
+$h20cNoPage = @($h20cRows | Where-Object { $_.Run -eq 'Default' -and $_.Key -notlike 'Effect:*' -and $_.Source -match 'No Learn page' } | ForEach-Object { $_.Key } | Sort-Object)
+Assert-Equal 'Tool:dcdiag.exe /test:FsmoCheck /s:<dc>|Tool:repadmin.exe /showbackup|Tool:repadmin.exe /showbackup {0}' ($h20cNoPage -join '|') 'H20c: the three default rows on no Learn page are FsmoCheck and the two forms of repadmin /showbackup'
+# PORT-PLAN H20d: the instance-method rows are keyed by receiver type; no reach name is keyed by name alone.
+Assert-True (@($h20cRows | Where-Object { $_.Key -match '^Method:(Close|Dispose|Read|Seek|Start|Kill|Stop|Translate|GenerateReport|BeginConnect|EndConnect|GetValue|OpenSubKey)$' }).Count -eq 0) 'H20d: no reach method is keyed by name alone'
+Assert-True (@($h20cRows | Where-Object { $_.Key -like 'Method:`[System.Net.Sockets.TcpClient`].Close' }).Count -eq 1 -and @($h20cRows | Where-Object { $_.Key -like 'Property:*' }).Count -eq 7) 'H20d: TcpClient.Close is keyed by type, and the 7 properties of the started process are rows'
 
 # ---- PORT-PLAN H21: run folder, exit code and closing log lines (pure) ------------------------
 $h21Out = $script:Config.Output
