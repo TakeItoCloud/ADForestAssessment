@@ -175,8 +175,13 @@
     best-practice remediation recommendation (Recommendation column in
     csv\Findings-Consolidated.csv, the detailed log, and the HTML lead section).
 
-    The report is written to the logged-on user's Documents folder by default:
-        %USERPROFILE%\Documents\AdAssessment\yyyy-MM-dd_HH-mm-ss\
+    Each run writes one timestamped folder on the computer running the assessment, never on a
+    domain controller (since v1.38.0, PORT-PLAN H21; before, the user's Documents folder):
+        C:\Scripts\Securnet\Reports\ADForestAssessment-yyyyMMdd-HHmmss\
+    holding the detailed log (ADForestAssessment-yyyyMMdd-HHmmss.log), the transcript, the raw
+    CSV files (csv\), the raw JSON of the run (Assessment.json) and the human-readable report
+    (Assessment.html). -OutputPath replaces the root. The log closes with the end time, the
+    duration, the totals per status and the exit code, also when the run stops with an error.
 
     Coverage-aware & fail-closed: any value that could not be collected is reported as
     "Not Assessed" (never a false Pass / 0). A trust direction that could not be read is
@@ -240,8 +245,13 @@
     effect; the decision rests on their documented purpose and signature.
 
 .PARAMETER OutputPath
-    Root folder for the assessment bundle. A timestamped sub-folder is always created inside it.
-    Default: <MyDocuments>\AdAssessment
+    Root folder for the assessment bundle, on the computer running the assessment. One folder per
+    run, ADForestAssessment-yyyyMMdd-HHmmss, is always created inside it and claimed by creating its
+    log file (FileMode CreateNew), so a second run in the same second, even one started at the same
+    moment, gets -2, a third -3. Default: C:\Scripts\Securnet\Reports (this repository's output
+    convention, since v1.38.0; before, a folder in the user's Documents). A root that does not exist is
+    created, and the screen and the log say so. A path that is not on the file system (a registry
+    key, the variable drive) is refused before anything is created.
 
 .PARAMETER AllDomains
     Assess every domain in the forest. Without it, only the current/target domain is assessed:
@@ -855,25 +865,54 @@
     covering the window, never as a clean scan.
 
 .EXAMPLE
-    .\Invoke-ADForestAssessment.ps1 -AllDomains -IncludeDcdiag -IncludeRepadmin -Verbose
+    powershell.exe -NoProfile -File .\Invoke-ADForestAssessment.ps1 -AllDomains -OutputPath D:\Reports
 
-    Full forest assessment (all domains) with raw diagnostics, verbose progress, report in
-    the current user's Documents.
+    The safe run: every domain of the forest, default sections, none of the opt-in switches that
+    are not read-only. The bundle lands in D:\Reports\ADForestAssessment-yyyyMMdd-HHmmss\ and the
+    process exit code is 0, 1 or 2 (see .NOTES). -File keeps the exit code 2 intact.
 
 .EXAMPLE
     .\Invoke-ADForestAssessment.ps1 -Sections Trusts,Replication -SkipTrustVerification
 
-    Collect only trust configuration and replication, without running external trust checks.
+    Collect only trust configuration and replication, without running external trust checks, into
+    C:\Scripts\Securnet\Reports\ADForestAssessment-yyyyMMdd-HHmmss\.
+
+.EXAMPLE
+    .\Invoke-ADForestAssessment.ps1 -AllDomains -IncludeDcdiag -IncludeRepadmin -Verbose
+
+    NOT read-only: -IncludeDcdiag runs 'dcdiag /c', which includes CutoffServers (triggers
+    replication) and the DNS test (registers and deletes a test record). Full forest assessment
+    with the raw diagnostics captured under raw\ and verbose progress.
 
 .OUTPUTS
-    [pscustomobject] run summary: paths, the Pass/Warning/Fail/Not Assessed counts and the names of
-    the report sections. The rows collected and reported per section are in csv\Section-Coverage.csv.
-    Data files are written as CSV, JSON and a single HTML report.
+    [pscustomobject] run summary: paths, the Pass/Warning/Fail/Not Assessed counts, the names of
+    the report sections, ExitCode and ExitReason. The rows collected and reported per section are in
+    csv\Section-Coverage.csv. Data files are written as CSV, JSON and a single HTML report.
+
+    Exit code 0: the run completed with at least one finding, no Fail finding, no section left
+    Not Assessed, no finding with an empty or unknown status, and every report written. Warning
+    and Info do not raise the code.
+    Exit code 1: the run completed, but with a Fail (Broken, Failed) finding, a section left Not
+    Assessed (a Not Assessed finding and no graded one; an Info row does not count as graded), a
+    finding with an empty or unknown status, no finding at all, rows that could not be
+    interpreted, or the HTML or JSON report not written. The reason is the log's "Exit code:" line
+    and ExitReason. PowerShell itself also gives 1 for a run that never started because of a
+    parameter binding error: then there is no run folder and no log.
+    Exit code 2: the run could not run or was stopped once started (a refused config file, the
+    ActiveDirectory module not loadable, the output folder not creatable, a pipeline stop such as
+    Ctrl+C, any terminating error).
+    The process exit code is set only when the script is run, never when it is dot-sourced. Use
+    -File: Microsoft documents that under -Command a script exit code other than 0 or 1 becomes 1.
 
 .NOTES
-    Author  : TakeItToCloud (Carlos Annes)
-    Requires: RSAT ActiveDirectory module. DnsServer / GroupPolicy / DFSR modules optional.
-    Runtime : Windows PowerShell 5.1 or PowerShell 7+. See .DESCRIPTION for what a run changes.
+    Owner: Carlos Annes (TakeItToCloud)
+    Version: 1.38.0
+    Created: 2026-07-22
+    Last updated: 2026-11-18
+    Requires: Windows PowerShell 5.1 or PowerShell 7+ (5.1 because the script runs on a stock domain controller); RSAT ActiveDirectory module (no minimum version set); DnsServer, GroupPolicy and DFSR modules optional; domain read access; administrative rights on the domain controllers for trust verification, dcdiag and the remote CIM sections; Enterprise Admins for the opt-in dcdiag DNS test (Microsoft's statement).
+
+    Read-only by default; see .DESCRIPTION for what a run changes and the opt-in switches that
+    are not read-only. Created is the date of the tool's 1.0.0 (docs/CHANGELOG-ADForestAssessment.md).
 #>
 
 [CmdletBinding()]
@@ -980,7 +1019,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.37.0'
+    Version                 = '1.38.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -997,6 +1036,39 @@ $script:Config = @{
     # (the value the scans always used). A scan that returns this many reports every count as a
     # minimum, because older events, and an event ID absent from the result, may have been cut off.
     EventScanMaxEvents      = 500
+    # PORT-PLAN H21 (operator decision 2026-11-18): where a run writes. This repository's
+    # CLAUDE.md output convention - one timestamped folder per run under
+    # C:\Scripts\Securnet\Reports\<ScriptName>-<yyyyMMdd-HHmmss>\ - wins over the operator's
+    # general C:\Scripts\Cannes default, because it is the rule written for this repository.
+    # A tool convention, not a Microsoft value: Microsoft publishes no folder convention for an
+    # assessment's output. -OutputPath replaces DefaultRoot. 'HH' is the 24-hour hour in .NET
+    # custom date formats (learn.microsoft.com/dotnet/standard/base-types/custom-date-and-time-format-strings,
+    # read 2026-11-18). MaxRunFolderAttempts is a tool default: the most suffixes (-2, -3, ...)
+    # tried when runs start in the same second, after which the run stops rather than reuse a folder.
+    Output                  = @{
+        DefaultRoot          = 'C:\Scripts\Securnet\Reports'
+        RunFolderPrefix      = 'ADForestAssessment'
+        StampFormat          = 'yyyyMMdd-HHmmss'
+        MaxRunFolderAttempts = 99
+    }
+    # PORT-PLAN H21: the process exit code. A tool convention, not a Microsoft value: Microsoft
+    # says only that "a nonzero exit code typically signals a failure" (about_Scripts, read
+    # 2026-11-18). 0 completed; 1 completed with a Fail finding or a section left Not Assessed;
+    # 2 could not run or was stopped. FailStatusPattern is the set the severity order of
+    # Invoke-Main already ranks as a failure (Fail, Broken, Failed). AssessedStatusPattern is a
+    # graded verdict - a row that measured something and judged it; a section counts as Not
+    # Assessed when it holds a Not Assessed row and no row of this set (an Info row assesses
+    # nothing, so it no longer hides such a section; independent review of H21). KnownStatusPattern
+    # is every status the run knows: the eight New-AdfaReportSummary classifies plus Failed. A
+    # status outside it (empty, missing or unknown) is unclassified and gives 1, never 0.
+    RunExit                 = @{
+        Completed             = 0
+        CompletedWithFindings = 1
+        Fatal                 = 2
+        FailStatusPattern     = '^(Fail|Broken|Failed)$'
+        AssessedStatusPattern = '^(Pass|Healthy|Warning|Degraded|Fail|Broken|Failed)$'
+        KnownStatusPattern    = '^(Pass|Healthy|Warning|Degraded|Fail|Broken|Failed|Not Assessed|Info)$'
+    }
     ReplicationStaleMinutes = 180
     # --- Replication convergence lag ------------------------------------------------------
     # OURS, not vendor limits, and the findings say so. Reasoning: intra-site replication is
@@ -3561,7 +3633,15 @@ function Write-Log {
     .DESCRIPTION
         This is the detailed audit trail for the run: every stage, per-section counts, each
         Warning/Fail/Not-Assessed finding, and any caught error land here. Written to
-        assessment.log in the run root. Safe to call before the log path is set (buffers to host).
+        ADForestAssessment-yyyyMMdd-HHmmss.log in the run folder (since v1.38.0, PORT-PLAN H21).
+        Safe to call before the log path is set (writes to the host only).
+    .PARAMETER Message
+        The message text. Type [string], mandatory.
+    .PARAMETER Level
+        The log level of the line. Type [string], default 'INFO', one of INFO, STAGE, RESULT, WARN,
+        ERROR.
+    .PARAMETER Section
+        The name of the report section. Type [string].
     #>
     [CmdletBinding()]
     param(
@@ -3582,12 +3662,32 @@ function Write-Log {
 }
 
 function Write-Stage {
+    <#
+    .SYNOPSIS
+        Writes a STAGE line to the detailed run log and the console: the start of a step of the run.
+    .PARAMETER Message
+        The message text. Type [string], mandatory.
+    #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Message)
     Write-Log -Message $Message -Level 'STAGE'
 }
 
 function New-Folder {
+    <#
+    .SYNOPSIS
+        Creates a folder of the run's own output on the host running the assessment, when it does
+        not exist yet, and returns its path.
+    .DESCRIPTION
+        Local output only (docs/SIDE-EFFECT-AUDIT.md, local output rows): New-Item -ItemType
+        Directory -Force on the file system, which Microsoft documents as returning an existing
+        folder intact. So this is never the claim of a run folder: New-AdfaRunFolder claims one by
+        creating its log file with FileMode CreateNew (PORT-PLAN H21).
+    .PARAMETER Path
+        The path input of New-Folder. Type [string], mandatory.
+    .OUTPUTS
+        [string] The path.
+    #>
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Path)
@@ -3620,6 +3720,9 @@ function Expand-AdfaRowList {
         data without saying so.
     .OUTPUTS
         [object[]]
+    .PARAMETER Rows
+        The rows to flatten or normalise. Nulls and nested collections are allowed. Untyped,
+        mandatory, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([object[]])]
@@ -3659,6 +3762,9 @@ function ConvertTo-AdfaRowSet {
         ones as they appear), so the report layout is unchanged when rows already agree.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER Rows
+        The rows to flatten or normalise. Nulls and nested collections are allowed. Untyped,
+        mandatory, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -3691,6 +3797,17 @@ function ConvertTo-AdfaRowSet {
 }
 
 function Save-Csv {
+    <#
+    .SYNOPSIS
+        Writes rows to a CSV file of the run's output folder, normalised to one column set first.
+    .DESCRIPTION
+        Local output only. Export-Csv takes its columns from the first object, so the rows go
+        through ConvertTo-AdfaRowSet first; nothing is written for no rows.
+    .PARAMETER InputObject
+        The rows to write or flatten. Untyped, mandatory, may be null or empty.
+    .PARAMETER Path
+        The path input of Save-Csv. Type [string], mandatory.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowNull()]$InputObject,
@@ -3705,6 +3822,15 @@ function Save-Csv {
 }
 
 function Test-CommandAvailable {
+    <#
+    .SYNOPSIS
+        True when a command (cmdlet, function or external tool) can be found on the host running the
+        assessment.
+    .PARAMETER Name
+        The name input of Test-CommandAvailable. Type [string], mandatory.
+    .OUTPUTS
+        [bool]
+    #>
     [CmdletBinding()]
     [OutputType([bool])]
     param([Parameter(Mandatory)][string]$Name)
@@ -3712,6 +3838,15 @@ function Test-CommandAvailable {
 }
 
 function Test-ModuleAvailable {
+    <#
+    .SYNOPSIS
+        True when a module is installed on the host running the assessment (Get-Module
+        -ListAvailable).
+    .PARAMETER Name
+        The name input of Test-ModuleAvailable. Type [string], mandatory.
+    .OUTPUTS
+        [bool]
+    #>
     [CmdletBinding()]
     [OutputType([bool])]
     param([Parameter(Mandatory)][string]$Name)
@@ -3719,6 +3854,15 @@ function Test-ModuleAvailable {
 }
 
 function New-SafeFileName {
+    <#
+    .SYNOPSIS
+        Turns a section or host name into a file name: characters that are not valid in a file name,
+        and dots, become underscores.
+    .PARAMETER Name
+        The name input of New-SafeFileName. Type [string], mandatory.
+    .OUTPUTS
+        [string]
+    #>
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Name)
@@ -3733,6 +3877,13 @@ function Test-TcpPort {
         Non-blocking TCP reachability probe used to gate remote calls.
     .OUTPUTS
         [bool]
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Port
+        The TCP port. Type [int], mandatory.
+    .PARAMETER TimeoutMs
+        Milliseconds to wait before the attempt is treated as not answering. Type [int], default
+        1200.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -3778,6 +3929,22 @@ function Invoke-ExternalCommand {
         retries are kept (PORT-PLAN C16a). Only .NET is used, so it runs on Windows PowerShell 5.1.
     .OUTPUTS
         [pscustomobject] Success, ExitCode, Attempt, Error, StdOut, OutFile
+    .PARAMETER FilePath
+        The file path input of Invoke-ExternalCommand. Type [string], mandatory.
+    .PARAMETER Arguments
+        The arguments input of Invoke-ExternalCommand. Type [string], mandatory.
+    .PARAMETER OutFile
+        The out file input of Invoke-ExternalCommand. Type [string].
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 90.
+    .PARAMETER Retries
+        How many times the external tool is attempted (-Retries of the run). Type [int], default 2.
+    .PARAMETER RetryDelaySeconds
+        Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
+    .PARAMETER DrainTimeoutMs
+        How long the two stream reads are waited for once the tool has exited (a tool default). Type
+        [int], default [int]$script:Config.ExternalToolDrainMs, from 100 to 600000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -3865,6 +4032,19 @@ function New-Finding {
         Builds a coverage-aware finding row (Pass/Warning/Fail/Not Assessed/Info).
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Area
+        The value of the Area column. Type [string], mandatory.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory, one of Pass, Warning, Fail, Not Assessed, Info.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string].
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string].
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -3907,6 +4087,21 @@ function Resolve-AdfaTrustHealth {
             Not Assessed: nothing could be tested (verification skipped / tools missing).
     .OUTPUTS
         [pscustomobject] Health, Reasons (string[])
+    .PARAMETER Direction
+        The direction input of Resolve-AdfaTrustHealth. Type [string], mandatory, one of Inbound,
+        Outbound, Bidirectional.
+    .PARAMETER OutboundResult
+        The outbound result input of Resolve-AdfaTrustHealth. Type [string], mandatory, one of
+        Verified, Failed, Not Assessed.
+    .PARAMETER InboundResult
+        The inbound result input of Resolve-AdfaTrustHealth. Type [string], mandatory, one of
+        Verified, Failed, Not Assessed.
+    .PARAMETER TargetReachable
+        The target reachable input of Resolve-AdfaTrustHealth. Type [bool], mandatory.
+    .PARAMETER VerificationSkipped
+        The verification skipped input of Resolve-AdfaTrustHealth. Type [bool], default $false.
+    .PARAMETER SecurityWarnings
+        The security warnings input of Resolve-AdfaTrustHealth. Type [string[]], default @().
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -3997,6 +4192,14 @@ function Get-AdfaNltestScArgument {
         trust is asked of a DC of the domain assessed, not of the host running the assessment.
     .OUTPUTS
         [string]
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER LiveVerify
+        Run the live nltest /sc_verify, which is not read-only (-IncludeSecureChannelVerify),
+        instead of the read-only /sc_query. Switch.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string], default
+        '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -4026,6 +4229,8 @@ function Get-AdfaScQueryOutcome {
         output without that line, the outcome is Unparsed and the caller reports Not Assessed.
     .OUTPUTS
         [pscustomobject] Outcome (Ok | Bad | Unparsed), Status (the status as printed, '' when Unparsed).
+    .PARAMETER Output
+        The text the external tool printed. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -4056,6 +4261,8 @@ function Get-AdfaScVerifyOutcome {
         "= 0 0x0 NAME" are accepted. Anything without a status line is Unparsed.
     .OUTPUTS
         [pscustomobject] Outcome (Ok | Bad | Unparsed), Status (the first non-zero status, else the first status).
+    .PARAMETER Output
+        The text the external tool printed. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -4076,6 +4283,10 @@ function Get-AdfaOutputExcerpt {
     <#
     .SYNOPSIS
         Pure: the first few non-blank lines of a tool's output, for quoting in a finding.
+    .PARAMETER Output
+        The text the external tool printed. Type [string], may be null or empty.
+    .PARAMETER Lines
+        The lines input of Get-AdfaOutputExcerpt. Type [int], default 3.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -4106,6 +4317,23 @@ function Test-AdfaSecureChannel {
         the assessment, which is that host's own channel, not the source domain's trust channel.
     .OUTPUTS
         [pscustomobject] Result, Tool, Detail
+    .PARAMETER SourceDomain
+        The source domain input of Test-AdfaSecureChannel. Type [string], mandatory.
+    .PARAMETER TargetDomain
+        The target domain input of Test-AdfaSecureChannel. Type [string], mandatory.
+    .PARAMETER LiveVerify
+        Run the live nltest /sc_verify, which is not read-only (-IncludeSecureChannelVerify),
+        instead of the read-only /sc_query. Switch.
+    .PARAMETER SourceDc
+        The domain controller the read or test runs from. Type [string], default '', may be null or
+        empty.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 90.
+    .PARAMETER Retries
+        How many times the external tool is attempted (-Retries of the run). Type [int], default 2.
+    .PARAMETER RetryDelaySeconds
+        Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -4200,6 +4428,21 @@ function Test-AdfaRemoteSecureChannel {
         fabricated Verified.
     .OUTPUTS
         [pscustomobject] Result, Tool, Detail
+    .PARAMETER PartnerDomain
+        The partner domain input of Test-AdfaRemoteSecureChannel. Type [string], mandatory.
+    .PARAMETER VerifyDomain
+        The verify domain input of Test-AdfaRemoteSecureChannel. Type [string], mandatory.
+    .PARAMETER PartnerDc
+        The partner dc input of Test-AdfaRemoteSecureChannel. Type [string].
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER LiveVerify
+        Run nltest /sc_verify on the partner DC instead of /sc_query. /sc_verify resets a channel
+        that is not working, on a DC in ANOTHER domain; off unless asked for. Switch.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -4268,6 +4511,8 @@ function Get-AdfaTrustSecurityWarning {
         Derives security posture warnings for a single trust object. Pure function.
     .OUTPUTS
         [string[]]
+    .PARAMETER Trust
+        The trust input of Get-AdfaTrustSecurityWarning. Type [pscustomobject], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -4317,6 +4562,13 @@ function Resolve-AdfaTrustSourceDc {
         no host name and the cause, worded so unreachable, access denied and timed out are told apart.
     .OUTPUTS
         [pscustomobject] HostName ('' when not resolved), Error ('' when resolved).
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -4348,6 +4600,53 @@ function Get-AdfaTrustHealth {
         Enumerates trusts for a domain and assesses two-way trust health.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER SkipVerification
+        The skip verification input of Get-AdfaTrustHealth. Switch.
+    .PARAMETER LiveVerify
+        Passed to both directions. See Get-AdfaNltestScArgument for what it changes. Switch.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 90.
+    .PARAMETER Retries
+        How many times the external tool is attempted (-Retries of the run). Type [int], default 2.
+    .PARAMETER RetryDelaySeconds
+        Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    .PARAMETER PropertyNames
+        PORT-PLAN C4b: the declared list (DirectoryRead.TrustHealthProperties) instead of every
+        attribute, refused before anything is sent if it names a secret attribute or a wildcard, and
+        a cap. Get-ADTrust has no -ResultSetSize on Learn, so the cap stops the pipeline after
+        MaxObjects + 1 objects; a read that reached it is Not Assessed, never a short list. Type
+        [string[]], default @($script:Config.DirectoryRead['TrustHealthProperties']), may be null or
+        empty.
+    .PARAMETER SecretNames
+        Attribute names that must never be read; a property list naming one is refused. Type
+        [string[]], default @(Get-AdfaSecretAttributeName), may be null or empty.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default [int]$script:Config.Inventory['MaxObjects'], from 1 to 1000000.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words (Get-AdfaCapSource): the built-in value, or
+        the -ConfigOverridePath file's. Type [string], default 'Inventory.MaxObjects, a tool
+        default'.
+    .PARAMETER SourceDc
+        PORT-PLAN C16 (GAP-P3): the DC of THIS domain the outbound direction is asked of (nltest
+        /server:<dc>), from Resolve-AdfaTrustSourceDc. With none, the outbound direction is Not
+        Assessed with -SourceDcError as its cause: before v1.36.0 it ran nltest on the host running
+        the assessment, whose own channel is not this domain's trust channel. Type [string], default
+        '', may be null or empty.
+    .PARAMETER SourceDcError
+        The source dc error input of Get-AdfaTrustHealth. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -4514,6 +4813,17 @@ function Get-AdfaTrustHealth {
 # ===========================================================================
 
 function Get-AdfaForestSummary {
+    <#
+    .SYNOPSIS
+        Reads the forest with Get-ADForest and returns one summary row: name, root domain, mode,
+        domains, sites, global catalog count, the two forest FSMO holders and the UPN suffixes.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .OUTPUTS
+        [pscustomobject]
+    #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param([hashtable]$AdParams = @{})
@@ -4532,6 +4842,20 @@ function Get-AdfaForestSummary {
 }
 
 function Get-AdfaDomainSummary {
+    <#
+    .SYNOPSIS
+        Reads one domain with Get-ADDomain and returns one summary row: DNS and NetBIOS name, mode,
+        the three domain FSMO holders and the domain SID.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .OUTPUTS
+        [pscustomobject]
+    #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
@@ -4550,6 +4874,20 @@ function Get-AdfaDomainSummary {
 }
 
 function Get-AdfaFsmoRole {
+    <#
+    .SYNOPSIS
+        Reads the five FSMO role holders for one domain: the two forest roles from Get-ADForest and
+        the three domain roles from Get-ADDomain.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .OUTPUTS
+        [pscustomobject]
+    #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param([hashtable]$AdParams = @{}, [Parameter(Mandatory)][string]$DomainName)
@@ -4572,6 +4910,13 @@ function Get-AdfaDomainControllerInventory {
         DC inventory. Get-ADDomainController has no -Properties, so enrich via Get-ADComputer.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -4649,6 +4994,23 @@ function Get-AdfaReplicationHealth {
         Assessed with that class and is not probed again.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        AllowEmptyCollection: when DC enumeration fails the caller passes an empty list. DC rows
+        (HostName, Scope) or plain host names (PORT-PLAN C2e). Untyped, default @(), may be null or
+        empty.
+    .PARAMETER RepParams
+        The rep params input of Get-AdfaReplicationHealth. Type [hashtable], default @{}.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    .PARAMETER StaleMinutes
+        The stale minutes input of Get-AdfaReplicationHealth. Type [int], default 180.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw (Domain, Error), and the domains of the run. Untyped,
+        default @(), may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -4785,6 +5147,22 @@ function Get-AdfaTopologyObjectRaw {
         that returned more than MaxObjects is Capped, never a short list read as complete.
     .OUTPUTS
         [pscustomobject] Ok, Error, ErrorType, NotFound, Refused, Records, Count, Capped, Kind.
+    .PARAMETER Kind
+        The kind input of Get-AdfaTopologyObjectRaw. Type [string], mandatory, one of SiteLink,
+        Connection.
+    .PARAMETER PropertyNames
+        The declared list of directory attributes to read (never every attribute). Type [string[]],
+        default @(), may be null or empty.
+    .PARAMETER SecretNames
+        Attribute names that must never be read; a property list naming one is refused. Type
+        [string[]], default @(), may be null or empty.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default 100000, from 1 to 1000000.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -4837,6 +5215,18 @@ function ConvertTo-AdfaTopologyListRow {
         are not decoded, PORT-PLAN C4b3).
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER Kind
+        The kind input of ConvertTo-AdfaTopologyListRow. Type [string], mandatory, one of SiteLink,
+        Connection.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default 100000, from 1 to 1000000.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words (Get-AdfaCapSource). Type [string], default
+        'Inventory.MaxObjects, a tool default'.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -4896,6 +5286,23 @@ function Get-AdfaReplicationTopology {
         sites and subnets down with it. The site and subnet reads are unchanged.
     .OUTPUTS
         [pscustomobject] Sites, Subnets, SiteLinks, Connections.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.DirectoryRead.
+    .PARAMETER SecretNames
+        Attribute names that must never be read; a property list naming one is refused. Type
+        [string[]], default @(Get-AdfaSecretAttributeName), may be null or empty.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default [int]$script:Config.Inventory['MaxObjects'], from 1 to 1000000.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words (Get-AdfaCapSource). Type [string], default
+        'Inventory.MaxObjects, a tool default'.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -4941,6 +5348,16 @@ function Get-AdfaSiteHealthFinding {
         only DCs of an unscoped or failed domain was reported empty.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER Topology
+        The topology input of Get-AdfaSiteHealthFinding. Type [pscustomobject], mandatory.
+    .PARAMETER DomainControllers
+        See the note on Get-AdfaReplicationHealth: an empty inventory must degrade, not abort. Type
+        [pscustomobject[]], mandatory, may be null or empty.
+    .PARAMETER InventoryCollected
+        The inventory collected input of Get-AdfaSiteHealthFinding. Type [bool], default $true.
+    .PARAMETER InventoryGap
+        Why the inventory does not cover the forest, in the row's words (Get-AdfaSiteInventoryGap).
+        Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -4992,6 +5409,14 @@ function Get-AdfaSiteInventoryGap {
         already uses (-ForestComplete).
     .OUTPUTS
         [string]
+    .PARAMETER Collected
+        The collected input of Get-AdfaSiteInventoryGap. Type [bool].
+    .PARAMETER DcCount
+        The dc count input of Get-AdfaSiteInventoryGap. Type [int].
+    .PARAMETER ScopeCoversForest
+        The scope covers forest input of Get-AdfaSiteInventoryGap. Type [bool].
+    .PARAMETER Failures
+        The failures input of Get-AdfaSiteInventoryGap. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -5043,6 +5468,10 @@ function Get-AdfaDcdiagArgument {
         Read: 2026-11-16.
     .OUTPUTS
         [string]
+    .PARAMETER TestName
+        The name of the dcdiag test, for example Advertising. Type [string], mandatory.
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -5069,6 +5498,13 @@ function Get-AdfaDcdiagTestOutcome {
         escaped, so a name containing regex metacharacters cannot silently widen the match.
     .OUTPUTS
         [string] Pass | Fail | Unparsed | ToolFailed
+    .PARAMETER TestName
+        The name of the dcdiag test, for example Advertising. Type [string], mandatory.
+    .PARAMETER Success
+        The success input of Get-AdfaDcdiagTestOutcome. Type [bool], default $true.
+    .PARAMETER StdOut
+        The standard output the external tool printed. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -5112,6 +5548,22 @@ function Get-AdfaDcdiagUnassessedCause {
         that is where dcdiag prints its summary and therefore where a localised verdict sits.
     .OUTPUTS
         [string]
+    .PARAMETER TestName
+        The name of the dcdiag test, for example Advertising. Type [string], mandatory.
+    .PARAMETER Outcome
+        The outcome input of Get-AdfaDcdiagUnassessedCause. Type [string], mandatory, one of
+        Unparsed, ToolFailed.
+    .PARAMETER StdOut
+        The standard output the external tool printed. Type [string], default '', may be null or
+        empty.
+    .PARAMETER ErrorText
+        The error text of the failed read or command; empty when there was none. Type [string],
+        default '', may be null or empty.
+    .PARAMETER ExitCode
+        The exit code input of Get-AdfaDcdiagUnassessedCause. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER ExcerptChars
+        The excerpt chars input of Get-AdfaDcdiagUnassessedCause. Type [int], default 200.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -5149,6 +5601,13 @@ function Get-AdfaDcdiagOutputExcerpt {
         summary at the bottom. Bounded to -ExcerptChars, with "..." when cut.
     .OUTPUTS
         [string] '' when there is no output.
+    .PARAMETER TestName
+        The name of the dcdiag test, for example Advertising. Type [string], mandatory.
+    .PARAMETER StdOut
+        The standard output the external tool printed. Type [string], default '', may be null or
+        empty.
+    .PARAMETER ExcerptChars
+        The excerpt chars input of Get-AdfaDcdiagOutputExcerpt. Type [int], default 200.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -5189,6 +5648,12 @@ function Test-AdfaDcdiagSubject {
           Read: 2026-11-16 (both).
     .OUTPUTS
         [bool]
+    .PARAMETER Subject
+        The subject input of Test-AdfaDcdiagSubject. Type [string], default '', may be null or
+        empty.
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], default
+        '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -5233,6 +5698,12 @@ function ConvertFrom-AdfaDcdiagOutput {
         [pscustomobject] Empty, Recognised, Parts (Test, Verdict Pass|Fail, Subject, ScopeKind
         Server|Partition|Enterprise|None, ScopeName, Line), UnreachableEvidence,
         AccessDeniedEvidence, EventLogUnreadableEvidence.
+    .PARAMETER StdOut
+        The standard output the external tool printed. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -5342,6 +5813,32 @@ function Resolve-AdfaDcdiagVerdict {
         output; output not recognised (possibly localised); otherwise no verdict line.
     .OUTPUTS
         [pscustomobject] Status, Detail ('' for a plain Pass), Parts (counted), Ignored.
+    .PARAMETER Parsed
+        The parsed input of Resolve-AdfaDcdiagVerdict. Untyped, mandatory.
+    .PARAMETER TestName
+        The name of the dcdiag test, for example Advertising. Type [string], mandatory.
+    .PARAMETER Mode
+        The mode input of Resolve-AdfaDcdiagVerdict. Type [string], default 'Dc', one of Dc, Scope.
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], default
+        '', may be null or empty.
+    .PARAMETER PartitionParts
+        The partition parts input of Resolve-AdfaDcdiagVerdict. Type [bool], default $false.
+    .PARAMETER EnterpriseParts
+        The enterprise parts input of Resolve-AdfaDcdiagVerdict. Type [bool], default $false.
+    .PARAMETER EventLog
+        The event log input of Resolve-AdfaDcdiagVerdict. Type [bool], default $false.
+    .PARAMETER Success
+        The success input of Resolve-AdfaDcdiagVerdict. Type [bool], default $true.
+    .PARAMETER ExitCode
+        The exit code input of Resolve-AdfaDcdiagVerdict. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER ErrorText
+        The error text of the failed read or command; empty when there was none. Type [string],
+        default '', may be null or empty.
+    .PARAMETER StdOut
+        The standard output the external tool printed. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -5461,6 +5958,17 @@ function Invoke-AdfaDcdiagTest {
         the argument from Get-AdfaDcdiagArgument. Never throws.
     .OUTPUTS
         [pscustomobject] StdOut, Success, ExitCode, Error.
+    .PARAMETER TestName
+        The name of the dcdiag test, for example Advertising. Type [string], mandatory.
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 90.
+    .PARAMETER Retries
+        How many times the external tool is attempted (-Retries of the run). Type [int], default 2.
+    .PARAMETER RetryDelaySeconds
+        Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -5508,6 +6016,25 @@ function New-AdfaDcDiagRow {
         Failures, NotRun.)
     .OUTPUTS
         [pscustomobject] Scope, Area, Item, Status, Detail, Evidence, Target, NotRun.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory, one of Pass, Warning, Fail, Not Assessed, Info.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER Evidence
+        The value of the Evidence column: what the verdict rests on. Type [string], default '', may
+        be null or empty.
+    .PARAMETER Target
+        The target input of New-AdfaDcDiagRow. Type [string], default '', may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -5559,6 +6086,12 @@ function ConvertFrom-AdfaDcdiagDnsSummary {
         [pscustomobject] HeaderFound, HeaderLine, HeaderCount (header lines seen), Columns (tokens in
         header order, spelled as in the config table), Rows (Name, Domain, Cells, CellCount,
         Recognised, Line).
+    .PARAMETER StdOut
+        The standard output the external tool printed. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -5665,6 +6198,28 @@ function Resolve-AdfaDcdiagDnsCategory {
         A missing value is never a Pass.
     .OUTPUTS
         [pscustomobject] Status, Detail, Cell, Evidence.
+    .PARAMETER Summary
+        The summary input of Resolve-AdfaDcdiagDnsCategory. Untyped, may be null or empty.
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], default
+        '', may be null or empty.
+    .PARAMETER Token
+        The token input of Resolve-AdfaDcdiagDnsCategory. Type [string], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER NotRunCause
+        The not run cause input of Resolve-AdfaDcdiagDnsCategory. Type [string], default '', may be
+        null or empty.
+    .PARAMETER RunCause
+        The run cause input of Resolve-AdfaDcdiagDnsCategory. Type [string], default '', may be null
+        or empty.
+    .PARAMETER OverallStatus
+        The overall status input of Resolve-AdfaDcdiagDnsCategory. Type [string], default '', may be
+        null or empty.
+    .PARAMETER OverallEvidence
+        The overall evidence input of Resolve-AdfaDcdiagDnsCategory. Type [string], default '', may
+        be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -5797,6 +6352,11 @@ function Resolve-AdfaDcdiagDnsRollup {
         (every cell was Info). No DC at all is Not Assessed.
     .OUTPUTS
         [pscustomobject] Status, Detail.
+    .PARAMETER Cells
+        One object per DC of the domain: HostName, Status. Untyped, default @(), may be null or
+        empty.
+    .PARAMETER Token
+        The token input of Resolve-AdfaDcdiagDnsRollup. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -5847,6 +6407,8 @@ function Select-AdfaDcdiagTarget {
         read-only one. $null when none qualifies.
     .OUTPUTS
         [pscustomobject] the chosen state, or $null.
+    .PARAMETER States
+        The states input of Select-AdfaDcdiagTarget. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -5870,6 +6432,20 @@ function Invoke-AdfaDcdiagScopedTest {
         in Scope mode. Never throws.
     .OUTPUTS
         [pscustomobject] Run (Invoke-AdfaDcdiagTest), Verdict (Resolve-AdfaDcdiagVerdict).
+    .PARAMETER TestName
+        The name of the dcdiag test, for example Advertising. Type [string], mandatory.
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 90.
+    .PARAMETER Retries
+        How many times the external tool is attempted (-Retries of the run). Type [int], default 2.
+    .PARAMETER RetryDelaySeconds
+        Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -5894,6 +6470,15 @@ function Get-AdfaDcdiagScopedDetail {
         Pure: the Detail of a once-per-domain, -forest or -site dcdiag row, from its verdict.
     .OUTPUTS
         [string]
+    .PARAMETER TestName
+        The name of the dcdiag test, for example Advertising. Type [string], mandatory.
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Verdict
+        The verdict input of Get-AdfaDcdiagScopedDetail. Untyped, mandatory.
+    .PARAMETER IsReadOnly
+        True when the domain controller is a read-only domain controller. Untyped, default $null,
+        may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -5973,6 +6558,40 @@ function Get-AdfaDcDiagnostic {
         holding a DC, with the opt-in; one "not run" row without it.
     .OUTPUTS
         [pscustomobject[]] Grid rows and scoped rows (New-AdfaDcDiagRow).
+    .PARAMETER DomainControllers
+        Inventory rows (HostName, Scope, Site, IsReadOnly), (Scope, HostName) rows from
+        Get-AdfaDcTargetsByDomain, or plain host names, which carry no domain or site.
+        AllowEmptyCollection: when DC enumeration fails the caller passes an empty list, and the
+        section reports itself unassessed rather than failing to bind. Untyped, mandatory, may be
+        null or empty.
+    .PARAMETER IncludeActiveTests
+        Also run the tests listed in $script:Config.DcdiagActiveTests, which Microsoft documents as
+        changing state on the DC or in DNS. Off unless asked for. Switch.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 90.
+    .PARAMETER Retries
+        How many times the external tool is attempted (-Retries of the run). Type [int], default 2.
+    .PARAMETER RetryDelaySeconds
+        Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    .PARAMETER Config
+        The DcDiag table: the built-in one, or the one -ConfigOverridePath supplied. Type
+        [hashtable], default $null, may be null or empty.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw: objects with Domain and Error. Untyped, default @(), may
+        be null or empty.
+    .PARAMETER EnumerationError
+        Why no DC could be enumerated at all, where the caller knows. Type [string], default '', may
+        be null or empty.
+    .PARAMETER ScopedDomains
+        The domains this run was scoped to: the declared population of the domain rows. Type
+        [string[]], default @(), may be null or empty.
+    .PARAMETER ForestRoot
+        The forest root domain's DNS name: whose DCs the forest tests are asked first. Type
+        [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -6379,6 +6998,8 @@ function Get-AdfaForwarderAddress {
         rather than stringified into empty entries.
     .OUTPUTS
         [string[]] Zero or more forwarder addresses.
+    .PARAMETER Forwarder
+        The forwarder input of Get-AdfaForwarderAddress. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -6422,6 +7043,56 @@ function New-AdfaDnsRow {
         value that was not measured is an empty string.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER Area
+        The value of the Area column. Type [string], default 'DNS'.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
+    .PARAMETER Evidence
+        The value of the Evidence column: what the verdict rests on. Type [string], default '', may
+        be null or empty.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string], default
+        '', may be null or empty.
+    .PARAMETER Zone
+        The zone input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], default
+        '', may be null or empty.
+    .PARAMETER RecordName
+        The record name input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+    .PARAMETER RecordType
+        The record type input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+    .PARAMETER RecordData
+        The record data input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+    .PARAMETER ZoneType
+        The zone type input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+    .PARAMETER ReplicationScope
+        The replication scope input of New-AdfaDnsRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER DsIntegrated
+        The ds integrated input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+    .PARAMETER DynamicUpdate
+        The dynamic update input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+    .PARAMETER Aging
+        The aging input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+    .PARAMETER ConfiguredIPv4
+        The configured i pv4 input of New-AdfaDnsRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER DnsServers
+        The DNS servers of the domain controller or row. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -6462,6 +7133,8 @@ function ConvertTo-AdfaDnsBool {
     .SYNOPSIS
         Pure: $true or $false from a boolean or its text, $null for anything else - an absent or
         unreadable value is never read as $false.
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaDnsBool. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -6484,6 +7157,8 @@ function Test-AdfaDnsServerScavenges {
         2026-11-17). The parameter is a TimeSpan; text is read as a TimeSpan in the invariant
         culture. A bare number is NOT read: its unit is not published for the cmdlet's output (the
         WMI class counts hours), so guessing one could turn "off" into "on".
+    .PARAMETER Interval
+        The interval input of Test-AdfaDnsServerScavenges. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Interval)
@@ -6512,6 +7187,13 @@ function Get-AdfaDnsReadErrorClass {
         also how a transport failure reads ("The network path was not found.").
     .OUTPUTS
         [string]
+    .PARAMETER Message
+        The message text. Type [string], may be null or empty.
+    .PARAMETER ErrorCode
+        The error code input of Get-AdfaDnsReadErrorClass. Type [string], may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -6533,6 +7215,10 @@ function Get-AdfaDnsReadCause {
     <#
     .SYNOPSIS
         Pure: the fixed lead of a Not Assessed cause for one failed DNS read, then what was reported.
+    .PARAMETER Class
+        The class input of Get-AdfaDnsReadCause. Type [string], mandatory.
+    .PARAMETER Message
+        The message text. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -6569,6 +7255,8 @@ function Get-AdfaDnsServerRaw {
         ScavengingOk, ScavengingInterval, ScavengingState, ScavengingError, Aging (lower-case zone
         name -> Ok, AgingEnabled, NoRefreshInterval, RefreshInterval, ScavengeServers, Error),
         ForwardersOk, Forwarders, ForwarderError.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -6641,6 +7329,8 @@ function ConvertTo-AdfaDnsRecordDataText {
     .SYNOPSIS
         Pure: the RecordData of one resource record as "Name=Value; ..." text, for display and the
         export. The property names inside RecordData are not published; every one present is shown.
+    .PARAMETER Data
+        The data input of ConvertTo-AdfaDnsRecordDataText. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -6666,6 +7356,10 @@ function Get-AdfaDnsRecordTarget {
         Pure: what one record points at - the SRV target host (DomainName), the A address
         (IPv4Address) or the CNAME alias (HostNameAlias); '' for any other type. Names are
         provisional: they are the parameter names of Add-DnsServerResourceRecord.
+    .PARAMETER Data
+        The data input of Get-AdfaDnsRecordTarget. Untyped, may be null or empty.
+    .PARAMETER RecordType
+        The record type input of Get-AdfaDnsRecordTarget. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -6696,6 +7390,22 @@ function Get-AdfaDnsRecordSetRaw {
     .OUTPUTS
         [pscustomobject] Ok, Outcome (Resolved|NoRecord|Error), Records (HostName, RecordType,
         TimeToLive, Timestamp, RecordData, Target), RealCount, Truncated, Error, ErrorCode, ErrorId.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER ZoneName
+        The DNS zone name. Type [string], mandatory.
+    .PARAMETER Name
+        The name input of Get-AdfaDnsRecordSetRaw. Type [string], default '', may be null or empty.
+    .PARAMETER RRType
+        The rr type input of Get-AdfaDnsRecordSetRaw. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Cap
+        The most items read or listed. Reaching it is said in the text. Type [int], default 0, from
+        0 to 1000000.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Dns.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -6762,6 +7472,8 @@ function Get-AdfaDnsServerZoneNames {
         Never throws.
     .OUTPUTS
         [pscustomobject] Ok, Names, Types (lower-case zone name -> ZoneType), Error, ErrorCode.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -6797,6 +7509,11 @@ function Resolve-AdfaDnsZoneForName {
         Pure: the zone, of the ones a server holds, that holds a name - the longest zone name the
         name ends with on a label boundary - and the name relative to it ('@' for the apex).
         $null when no zone holds it.
+    .PARAMETER Name
+        The name input of Resolve-AdfaDnsZoneForName. Type [string], mandatory.
+    .PARAMETER ZoneNames
+        The zone names input of Resolve-AdfaDnsZoneForName. Type [string[]], default @(), may be
+        null or empty.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Name, [AllowEmptyCollection()][string[]]$ZoneNames = @())
@@ -6818,6 +7535,11 @@ function Get-AdfaDnsDelegationPoint {
         Pure: the delegation, of a zone's delegation points (owner names of NS records below its
         apex, relative to the zone), at or above a relative name - '' when the name is not below
         any. Such a name is held by the delegated zone, not by the zone that was read.
+    .PARAMETER Relative
+        The relative input of Get-AdfaDnsDelegationPoint. Type [string], mandatory.
+    .PARAMETER Delegations
+        The delegations input of Get-AdfaDnsDelegationPoint. Type [string[]], default @(), may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -6845,6 +7567,13 @@ function Get-AdfaDnsZoneDelegation {
         reads the apex NS records with -Node).
     .OUTPUTS
         [pscustomobject] Ok, Names (relative, lower-case), Cause.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER ZoneName
+        The DNS zone name. Type [string], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -6882,6 +7611,13 @@ function Resolve-AdfaDnsServerZone {
         for the zone" (zone-types, read 2026-11-17).
     .OUTPUTS
         [pscustomobject] Ok, Zone, Relative, Cause.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Name
+        The name input of Resolve-AdfaDnsServerZone. Type [string], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -6927,6 +7663,20 @@ function Get-AdfaDnsServerRecord {
         a name it does not hold is never Absent here.
     .OUTPUTS
         [pscustomobject] Outcome (Present|Absent|Unread), Targets, Cause.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Name
+        The name input of Get-AdfaDnsServerRecord. Type [string], mandatory.
+    .PARAMETER Type
+        The type input of Get-AdfaDnsServerRecord. Type [string], mandatory, one of SRV, A, CNAME.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER ModuleAvailable
+        The module available input of Get-AdfaDnsServerRecord. Type [bool], default $true.
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -6971,6 +7721,13 @@ function Get-AdfaDnsResolverRecord {
         client cache.
     .OUTPUTS
         [pscustomobject] Outcome (Present|Absent|Unread), Targets, Cause.
+    .PARAMETER Name
+        The name input of Get-AdfaDnsResolverRecord. Type [string], mandatory.
+    .PARAMETER Type
+        The type input of Get-AdfaDnsResolverRecord. Type [string], mandatory, one of SRV, A, CNAME.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string],
+        mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -6994,6 +7751,12 @@ function Get-AdfaDnsEvidenceState {
         A negative conclusion needs two instruments: only AbsentBoth may be graded as a measured
         absence. A server read and a query that disagree (one present, one absent) are Present: a
         record seen by either exists somewhere the DC locator can reach.
+    .PARAMETER ServerOutcome
+        The server outcome input of Get-AdfaDnsEvidenceState. Type [string], mandatory, one of
+        Present, Absent, Unread.
+    .PARAMETER ResolverOutcome
+        The resolver outcome input of Get-AdfaDnsEvidenceState. Type [string], mandatory, one of
+        Present, Absent, Unread.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -7012,6 +7775,12 @@ function Get-AdfaDnsGradeText {
         keys the file supplied (Merge-AdfaDnsConfig), so a grade set by a file is never called a tool
         default. Every row that carries this text is matched by a section-scoped recommendation entry
         anchored on its Item, so a file path here cannot choose advice.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -7037,6 +7806,12 @@ function Get-AdfaDnsDynamicUpdateVerdict {
         only when every hosting server was read.
     .OUTPUTS
         [pscustomobject] Status, Detail, Evidence.
+    .PARAMETER Observations
+        The observations input of Get-AdfaDnsDynamicUpdateVerdict. Untyped, default @(), may be null
+        or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7099,6 +7874,17 @@ function Get-AdfaDnsScavengingVerdict {
         Both grades are tool defaults: Microsoft publishes no requirement to enable either.
     .OUTPUTS
         [pscustomobject] Status, Detail, Evidence.
+    .PARAMETER Observations
+        The observations input of Get-AdfaDnsScavengingVerdict. Untyped, default @(), may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER HostSetComplete
+        The host set complete input of Get-AdfaDnsScavengingVerdict. Type [bool], default $true.
+    .PARAMETER HostSetCause
+        The host set cause input of Get-AdfaDnsScavengingVerdict. Type [string], default '', may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7168,6 +7954,14 @@ function Get-AdfaDcLocatorVerdict {
         documents that RODCs register site-specific records by default (reference SPEC: excluded).
     .OUTPUTS
         [pscustomobject] Status, Detail, Evidence.
+    .PARAMETER IsReadOnly
+        True when the domain controller is a read-only domain controller. Untyped, may be null or
+        empty.
+    .PARAMETER Checks
+        The checks input of Get-AdfaDcLocatorVerdict. Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7213,6 +8007,17 @@ function Get-AdfaDcARecordVerdict {
         publish how IPv6 is handled for this purpose.
     .OUTPUTS
         [pscustomobject] Status, Detail, Evidence.
+    .PARAMETER ConfiguredIPv4
+        The configured i pv4 input of Get-AdfaDcARecordVerdict. Type [string[]], may be null or
+        empty.
+    .PARAMETER ConfiguredCause
+        The configured cause input of Get-AdfaDcARecordVerdict. Type [string], default '', may be
+        null or empty.
+    .PARAMETER Answers
+        The answers input of Get-AdfaDcARecordVerdict. Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7286,6 +8091,24 @@ function Get-AdfaStaleDnsRecordVerdict {
         domain controllers".
     .OUTPUTS
         [pscustomobject] Stale (Name, Type, Target, Servers), Status, Detail.
+    .PARAMETER Candidates
+        The candidates input of Get-AdfaStaleDnsRecordVerdict. Untyped, default @(), may be null or
+        empty.
+    .PARAMETER KnownDcHosts
+        The known dc hosts input of Get-AdfaStaleDnsRecordVerdict. Type [string[]], default @(), may
+        be null or empty.
+    .PARAMETER KnownDsaGuids
+        The known dsa guids input of Get-AdfaStaleDnsRecordVerdict. Type [string[]], default @(),
+        may be null or empty.
+    .PARAMETER DsaError
+        The dsa error input of Get-AdfaStaleDnsRecordVerdict. Type [string], default '', may be null
+        or empty.
+    .PARAMETER Unread
+        The unread input of Get-AdfaStaleDnsRecordVerdict. Type [string[]], default @(), may be null
+        or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7368,6 +8191,24 @@ function Get-AdfaDcDnsClientVerdict {
         DnsServers column, never in Detail.
     .OUTPUTS
         [pscustomobject] Status, Detail.
+    .PARAMETER DnsServers
+        The DNS servers of the domain controller or row. Type [string[]], may be null or empty.
+    .PARAMETER Cause
+        The cause input of Get-AdfaDcDnsClientVerdict. Type [string], default '', may be null or
+        empty.
+    .PARAMETER SelfAddresses
+        The self addresses input of Get-AdfaDcDnsClientVerdict. Type [string[]], default @(), may be
+        null or empty.
+    .PARAMETER KnownDcAddresses
+        The known dc addresses input of Get-AdfaDcDnsClientVerdict. Type [string[]], default @(),
+        may be null or empty.
+    .PARAMETER DcCount
+        The dc count input of Get-AdfaDcDnsClientVerdict. Type [int], default 0.
+    .PARAMETER DcCountIsForest
+        The dc count is forest input of Get-AdfaDcDnsClientVerdict. Type [bool], default $false.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7432,6 +8273,16 @@ function Get-AdfaDcNetworkRaw {
     .OUTPUTS
         [pscustomobject] Ok, Protocol, Error, ErrorCode, Adapters (IPEnabled, IPAddress,
         DNSServerSearchOrder - $null when absent, Description, InterfaceIndex).
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Protocol
+        The CIM session protocol (WinRM or DCOM). Type [string], default 'Wsman', one of Wsman,
+        Dcom.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7494,6 +8345,19 @@ function Get-AdfaDcNetworkState {
         [pscustomobject] Status (Read|Unreachable|AccessDenied|Error), Cause, IPv4 (string[]),
         DnsServers (string[] in adapter order, $null when no adapter returned the property),
         DnsCause (why DnsServers is $null after a read), Adapters.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7612,6 +8476,32 @@ function Get-AdfaDnsHealth {
         run as the account running the script (PORT-PLAN C16b).
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Dns.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER EnumerationError
+        The error text when the domain controllers could not be enumerated; empty when they were.
+        Type [string], default '', may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
+    .PARAMETER ForestComplete
+        True when every domain of the forest is in scope (-AllDomains), so a forest-wide verdict may
+        be given. Type [bool], default $false.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -7865,6 +8755,33 @@ function Get-AdfaDnsLocatorFinding {
         (population)" row for the domain.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Dcs
+        The dcs input of Get-AdfaDnsLocatorFinding. Untyped, default @(), may be null or empty.
+    .PARAMETER DnsServers
+        The DNS servers of the domain controller or row. Type [string[]], default @(), may be null
+        or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER DsaInventory
+        The dsa inventory input of Get-AdfaDnsLocatorFinding. Untyped, default @(), may be null or
+        empty.
+    .PARAMETER DsaError
+        The dsa error input of Get-AdfaDnsLocatorFinding. Type [string], default '', may be null or
+        empty.
+    .PARAMETER ForestRoot
+        The DNS name of the forest root domain. Type [string], default '', may be null or empty.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -7999,6 +8916,34 @@ function Get-AdfaDcDnsClient {
         and every DC (one "DNS client: <dc>" row), plus a "DNS client (population)" row per domain.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Dns.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER EnumerationError
+        The error text when the domain controllers could not be enumerated; empty when they were.
+        Type [string], default '', may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
+    .PARAMETER ForestComplete
+        True when every domain of the forest is in scope (-AllDomains), so a forest-wide verdict may
+        be given. Type [bool], default $false.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -8095,6 +9040,28 @@ function Export-AdfaDnsRecord {
         none). Files: csv\DnsRecords_<server>_<zone>.csv. Opt-in because a zone can hold many records.
     .OUTPUTS
         [pscustomobject[]] summary rows.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Dns.
+    .PARAMETER CsvPath
+        The csv path input of Export-AdfaDnsRecord. Type [string], mandatory.
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER EnumerationError
+        The error text when the domain controllers could not be enumerated; empty when they were.
+        Type [string], default '', may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -8210,6 +9177,15 @@ function Merge-AdfaDnsConfig {
         a JSON number or not a whole number in range. Provenance follows the keys.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -8299,6 +9275,16 @@ function Get-AdfaSysvolHealth {
         /delete* and /createglobalobjects switches are never used.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 90.
+    .PARAMETER Retries
+        How many times the external tool is attempted (-Retries of the run). Type [int], default 2.
+    .PARAMETER RetryDelaySeconds
+        Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
+    .PARAMETER HostDomain
+        The DNS domain of the computer running the assessment; '' when it is not joined to one. Type
+        [string], has a default, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -8342,6 +9328,9 @@ function Get-AdfaGpoInventory {
         this runs as the account running the script (PORT-PLAN C16, GAP-P23).
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -8403,6 +9392,63 @@ function New-AdfaGpoVersionRow {
         GUID. A number that was not measured is an empty string, never 0.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
+    .PARAMETER Evidence
+        The value of the Evidence column: what the verdict rests on. Type [string], default '', may
+        be null or empty.
+    .PARAMETER GPOName
+        The gpo name input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER GpoGuid
+        The gpo guid input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER ReadFrom
+        The read from input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER DsVersion
+        The ds version input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or empty.
+    .PARAMETER SysvolVersion
+        The sysvol version input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER Flags
+        The flags input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or empty.
+    .PARAMETER FlagsLabel
+        The flags label input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER GptIniPath
+        The gpt ini path input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER FileSysPath
+        The file sys path input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Encoding
+        The encoding input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Population
+        The population input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or empty.
+    .PARAMETER Compared
+        The compared input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or empty.
+    .PARAMETER Mismatched
+        The mismatched input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or empty.
+    .PARAMETER NotAssessedCount
+        The not assessed count input of New-AdfaGpoVersionRow. Untyped, default $null, may be null
+        or empty.
+    .PARAMETER FoldersWithoutContainer
+        The folders without container input of New-AdfaGpoVersionRow. Untyped, default $null, may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8475,6 +9521,8 @@ function ConvertTo-AdfaGpoVersionNumber {
         NotANumber (not a whole number), OutOfRange.
     .OUTPUTS
         [pscustomobject] Ok, Version ([int64] or $null), Cause, Masked.
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaGpoVersionNumber. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8517,6 +9565,8 @@ function Split-AdfaGpoVersion {
         as MS-GPOL publishes them.
     .OUTPUTS
         [pscustomobject] User, Computer.
+    .PARAMETER Version
+        The version input of Split-AdfaGpoVersion. Type [int64], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8544,6 +9594,11 @@ function ConvertFrom-AdfaGptIniVersion {
         The value itself is not quoted in CauseText: the file's content is not for the report text.
     .OUTPUTS
         [pscustomobject] Ok, Version ([int64] or $null), Cause, CauseText, Encoding.
+    .PARAMETER Bytes
+        The bytes input of ConvertFrom-AdfaGptIniVersion. Type [byte[]], may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8602,6 +9657,8 @@ function Get-AdfaGpoFailureLead {
         Pure: the words a Not Assessed row of this section starts with, for a read failure class.
     .OUTPUTS
         [string]
+    .PARAMETER Class
+        The class input of Get-AdfaGpoFailureLead. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -8634,6 +9691,12 @@ function Get-AdfaGpoFileReadErrorClass {
         is not published (PORT-PLAN C8a).
     .OUTPUTS
         [string]
+    .PARAMETER TypeName
+        The type name input of Get-AdfaGpoFileReadErrorClass. Type [string], may be null or empty.
+    .PARAMETER HResult
+        The h result input of Get-AdfaGpoFileReadErrorClass. Type [int], default 0.
+    .PARAMETER Message
+        The message text. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -8667,6 +9730,8 @@ function Get-AdfaGpoFileFailure {
         exception; that wrapper says nothing about the cause and is unwrapped first.
     .OUTPUTS
         [pscustomobject] Class, Error, ErrorType, HResult.
+    .PARAMETER Exception
+        The exception (or error record) to classify. Type [System.Exception], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8697,6 +9762,19 @@ function Get-AdfaGpoSysvolPath {
         is refused rather than put in a path.
     .OUTPUTS
         [pscustomobject] Ok, PoliciesPath, FolderPath, IniPath, Cause.
+    .PARAMETER Pdc
+        The pdc input of Get-AdfaGpoSysvolPath. Type [string], default '', may be null or empty.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], default '', may be null
+        or empty.
+    .PARAMETER Guid
+        The guid input of Get-AdfaGpoSysvolPath. Type [string], default '', may be null or empty.
+    .PARAMETER FileSysPath
+        The file sys path input of Get-AdfaGpoSysvolPath. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8745,6 +9823,8 @@ function ConvertTo-AdfaGpoContainerRecord {
         without regard to case.
     .OUTPUTS
         [pscustomobject] Guid, DisplayName, Version (as returned), FileSysPath, Flags (as returned), Dn.
+    .PARAMETER Object
+        The object input of ConvertTo-AdfaGpoContainerRecord. Untyped, mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8784,6 +9864,16 @@ function Get-AdfaGpoContainerRaw {
     .OUTPUTS
         [pscustomobject] Ok, Refused, Error, ErrorType, Pdc, PdcError, PdcErrorType, DomainDn,
         Containers (records of ConvertTo-AdfaGpoContainerRecord).
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8853,6 +9943,8 @@ function Get-AdfaSysvolPolicyFolderRaw {
     .OUTPUTS
         [pscustomobject] Ok, Class (Read or a class of Get-AdfaGpoFileReadErrorClass), Names, Error,
         ErrorType, HResult, Path.
+    .PARAMETER Path
+        The path input of Get-AdfaSysvolPolicyFolderRaw. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8886,6 +9978,10 @@ function Get-AdfaGptIniRaw {
     .OUTPUTS
         [pscustomobject] Ok, Class (Read, TooLarge or a class of Get-AdfaGpoFileReadErrorClass),
         Bytes, Error, ErrorType, HResult, Path.
+    .PARAMETER Path
+        The path input of Get-AdfaGptIniRaw. Type [string], mandatory.
+    .PARAMETER MaxBytes
+        The max bytes input of Get-AdfaGptIniRaw. Type [int], default 65536, from 1 to 16777216.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8950,6 +10046,15 @@ function Get-AdfaGpoSysvolRaw {
         [pscustomobject] PortOk, Port, Pdc, PoliciesPath, Listing (or $null when SMB did not answer),
         Reads (hashtable: GUID -> read), ReachCause ('' unless the PDC was classified Unreachable in
         this run, PORT-PLAN C14c: then port 445 was not probed and this is the class).
+    .PARAMETER Pdc
+        The pdc input of Get-AdfaGpoSysvolRaw. Type [string], mandatory.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Targets
+        The targets input of Get-AdfaGpoSysvolRaw. Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8991,6 +10096,16 @@ function Get-AdfaGpoVersionVerdict {
         stops being transient, so the status is the config's, labelled with its source.
     .OUTPUTS
         [pscustomobject] Status, Half (None, User, Computer, Both), Detail.
+    .PARAMETER DsVersion
+        The ds version input of Get-AdfaGpoVersionVerdict. Type [int64], mandatory.
+    .PARAMETER SysvolVersion
+        The sysvol version input of Get-AdfaGpoVersionVerdict. Type [int64], mandatory.
+    .PARAMETER ReadFrom
+        The read from input of Get-AdfaGpoVersionVerdict. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -9028,6 +10143,22 @@ function Get-AdfaGpoDomainVerdict {
         than compared) are a defect in the tool and are said to be.
     .OUTPUTS
         [pscustomobject] Status, Detail.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER ReadFrom
+        The read from input of Get-AdfaGpoDomainVerdict. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Population
+        The population input of Get-AdfaGpoDomainVerdict. Untyped, may be null or empty.
+    .PARAMETER Compared
+        The compared input of Get-AdfaGpoDomainVerdict. Type [int], default 0.
+    .PARAMETER Mismatched
+        The mismatched input of Get-AdfaGpoDomainVerdict. Type [int], default 0.
+    .PARAMETER NotAssessed
+        The not assessed input of Get-AdfaGpoDomainVerdict. Type [int], default 0.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -9080,6 +10211,16 @@ function Get-AdfaGpoDomainFinding {
         only when the Policies folder was listed or a GPT.INI version was read.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, mandatory.
+    .PARAMETER Sysvol
+        The sysvol input of Get-AdfaGpoDomainFinding. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -9300,6 +10441,15 @@ function Get-AdfaGpoVersion {
         section.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -9366,6 +10516,15 @@ function Merge-AdfaGpoConfig {
         exactly the keys it supplied.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -9427,6 +10586,20 @@ function Merge-AdfaGpoConfig {
 # ===========================================================================
 
 function Get-AdfaPasswordPolicy {
+    <#
+    .SYNOPSIS
+        Reads the default domain password policy and the fine-grained password policies of one
+        domain; a policy that cannot be read is Not Assessed with the cause.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param([Parameter(Mandatory)][string]$DomainName, [hashtable]$AdParams = @{})
@@ -9479,6 +10652,25 @@ function Get-AdfaPasswordPolicy {
 # ===========================================================================
 
 function Get-AdfaSecurityPosture {
+    <#
+    .SYNOPSIS
+        Reads the security posture rows of one domain: the krbtgt password age and, in the forest
+        root, the AD Recycle Bin; a value that cannot be read is Not Assessed with the cause.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER IsRootDomain
+        True when the domain is the forest root domain. Type [bool].
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER KrbtgtMaxAgeDays
+        The most days since the krbtgt password was last set before the age is a Warning
+        (-KrbtgtMaxAgeDays of the run). Type [int], default 180.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param([Parameter(Mandatory)][string]$DomainName, [bool]$IsRootDomain, [hashtable]$AdParams = @{}, [int]$KrbtgtMaxAgeDays = 180)
@@ -9570,6 +10762,23 @@ function Get-AdfaStaleObject {
         PasswordNeverExpires row is unchanged.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER StaleDays
+        Days of inactivity after which an object counts as stale (-StaleDays of the run). Type
+        [int], default 90.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Stale.
+    .PARAMETER Now
+        The current time, passed in so the verdict can be tested with a fixed clock. Untyped,
+        default $null, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -9626,6 +10835,10 @@ function ConvertTo-AdfaFlatObject {
         Multi-valued attributes are joined with ';'. Only properties actually present are read.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER InputObject
+        The rows to write or flatten. Untyped, mandatory.
+    .PARAMETER Property
+        The property input of ConvertTo-AdfaFlatObject. Type [string[]], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -9647,6 +10860,15 @@ function ConvertTo-AdfaFlatObject {
 }
 
 function Get-AdfaObjectPropertyUnion {
+    <#
+    .SYNOPSIS
+        The sorted union of the property names of a set of objects (the directory returns only the
+        properties that are set on each object).
+    .PARAMETER Objects
+        The objects whose property names are combined. Untyped, mandatory, may be null or empty.
+    .OUTPUTS
+        [string[]]
+    #>
     # Union of populated property names across a set (AD returns only set properties per object).
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -9665,6 +10887,13 @@ function Get-AdfaSecretAttributeName {
         LAPS names of Laps.NeverRead and DirectoryRead.SecretNames, each once.
     .OUTPUTS
         [string[]]
+    .PARAMETER LapsConfig
+        The laps config input of Get-AdfaSecretAttributeName. Type [hashtable], default
+        $script:Config.Laps.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.DirectoryRead.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -9696,6 +10925,12 @@ function Get-AdfaRefusedPropertyName {
         are allowed.
     .OUTPUTS
         [string[]]
+    .PARAMETER PropertyNames
+        The declared list of directory attributes to read (never every attribute). Type [string[]],
+        default @(), may be null or empty.
+    .PARAMETER SecretNames
+        Attribute names that must never be read; a property list naming one is refused. Type
+        [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -9735,6 +10970,16 @@ function Get-AdfaCapSource {
         never called a default.
     .OUTPUTS
         [string]
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Key
+        The key input of Get-AdfaCapSource. Type [string], mandatory.
+    .PARAMETER Label
+        The label input of Get-AdfaCapSource. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -9779,6 +11024,26 @@ function Get-AdfaIdentityExportRaw {
     .OUTPUTS
         [pscustomobject] the seam's result (Ok, Error, ErrorType, NotFound, Records, Count, Capped,
         Filter, Identity) plus Refused, Kind and Properties.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Kind
+        The kind input of Get-AdfaIdentityExportRaw. Type [string], mandatory, one of User,
+        Computer.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.DirectoryRead.
+    .PARAMETER SecretNames
+        Attribute names that must never be read; a property list naming one is refused. Type
+        [string[]], default @(Get-AdfaSecretAttributeName), may be null or empty.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default [int]$script:Config.Inventory['MaxObjects'], from 1 to 1000000.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -9826,6 +11091,23 @@ function ConvertTo-AdfaIdentityExport {
         saw nothing). The summary row is Not Assessed whenever Cause is set, never 0.
     .OUTPUTS
         [pscustomobject] Rows, Cause.
+    .PARAMETER Kind
+        The kind input of ConvertTo-AdfaIdentityExport. Type [string], mandatory, one of User,
+        Computer.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Columns
+        The declared list (DirectoryRead.UserExportProperties or ComputerExportProperties): the CSV
+        columns. Type [string[]], mandatory, may be null or empty.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default 100000, from 1 to 1000000.
+    .PARAMETER AccountDisableBit
+        The account disable bit input of ConvertTo-AdfaIdentityExport. Type [int], default 2.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words (Get-AdfaCapSource). Type [string], default
+        'Inventory.MaxObjects, a tool default'.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -9885,6 +11167,23 @@ function Get-AdfaIdentitySummary {
         Compact summary of a full user/computer export for the HTML report.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Users
+        The users input of Get-AdfaIdentitySummary. Untyped, may be null or empty.
+    .PARAMETER Computers
+        The computers input of Get-AdfaIdentitySummary. Untyped, may be null or empty.
+    .PARAMETER StaleDays
+        Days of inactivity after which an object counts as stale (-StaleDays of the run). Type
+        [int], default 90.
+    .PARAMETER UsersError
+        PORT-PLAN C15: why an export failed. Before v1.32.0 a failed export was summarised as 0
+        objects with status Info; it is now Not Assessed with its cause, never 0. Type [string],
+        default '', may be null or empty.
+    .PARAMETER ComputersError
+        The computers error input of Get-AdfaIdentitySummary. Type [string], default '', may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -9938,6 +11237,8 @@ function Test-AdfaEsc1Template {
         no manager approval + no enrollment-agent signatures. Pure function.
     .OUTPUTS
         [pscustomobject] Vulnerable (bool), Reason
+    .PARAMETER Template
+        The template input of Test-AdfaEsc1Template. Type [pscustomobject], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -9968,6 +11269,8 @@ function Find-AdfaDuplicateSpn {
         Finds servicePrincipalName values registered on more than one object. Pure function.
     .OUTPUTS
         [pscustomobject[]] Spn, Holders
+    .PARAMETER Objects
+        The objects whose property names are combined. Untyped, mandatory, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -10006,6 +11309,10 @@ function Get-AdfaPkiHealth {
         rights are PORT-PLAN C16b.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -10057,6 +11364,56 @@ function New-AdfaAclRow {
         an empty string, never 0.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
+    .PARAMETER Evidence
+        The value of the Evidence column: what the verdict rests on. Type [string], default '', may
+        be null or empty.
+    .PARAMETER CatalogueId
+        The catalogue id input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER Severity
+        The severity input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER ObjectKind
+        The object kind input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER ObjectDn
+        The object dn input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER ReadFrom
+        The read from input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER OwnerSid
+        The owner sid input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER AceCount
+        The ace count input of New-AdfaAclRow. Untyped, default $null, may be null or empty.
+    .PARAMETER FlaggedSids
+        The flagged sids input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER RightsHeld
+        The rights held input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER Principals
+        The principals input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER Undecided
+        The undecided input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER AllowlistNote
+        The allowlist note input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+    .PARAMETER Population
+        The population input of New-AdfaAclRow. Untyped, default $null, may be null or empty.
+    .PARAMETER ReadCount
+        The read count input of New-AdfaAclRow. Untyped, default $null, may be null or empty.
+    .PARAMETER FlaggedCount
+        The flagged count input of New-AdfaAclRow. Untyped, default $null, may be null or empty.
+    .PARAMETER NotAssessedCount
+        The not assessed count input of New-AdfaAclRow. Untyped, default $null, may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -10142,6 +11499,8 @@ function ConvertTo-AdfaAclDescriptor {
         [pscustomobject] Ok, Class (Read | NotReturned | DaclAbsent | NullDacl | Unparseable), Error, OwnerSid,
         Aces (Index, Sid, Allow, Deny, Kind Common|Object|Other, Mask, InheritOnly, Inherited,
         ObjectType, InheritedObjectType), AceCount.
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaAclDescriptor. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -10220,6 +11579,11 @@ function Get-AdfaAclNormalMask {
         GenericWrite 131112 (Learn: ads_rights_enum, ActiveDirectoryRights).
     .OUTPUTS
         [int64]
+    .PARAMETER Mask
+        The mask input of Get-AdfaAclNormalMask. Type [int64].
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([int64])]
@@ -10255,6 +11619,13 @@ function Get-AdfaAclAceRight {
         this section grades, so a plain read ACE grants nothing here.
     .OUTPUTS
         [pscustomobject] GenericAll, Atoms (in the order of Config.RightNames), Scope (None | Class | Node).
+    .PARAMETER Ace
+        The ace input of Get-AdfaAclAceRight. Untyped, mandatory.
+    .PARAMETER ObjectKind
+        The object kind input of Get-AdfaAclAceRight. Type [string], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -10309,6 +11680,13 @@ function Test-AdfaAclDenyCover {
         access check evaluates ACEs in order; group membership is not expanded here).
     .OUTPUTS
         [bool]
+    .PARAMETER Aces
+        The aces input of Test-AdfaAclDenyCover. Untyped, default @(), may be null or empty.
+    .PARAMETER Index
+        The index input of Test-AdfaAclDenyCover. Type [int].
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -10345,6 +11723,16 @@ function Get-AdfaAclAllowedSet {
         Config.RightNames. Nothing here reads a name.
     .OUTPUTS
         [hashtable] SID -> @{ Rights = string[]; Reasons = string[] (override reasons) }
+    .PARAMETER ObjectKind
+        The object kind input of Get-AdfaAclAllowedSet. Type [string], mandatory.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER RootDomainSid
+        The SID of the forest root domain. Type [string], default '', may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -10398,6 +11786,20 @@ function Get-AdfaAclAnalysis {
     .OUTPUTS
         [pscustomobject] Flagged (Sid, Rights, GenericAll), Undecided (SID text), Unrecognised,
         Considered, Cancelled, DenyNotes, OverrideUsed, AceCount.
+    .PARAMETER Descriptor
+        The descriptor input of Get-AdfaAclAnalysis. Untyped, mandatory.
+    .PARAMETER ObjectKind
+        The object kind input of Get-AdfaAclAnalysis. Type [string], mandatory.
+    .PARAMETER RowKey
+        The row key input of Get-AdfaAclAnalysis. Type [string], mandatory.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER RootDomainSid
+        The SID of the forest root domain. Type [string], default '', may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -10498,6 +11900,10 @@ function Get-AdfaAclReadLead {
         this read cannot tell a DACL that was not handed over from an object that has none.
     .OUTPUTS
         [string]
+    .PARAMETER Read
+        The read input of Get-AdfaAclReadLead. Untyped, may be null or empty.
+    .PARAMETER What
+        A short description of what was being read, used in the message. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -10537,6 +11943,35 @@ function Get-AdfaAclObjectVerdict {
         "unresolved". No decision reads a name.
     .OUTPUTS
         [pscustomobject] one row (New-AdfaAclRow).
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER ObjectKind
+        The object kind input of Get-AdfaAclObjectVerdict. Type [string], mandatory.
+    .PARAMETER RowKey
+        The row key input of Get-AdfaAclObjectVerdict. Type [string], mandatory.
+    .PARAMETER What
+        A short description of what was being read, used in the message. Type [string], mandatory.
+    .PARAMETER Read
+        The read input of Get-AdfaAclObjectVerdict. Untyped, may be null or empty.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER DomainSidError
+        The domain sid error input of Get-AdfaAclObjectVerdict. Type [string], default '', may be
+        null or empty.
+    .PARAMETER RootDomainSid
+        The SID of the forest root domain. Type [string], default '', may be null or empty.
+    .PARAMETER RootDomainSidError
+        The root domain sid error input of Get-AdfaAclObjectVerdict. Type [string], default '', may
+        be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER NameResolver
+        A script block that turns a SID into a name, passed in so the verdict can be tested without
+        a directory. Type [scriptblock], default $null, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -10652,6 +12087,13 @@ function Get-AdfaAclDomainRaw {
         is in force) is the text of the DomainMode property, '' when the answer did not carry it.
     .OUTPUTS
         [pscustomobject] Ok, Error, ErrorType, DomainDn, DomainSid, DomainSidError, DomainMode.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -10703,6 +12145,18 @@ function Get-AdfaAclObjectRaw {
         (Get-AdfaDirectoryReadErrorClass, from the exception type first).
     .OUTPUTS
         [pscustomobject] Ok, Class, Error, ErrorType, Dn, Server, Descriptor.
+    .PARAMETER Dn
+        The distinguished name of the directory object. Type [string], mandatory.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -10762,6 +12216,19 @@ function Get-AdfaAclGpoRaw {
         call.
     .OUTPUTS
         [pscustomobject] Ok, Class, Error, ErrorType, SearchBase, Items (Guid, Dn, Read).
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER DomainDn
+        The distinguished name of the domain, for example DC=contoso,DC=com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -10836,6 +12303,24 @@ function Get-AdfaAclDomainFinding {
         one GPO row per container returned.
     .OUTPUTS
         [pscustomobject[]] rows.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER DomainRaw
+        The domain raw input of Get-AdfaAclDomainFinding. Untyped, may be null or empty.
+    .PARAMETER RootRaw
+        The root raw input of Get-AdfaAclDomainFinding. Untyped, may be null or empty.
+    .PARAMETER HeadRead
+        The head read input of Get-AdfaAclDomainFinding. Untyped, may be null or empty.
+    .PARAMETER AdminRead
+        The admin read input of Get-AdfaAclDomainFinding. Untyped, may be null or empty.
+    .PARAMETER GpoRaw
+        The gpo raw input of Get-AdfaAclDomainFinding. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER NameResolver
+        A script block that turns a SID into a name, passed in so the verdict can be tested without
+        a directory. Type [scriptblock], default $null, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -10933,6 +12418,8 @@ function Resolve-AdfaAclSidName {
         no verdict reads it.
     .OUTPUTS
         [string]
+    .PARAMETER Sid
+        A SID in string form. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -10965,6 +12452,20 @@ function Get-AdfaDangerousAcl {
         Assessed and never ends the section.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER RootDomain
+        The DNS name of the forest root domain. Type [string], default '', may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER NameResolver
+        A script block that turns a SID into a name, passed in so the verdict can be tested without
+        a directory. Type [scriptblock], default $null, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -11049,6 +12550,15 @@ function Merge-AdfaAclConfig {
         exactly the keys it supplied.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -11175,6 +12685,78 @@ function New-AdfaPrivilegedRow {
         not measured is an empty string, never 0.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Area
+        The value of the Area column. Type [string], mandatory, one of Privileged, PrivHygiene,
+        Kerberos.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
+    .PARAMETER Evidence
+        The value of the Evidence column: what the verdict rests on. Type [string], default '', may
+        be null or empty.
+    .PARAMETER CatalogueId
+        The catalogue id input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Severity
+        The severity input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER GroupSid
+        The group sid input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Count
+        The count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or empty.
+    .PARAMETER UserCount
+        The user count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or empty.
+    .PARAMETER ComputerCount
+        The computer count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER GroupCount
+        The group count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER ForeignCount
+        The foreign count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER UnresolvedCount
+        The unresolved count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER ExcludedCount
+        The excluded count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER Listed
+        The listed input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or empty.
+    .PARAMETER NotListed
+        The not listed input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or empty.
+    .PARAMETER Principals
+        The principals input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER PrincipalSids
+        The principal sids input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER ForeignSids
+        The foreign sids input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Unresolved
+        The unresolved input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Targets
+        The targets input of New-AdfaPrivilegedRow. Type [string], default '', may be null or empty.
+    .PARAMETER AllowedSids
+        The allowed sids input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11247,6 +12829,8 @@ function ConvertTo-AdfaLdapSidFilterValue {
         sub-authority little-endian. Arithmetic on [uint64] only, so 5.1 and 7 agree.
     .OUTPUTS
         [string]
+    .PARAMETER Sid
+        A SID in string form. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -11274,6 +12858,8 @@ function ConvertTo-AdfaPrivInteger {
         number. Never throws.
     .OUTPUTS
         [int64] or $null
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaPrivInteger. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -11306,6 +12892,11 @@ function ConvertTo-AdfaPrivRecord {
     .OUTPUTS
         [pscustomobject] Dn, Sam, Name, Class, Kind, Sid, DomainPart, Rid, IsAccountDomainSid, Uac,
         Enabled, AdminCount, Spns, PrimaryGroupId, Members, DelegateTo, HasRbcd, Rbcd.
+    .PARAMETER Object
+        The object input of ConvertTo-AdfaPrivRecord. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11369,6 +12960,10 @@ function Get-AdfaPrivReadClass {
         exception, otherwise Unreachable, AccessDenied, TimedOut or Error (Get-AdfaDirectoryReadErrorClass).
     .OUTPUTS
         [string]
+    .PARAMETER Message
+        The message text. Type [string], may be null or empty.
+    .PARAMETER TypeName
+        The type name input of Get-AdfaPrivReadClass. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -11393,6 +12988,25 @@ function Get-AdfaPrivSearchRaw {
     .OUTPUTS
         [pscustomobject] Ok, Class (Read | Refused | Unreachable | AccessDenied | TimedOut | Error),
         Error, ErrorType, Server, Filter, Objects.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string],
+        mandatory.
+    .PARAMETER LDAPFilter
+        The LDAP filter of the search. Type [string], mandatory.
+    .PARAMETER Properties
+        The declared list of directory attributes to read (never every attribute). Type [string[]],
+        default @(), may be null or empty.
+    .PARAMETER SearchBase
+        The distinguished name to search under. Type [string], default '', may be null or empty.
+    .PARAMETER SearchScope
+        The search scope: Base, OneLevel or Subtree. Type [string], default '', may be null or
+        empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER ResultSetSize
+        The result set size input of Get-AdfaPrivSearchRaw. Type [int], default 0.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11447,6 +13061,19 @@ function Get-AdfaPrivObjectRaw {
     .OUTPUTS
         [pscustomobject] Ok, Class (Read | NotFound | Refused | Unreachable | AccessDenied | TimedOut |
         Error), Error, ErrorType, Server, Object.
+    .PARAMETER Identity
+        The identity (distinguished name or GUID) of the directory object to read. Type [string],
+        mandatory.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string],
+        mandatory.
+    .PARAMETER Properties
+        The declared list of directory attributes to read (never every attribute). Type [string[]],
+        default @(), may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11503,6 +13130,15 @@ function Get-AdfaPrivForestRaw {
         DsaCount, ServerCount, NoReference (server DNs of DCs with no serverReference),
         HeuristicsOk, HeuristicsClass, HeuristicsError, HeuristicsErrorType, HeuristicsPresent,
         HeuristicsValue.
+    .PARAMETER RootDomain
+        The DNS name of the forest root domain. Type [string], default '', may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11605,6 +13241,11 @@ function Get-AdfaPrivHeuristicsState {
         Account, Server, Print or Backup Operators undecided, never judged.
     .OUTPUTS
         [pscustomobject] Known, MaskZero, Character, Text.
+    .PARAMETER Forest
+        The forest input of Get-AdfaPrivHeuristicsState. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11638,6 +13279,8 @@ function Get-AdfaPrivDcPopulationState {
         what is missing, and no row may exclude or judge a DC on it.
     .OUTPUTS
         [pscustomobject] Known, Why, Set (lower-case DN -> $true).
+    .PARAMETER Forest
+        The forest input of Get-AdfaPrivDcPopulationState. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11683,6 +13326,9 @@ function Get-AdfaPrivDnDomainPart {
         components). '' when the DN ends in anything else.
     .OUTPUTS
         [string]
+    .PARAMETER Dn
+        The distinguished name of the directory object. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -11702,6 +13348,11 @@ function Get-AdfaPrivDomainDcList {
         DomainDn - exactly, not in a child domain below it.
     .OUTPUTS
         [string[]]
+    .PARAMETER DcState
+        The dc state input of Get-AdfaPrivDomainDcList. Untyped, may be null or empty.
+    .PARAMETER DomainDn
+        The distinguished name of the domain, for example DC=contoso,DC=com. Type [string], default
+        '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -11720,6 +13371,15 @@ function Get-AdfaPrivDcMembershipGap {
         by default). '' when it holds; otherwise why the membership reads cannot be trusted to be complete.
     .OUTPUTS
         [string]
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER DomainDn
+        The distinguished name of the domain, for example DC=contoso,DC=com. Type [string], default
+        '', may be null or empty.
+    .PARAMETER Groups
+        The groups input of Get-AdfaPrivDcMembershipGap. Untyped, may be null or empty.
+    .PARAMETER Forest
+        The forest input of Get-AdfaPrivDcMembershipGap. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -11754,6 +13414,14 @@ function Get-AdfaPrivGroupSpec {
         whose SID cannot be built (the domain's SID was not read) carries Sid '' and is Not Assessed.
     .OUTPUTS
         [pscustomobject[]] Key, Name, Rid, Scope, Protected, Always, Sid.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER IsRoot
+        The is root input of Get-AdfaPrivGroupSpec. Type [bool], default $false.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -11795,6 +13463,14 @@ function Resolve-AdfaPrivDnDomain {
     .OUTPUTS
         [pscustomobject] Class (Routed | OutOfScope | Ambiguous | Unreachable | AccessDenied | TimedOut |
         Error), Domain, Why.
+    .PARAMETER Dn
+        The distinguished name of the directory object. Type [string], default '', may be null or
+        empty.
+    .PARAMETER DomainMap
+        The domain map input of Resolve-AdfaPrivDnDomain. Type [hashtable], mandatory.
+    .PARAMETER Scoped
+        The scoped input of Resolve-AdfaPrivDnDomain. Type [string[]], default @(), may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11873,6 +13549,19 @@ function New-AdfaPrivContext {
         DN that is not in the cache as NotFound instead of reading the directory.
     .OUTPUTS
         [hashtable]
+    .PARAMETER DomainMap
+        The domain map input of New-AdfaPrivContext. Type [hashtable], mandatory.
+    .PARAMETER Scoped
+        The scoped input of New-AdfaPrivContext. Type [string[]], default @(), may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER Offline
+        The offline input of New-AdfaPrivContext. Switch.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -11896,6 +13585,10 @@ function Read-AdfaPrivObject {
         Read-only. Never throws.
     .OUTPUTS
         [pscustomobject] Ok, Class, Error, ErrorType, Record.
+    .PARAMETER Context
+        The context input of Read-AdfaPrivObject. Type [hashtable], mandatory.
+    .PARAMETER Dn
+        The distinguished name of the directory object. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11937,6 +13630,10 @@ function Read-AdfaPrivPrimary {
         left (-ResultSetSize), and an answer larger than what is left is Class Limit with no record.
     .OUTPUTS
         [pscustomobject] Ok, Class, Error, ErrorType, Records.
+    .PARAMETER Context
+        The context input of Read-AdfaPrivPrimary. Type [hashtable], mandatory.
+    .PARAMETER Group
+        The group input of Read-AdfaPrivPrimary. Untyped, mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12004,6 +13701,13 @@ function Find-AdfaPrivGroup {
     .OUTPUTS
         [pscustomobject] Ok, Class (Read | NotFound | Duplicate | NoSid | Refused | Unreachable |
         AccessDenied | TimedOut | Error), Error, ErrorType, Filter, Record.
+    .PARAMETER Context
+        The context input of Find-AdfaPrivGroup. Type [hashtable], mandatory.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string],
+        mandatory.
+    .PARAMETER Sid
+        A SID in string form. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12035,6 +13739,8 @@ function Get-AdfaPrivUnresolvedText {
         Pure: why one member reference was not resolved, in words, by class.
     .OUTPUTS
         [string]
+    .PARAMETER Read
+        The read input of Get-AdfaPrivUnresolvedText. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -12071,6 +13777,13 @@ function Resolve-AdfaPrivGroupClosure {
         truncated. Complete is true only when nothing is unresolved.
     .OUTPUTS
         [pscustomobject] Group, Complete, Principals (Record, Via), Groups, Foreign, Unresolved (Ref, Reason).
+    .PARAMETER Group
+        The group input of Resolve-AdfaPrivGroupClosure. Untyped, mandatory.
+    .PARAMETER Context
+        The context input of Resolve-AdfaPrivGroupClosure. Type [hashtable], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12141,6 +13854,9 @@ function Get-AdfaPrivDelegationFilter {
         takes a decimal value).
     .OUTPUTS
         [string]
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -12158,6 +13874,13 @@ function Get-AdfaKerberosRoastRaw {
     .OUTPUTS
         [pscustomobject] RoastOk, RoastClass, RoastError, RoastErrorType, Roast (Name, Enabled),
         AsRepOk, AsRepClass, AsRepError, AsRepErrorType, AsRep (Name, Enabled).
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12213,6 +13936,23 @@ function Get-AdfaPrivilegedState {
     .OUTPUTS
         [pscustomobject] Scoped, RootDomain, RootScoped, Parts, DomainMap, Forest, Context, Domains
         (domain -> Domain, Raw, Groups (Key -> Spec, Locate, Closure), AdminCount, Delegation, Roast, Error).
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER ForestDomains
+        The DNS names of every domain of the forest. Type [string[]], default @(), may be null or
+        empty.
+    .PARAMETER RootDomain
+        The DNS name of the forest root domain. Type [string], default '', may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER Parts
+        The parts input of Get-AdfaPrivilegedState. Type [string[]], default @('Groups', 'Hygiene',
+        'Delegation'), one of Groups, Hygiene, Delegation.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12287,6 +14027,12 @@ function Get-AdfaPrivNameList {
         column of a row (Targets, AllowedSids) is built from the same accounts Principals names.
     .OUTPUTS
         [pscustomobject] Listed, NotListed, Names, Sids, Records.
+    .PARAMETER Records
+        The records input of Get-AdfaPrivNameList. Type [object[]], default @(), may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12324,6 +14070,12 @@ function Get-AdfaPrivLocateLead {
         Duplicate is a lookup that succeeded and returned more than one object: not a refusal.
     .OUTPUTS
         [string]
+    .PARAMETER Locate
+        The locate input of Get-AdfaPrivLocateLead. Untyped, may be null or empty.
+    .PARAMETER What
+        A short description of what was being read, used in the message. Type [string], mandatory.
+    .PARAMETER Search
+        The search input of Get-AdfaPrivLocateLead. Switch.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -12353,6 +14105,14 @@ function Get-AdfaPrivMemberSummary {
     .OUTPUTS
         [pscustomobject] Count, Users, Computers, Others, Foreign, Groups, Unresolved, Counted, Excluded,
         Names (Get-AdfaPrivNameList), ForeignSids, UnresolvedText.
+    .PARAMETER Closure
+        The closure input of Get-AdfaPrivMemberSummary. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER ExcludeSid
+        The exclude sid input of Get-AdfaPrivMemberSummary. Type [string], default '', may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12398,6 +14158,22 @@ function Get-AdfaPrivEmptyGroupVerdict {
         the count; Detail always quotes Learn's exception for it.
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Key
+        The key input of Get-AdfaPrivEmptyGroupVerdict. Type [string], mandatory, one of
+        SchemaAdmins, EnterpriseAdmins.
+    .PARAMETER Entry
+        The entry input of Get-AdfaPrivEmptyGroupVerdict. Untyped, may be null or empty.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER PopulationGap
+        The population gap input of Get-AdfaPrivEmptyGroupVerdict. Type [string], default '', may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12474,6 +14250,18 @@ function Get-AdfaPrivGroupCountVerdict {
         number.
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Spec
+        The spec input of Get-AdfaPrivGroupCountVerdict. Untyped, mandatory.
+    .PARAMETER Entry
+        The entry input of Get-AdfaPrivGroupCountVerdict. Untyped, may be null or empty.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12514,6 +14302,19 @@ function Get-AdfaPrivGroupPopulationVerdict {
         would pass a domain whose every group came back empty.
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Specs
+        The specs input of Get-AdfaPrivGroupPopulationVerdict. Type [object[]], default @(), may be
+        null or empty.
+    .PARAMETER Groups
+        The groups input of Get-AdfaPrivGroupPopulationVerdict. Untyped, may be null or empty.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER PopulationGap
+        The population gap input of Get-AdfaPrivGroupPopulationVerdict. Type [string], default '',
+        may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12562,6 +14363,11 @@ function Get-AdfaPrivilegedAccount {
         Assessed, and an empty Schema Admins or Enterprise Admins is not passed.
     .OUTPUTS
         [pscustomobject[]] rows.
+    .PARAMETER State
+        The state input of Get-AdfaPrivilegedAccount. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -12654,6 +14460,13 @@ function Get-AdfaPrivProtectedSet {
         [pscustomobject] Complete, Missing, BySid, ByDn, Members (records of protected users and
         computers, by DN), ProtectedUsers (Known, Dns, Why, DelegationEnforced - $true, $false or $null
         from the domain functional level - and ModeText), DomainSid.
+    .PARAMETER State
+        The state input of Get-AdfaPrivProtectedSet. Untyped, mandatory.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12770,6 +14583,17 @@ function Get-AdfaPrivOrphanVerdict {
           otherwise                                           Pass ("none visible")
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER AdminCount
+        The admin count input of Get-AdfaPrivOrphanVerdict. Untyped, may be null or empty.
+    .PARAMETER Protected
+        The protected input of Get-AdfaPrivOrphanVerdict. Untyped, mandatory.
+    .PARAMETER Heuristics
+        The heuristics input of Get-AdfaPrivOrphanVerdict. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12853,6 +14677,15 @@ function Get-AdfaPrivAccountPopulation {
         population is not Complete.
     .OUTPUTS
         [pscustomobject] Records, Complete, Gaps.
+    .PARAMETER Protected
+        The protected input of Get-AdfaPrivAccountPopulation. Untyped, mandatory.
+    .PARAMETER AdminCount
+        The admin count input of Get-AdfaPrivAccountPopulation. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER IncludeAdminCount
+        The include admin count input of Get-AdfaPrivAccountPopulation. Switch.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12895,6 +14728,16 @@ function Get-AdfaPrivSpnVerdict {
         are not in the population; krbtgt is not either.
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Population
+        The population input of Get-AdfaPrivSpnVerdict. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12949,6 +14792,18 @@ function Get-AdfaPrivDelegableVerdict {
         empty population is Not Assessed: it always holds the domain's Administrator.
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Population
+        The population input of Get-AdfaPrivDelegableVerdict. Untyped, mandatory.
+    .PARAMETER ProtectedUsers
+        The protected users input of Get-AdfaPrivDelegableVerdict. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -13011,6 +14866,16 @@ function Get-AdfaPrivProtectedUsersVerdict {
         (RID 525). Info, or Not Assessed. Not a grade: Learn warns against adding accounts blindly.
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Entry
+        The entry input of Get-AdfaPrivProtectedUsersVerdict. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -13048,6 +14913,11 @@ function Get-AdfaPrivilegedHygiene {
         the section.
     .OUTPUTS
         [pscustomobject[]] rows.
+    .PARAMETER State
+        The state input of Get-AdfaPrivilegedHygiene. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -13097,6 +14967,13 @@ function Get-AdfaKerberosRoastVerdict {
         into Principals, and a failed read worded by class.
     .OUTPUTS
         [pscustomobject[]] two rows.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Roast
+        The roast input of Get-AdfaKerberosRoastVerdict. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -13154,6 +15031,21 @@ function Get-AdfaPrivDelegationVerdict {
         Principals names (Get-AdfaPrivNameList), never from a different selection.
     .OUTPUTS
         [pscustomobject[]] four rows.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Delegation
+        The delegation input of Get-AdfaPrivDelegationVerdict. Untyped, may be null or empty.
+    .PARAMETER Forest
+        The forest input of Get-AdfaPrivDelegationVerdict. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER DomainDn
+        The distinguished name of the domain, for example DC=contoso,DC=com. Type [string], default
+        '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -13320,6 +15212,11 @@ function Get-AdfaKerberosExposure {
         section.
     .OUTPUTS
         [pscustomobject[]] rows.
+    .PARAMETER State
+        The state input of Get-AdfaKerberosExposure. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -13382,6 +15279,15 @@ function Merge-AdfaPrivilegedConfig {
         exactly the keys it supplied.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -13486,6 +15392,13 @@ function Test-AdfaDcPort {
         Test-TcpPort with a per-run cache, so a DC is probed once per port, not once per section.
     .OUTPUTS
         [bool]
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Port
+        The TCP port. Type [int], mandatory.
+    .PARAMETER TimeoutMs
+        Milliseconds to wait before the attempt is treated as not answering. Type [int], default
+        1200.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -13506,6 +15419,10 @@ function Get-AdfaConfigValue {
     .SYNOPSIS
         Pure: reads one named value from a config row that is a hashtable (built-in table) or
         an object (a row loaded from JSON). $null when the name is absent.
+    .PARAMETER Entry
+        The entry input of Get-AdfaConfigValue. Untyped, may be null or empty.
+    .PARAMETER Name
+        The name input of Get-AdfaConfigValue. Type [string], mandatory.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Entry, [Parameter(Mandatory)][string]$Name)
@@ -13524,6 +15441,8 @@ function ConvertTo-AdfaConfigDate {
     .SYNOPSIS
         Pure: a yyyy-MM-dd config value as a date, or $null. No other format is accepted, so a
         date cannot be read differently on a host with a different culture.
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaConfigDate. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -13546,6 +15465,9 @@ function Get-AdfaOsBuild {
         to the OS name; it never assumes a build.
     .OUTPUTS
         [int] or $null
+    .PARAMETER OperatingSystemVersion
+        The operatingSystemVersion attribute of the domain controller's computer object. Type
+        [string], may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()][AllowEmptyString()][string]$OperatingSystemVersion)
@@ -13573,6 +15495,15 @@ function Resolve-AdfaOsLifecycleEntry {
         never matched on the build alone.
     .OUTPUTS
         [pscustomobject] Entry ($null when not identified), Reason ('' when identified).
+    .PARAMETER OperatingSystem
+        The operatingSystem attribute of the domain controller's computer object. Type [string], may
+        be null or empty.
+    .PARAMETER OperatingSystemVersion
+        The operatingSystemVersion attribute of the domain controller's computer object. Type
+        [string], may be null or empty.
+    .PARAMETER Entries
+        The entries input of Resolve-AdfaOsLifecycleEntry. Untyped, default @(), may be null or
+        empty.
     #>
     [CmdletBinding()]
     param(
@@ -13641,6 +15572,19 @@ function Get-AdfaOsLifecycleVerdict {
         either: the table has no date for it, so no date is claimed.
     .OUTPUTS
         [pscustomobject] Status, Detail, Label.
+    .PARAMETER OperatingSystem
+        The operatingSystem attribute of the domain controller's computer object. Type [string], may
+        be null or empty.
+    .PARAMETER OperatingSystemVersion
+        The operatingSystemVersion attribute of the domain controller's computer object. Type
+        [string], may be null or empty.
+    .PARAMETER EnrichmentError
+        The enrichment error input of Get-AdfaOsLifecycleVerdict. Type [string], may be null or
+        empty.
+    .PARAMETER Today
+        The today input of Get-AdfaOsLifecycleVerdict. Type [datetime], mandatory.
+    .PARAMETER Entries
+        The entries input of Get-AdfaOsLifecycleVerdict. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -13702,6 +15646,18 @@ function Get-AdfaDcOsLifecycle {
         inventory it reports Not Assessed and names the section that supplies it.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER Today
+        The today input of Get-AdfaDcOsLifecycle. Type [datetime], mandatory.
+    .PARAMETER InventoryFailures
+        Domains whose DC inventory call threw: objects with Domain and Error. Their DCs are in no
+        list, so without a row here the section would look complete while a whole domain went
+        unjudged. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -13758,6 +15714,11 @@ function ConvertTo-AdfaHotfixDate {
         the order (see Get-AdfaHotfixDateOrder). A wrong date is worse than no date.
     .OUTPUTS
         [datetime] or $null
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaHotfixDate. Untyped, may be null or empty.
+    .PARAMETER Order
+        The order input of ConvertTo-AdfaHotfixDate. Type [string], default 'Unknown', one of
+        Unknown, MonthFirst, DayFirst.
     #>
     [CmdletBinding()]
     param(
@@ -13808,6 +15769,9 @@ function Get-AdfaHotfixDateOrder {
         the ambiguous values stay unread.
     .OUTPUTS
         [string] Unknown | MonthFirst | DayFirst
+    .PARAMETER Values
+        The values input of Get-AdfaHotfixDateOrder. Type [object[]], default @(), may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -13834,6 +15798,9 @@ function Get-AdfaHotfixSummary {
         list could not be read.
     .OUTPUTS
         [pscustomobject] Total, Parsed, Unparsed, Latest ($null when none), Order, UnparsedSamples.
+    .PARAMETER InstalledOn
+        The installed on input of Get-AdfaHotfixSummary. Type [object[]], default @(), may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -13872,6 +15839,13 @@ function Get-AdfaRemoteReadErrorClass {
         second kind. Anything not recognised as a refusal is Error and is quoted, not interpreted.
     .OUTPUTS
         [string] AccessDenied | Error
+    .PARAMETER Message
+        The message text. Type [string], may be null or empty.
+    .PARAMETER ErrorCode
+        The CIM error code name where the exception carried one (CimException.NativeErrorCode).
+        Checked first because the message is in the UI language of the host running the assessment:
+        on a non-English host "access is denied" is not what the text says. Type [string], may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -13907,6 +15881,8 @@ function Get-AdfaExceptionErrorCode {
         not measured (PORT-PLAN C17a), so the wrapped exceptions are read too, up to five deep.
     .OUTPUTS
         [string]
+    .PARAMETER Exception
+        The exception (or error record) to classify. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -13951,6 +15927,16 @@ function Get-AdfaDcSystemRaw {
         [pscustomobject] Ok, Protocol, LastBootUpTime, BuildNumber, Version, HotfixOk,
         InstalledOn (one entry per record, $null where the record carries none), Error, HotfixError,
         UbrRead (the Get-AdfaStdRegDwordValue result, or $null when the read was not attempted).
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Protocol
+        The CIM session protocol (WinRM or DCOM). Type [string], default 'Wsman', one of Wsman,
+        Dcom.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -14055,6 +16041,15 @@ function Resolve-AdfaBuildRevision {
         its registry type is not published, and the text says so where a type mismatch is reported.
     .OUTPUTS
         [pscustomobject] Kind, Number ([int64] or $null), FullBuild, Text.
+    .PARAMETER BuildNumber
+        The build number input of Resolve-AdfaBuildRevision. Type [string], default '', may be null
+        or empty.
+    .PARAMETER UbrRead
+        The ubr read input of Resolve-AdfaBuildRevision. Untyped, may be null or empty.
+    .PARAMETER Key
+        The key input of Resolve-AdfaBuildRevision. Type [string], mandatory.
+    .PARAMETER ValueName
+        The registry value name. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -14114,6 +16109,29 @@ function Get-AdfaDcPatchLevel {
         directory, are unaffected.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER DomainControllers
+        DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e). Untyped, default @(), may be
+        null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
+    .PARAMETER Now
+        The current time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], default (Get-Date).
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw (Domain, Error), and the domains of the run. Untyped,
+        default @(), may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -14269,6 +16287,15 @@ function Merge-AdfaDcSystemConfig {
         a Pattern (it could match nothing), or a Pattern that is not a valid regular expression.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -14371,6 +16398,11 @@ function Import-AdfaDcSystemConfig {
         the operator believes their own are in force is worse than stopping.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Path
+        The path input of Import-AdfaDcSystemConfig. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -14407,6 +16439,8 @@ function ConvertTo-AdfaByteCount {
         number here: $true would otherwise be read as one byte.
     .OUTPUTS
         [double] or $null
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaByteCount. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -14439,6 +16473,10 @@ function ConvertTo-AdfaFixedText {
         the floor of the double. Values are expected to be zero or more.
     .OUTPUTS
         [string]
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaFixedText. Type [double], mandatory.
+    .PARAMETER Decimals
+        The decimals input of ConvertTo-AdfaFixedText. Type [int], default 2, from 0 to 6.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -14482,6 +16520,18 @@ function Get-AdfaDiskSpaceVerdict {
     .OUTPUTS
         [pscustomobject] Status, PercentFree, FreeGB, CapacityGB ($null when Not Assessed),
         Trigger (None | Percent | Floor | Both - what produced the reported status), Detail.
+    .PARAMETER CapacityBytes
+        The capacity bytes input of Get-AdfaDiskSpaceVerdict. Untyped, may be null or empty.
+    .PARAMETER FreeBytes
+        The free bytes input of Get-AdfaDiskSpaceVerdict. Untyped, may be null or empty.
+    .PARAMETER WarnBelowPercent
+        The warn below percent input of Get-AdfaDiskSpaceVerdict. Type [double], mandatory.
+    .PARAMETER FailBelowPercent
+        The fail below percent input of Get-AdfaDiskSpaceVerdict. Type [double], mandatory.
+    .PARAMETER WarnBelowFreeGB
+        The warn below free gb input of Get-AdfaDiskSpaceVerdict. Type [double], default 0.
+    .PARAMETER FailBelowFreeGB
+        The fail below free gb input of Get-AdfaDiskSpaceVerdict. Type [double], default 0.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -14584,6 +16634,10 @@ function Resolve-AdfaVolumeForPath {
         backslash is added to both sides so D:\Mount\NTDSX is not taken to be under D:\Mount\NTDS.
     .OUTPUTS
         [pscustomobject] Resolved, Volume ($null when not resolved), Reason ('' when resolved).
+    .PARAMETER Path
+        The path input of Resolve-AdfaVolumeForPath. Type [string], may be null or empty.
+    .PARAMETER Volumes
+        The volumes input of Resolve-AdfaVolumeForPath. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -14631,6 +16685,9 @@ function Get-AdfaDcDiskThresholdText {
     <#
     .SYNOPSIS
         Pure: the thresholds in force and where each came from, as one sentence for a finding.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -14676,6 +16733,14 @@ function Get-AdfaStdRegReturnClass {
         Threw tells a call that raised from one that returned; Code is the number, or $null.
     .OUTPUTS
         [pscustomobject] Class, Code ([int64] or $null), Threw.
+    .PARAMETER ReturnValue
+        The return value input of Get-AdfaStdRegReturnClass. Untyped, may be null or empty.
+    .PARAMETER ErrorText
+        The error text of the failed read or command; empty when there was none. Type [string],
+        default '', may be null or empty.
+    .PARAMETER ErrorCode
+        The error code input of Get-AdfaStdRegReturnClass. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -14755,6 +16820,8 @@ function Resolve-AdfaDcDiskPathRead {
         publishes no meaning for an absent value, so the role is reported as not measured.
     .OUTPUTS
         [pscustomobject] Usable, Path ('' when not usable), Cause ('' when usable).
+    .PARAMETER Entry
+        The entry input of Resolve-AdfaDcDiskPathRead. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -14837,6 +16904,20 @@ function New-AdfaDcDiskRow {
     .SYNOPSIS
         Pure: one DcDisk finding row. Every row of the section has the same columns, NotRun
         included, so a consumer never has to test whether the column exists.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -14885,6 +16966,17 @@ function Get-AdfaDcDiskFinding {
         Nothing equivalent is published for a volume that holds only SYSVOL, so none is claimed.
     .OUTPUTS
         [pscustomobject[]] Finding rows (Scope, Area, Item, Status, Detail, NotRun).
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -14989,6 +17081,10 @@ function Get-AdfaCimRawValue {
         applied to Win32_Volume has not been measured, so the unadapted store,
         CimInstanceProperties, is read first and the member is the fallback for an object that
         has no such store.
+    .PARAMETER Instance
+        The instance input of Get-AdfaCimRawValue. Untyped, may be null or empty.
+    .PARAMETER Name
+        The name input of Get-AdfaCimRawValue. Type [string], mandatory.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Instance, [Parameter(Mandatory)][string]$Name)
@@ -15059,6 +17155,16 @@ function Get-AdfaStdRegStringValue {
     .OUTPUTS
         [pscustomobject] Answered, ReturnValue ($null when not answered), Value, Method, Error,
         ErrorCode.
+    .PARAMETER CimSession
+        The open CIM session to call through. Untyped, mandatory.
+    .PARAMETER Key
+        The key input of Get-AdfaStdRegStringValue. Type [string], mandatory.
+    .PARAMETER ValueName
+        The registry value name. Type [string], mandatory.
+    .PARAMETER Expanded
+        The expanded input of Get-AdfaStdRegStringValue. Switch.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15146,6 +17252,18 @@ function Get-AdfaDcDiskRaw {
         Error, ErrorCode, ExpandedReturnValue),
         VolumesOk, Volumes (Name, DeviceID, DriveType, Capacity, FreeSpace - raw), VolumeError,
         VolumeErrorCode.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Protocol
+        The CIM session protocol (WinRM or DCOM). Type [string], default 'Wsman', one of Wsman,
+        Dcom.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
+    .PARAMETER Paths
+        The paths input of Get-AdfaDcDiskRaw. Untyped, mandatory, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15274,6 +17392,12 @@ function Get-AdfaDcTargetsByDomain {
         the caller to report, not dropped.
     .OUTPUTS
         [pscustomobject] Targets (Scope, HostName), Failures (Domain, Error).
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15316,6 +17440,15 @@ function Get-AdfaDcPopulationGap {
         [pscustomobject[]] Domain, Failed, Error ('' unless Failed), Seen (targets carry this
         domain although its enumeration failed), WithoutDomain (how many targets carry no
         domain at all - they came from the unscoped fallback enumeration).
+    .PARAMETER Targets
+        The targets input of Get-AdfaDcPopulationGap. Untyped, default @(), may be null or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -15372,6 +17505,10 @@ function Get-AdfaDcPopulationGapText {
         row says that instead. -NothingRead is the section's own sentence for the plain case.
     .OUTPUTS
         [string]
+    .PARAMETER Gap
+        The gap input of Get-AdfaDcPopulationGapText. Untyped, mandatory.
+    .PARAMETER NothingRead
+        The nothing read input of Get-AdfaDcPopulationGapText. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -15398,6 +17535,8 @@ function ConvertTo-AdfaDcTarget {
         (HostName, Scope) or a plain host name, which carries no domain.
     .OUTPUTS
         [pscustomobject] HostName ('' when the target has none), Scope ('' when it has none).
+    .PARAMETER Target
+        The target input of ConvertTo-AdfaDcTarget. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15424,6 +17563,8 @@ function Get-AdfaDcHostSet {
         with no host name is left out: it names no server.
     .OUTPUTS
         [string[]]
+    .PARAMETER Targets
+        The targets input of Get-AdfaDcHostSet. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -15457,6 +17598,17 @@ function Get-AdfaDomainDcHostName {
         Assessed row; $null otherwise.
     .OUTPUTS
         [pscustomobject] HostNames (string[]), Gap.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Targets
+        The targets input of Get-AdfaDomainDcHostName. Untyped, default @(), may be null or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15500,6 +17652,16 @@ function Invoke-AdfaDcRemoteRead {
     .OUTPUTS
         [pscustomobject] Raw (the seam's last result, $null when it returned none), Denied,
         Attempts ("<protocol>: <error>" for each attempt that did not succeed).
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Protocols
+        The protocols input of Invoke-AdfaDcRemoteRead. Type [string[]], mandatory, may be null or
+        empty.
+    .PARAMETER ReadCommand
+        The read command input of Invoke-AdfaDcRemoteRead. Type [string], mandatory, one of
+        Get-AdfaDcDiskRaw, Get-AdfaDcHardeningRaw, Get-AdfaDcNetworkRaw, Get-AdfaDcW32TimeRaw.
+    .PARAMETER ReadArguments
+        The read arguments input of Invoke-AdfaDcRemoteRead. Type [hashtable], default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15561,6 +17723,29 @@ function Get-AdfaDcDiskSpace {
         instead. No row is ever Info, and none is Pass unless both figures were read.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw: objects with Domain and Error. Untyped, default @(), may
+        be null or empty.
+    .PARAMETER EnumerationError
+        Why no DC could be enumerated at all, where the caller knows. Type [string], default '', may
+        be null or empty.
+    .PARAMETER ScopedDomains
+        The domains this run was scoped to: the declared population of the section. Type [string[]],
+        default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -15664,6 +17849,15 @@ function Merge-AdfaDcDiskConfig {
         tool defaults.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -15783,6 +17977,20 @@ function New-AdfaDcHardeningRow {
     .SYNOPSIS
         Pure: one DcHardening finding row. Every row of the section has the same columns, NotRun
         included, so a consumer never has to test whether the column exists.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15803,6 +18011,8 @@ function ConvertTo-AdfaNullableBoolean {
     .SYNOPSIS
         Pure: a CIM boolean as $true or $false, or $null when it is neither. A property that was
         not returned is not False.
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaNullableBoolean. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -15837,6 +18047,8 @@ function Resolve-AdfaHardeningRead {
         so. See Get-AdfaStdRegDwordValue for what Microsoft publishes and what was measured.
     .OUTPUTS
         [pscustomobject] Kind, Number ([int64] or $null), Cause ('' for Value and NotSet).
+    .PARAMETER Entry
+        The entry input of Resolve-AdfaHardeningRead. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15920,6 +18132,11 @@ function Resolve-AdfaHardeningDefault {
     .OUTPUTS
         [pscustomobject] Known, Value ([int64] or $null), Meets ($true, $false or $null),
         Label, Source, Reason ('' when Known).
+    .PARAMETER Setting
+        The setting input of Resolve-AdfaHardeningDefault. Untyped, mandatory.
+    .PARAMETER Build
+        The operating system build number of the domain controller, as read; empty or $null when it
+        was not read. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -16021,6 +18238,24 @@ function Get-AdfaHardeningVerdict {
         Nothing here is a statement about the wire. The caller says so in NotRun.
     .OUTPUTS
         [pscustomobject] Status, Detail.
+    .PARAMETER Setting
+        The setting input of Get-AdfaHardeningVerdict. Untyped, mandatory.
+    .PARAMETER State
+        The state input of Get-AdfaHardeningVerdict. Untyped, mandatory.
+    .PARAMETER Build
+        The operating system build number of the domain controller, as read; empty or $null when it
+        was not read. Untyped, may be null or empty.
+    .PARAMETER Related
+        The states of the other settings of the same DC, by setting id. Type [hashtable], default
+        @{}.
+    .PARAMETER SecondInstrument
+        Read ([bool]), Value ($true / $false) and Error, or $null where there is none. Untyped,
+        default $null, may be null or empty.
+    .PARAMETER RelatedSettings
+        The config rows of the other settings, by setting id: where a verdict rests on another
+        setting's number, that number's published meanings come from here. A setting that is not
+        supplied has no published meaning as far as this function knows. Type [hashtable], default
+        @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -16274,6 +18509,9 @@ function Get-AdfaSpoolerVerdict {
           Read: 2026-11-13.
     .OUTPUTS
         [pscustomobject] Status, Detail.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -16345,6 +18583,9 @@ function Resolve-AdfaSmbServerRead {
         a read.
     .OUTPUTS
         [pscustomobject] Kind, Instrument, EnableSmb1, RequireSigning, Cause, CauseSource, ErrorCode.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -16425,6 +18666,10 @@ function Get-AdfaSmb1Verdict {
         never said to be reported by the DC.
     .OUTPUTS
         [pscustomobject] Status, Detail.
+    .PARAMETER Read
+        The read input of Get-AdfaSmb1Verdict. Untyped, mandatory.
+    .PARAMETER Protocol
+        The CIM session protocol (WinRM or DCOM). Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -16515,6 +18760,17 @@ function Get-AdfaDcHardeningFinding {
         are each their own Not Assessed cause.
     .OUTPUTS
         [pscustomobject[]] Finding rows (Scope, Area, Item, Status, Detail, NotRun).
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -16676,6 +18932,14 @@ function Get-AdfaStdRegDwordValue {
     .OUTPUTS
         [pscustomobject] Answered, ReturnValue ($null when not answered), Value ($null unless
         the return was 0 and a value came back), Method, Error, ErrorCode.
+    .PARAMETER CimSession
+        The open CIM session to call through. Untyped, mandatory.
+    .PARAMETER Key
+        The key input of Get-AdfaStdRegDwordValue. Type [string], mandatory.
+    .PARAMETER ValueName
+        The registry value name. Type [string], mandatory.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -16776,6 +19040,18 @@ function Get-AdfaDcHardeningRaw {
         SmbEnableSmb1, SmbRequireSigning, SmbError, SmbErrorCode, SmbErrorByTool ($true: SmbError
         is a sentence this tool wrote, not an error the read raised), SpoolerOk, SpoolerFound,
         SpoolerState, SpoolerStartMode, SpoolerError, SpoolerErrorCode.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Protocol
+        The CIM session protocol (WinRM or DCOM). Type [string], default 'Wsman', one of Wsman,
+        Dcom.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
+    .PARAMETER Settings
+        The settings input of Get-AdfaDcHardeningRaw. Untyped, mandatory, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -16957,6 +19233,29 @@ function Get-AdfaDcHardening {
         and the DC negotiate on the wire. No LDAP bind and no SMB session is attempted.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw: objects with Domain and Error. Untyped, default @(), may
+        be null or empty.
+    .PARAMETER EnumerationError
+        Why no DC could be enumerated at all, where the caller knows. Type [string], default '', may
+        be null or empty.
+    .PARAMETER ScopedDomains
+        The domains this run was scoped to: the declared population of the section. Type [string[]],
+        default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -17037,6 +19336,8 @@ function ConvertTo-AdfaOverrideTable {
         Pure: an override object - a hashtable built in memory, or an object parsed from JSON -
         as an ordered name-to-value table. $null when it is neither, so the caller can refuse
         an array, a string or a number, whose own properties must not be read as keys.
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaOverrideTable. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -17091,6 +19392,15 @@ function Merge-AdfaDcHardeningConfig {
         keys the override supplied, and the built-in source stays named beside it.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -17238,6 +19548,20 @@ function New-AdfaLapsRow {
     .SYNOPSIS
         Pure: one Windows LAPS finding row. Every row of the section has the same columns, NotRun
         included, so a consumer never has to test whether the column exists.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -17267,6 +19591,8 @@ function ConvertTo-AdfaFileTimeUtc {
         "none" says so itself.
     .OUTPUTS
         [datetime] in UTC, or $null
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaFileTimeUtc. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -17305,6 +19631,10 @@ function Get-AdfaDirectoryReadErrorClass {
         and the row quotes it as reported rather than interpreting it.
     .OUTPUTS
         [string] Unreachable | AccessDenied | TimedOut | Error
+    .PARAMETER Message
+        The message text. Type [string], may be null or empty.
+    .PARAMETER TypeName
+        The type name input of Get-AdfaDirectoryReadErrorClass. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -17328,6 +19658,12 @@ function Get-AdfaLapsReadFailureLead {
     <#
     .SYNOPSIS
         Pure: the opening of a Not Assessed row for a directory read that failed, by class.
+    .PARAMETER Message
+        The message text. Type [string], may be null or empty.
+    .PARAMETER TypeName
+        The type name input of Get-AdfaLapsReadFailureLead. Type [string], may be null or empty.
+    .PARAMETER What
+        A short description of what was being read, used in the message. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -17368,6 +19704,12 @@ function Get-AdfaLapsRefusedProperty {
         empty never-read list there is nothing to check against, so everything is refused.
     .OUTPUTS
         [string[]] The refused names; empty when the list is safe to send.
+    .PARAMETER PropertyNames
+        The declared list of directory attributes to read (never every attribute). Type [string[]],
+        default @(), may be null or empty.
+    .PARAMETER NeverRead
+        The never read input of Get-AdfaLapsRefusedProperty. Type [string[]], default @(), may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -17406,6 +19748,13 @@ function Get-AdfaLapsSchemaRaw {
     .OUTPUTS
         [pscustomobject] Ok, Error, ErrorType, SchemaNamingContext, Names (the lDAPDisplayName
         of each definition returned).
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER AttributeNames
+        The attribute names input of Get-AdfaLapsSchemaRaw. Type [string[]], default @(), may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -17469,6 +19818,12 @@ function Get-AdfaLapsSchemaState {
         [pscustomobject] Read, State, Error, ErrorType, ControlSeen, Present, Missing,
         HasWindowsExpiry, HasLegacyExpiry, WindowsSetPresent, WindowsSetMissing, LegacyPresent,
         VersionAttribute, HasVersionAttribute, SchemaNamingContext.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -17526,6 +19881,13 @@ function Get-AdfaLapsSchemaFinding {
         own rows, so that one cause is not counted as a finding twice here.
     .OUTPUTS
         [pscustomobject] One finding row.
+    .PARAMETER SchemaState
+        The schema state input of Get-AdfaLapsSchemaFinding. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER ForestName
+        The DNS name of the forest. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -17588,6 +19950,11 @@ function Get-AdfaLapsPropertyList {
         holds a refused name is a terminating error - a defect in the config, never a request.
     .OUTPUTS
         [string[]]
+    .PARAMETER SchemaState
+        The schema state input of Get-AdfaLapsPropertyList. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -17617,6 +19984,14 @@ function ConvertTo-AdfaLapsComputerRecord {
     .OUTPUTS
         [pscustomobject] Name, OperatingSystem, OperatingSystemVersion, UserAccountControl,
         LastLogonTimestamp, ObjectClasses, WindowsExpiry, LegacyExpiry.
+    .PARAMETER Computer
+        The computer input of ConvertTo-AdfaLapsComputerRecord. Untyped, mandatory.
+    .PARAMETER WindowsExpiryName
+        The windows expiry name input of ConvertTo-AdfaLapsComputerRecord. Type [string], default
+        '', may be null or empty.
+    .PARAMETER LegacyExpiryName
+        The legacy expiry name input of ConvertTo-AdfaLapsComputerRecord. Type [string], default '',
+        may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -17683,6 +20058,25 @@ function Get-AdfaLapsDirectoryRaw {
         [pscustomobject] Ok (the computer query succeeded), Refused, Error, ErrorType,
         DomainLevel (raw string, '' when not read), DomainLevelError, Computers (records),
         PropertyNames.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER PropertyNames
+        The declared list of directory attributes to read (never every attribute). Type [string[]],
+        default @(), may be null or empty.
+    .PARAMETER NeverRead
+        The never read input of Get-AdfaLapsDirectoryRaw. Type [string[]], default @(), may be null
+        or empty.
+    .PARAMETER WindowsExpiryName
+        The windows expiry name input of Get-AdfaLapsDirectoryRaw. Type [string], default '', may be
+        null or empty.
+    .PARAMETER LegacyExpiryName
+        The legacy expiry name input of Get-AdfaLapsDirectoryRaw. Type [string], default '', may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -17753,6 +20147,12 @@ function Test-AdfaLapsCapableBuild {
         Pure: whether an OS build is one Microsoft lists as able to run Windows LAPS.
     .OUTPUTS
         [bool]
+    .PARAMETER Build
+        The operating system build number of the domain controller, as read; empty or $null when it
+        was not read. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -17799,6 +20199,13 @@ function Get-AdfaLapsComputerClass {
           Stale                  lastLogonTimestamp older than the cutoff
     .OUTPUTS
         [string]
+    .PARAMETER Computer
+        The computer input of Get-AdfaLapsComputerClass. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER StaleCutoffUtc
+        The stale cutoff utc input of Get-AdfaLapsComputerClass. Type [datetime], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -17853,6 +20260,21 @@ function Get-AdfaLapsCoverageVerdict {
         tool defaults or an override, never Microsoft values.
     .OUTPUTS
         [pscustomobject] Status, State, Percent.
+    .PARAMETER TotalReturned
+        The total returned input of Get-AdfaLapsCoverageVerdict. Type [int], mandatory.
+    .PARAMETER InPopulation
+        The in population input of Get-AdfaLapsCoverageVerdict. Type [int], mandatory.
+    .PARAMETER NoneVisible
+        The none visible input of Get-AdfaLapsCoverageVerdict. Type [int], mandatory.
+    .PARAMETER ProofOfRead
+        The proof of read input of Get-AdfaLapsCoverageVerdict. Type [bool], mandatory.
+    .PARAMETER SchemaHasExpiry
+        The schema has expiry input of Get-AdfaLapsCoverageVerdict. Type [bool], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER Unclassified
+        The unclassified input of Get-AdfaLapsCoverageVerdict. Type [int], default 0.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -17909,6 +20331,29 @@ function Get-AdfaLapsDsrmVerdict {
         Microsoft documents the feature as off by default, not as a requirement.
     .OUTPUTS
         [pscustomobject] Status, State.
+    .PARAMETER Build
+        The operating system build number of the domain controller, as read; empty or $null when it
+        was not read. Untyped, may be null or empty.
+    .PARAMETER DomainLevel
+        The domain level input of Get-AdfaLapsDsrmVerdict. Type [string], may be null or empty.
+    .PARAMETER ExpiryPresent
+        The expiry present input of Get-AdfaLapsDsrmVerdict. Type [bool], mandatory.
+    .PARAMETER ExpiryUtc
+        The expiry utc input of Get-AdfaLapsDsrmVerdict. Untyped, may be null or empty.
+    .PARAMETER Now
+        The current time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], mandatory.
+    .PARAMETER ProofOfRead
+        The proof of read input of Get-AdfaLapsDsrmVerdict. Type [bool], mandatory.
+    .PARAMETER SchemaRead
+        The schema read input of Get-AdfaLapsDsrmVerdict. Type [bool], mandatory.
+    .PARAMETER HasWindowsExpiry
+        The has windows expiry input of Get-AdfaLapsDsrmVerdict. Type [bool], mandatory.
+    .PARAMETER IsReadOnly
+        True when the domain controller is a read-only domain controller. Type [bool], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -17953,6 +20398,26 @@ function Get-AdfaLapsDsrmDetail {
     <#
     .SYNOPSIS
         Pure: the Detail of one DSRM password backup row, for the state the verdict returned.
+    .PARAMETER State
+        The state input of Get-AdfaLapsDsrmDetail. Type [string], mandatory.
+    .PARAMETER Build
+        The operating system build number of the domain controller, as read; empty or $null when it
+        was not read. Untyped, may be null or empty.
+    .PARAMETER BuildRaw
+        The build raw input of Get-AdfaLapsDsrmDetail. Type [string], may be null or empty.
+    .PARAMETER DomainLevel
+        The domain level input of Get-AdfaLapsDsrmDetail. Type [string], may be null or empty.
+    .PARAMETER DomainLevelError
+        The domain level error input of Get-AdfaLapsDsrmDetail. Type [string], may be null or empty.
+    .PARAMETER ExpiryUtc
+        The expiry utc input of Get-AdfaLapsDsrmDetail. Untyped, may be null or empty.
+    .PARAMETER ExpiryRaw
+        The expiry raw input of Get-AdfaLapsDsrmDetail. Type [string], may be null or empty.
+    .PARAMETER IsReadOnly
+        True when the domain controller is a read-only domain controller. Type [bool], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -18028,6 +20493,9 @@ function Get-AdfaLapsThresholdText {
     <#
     .SYNOPSIS
         Pure: the two coverage thresholds in words, with where they come from.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -18062,6 +20530,23 @@ function Get-AdfaLapsDomainFinding {
         SampleLimit, and the row says when the list was cut.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER SchemaState
+        The schema state input of Get-AdfaLapsDomainFinding. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER StaleDays
+        Days of inactivity after which an object counts as stale (-StaleDays of the run). Type
+        [int], default 90.
+    .PARAMETER Now
+        The current time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -18274,6 +20759,23 @@ function Get-AdfaLaps {
         the tool does not know which expiry attribute it may ask for.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER StaleDays
+        Days of inactivity after which an object counts as stale (-StaleDays of the run). Type
+        [int], default 90.
+    .PARAMETER Now
+        The current time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], mandatory.
+    .PARAMETER ForestName
+        The DNS name of the forest. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -18360,6 +20862,15 @@ function Merge-AdfaLapsConfig {
         defaults.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -18470,6 +20981,37 @@ function New-AdfaDcCertificateRow {
         of it goes in its own columns (CertSubject, CertIssuer, CertSan, Ekus, SslPolicyErrors,
         ChainStatus), never in Detail: the consolidated findings choose a recommendation from
         Detail, and none of these columns is read there.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
+    .PARAMETER Evidence
+        The value of the Evidence column: what the verdict rests on. Type [string], default '', may
+        be null or empty.
+    .PARAMETER Certificate
+        The certificate input of New-AdfaDcCertificateRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER DaysLeft
+        The days left input of New-AdfaDcCertificateRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER Ekus
+        The ekus input of New-AdfaDcCertificateRow. Type [string], default '', may be null or empty.
+    .PARAMETER SslPolicyErrors
+        The ssl policy errors input of New-AdfaDcCertificateRow. Type [string], default '', may be
+        null or empty.
+    .PARAMETER ChainStatus
+        The chain status input of New-AdfaDcCertificateRow. Type [string], default '', may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -18552,6 +21094,8 @@ function ConvertTo-AdfaCertificateRecord {
     .OUTPUTS
         [pscustomobject] Read, ReadError, Subject, Issuer, Thumbprint, SerialNumber, NotBeforeUtc,
         NotAfterUtc, Ekus, HasEkuExtension, San.
+    .PARAMETER Certificate
+        The certificate input of ConvertTo-AdfaCertificateRecord. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -18635,6 +21179,20 @@ function Get-AdfaCertificateExpiryVerdict {
         window ("Warning at most 30 days left", the AdAssessment26 rule ADA-CERT-001).
     .OUTPUTS
         [pscustomobject] Status, State, DaysLeft ([int] or $null), Reason.
+    .PARAMETER NotBeforeUtc
+        The not before utc input of Get-AdfaCertificateExpiryVerdict. Untyped, may be null or empty.
+    .PARAMETER NotAfterUtc
+        The not after utc input of Get-AdfaCertificateExpiryVerdict. Untyped, may be null or empty.
+    .PARAMETER NowUtc
+        The current UTC time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], mandatory.
+    .PARAMETER WarnWithinDays
+        The warn within days input of Get-AdfaCertificateExpiryVerdict. Type [int], default 30.
+    .PARAMETER FailWithinDays
+        The fail within days input of Get-AdfaCertificateExpiryVerdict. Type [int], default 0.
+    .PARAMETER ThresholdSource
+        Where the threshold came from (a Microsoft value, a tool default or the override file),
+        cited in the text. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -18689,6 +21247,14 @@ function Get-AdfaCertificateEkuText {
     .SYNOPSIS
         Pure: the EKUs of a certificate as text, each object identifier with the name the config
         table gives it. "no EKU extension" is said as such, never as a missing purpose.
+    .PARAMETER Ekus
+        The ekus input of Get-AdfaCertificateEkuText. Type [string[]], default @(), may be null or
+        empty.
+    .PARAMETER HasEkuExtension
+        The has eku extension input of Get-AdfaCertificateEkuText. Type [bool], default $false.
+    .PARAMETER EkuNames
+        The eku names input of Get-AdfaCertificateEkuText. Untyped, default @{}, may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -18720,6 +21286,8 @@ function Get-AdfaSocketErrorClass {
         https://learn.microsoft.com/dotnet/api/system.net.sockets.socketerror
     .OUTPUTS
         [string] ConnectRefused | ConnectTimedOut | Unresolved | ConnectFailed
+    .PARAMETER SocketError
+        The socket error input of Get-AdfaSocketErrorClass. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -18743,6 +21311,9 @@ function Get-AdfaTlsHandshakeErrorClass {
         read 2026-11-16) whose inner SocketException carries TimedOut. Anything else that stops
         the handshake - an AuthenticationException, a reset, a closed connection - is
         HandshakeFailed, and the caller quotes it.
+    .PARAMETER SocketErrors
+        The socket errors input of Get-AdfaTlsHandshakeErrorClass. Type [string[]], default @(), may
+        be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -18756,6 +21327,8 @@ function Get-AdfaExceptionChainInfo {
     .SYNOPSIS
         Pure: the type names, messages and SocketError names along an exception and its inner
         exceptions, outermost first.
+    .PARAMETER Exception
+        The exception (or error record) to classify. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -18798,6 +21371,22 @@ function Get-AdfaTlsProbeClass {
           - the handshake ended with no certificate          -> NoCertificate
     .OUTPUTS
         [string]
+    .PARAMETER Connected
+        The connected input of Get-AdfaTlsProbeClass. Type [bool], default $false.
+    .PARAMETER ConnectThrew
+        The connect threw input of Get-AdfaTlsProbeClass. Type [bool], default $false.
+    .PARAMETER ConnectSocketError
+        The connect socket error input of Get-AdfaTlsProbeClass. Type [string], default '', may be
+        null or empty.
+    .PARAMETER CertificateSeen
+        The certificate seen input of Get-AdfaTlsProbeClass. Type [bool], default $false.
+    .PARAMETER HandshakeThrew
+        The handshake threw input of Get-AdfaTlsProbeClass. Type [bool], default $false.
+    .PARAMETER HandshakeSocketErrors
+        The handshake socket errors input of Get-AdfaTlsProbeClass. Type [string[]], default @(),
+        may be null or empty.
+    .PARAMETER DeadlineExpired
+        The deadline expired input of Get-AdfaTlsProbeClass. Type [bool], default $false.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -18871,6 +21460,14 @@ function Get-AdfaDcTlsCertificateRaw {
         [pscustomobject] Ok, Class, Error, ErrorType, SocketError, Certificate (a record from
         ConvertTo-AdfaCertificateRecord, or $null), SslPolicyErrors, ChainStatus, CallbackRan,
         DeadlineExpired, ElapsedMs.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Port
+        The TCP port. Type [int], mandatory.
+    .PARAMETER ConnectTimeoutMs
+        The connect timeout ms input of Get-AdfaDcTlsCertificateRaw. Type [int], default 5000.
+    .PARAMETER HandshakeTimeoutMs
+        The handshake timeout ms input of Get-AdfaDcTlsCertificateRaw. Type [int], default 5000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19029,6 +21626,8 @@ function ConvertTo-AdfaLdapFilterValue {
         characters must appear in the search filter as literals, they must be replaced by the
         listed escape sequence": * \2a, ( \28, ) \29, \ \5c, NUL \00, / \2f.
         https://learn.microsoft.com/windows/win32/adsi/search-filter-syntax (read 2026-11-16).
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaLdapFilterValue. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -19067,6 +21666,15 @@ function Get-AdfaDcCertificateDirectoryRaw {
     .OUTPUTS
         [pscustomobject] Ok, Error, ErrorType, Server, ObjectCount, AttributeReturned, Values
         (byte[] each, or the raw value where it was not bytes).
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], mandatory.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string], default
+        '', may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19126,6 +21734,30 @@ function Get-AdfaDcLdapsFinding {
         assessment, which may not be a client of the domain at all.
     .OUTPUTS
         [pscustomobject] One row.
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER HandshakeRun
+        The handshake run input of Get-AdfaDcLdapsFinding. Type [bool], default $false.
+    .PARAMETER PortAnswered
+        The port answered input of Get-AdfaDcLdapsFinding. Type [bool], default $false.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, default $null, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER NowUtc
+        The current UTC time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], mandatory.
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER ReachCause
+        PORT-PLAN C14c: the reachability class of a DC classified Unreachable, which was not probed.
+        Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19232,6 +21864,23 @@ function Get-AdfaDcDirectoryCertificateFinding {
         host name is Not Assessed too.
     .OUTPUTS
         [pscustomobject[]] Rows.
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, default $null, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER NowUtc
+        The current UTC time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], mandatory.
+    .PARAMETER PresentedThumbprint
+        The presented thumbprint input of Get-AdfaDcDirectoryCertificateFinding. Type [string],
+        default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -19331,6 +21980,33 @@ function Get-AdfaDcCertificates {
         -Now is the clock every verdict is judged against, converted to UTC; tests inject it.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER Now
+        The current time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], mandatory.
+    .PARAMETER IncludeHandshake
+        The include handshake input of Get-AdfaDcCertificates. Type [bool], default $false.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw: objects with Domain and Error. Untyped, default @(), may
+        be null or empty.
+    .PARAMETER EnumerationError
+        Why no DC could be enumerated at all, where the caller knows. Type [string], default '', may
+        be null or empty.
+    .PARAMETER ScopedDomains
+        The domains this run was scoped to: the declared population of the section. Type [string[]],
+        default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -19432,6 +22108,15 @@ function Merge-AdfaDcCertificatesConfig {
         timeouts leaves it untouched.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -19531,6 +22216,53 @@ function New-AdfaRidPoolRow {
         not measured is an empty string, never 0.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
+    .PARAMETER Evidence
+        The value of the Evidence column: what the verdict rests on. Type [string], default '', may
+        be null or empty.
+    .PARAMETER RidMaster
+        The rid master input of New-AdfaRidPoolRow. Type [string], default '', may be null or empty.
+    .PARAMETER Ceiling
+        The ceiling input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+    .PARAMETER CeilingSource
+        The ceiling source input of New-AdfaRidPoolRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Issued
+        The issued input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+    .PARAMETER PercentUsed
+        The percent used input of New-AdfaRidPoolRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER PoolStart
+        The pool start input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+    .PARAMETER PoolEnd
+        The pool end input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+    .PARAMETER NextRid
+        The next rid input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+    .PARAMETER RemainingInPool
+        The remaining in pool input of New-AdfaRidPoolRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER NextPoolStart
+        The next pool start input of New-AdfaRidPoolRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER NextPoolEnd
+        The next pool end input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+    .PARAMETER ObjectDn
+        The object dn input of New-AdfaRidPoolRow. Type [string], default '', may be null or empty.
+    .PARAMETER RawValue
+        The raw value input of New-AdfaRidPoolRow. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19600,6 +22332,8 @@ function ConvertFrom-AdfaLargeInteger {
         the reason, and never an exception.
     .OUTPUTS
         [pscustomobject] Read, Low, High, Raw (the value as text), Error.
+    .PARAMETER Value
+        The value input of ConvertFrom-AdfaLargeInteger. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19650,6 +22384,12 @@ function Get-AdfaRidSchemaState {
         absence of a name from such an answer proves nothing.
     .OUTPUTS
         [pscustomobject] InSchema (Yes | No | Unknown), Detail.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19713,6 +22453,12 @@ function Get-AdfaRidAllocationVerdict {
         graded whatever the schema read returned.
     .OUTPUTS
         [pscustomobject] Status, State, Reason.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER InSchema
+        The in schema input of Get-AdfaRidAllocationVerdict. Type [string], default 'Unknown', one
+        of Yes, No, Unknown.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19791,6 +22537,13 @@ function Get-AdfaRidSpaceVerdict {
     .OUTPUTS
         [pscustomobject] Status, State, PercentUsed ('' when not computed), Ceiling, CeilingLabel,
         Reason.
+    .PARAMETER Low
+        The low input of Get-AdfaRidSpaceVerdict. Type [int64].
+    .PARAMETER High
+        The high input of Get-AdfaRidSpaceVerdict. Type [int64].
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19869,6 +22622,16 @@ function Get-AdfaRidManagerRaw {
         failed), Error, ErrorType, Server, DomainDn, RidMaster, ObjectDn, AvailablePoolReturned,
         AvailablePool, AllocationRead, AllocationError, AllocationErrorType, AllocationReturned,
         AllocationValue.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19960,6 +22723,16 @@ function Get-AdfaRidDomainFinding {
         master's name, the object's DN and the raw values go in their own columns.
     .OUTPUTS
         [pscustomobject[]] Two rows: allocation, then global space.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Schema
+        The schema input of Get-AdfaRidDomainFinding. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -20042,6 +22815,13 @@ function ConvertTo-AdfaRidSetRecord {
     .OUTPUTS
         [pscustomobject] Dn, FromSearch, PreviousAllocationPool, AllocationPool, NextRid, UsedPool,
         Returned (the attribute names that came back with a value), or $null for no object.
+    .PARAMETER Object
+        The object input of ConvertTo-AdfaRidSetRecord. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER FromSearch
+        The from search input of ConvertTo-AdfaRidSetRecord. Type [bool], default $false.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -20099,6 +22879,18 @@ function Get-AdfaDcRidSetRaw {
         ObjectCount, ComputerDn, References, ReferenceRead (NotTried | Ok | Failed),
         ReferenceError, ReferenceErrorType, SearchRun, SearchOk, SearchError, SearchErrorType,
         SearchCount, RidSet (ConvertTo-AdfaRidSetRecord, or $null).
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], mandatory.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string], default
+        '', may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -20221,6 +23013,20 @@ function Get-AdfaDcRidPoolFinding {
         this tool's derivation. Both are said in the row.
     .OUTPUTS
         [pscustomobject] One row.
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER IsReadOnly
+        True when the domain controller is a read-only domain controller. Type [bool], default
+        $false.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -20376,6 +23182,25 @@ function Get-AdfaRidPool {
         one DC is handled makes its rows Not Assessed and never ends the section.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw: objects with Domain and Error. Untyped, default @(), may
+        be null or empty.
+    .PARAMETER EnumerationError
+        Why no DC could be enumerated at all, where the caller knows. Type [string], default '', may
+        be null or empty.
+    .PARAMETER ScopedDomains
+        The domains this run was scoped to: the declared population of the section. Type [string[]],
+        default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -20479,6 +23304,15 @@ function Merge-AdfaRidPoolConfig {
         exactly the keys it supplied.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -20573,6 +23407,15 @@ function Merge-AdfaDcDiagConfig {
         came from the -ConfigOverridePath file without naming the path.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -20657,6 +23500,65 @@ function New-AdfaSidHistoryRow {
         never 0.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
+    .PARAMETER Evidence
+        The value of the Evidence column: what the verdict rests on. Type [string], default '', may
+        be null or empty.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER PrincipalCount
+        The principal count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER ValueCount
+        The value count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER UserCount
+        The user count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or empty.
+    .PARAMETER ComputerCount
+        The computer count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER GroupCount
+        The group count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER OtherCount
+        The other count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER EnabledCount
+        The enabled count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER DisabledCount
+        The disabled count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER UnparsedCount
+        The unparsed count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER Listed
+        The listed input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or empty.
+    .PARAMETER NotListed
+        The not listed input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or empty.
+    .PARAMETER Principals
+        The principals input of New-AdfaSidHistoryRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER HistoricSids
+        The historic sids input of New-AdfaSidHistoryRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER SourceDomains
+        The source domains input of New-AdfaSidHistoryRow. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -20710,6 +23612,14 @@ function Get-AdfaSidHistoryCapText {
     <#
     .SYNOPSIS
         Pure: the sentence that says how many names a row lists and how many it leaves out.
+    .PARAMETER Listed
+        The listed input of Get-AdfaSidHistoryCapText. Type [int].
+    .PARAMETER NotListed
+        The not listed input of Get-AdfaSidHistoryCapText. Type [int].
+    .PARAMETER Cap
+        The most items read or listed. Reaching it is said in the text. Type [int].
+    .PARAMETER Column
+        The column input of Get-AdfaSidHistoryCapText. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -20756,6 +23666,12 @@ function ConvertFrom-AdfaSidValue {
     .OUTPUTS
         [pscustomobject] Ok, Text, Authority, SubAuthorities, DomainPart, Rid, IsAccountDomain,
         Parser (Text | Platform | Fallback), Error.
+    .PARAMETER Value
+        The value input of ConvertFrom-AdfaSidValue. Untyped, may be null or empty.
+    .PARAMETER NoPlatform
+        The no platform input of ConvertFrom-AdfaSidValue. Switch.
+    .PARAMETER PlatformReader
+        The platform reader input of ConvertFrom-AdfaSidValue. Type [scriptblock], default $null.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -20856,6 +23772,8 @@ function Get-AdfaSidValueList {
         gives nothing.
     .OUTPUTS
         [object] one per value.
+    .PARAMETER Value
+        The value input of Get-AdfaSidValueList. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -20875,6 +23793,9 @@ function Get-AdfaSidHistoryRefusedProperty {
         which would ask the directory for every attribute of every principal.
     .OUTPUTS
         [string[]]
+    .PARAMETER PropertyNames
+        The declared list of directory attributes to read (never every attribute). Type [string[]],
+        default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -20899,6 +23820,11 @@ function ConvertTo-AdfaSidHistoryRecord {
         for a group, or where userAccountControl was not returned, it is $null.
     .OUTPUTS
         [pscustomobject] Dn, Sam, Name, Class, Enabled, ObjectSid, History.
+    .PARAMETER Object
+        The object input of ConvertTo-AdfaSidHistoryRecord. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -20971,6 +23897,16 @@ function Get-AdfaSidHistoryRaw {
         [pscustomobject] Ok (the principal query succeeded), Refused, Error, ErrorType, Server,
         DomainDn, DomainSid (text, '' when not read), DomainSidError, Records, TrustOk, TrustError,
         TrustErrorType, Trusts (Partner, FlatName, Sid).
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21081,6 +24017,12 @@ function Get-AdfaSidHistoryForestMap {
         the sources row partial and never fails a domain.
     .OUTPUTS
         [pscustomobject] Map (domain SID text -> domain name), Failures ("<domain>: <reason>").
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21127,6 +24069,21 @@ function Get-AdfaSidHistoryClassification {
     .OUTPUTS
         [pscustomobject] OwnSid ('' when not known), Values (Record, Parsed, SameDomain, Privileged,
         PrivilegedName, SourceKey, Source), Unparsed, NoValue.
+    .PARAMETER Records
+        The records input of Get-AdfaSidHistoryClassification. Untyped, default @(), may be null or
+        empty.
+    .PARAMETER DomainSid
+        The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
+        [string], default '', may be null or empty.
+    .PARAMETER ForestMap
+        The forest map input of Get-AdfaSidHistoryClassification. Untyped, default $null, may be
+        null or empty.
+    .PARAMETER Trusts
+        The trusts input of Get-AdfaSidHistoryClassification. Untyped, default @(), may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21206,6 +24163,13 @@ function Get-AdfaSidHistoryHolderText {
         principals they belong to, and how many were listed under the cap.
     .OUTPUTS
         [pscustomobject] Count, Listed, NotListed, Principals, HistoricSids.
+    .PARAMETER Values
+        The values input of Get-AdfaSidHistoryHolderText. Untyped, default @(), may be null or
+        empty.
+    .PARAMETER Cap
+        The most items read or listed. Reaching it is said in the text. Type [int], default 0.
+    .PARAMETER WithPrivilegedName
+        The with privileged name input of Get-AdfaSidHistoryHolderText. Switch.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21248,6 +24212,16 @@ function Get-AdfaSidHistoryCountVerdict {
                                publishes no grade; the same-domain and privileged rows carry the Fail
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, mandatory.
+    .PARAMETER Classified
+        The classified input of Get-AdfaSidHistoryCountVerdict. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21313,6 +24287,16 @@ function Get-AdfaSidHistorySameDomainVerdict {
         for a historic SID of the object's own domain. That it indicates abuse is an inference.
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, mandatory.
+    .PARAMETER Classified
+        The classified input of Get-AdfaSidHistorySameDomainVerdict. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21380,6 +24364,16 @@ function Get-AdfaSidHistoryPrivilegedVerdict {
         history; which SIDs count as privileged is this tool's list, from Microsoft's tables.
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, mandatory.
+    .PARAMETER Classified
+        The classified input of Get-AdfaSidHistoryPrivilegedVerdict. Untyped, mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21441,6 +24435,19 @@ function Get-AdfaSidHistorySourceVerdict {
         on any of them, the row is Not Assessed: no source was measured.
     .OUTPUTS
         [pscustomobject] a row.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, mandatory.
+    .PARAMETER Classified
+        The classified input of Get-AdfaSidHistorySourceVerdict. Untyped, mandatory.
+    .PARAMETER ForestMap
+        The forest map input of Get-AdfaSidHistorySourceVerdict. Untyped, default $null, may be null
+        or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21515,6 +24522,17 @@ function Get-AdfaSidHistoryDomainFinding {
         A count that was not measured is left empty.
     .OUTPUTS
         [pscustomobject[]] four rows.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER ForestMap
+        The forest map input of Get-AdfaSidHistoryDomainFinding. Untyped, default $null, may be null
+        or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -21565,6 +24583,18 @@ function Get-AdfaSidHistory {
         handled makes its four rows Not Assessed and never ends the section.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER ForestDomains
+        The DNS names of every domain of the forest. Type [string[]], default @(), may be null or
+        empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -21627,6 +24657,15 @@ function Merge-AdfaSidHistoryConfig {
         exactly the keys it supplied.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -21755,6 +24794,18 @@ function Resolve-AdfaConfigOverride {
         from the result, so its caller keeps the built-in table and that table's provenance.
     .OUTPUTS
         [hashtable] section name -> merged config table.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Sections
+        The sections input of Resolve-AdfaConfigOverride. Type [System.Collections.IDictionary],
+        mandatory.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -21822,6 +24873,8 @@ function Get-AdfaJsonTopLevelKind {
         because the two PowerShell editions return different things for the same array.
     .OUTPUTS
         [string]
+    .PARAMETER Text
+        The text to parse. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -21855,6 +24908,8 @@ function Get-AdfaJsonDuplicateKey {
     .OUTPUTS
         [string[]] One entry per repeated key, as its dotted path (DcDisk.WarnBelowPercent),
         each path once. Empty when nothing is repeated.
+    .PARAMETER Text
+        The text to parse. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -21947,6 +25002,14 @@ function Import-AdfaConfigOverride {
         editions reduce to its last value without an error.
     .OUTPUTS
         [hashtable] section name -> merged config table.
+    .PARAMETER Path
+        The path input of Import-AdfaConfigOverride. Type [string], mandatory.
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Sections
+        The sections input of Import-AdfaConfigOverride. Type [System.Collections.IDictionary],
+        mandatory.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -21991,6 +25054,8 @@ function ConvertFrom-AdfaShowreplCsv {
         returns one object per replication link. Tolerates banner lines before the header.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER Text
+        The text to parse. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -22021,6 +25086,9 @@ function ConvertFrom-AdfaRepadminDelta {
         silently treated as zero.
     .OUTPUTS
         [System.Nullable[int]] Minutes, or $null.
+    .PARAMETER Delta
+        The delta input of ConvertFrom-AdfaRepadminDelta. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([System.Nullable[int]])]
@@ -22063,6 +25131,8 @@ function ConvertFrom-AdfaReplsummary {
         Not Assessed rather than as a clean result.
     .OUTPUTS
         [pscustomobject[]] Direction (Source|Destination), Dsa, Delta, DeltaMinutes, Fails, Total, ErrorText
+    .PARAMETER Text
+        The text to parse. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -22106,6 +25176,27 @@ function Get-AdfaReplsummaryVerdict {
         to measure from, which is worse than a large number, not better.
     .OUTPUTS
         [pscustomobject] Status, Detail
+    .PARAMETER Direction
+        The direction input of Get-AdfaReplsummaryVerdict. Type [string], mandatory.
+    .PARAMETER Dsa
+        The dsa input of Get-AdfaReplsummaryVerdict. Type [string], mandatory.
+    .PARAMETER Delta
+        The delta input of Get-AdfaReplsummaryVerdict. Type [string], default '', may be null or
+        empty.
+    .PARAMETER DeltaMinutes
+        The delta minutes input of Get-AdfaReplsummaryVerdict. Type [Nullable[int]], may be null or
+        empty.
+    .PARAMETER Fails
+        The fails input of Get-AdfaReplsummaryVerdict. Type [int], default 0.
+    .PARAMETER Total
+        The total input of Get-AdfaReplsummaryVerdict. Type [int], default 0.
+    .PARAMETER ErrorText
+        The error text of the failed read or command; empty when there was none. Type [string],
+        default ''.
+    .PARAMETER WarnHours
+        The Warning threshold, in hours. Type [int], default 24.
+    .PARAMETER FailHours
+        The fail hours input of Get-AdfaReplsummaryVerdict. Type [int], default 168.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -22174,6 +25265,13 @@ function Get-AdfaReplsummaryHealth {
         partition, in both directions.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 300.
+    .PARAMETER Retries
+        How many times the external tool is attempted (-Retries of the run). Type [int], default 2.
+    .PARAMETER RetryDelaySeconds
+        Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -22217,6 +25315,22 @@ function Get-AdfaReplicationLagVerdict {
         An unparseable or absent last-success time is NOT treated as recent.
     .OUTPUTS
         [pscustomobject] Status, Detail
+    .PARAMETER Destination
+        The destination input of Get-AdfaReplicationLagVerdict. Type [string], mandatory.
+    .PARAMETER Source
+        The source input of Get-AdfaReplicationLagVerdict. Type [string], mandatory.
+    .PARAMETER NamingContext
+        The naming context input of Get-AdfaReplicationLagVerdict. Type [string], default ''.
+    .PARAMETER LastSuccess
+        The last success input of Get-AdfaReplicationLagVerdict. Type [string], default '', may be
+        null or empty.
+    .PARAMETER Now
+        The current time, passed in so the verdict can be tested with a fixed clock. Type
+        [Nullable[datetime]], may be null or empty.
+    .PARAMETER WarnHours
+        The Warning threshold, in hours. Type [int], default 24.
+    .PARAMETER FailHours
+        The fail hours input of Get-AdfaReplicationLagVerdict. Type [int], default 168.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -22283,6 +25397,13 @@ function Get-AdfaRepadminReplication {
         summary when every reported link is clean.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 300.
+    .PARAMETER Retries
+        How many times the external tool is attempted (-Retries of the run). Type [int], default 2.
+    .PARAMETER RetryDelaySeconds
+        Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -22362,6 +25483,8 @@ function Get-AdfaLatestBackupDate {
         a fabricated age.
     .OUTPUTS
         [nullable[datetime]]
+    .PARAMETER Text
+        The text to parse. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([nullable[datetime]])]
@@ -22390,6 +25513,27 @@ function Get-AdfaBackupStatus {
         when - correlate with the machine-account password ages in DcSecureChannel.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e). Untyped, default @(), may be
+        null or empty.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 90.
+    .PARAMETER Retries
+        How many times the external tool is attempted (-Retries of the run). Type [int], default 2.
+    .PARAMETER RetryDelaySeconds
+        Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
+    .PARAMETER MaxAgeDays
+        The max age days input of Get-AdfaBackupStatus. Type [int], default 30.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw (Domain, Error), and the domains of the run. Untyped,
+        default @(), may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -22479,6 +25623,19 @@ function Get-AdfaLingeringObjectScan {
         The advisory-mode output format is not published by Microsoft (PORT-PLAN C16c).
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 300.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -22585,6 +25742,9 @@ function Get-AdfaTimeSync {
         before v1.36.0 it was Info "Source: ". The text is matched in English.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 60.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -22627,6 +25787,19 @@ function Get-AdfaDnsDepth {
         (PORT-PLAN C16, GAP-P16), because a lookup that failed is not a record found missing.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Type [string[]].
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Dns.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -22700,6 +25873,13 @@ function Get-AdfaRedundancy {
         read 2026-11-18). It is never a Fail.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -22763,6 +25943,11 @@ function Test-AdfaOsSupported {
         silently pass an unsupported DC.
     .OUTPUTS
         [string] The supported-OS label, or '' when unsupported.
+    .PARAMETER OperatingSystem
+        The operatingSystem attribute of the domain controller's computer object. Type [string], may
+        be null or empty.
+    .PARAMETER SupportedOs
+        The supported os input of Test-AdfaOsSupported. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -22804,6 +25989,15 @@ function Merge-AdfaExchangeSeConfig {
         finding that cites Microsoft Learn must not do so when the values came from elsewhere.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -22858,6 +26052,11 @@ function Import-AdfaExchangeSeConfig {
         throws: silently judging a forest against the wrong table is worse than stopping.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Path
+        The path input of Import-AdfaExchangeSeConfig. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -22896,6 +26095,9 @@ function Get-AdfaEnrichmentFailureAdvice {
         interpreted - an unrecognised error is reported, never guessed at.
     .OUTPUTS
         [string] A leading-space-prefixed sentence, or '' when there is nothing to say.
+    .PARAMETER Causes
+        The causes input of Get-AdfaEnrichmentFailureAdvice. Type [string[]], default @(), may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -22924,6 +26126,8 @@ function Get-AdfaForestLevelTable {
         read as a number is not a level it can order.
     .OUTPUTS
         [pscustomobject[]] Level (int), Mode, Label.
+    .PARAMETER SeConfig
+        The se config input of Get-AdfaForestLevelTable. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -22957,6 +26161,14 @@ function Get-AdfaForestLevelClass {
         supports. Nothing is queried.
     .OUTPUTS
         [string] One of: Unreadable | Unrecognised | Supported | Below | Above
+    .PARAMETER RawLevel
+        The raw level input of Get-AdfaForestLevelClass. Type [string], may be null or empty.
+    .PARAMETER KnownLevels
+        The known levels input of Get-AdfaForestLevelClass. Type [int[]], default @(), may be null
+        or empty.
+    .PARAMETER SupportedLevels
+        The supported levels input of Get-AdfaForestLevelClass. Type [int[]], default @(), may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -22994,6 +26206,12 @@ function Get-AdfaForestBehaviorVersion {
         A refused or failed read carries the directory's own error text, uninterpreted.
     .OUTPUTS
         [pscustomobject] Level (raw string, '' when not read), Error ('' when read).
+    .PARAMETER Forest
+        The forest input of Get-AdfaForestBehaviorVersion. Untyped, may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -23047,6 +26265,28 @@ function Get-AdfaExchangeSeCompatibility {
         because an absent value and a measured unsupported value are different claims.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER ForestMode
+        Shown for information only. The verdict never reads it - see -ForestLevel. Type [string],
+        may be null or empty.
+    .PARAMETER ForestLevel
+        msDS-Behavior-Version exactly as read from the Partitions container; '' when not read. Type
+        [string], may be null or empty.
+    .PARAMETER ForestLevelError
+        Why -ForestLevel is empty, in the directory's own words where it gave any. Type [string],
+        may be null or empty.
+    .PARAMETER DomainSummaries
+        The domain summaries input of Get-AdfaExchangeSeCompatibility. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER SeConfig
+        The se config input of Get-AdfaExchangeSeCompatibility. Type [hashtable], mandatory.
+    .PARAMETER ForestComplete
+        PORT-PLAN C16 (GAP-P20): whether -DomainControllers is every DC of the forest - every domain
+        of the forest scoped and its inventory read (Invoke-Main). The DC gate passes only then;
+        otherwise "every DC in the forest" was not seen and the gate is Not Assessed. Off unless the
+        caller says so. Type [bool], default $false.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -23273,6 +26513,17 @@ function Get-AdfaExchangeSeCompatibility {
 # ===========================================================================
 
 function Get-AdfaExchangeSchemaMarker {
+    <#
+    .SYNOPSIS
+        Reads one Exchange schema marker, rangeUpper of ms-Exch-Schema-Version-Pt, as inventory with
+        no verdict; an absent marker or a failed read is said in the Note column.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .OUTPUTS
+        [pscustomobject[]]
+    #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param([hashtable]$AdParams = @{})
@@ -23299,6 +26550,13 @@ function Get-AdfaDnsQueryOutcome {
         would let a dead DNS server masquerade as a missing record (or vice versa).
     .OUTPUTS
         [string] NoTool | Resolved | NoRecord | NoAnswer
+    .PARAMETER Available
+        The available input of Get-AdfaDnsQueryOutcome. Type [bool], default $true.
+    .PARAMETER TargetCount
+        The target count input of Get-AdfaDnsQueryOutcome. Type [int], default 0.
+    .PARAMETER ErrorText
+        The error text of the failed read or command; empty when there was none. Type [string],
+        default ''.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -23339,6 +26597,13 @@ function Resolve-AdfaDnsRecord {
     .OUTPUTS
         [pscustomobject] Available (bool), Targets (string[]), Error (string),
         Outcome (NoTool|Resolved|NoRecord|NoAnswer)
+    .PARAMETER Name
+        The name input of Resolve-AdfaDnsRecord. Type [string], mandatory.
+    .PARAMETER Type
+        The type input of Resolve-AdfaDnsRecord. Type [string], mandatory, one of SRV, CNAME, NS, A,
+        SOA.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string].
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -23431,6 +26696,11 @@ function Compare-AdfaDnsServerView {
         is visible instead of one resolver's answer being printed as forest truth.
     .OUTPUTS
         [pscustomobject] PerServer, AgreeingServers, DivergentServers, ServersQueried
+    .PARAMETER AdHosts
+        The ad hosts input of Compare-AdfaDnsServerView. Type [string[]], default @(), may be null
+        or empty.
+    .PARAMETER ServerTargets
+        The server targets input of Compare-AdfaDnsServerView. Type [hashtable], default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -23464,6 +26734,12 @@ function Compare-AdfaDnsAdvertisement {
         advertises. Names are normalised (case, trailing dot) before comparing.
     .OUTPUTS
         [pscustomobject] StaleInDns (string[]), MissingFromDns (string[]), Matched (string[])
+    .PARAMETER AdHosts
+        The ad hosts input of Compare-AdfaDnsAdvertisement. Type [string[]], default @(), may be
+        null or empty.
+    .PARAMETER DnsTargets
+        The dns targets input of Compare-AdfaDnsAdvertisement. Type [string[]], default @(), may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -23496,6 +26772,13 @@ function Resolve-AdfaDcPasswordVerdict {
         happening - typical of a DC restored from an old backup.
     .OUTPUTS
         [string] Pass | Warning | Fail | Not Assessed
+    .PARAMETER AgeDays
+        The age days input of Resolve-AdfaDcPasswordVerdict. Type [nullable[double]], may be null or
+        empty.
+    .PARAMETER WarnDays
+        The Warning threshold, in days. Type [int], default 45.
+    .PARAMETER FailDays
+        The fail days input of Resolve-AdfaDcPasswordVerdict. Type [int], default 90.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -23521,6 +26804,14 @@ function Get-AdfaDnsRecordView {
     .OUTPUTS
         [pscustomobject] ToolAvailable (bool), Views (hashtable server->targets),
         Unanswered (string[]), Error (string)
+    .PARAMETER Name
+        The name input of Get-AdfaDnsRecordView. Type [string], mandatory.
+    .PARAMETER Type
+        The type input of Get-AdfaDnsRecordView. Type [string], mandatory, one of SRV, CNAME, NS, A,
+        SOA.
+    .PARAMETER DnsServers
+        The DNS servers of the domain controller or row. Type [string[]], default @(), may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -23563,6 +26854,36 @@ function Get-AdfaDnsAdConsistency {
         the locator records that name no DC (DNS-005). The per-server rows above are unchanged.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER DnsServers
+        The DNS servers of the domain controller or row. Type [string[]], default @(), may be null
+        or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Dns.
+    .PARAMETER ForestRoot
+        The DNS name of the forest root domain. Type [string], default '', may be null or empty.
+    .PARAMETER DsaInventory
+        The dsa inventory input of Get-AdfaDnsAdConsistency. Untyped, default @(), may be null or
+        empty.
+    .PARAMETER DsaError
+        The dsa error input of Get-AdfaDnsAdConsistency. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -23667,6 +26988,10 @@ function Get-AdfaDsaInventory {
         lingering-object scan. StrictMode-safe against objects missing properties.
     .OUTPUTS
         [pscustomobject[]] DsaGuid, ServerDn, DnsHostName ('' when orphaned)
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -23721,6 +27046,15 @@ function Get-AdfaDsaGuidCname {
         with broken replication the alias can exist on some DNS servers and not others.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER ForestRoot
+        The DNS name of the forest root domain. Type [string], mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER DnsServers
+        The DNS servers of the domain controller or row. Type [string[]], default @(), may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -23791,6 +27125,15 @@ function Get-AdfaGcConsistency {
         GlobalCatalogs) against what each DNS server advertises under _gc._tcp.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER ForestRoot
+        The DNS name of the forest root domain. Type [string], mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER DnsServers
+        The DNS servers of the domain controller or row. Type [string[]], default @(), may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -23847,6 +27190,8 @@ function Get-AdfaDnsNameNormalised {
         a mismatch here reads as a missing record.
     .OUTPUTS
         [string]
+    .PARAMETER Name
+        The name input of Get-AdfaDnsNameNormalised. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -23874,6 +27219,13 @@ function Get-AdfaMsdcsZoneVerdict {
         normalised, so a trailing dot or capitalisation never decides the verdict.
     .OUTPUTS
         [string] DelegatedZone | NotDelegated | OtherApex | NoAnswer
+    .PARAMETER ZoneName
+        The DNS zone name. Type [string], mandatory.
+    .PARAMETER ParentZone
+        The parent zone input of Get-AdfaMsdcsZoneVerdict. Type [string], mandatory.
+    .PARAMETER SoaApex
+        The soa apex input of Get-AdfaMsdcsZoneVerdict. Type [string[]], default @(), may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -23927,6 +27279,23 @@ function Get-AdfaMsdcsDelegationVerdict {
         fault.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER ForestRoot
+        The DNS name of the forest root domain. Type [string], mandatory.
+    .PARAMETER Observations
+        One object per answering DNS server: Server, SoaApex, NsTargets, GlueMissing, GlueUnknown.
+        Supplied by the collector so this verdict needs no directory or resolver. Untyped, default
+        @(), may be null or empty.
+    .PARAMETER AdDcHosts
+        The ad dc hosts input of Get-AdfaMsdcsDelegationVerdict. Type [string[]], default @(), may
+        be null or empty.
+    .PARAMETER Unanswered
+        The unanswered input of Get-AdfaMsdcsDelegationVerdict. Type [string[]], default @(), may be
+        null or empty.
+    .PARAMETER IncompleteDomains
+        PORT-PLAN C2e: scoped domains whose DCs are missing from -AdDcHosts (their enumeration threw
+        or returned no DC). With any named, an NS host missing from -AdDcHosts may be one of their
+        DCs, so it is Not Assessed naming them, never "not a known DC". Type [string[]], default
+        @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -24075,6 +27444,18 @@ function Get-AdfaMsdcsDelegation {
         resolver using that server would actually have to follow.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER ForestRoot
+        The DNS name of the forest root domain. Type [string], mandatory.
+    .PARAMETER DnsServers
+        The DNS servers of the domain controller or row. Type [string[]], default @(), may be null
+        or empty.
+    .PARAMETER AdDcHosts
+        The ad dc hosts input of Get-AdfaMsdcsDelegation. Type [string[]], default @(), may be null
+        or empty.
+    .PARAMETER IncompleteDomains
+        PORT-PLAN C2e: scoped domains whose DCs are missing from -AdDcHosts (their enumeration threw
+        or returned no DC). Passed to the verdict, which then does not call an NS host "not a known
+        DC". Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -24144,6 +27525,8 @@ function ConvertFrom-AdfaW32tmConfiguration {
         Read: 2026-09-22.
     .OUTPUTS
         [pscustomobject] Type (string), NtpServer (string)
+    .PARAMETER Text
+        The text to parse. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -24196,6 +27579,25 @@ function Get-AdfaTimeSourceVerdict {
         configuration. It never returns Pass for a source it could not read.
     .OUTPUTS
         [pscustomobject] A single finding row.
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default ''.
+    .PARAMETER IsPdcEmulator
+        The is pdc emulator input of Get-AdfaTimeSourceVerdict. Type [bool], default $false.
+    .PARAMETER IsForestRootPdc
+        The is forest root pdc input of Get-AdfaTimeSourceVerdict. Type [bool], default $false.
+    .PARAMETER Queried
+        The queried input of Get-AdfaTimeSourceVerdict. Type [bool], default $true.
+    .PARAMETER Source
+        The source input of Get-AdfaTimeSourceVerdict. Type [string], default ''.
+    .PARAMETER ErrorText
+        The error text of the failed read or command; empty when there was none. Type [string],
+        default ''.
+    .PARAMETER DomainControllerHosts
+        The domain controller hosts input of Get-AdfaTimeSourceVerdict. Type [string[]], default
+        @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -24285,6 +27687,15 @@ function Get-AdfaRootPdcClientTypeVerdict {
         output, which says nothing about the configuration.
     .OUTPUTS
         [pscustomobject] A single finding row.
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default ''.
+    .PARAMETER ClientType
+        The client type input of Get-AdfaRootPdcClientTypeVerdict. Type [string], default ''.
+    .PARAMETER NtpServer
+        The ntp server input of Get-AdfaRootPdcClientTypeVerdict. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -24350,6 +27761,8 @@ function ConvertFrom-AdfaStripchartCsv {
         perfectly synchronised.
     .OUTPUTS
         [pscustomobject] Offsets (double[]), Delays (double[]), RowsSeen (int), RowsParsed (int)
+    .PARAMETER Text
+        The text to parse. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -24419,6 +27832,26 @@ function Get-AdfaClockOffsetVerdict {
         clean - which is why the detail names the reference rather than leaving it implied.
     .OUTPUTS
         [pscustomobject] A single finding row.
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default ''.
+    .PARAMETER ReferenceHost
+        The reference host input of Get-AdfaClockOffsetVerdict. Type [string], default '(this
+        host)'.
+    .PARAMETER Queried
+        The queried input of Get-AdfaClockOffsetVerdict. Type [bool], default $true.
+    .PARAMETER Offsets
+        The offsets input of Get-AdfaClockOffsetVerdict. Type [object[]], default @(), may be null
+        or empty.
+    .PARAMETER ErrorText
+        The error text of the failed read or command; empty when there was none. Type [string],
+        default ''.
+    .PARAMETER WarnSeconds
+        The Warning threshold, in seconds. Type [double], default 60.
+    .PARAMETER FailSeconds
+        The Fail threshold, in seconds. Type [double], default 300.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -24484,6 +27917,35 @@ function Get-AdfaTimeHierarchyHealth {
         reachability probe classified Unreachable says so.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e). Untyped, default @(), may be
+        null or empty.
+    .PARAMETER PdcEmulators
+        Hashtable of DC host name -> domain DNS name, for the PDC emulator of each domain. Type
+        [hashtable], default @{}.
+    .PARAMETER ForestRootPdc
+        The forest root pdc input of Get-AdfaTimeHierarchyHealth. Type [string], default ''.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 60.
+    .PARAMETER SkewSamples
+        The skew samples input of Get-AdfaTimeHierarchyHealth. Type [int], default 3.
+    .PARAMETER WarnSeconds
+        The Warning threshold, in seconds. Type [double], default 60.
+    .PARAMETER FailSeconds
+        The Fail threshold, in seconds. Type [double], default 300.
+    .PARAMETER ThresholdSource
+        Where the grades came from (ClockSkew ThresholdSource, the file's where it supplied one).
+        Type [string], default '', may be null or empty.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw (Domain, Error), and the domains of the run. Untyped,
+        default @(), may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -24682,6 +28144,9 @@ function Get-AdfaSiteGcCoverage {
         quietly dropping out of the count.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -24767,6 +28232,13 @@ function Get-AdfaPortMatrix {
         closed" - they have completely different fixes.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e). The population rows of the
+        section are the "DC reachability (population)" rows, which take the same targets. Untyped,
+        default @(), may be null or empty.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -24842,6 +28314,26 @@ function Get-AdfaDcSecureChannel {
         where it is not, the check reports Not Assessed and says what to run locally.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER WarnDays
+        The Warning threshold, in days. Type [int], default 45.
+    .PARAMETER FailDays
+        The fail days input of Get-AdfaDcSecureChannel. Type [int], default 90.
+    .PARAMETER LiveVerify
+        Run nltest /sc_verify on each DC instead of /sc_query. /sc_verify resets a channel that is
+        not working, on every DC it reaches; off unless asked for. Switch.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -24981,6 +28473,17 @@ function Get-AdfaEventLogCoverage {
           Unknown   - the log could not be inspected (unreachable, access denied, absent).
     .OUTPUTS
         [string] Covered | Truncated | Empty | Unknown
+    .PARAMETER Inspected
+        The inspected input of Get-AdfaEventLogCoverage. Type [bool], default $true.
+    .PARAMETER RecordCount
+        The record count input of Get-AdfaEventLogCoverage. Type [Nullable[int]], may be null or
+        empty.
+    .PARAMETER OldestRecord
+        The oldest record input of Get-AdfaEventLogCoverage. Type [Nullable[datetime]], may be null
+        or empty.
+    .PARAMETER WindowStart
+        The window start input of Get-AdfaEventLogCoverage. Type [Nullable[datetime]], may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -25007,6 +28510,21 @@ function Get-AdfaEventCoverageDetail {
         rather than buried in string concatenation inside a collector.
     .OUTPUTS
         [string] Empty for 'Covered' - there is nothing to caveat.
+    .PARAMETER Coverage
+        The coverage input of Get-AdfaEventCoverageDetail. Type [string], mandatory, one of Covered,
+        Truncated, Empty, Unknown.
+    .PARAMETER OldestRecord
+        The oldest record input of Get-AdfaEventCoverageDetail. Type [Nullable[datetime]], may be
+        null or empty.
+    .PARAMETER LookbackDays
+        How many days back the event scan looks (-EventLookbackDays of the run). Type [int], default
+        14.
+    .PARAMETER Reason
+        The reason input of Get-AdfaEventCoverageDetail. Type [string], default ''.
+    .PARAMETER LogName
+        Named by the caller so one guard serves both the Directory Service and the DFS Replication
+        logs rather than the wording being duplicated per log. Type [string], default 'Directory
+        Service'.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -25047,6 +28565,15 @@ function Get-AdfaEventLogCoverageForLog {
         with -Oldest -MaxEvents 1.
     .OUTPUTS
         [pscustomobject] Coverage, OldestRecord, RecordCount, Reason
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER LogName
+        The log name input of Get-AdfaEventLogCoverageForLog. Type [string], mandatory.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER WindowStart
+        The window start input of Get-AdfaEventLogCoverageForLog. Type [datetime], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -25121,6 +28648,14 @@ function Get-AdfaSysvolShareOutcome {
         Read: 2026-09-21.
     .OUTPUTS
         [string] Shared | MissingSysvol | MissingNetlogon | MissingBoth | Unknown
+    .PARAMETER SmbReachable
+        The smb reachable input of Get-AdfaSysvolShareOutcome. Type [bool], default $true.
+    .PARAMETER SysvolPresent
+        The sysvol present input of Get-AdfaSysvolShareOutcome. Type [Nullable[bool]], may be null
+        or empty.
+    .PARAMETER NetlogonPresent
+        The netlogon present input of Get-AdfaSysvolShareOutcome. Type [Nullable[bool]], may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -25146,6 +28681,18 @@ function Get-AdfaSysvolShareHealth {
         unreachable DC is reported as unknown rather than as a missing share.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e). Untyped, default @(), may be
+        null or empty.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw (Domain, Error), and the domains of the run. Untyped,
+        default @(), may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -25242,6 +28789,16 @@ function Get-AdfaDfsrSubscriptionVerdict {
         not document clearing it afterwards, so a set value is reported as state, not as a fault.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Subscriptions
+        The subscriptions input of Get-AdfaDfsrSubscriptionVerdict. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER NotDfsrCount
+        PORT-PLAN C16 (GAP-P1): DCs of the domain read to have no DFSR SYSVOL subscription (an FRS
+        DC); they are not in -Subscriptions, and are named in the row when nothing else is. Type
+        [int], default 0, from 0 to 1000000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -25344,6 +28901,9 @@ function ConvertTo-AdfaDfsrSubscriptionList {
         unknown. msDFSR-options is read as an integer where it is one.
     .OUTPUTS
         [pscustomobject] Subscriptions (DcName, Enabled, Options, Error), NotDfsrCount.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -25401,6 +28961,15 @@ function Get-AdfaDfsrBacklogCount {
         Returns Count (int) and Exact (bool). Count is -1 when nothing could be determined.
     .OUTPUTS
         [pscustomobject] Count, Exact, Source
+    .PARAMETER VerboseMessage
+        The verbose message input of Get-AdfaDfsrBacklogCount. Type [string], default '', may be
+        null or empty.
+    .PARAMETER ObjectCount
+        The object count input of Get-AdfaDfsrBacklogCount. Type [int], default 0.
+    .PARAMETER DisplayCap
+        The display cap input of Get-AdfaDfsrBacklogCount. Type [int], default 100.
+    .PARAMETER Succeeded
+        The succeeded input of Get-AdfaDfsrBacklogCount. Type [bool], default $true.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -25440,6 +29009,20 @@ function Get-AdfaSysvolBacklogVerdict {
         A count that is a floor rather than a total is never reported as if it were exact.
     .OUTPUTS
         [pscustomobject] Status, Detail
+    .PARAMETER SourceDc
+        The domain controller the read or test runs from. Type [string], mandatory.
+    .PARAMETER DestinationDc
+        The destination dc input of Get-AdfaSysvolBacklogVerdict. Type [string], mandatory.
+    .PARAMETER Count
+        The count input of Get-AdfaSysvolBacklogVerdict. Type [int], default -1.
+    .PARAMETER Exact
+        The exact input of Get-AdfaSysvolBacklogVerdict. Type [bool], default $true.
+    .PARAMETER WarnAt
+        The warn at input of Get-AdfaSysvolBacklogVerdict. Type [int], default 1.
+    .PARAMETER FailAt
+        The fail at input of Get-AdfaSysvolBacklogVerdict. Type [int], default 100.
+    .PARAMETER Reason
+        The reason input of Get-AdfaSysvolBacklogVerdict. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -25495,6 +29078,17 @@ function Get-AdfaSysvolBacklog {
         faults, and testing only one would miss half of them.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER ReferenceDc
+        The reference dc input of Get-AdfaSysvolBacklog. Type [string], mandatory.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Type [string[]], default @(), may be null or empty.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -25580,6 +29174,27 @@ function Get-AdfaDfsrEventLog {
         log did not cover the window.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e). Untyped, default @(), may be
+        null or empty.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER LookbackDays
+        How many days back the event scan looks (-EventLookbackDays of the run). Type [int], default
+        14.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw (Domain, Error), and the domains of the run. Untyped,
+        default @(), may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
+    .PARAMETER MaxEvents
+        The most events read per domain controller. Type [int], default
+        [int]$script:Config.EventScanMaxEvents, from 1 to 100000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -25694,6 +29309,10 @@ function Get-AdfaEventCapText {
     .SYNOPSIS
         Pure: '' unless an event scan returned as many events as its cap; then the sentence every
         event row of that scan carries, saying its count is a minimum. PORT-PLAN C16 (GAP-P25).
+    .PARAMETER Count
+        The count input of Get-AdfaEventCapText. Type [int].
+    .PARAMETER Cap
+        The most items read or listed. Reaching it is said in the text. Type [int].
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -25722,6 +29341,27 @@ function Get-AdfaDsEventLog {
         occurrences, and a rarer ID of interest, out of the result.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e). Untyped, default @(), may be
+        null or empty.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER LookbackDays
+        How many days back the event scan looks (-EventLookbackDays of the run). Type [int], default
+        14.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw (Domain, Error), and the domains of the run. Untyped,
+        default @(), may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
+    .PARAMETER MaxEvents
+        The most events read per domain controller. Type [int], default
+        [int]$script:Config.EventScanMaxEvents, from 1 to 100000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -25868,6 +29508,13 @@ function Get-AdfaUsnRollbackVerdict {
         that limit stated, rather than as proof of health.
     .OUTPUTS
         [string] Rollback | OtherValue | NoEvidence | Unknown
+    .PARAMETER Readable
+        The readable input of Get-AdfaUsnRollbackVerdict. Type [bool], default $true.
+    .PARAMETER Present
+        The present input of Get-AdfaUsnRollbackVerdict. Type [Nullable[bool]], may be null or
+        empty.
+    .PARAMETER Value
+        The value input of Get-AdfaUsnRollbackVerdict. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -25891,6 +29538,13 @@ function Get-AdfaUsnRollbackDetail {
         The sentence that goes with a Dsa Not Writable verdict.
     .OUTPUTS
         [string]
+    .PARAMETER Verdict
+        The verdict input of Get-AdfaUsnRollbackDetail. Type [string], mandatory, one of Rollback,
+        OtherValue, NoEvidence, Unknown.
+    .PARAMETER Value
+        The value input of Get-AdfaUsnRollbackDetail. Untyped, may be null or empty.
+    .PARAMETER Reason
+        The reason input of Get-AdfaUsnRollbackDetail. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -25922,6 +29576,18 @@ function Get-AdfaUsnRollbackForensics {
         the DC hardening checks and the same NTDS Parameters key.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        DC rows (HostName, Scope) or plain host names (PORT-PLAN C2e). Untyped, default @(), may be
+        null or empty.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    .PARAMETER InventoryFailures
+        Domains whose DC enumeration threw (Domain, Error), and the domains of the run. Untyped,
+        default @(), may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -25993,6 +29659,8 @@ function Get-AdfaUsnRollbackRaw {
         without a DC.
     .OUTPUTS
         [pscustomobject] Readable, Present ($null unless Readable), Value, Reason, ErrorCode.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26040,6 +29708,8 @@ function Get-AdfaRegistryReadErrorCode {
         localised on a host whose language is not English, which is why the type decides.
     .OUTPUTS
         [string]
+    .PARAMETER Exception
+        The exception (or error record) to classify. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -26075,6 +29745,9 @@ function Get-AdfaInvocationIdVerdict {
         between them.
     .OUTPUTS
         [pscustomobject[]] Finding rows.
+    .PARAMETER DsaInventory
+        The dsa inventory input of Get-AdfaInvocationIdVerdict. Untyped, default @(), may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -26149,6 +29822,28 @@ function New-AdfaC14Row {
         read there. NotRun is added to the finding after the recommendation is chosen.
     .OUTPUTS
         [pscustomobject] Scope, Area, Item, Status, Detail, Evidence, the given columns, NotRun.
+    .PARAMETER Area
+        The value of the Area column. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory, one of Pass, Warning, Fail, Not Assessed, Info.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be null or empty.
+    .PARAMETER Evidence
+        The value of the Evidence column: what the verdict rests on. Type [string], default '', may
+        be null or empty.
+    .PARAMETER Columns
+        The columns input of New-AdfaC14Row. Type [System.Collections.IDictionary], default $null,
+        may be null or empty.
+    .PARAMETER NotRun
+        A note naming what was deliberately not run and why. It goes in the NotRun column, never in
+        the text the recommendation is chosen from. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26186,6 +29881,15 @@ function Merge-AdfaSpecConfig {
         keys it supplied and the built-in source for the others.
     .OUTPUTS
         [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -26263,6 +29967,10 @@ function Get-AdfaC14NameList {
     <#
     .SYNOPSIS
         Pure: up to -Cap names joined with '; ', and how many were left out. For display columns only.
+    .PARAMETER Names
+        The names input of Get-AdfaC14NameList. Type [string[]], default @(), may be null or empty.
+    .PARAMETER Cap
+        The most items read or listed. Reaching it is said in the text. Type [int], default 20.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -26281,6 +29989,8 @@ function Get-AdfaReadClassPhrase {
     .SYNOPSIS
         Pure: the words a row uses for a read-failure class, so that unreachable, access denied and
         timed out are never worded alike.
+    .PARAMETER Class
+        The class input of Get-AdfaReadClassPhrase. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -26307,6 +30017,11 @@ function Resolve-AdfaHostAddress {
         exception is a fault of the input or the tool, with no SocketError. Sends nothing to the DC.
     .OUTPUTS
         [pscustomobject] Ok, Addresses (string[]), SocketError, TimedOut, Error.
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], mandatory.
+    .PARAMETER TimeoutMs
+        Milliseconds to wait before the attempt is treated as not answering. Type [int], default
+        3000, from 100 to 60000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26347,6 +30062,13 @@ function Test-AdfaTcpAddress {
         ...). The client is closed in a finally block. One attempt, no retry.
     .OUTPUTS
         [pscustomobject] Outcome (Open | Failed), SocketError, TimedOut, Error.
+    .PARAMETER Address
+        The address input of Test-AdfaTcpAddress. Type [string], mandatory.
+    .PARAMETER Port
+        The TCP port. Type [int], mandatory, from 1 to 65535.
+    .PARAMETER TimeoutMs
+        Milliseconds to wait before the attempt is treated as not answering. Type [int], default
+        3000, from 100 to 60000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26393,6 +30115,12 @@ function Get-AdfaProbeClass {
     .DESCRIPTION
         From the outcome first, then the wait that ran out, then the SocketError name against the
         lists in the Reach table. Anything not recognised is Failed and is quoted, not interpreted.
+    .PARAMETER Probe
+        The probe input of Get-AdfaProbeClass. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Reach.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -26429,6 +30157,19 @@ function Resolve-AdfaDcReachClass {
         Never Reachable without every probe it rests on.
     .OUTPUTS
         [pscustomobject] Class, Cause.
+    .PARAMETER Resolve
+        The resolve input of Resolve-AdfaDcReachClass. Untyped, may be null or empty.
+    .PARAMETER LdapProbes
+        The ldap probes input of Resolve-AdfaDcReachClass. Untyped, default @(), may be null or
+        empty.
+    .PARAMETER WinRm
+        The win rm input of Resolve-AdfaDcReachClass. Untyped, default $null, may be null or empty.
+    .PARAMETER Rpc
+        The rpc input of Resolve-AdfaDcReachClass. Untyped, default $null, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Reach.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26479,6 +30220,12 @@ function Get-AdfaDcReachability {
     .OUTPUTS
         [pscustomobject] HostName, Class, Cause, Addresses, LdapAddress, PortText, TimeoutMs, Error,
         SocketError.
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], mandatory.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Reach.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26533,6 +30280,9 @@ function Get-AdfaDcReachRecord {
     .SYNOPSIS
         The reachability record of one DC if it was classified in this run; $null otherwise. Probes
         nothing.
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26548,6 +30298,14 @@ function Get-AdfaC14UnreachableText {
     .SYNOPSIS
         Pure: the words for one Unreachable cause. Never mentions access: a refused read is not a
         reachability class.
+    .PARAMETER Cause
+        The cause input of Get-AdfaC14UnreachableText. Type [string], may be null or empty.
+    .PARAMETER TimeoutMs
+        Milliseconds to wait before the attempt is treated as not answering. Type [int], default
+        3000.
+    .PARAMETER SocketError
+        The socket error input of Get-AdfaC14UnreachableText. Type [string], default '', may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -26568,6 +30326,9 @@ function Get-AdfaDcReachCause {
     .SYNOPSIS
         '' unless this DC was classified Unreachable in this run; then the reason, worded for the row
         of any section that did not read it. Probes nothing.
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -26600,6 +30361,13 @@ function Get-AdfaDcProbeGate {
     .OUTPUTS
         [pscustomobject] Cause ('' unless the DC was classified Unreachable), Open (hashtable:
         port -> bool).
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], may be null or empty.
+    .PARAMETER Ports
+        The ports input of Get-AdfaDcProbeGate. Type [int[]], default @(), may be null or empty.
+    .PARAMETER TimeoutMs
+        Milliseconds to wait before the attempt is treated as not answering. Type [int], default
+        1200.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26624,6 +30392,10 @@ function Get-AdfaDcGateText {
         Unreachable - the class, then what was not read. The same cause in every section.
     .OUTPUTS
         [string]
+    .PARAMETER Cause
+        The cause input of Get-AdfaDcGateText. Type [string], mandatory.
+    .PARAMETER NotRead
+        The not read input of Get-AdfaDcGateText. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -26647,6 +30419,24 @@ function Get-AdfaDcPopulationRow {
         replication-health shape, whose item column is DomainController.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER Targets
+        The targets input of Get-AdfaDcPopulationRow. Untyped, default @(), may be null or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
+    .PARAMETER Area
+        The value of the Area column. Type [string], mandatory.
+    .PARAMETER Label
+        The label input of Get-AdfaDcPopulationRow. Type [string], mandatory.
+    .PARAMETER NothingRead
+        The nothing read input of Get-AdfaDcPopulationRow. Type [string], mandatory.
+    .PARAMETER Shape
+        The shape input of Get-AdfaDcPopulationRow. Type [string], default 'Finding', one of
+        Finding, DomainController.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -26688,6 +30478,18 @@ function Get-AdfaDcReachVerdict {
         anything not classified is Not Assessed. Addresses and ports are display columns.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], default
+        '', may be null or empty.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Record
+        The record input of Get-AdfaDcReachVerdict. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Reach.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26752,6 +30554,23 @@ function Get-AdfaDcReachabilityRows {
         population row per domain, each DC classified once for the run.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Reach.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER EnumerationError
+        The error text when the domain controllers could not be enumerated; empty when they were.
+        Type [string], default '', may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -26813,6 +30632,17 @@ function Get-AdfaSubnetSiteVerdict {
         the Evidence says so.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Subnets
+        The subnets input of Get-AdfaSubnetSiteVerdict. Untyped, default @(), may be null or empty.
+    .PARAMETER ReadError
+        The read error input of Get-AdfaSubnetSiteVerdict. Type [string], default '', may be null or
+        empty.
+    .PARAMETER ForestName
+        The DNS name of the forest. Type [string], default '', may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.SiteCoverage.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26874,6 +30704,11 @@ function Get-AdfaNetlogonLogRaw {
     .OUTPUTS
         [pscustomobject] Ok, Class, Text, Error, ErrorType, HResult, Path, Partial, BytesRead,
         FileLength.
+    .PARAMETER Path
+        The path input of Get-AdfaNetlogonLogRaw. Type [string], mandatory.
+    .PARAMETER MaxBytes
+        The max bytes input of Get-AdfaNetlogonLogRaw. Type [int], default 4194304, from 256 to
+        20000000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26931,6 +30766,11 @@ function ConvertFrom-AdfaNetlogonNoClientSite {
         counted as Unparsed, never guessed. Clients are listed once each, in first-seen order.
     .OUTPUTS
         [pscustomobject] Lines (marker lines), Unparsed, Entries (Name, Address).
+    .PARAMETER Text
+        The text to parse. Type [string], default '', may be null or empty.
+    .PARAMETER Marker
+        The marker input of ConvertFrom-AdfaNetlogonNoClientSite. Type [string], default
+        'NO_CLIENT_SITE:'.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26971,6 +30811,24 @@ function Get-AdfaNoClientSiteVerdict {
         marker line could not be parsed. Client names and addresses are in the Clients column only.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER HostName
+        The host name of the domain controller or server the row is about. Type [string], default
+        '', may be null or empty.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER PortOpen
+        The port open input of Get-AdfaNoClientSiteVerdict. Type [bool], default $true.
+    .PARAMETER ReachCause
+        The reachability cause of the domain controller from the per-run probe; empty when it
+        answered. Type [string], default '', may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.SiteCoverage.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27035,6 +30893,26 @@ function Get-AdfaClientSiteRows {
         \\<dc>\ADMIN$\debug\netlogon.log. Read-only.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.SiteCoverage.
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER EnumerationError
+        The error text when the domain controllers could not be enumerated; empty when they were.
+        Type [string], default '', may be null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -27092,6 +30970,13 @@ function Get-AdfaStripchartSample {
         /rdtsc header.
     .OUTPUTS
         [pscustomobject] Queried, Offsets, Delays, Error.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Samples
+        The samples input of Get-AdfaStripchartSample. Type [int], default 3, from 1 to 100.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
+        run). Type [int], default 60.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27121,6 +31006,8 @@ function Get-AdfaC14Median {
     <#
     .SYNOPSIS
         Pure: the median of a list of numbers, or $null for none.
+    .PARAMETER Values
+        The values input of Get-AdfaC14Median. Type [double[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()][AllowEmptyCollection()][double[]]$Values = @())
@@ -27147,6 +31034,32 @@ function Get-AdfaPdcClockOffsetVerdict {
         not identified or not measured, the DC was classified unreachable, or the DC was not measured.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER DomainController
+        The host name of the domain controller. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER ReferencePdc
+        The reference pdc input of Get-AdfaPdcClockOffsetVerdict. Type [string], default '', may be
+        null or empty.
+    .PARAMETER IsReference
+        The is reference input of Get-AdfaPdcClockOffsetVerdict. Type [bool], default $false.
+    .PARAMETER Sample
+        The sample input of Get-AdfaPdcClockOffsetVerdict. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER ReferenceSample
+        The reference sample input of Get-AdfaPdcClockOffsetVerdict. Untyped, default $null, may be
+        null or empty.
+    .PARAMETER ReachCause
+        The reachability cause of the domain controller from the per-run probe; empty when it
+        answered. Type [string], default '', may be null or empty.
+    .PARAMETER WarnSeconds
+        The Warning threshold, in seconds. Type [double], default 60.
+    .PARAMETER FailSeconds
+        The Fail threshold, in seconds. Type [double], default 300.
+    .PARAMETER ThresholdSource
+        Where the threshold came from (a Microsoft value, a tool default or the override file),
+        cited in the text. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27250,6 +31163,12 @@ function Get-AdfaStaleLdapFilter {
         AllDisabledComputer, their declared population, without the time term.
     .OUTPUTS
         [string]
+    .PARAMETER Kind
+        The kind input of Get-AdfaStaleLdapFilter. Type [string], mandatory, one of User, Computer,
+        Password, EnabledUser, EnabledComputer, DisabledUser, DisabledComputer, AllDisabledUser,
+        AllDisabledComputer.
+    .PARAMETER CutoffUtc
+        The cutoff utc input of Get-AdfaStaleLdapFilter. Type [datetime], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -27293,6 +31212,21 @@ function Get-AdfaStaleRaw {
     .OUTPUTS
         [pscustomobject] Ok, Error, ErrorType, Records (Name, HasLastLogon, LastLogonUtc,
         WhenCreatedUtc, PwdLastSetRaw, UserAccountControl), Capped, Filter, Properties.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Kind
+        The kind input of Get-AdfaStaleRaw. Type [string], mandatory, one of User, Computer,
+        Password, DisabledUser, DisabledComputer.
+    .PARAMETER CutoffUtc
+        The cutoff utc input of Get-AdfaStaleRaw. Type [datetime], mandatory.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default 100000, from 1 to 1000000.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27367,6 +31301,19 @@ function Get-AdfaStalePopulationRaw {
         returned nothing be told from a read that saw nothing: a count of 0 is never a clean result.
     .OUTPUTS
         [pscustomobject] Ok, Count, Capped, Error, ErrorType, Filter.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Kind
+        The kind input of Get-AdfaStalePopulationRaw. Type [string], mandatory, one of User,
+        Computer, DisabledUser, DisabledComputer.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default 100000, from 1 to 1000000.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27410,6 +31357,13 @@ function Get-AdfaC14PopulationText {
         enabled account.
     .OUTPUTS
         [pscustomobject] Ok, Text, Why.
+    .PARAMETER Population
+        The population input of Get-AdfaC14PopulationText. Untyped, may be null or empty.
+    .PARAMETER Noun
+        The noun input of Get-AdfaC14PopulationText. Type [string], mandatory.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default 100000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27444,6 +31398,13 @@ function Get-AdfaLogonSyncIntervalRaw {
         false when the attribute is not set; the verdict then states the default.
     .OUTPUTS
         [pscustomobject] Ok, Present, Value, Error.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27476,6 +31437,12 @@ function Get-AdfaC14SyncInterval {
         disabled.
     .OUTPUTS
         [pscustomobject] Days, Disabled, Text.
+    .PARAMETER Interval
+        The interval input of Get-AdfaC14SyncInterval. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Stale.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27514,6 +31481,30 @@ function Get-AdfaStaleCountVerdict {
         counted, could not be counted or was empty. Names are in the Accounts column only.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Kind
+        The kind input of Get-AdfaStaleCountVerdict. Type [string], mandatory, one of User,
+        Computer.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Interval
+        The interval input of Get-AdfaStaleCountVerdict. Untyped, may be null or empty.
+    .PARAMETER StaleDays
+        Days of inactivity after which an object counts as stale (-StaleDays of the run). Type
+        [int], mandatory.
+    .PARAMETER Now
+        The current time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], mandatory.
+    .PARAMETER Population
+        The population input of Get-AdfaStaleCountVerdict. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Stale.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27602,6 +31593,22 @@ function Get-AdfaPasswordAgeVerdict {
         found and the declared population (Population, the enabled users) was not counted or empty.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Now
+        The current time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], mandatory.
+    .PARAMETER Population
+        The population input of Get-AdfaPasswordAgeVerdict. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Stale.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27690,6 +31697,23 @@ function Get-AdfaDirectoryObjectState {
         a refused read is never taken for an object that does not exist.
     .OUTPUTS
         [pscustomobject] State, Object, Error, ErrorType, Class.
+    .PARAMETER Identity
+        The identity (distinguished name or GUID) of the directory object to read. Type [string],
+        mandatory.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string],
+        mandatory.
+    .PARAMETER Properties
+        The declared list of directory attributes to read (never every attribute). Type [string[]],
+        default @(), may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.SysvolEngine.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27738,6 +31762,17 @@ function Get-AdfaSysvolEngineRaw {
         (HostName, IsReadOnly, ComputerDn, Dfsr, DfsrError, Frs, FrsError, DfsrEnabled, DfsrOptions -
         the raw msDFSR-Enabled and msDFSR-options of a DFSR subscription that is Present, $null when
         not returned; PORT-PLAN C16).
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.SysvolEngine.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27817,6 +31852,12 @@ function Resolve-AdfaSysvolEngineDc {
     .SYNOPSIS
         Pure: the SYSVOL engine of one DC from its two objects - DFSR, FRS, Transitional (both: a
         migration has started and not finished) or Unknown (neither, or either not read).
+    .PARAMETER Dfsr
+        The dfsr input of Resolve-AdfaSysvolEngineDc. Type [string], default 'Unread', may be null
+        or empty.
+    .PARAMETER Frs
+        The frs input of Resolve-AdfaSysvolEngineDc. Type [string], default 'Unread', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -27845,6 +31886,16 @@ function Get-AdfaSysvolEngineVerdict {
         only; its absence is never read as FRS.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.SysvolEngine.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -27975,6 +32026,32 @@ function Get-AdfaInventoryDirectoryRaw {
     .OUTPUTS
         [pscustomobject] Ok, Error, ErrorType, NotFound, Records (DistinguishedName, Name, the listed
         properties, <name>Count), Count, Capped, Filter, Identity.
+    .PARAMETER Server
+        The server (domain controller or DNS server) the read is directed at. Type [string],
+        mandatory.
+    .PARAMETER Identity
+        The identity (distinguished name or GUID) of the directory object to read. Type [string],
+        default '', may be null or empty.
+    .PARAMETER SearchBase
+        The distinguished name to search under. Type [string], default '', may be null or empty.
+    .PARAMETER SearchScope
+        The search scope: Base, OneLevel or Subtree. Type [string], default '', may be null or
+        empty.
+    .PARAMETER LDAPFilter
+        The LDAP filter of the search. Type [string], default '', may be null or empty.
+    .PARAMETER Properties
+        The declared list of directory attributes to read (never every attribute). Type [string[]],
+        default @(), may be null or empty.
+    .PARAMETER CountProperties
+        The count properties input of Get-AdfaInventoryDirectoryRaw. Type [string[]], default @(),
+        may be null or empty.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default 100000, from 1 to 1000000.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28052,6 +32129,18 @@ function Get-AdfaInventoryReadCause {
         timed out, not found and a reached cap are each worded apart.
     .OUTPUTS
         [string]
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER What
+        A short description of what was being read, used in the message. Type [string], mandatory.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default 100000.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words. The C15 callers keep the default; the C4b
+        reads pass Get-AdfaCapSource's phrase (PORT-PLAN C4b4 for the C15 callers). Type [string],
+        default 'MaxObjects, a tool default'.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -28082,6 +32171,13 @@ function Get-AdfaInventoryDomainDn {
         The distinguished name of one domain, from Get-ADDomain. Never throws.
     .OUTPUTS
         [pscustomobject] Ok, Dn, Error, ErrorType.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28110,6 +32206,10 @@ function Get-AdfaRootDseRaw {
         configuration naming context. Never throws.
     .OUTPUTS
         [pscustomobject] Ok, DnsHostName, ConfigurationNamingContext, Error, ErrorType.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28136,6 +32236,12 @@ function New-AdfaInventoryFailedRead {
     .SYNOPSIS
         Pure: a read result that failed before it was sent, carrying the cause, in the shape the
         directory seam returns.
+    .PARAMETER ErrorText
+        The error text of the failed read or command; empty when there was none. Type [string],
+        default '', may be null or empty.
+    .PARAMETER ErrorType
+        The error type input of New-AdfaInventoryFailedRead. Type [string], default '', may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28158,6 +32264,17 @@ function Get-AdfaLevelRow {
         above 10; the raw value is kept).
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Kind
+        The kind input of Get-AdfaLevelRow. Type [string], mandatory, one of Forest, Domain.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28204,6 +32321,8 @@ function Get-AdfaFsmoHolderName {
         documented as invalid and is not read as a server.
     .OUTPUTS
         [pscustomobject] Valid, Server, Reason.
+    .PARAMETER Value
+        The value input of Get-AdfaFsmoHolderName. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28227,6 +32346,17 @@ function Get-AdfaFsmoRow {
         The holder is in the Holder column, never in Detail.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Role
+        The role input of Get-AdfaFsmoRow. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28261,6 +32391,25 @@ function Get-AdfaSuffixListRow {
         UPN suffix and allowed DNS suffix rows.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Attribute
+        The attribute input of Get-AdfaSuffixListRow. Type [string], mandatory.
+    .PARAMETER Noun
+        The noun input of Get-AdfaSuffixListRow. Type [string], mandatory.
+    .PARAMETER What
+        A short description of what was being read, used in the message. Type [string], mandatory.
+    .PARAMETER Evidence
+        The value of the Evidence column: what the verdict rests on. Type [string], mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28299,6 +32448,14 @@ function Get-AdfaUpnSuffixRow {
         Pure: "UPN suffixes: <forest>" from uPNSuffixes on CN=Partitions.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER ForestName
+        The DNS name of the forest. Type [string], default '', may be null or empty.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28313,6 +32470,15 @@ function Get-AdfaAllowedDnsSuffixRow {
         Pure: "Allowed DNS suffixes: <domain>" from msDS-AllowedDNSSuffixes on the domain head.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        default '', may be null or empty.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28333,6 +32499,19 @@ function Get-AdfaDnsSuffixRows {
         Disjoint "Unknown" and Not Assessed.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -28387,6 +32566,13 @@ function Get-AdfaRunnerRow {
         computer the run ran on.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER ForestName
+        The DNS name of the forest. Type [string], default '', may be null or empty.
+    .PARAMETER RootDse
+        The root dse input of Get-AdfaRunnerRow. Untyped, may be null or empty.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28425,6 +32611,35 @@ function Get-AdfaTopologyInventory {
         could not be read gets every one of its rows Not Assessed with that cause.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER ForestName
+        The DNS name of the forest. Type [string], default '', may be null or empty.
+    .PARAMETER RootDomain
+        The DNS name of the forest root domain. Type [string], default '', may be null or empty.
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
+    .PARAMETER ForestError
+        The error text when the forest could not be read; empty when it was read. Type [string],
+        default '', may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], default
+        [Environment]::MachineName, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -28493,6 +32708,11 @@ function Get-AdfaTrustAttributeDecode {
         not measured - never "no flags".
     .OUTPUTS
         [pscustomobject] Measured, Value, Flags (string[]), Unknown (string[]), Reason.
+    .PARAMETER Value
+        The value input of Get-AdfaTrustAttributeDecode. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28532,6 +32752,10 @@ function Get-AdfaInventoryCodeLabel {
     .SYNOPSIS
         Pure: "<raw> <name>" for an enumerated value, "<raw> (no published name)" for one the table
         does not name, '' for none.
+    .PARAMETER Value
+        The value input of Get-AdfaInventoryCodeLabel. Untyped, may be null or empty.
+    .PARAMETER Labels
+        The labels input of Get-AdfaInventoryCodeLabel. Type [hashtable], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -28556,6 +32780,15 @@ function Get-AdfaTrustInventoryRows {
         makes the population Not Assessed with its cause, never 0 trusts.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -28614,6 +32847,18 @@ function Get-AdfaTrustInventory {
         Trusts: the trustedDomain objects of every scoped domain, read from that domain (INV-006).
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER ForestError
+        The error text when the forest could not be read; empty when it was read. Type [string],
+        default '', may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -28647,6 +32892,8 @@ function ConvertTo-AdfaInventoryInteger {
     .SYNOPSIS
         Pure: a whole number from a directory or registry value - an integral number as it is, a
         string only when it is a whole number - or $null. A fraction, a boolean or text is $null.
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaInventoryInteger. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -28667,6 +32914,8 @@ function ConvertTo-AdfaInventoryUInt32 {
     .SYNOPSIS
         Pure: a 32-bit flag attribute as an unsigned number (a negative value read as signed is
         taken as unsigned), or $null when it is not a whole number.
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaInventoryUInt32. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -28689,6 +32938,15 @@ function Get-AdfaObjectCountRows {
         read that returned nothing is 0, visible to the account running the assessment.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Reads
+        The reads input of Get-AdfaObjectCountRows. Type [System.Collections.IDictionary], default
+        @{}, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -28759,6 +33017,11 @@ function Get-AdfaGroupScopeType {
     .SYNOPSIS
         Pure: the scope (Global, DomainLocal, Universal, Other) and type (Security, Distribution) a
         groupType value holds; both '' when it could not be read.
+    .PARAMETER Value
+        The value input of Get-AdfaGroupScopeType. Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28786,6 +33049,15 @@ function Get-AdfaGroupInventoryRows {
         row says so. Names only in the Groups column. A failed or capped read is Not Assessed.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -28850,6 +33122,15 @@ function ConvertTo-AdfaGroupExportRow {
         CSV never reads as the domain's complete group list.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -28885,6 +33166,18 @@ function Get-AdfaIdentityInventoryDepth {
         INV-010). Directory reads only, listed properties, member values counted and never kept.
     .OUTPUTS
         [pscustomobject] Counts (rows), Groups (rows), GroupExport (domain -> rows for the CSV).
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER ForestError
+        The error text when the forest could not be read; empty when it was read. Type [string],
+        default '', may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -28934,6 +33227,30 @@ function Get-AdfaStaleDisabledVerdict {
         counted. StaleDays is the -StaleDays parameter: Microsoft publishes no stale threshold.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Kind
+        The kind input of Get-AdfaStaleDisabledVerdict. Type [string], mandatory, one of User,
+        Computer.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Interval
+        The interval input of Get-AdfaStaleDisabledVerdict. Untyped, may be null or empty.
+    .PARAMETER StaleDays
+        Days of inactivity after which an object counts as stale (-StaleDays of the run). Type
+        [int], mandatory.
+    .PARAMETER Now
+        The current time, passed in so the verdict can be tested with a fixed clock. Type
+        [datetime], mandatory.
+    .PARAMETER Population
+        The population input of Get-AdfaStaleDisabledVerdict. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], default
+        $script:Config.Stale.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -29024,6 +33341,11 @@ function ConvertFrom-AdfaGpLink {
         every domain.
     .OUTPUTS
         [pscustomobject[]] Raw, Dn, DomainDn, Guid, Options, Disabled, Enforced, UnknownOptions, Parsed.
+    .PARAMETER Value
+        The value input of ConvertFrom-AdfaGpLink. Type [string], may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -29060,6 +33382,12 @@ function ConvertTo-AdfaGpLinkDomainDn {
         ',' or '='. From a DN when one is given, otherwise built from the DNS name (DC= per label).
     .OUTPUTS
         [string]
+    .PARAMETER Dn
+        The distinguished name of the directory object. Type [string], default '', may be null or
+        empty.
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -29092,6 +33420,30 @@ function Get-AdfaGpoDirectoryRows {
         -ForestDomains empty means the forest's domain list is not known - the fail-closed case.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER Gpc
+        The gpc input of Get-AdfaGpoDirectoryRows. Untyped, may be null or empty.
+    .PARAMETER Som
+        The som input of Get-AdfaGpoDirectoryRows. Untyped, may be null or empty.
+    .PARAMETER Site
+        The site input of Get-AdfaGpoDirectoryRows. Untyped, may be null or empty.
+    .PARAMETER Wmi
+        The wmi input of Get-AdfaGpoDirectoryRows. Untyped, may be null or empty.
+    .PARAMETER DomainDn
+        The distinguished name of the domain, for example DC=contoso,DC=com. Type [string], default
+        '', may be null or empty.
+    .PARAMETER ForestDomains
+        The DNS names of every domain of the forest. Type [string[]], default @(), may be null or
+        empty.
+    .PARAMETER OtherSom
+        The other som input of Get-AdfaGpoDirectoryRows. Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER GpoConfig
+        The gpo config input of Get-AdfaGpoDirectoryRows. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -29303,6 +33655,25 @@ function Get-AdfaGpoDirectoryInventory {
         rows and keeps "no link" from being stated.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER Domains
+        The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
+    .PARAMETER ForestDomains
+        The DNS names of every domain of the forest. Type [string[]], default @(), may be null or
+        empty.
+    .PARAMETER RootDomain
+        The DNS name of the forest root domain. Type [string], default '', may be null or empty.
+    .PARAMETER ForestError
+        The error text when the forest could not be read; empty when it was read. Type [string],
+        default '', may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER GpoConfig
+        The gpo config input of Get-AdfaGpoDirectoryInventory. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -29378,6 +33749,22 @@ function Get-AdfaEventInventoryRaw {
         also finds none, is NoEvents set; a refusal is AccessDenied and any other error is kept.
     .OUTPUTS
         [pscustomobject] Ok, NoEvents, LogAbsent, Events, Truncated, Error, ErrorId, ErrorCode.
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER LogName
+        The log name input of Get-AdfaEventInventoryRaw. Type [string], mandatory.
+    .PARAMETER StartTime
+        The start time input of Get-AdfaEventInventoryRaw. Type [datetime], mandatory.
+    .PARAMETER Levels
+        The levels input of Get-AdfaEventInventoryRaw. Type [int[]], mandatory.
+    .PARAMETER MaxEvents
+        The most events read per domain controller. Type [int], mandatory, from 1 to 100000.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -29466,6 +33853,27 @@ function Get-AdfaEventInventoryRows {
         error are Not Assessed, each with its own cause.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER LogName
+        The log name input of Get-AdfaEventInventoryRows. Type [string], mandatory.
+    .PARAMETER Raw
+        The raw result of the read seam this function interprets (Ok or the error, and the values
+        read). Untyped, may be null or empty.
+    .PARAMETER Coverage
+        The coverage input of Get-AdfaEventInventoryRows. Untyped, may be null or empty.
+    .PARAMETER Unreachable
+        The unreachable input of Get-AdfaEventInventoryRows. Type [string], default '', may be null
+        or empty.
+    .PARAMETER LookbackDays
+        How many days back the event scan looks (-EventLookbackDays of the run). Type [int], default
+        14.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -29579,6 +33987,31 @@ function Get-AdfaEventInventory {
         the window (Get-AdfaEventLogCoverageForLog) is measured after a read that worked.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
+    .PARAMETER EnumerationError
+        The error text when the domain controllers could not be enumerated; empty when they were.
+        Type [string], default '', may be null or empty.
+    .PARAMETER LookbackDays
+        How many days back the event scan looks (-EventLookbackDays of the run). Type [int], default
+        14.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -29652,6 +34085,18 @@ function Get-AdfaDcW32TimeRaw {
     .OUTPUTS
         [pscustomobject] Ok, Protocol, Error, ErrorCode, Values (Id, Key, ValueName, Kind, Answered,
         ReturnValue, Value, Method, Error, ErrorCode).
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Protocol
+        The CIM session protocol (WinRM or DCOM). Type [string], default 'Wsman', one of Wsman,
+        Dcom.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
+    .PARAMETER Values
+        The values input of Get-AdfaDcW32TimeRaw. Untyped, mandatory, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -29722,6 +34167,19 @@ function Get-AdfaW32TimeConfigRow {
         not read, and the row says so.
     .OUTPUTS
         [pscustomobject]
+    .PARAMETER ComputerName
+        The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER Scope
+        The value of the Scope column: the domain, domain controller or forest the row is about.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Read
+        The read input of Get-AdfaW32TimeConfigRow. Untyped, may be null or empty.
+    .PARAMETER Unreachable
+        The unreachable input of Get-AdfaW32TimeConfigRow. Type [string], default '', may be null or
+        empty.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -29787,6 +34245,30 @@ function Get-AdfaW32TimeInventory {
         covers. Read-only: no w32tm verb is run here.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER DomainControllers
+        The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
+        Scope where known). Untyped, default @(), may be null or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
+    .PARAMETER EnumerationError
+        The error text when the domain controllers could not be enumerated; empty when they were.
+        Type [string], default '', may be null or empty.
+    .PARAMETER Credential
+        The credential for the remote reads. When it is absent the account running the assessment is
+        used. Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe before the port is treated as not answering.
+        Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
+    .PARAMETER Config
+        The configuration table this function reads its names, thresholds and limits from: a table
+        of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -30433,6 +34915,12 @@ function ConvertTo-AdfaConsolidatedFinding {
         advice for a failure that has nothing to do with either.
     .OUTPUTS
         [pscustomobject] Section, Scope, Item, Status, Detail, Recommendation.
+    .PARAMETER Section
+        The name of the report section. Type [string], mandatory.
+    .PARAMETER Row
+        The row input of ConvertTo-AdfaConsolidatedFinding. Untyped, mandatory.
+    .PARAMETER StatusColumn
+        The status column input of ConvertTo-AdfaConsolidatedFinding. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -30478,6 +34966,13 @@ function Get-AdfaRecommendation {
         recommendation is honest, never invented.
     .OUTPUTS
         [string]
+    .PARAMETER Section
+        The name of the report section. Type [string], default ''.
+    .PARAMETER Item
+        The value of the Item column. Type [string], default ''.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -30499,6 +34994,15 @@ function Get-AdfaRecommendation {
 # ===========================================================================
 
 function ConvertTo-AdfaHtmlText {
+    <#
+    .SYNOPSIS
+        HTML-encodes a value for the report with System.Net.WebUtility, which Windows PowerShell 5.1
+        and PowerShell 7 both have; $null gives an empty string.
+    .PARAMETER Value
+        The value input of ConvertTo-AdfaHtmlText. Untyped, may be null or empty.
+    .OUTPUTS
+        [string]
+    #>
     # Portable HTML-encode: System.Net.WebUtility is present on .NET Framework 4.5+ and
     # .NET Core/5+, so this works on Windows PowerShell 5.1 and pwsh 7 without System.Web.
     [CmdletBinding()]
@@ -30514,6 +35018,12 @@ function ConvertTo-AdfaHtmlSection {
         Renders a collection to an HTML table with RAG colouring of a Status/Health column.
     .OUTPUTS
         [string]
+    .PARAMETER Title
+        The title input of ConvertTo-AdfaHtmlSection. Type [string], mandatory.
+    .PARAMETER Data
+        The data input of ConvertTo-AdfaHtmlSection. Untyped, may be null or empty.
+    .PARAMETER Description
+        The description input of ConvertTo-AdfaHtmlSection. Type [string].
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -30560,6 +35070,21 @@ function ConvertTo-AdfaHtmlSection {
 }
 
 function New-AdfaHtmlReport {
+    <#
+    .SYNOPSIS
+        Writes the human-readable report, Assessment.html, into the run's output folder: the run
+        metadata, the roll-up badges and one table per section.
+    .PARAMETER Sections
+        The sections input of New-AdfaHtmlReport. Type
+        [System.Collections.Specialized.OrderedDictionary], mandatory.
+    .PARAMETER Meta
+        The run metadata: forest, tool version, time generated, domains scoped and DC count. Type
+        [pscustomobject], mandatory.
+    .PARAMETER Path
+        The path input of New-AdfaHtmlReport. Type [string], mandatory.
+    .OUTPUTS
+        [string] The path written.
+    #>
     [CmdletBinding()]
     [OutputType([string])]
     param(
@@ -30618,6 +35143,10 @@ function New-AdfaReportSummary {
         shows up in 'unclassified' instead of vanishing.
     .OUTPUTS
         [System.Collections.Specialized.OrderedDictionary]
+    .PARAMETER Summary
+        The summary input of New-AdfaReportSummary. Type [pscustomobject], mandatory.
+    .PARAMETER Findings
+        The consolidated findings of the run. Untyped, mandatory, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([System.Collections.Specialized.OrderedDictionary])]
@@ -30662,6 +35191,17 @@ function New-AdfaReportDocument {
         an environment change. Bump it only when the shape changes incompatibly.
     .OUTPUTS
         [System.Collections.Specialized.OrderedDictionary]
+    .PARAMETER Meta
+        The run metadata: forest, tool version, time generated, domains scoped and DC count. Type
+        [pscustomobject], mandatory.
+    .PARAMETER Findings
+        The consolidated findings of the run. Untyped, mandatory, may be null or empty.
+    .PARAMETER Coverage
+        The coverage input of New-AdfaReportDocument. Untyped, mandatory, may be null or empty.
+    .PARAMETER Sections
+        The sections input of New-AdfaReportDocument. Untyped, mandatory, may be null or empty.
+    .PARAMETER Summary
+        The summary input of New-AdfaReportDocument. Type [pscustomobject], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([System.Collections.Specialized.OrderedDictionary])]
@@ -30722,6 +35262,21 @@ function Export-AdfaJsonReport {
         carries real section data rather than "System.Object[]".
     .OUTPUTS
         [string] The path written.
+    .PARAMETER Meta
+        The run metadata: forest, tool version, time generated, domains scoped and DC count. Type
+        [pscustomobject], mandatory.
+    .PARAMETER Findings
+        The consolidated findings of the run. Untyped, mandatory, may be null or empty.
+    .PARAMETER Coverage
+        The coverage input of Export-AdfaJsonReport. Untyped, mandatory, may be null or empty.
+    .PARAMETER Sections
+        The sections input of Export-AdfaJsonReport. Untyped, mandatory, may be null or empty.
+    .PARAMETER Summary
+        The summary input of Export-AdfaJsonReport. Type [pscustomobject], mandatory.
+    .PARAMETER Path
+        The path input of Export-AdfaJsonReport. Type [string], mandatory.
+    .PARAMETER Depth
+        The depth input of Export-AdfaJsonReport. Type [int], default 12.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -30740,1221 +35295,1784 @@ function Export-AdfaJsonReport {
 }
 
 # ===========================================================================
+# region Run folder, exit code and closing log lines (PORT-PLAN H21)
+# ===========================================================================
+
+function Resolve-AdfaOutputRoot {
+    <#
+    .SYNOPSIS
+        The root folder a run writes under: -OutputPath when given, otherwise the repository's
+        default. Refused unless it is on the file system. Touches no disk.
+    .DESCRIPTION
+        PORT-PLAN H21. With no -OutputPath the root is DefaultRoot of $script:Config.Output,
+        C:\Scripts\Securnet\Reports, from this repository's CLAUDE.md output convention.
+
+        The path is resolved against the current location with
+        PathIntrinsics.GetUnresolvedProviderPathFromPSPath, which Microsoft documents as
+        converting a drive- or provider-qualified, absolute or relative path into a
+        provider-internal path, and as throwing DriveNotFoundException for a drive that cannot be
+        found (Learn, PathIntrinsics.GetUnresolvedProviderPathFromPSPath, read 2026-11-18). It
+        reads the session's providers and drives only. A path on any provider other than
+        FileSystem is refused: Microsoft documents that New-Item -Force on an existing registry
+        key overwrites it with an empty key (Learn, New-Item, read 2026-11-18), and the run must
+        write only its own files. A path that cannot be resolved is refused with the error
+        PowerShell gave. Either refusal happens before anything is created.
+    .PARAMETER OutputPath
+        The -OutputPath of the run. Empty or $null means the default root.
+    .PARAMETER Config
+        The output table, $script:Config.Output (DefaultRoot is read).
+    .EXAMPLE
+        Resolve-AdfaOutputRoot -OutputPath '' -Config $script:Config.Output
+
+        Root C:\Scripts\Securnet\Reports, FromDefault True, Provider FileSystem.
+    .OUTPUTS
+        [pscustomobject] Root, FromDefault, Provider.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$OutputPath,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $fromDefault = [string]::IsNullOrWhiteSpace($OutputPath)
+    $requested = $OutputPath
+    if ($fromDefault) { $requested = [string]$Config['DefaultRoot'] }
+    $provider = $null
+    $drive = $null
+    try {
+        $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($requested, [ref]$provider, [ref]$drive)
+    }
+    catch {
+        throw ("-OutputPath '{0}' cannot be used: {1} Nothing was created." -f $requested, $_.Exception.Message)
+    }
+    if ($null -eq $provider -or [string]$provider.Name -ne 'FileSystem') {
+        $providerName = 'an unknown'
+        if ($null -ne $provider) { $providerName = ('the {0}' -f [string]$provider.Name) }
+        throw ("-OutputPath '{0}' is on {1} provider. The run writes its report files only to the file system, so the path was refused before anything was created." -f $requested, $providerName)
+    }
+    return [pscustomobject]@{ Root = [string]$resolved; FromDefault = $fromDefault; Provider = [string]$provider.Name }
+}
+
+function Get-AdfaRunFolderPath {
+    <#
+    .SYNOPSIS
+        Pure: the paths of one run folder - folder, log, transcript, csv\ and raw\ - for a root,
+        a time and an attempt number. Creates nothing.
+    .DESCRIPTION
+        PORT-PLAN H21. The folder is <Root>\<RunFolderPrefix>-<Now in StampFormat>, so with the
+        built-in table C:\Scripts\Securnet\Reports\ADForestAssessment-yyyyMMdd-HHmmss. Attempt 2
+        and above add -2, -3 and so on, for a run that starts in the same second as another. The
+        log and the transcript carry the folder's own name. The stamp is formatted with the
+        invariant culture, so the digits do not depend on the culture of the host.
+    .EXAMPLE
+        Get-AdfaRunFolderPath -Root 'C:\Scripts\Securnet\Reports' -Now (Get-Date) -Config $script:Config.Output
+
+        The run folder for this second, first attempt.
+    .OUTPUTS
+        [pscustomobject] Root, Stamp, RunFolderName, RunRoot, LogFile, TranscriptFile, CsvPath, RawPath.
+    .PARAMETER Root
+        The resolved root folder (Resolve-AdfaOutputRoot). Type [string], mandatory.
+    .PARAMETER Now
+        The start time of the run, passed in so the name can be tested with a fixed clock. Type
+        [datetime], mandatory.
+    .PARAMETER Config
+        The output table, $script:Config.Output (RunFolderPrefix and StampFormat are read). Type
+        [hashtable], mandatory.
+    .PARAMETER Attempt
+        1 for the plain name; 2 and above add -2, -3, ... Type [int], default 1, from 1 to 9999.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        # The resolved root folder (Resolve-AdfaOutputRoot).
+        [Parameter(Mandatory)][string]$Root,
+        # The start time of the run, passed in so the name can be tested with a fixed clock.
+        [Parameter(Mandatory)][datetime]$Now,
+        # The output table, $script:Config.Output (RunFolderPrefix and StampFormat are read).
+        [Parameter(Mandatory)][hashtable]$Config,
+        # 1 for the plain name; 2 and above add -2, -3, ...
+        [ValidateRange(1, 9999)][int]$Attempt = 1
+    )
+    $stamp = $Now.ToString([string]$Config['StampFormat'], [System.Globalization.CultureInfo]::InvariantCulture)
+    $name = '{0}-{1}' -f [string]$Config['RunFolderPrefix'], $stamp
+    if ($Attempt -gt 1) { $name = '{0}-{1}' -f $name, $Attempt }
+    $runRoot = Join-Path $Root $name
+    return [pscustomobject]@{
+        Root           = $Root
+        Stamp          = $stamp
+        RunFolderName  = $name
+        RunRoot        = $runRoot
+        LogFile        = (Join-Path $runRoot ('{0}.log' -f $name))
+        TranscriptFile = (Join-Path $runRoot ('{0}-transcript.log' -f $name))
+        CsvPath        = (Join-Path $runRoot 'csv')
+        RawPath        = (Join-Path $runRoot 'raw')
+    }
+}
+
+function Select-AdfaRunFolder {
+    <#
+    .SYNOPSIS
+        Chooses the run folder: resolves the root and takes the first folder name of this second
+        that does not exist yet. Reads the local file system only; creates nothing.
+    .DESCRIPTION
+        PORT-PLAN H21. Test-Path is the only call that touches the disk, on the computer running
+        the assessment. A folder name that exists - a run started earlier in the same second - is
+        skipped: the next attempt adds -2, -3 and so on, up to MaxRunFolderAttempts, after which the
+        run stops with the last name tried. This is a check, not a claim: two runs that check at
+        the same moment can both see a name free, so New-AdfaRunFolder claims the name it is given
+        atomically and moves on when another run got there first. RootExisted says whether the
+        root was there before, so Invoke-Main can say on screen and in the log that it created it.
+    .EXAMPLE
+        Select-AdfaRunFolder -OutputPath $OutputPath -Now (Get-Date) -Config $script:Config.Output
+
+        The first free folder name, which New-AdfaRunFolder then claims.
+    .OUTPUTS
+        [pscustomobject] the fields of Get-AdfaRunFolderPath, plus FromDefault, RootExisted and Attempt.
+    .PARAMETER OutputPath
+        The -OutputPath of the run; empty or $null for the default root. Type [string], may be null
+        or empty.
+    .PARAMETER Now
+        The start time of the run. Type [datetime], mandatory.
+    .PARAMETER Config
+        The output table, $script:Config.Output. Type [hashtable], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        # The -OutputPath of the run; empty or $null for the default root.
+        [AllowNull()][AllowEmptyString()][string]$OutputPath,
+        # The start time of the run.
+        [Parameter(Mandatory)][datetime]$Now,
+        # The output table, $script:Config.Output.
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $root = Resolve-AdfaOutputRoot -OutputPath $OutputPath -Config $Config
+    $rootExisted = [bool](Test-Path -LiteralPath $root.Root -PathType Container)
+    $max = [int]$Config['MaxRunFolderAttempts']
+    $taken = ''
+    for ($attempt = 1; $attempt -le $max; $attempt++) {
+        $p = Get-AdfaRunFolderPath -Root $root.Root -Now $Now -Config $Config -Attempt $attempt
+        if ((-not $rootExisted) -or (-not (Test-Path -LiteralPath $p.RunRoot))) {
+            return [pscustomobject]@{
+                Root           = $p.Root
+                Stamp          = $p.Stamp
+                RunFolderName  = $p.RunFolderName
+                RunRoot        = $p.RunRoot
+                LogFile        = $p.LogFile
+                TranscriptFile = $p.TranscriptFile
+                CsvPath        = $p.CsvPath
+                RawPath        = $p.RawPath
+                FromDefault    = [bool]$root.FromDefault
+                RootExisted    = $rootExisted
+                Attempt        = $attempt
+            }
+        }
+        $taken = $p.RunRoot
+    }
+    throw ("No free run folder: {0} and the names before it already exist ({1} attempts). The run stops rather than write into the folder of another run." -f $taken, $max)
+}
+
+function New-AdfaRunFolder {
+    <#
+    .SYNOPSIS
+        Creates the run folder and claims it for this run by creating its log file, which fails if
+        another run created it first. Writes on the computer running the assessment only.
+    .DESCRIPTION
+        PORT-PLAN H21, fixed after an independent review: Select-AdfaRunFolder only checks names,
+        so two runs started in the same second with the same -OutputPath could both pick one name,
+        and New-Item -Force returns an existing folder intact, so both would write into it. The
+        folder is now claimed by creating its log file with FileMode CreateNew, which Microsoft
+        documents as "If the file already exists, an IOException exception is thrown"
+        (learn.microsoft.com/dotnet/api/system.io.filemode, read 2026-11-18). The run that creates
+        the log owns the folder. A run that finds the log already there leaves that folder and its
+        files untouched - it never opens, truncates or writes them - and tries the next name (-2,
+        -3, ...), up to MaxRunFolderAttempts, after which it stops naming the last folder tried.
+        Any other failure to create the log (access denied, a path that is not a folder) stops the
+        run with that error.
+    .EXAMPLE
+        New-AdfaRunFolder -OutputPath $OutputPath -Now (Get-Date) -Config $script:Config.Output
+
+        Creates C:\Scripts\Securnet\Reports\ADForestAssessment-<stamp>\ and its empty log, and
+        returns the paths.
+    .OUTPUTS
+        [pscustomobject] the fields of Select-AdfaRunFolder, for the folder this run claimed.
+    .PARAMETER OutputPath
+        The -OutputPath of the run; empty or $null for the default root. Type [string], may be null
+        or empty.
+    .PARAMETER Now
+        The start time of the run. Type [datetime], mandatory.
+    .PARAMETER Config
+        The output table, $script:Config.Output. Type [hashtable], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        # The -OutputPath of the run; empty or $null for the default root.
+        [AllowNull()][AllowEmptyString()][string]$OutputPath,
+        # The start time of the run.
+        [Parameter(Mandatory)][datetime]$Now,
+        # The output table, $script:Config.Output.
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $sel = Select-AdfaRunFolder -OutputPath $OutputPath -Now $Now -Config $Config
+    $max = [int]$Config['MaxRunFolderAttempts']
+    $taken = $sel.RunRoot
+    for ($attempt = [int]$sel.Attempt; $attempt -le $max; $attempt++) {
+        $p = Get-AdfaRunFolderPath -Root $sel.Root -Now $Now -Config $Config -Attempt $attempt
+        $null = New-Folder -Path $p.RunRoot
+        $claimed = $false
+        try {
+            # CreateNew: the claim. It fails, creating and changing nothing, when the log exists.
+            $stream = [System.IO.File]::Open($p.LogFile, 'CreateNew', 'Write', 'Read')
+            $stream.Dispose()
+            $claimed = $true
+        }
+        catch {
+            # Another run created this log first: its folder. Any other failure stops the run.
+            if (-not (Test-Path -LiteralPath $p.LogFile -PathType Leaf)) { throw }
+        }
+        if ($claimed) {
+            return [pscustomobject]@{
+                Root           = $p.Root
+                Stamp          = $p.Stamp
+                RunFolderName  = $p.RunFolderName
+                RunRoot        = $p.RunRoot
+                LogFile        = $p.LogFile
+                TranscriptFile = $p.TranscriptFile
+                CsvPath        = $p.CsvPath
+                RawPath        = $p.RawPath
+                FromDefault    = [bool]$sel.FromDefault
+                RootExisted    = [bool]$sel.RootExisted
+                Attempt        = $attempt
+            }
+        }
+        $taken = $p.RunRoot
+    }
+    throw ("No free run folder: {0} and the names before it are claimed by other runs ({1} attempts). The run stops rather than write into the folder of another run." -f $taken, $max)
+}
+
+function Get-AdfaRunExitCode {
+    <#
+    .SYNOPSIS
+        Pure: the exit code of a run and its reason - 0 completed, 1 completed with a Fail finding
+        or a section left Not Assessed, 2 could not run.
+    .DESCRIPTION
+        PORT-PLAN H21. The numbers come from $script:Config.RunExit; the mapping is a tool
+        convention, not a Microsoft value. Exit code 1 is given for any of:
+          - a finding whose status matches FailStatusPattern (Fail, Broken, Failed);
+          - a section left Not Assessed: it holds at least one Not Assessed finding and no
+            graded finding (AssessedStatusPattern: Pass, Healthy, Warning, Degraded, Fail, Broken,
+            Failed). Info rows assess nothing, so an Info row beside Not Assessed ones - a scope
+            statement, a population count - does not make the section assessed. A section with one
+            graded finding beside Not Assessed ones is not counted: a default run always carries
+            some Not Assessed rows for the opt-in tests it did not run, so "any Not Assessed row"
+            would make 1 the code of every run;
+          - a finding whose status is empty, missing or outside KnownStatusPattern (unclassified):
+            a verdict nobody could read is never "nothing to act on";
+          - no status-bearing finding at all (nothing can be called assessed);
+          - collected rows that could not be interpreted (the findings are incomplete);
+          - a report (HTML or JSON) that was not written.
+        Otherwise 0; Warning and Info rows do not raise the code. -Fatal gives 2 whatever the
+        findings say. The reason names each cause, so the log line explains the code; line breaks
+        in -FatalReason are replaced by " / " so the reason stays on one log line. A row may be an
+        object or a dictionary; Section and Status are read from either.
+    .EXAMPLE
+        Get-AdfaRunExitCode -Findings $consolidated -UnreadableRows 0
+
+        ExitCode 1 and the reason "3 Fail finding(s)" for a run with three Fail findings.
+    .OUTPUTS
+        [pscustomobject] ExitCode, Reason, FailFindings, NotAssessedSections, UnclassifiedFindings,
+        FindingCount.
+    .PARAMETER Findings
+        The consolidated findings of the run (Section and Status are read). Untyped, may be null or
+        empty.
+    .PARAMETER UnreadableRows
+        How many collected rows could not be interpreted (Invoke-Main's unreadable rows). Type
+        [int], default 0, from 0 to 2147483647.
+    .PARAMETER ReportsNotWritten
+        The reports that were not written, for example 'HTML' or 'JSON'. Type [string[]], default
+        @(), may be null or empty.
+    .PARAMETER Fatal
+        The run could not run or was stopped by an error. Switch.
+    .PARAMETER FatalReason
+        Why the run stopped, named in the reason of exit code 2. Type [string], default '', may be
+        null or empty.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        # The consolidated findings of the run (Section and Status are read).
+        [AllowNull()][AllowEmptyCollection()]$Findings,
+        # How many collected rows could not be interpreted (Invoke-Main's unreadable rows).
+        [ValidateRange(0, 2147483647)][int]$UnreadableRows = 0,
+        # The reports that were not written, for example 'HTML' or 'JSON'.
+        [AllowNull()][AllowEmptyCollection()][string[]]$ReportsNotWritten = @(),
+        # The run could not run or was stopped by an error.
+        [switch]$Fatal,
+        # Why the run stopped, named in the reason of exit code 2.
+        [AllowEmptyString()][string]$FatalReason = ''
+    )
+    $codes = $script:Config.RunExit
+    if ($Fatal) {
+        $why = ([string]$FatalReason).Trim() -replace '\s*\r?\n\s*', ' / '
+        if ([string]::IsNullOrWhiteSpace($why)) { $why = 'the run did not complete' }
+        return [pscustomobject]@{ ExitCode = [int]$codes['Fatal']; Reason = ('could not run or was stopped: {0}' -f $why); FailFindings = $null; NotAssessedSections = @(); UnclassifiedFindings = $null; FindingCount = $null }
+    }
+    $rows = @(Expand-AdfaRowList -Rows $Findings)
+    $fail = 0
+    $unclassified = 0
+    $bySection = [ordered]@{}
+    foreach ($r in $rows) {
+        $status = ''
+        $section = ''
+        if ($r -is [System.Collections.IDictionary]) {
+            if ($r.Contains('Status')) { $status = [string]$r['Status'] }
+            if ($r.Contains('Section')) { $section = [string]$r['Section'] }
+        }
+        else {
+            $statusProp = $r.PSObject.Properties['Status']
+            if ($null -ne $statusProp) { $status = [string]$statusProp.Value }
+            $sectionProp = $r.PSObject.Properties['Section']
+            if ($null -ne $sectionProp) { $section = [string]$sectionProp.Value }
+        }
+        if ($status -match [string]$codes['FailStatusPattern']) { $fail++ }
+        if ($status -notmatch [string]$codes['KnownStatusPattern']) { $unclassified++ }
+        if (-not $bySection.Contains($section)) { $bySection[$section] = @{ Graded = 0; NotAssessed = 0 } }
+        if ($status -match [string]$codes['AssessedStatusPattern']) { $bySection[$section]['Graded'] = [int]$bySection[$section]['Graded'] + 1 }
+        if ($status -eq $script:Status.NotAssessed) { $bySection[$section]['NotAssessed'] = [int]$bySection[$section]['NotAssessed'] + 1 }
+    }
+    $naSections = @(foreach ($k in @($bySection.Keys)) {
+            $s = $bySection[$k]
+            if ([int]$s['NotAssessed'] -gt 0 -and [int]$s['Graded'] -eq 0) { [string]$k }
+        })
+    $reasons = @()
+    if ($rows.Count -eq 0) { $reasons += 'no status-bearing finding was produced, so nothing can be called assessed' }
+    if ($fail -gt 0) { $reasons += ('{0} Fail finding(s)' -f $fail) }
+    if ($naSections.Count -gt 0) { $reasons += ('{0} section(s) Not Assessed: {1}' -f $naSections.Count, ($naSections -join ', ')) }
+    if ($unclassified -gt 0) { $reasons += ('{0} finding(s) with an empty or unclassified status, so they could not be graded' -f $unclassified) }
+    if ($UnreadableRows -gt 0) { $reasons += ('{0} collected row(s) could not be interpreted, so the findings are incomplete' -f $UnreadableRows) }
+    foreach ($rep in @($ReportsNotWritten | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) { $reasons += ('{0} report not written' -f $rep) }
+    if ($reasons.Count -gt 0) {
+        return [pscustomobject]@{ ExitCode = [int]$codes['CompletedWithFindings']; Reason = ($reasons -join '; '); FailFindings = $fail; NotAssessedSections = $naSections; UnclassifiedFindings = $unclassified; FindingCount = $rows.Count }
+    }
+    return [pscustomobject]@{ ExitCode = [int]$codes['Completed']; Reason = 'completed; no Fail finding, no section left Not Assessed and no unclassified status'; FailFindings = 0; NotAssessedSections = @(); UnclassifiedFindings = 0; FindingCount = $rows.Count }
+}
+
+function Get-AdfaRunClosingLine {
+    <#
+    .SYNOPSIS
+        Pure: the three closing lines of the detailed log - end time and duration, totals per
+        status, exit code and reason.
+    .DESCRIPTION
+        PORT-PLAN H21 (house rule: the log ends with end time, duration, totals and exit code).
+        The duration counts hours past 24. With no totals - the run stopped before the findings
+        were consolidated - the line says they were not counted, never zeros.
+    .EXAMPLE
+        Get-AdfaRunClosingLine -End (Get-Date) -Elapsed $clock.Elapsed -Totals $totals -ExitInfo $exitInfo
+
+        "Run finished ...; duration 00:11:12 (672 s)", "Totals: Pass=... Total=...", "Exit code: 1 (...)".
+    .OUTPUTS
+        [string[]]
+    .PARAMETER End
+        When the run ended. Type [datetime], mandatory.
+    .PARAMETER Elapsed
+        How long the run took. Type [timespan], mandatory.
+    .PARAMETER Totals
+        The roll-up of New-AdfaReportSummary (pass, warning, fail, notAssessed, info, unclassified,
+        total), or $null when the run stopped before it was built. Untyped, may be null or empty.
+    .PARAMETER ExitInfo
+        The result of Get-AdfaRunExitCode (ExitCode and Reason are read). Untyped, mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        # When the run ended.
+        [Parameter(Mandatory)][datetime]$End,
+        # How long the run took.
+        [Parameter(Mandatory)][timespan]$Elapsed,
+        # The roll-up of New-AdfaReportSummary (pass, warning, fail, notAssessed, info,
+        # unclassified, total), or $null when the run stopped before it was built.
+        [AllowNull()]$Totals,
+        # The result of Get-AdfaRunExitCode (ExitCode and Reason are read).
+        [Parameter(Mandatory)]$ExitInfo
+    )
+    $hours = [int][math]::Floor($Elapsed.TotalHours)
+    $seconds = [int][math]::Floor($Elapsed.TotalSeconds)
+    $first = 'Run finished {0}; duration {1:00}:{2:00}:{3:00} ({4} s)' -f $End.ToString('yyyy-MM-ddTHH:mm:sszzz', [System.Globalization.CultureInfo]::InvariantCulture), $hours, $Elapsed.Minutes, $Elapsed.Seconds, $seconds
+    $second = 'Totals: not counted - the run stopped before the findings were consolidated'
+    if ($null -ne $Totals) {
+        $second = 'Totals: Pass={0} Warning={1} Fail={2} NotAssessed={3} Info={4} Unclassified={5} Total={6}' -f $Totals['pass'], $Totals['warning'], $Totals['fail'], $Totals['notAssessed'], $Totals['info'], $Totals['unclassified'], $Totals['total']
+    }
+    # Independent review of H21: a reason that carries a line break (an exception message does on
+    # Windows PowerShell 5.1) must not split the line, so the log still ends with its three lines.
+    $third = 'Exit code: {0} ({1})' -f [int]$ExitInfo.ExitCode, (([string]$ExitInfo.Reason).Trim() -replace '\s*\r?\n\s*', ' / ')
+    return @($first, $second, $third)
+}
+
+function Write-AdfaErrorRecord {
+    <#
+    .SYNOPSIS
+        Logs an error that stops the run, at level ERROR: the step, the message, the exception
+        type, the position and the script stack trace, on one line.
+    .DESCRIPTION
+        PORT-PLAN H21 (house rule: every catch logs the step, the exception message and type,
+        $_.InvocationInfo.PositionMessage and $_.ScriptStackTrace). Line breaks inside the
+        message, the position and the stack are replaced by " / " so the record stays one log
+        line (on Windows PowerShell 5.1 a ConvertFrom-Json message ends in a line break).
+    .EXAMPLE
+        try { Invoke-Something } catch { Write-AdfaErrorRecord -Step 'Invoke-Main' -ErrorRecord $_ }
+    .OUTPUTS
+        None. Writes one line through Write-Log.
+    .PARAMETER Step
+        What was being attempted, for example Invoke-Main. Type [string], mandatory.
+    .PARAMETER ErrorRecord
+        The error record caught. Type [System.Management.Automation.ErrorRecord], mandatory.
+    #>
+    [CmdletBinding()]
+    param(
+        # What was being attempted, for example Invoke-Main.
+        [Parameter(Mandatory)][string]$Step,
+        # The error record caught.
+        [Parameter(Mandatory)][System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+    $position = ''
+    if ($null -ne $ErrorRecord.InvocationInfo) { $position = [string]$ErrorRecord.InvocationInfo.PositionMessage }
+    $stack = [string]$ErrorRecord.ScriptStackTrace
+    $flat = '\s*\r?\n\s*'
+    $message = ([string]$ErrorRecord.Exception.Message).Trim() -replace $flat, ' / '
+    Write-Log -Level ERROR -Message ('Fatal error in {0}: {1} | Type: {2} | Position: {3} | Stack: {4}' -f $Step, $message, $ErrorRecord.Exception.GetType().FullName, ($position -replace $flat, ' / '), ($stack -replace $flat, ' / '))
+}
+
+function Get-AdfaScriptExitCode {
+    <#
+    .SYNOPSIS
+        Pure: the process exit code the script ends with, read from what Invoke-Main returned.
+    .DESCRIPTION
+        PORT-PLAN H21, fixed after an independent review (the script tail was never tested for 0
+        or 1). The ExitCode of the last object Invoke-Main returned, when it is 0, 1 or 2 (the
+        three codes of $script:Config.RunExit). Anything else - no output, no ExitCode property,
+        a value that is not one of the three - is 2: a run whose result cannot be read never
+        reports success.
+    .EXAMPLE
+        Get-AdfaScriptExitCode -RunOutput @(Invoke-Main)
+
+        1 for a run whose summary says ExitCode 1.
+    .OUTPUTS
+        [int]
+    .PARAMETER RunOutput
+        What Invoke-Main returned (the run summary is the last object). Untyped, may be null or
+        empty.
+    #>
+    [CmdletBinding()]
+    [OutputType([int])]
+    param(
+        # What Invoke-Main returned (the run summary is the last object).
+        [AllowNull()][AllowEmptyCollection()]$RunOutput
+    )
+    $codes = $script:Config.RunExit
+    $fatal = [int]$codes['Fatal']
+    $out = @($RunOutput)
+    if ($out.Count -eq 0 -or $null -eq $out[$out.Count - 1]) { return $fatal }
+    $prop = $out[$out.Count - 1].PSObject.Properties['ExitCode']
+    if ($null -eq $prop -or $null -eq $prop.Value) { return $fatal }
+    $value = 0
+    if (-not [int]::TryParse([string]$prop.Value, [ref]$value)) { return $fatal }
+    $known = @([int]$codes['Completed'], [int]$codes['CompletedWithFindings'], $fatal)
+    if ($known -notcontains $value) { return $fatal }
+    return $value
+}
+
+# ===========================================================================
 # region MAIN
 # ===========================================================================
 
 function Test-SectionSelected {
+    <#
+    .SYNOPSIS
+        True when a section is selected by -Sections: named, or All given.
+    .PARAMETER Name
+        The -Sections value of the section, for example DcSystem. Type [string].
+    .PARAMETER Selected
+        The -Sections values of the run. Type [string[]].
+    .OUTPUTS
+        [bool]
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
     param([string]$Name, [string[]]$Selected)
     return ($Selected -contains 'All' -or $Selected -contains $Name)
 }
 
 function Invoke-Main {
+    <#
+    .SYNOPSIS
+        Runs the assessment: creates the run folder, collects every selected section, writes the
+        CSV, JSON and HTML bundle and the detailed log, and returns the run summary with the exit code.
+    .DESCRIPTION
+        Reads the script's own parameters. Read-only against the directory and the domain
+        controllers, except for the opt-in switches the script help lists. Writes only on the
+        computer running the assessment, into one new folder claimed by New-AdfaRunFolder
+        (PORT-PLAN H21).
+
+        Everything after the log is opened runs inside one try / catch / finally. The catch logs
+        an error that stops the run with Write-AdfaErrorRecord and rethrows it; the finally writes
+        the closing lines - end time, duration, totals per status, exit code - and the log path,
+        and stops the transcript, on success, on an error and on Ctrl+C alike (Microsoft: a
+        finally block runs even on Ctrl+C or exit; about_Language_Keywords, read 2026-11-18). The
+        exit code itself is set by the script's tail (its one exit, in a finally), never here, so dot-sourcing the
+        script never ends the caller.
+    .OUTPUTS
+        [pscustomobject] the run summary, with ExitCode and ExitReason.
+    #>
     [CmdletBinding()]
     param()
 
-    # Resolve output root -> logged-on user's Documents by default.
-    if (-not $OutputPath) {
-        $docs = [Environment]::GetFolderPath('MyDocuments')
-        if ([string]::IsNullOrWhiteSpace($docs)) { $docs = Join-Path $HOME 'Documents' }
-        $OutputPath = Join-Path $docs 'AdAssessment'
-    }
-    $stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
-    $runRoot = New-Folder -Path (Join-Path $OutputPath $stamp)
-    $csvPath = New-Folder -Path (Join-Path $runRoot 'csv')
-    $rawPath = New-Folder -Path (Join-Path $runRoot 'raw')
+    # PORT-PLAN H21: the run's clock starts here; the closing lines state the duration.
+    $runStart = Get-Date
+    $runClock = [System.Diagnostics.Stopwatch]::StartNew()
+    # One new timestamped folder per run, computed (Select-AdfaRunFolder creates nothing), then
+    # created and claimed by creating its log file (New-AdfaRunFolder), on the computer running
+    # the assessment only. A folder another run claimed first is never written.
+    $runFolder = New-AdfaRunFolder -OutputPath $OutputPath -Now $runStart -Config $script:Config.Output
+    $runRoot = $runFolder.RunRoot
+    $csvPath = New-Folder -Path $runFolder.CsvPath
+    $rawPath = New-Folder -Path $runFolder.RawPath
 
-    # Detailed run log (itemised) is the primary log; transcript captures raw host/verbose.
-    $script:LogFile = Join-Path $runRoot ("assessment_{0}.log" -f $stamp)
-    "AD Forest Assessment detailed log - $stamp" | Out-File -LiteralPath $script:LogFile -Encoding UTF8 -Force
-    $transcript = Join-Path $runRoot ("transcript_{0}.log" -f $stamp)
+    # Detailed run log (itemised) is the primary log; transcript captures raw host/verbose. The log
+    # is the empty file this run created to claim the folder, so -Force overwrites only this run's own.
+    $script:LogFile = $runFolder.LogFile
+    ("ADForestAssessment v{0} detailed log - started {1}" -f $script:Config.Version, $runStart.ToString('yyyy-MM-ddTHH:mm:sszzz', [System.Globalization.CultureInfo]::InvariantCulture)) | Out-File -LiteralPath $script:LogFile -Encoding UTF8 -Force
+    $transcript = $runFolder.TranscriptFile
     try { Start-Transcript -Path $transcript -Force | Out-Null } catch { }
 
     Write-Log -Level INFO ("Runtime: PowerShell {0} on {1}; user {2}\{3}" -f `
         $PSVersionTable.PSVersion, [Environment]::MachineName, $env:USERDOMAIN, $env:USERNAME)
-    Write-Log -Level INFO ("Parameters: AllDomains={0} Sections={1} IncludeDcdiag={2} IncludeRepadmin={3} SkipTrustVerification={4} Server={5} IncludeSecureChannelVerify={6} ConfigOverridePath={7}" -f `
-        $AllDomains.IsPresent, ($Sections -join ','), $IncludeDcdiag.IsPresent, $IncludeRepadmin.IsPresent, $SkipTrustVerification.IsPresent, $Server, $IncludeSecureChannelVerify.IsPresent, $ConfigOverridePath)
-    # Said in the log as well as in the findings: this run can change a secure channel.
-    if ($IncludeSecureChannelVerify) {
-        Write-Log -Level WARN -Section 'SecureChannel' -Message 'IncludeSecureChannelVerify is set: nltest /sc_verify will run, and it resets any secure channel it finds not working. This run is not read-only.'
+    # Every parameter of the script; the credential is never logged, only whether one was given.
+    $credentialText = '(none)'
+    if ($Credential) { $credentialText = '<redacted>' }
+    $outputPathText = '(default)'
+    if ($OutputPath) { $outputPathText = $OutputPath }
+    Write-Log -Level INFO ("Parameters: OutputPath={0} AllDomains={1} Sections={2} IncludeDcdiag={3} IncludeRepadmin={4} IncludeLingeringObjectScan={5} IncludeSysvolBacklog={6} SkipTrustVerification={7} IncludeSecureChannelVerify={8} IncludeDcdiagActiveTests={9} IncludeLdapsHandshake={10} Server={11} Credential={12} ExchangeSeConfigPath={13} DcSystemConfigPath={14} ConfigOverridePath={15} StaleDays={16} KrbtgtMaxAgeDays={17} EventLookbackDays={18} RpcPortTimeoutMs={19} ExternalToolTimeoutSeconds={20} Retries={21} RetryDelaySeconds={22}" -f `
+        $outputPathText, [bool]$AllDomains, ($Sections -join ','), [bool]$IncludeDcdiag, [bool]$IncludeRepadmin, [bool]$IncludeLingeringObjectScan, [bool]$IncludeSysvolBacklog, `
+        [bool]$SkipTrustVerification, [bool]$IncludeSecureChannelVerify, [bool]$IncludeDcdiagActiveTests, [bool]$IncludeLdapsHandshake, $Server, $credentialText, `
+        $ExchangeSeConfigPath, $DcSystemConfigPath, $ConfigOverridePath, $StaleDays, $KrbtgtMaxAgeDays, $EventLookbackDays, $RpcPortTimeoutMs, $ExternalToolTimeoutSeconds, $Retries, $RetryDelaySeconds)
+    # The log path on screen at the start (and again at the end, in the finally below).
+    Write-Log -Level INFO ("Detailed log: {0}" -f $script:LogFile)
+    if (-not $runFolder.RootExisted) {
+        # House rule: a missing folder is created and said so on screen and in the log, never silently.
+        Write-Log -Level WARN ("Output root {0} did not exist; it was created on this computer for this run." -f $runFolder.Root)
     }
-    if ($IncludeDcdiag) {
-        Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiag is set: the raw capture runs dcdiag /c on each DC. Microsoft documents /c as running all tests except DCPromo and RegisterInDNS; by that description it includes CutoffServers, which triggers replication, and the DNS test, whose dynamic update test registers and deletes a test record. This run is not read-only.'
-    }
-    if ($IncludeDcdiagActiveTests) {
-        Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiagActiveTests is set: the dcdiag DNS test will register and delete a DNS test record on each DC, the dcdiag SystemLog test, which Microsoft describes as reading and writing System log entries, will run on each DC, and the dcdiag Intersite test will trigger a replication, once per site that holds a DC. This run is not read-only.'
-    }
-    if ($IncludeLdapsHandshake) {
-        Write-Log -Level WARN -Section 'DcCertificates' -Message 'IncludeLdapsHandshake is set: a TLS handshake is made to port 636 of each DC to read the certificate it presents. Nothing is written to the DC, but Microsoft does not state that a handshake leaves no trace: a DC that cannot complete it may log a Schannel error event in its System log.'
-    }
-    # -ConfigOverridePath is read and validated ONCE, here, before the directory is touched and
-    # before any section runs: a file that cannot be used must stop the run before any work is
-    # done, not after an hour of collection. It is validated in full even when the section it
-    # names was not selected - a file is right or wrong regardless of this run's -Sections -
-    # and the log says which of its sections this run will not use.
-    $configOverrides = @{}
-    if ($ConfigOverridePath) {
-        try {
-            $configOverrides = Import-AdfaConfigOverride -Path $ConfigOverridePath -BaseConfig $script:Config -Sections $script:ConfigOverrideSections
+
+    # Until the run completes, the code is 2: a run stopped by an error or by Ctrl+C says so.
+    $exitInfo = Get-AdfaRunExitCode -Fatal -FatalReason 'the run stopped before it completed'
+    $runTotals = $null
+    try {
+        # Said in the log as well as in the findings: this run can change a secure channel.
+        if ($IncludeSecureChannelVerify) {
+            Write-Log -Level WARN -Section 'SecureChannel' -Message 'IncludeSecureChannelVerify is set: nltest /sc_verify will run, and it resets any secure channel it finds not working. This run is not read-only.'
         }
-        catch {
-            Write-Log -Level ERROR ("Config override refused, nothing was collected: {0}" -f $_.Exception.Message)
-            try { Stop-Transcript | Out-Null } catch { }
-            throw
+        if ($IncludeDcdiag) {
+            Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiag is set: the raw capture runs dcdiag /c on each DC. Microsoft documents /c as running all tests except DCPromo and RegisterInDNS; by that description it includes CutoffServers, which triggers replication, and the DNS test, whose dynamic update test registers and deletes a test record. This run is not read-only.'
         }
-        foreach ($name in @($configOverrides.Keys | Sort-Object)) {
-            Write-Log -Level INFO ("Config override: section {0} taken from {1}" -f $name, $ConfigOverridePath)
-            # A table may serve more than one section (AlsoUsedBy, PORT-PLAN C10); it is unused only when
-            # none of them is selected.
-            $usedBy = @(@([string]$script:ConfigOverrideSections[[string]$name]['Section']) + @(@($script:ConfigOverrideSections[[string]$name]['AlsoUsedBy']) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ }))
-            if (@($usedBy | Where-Object { Test-SectionSelected -Name $_ -Selected $Sections }).Count -eq 0) {
-                Write-Log -Level WARN -Message ("Config override: section {0} was validated but is not used by this run, because -Sections does not include {1}." -f $name, ($usedBy -join ' or '))
+        if ($IncludeDcdiagActiveTests) {
+            Write-Log -Level WARN -Section 'DcDiagnostics' -Message 'IncludeDcdiagActiveTests is set: the dcdiag DNS test will register and delete a DNS test record on each DC, the dcdiag SystemLog test, which Microsoft describes as reading and writing System log entries, will run on each DC, and the dcdiag Intersite test will trigger a replication, once per site that holds a DC. This run is not read-only.'
+        }
+        if ($IncludeLdapsHandshake) {
+            Write-Log -Level WARN -Section 'DcCertificates' -Message 'IncludeLdapsHandshake is set: a TLS handshake is made to port 636 of each DC to read the certificate it presents. Nothing is written to the DC, but Microsoft does not state that a handshake leaves no trace: a DC that cannot complete it may log a Schannel error event in its System log.'
+        }
+        # -ConfigOverridePath is read and validated ONCE, here, before the directory is touched and
+        # before any section runs: a file that cannot be used must stop the run before any work is
+        # done, not after an hour of collection. It is validated in full even when the section it
+        # names was not selected - a file is right or wrong regardless of this run's -Sections -
+        # and the log says which of its sections this run will not use.
+        $configOverrides = @{}
+        if ($ConfigOverridePath) {
+            try {
+                $configOverrides = Import-AdfaConfigOverride -Path $ConfigOverridePath -BaseConfig $script:Config -Sections $script:ConfigOverrideSections
             }
-        }
-    }
-    # A fresh run starts with no remembered port probes; within the run each DC is probed once.
-    Clear-AdfaDcPortCache
-    Write-Stage ("AD Forest Assessment v{0} starting" -f $script:Config.Version)
-    Write-Stage ("Output: {0}" -f $runRoot)
-
-    # Terminating on purpose: with no module there is no directory access and nothing to report
-    # on. The message names the requirement instead of surfacing a raw module-load error.
-    try { Import-Module ActiveDirectory -ErrorAction Stop -Verbose:$false }
-    catch {
-        Write-Log -Level ERROR ("RSAT ActiveDirectory module could not be loaded: {0}" -f $_.Exception.Message)
-        throw ("The RSAT ActiveDirectory module is required and could not be loaded: {0}. Install RSAT-AD-PowerShell, or run this on a domain controller." -f $_.Exception.Message)
-    }
-    Write-Stage 'ActiveDirectory module imported'
-
-    $adParams = @{}
-    if ($Server) { $adParams.Server = $Server }
-    if ($Credential) { $adParams.Credential = $Credential }
-    $repParams = @{}
-    if ($Credential) { $repParams.Credential = $Credential }
-
-    # Forest and domain resolution. Previously unguarded: on a forest where either call throws -
-    # a damaged or partially-recovered one, which is precisely what this tool exists for - the run
-    # died with a raw exception and produced NO report at all. Now the failure becomes the
-    # report's headline finding and every section degrades around it, which is only possible
-    # because the collectors now tolerate an empty domain and DC list.
-    $scopeRows = @()
-    $forestError = ''
-    $forest = $null
-    try { $forest = Get-ADForest @adParams }
-    catch { $forestError = $_.Exception.Message }
-
-    if ($null -eq $forest) {
-        Write-Log -Level ERROR -Section 'ForestScope' -Message ("Forest could not be read: {0}" -f $forestError)
-        # A placeholder so the reporting path still runs and a bundle still lands on disk. Named
-        # so nobody mistakes it for a forest: every section around it reports Not Assessed.
-        $forest = [pscustomobject]@{ Name = '(forest unreadable)'; RootDomain = ''; Domains = @(); ForestMode = '' }
-        $scopeRows += New-Finding -Area 'ForestScope' -Item 'Forest resolution' -Status $script:Status.Fail `
-            -Detail ("The forest could not be read, so NOTHING in this report was assessed: {0}. Check that the target is reachable, that ADWS (9389) and LDAP (389) are open, and that the credentials can read the directory. Re-run with -Server pointed at a known-healthy DC." -f $forestError)
-    }
-
-    $rootDomain = [string]$forest.RootDomain
-    $targetDomains = @()
-    if (-not $forestError) {
-        if ($AllDomains) { $targetDomains = @($forest.Domains) }
-        else {
-            try { $targetDomains = @((Get-ADDomain @adParams).DNSRoot) }
             catch {
-                # The forest object read but the current domain did not. Falling back to the forest
-                # root is a genuine recovery on a damaged forest - but it CHANGES THE SCOPE of the
-                # run, so it is reported loudly rather than done quietly.
-                Write-Log -Level ERROR -Section 'ForestScope' -Message ("Current domain could not be read: {0}" -f $_.Exception.Message)
-                if ($rootDomain) {
-                    $targetDomains = @($rootDomain)
-                    $scopeRows += New-Finding -Area 'ForestScope' -Item 'Domain scope' -Status $script:Status.Warning `
-                        -Detail ("The current domain could not be determined ({0}), so this run was scoped to the forest ROOT domain '{1}' instead. Confirm that is the domain you meant to assess; if not, re-run with -Server pointed at a DC in the intended domain." -f $_.Exception.Message, $rootDomain)
-                }
-                else {
-                    $scopeRows += New-Finding -Area 'ForestScope' -Item 'Domain scope' -Status $script:Status.Fail `
-                        -Detail ("The current domain could not be determined ({0}) and the forest reported no root domain to fall back to, so no domain was assessed." -f $_.Exception.Message)
+                # One log line, even for a message that ends in a line break (5.1 ConvertFrom-Json).
+                Write-Log -Level ERROR ("Config override refused, nothing was collected: {0}" -f (([string]$_.Exception.Message).Trim() -replace '\s*\r?\n\s*', ' / '))
+                # The transcript is stopped and the log closed by the finally of Invoke-Main (H21).
+                throw
+            }
+            foreach ($name in @($configOverrides.Keys | Sort-Object)) {
+                Write-Log -Level INFO ("Config override: section {0} taken from {1}" -f $name, $ConfigOverridePath)
+                # A table may serve more than one section (AlsoUsedBy, PORT-PLAN C10); it is unused only when
+                # none of them is selected.
+                $usedBy = @(@([string]$script:ConfigOverrideSections[[string]$name]['Section']) + @(@($script:ConfigOverrideSections[[string]$name]['AlsoUsedBy']) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ }))
+                if (@($usedBy | Where-Object { Test-SectionSelected -Name $_ -Selected $Sections }).Count -eq 0) {
+                    Write-Log -Level WARN -Message ("Config override: section {0} was validated but is not used by this run, because -Sections does not include {1}." -f $name, ($usedBy -join ' or '))
                 }
             }
         }
-    }
-    if (@($targetDomains).Count -eq 0 -and -not $forestError) {
-        $scopeRows += New-Finding -Area 'ForestScope' -Item 'Domain scope' -Status $script:Status.Fail `
-            -Detail 'The forest was readable but reported no domains to assess. Every per-domain section is therefore unassessed, not clean.'
-    }
-    # Whether the scoped domains are every domain of the forest (PORT-PLAN C13): only then is a DC
-    # count, or the set of DNS servers that can host a forest-wide zone, one over the forest.
-    $forestDomainsProp = $forest.PSObject.Properties['Domains']
-    $forestDomainList = @()
-    if ($null -ne $forestDomainsProp) { $forestDomainList = @(@($forestDomainsProp.Value) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim().TrimEnd('.').ToLowerInvariant() }) }
-    $scopedDomainList = @(@($targetDomains) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim().TrimEnd('.').ToLowerInvariant() })
-    $scopeCoversForest = ($forestDomainList.Count -gt 0 -and @($forestDomainList | Where-Object { $scopedDomainList -notcontains $_ }).Count -eq 0)
-    Write-Stage ("Forest: {0}; assessing domains: {1}" -f $forest.Name, ($targetDomains -join ', '))
+        # A fresh run starts with no remembered port probes; within the run each DC is probed once.
+        Clear-AdfaDcPortCache
+        Write-Stage ("AD Forest Assessment v{0} starting" -f $script:Config.Version)
+        Write-Stage ("Output: {0}" -f $runRoot)
 
-    $sectionData = [ordered]@{}
-    # Scope problems lead the report: if the forest or the domain list could not be resolved,
-    # every section below is unassessed and the reader needs to know that before reading them.
-    if (@($scopeRows).Count -gt 0) { $sectionData['Forest & Domain Scope'] = @($scopeRows) }
-    $ext = @{ TimeoutSeconds = $script:Config.ExternalToolTimeoutSec; Retries = $script:Config.Retries; RetryDelaySeconds = $script:Config.RetryDelaySeconds }
-
-    # ---- Forest-level sections ----
-    if (Test-SectionSelected 'Forest' $Sections) {
-        # PORT-PLAN C16 (GAP-P29): a summary that could not be read is a row of the section, not a
-        # warning on the console and a section silently missing from the report.
-        try { $sectionData['Forest Summary'] = @(Get-AdfaForestSummary -AdParams $adParams) }
+        # Terminating on purpose: with no module there is no directory access and nothing to report
+        # on. The message names the requirement instead of surfacing a raw module-load error.
+        try { Import-Module ActiveDirectory -ErrorAction Stop -Verbose:$false }
         catch {
-            Write-Log -Level ERROR -Section 'Forest' -Message ("Forest summary failed: {0}" -f $_.Exception.Message)
-            $sectionData['Forest Summary'] = @(New-Finding -Area 'Forest' -Item 'Forest summary' -Status $script:Status.NotAssessed `
-                    -Detail ("The forest summary (name, root domain, mode, domains, sites, global catalogs, forest FSMO holders, UPN suffixes) could not be read: {0}" -f $_.Exception.Message))
+            Write-Log -Level ERROR ("RSAT ActiveDirectory module could not be loaded: {0}" -f $_.Exception.Message)
+            throw ("The RSAT ActiveDirectory module is required and could not be loaded: {0}. Install RSAT-AD-PowerShell, or run this on a domain controller." -f $_.Exception.Message)
         }
-    }
+        Write-Stage 'ActiveDirectory module imported'
 
-    $allDcInventory = @()
-    # Domains whose inventory call threw. Their DCs are in no list, so a section that reports
-    # per DC must be told, or it looks complete while a whole domain is missing from it.
-    $dcInventoryFailures = @()
-    # Whether the inventory was asked for at all. A per-DC section that needs every scoped
-    # domain's DCs (DcDisk, DcHardening) enumerates them itself when it was not.
-    $dcInventoryCollected = $false
-    # The DNS table (PORT-PLAN C13), shared by Dns, DnsAdConsistency, DomainControllers and the opt-in
-    # DnsRecordExport: the file's table where it supplied one, validated before any section ran.
-    $dnsConfig = $script:Config.Dns
-    if ($configOverrides.ContainsKey('Dns')) { $dnsConfig = $configOverrides['Dns'] }
-    if (Test-SectionSelected 'DomainControllers' $Sections) {
-        $dcInventoryCollected = $true
-        $inv = @()
-        foreach ($d in $targetDomains) {
-            try { $inv += Get-AdfaDomainControllerInventory -DomainName $d -AdParams $adParams }
-            catch {
-                Write-Warning ("DC inventory failed for {0}: {1}" -f $d, $_.Exception.Message)
-                $dcInventoryFailures += [pscustomobject]@{ Domain = [string]$d; Error = $_.Exception.Message }
-            }
+        $adParams = @{}
+        if ($Server) { $adParams.Server = $Server }
+        if ($Credential) { $adParams.Credential = $Credential }
+        $repParams = @{}
+        if ($Credential) { $repParams.Credential = $Credential }
+
+        # Forest and domain resolution. Previously unguarded: on a forest where either call throws -
+        # a damaged or partially-recovered one, which is precisely what this tool exists for - the run
+        # died with a raw exception and produced NO report at all. Now the failure becomes the
+        # report's headline finding and every section degrades around it, which is only possible
+        # because the collectors now tolerate an empty domain and DC list.
+        $scopeRows = @()
+        $forestError = ''
+        $forest = $null
+        try { $forest = Get-ADForest @adParams }
+        catch { $forestError = $_.Exception.Message }
+
+        if ($null -eq $forest) {
+            Write-Log -Level ERROR -Section 'ForestScope' -Message ("Forest could not be read: {0}" -f $forestError)
+            # A placeholder so the reporting path still runs and a bundle still lands on disk. Named
+            # so nobody mistakes it for a forest: every section around it reports Not Assessed.
+            $forest = [pscustomobject]@{ Name = '(forest unreadable)'; RootDomain = ''; Domains = @(); ForestMode = '' }
+            $scopeRows += New-Finding -Area 'ForestScope' -Item 'Forest resolution' -Status $script:Status.Fail `
+                -Detail ("The forest could not be read, so NOTHING in this report was assessed: {0}. Check that the target is reachable, that ADWS (9389) and LDAP (389) are open, and that the credentials can read the directory. Re-run with -Server pointed at a known-healthy DC." -f $forestError)
         }
-        $allDcInventory = $inv
-        $sectionData['Domain Controllers'] = $inv
-        # ADA-INV-016: each DC's DNS server list from its enabled adapters (read-only CIM). Its own
-        # key, so the inventory rows keep the columns they had. The key is placed here, in its place
-        # in the report; the adapters are read after the reachability classification below
-        # (PORT-PLAN C14c), so a DC classified Unreachable is not probed by this read first.
-        $sectionData['DC DNS Client'] = @()
-    }
-    $dcNames = @($allDcInventory | Select-Object -ExpandProperty HostName -ErrorAction SilentlyContinue)
-    # Every per-DC section downstream reads $dcNames. When this fallback threw silently, all of
-    # them reported "No domain controllers enumerated" and the actual cause - bad credentials, no
-    # ADWS, a dead target DC - was discarded. The reason is captured so those sections can name
-    # it, which is the difference between "this forest has no DCs" and "we could not ask".
-    $script:DcEnumerationError = ''
-    if ($dcNames.Count -eq 0) {
-        try { $dcNames = @(Get-ADDomainController -Filter * @adParams | Select-Object -ExpandProperty HostName) }
-        catch {
-            $script:DcEnumerationError = $_.Exception.Message
-            Write-Log -Level ERROR -Section 'DomainControllers' -Message ("Domain controller enumeration FAILED, so every per-DC section is unassessed rather than clean: {0}" -f $_.Exception.Message)
-        }
-    }
-    if ($dcNames.Count -eq 0) {
-        $whyNoDcs = 'No domain controllers could be enumerated.'
-        if ($script:DcEnumerationError) { $whyNoDcs = ("Domain controller enumeration failed: {0}" -f $script:DcEnumerationError) }
-        Write-Log -Level ERROR -Section 'DomainControllers' -Message $whyNoDcs
-        # A first-class finding, so the report itself says the per-DC checks are unassessed.
-        # Without this the only trace was each section's own terse "no DCs enumerated" line.
-        $sectionData['Domain Controller Enumeration'] = @(New-Finding -Area 'DomainControllers' `
-                -Item 'Domain controller enumeration' -Status $script:Status.NotAssessed `
-                -Detail ("{0} Every per-DC check (replication, DNS consistency, ports, secure channels, DS events, diagnostics) is therefore UNASSESSED, not clean." -f $whyNoDcs))
-    }
 
-    # ---- DC reachability classes (PORT-PLAN C14, REACH-001/002) ----
-    # Every DC is classified ONCE, here, before the first per-DC section: name resolution, LDAP (389),
-    # then WinRM (5985) and RPC (135). The class is kept for the run and seeded into the shared port
-    # cache, and the later sections that read it (Site Health, Time Hierarchy) say "Unreachable" with
-    # the cause instead of probing again. The table the file supplied where it supplied one.
-    $reachConfig = $script:Config.Reach
-    if ($configOverrides.ContainsKey('Reach')) { $reachConfig = $configOverrides['Reach'] }
-    # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk takes them.
-    $c14Targets = @($allDcInventory)
-    $c14Failures = @($dcInventoryFailures)
-    if (-not $dcInventoryCollected -and ((Test-SectionSelected 'PortMatrix' $Sections) -or (Test-SectionSelected 'Topology' $Sections))) {
-        $c14Enumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
-        $c14Targets = @($c14Enumeration.Targets)
-        $c14Failures = @($c14Enumeration.Failures)
-    }
-    if ($c14Targets.Count -eq 0) { $c14Targets = @($dcNames) }
-    # ---- Inventory depth (PORT-PLAN C15, INV-001, INV-006..INV-012, INV-015) ----
-    # The Inventory table the file supplied where it supplied one; read by Forest, Trusts, Identity, Gpo,
-    # DsEvents and TimeHierarchy. The per-DC families (DNS suffix, events, W32Time configuration) take
-    # the DCs of every scoped domain with their domains: the C14 targets where they were enumerated per
-    # domain, otherwise enumerated here, as the C14 block does.
-    $inventoryConfig = $script:Config.Inventory
-    if ($configOverrides.ContainsKey('Inventory')) { $inventoryConfig = $configOverrides['Inventory'] }
-    # PORT-PLAN C4b: the words the capped C4b rows use for where MaxObjects came from, read from the
-    # provenance the merge recorded, so a cap the file set is never called a tool default.
-    $inventoryCapSource = Get-AdfaCapSource -Config $inventoryConfig -BaseConfig $script:Config.Inventory -Key 'MaxObjects' -Label 'Inventory'
-    $c15Targets = @($c14Targets)
-    $c15Failures = @($c14Failures)
-    $c14PerDomain = ($dcInventoryCollected -or (Test-SectionSelected 'PortMatrix' $Sections) -or (Test-SectionSelected 'Topology' $Sections))
-    # Whether $c15Targets is a per-domain list (PORT-PLAN C2e reuses it rather than enumerating again).
-    $c15PerDomain = $c14PerDomain
-    if (-not $c14PerDomain -and ((Test-SectionSelected 'Forest' $Sections) -or (Test-SectionSelected 'DsEvents' $Sections) -or (Test-SectionSelected 'TimeHierarchy' $Sections))) {
-        $c15PerDomain = $true
-        $c15Enumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
-        $c15Targets = @($c15Enumeration.Targets)
-        $c15Failures = @($c15Enumeration.Failures)
-        if ($c15Targets.Count -eq 0) { $c15Targets = @($dcNames) }
-    }
-    if (Test-SectionSelected 'Forest' $Sections) {
-        Write-Stage 'Topology inventory (functional levels, FSMO holders, UPN and DNS suffixes, runner DC)'
-        $sectionData['Topology Inventory'] = @(Get-AdfaTopologyInventory -ForestName ([string]$forest.Name) -RootDomain $rootDomain -Domains $targetDomains `
-                -DomainControllers $c15Targets -InventoryFailures $c15Failures -ScopedDomains $targetDomains -ForestError $forestError -AdParams $adParams -Config $inventoryConfig)
-    }
-    $reachRows = @()
-    if (Test-SectionSelected 'PortMatrix' $Sections) {
-        Write-Stage 'DC reachability (name resolution, LDAP 389, WinRM 5985, RPC 135; once per DC, reused by Site Health and Time Hierarchy)'
-        $reachRows = @(Get-AdfaDcReachabilityRows -DomainControllers $c14Targets -Config $reachConfig -InventoryFailures $c14Failures `
-                -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
-    }
-    if ($dcInventoryCollected) {
-        # ADA-INV-016, read after the classification (PORT-PLAN C14c): see the DomainControllers block,
-        # which set $dcInventoryCollected exactly when DomainControllers is among -Sections.
-        Write-Stage 'DC DNS client settings (enabled adapters, per DC)'
-        $sectionData['DC DNS Client'] = @(Get-AdfaDcDnsClient -DomainControllers $allDcInventory -Config $dnsConfig -Credential $Credential `
-                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
-                -InventoryFailures $dcInventoryFailures -ScopedDomains $targetDomains -ForestComplete $scopeCoversForest)
-    }
-
-    # ---- Per-domain DC targets of the per-DC sections that took $dcNames (PORT-PLAN C2e) ----
-    # Replication, SYSVOL shares and DFS Replication events, the patch-level half of DcSystem, Backup,
-    # Time Hierarchy, the port matrix, Directory Service events, Restore Integrity, the DNS server set of
-    # the four DNS-vs-AD sections and the raw repadmin/dcdiag captures used to take $dcNames, which with
-    # DomainControllers not selected is one unscoped Get-ADDomainController against the default server:
-    # the current domain's DCs only. They now take the DCs of EVERY scoped domain, each with its domain:
-    # the per-domain list C14/C15 already hold where one exists, otherwise one enumeration here shared
-    # by all of them (one Get-ADDomainController per domain per run), and the unscoped names last.
-    $perDcTargets = @($c15Targets)
-    $perDcFailures = @($c15Failures)
-    $perDcSections = @('Replication', 'Sysvol', 'DcSystem', 'Backup', 'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'MsdcsDelegation',
-        'TimeHierarchy', 'PortMatrix', 'DsEvents', 'RestoreIntegrity')
-    $perDcSelected = (@($perDcSections | Where-Object { Test-SectionSelected $_ $Sections }).Count -gt 0)
-    if (-not $c15PerDomain -and ($perDcSelected -or $IncludeRepadmin -or $IncludeDcdiag)) {
-        $perDcEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
-        $perDcTargets = @($perDcEnumeration.Targets)
-        $perDcFailures = @($perDcEnumeration.Failures)
-    }
-    if ($perDcTargets.Count -eq 0) { $perDcTargets = @($dcNames) }
-    # The host names of those targets, in order, each once: the DNS server set and the DC count.
-    $perDcHosts = @(Get-AdfaDcHostSet -Targets $perDcTargets)
-    $perDcDnsServers = @($perDcHosts)
-    # The scoped domains whose DCs are missing from those targets (enumeration threw, or returned no DC):
-    # a check that compares a host with "the known DCs" cannot call it unknown while these are missing.
-    # On a single-domain run the unscoped fallback names are that domain's DCs (Get-AdfaDomainDcHostName).
-    $perDcGapDomains = @(@(Get-AdfaDcPopulationGap -Targets $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains) |
-        Where-Object { -not ([int]$_.WithoutDomain -gt 0 -and @($targetDomains).Count -eq 1) } | ForEach-Object { [string]$_.Domain })
-
-    # A throw here used to drop the domain from the section silently - the same shape of defect
-    # as the v1.6.0 multi-domain data loss, where a reader saw a shorter list and no error. Each
-    # failure now becomes a row, so the section's own count reconciles with the domains scoped.
-    if (Test-SectionSelected 'Domains' $Sections) {
-        $ds = foreach ($d in $targetDomains) {
-            try { Get-AdfaDomainSummary -DomainName $d -AdParams $adParams }
-            catch {
-                Write-Log -Level ERROR -Section $d -Message ("Domain summary failed: {0}" -f $_.Exception.Message)
-                New-Finding -Scope $d -Area 'Domains' -Item ("Domain summary - {0}" -f $d) -Status $script:Status.NotAssessed `
-                    -Detail ("Could not be read: {0}. Functional level, FSMO holders and the domain SID are unknown for this domain." -f $_.Exception.Message)
-            }
-        }
-        $sectionData['Domain Summary'] = @($ds)
-    }
-    if (Test-SectionSelected 'Fsmo' $Sections) {
-        $fs = foreach ($d in $targetDomains) {
-            try { Get-AdfaFsmoRole -DomainName $d -AdParams $adParams }
-            catch {
-                Write-Log -Level ERROR -Section $d -Message ("FSMO role lookup failed: {0}" -f $_.Exception.Message)
-                New-Finding -Scope $d -Area 'Fsmo' -Item ("FSMO roles - {0}" -f $d) -Status $script:Status.NotAssessed `
-                    -Detail ("Could not be read: {0}. Role holders for this domain are unknown - do not conclude they are healthy." -f $_.Exception.Message)
-            }
-        }
-        $sectionData['FSMO Roles'] = @($fs)
-    }
-
-    if (Test-SectionSelected 'Replication' $Sections) {
-        Write-Stage 'Replication health'
-        $sectionData['Replication Health'] = Get-AdfaReplicationHealth -DomainControllers $perDcTargets -RepParams $repParams -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -StaleMinutes $script:Config.ReplicationStaleMinutes `
-            -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
-        Write-Stage 'Replication cross-check (repadmin /showrepl * /csv)'
-        $sectionData['Replication Cross-Check (repadmin)'] = Get-AdfaRepadminReplication -TimeoutSeconds 300 -Retries $script:Config.Retries -RetryDelaySeconds $script:Config.RetryDelaySeconds
-        Write-Stage 'Replication convergence summary (repadmin /replsummary)'
-        $sectionData['Replication Summary (repadmin)'] = Get-AdfaReplsummaryHealth -TimeoutSeconds 300 -Retries $script:Config.Retries -RetryDelaySeconds $script:Config.RetryDelaySeconds
-    }
-
-    $topology = $null
-    if (Test-SectionSelected 'Topology' $Sections) {
-        Write-Stage 'Topology'
-        $topologyError = ''
-        $siteRows = @()
-        try {
-            # PORT-PLAN C4b: declared lists for the site links and connection objects, capped at the
-            # Inventory table's MaxObjects; each of those two reads fails on its own row.
-            $topology = Get-AdfaReplicationTopology -AdParams $adParams -Config $script:Config.DirectoryRead -MaxObjects ([int]$inventoryConfig['MaxObjects']) -CapSource $inventoryCapSource
-            $sectionData['AD Sites'] = $topology.Sites
-            $sectionData['AD Subnets'] = $topology.Subnets
-            $sectionData['Site Links'] = $topology.SiteLinks
-            $sectionData['Replication Connections'] = $topology.Connections
-            # PORT-PLAN C16 (GAP-P6): sites without subnets need no inventory and are always checked;
-            # empty sites need it, and say so when it was not collected, instead of the whole check
-            # being skipped silently.
-            # Independent review of the C16 diff (findings 3, 9): the sites are the forest's, so the
-            # inventory must cover the forest, with no domain's read failed.
-            $siteInventoryGap = Get-AdfaSiteInventoryGap -Collected $dcInventoryCollected -DcCount @($allDcInventory).Count -ScopeCoversForest $scopeCoversForest -Failures @($dcInventoryFailures)
-            $siteRows += @(Get-AdfaSiteHealthFinding -Topology $topology -DomainControllers @($allDcInventory) -InventoryCollected ($siteInventoryGap -eq '') -InventoryGap $siteInventoryGap)
-        }
-        catch {
-            $topologyError = [string]$_.Exception.Message
-            Write-Warning ("Topology failed: {0}" -f $topologyError)
-            Write-Log -Level ERROR -Section 'Topology' -Message ("Topology read failed, so whether any subnet lacks a site is unknown: {0}" -f $topologyError)
-        }
-        # PORT-PLAN C14 (SITE-001): subnets without a site, outside the DC inventory gate, and the
-        # clients each DC's netlogon.log names as mapped to no site. The table the file supplied where
-        # it supplied one.
-        $siteConfig = $script:Config.SiteCoverage
-        if ($configOverrides.ContainsKey('SiteCoverage')) { $siteConfig = $configOverrides['SiteCoverage'] }
-        $subnetList = @()
-        if ($null -ne $topology) { $subnetList = @($topology.Subnets) }
-        $siteForest = ''
-        if (-not $forestError) { $siteForest = [string]$forest.Name }
-        else { $topologyError = ("the forest could not be read ({0})" -f $forestError) }
-        $siteRows += Get-AdfaSubnetSiteVerdict -Subnets $subnetList -ReadError $topologyError -ForestName $siteForest -Config $siteConfig
-        Write-Stage 'Clients without a site (netlogon.log NO_CLIENT_SITE, per DC, read-only)'
-        $siteRows += @(Get-AdfaClientSiteRows -DomainControllers $c14Targets -Config $siteConfig -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
-                -InventoryFailures $c14Failures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
-        $sectionData['Site Health'] = @($siteRows)
-    }
-
-    if (Test-SectionSelected 'Trusts' $Sections) {
-        Write-Stage 'Trust health (two-way verification)'
-        $trustRows = @()
-        foreach ($d in $targetDomains) {
-            $tp = @{} + $adParams; $tp.Server = $d
-            # PORT-PLAN C16 (GAP-P3): the outbound direction is asked of a DC of this domain
-            # (nltest /server:<dc>), not of the host running the assessment. Not looked up when
-            # verification is skipped, since nothing would be asked of it.
-            $trustSource = [pscustomobject]@{ HostName = ''; Error = '' }
-            if (-not $SkipTrustVerification) { $trustSource = Resolve-AdfaTrustSourceDc -DomainName $d -AdParams $adParams }
-            $trustRows += Get-AdfaTrustHealth -DomainName $d -AdParams $tp -SkipVerification:$SkipTrustVerification -LiveVerify:$IncludeSecureChannelVerify `
-                -TimeoutSeconds $script:Config.ExternalToolTimeoutSec -Retries $script:Config.Retries `
-                -RetryDelaySeconds $script:Config.RetryDelaySeconds -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
-                -PropertyNames @($script:Config.DirectoryRead['TrustHealthProperties']) -MaxObjects ([int]$inventoryConfig['MaxObjects']) -CapSource $inventoryCapSource `
-                -SourceDc $trustSource.HostName -SourceDcError $trustSource.Error
-        }
-        $sectionData['Trusts & Two-Way Health'] = $trustRows
-        # PORT-PLAN C15 (INV-006): the trustedDomain objects of every scoped domain, read from that
-        # domain with a listed attribute set and decoded by name; inventory only.
-        Write-Stage 'Trust inventory (trustedDomain objects, per domain)'
-        $sectionData['Trust Inventory'] = @(Get-AdfaTrustInventory -Domains $targetDomains -ForestError $forestError -AdParams $adParams -Config $inventoryConfig)
-    }
-
-    if (Test-SectionSelected 'DcDiagnostics' $Sections) {
-        Write-Stage 'DC diagnostics (parsed: per DC, per domain, per forest, per site)'
-        # The table the file supplied where it supplied one, otherwise the built-in table. The file
-        # was validated before any section ran. It can set the time-out and retries only.
-        $dcDiagConfig = $script:Config.DcDiag
-        if ($configOverrides.ContainsKey('DcDiag')) { $dcDiagConfig = $configOverrides['DcDiag'] }
-        # The DCs of EVERY scoped domain, each carrying its domain (and, from the inventory, its site
-        # and whether it is read-only), exactly as RidPool takes them: the DC inventory where the
-        # DomainControllers section ran; otherwise the section's own enumeration of each scoped
-        # domain; last resort, the fallback host names, which carry no domain.
-        $dcDiagTargets = @($allDcInventory)
-        $dcDiagFailures = @($dcInventoryFailures)
-        if (-not $dcInventoryCollected) {
-            $dcDiagEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
-            $dcDiagTargets = @($dcDiagEnumeration.Targets)
-            $dcDiagFailures = @($dcDiagEnumeration.Failures)
-        }
-        if ($dcDiagTargets.Count -eq 0) { $dcDiagTargets = @($dcNames) }
-        $sectionData['DC Diagnostics'] = @(Get-AdfaDcDiagnostic -DomainControllers $dcDiagTargets -IncludeActiveTests:$IncludeDcdiagActiveTests @ext -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
-                -Config $dcDiagConfig -InventoryFailures $dcDiagFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains -ForestRoot $rootDomain)
-    }
-    if (Test-SectionSelected 'Dns' $Sections) {
-        Write-Stage 'DNS health (zone dynamic update, aging and scavenging, zone inventory; per DNS server)'
-        # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk takes them: the
-        # DC inventory where the DomainControllers section ran; otherwise the section's own
-        # enumeration of each scoped domain; last resort, the fallback host names.
-        $dnsTargets = @($allDcInventory)
-        $dnsFailures = @($dcInventoryFailures)
-        if (-not $dcInventoryCollected) {
-            $dnsEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
-            $dnsTargets = @($dnsEnumeration.Targets)
-            $dnsFailures = @($dnsEnumeration.Failures)
-        }
-        # The fallback host names carry no domain, so a run on them never claims the forest's servers.
-        $dnsForestComplete = $scopeCoversForest
-        if ($dnsTargets.Count -eq 0) { $dnsTargets = @($dcNames); $dnsForestComplete = $false }
-        $sectionData['DNS Health'] = @(Get-AdfaDnsHealth -DomainControllers $dnsTargets -Config $dnsConfig -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
-                -InventoryFailures $dnsFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains -ForestComplete $dnsForestComplete)
-    }
-    if (Test-SectionSelected 'Sysvol' $Sections) {
-        Write-Stage 'SYSVOL/DFSR'
-        $sysvolRows = @(Get-AdfaSysvolHealth @ext)
-
-        # Whether each DC is actually serving SYSVOL and NETLOGON. The vendor's own first
-        # diagnostic for broken SYSVOL replication, and a common state after a restore: DFSR
-        # does not share SYSVOL until the replicated folder has initialised.
-        $sysvolRows += @(Get-AdfaSysvolShareHealth -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains)
-
-        # PORT-PLAN C14 (SYSVOL-004): the SYSVOL replication engine of each DC and each scoped domain,
-        # from the DFSR SYSVOL subscription and the NTFRS subscriber of every DC, read from its own
-        # domain. The table the file supplied where it supplied one.
-        # PORT-PLAN C16 (GAP-P1): the same read gives the two attributes a D2/D4-equivalent rebuild
-        # edits by hand, per KB 2218556 (msDFSR-Enabled, msDFSR-options), graded per domain because
-        # "exactly one member is authoritative" is a cross-DC rule. Before v1.36.0 they were read from
-        # a DC inventory row property that no inventory row carried, so no subscription was read.
-        $sysvolEngineConfig = $script:Config.SysvolEngine
-        if ($configOverrides.ContainsKey('SysvolEngine')) { $sysvolEngineConfig = $configOverrides['SysvolEngine'] }
-        if ($forestError) {
-            $sysvolRows += New-AdfaC14Row -Area 'SYSVOL' -Item 'SYSVOL replication engine' -Status $script:Status.NotAssessed `
-                -Detail ("The forest could not be read ({0}), so no domain was scoped and no SYSVOL subscription was read. This is not a clean result." -f $forestError)
-        }
-        else {
-            foreach ($d in $targetDomains) {
-                $engineRaw = Get-AdfaSysvolEngineRaw -DomainName $d -AdParams $adParams -Config $sysvolEngineConfig
-                $subscriptionList = ConvertTo-AdfaDfsrSubscriptionList -Raw $engineRaw
-                $sysvolRows += @(Get-AdfaDfsrSubscriptionVerdict -DomainName $d -Subscriptions @($subscriptionList.Subscriptions) -NotDfsrCount ([int]$subscriptionList.NotDfsrCount))
-                $sysvolRows += @(Get-AdfaSysvolEngineVerdict -DomainName $d -Raw $engineRaw -Config $sysvolEngineConfig)
-            }
-        }
-        $sectionData['SYSVOL / DFSR'] = @($sysvolRows)
-
-        Write-Stage 'DFS Replication events'
-        $sectionData['DFS Replication Events'] = Get-AdfaDfsrEventLog -DomainControllers $perDcTargets -Credential $Credential `
-            -LookbackDays $script:Config.DfsrEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
-
-        if ($IncludeSysvolBacklog) {
-            Write-Stage 'SYSVOL backlog (DFSR, both directions against each domain PDC)'
-            $backlogRows = @()
-            foreach ($d in $targetDomains) {
-                # The PDC emulator is where Group Policy edits are normally written, so it is the
-                # DC the others should be catching up with.
-                $pdc = ''
-                try { $pdc = [string](Get-ADDomain -Identity $d @adParams).PDCEmulator }
+        $rootDomain = [string]$forest.RootDomain
+        $targetDomains = @()
+        if (-not $forestError) {
+            if ($AllDomains) { $targetDomains = @($forest.Domains) }
+            else {
+                try { $targetDomains = @((Get-ADDomain @adParams).DNSRoot) }
                 catch {
-                    Write-Log -Level ERROR -Section $d -Message ("PDC emulator lookup failed, so no SYSVOL backlog could be measured: {0}" -f $_.Exception.Message)
-                    $backlogRows += New-Finding -Scope $d -Area 'SysvolBacklog' -Item 'SYSVOL backlog' -Status $script:Status.NotAssessed `
-                        -Detail ("The PDC emulator could not be identified, so there was no reference DC to measure against: {0}" -f $_.Exception.Message)
-                    continue
+                    # The forest object read but the current domain did not. Falling back to the forest
+                    # root is a genuine recovery on a damaged forest - but it CHANGES THE SCOPE of the
+                    # run, so it is reported loudly rather than done quietly.
+                    Write-Log -Level ERROR -Section 'ForestScope' -Message ("Current domain could not be read: {0}" -f $_.Exception.Message)
+                    if ($rootDomain) {
+                        $targetDomains = @($rootDomain)
+                        $scopeRows += New-Finding -Area 'ForestScope' -Item 'Domain scope' -Status $script:Status.Warning `
+                            -Detail ("The current domain could not be determined ({0}), so this run was scoped to the forest ROOT domain '{1}' instead. Confirm that is the domain you meant to assess; if not, re-run with -Server pointed at a DC in the intended domain." -f $_.Exception.Message, $rootDomain)
+                    }
+                    else {
+                        $scopeRows += New-Finding -Area 'ForestScope' -Item 'Domain scope' -Status $script:Status.Fail `
+                            -Detail ("The current domain could not be determined ({0}) and the forest reported no root domain to fall back to, so no domain was assessed." -f $_.Exception.Message)
+                    }
                 }
-                # PORT-PLAN C2e: this domain's own DCs only. The unscoped host names are taken only on a
-                # single-domain run, where they are that domain's; a domain whose DCs could not be listed
-                # gets a Not Assessed row with the cause, never another domain's DCs under its scope.
-                $backlogPeers = Get-AdfaDomainDcHostName -Domain $d -Targets $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
-                if (@($backlogPeers.HostNames).Count -eq 0) {
-                    $backlogWhy = 'No domain controller of it was listed, so no SYSVOL backlog was measured.'
-                    if ($null -ne $backlogPeers.Gap) { $backlogWhy = Get-AdfaDcPopulationGapText -Gap $backlogPeers.Gap -NothingRead 'No SYSVOL backlog of its domain controllers was measured.' }
-                    $backlogRows += New-Finding -Scope $d -Area 'SysvolBacklog' -Item ("SYSVOL backlog (population): {0}" -f $d) -Status $script:Status.NotAssessed -Detail $backlogWhy
-                    continue
-                }
-                $backlogRows += @(Get-AdfaSysvolBacklog -DomainName $d -ReferenceDc $pdc `
-                        -DomainControllers @($backlogPeers.HostNames) -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs)
             }
-            $sectionData['SYSVOL Backlog'] = @($backlogRows)
         }
-    }
-    if (Test-SectionSelected 'Gpo' $Sections) {
-        Write-Stage 'GPO inventory'
-        $g = foreach ($d in $targetDomains) { Get-AdfaGpoInventory -DomainName $d }
-        # GPO version consistency (PORT-PLAN C8): per scoped domain, each GPO's version in the
-        # directory against GPT.INI in SYSVOL, both read from the domain's PDC emulator. Appended
-        # after the inventory rows, whose shape is unchanged. The table the file supplied where it
-        # supplied one, otherwise the built-in table; the file was validated before any section ran.
-        Write-Stage 'GPO version consistency (directory against SYSVOL, on each domain PDC)'
-        $gpoConfig = $script:Config.Gpo
-        if ($configOverrides.ContainsKey('Gpo')) { $gpoConfig = $configOverrides['Gpo'] }
-        # With the forest unreadable there is no domain to scope, and the rows say so in one row
-        # instead of asking whatever the default server is.
-        if ($forestError) {
-            $gpoVersionRows = @(New-AdfaGpoVersionRow -Item 'GPO version' -Status $script:Status.NotAssessed -Evidence 'none' `
-                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no GPO version was read. This is not a clean result." -f $forestError))
+        if (@($targetDomains).Count -eq 0 -and -not $forestError) {
+            $scopeRows += New-Finding -Area 'ForestScope' -Item 'Domain scope' -Status $script:Status.Fail `
+                -Detail 'The forest was readable but reported no domains to assess. Every per-domain section is therefore unassessed, not clean.'
         }
-        else {
-            $gpoVersionRows = @(Get-AdfaGpoVersion -Domains $targetDomains -AdParams $adParams -Config $gpoConfig)
-        }
-        $sectionData['GPO Inventory'] = @(@($g) + @($gpoVersionRows))
-        # PORT-PLAN C15 (INV-011): from the directory, without the GroupPolicy module - each GPO's
-        # status flags, WMI filter and links, and the links of every site, domain and OU; inventory only.
-        Write-Stage 'GPO directory inventory (status flags, WMI filters, links per site, domain and OU)'
-        $sectionData['GPO Directory Inventory'] = @(Get-AdfaGpoDirectoryInventory -Domains $targetDomains -ForestDomains @($forest.Domains) -RootDomain $rootDomain -ForestError $forestError `
-                -AdParams $adParams -Config $inventoryConfig -GpoConfig $gpoConfig)
-    }
-    if (Test-SectionSelected 'PasswordPolicy' $Sections) {
-        $pp = foreach ($d in $targetDomains) { Get-AdfaPasswordPolicy -DomainName $d -AdParams $adParams }
-        $sectionData['Password Policy'] = @($pp)
-    }
-    # Privileged groups and delegation (PORT-PLAN C10): the directory is read ONCE for the three sections
-    # that use it - the privileged groups and their transitive membership (PrivilegedAccounts and
-    # PrivilegedHygiene), the adminCount objects and dSHeuristics (PrivilegedHygiene), and the DC
-    # population and delegation settings (Kerberos) - and each section builds its rows from that state.
-    # The table the file supplied where it supplied one, otherwise the built-in table; the file was
-    # validated before any section ran.
-    $privConfig = $script:Config.Privileged
-    if ($configOverrides.ContainsKey('Privileged')) { $privConfig = $configOverrides['Privileged'] }
-    $privParts = @()
-    if (Test-SectionSelected 'PrivilegedAccounts' $Sections) { $privParts += 'Groups' }
-    if (Test-SectionSelected 'PrivilegedHygiene' $Sections) { $privParts += @('Groups', 'Hygiene') }
-    if (Test-SectionSelected 'Kerberos' $Sections) { $privParts += 'Delegation' }
-    $privState = $null
-    if (@($privParts).Count -gt 0 -and -not $forestError) {
-        Write-Stage 'Privileged groups and delegation (directory reads for three sections)'
-        $privState = Get-AdfaPrivilegedState -Domains $targetDomains -ForestDomains @($forest.Domains) -RootDomain $rootDomain -AdParams $adParams -Config $privConfig -Parts $privParts
-    }
-    if (Test-SectionSelected 'PrivilegedAccounts' $Sections) {
-        # With the forest unreadable there is no domain to scope, and the rows say so in one row instead of
-        # asking whatever the default server is.
-        if ($forestError) {
-            $paRows = @(New-AdfaPrivilegedRow -Area 'Privileged' -Item 'Privileged groups' -Status $script:Status.NotAssessed -Evidence 'none' `
-                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no privileged group was read. This is not a clean result." -f $forestError))
-        }
-        else {
-            $paRows = @(Get-AdfaPrivilegedAccount -State $privState -Config $privConfig)
-        }
-        $sectionData['Privileged Accounts'] = @($paRows)
-    }
-    if (Test-SectionSelected 'SecurityPosture' $Sections) {
-        Write-Stage 'Security posture'
-        $sp = foreach ($d in $targetDomains) { Get-AdfaSecurityPosture -DomainName $d -IsRootDomain:($d -eq $rootDomain) -AdParams $adParams -KrbtgtMaxAgeDays $script:Config.KrbtgtMaxAgeDays }
-        # SID history (PORT-PLAN C7): four rows per scoped domain, directory reads only. The table
-        # the file supplied where it supplied one, otherwise the built-in table; the file was
-        # validated before any section ran.
-        $sidHistoryConfig = $script:Config.SidHistory
-        if ($configOverrides.ContainsKey('SidHistory')) { $sidHistoryConfig = $configOverrides['SidHistory'] }
-        # With the forest unreadable there is no domain to scope and no forest domain SID to read,
-        # and the rows say so in one row instead of asking whatever the default server is.
-        if ($forestError) {
-            $sidHistoryRows = @(New-AdfaSidHistoryRow -Item 'SID history' -Status $script:Status.NotAssessed -Evidence 'none' `
-                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no security principal was read for sIDHistory. This is not a clean result." -f $forestError))
-        }
-        else {
-            $sidHistoryRows = @(Get-AdfaSidHistory -Domains $targetDomains -ForestDomains @($forest.Domains) -AdParams $adParams -Config $sidHistoryConfig)
-        }
-        $sectionData['Security Posture'] = @(@($sp) + @($sidHistoryRows))
-    }
-    if (Test-SectionSelected 'StaleObjects' $Sections) {
-        # PORT-PLAN C14 (STALE-001/002): per scoped domain, a listed-property, capped read of the
-        # enabled users and computers with no logon recorded for -StaleDays, never-logged-on ones
-        # included, and of the enabled users with an old password. The table the file supplied where
-        # it supplied one.
-        Write-Stage 'Stale enabled objects (lastLogonTimestamp, pwdLastSet; per domain)'
-        $staleConfig = $script:Config.Stale
-        if ($configOverrides.ContainsKey('Stale')) { $staleConfig = $configOverrides['Stale'] }
-        $staleNow = Get-Date
-        $so = @()
-        if ($forestError) {
-            $so += New-AdfaC14Row -Area 'Stale' -Item 'Stale objects' -Status $script:Status.NotAssessed `
-                -Detail ("The forest could not be read ({0}), so no domain was scoped and no account was read. This is not a clean result." -f $forestError)
-        }
-        foreach ($d in $targetDomains) { $so += @(Get-AdfaStaleObject -DomainName $d -AdParams $adParams -StaleDays $script:Config.StaleDays -Config $staleConfig -Now $staleNow) }
-        $sectionData['Stale Objects'] = @($so)
-    }
+        # Whether the scoped domains are every domain of the forest (PORT-PLAN C13): only then is a DC
+        # count, or the set of DNS servers that can host a forest-wide zone, one over the forest.
+        $forestDomainsProp = $forest.PSObject.Properties['Domains']
+        $forestDomainList = @()
+        if ($null -ne $forestDomainsProp) { $forestDomainList = @(@($forestDomainsProp.Value) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim().TrimEnd('.').ToLowerInvariant() }) }
+        $scopedDomainList = @(@($targetDomains) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim().TrimEnd('.').ToLowerInvariant() })
+        $scopeCoversForest = ($forestDomainList.Count -gt 0 -and @($forestDomainList | Where-Object { $scopedDomainList -notcontains $_ }).Count -eq 0)
+        Write-Stage ("Forest: {0}; assessing domains: {1}" -f $forest.Name, ($targetDomains -join ', '))
 
-    # ---- Deep security & reliability ----
-    if (Test-SectionSelected 'Pki' $Sections) {
-        Write-Stage 'AD CS / PKI (ESC1 heuristic)'
-        $sectionData['PKI / AD CS'] = Get-AdfaPkiHealth -AdParams $adParams
-    }
-    if (Test-SectionSelected 'Acl' $Sections) {
-        # Dangerous rights (PORT-PLAN C9): per scoped domain, the domain head's replication and control
-        # rights, AdminSDHolder and every GPO, from nTSecurityDescriptor, matched by SID against an
-        # allowlist. The table the file supplied where it supplied one, otherwise the built-in table;
-        # the file was validated before any section ran.
-        Write-Stage 'Dangerous ACLs (replication and control rights on the domain head, AdminSDHolder and GPOs)'
-        $aclConfig = $script:Config.Acl
-        if ($configOverrides.ContainsKey('Acl')) { $aclConfig = $configOverrides['Acl'] }
-        # With the forest unreadable there is no domain to scope and no forest root SID to read, and the
-        # rows say so in one row instead of asking whatever the default server is.
-        if ($forestError) {
-            $aclRows = @(New-AdfaAclRow -Item 'Dangerous ACLs' -Status $script:Status.NotAssessed -Evidence 'none' `
-                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no security descriptor was read. This is not a clean result." -f $forestError))
+        $sectionData = [ordered]@{}
+        # Scope problems lead the report: if the forest or the domain list could not be resolved,
+        # every section below is unassessed and the reader needs to know that before reading them.
+        if (@($scopeRows).Count -gt 0) { $sectionData['Forest & Domain Scope'] = @($scopeRows) }
+        $ext = @{ TimeoutSeconds = $script:Config.ExternalToolTimeoutSec; Retries = $script:Config.Retries; RetryDelaySeconds = $script:Config.RetryDelaySeconds }
+
+        # ---- Forest-level sections ----
+        if (Test-SectionSelected 'Forest' $Sections) {
+            # PORT-PLAN C16 (GAP-P29): a summary that could not be read is a row of the section, not a
+            # warning on the console and a section silently missing from the report.
+            try { $sectionData['Forest Summary'] = @(Get-AdfaForestSummary -AdParams $adParams) }
+            catch {
+                Write-Log -Level ERROR -Section 'Forest' -Message ("Forest summary failed: {0}" -f $_.Exception.Message)
+                $sectionData['Forest Summary'] = @(New-Finding -Area 'Forest' -Item 'Forest summary' -Status $script:Status.NotAssessed `
+                        -Detail ("The forest summary (name, root domain, mode, domains, sites, global catalogs, forest FSMO holders, UPN suffixes) could not be read: {0}" -f $_.Exception.Message))
+            }
         }
-        else {
-            $aclRows = @(Get-AdfaDangerousAcl -Domains $targetDomains -RootDomain $rootDomain -AdParams $adParams -Config $aclConfig)
+
+        $allDcInventory = @()
+        # Domains whose inventory call threw. Their DCs are in no list, so a section that reports
+        # per DC must be told, or it looks complete while a whole domain is missing from it.
+        $dcInventoryFailures = @()
+        # Whether the inventory was asked for at all. A per-DC section that needs every scoped
+        # domain's DCs (DcDisk, DcHardening) enumerates them itself when it was not.
+        $dcInventoryCollected = $false
+        # The DNS table (PORT-PLAN C13), shared by Dns, DnsAdConsistency, DomainControllers and the opt-in
+        # DnsRecordExport: the file's table where it supplied one, validated before any section ran.
+        $dnsConfig = $script:Config.Dns
+        if ($configOverrides.ContainsKey('Dns')) { $dnsConfig = $configOverrides['Dns'] }
+        if (Test-SectionSelected 'DomainControllers' $Sections) {
+            $dcInventoryCollected = $true
+            $inv = @()
+            foreach ($d in $targetDomains) {
+                try { $inv += Get-AdfaDomainControllerInventory -DomainName $d -AdParams $adParams }
+                catch {
+                    Write-Warning ("DC inventory failed for {0}: {1}" -f $d, $_.Exception.Message)
+                    $dcInventoryFailures += [pscustomobject]@{ Domain = [string]$d; Error = $_.Exception.Message }
+                }
+            }
+            $allDcInventory = $inv
+            $sectionData['Domain Controllers'] = $inv
+            # ADA-INV-016: each DC's DNS server list from its enabled adapters (read-only CIM). Its own
+            # key, so the inventory rows keep the columns they had. The key is placed here, in its place
+            # in the report; the adapters are read after the reachability classification below
+            # (PORT-PLAN C14c), so a DC classified Unreachable is not probed by this read first.
+            $sectionData['DC DNS Client'] = @()
         }
-        $sectionData['Dangerous ACLs (DCSync)'] = @($aclRows)
-    }
-    if (Test-SectionSelected 'Kerberos' $Sections) {
-        Write-Stage 'Kerberos exposure (roasting / delegation)'
-        if ($forestError) {
-            $kRows = @(New-AdfaPrivilegedRow -Area 'Kerberos' -Item 'Kerberos exposure' -Status $script:Status.NotAssessed -Evidence 'none' `
-                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no account was read. This is not a clean result." -f $forestError))
+        $dcNames = @($allDcInventory | Select-Object -ExpandProperty HostName -ErrorAction SilentlyContinue)
+        # Every per-DC section downstream reads $dcNames. When this fallback threw silently, all of
+        # them reported "No domain controllers enumerated" and the actual cause - bad credentials, no
+        # ADWS, a dead target DC - was discarded. The reason is captured so those sections can name
+        # it, which is the difference between "this forest has no DCs" and "we could not ask".
+        $script:DcEnumerationError = ''
+        if ($dcNames.Count -eq 0) {
+            try { $dcNames = @(Get-ADDomainController -Filter * @adParams | Select-Object -ExpandProperty HostName) }
+            catch {
+                $script:DcEnumerationError = $_.Exception.Message
+                Write-Log -Level ERROR -Section 'DomainControllers' -Message ("Domain controller enumeration FAILED, so every per-DC section is unassessed rather than clean: {0}" -f $_.Exception.Message)
+            }
         }
-        else {
-            $kRows = @(Get-AdfaKerberosExposure -State $privState -Config $privConfig)
+        if ($dcNames.Count -eq 0) {
+            $whyNoDcs = 'No domain controllers could be enumerated.'
+            if ($script:DcEnumerationError) { $whyNoDcs = ("Domain controller enumeration failed: {0}" -f $script:DcEnumerationError) }
+            Write-Log -Level ERROR -Section 'DomainControllers' -Message $whyNoDcs
+            # A first-class finding, so the report itself says the per-DC checks are unassessed.
+            # Without this the only trace was each section's own terse "no DCs enumerated" line.
+            $sectionData['Domain Controller Enumeration'] = @(New-Finding -Area 'DomainControllers' `
+                    -Item 'Domain controller enumeration' -Status $script:Status.NotAssessed `
+                    -Detail ("{0} Every per-DC check (replication, DNS consistency, ports, secure channels, DS events, diagnostics) is therefore UNASSESSED, not clean." -f $whyNoDcs))
         }
-        $sectionData['Kerberos Exposure'] = @($kRows)
-    }
-    if (Test-SectionSelected 'PrivilegedHygiene' $Sections) {
-        Write-Stage 'Privileged hygiene'
-        if ($forestError) {
-            $phRows = @(New-AdfaPrivilegedRow -Area 'PrivHygiene' -Item 'Privileged hygiene' -Status $script:Status.NotAssessed -Evidence 'none' `
-                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no privileged account was read. This is not a clean result." -f $forestError))
+
+        # ---- DC reachability classes (PORT-PLAN C14, REACH-001/002) ----
+        # Every DC is classified ONCE, here, before the first per-DC section: name resolution, LDAP (389),
+        # then WinRM (5985) and RPC (135). The class is kept for the run and seeded into the shared port
+        # cache, and the later sections that read it (Site Health, Time Hierarchy) say "Unreachable" with
+        # the cause instead of probing again. The table the file supplied where it supplied one.
+        $reachConfig = $script:Config.Reach
+        if ($configOverrides.ContainsKey('Reach')) { $reachConfig = $configOverrides['Reach'] }
+        # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk takes them.
+        $c14Targets = @($allDcInventory)
+        $c14Failures = @($dcInventoryFailures)
+        if (-not $dcInventoryCollected -and ((Test-SectionSelected 'PortMatrix' $Sections) -or (Test-SectionSelected 'Topology' $Sections))) {
+            $c14Enumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+            $c14Targets = @($c14Enumeration.Targets)
+            $c14Failures = @($c14Enumeration.Failures)
         }
-        else {
-            $phRows = @(Get-AdfaPrivilegedHygiene -State $privState -Config $privConfig)
+        if ($c14Targets.Count -eq 0) { $c14Targets = @($dcNames) }
+        # ---- Inventory depth (PORT-PLAN C15, INV-001, INV-006..INV-012, INV-015) ----
+        # The Inventory table the file supplied where it supplied one; read by Forest, Trusts, Identity, Gpo,
+        # DsEvents and TimeHierarchy. The per-DC families (DNS suffix, events, W32Time configuration) take
+        # the DCs of every scoped domain with their domains: the C14 targets where they were enumerated per
+        # domain, otherwise enumerated here, as the C14 block does.
+        $inventoryConfig = $script:Config.Inventory
+        if ($configOverrides.ContainsKey('Inventory')) { $inventoryConfig = $configOverrides['Inventory'] }
+        # PORT-PLAN C4b: the words the capped C4b rows use for where MaxObjects came from, read from the
+        # provenance the merge recorded, so a cap the file set is never called a tool default.
+        $inventoryCapSource = Get-AdfaCapSource -Config $inventoryConfig -BaseConfig $script:Config.Inventory -Key 'MaxObjects' -Label 'Inventory'
+        $c15Targets = @($c14Targets)
+        $c15Failures = @($c14Failures)
+        $c14PerDomain = ($dcInventoryCollected -or (Test-SectionSelected 'PortMatrix' $Sections) -or (Test-SectionSelected 'Topology' $Sections))
+        # Whether $c15Targets is a per-domain list (PORT-PLAN C2e reuses it rather than enumerating again).
+        $c15PerDomain = $c14PerDomain
+        if (-not $c14PerDomain -and ((Test-SectionSelected 'Forest' $Sections) -or (Test-SectionSelected 'DsEvents' $Sections) -or (Test-SectionSelected 'TimeHierarchy' $Sections))) {
+            $c15PerDomain = $true
+            $c15Enumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+            $c15Targets = @($c15Enumeration.Targets)
+            $c15Failures = @($c15Enumeration.Failures)
+            if ($c15Targets.Count -eq 0) { $c15Targets = @($dcNames) }
         }
-        $sectionData['Privileged Hygiene'] = @($phRows)
-    }
-    if (Test-SectionSelected 'DcHardening' $Sections) {
-        Write-Stage 'DC hardening (LDAP signing and channel binding, SMB signing, LAN Manager level, Print Spooler, SMBv1; per DC)'
-        # The table the file supplied where it supplied one, otherwise the built-in table. The
-        # file was validated before any section ran.
-        $dcHardeningConfig = $script:Config.DcHardening
-        if ($configOverrides.ContainsKey('DcHardening')) { $dcHardeningConfig = $configOverrides['DcHardening'] }
-        # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk takes them
-        # (PORT-PLAN C2e): the DC inventory where the DomainControllers section ran; otherwise
-        # the section's own enumeration of each scoped domain, because $dcNames then holds only
-        # what one unscoped call against the default server returned - the current domain's DCs.
-        $dcHardeningTargets = @($allDcInventory)
-        $dcHardeningFailures = @($dcInventoryFailures)
-        if (-not $dcInventoryCollected) {
-            $dcHardeningEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
-            $dcHardeningTargets = @($dcHardeningEnumeration.Targets)
-            $dcHardeningFailures = @($dcHardeningEnumeration.Failures)
+        if (Test-SectionSelected 'Forest' $Sections) {
+            Write-Stage 'Topology inventory (functional levels, FSMO holders, UPN and DNS suffixes, runner DC)'
+            $sectionData['Topology Inventory'] = @(Get-AdfaTopologyInventory -ForestName ([string]$forest.Name) -RootDomain $rootDomain -Domains $targetDomains `
+                    -DomainControllers $c15Targets -InventoryFailures $c15Failures -ScopedDomains $targetDomains -ForestError $forestError -AdParams $adParams -Config $inventoryConfig)
         }
-        # Last resort, when no scoped domain gave a single DC: the host names the fallback
-        # enumeration found. They carry no domain, and the section says so for each domain.
-        if ($dcHardeningTargets.Count -eq 0) { $dcHardeningTargets = @($dcNames) }
-        $sectionData['DC Hardening'] = @(Get-AdfaDcHardening -DomainControllers $dcHardeningTargets -Config $dcHardeningConfig -Credential $Credential `
-                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
-                -InventoryFailures $dcHardeningFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
-    }
-    if (Test-SectionSelected 'DcSystem' $Sections) {
-        Write-Stage 'DC system (OS lifecycle; build, uptime and last update per DC)'
-        # As with the Exchange SE table, an override that cannot be read is fatal rather than
-        # swallowed.
-        $dcSystemConfig = $script:Config.DcSystem
-        if ($DcSystemConfigPath) {
-            $dcSystemConfig = Import-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Path $DcSystemConfigPath
-            Write-Log -Level INFO ("DC system table overridden from {0}" -f $DcSystemConfigPath)
+        $reachRows = @()
+        if (Test-SectionSelected 'PortMatrix' $Sections) {
+            Write-Stage 'DC reachability (name resolution, LDAP 389, WinRM 5985, RPC 135; once per DC, reused by Site Health and Time Hierarchy)'
+            $reachRows = @(Get-AdfaDcReachabilityRows -DomainControllers $c14Targets -Config $reachConfig -InventoryFailures $c14Failures `
+                    -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
         }
-        $dcSystemRows = @()
-        # The lifecycle rows read only the inventory (directory attributes); the patch-level
-        # rows read each DC. They are separate so that a run without rights on the DCs still
-        # gets a lifecycle verdict for every one of them.
-        $dcSystemRows += Get-AdfaDcOsLifecycle -DomainControllers $allDcInventory -Config $dcSystemConfig -Today (Get-Date) `
-            -InventoryFailures $dcInventoryFailures
-        $dcSystemRows += Get-AdfaDcPatchLevel -DomainControllers $perDcTargets -Config $dcSystemConfig -Credential $Credential `
-            -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
-        $sectionData['DC System'] = @($dcSystemRows)
-    }
-    if (Test-SectionSelected 'DcDisk' $Sections) {
-        Write-Stage 'DC disk space (NTDS database, NTDS log and SYSVOL volumes, per DC)'
-        # The table the file supplied where it supplied one, otherwise the built-in table. The
-        # file was validated before any section ran.
-        $dcDiskConfig = $script:Config.DcDisk
-        if ($configOverrides.ContainsKey('DcDisk')) { $dcDiskConfig = $configOverrides['DcDisk'] }
-        # The DCs of EVERY scoped domain, each carrying its domain. Where the DomainControllers
-        # section ran, that is its inventory. Where it did not, $allDcInventory is empty and
-        # $dcNames holds only what one unscoped call against the default server returned - the
-        # current domain's DCs - so on a run with -AllDomains every other domain would be
-        # missing from this section with no row to say so. The section therefore enumerates the
-        # scoped domains itself in that case.
-        $dcDiskTargets = @($allDcInventory)
-        $dcDiskFailures = @($dcInventoryFailures)
-        if (-not $dcInventoryCollected) {
-            $dcDiskEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
-            $dcDiskTargets = @($dcDiskEnumeration.Targets)
-            $dcDiskFailures = @($dcDiskEnumeration.Failures)
+        if ($dcInventoryCollected) {
+            # ADA-INV-016, read after the classification (PORT-PLAN C14c): see the DomainControllers block,
+            # which set $dcInventoryCollected exactly when DomainControllers is among -Sections.
+            Write-Stage 'DC DNS client settings (enabled adapters, per DC)'
+            $sectionData['DC DNS Client'] = @(Get-AdfaDcDnsClient -DomainControllers $allDcInventory -Config $dnsConfig -Credential $Credential `
+                    -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
+                    -InventoryFailures $dcInventoryFailures -ScopedDomains $targetDomains -ForestComplete $scopeCoversForest)
         }
-        # Last resort, when no scoped domain gave a single DC: the host names the fallback
-        # enumeration found. They carry no domain, and the section says so for each domain.
-        if ($dcDiskTargets.Count -eq 0) { $dcDiskTargets = @($dcNames) }
-        $sectionData['DC Disk Space'] = @(Get-AdfaDcDiskSpace -DomainControllers $dcDiskTargets -Config $dcDiskConfig -Credential $Credential `
-                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
-                -InventoryFailures $dcDiskFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
-    }
-    if (Test-SectionSelected 'Laps' $Sections) {
-        Write-Stage 'Windows LAPS (schema, DSRM password backup per DC, computers with no LAPS expiry time visible; directory reads only)'
-        # The table the file supplied where it supplied one, otherwise the built-in table. The
-        # file was validated before any section ran.
-        $lapsConfig = $script:Config.Laps
-        if ($configOverrides.ContainsKey('Laps')) { $lapsConfig = $configOverrides['Laps'] }
-        # Directory reads only, per scoped domain: this section takes no DC list and connects to
-        # no DC. With the forest unreadable there is no schema to ask and no domain to scope, and
-        # the section says so in one row instead of querying whatever the default server is.
-        if ($forestError) {
-            $sectionData['Windows LAPS'] = @(New-AdfaLapsRow -Item 'Windows LAPS' -Status $script:Status.NotAssessed `
-                    -Detail ("The forest could not be read ({0}), so neither the schema nor any computer account was read. This is not a clean result." -f $forestError))
+
+        # ---- Per-domain DC targets of the per-DC sections that took $dcNames (PORT-PLAN C2e) ----
+        # Replication, SYSVOL shares and DFS Replication events, the patch-level half of DcSystem, Backup,
+        # Time Hierarchy, the port matrix, Directory Service events, Restore Integrity, the DNS server set of
+        # the four DNS-vs-AD sections and the raw repadmin/dcdiag captures used to take $dcNames, which with
+        # DomainControllers not selected is one unscoped Get-ADDomainController against the default server:
+        # the current domain's DCs only. They now take the DCs of EVERY scoped domain, each with its domain:
+        # the per-domain list C14/C15 already hold where one exists, otherwise one enumeration here shared
+        # by all of them (one Get-ADDomainController per domain per run), and the unscoped names last.
+        $perDcTargets = @($c15Targets)
+        $perDcFailures = @($c15Failures)
+        $perDcSections = @('Replication', 'Sysvol', 'DcSystem', 'Backup', 'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'MsdcsDelegation',
+            'TimeHierarchy', 'PortMatrix', 'DsEvents', 'RestoreIntegrity')
+        $perDcSelected = (@($perDcSections | Where-Object { Test-SectionSelected $_ $Sections }).Count -gt 0)
+        if (-not $c15PerDomain -and ($perDcSelected -or $IncludeRepadmin -or $IncludeDcdiag)) {
+            $perDcEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+            $perDcTargets = @($perDcEnumeration.Targets)
+            $perDcFailures = @($perDcEnumeration.Failures)
         }
-        else {
-            # The stale threshold is the one the StaleObjects section uses (-StaleDays); there is
-            # no second one.
-            $sectionData['Windows LAPS'] = @(Get-AdfaLaps -Domains $targetDomains -AdParams $adParams -Config $lapsConfig `
-                    -StaleDays $script:Config.StaleDays -Now (Get-Date) -ForestName ([string]$forest.Name))
+        if ($perDcTargets.Count -eq 0) { $perDcTargets = @($dcNames) }
+        # The host names of those targets, in order, each once: the DNS server set and the DC count.
+        $perDcHosts = @(Get-AdfaDcHostSet -Targets $perDcTargets)
+        $perDcDnsServers = @($perDcHosts)
+        # The scoped domains whose DCs are missing from those targets (enumeration threw, or returned no DC):
+        # a check that compares a host with "the known DCs" cannot call it unknown while these are missing.
+        # On a single-domain run the unscoped fallback names are that domain's DCs (Get-AdfaDomainDcHostName).
+        $perDcGapDomains = @(@(Get-AdfaDcPopulationGap -Targets $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains) |
+            Where-Object { -not ([int]$_.WithoutDomain -gt 0 -and @($targetDomains).Count -eq 1) } | ForEach-Object { [string]$_.Domain })
+
+        # A throw here used to drop the domain from the section silently - the same shape of defect
+        # as the v1.6.0 multi-domain data loss, where a reader saw a shorter list and no error. Each
+        # failure now becomes a row, so the section's own count reconciles with the domains scoped.
+        if (Test-SectionSelected 'Domains' $Sections) {
+            $ds = foreach ($d in $targetDomains) {
+                try { Get-AdfaDomainSummary -DomainName $d -AdParams $adParams }
+                catch {
+                    Write-Log -Level ERROR -Section $d -Message ("Domain summary failed: {0}" -f $_.Exception.Message)
+                    New-Finding -Scope $d -Area 'Domains' -Item ("Domain summary - {0}" -f $d) -Status $script:Status.NotAssessed `
+                        -Detail ("Could not be read: {0}. Functional level, FSMO holders and the domain SID are unknown for this domain." -f $_.Exception.Message)
+                }
+            }
+            $sectionData['Domain Summary'] = @($ds)
         }
-    }
-    if (Test-SectionSelected 'DcCertificates' $Sections) {
-        Write-Stage 'DC certificates (certificates published in the directory per DC; the LDAPS certificate each DC presents with -IncludeLdapsHandshake)'
-        # The table the file supplied where it supplied one, otherwise the built-in table. The
-        # file was validated before any section ran.
-        $dcCertificatesConfig = $script:Config.DcCertificates
-        if ($configOverrides.ContainsKey('DcCertificates')) { $dcCertificatesConfig = $configOverrides['DcCertificates'] }
-        # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk and
-        # DcHardening take them (PORT-PLAN C2e): the DC inventory where the DomainControllers
-        # section ran; otherwise the section's own enumeration of each scoped domain.
-        $dcCertificatesTargets = @($allDcInventory)
-        $dcCertificatesFailures = @($dcInventoryFailures)
-        if (-not $dcInventoryCollected) {
-            $dcCertificatesEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
-            $dcCertificatesTargets = @($dcCertificatesEnumeration.Targets)
-            $dcCertificatesFailures = @($dcCertificatesEnumeration.Failures)
+        if (Test-SectionSelected 'Fsmo' $Sections) {
+            $fs = foreach ($d in $targetDomains) {
+                try { Get-AdfaFsmoRole -DomainName $d -AdParams $adParams }
+                catch {
+                    Write-Log -Level ERROR -Section $d -Message ("FSMO role lookup failed: {0}" -f $_.Exception.Message)
+                    New-Finding -Scope $d -Area 'Fsmo' -Item ("FSMO roles - {0}" -f $d) -Status $script:Status.NotAssessed `
+                        -Detail ("Could not be read: {0}. Role holders for this domain are unknown - do not conclude they are healthy." -f $_.Exception.Message)
+                }
+            }
+            $sectionData['FSMO Roles'] = @($fs)
         }
-        # Last resort, when no scoped domain gave a single DC: the host names the fallback
-        # enumeration found. They carry no domain, and the section says so for each domain.
-        if ($dcCertificatesTargets.Count -eq 0) { $dcCertificatesTargets = @($dcNames) }
-        $sectionData['DC Certificates'] = @(Get-AdfaDcCertificates -DomainControllers $dcCertificatesTargets -Config $dcCertificatesConfig -AdParams $adParams `
-                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -Now (Get-Date) -IncludeHandshake ([bool]$IncludeLdapsHandshake) `
-                -InventoryFailures $dcCertificatesFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
-    }
-    if (Test-SectionSelected 'RidPool' $Sections) {
-        Write-Stage 'RID pool (allocation and global RID space per domain, the RID pool of each DC; directory reads only)'
-        # The table the file supplied where it supplied one, otherwise the built-in table. The
-        # file was validated before any section ran.
-        $ridPoolConfig = $script:Config.RidPool
-        if ($configOverrides.ContainsKey('RidPool')) { $ridPoolConfig = $configOverrides['RidPool'] }
-        # With the forest unreadable there is no domain to scope, and the section says so in one
-        # row instead of asking whatever the default server is, as the Laps section does.
-        if ($forestError) {
-            $sectionData['RID Pool'] = @(New-AdfaRidPoolRow -Item 'RID pool' -Status $script:Status.NotAssessed -Evidence 'none' `
-                    -Detail ("The forest could not be read ({0}), so no domain was scoped and neither CN=RID Manager`$ nor any RID Set was read. This is not a clean result." -f $forestError))
+
+        if (Test-SectionSelected 'Replication' $Sections) {
+            Write-Stage 'Replication health'
+            $sectionData['Replication Health'] = Get-AdfaReplicationHealth -DomainControllers $perDcTargets -RepParams $repParams -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -StaleMinutes $script:Config.ReplicationStaleMinutes `
+                -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
+            Write-Stage 'Replication cross-check (repadmin /showrepl * /csv)'
+            $sectionData['Replication Cross-Check (repadmin)'] = Get-AdfaRepadminReplication -TimeoutSeconds 300 -Retries $script:Config.Retries -RetryDelaySeconds $script:Config.RetryDelaySeconds
+            Write-Stage 'Replication convergence summary (repadmin /replsummary)'
+            $sectionData['Replication Summary (repadmin)'] = Get-AdfaReplsummaryHealth -TimeoutSeconds 300 -Retries $script:Config.Retries -RetryDelaySeconds $script:Config.RetryDelaySeconds
         }
-        else {
-            # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcCertificates
-            # takes them: the DC inventory where the DomainControllers section ran; otherwise the
-            # section's own enumeration of each scoped domain.
-            $ridPoolTargets = @($allDcInventory)
-            $ridPoolFailures = @($dcInventoryFailures)
+
+        $topology = $null
+        if (Test-SectionSelected 'Topology' $Sections) {
+            Write-Stage 'Topology'
+            $topologyError = ''
+            $siteRows = @()
+            try {
+                # PORT-PLAN C4b: declared lists for the site links and connection objects, capped at the
+                # Inventory table's MaxObjects; each of those two reads fails on its own row.
+                $topology = Get-AdfaReplicationTopology -AdParams $adParams -Config $script:Config.DirectoryRead -MaxObjects ([int]$inventoryConfig['MaxObjects']) -CapSource $inventoryCapSource
+                $sectionData['AD Sites'] = $topology.Sites
+                $sectionData['AD Subnets'] = $topology.Subnets
+                $sectionData['Site Links'] = $topology.SiteLinks
+                $sectionData['Replication Connections'] = $topology.Connections
+                # PORT-PLAN C16 (GAP-P6): sites without subnets need no inventory and are always checked;
+                # empty sites need it, and say so when it was not collected, instead of the whole check
+                # being skipped silently.
+                # Independent review of the C16 diff (findings 3, 9): the sites are the forest's, so the
+                # inventory must cover the forest, with no domain's read failed.
+                $siteInventoryGap = Get-AdfaSiteInventoryGap -Collected $dcInventoryCollected -DcCount @($allDcInventory).Count -ScopeCoversForest $scopeCoversForest -Failures @($dcInventoryFailures)
+                $siteRows += @(Get-AdfaSiteHealthFinding -Topology $topology -DomainControllers @($allDcInventory) -InventoryCollected ($siteInventoryGap -eq '') -InventoryGap $siteInventoryGap)
+            }
+            catch {
+                $topologyError = [string]$_.Exception.Message
+                Write-Warning ("Topology failed: {0}" -f $topologyError)
+                Write-Log -Level ERROR -Section 'Topology' -Message ("Topology read failed, so whether any subnet lacks a site is unknown: {0}" -f $topologyError)
+            }
+            # PORT-PLAN C14 (SITE-001): subnets without a site, outside the DC inventory gate, and the
+            # clients each DC's netlogon.log names as mapped to no site. The table the file supplied where
+            # it supplied one.
+            $siteConfig = $script:Config.SiteCoverage
+            if ($configOverrides.ContainsKey('SiteCoverage')) { $siteConfig = $configOverrides['SiteCoverage'] }
+            $subnetList = @()
+            if ($null -ne $topology) { $subnetList = @($topology.Subnets) }
+            $siteForest = ''
+            if (-not $forestError) { $siteForest = [string]$forest.Name }
+            else { $topologyError = ("the forest could not be read ({0})" -f $forestError) }
+            $siteRows += Get-AdfaSubnetSiteVerdict -Subnets $subnetList -ReadError $topologyError -ForestName $siteForest -Config $siteConfig
+            Write-Stage 'Clients without a site (netlogon.log NO_CLIENT_SITE, per DC, read-only)'
+            $siteRows += @(Get-AdfaClientSiteRows -DomainControllers $c14Targets -Config $siteConfig -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                    -InventoryFailures $c14Failures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
+            $sectionData['Site Health'] = @($siteRows)
+        }
+
+        if (Test-SectionSelected 'Trusts' $Sections) {
+            Write-Stage 'Trust health (two-way verification)'
+            $trustRows = @()
+            foreach ($d in $targetDomains) {
+                $tp = @{} + $adParams; $tp.Server = $d
+                # PORT-PLAN C16 (GAP-P3): the outbound direction is asked of a DC of this domain
+                # (nltest /server:<dc>), not of the host running the assessment. Not looked up when
+                # verification is skipped, since nothing would be asked of it.
+                $trustSource = [pscustomobject]@{ HostName = ''; Error = '' }
+                if (-not $SkipTrustVerification) { $trustSource = Resolve-AdfaTrustSourceDc -DomainName $d -AdParams $adParams }
+                $trustRows += Get-AdfaTrustHealth -DomainName $d -AdParams $tp -SkipVerification:$SkipTrustVerification -LiveVerify:$IncludeSecureChannelVerify `
+                    -TimeoutSeconds $script:Config.ExternalToolTimeoutSec -Retries $script:Config.Retries `
+                    -RetryDelaySeconds $script:Config.RetryDelaySeconds -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                    -PropertyNames @($script:Config.DirectoryRead['TrustHealthProperties']) -MaxObjects ([int]$inventoryConfig['MaxObjects']) -CapSource $inventoryCapSource `
+                    -SourceDc $trustSource.HostName -SourceDcError $trustSource.Error
+            }
+            $sectionData['Trusts & Two-Way Health'] = $trustRows
+            # PORT-PLAN C15 (INV-006): the trustedDomain objects of every scoped domain, read from that
+            # domain with a listed attribute set and decoded by name; inventory only.
+            Write-Stage 'Trust inventory (trustedDomain objects, per domain)'
+            $sectionData['Trust Inventory'] = @(Get-AdfaTrustInventory -Domains $targetDomains -ForestError $forestError -AdParams $adParams -Config $inventoryConfig)
+        }
+
+        if (Test-SectionSelected 'DcDiagnostics' $Sections) {
+            Write-Stage 'DC diagnostics (parsed: per DC, per domain, per forest, per site)'
+            # The table the file supplied where it supplied one, otherwise the built-in table. The file
+            # was validated before any section ran. It can set the time-out and retries only.
+            $dcDiagConfig = $script:Config.DcDiag
+            if ($configOverrides.ContainsKey('DcDiag')) { $dcDiagConfig = $configOverrides['DcDiag'] }
+            # The DCs of EVERY scoped domain, each carrying its domain (and, from the inventory, its site
+            # and whether it is read-only), exactly as RidPool takes them: the DC inventory where the
+            # DomainControllers section ran; otherwise the section's own enumeration of each scoped
+            # domain; last resort, the fallback host names, which carry no domain.
+            $dcDiagTargets = @($allDcInventory)
+            $dcDiagFailures = @($dcInventoryFailures)
             if (-not $dcInventoryCollected) {
-                $ridPoolEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
-                $ridPoolTargets = @($ridPoolEnumeration.Targets)
-                $ridPoolFailures = @($ridPoolEnumeration.Failures)
+                $dcDiagEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+                $dcDiagTargets = @($dcDiagEnumeration.Targets)
+                $dcDiagFailures = @($dcDiagEnumeration.Failures)
+            }
+            if ($dcDiagTargets.Count -eq 0) { $dcDiagTargets = @($dcNames) }
+            $sectionData['DC Diagnostics'] = @(Get-AdfaDcDiagnostic -DomainControllers $dcDiagTargets -IncludeActiveTests:$IncludeDcdiagActiveTests @ext -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                    -Config $dcDiagConfig -InventoryFailures $dcDiagFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains -ForestRoot $rootDomain)
+        }
+        if (Test-SectionSelected 'Dns' $Sections) {
+            Write-Stage 'DNS health (zone dynamic update, aging and scavenging, zone inventory; per DNS server)'
+            # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk takes them: the
+            # DC inventory where the DomainControllers section ran; otherwise the section's own
+            # enumeration of each scoped domain; last resort, the fallback host names.
+            $dnsTargets = @($allDcInventory)
+            $dnsFailures = @($dcInventoryFailures)
+            if (-not $dcInventoryCollected) {
+                $dnsEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+                $dnsTargets = @($dnsEnumeration.Targets)
+                $dnsFailures = @($dnsEnumeration.Failures)
+            }
+            # The fallback host names carry no domain, so a run on them never claims the forest's servers.
+            $dnsForestComplete = $scopeCoversForest
+            if ($dnsTargets.Count -eq 0) { $dnsTargets = @($dcNames); $dnsForestComplete = $false }
+            $sectionData['DNS Health'] = @(Get-AdfaDnsHealth -DomainControllers $dnsTargets -Config $dnsConfig -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                    -InventoryFailures $dnsFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains -ForestComplete $dnsForestComplete)
+        }
+        if (Test-SectionSelected 'Sysvol' $Sections) {
+            Write-Stage 'SYSVOL/DFSR'
+            $sysvolRows = @(Get-AdfaSysvolHealth @ext)
+
+            # Whether each DC is actually serving SYSVOL and NETLOGON. The vendor's own first
+            # diagnostic for broken SYSVOL replication, and a common state after a restore: DFSR
+            # does not share SYSVOL until the replicated folder has initialised.
+            $sysvolRows += @(Get-AdfaSysvolShareHealth -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains)
+
+            # PORT-PLAN C14 (SYSVOL-004): the SYSVOL replication engine of each DC and each scoped domain,
+            # from the DFSR SYSVOL subscription and the NTFRS subscriber of every DC, read from its own
+            # domain. The table the file supplied where it supplied one.
+            # PORT-PLAN C16 (GAP-P1): the same read gives the two attributes a D2/D4-equivalent rebuild
+            # edits by hand, per KB 2218556 (msDFSR-Enabled, msDFSR-options), graded per domain because
+            # "exactly one member is authoritative" is a cross-DC rule. Before v1.36.0 they were read from
+            # a DC inventory row property that no inventory row carried, so no subscription was read.
+            $sysvolEngineConfig = $script:Config.SysvolEngine
+            if ($configOverrides.ContainsKey('SysvolEngine')) { $sysvolEngineConfig = $configOverrides['SysvolEngine'] }
+            if ($forestError) {
+                $sysvolRows += New-AdfaC14Row -Area 'SYSVOL' -Item 'SYSVOL replication engine' -Status $script:Status.NotAssessed `
+                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no SYSVOL subscription was read. This is not a clean result." -f $forestError)
+            }
+            else {
+                foreach ($d in $targetDomains) {
+                    $engineRaw = Get-AdfaSysvolEngineRaw -DomainName $d -AdParams $adParams -Config $sysvolEngineConfig
+                    $subscriptionList = ConvertTo-AdfaDfsrSubscriptionList -Raw $engineRaw
+                    $sysvolRows += @(Get-AdfaDfsrSubscriptionVerdict -DomainName $d -Subscriptions @($subscriptionList.Subscriptions) -NotDfsrCount ([int]$subscriptionList.NotDfsrCount))
+                    $sysvolRows += @(Get-AdfaSysvolEngineVerdict -DomainName $d -Raw $engineRaw -Config $sysvolEngineConfig)
+                }
+            }
+            $sectionData['SYSVOL / DFSR'] = @($sysvolRows)
+
+            Write-Stage 'DFS Replication events'
+            $sectionData['DFS Replication Events'] = Get-AdfaDfsrEventLog -DomainControllers $perDcTargets -Credential $Credential `
+                -LookbackDays $script:Config.DfsrEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
+
+            if ($IncludeSysvolBacklog) {
+                Write-Stage 'SYSVOL backlog (DFSR, both directions against each domain PDC)'
+                $backlogRows = @()
+                foreach ($d in $targetDomains) {
+                    # The PDC emulator is where Group Policy edits are normally written, so it is the
+                    # DC the others should be catching up with.
+                    $pdc = ''
+                    try { $pdc = [string](Get-ADDomain -Identity $d @adParams).PDCEmulator }
+                    catch {
+                        Write-Log -Level ERROR -Section $d -Message ("PDC emulator lookup failed, so no SYSVOL backlog could be measured: {0}" -f $_.Exception.Message)
+                        $backlogRows += New-Finding -Scope $d -Area 'SysvolBacklog' -Item 'SYSVOL backlog' -Status $script:Status.NotAssessed `
+                            -Detail ("The PDC emulator could not be identified, so there was no reference DC to measure against: {0}" -f $_.Exception.Message)
+                        continue
+                    }
+                    # PORT-PLAN C2e: this domain's own DCs only. The unscoped host names are taken only on a
+                    # single-domain run, where they are that domain's; a domain whose DCs could not be listed
+                    # gets a Not Assessed row with the cause, never another domain's DCs under its scope.
+                    $backlogPeers = Get-AdfaDomainDcHostName -Domain $d -Targets $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
+                    if (@($backlogPeers.HostNames).Count -eq 0) {
+                        $backlogWhy = 'No domain controller of it was listed, so no SYSVOL backlog was measured.'
+                        if ($null -ne $backlogPeers.Gap) { $backlogWhy = Get-AdfaDcPopulationGapText -Gap $backlogPeers.Gap -NothingRead 'No SYSVOL backlog of its domain controllers was measured.' }
+                        $backlogRows += New-Finding -Scope $d -Area 'SysvolBacklog' -Item ("SYSVOL backlog (population): {0}" -f $d) -Status $script:Status.NotAssessed -Detail $backlogWhy
+                        continue
+                    }
+                    $backlogRows += @(Get-AdfaSysvolBacklog -DomainName $d -ReferenceDc $pdc `
+                            -DomainControllers @($backlogPeers.HostNames) -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs)
+                }
+                $sectionData['SYSVOL Backlog'] = @($backlogRows)
+            }
+        }
+        if (Test-SectionSelected 'Gpo' $Sections) {
+            Write-Stage 'GPO inventory'
+            $g = foreach ($d in $targetDomains) { Get-AdfaGpoInventory -DomainName $d }
+            # GPO version consistency (PORT-PLAN C8): per scoped domain, each GPO's version in the
+            # directory against GPT.INI in SYSVOL, both read from the domain's PDC emulator. Appended
+            # after the inventory rows, whose shape is unchanged. The table the file supplied where it
+            # supplied one, otherwise the built-in table; the file was validated before any section ran.
+            Write-Stage 'GPO version consistency (directory against SYSVOL, on each domain PDC)'
+            $gpoConfig = $script:Config.Gpo
+            if ($configOverrides.ContainsKey('Gpo')) { $gpoConfig = $configOverrides['Gpo'] }
+            # With the forest unreadable there is no domain to scope, and the rows say so in one row
+            # instead of asking whatever the default server is.
+            if ($forestError) {
+                $gpoVersionRows = @(New-AdfaGpoVersionRow -Item 'GPO version' -Status $script:Status.NotAssessed -Evidence 'none' `
+                        -Detail ("The forest could not be read ({0}), so no domain was scoped and no GPO version was read. This is not a clean result." -f $forestError))
+            }
+            else {
+                $gpoVersionRows = @(Get-AdfaGpoVersion -Domains $targetDomains -AdParams $adParams -Config $gpoConfig)
+            }
+            $sectionData['GPO Inventory'] = @(@($g) + @($gpoVersionRows))
+            # PORT-PLAN C15 (INV-011): from the directory, without the GroupPolicy module - each GPO's
+            # status flags, WMI filter and links, and the links of every site, domain and OU; inventory only.
+            Write-Stage 'GPO directory inventory (status flags, WMI filters, links per site, domain and OU)'
+            $sectionData['GPO Directory Inventory'] = @(Get-AdfaGpoDirectoryInventory -Domains $targetDomains -ForestDomains @($forest.Domains) -RootDomain $rootDomain -ForestError $forestError `
+                    -AdParams $adParams -Config $inventoryConfig -GpoConfig $gpoConfig)
+        }
+        if (Test-SectionSelected 'PasswordPolicy' $Sections) {
+            $pp = foreach ($d in $targetDomains) { Get-AdfaPasswordPolicy -DomainName $d -AdParams $adParams }
+            $sectionData['Password Policy'] = @($pp)
+        }
+        # Privileged groups and delegation (PORT-PLAN C10): the directory is read ONCE for the three sections
+        # that use it - the privileged groups and their transitive membership (PrivilegedAccounts and
+        # PrivilegedHygiene), the adminCount objects and dSHeuristics (PrivilegedHygiene), and the DC
+        # population and delegation settings (Kerberos) - and each section builds its rows from that state.
+        # The table the file supplied where it supplied one, otherwise the built-in table; the file was
+        # validated before any section ran.
+        $privConfig = $script:Config.Privileged
+        if ($configOverrides.ContainsKey('Privileged')) { $privConfig = $configOverrides['Privileged'] }
+        $privParts = @()
+        if (Test-SectionSelected 'PrivilegedAccounts' $Sections) { $privParts += 'Groups' }
+        if (Test-SectionSelected 'PrivilegedHygiene' $Sections) { $privParts += @('Groups', 'Hygiene') }
+        if (Test-SectionSelected 'Kerberos' $Sections) { $privParts += 'Delegation' }
+        $privState = $null
+        if (@($privParts).Count -gt 0 -and -not $forestError) {
+            Write-Stage 'Privileged groups and delegation (directory reads for three sections)'
+            $privState = Get-AdfaPrivilegedState -Domains $targetDomains -ForestDomains @($forest.Domains) -RootDomain $rootDomain -AdParams $adParams -Config $privConfig -Parts $privParts
+        }
+        if (Test-SectionSelected 'PrivilegedAccounts' $Sections) {
+            # With the forest unreadable there is no domain to scope, and the rows say so in one row instead of
+            # asking whatever the default server is.
+            if ($forestError) {
+                $paRows = @(New-AdfaPrivilegedRow -Area 'Privileged' -Item 'Privileged groups' -Status $script:Status.NotAssessed -Evidence 'none' `
+                        -Detail ("The forest could not be read ({0}), so no domain was scoped and no privileged group was read. This is not a clean result." -f $forestError))
+            }
+            else {
+                $paRows = @(Get-AdfaPrivilegedAccount -State $privState -Config $privConfig)
+            }
+            $sectionData['Privileged Accounts'] = @($paRows)
+        }
+        if (Test-SectionSelected 'SecurityPosture' $Sections) {
+            Write-Stage 'Security posture'
+            $sp = foreach ($d in $targetDomains) { Get-AdfaSecurityPosture -DomainName $d -IsRootDomain:($d -eq $rootDomain) -AdParams $adParams -KrbtgtMaxAgeDays $script:Config.KrbtgtMaxAgeDays }
+            # SID history (PORT-PLAN C7): four rows per scoped domain, directory reads only. The table
+            # the file supplied where it supplied one, otherwise the built-in table; the file was
+            # validated before any section ran.
+            $sidHistoryConfig = $script:Config.SidHistory
+            if ($configOverrides.ContainsKey('SidHistory')) { $sidHistoryConfig = $configOverrides['SidHistory'] }
+            # With the forest unreadable there is no domain to scope and no forest domain SID to read,
+            # and the rows say so in one row instead of asking whatever the default server is.
+            if ($forestError) {
+                $sidHistoryRows = @(New-AdfaSidHistoryRow -Item 'SID history' -Status $script:Status.NotAssessed -Evidence 'none' `
+                        -Detail ("The forest could not be read ({0}), so no domain was scoped and no security principal was read for sIDHistory. This is not a clean result." -f $forestError))
+            }
+            else {
+                $sidHistoryRows = @(Get-AdfaSidHistory -Domains $targetDomains -ForestDomains @($forest.Domains) -AdParams $adParams -Config $sidHistoryConfig)
+            }
+            $sectionData['Security Posture'] = @(@($sp) + @($sidHistoryRows))
+        }
+        if (Test-SectionSelected 'StaleObjects' $Sections) {
+            # PORT-PLAN C14 (STALE-001/002): per scoped domain, a listed-property, capped read of the
+            # enabled users and computers with no logon recorded for -StaleDays, never-logged-on ones
+            # included, and of the enabled users with an old password. The table the file supplied where
+            # it supplied one.
+            Write-Stage 'Stale enabled objects (lastLogonTimestamp, pwdLastSet; per domain)'
+            $staleConfig = $script:Config.Stale
+            if ($configOverrides.ContainsKey('Stale')) { $staleConfig = $configOverrides['Stale'] }
+            $staleNow = Get-Date
+            $so = @()
+            if ($forestError) {
+                $so += New-AdfaC14Row -Area 'Stale' -Item 'Stale objects' -Status $script:Status.NotAssessed `
+                    -Detail ("The forest could not be read ({0}), so no domain was scoped and no account was read. This is not a clean result." -f $forestError)
+            }
+            foreach ($d in $targetDomains) { $so += @(Get-AdfaStaleObject -DomainName $d -AdParams $adParams -StaleDays $script:Config.StaleDays -Config $staleConfig -Now $staleNow) }
+            $sectionData['Stale Objects'] = @($so)
+        }
+
+        # ---- Deep security & reliability ----
+        if (Test-SectionSelected 'Pki' $Sections) {
+            Write-Stage 'AD CS / PKI (ESC1 heuristic)'
+            $sectionData['PKI / AD CS'] = Get-AdfaPkiHealth -AdParams $adParams
+        }
+        if (Test-SectionSelected 'Acl' $Sections) {
+            # Dangerous rights (PORT-PLAN C9): per scoped domain, the domain head's replication and control
+            # rights, AdminSDHolder and every GPO, from nTSecurityDescriptor, matched by SID against an
+            # allowlist. The table the file supplied where it supplied one, otherwise the built-in table;
+            # the file was validated before any section ran.
+            Write-Stage 'Dangerous ACLs (replication and control rights on the domain head, AdminSDHolder and GPOs)'
+            $aclConfig = $script:Config.Acl
+            if ($configOverrides.ContainsKey('Acl')) { $aclConfig = $configOverrides['Acl'] }
+            # With the forest unreadable there is no domain to scope and no forest root SID to read, and the
+            # rows say so in one row instead of asking whatever the default server is.
+            if ($forestError) {
+                $aclRows = @(New-AdfaAclRow -Item 'Dangerous ACLs' -Status $script:Status.NotAssessed -Evidence 'none' `
+                        -Detail ("The forest could not be read ({0}), so no domain was scoped and no security descriptor was read. This is not a clean result." -f $forestError))
+            }
+            else {
+                $aclRows = @(Get-AdfaDangerousAcl -Domains $targetDomains -RootDomain $rootDomain -AdParams $adParams -Config $aclConfig)
+            }
+            $sectionData['Dangerous ACLs (DCSync)'] = @($aclRows)
+        }
+        if (Test-SectionSelected 'Kerberos' $Sections) {
+            Write-Stage 'Kerberos exposure (roasting / delegation)'
+            if ($forestError) {
+                $kRows = @(New-AdfaPrivilegedRow -Area 'Kerberos' -Item 'Kerberos exposure' -Status $script:Status.NotAssessed -Evidence 'none' `
+                        -Detail ("The forest could not be read ({0}), so no domain was scoped and no account was read. This is not a clean result." -f $forestError))
+            }
+            else {
+                $kRows = @(Get-AdfaKerberosExposure -State $privState -Config $privConfig)
+            }
+            $sectionData['Kerberos Exposure'] = @($kRows)
+        }
+        if (Test-SectionSelected 'PrivilegedHygiene' $Sections) {
+            Write-Stage 'Privileged hygiene'
+            if ($forestError) {
+                $phRows = @(New-AdfaPrivilegedRow -Area 'PrivHygiene' -Item 'Privileged hygiene' -Status $script:Status.NotAssessed -Evidence 'none' `
+                        -Detail ("The forest could not be read ({0}), so no domain was scoped and no privileged account was read. This is not a clean result." -f $forestError))
+            }
+            else {
+                $phRows = @(Get-AdfaPrivilegedHygiene -State $privState -Config $privConfig)
+            }
+            $sectionData['Privileged Hygiene'] = @($phRows)
+        }
+        if (Test-SectionSelected 'DcHardening' $Sections) {
+            Write-Stage 'DC hardening (LDAP signing and channel binding, SMB signing, LAN Manager level, Print Spooler, SMBv1; per DC)'
+            # The table the file supplied where it supplied one, otherwise the built-in table. The
+            # file was validated before any section ran.
+            $dcHardeningConfig = $script:Config.DcHardening
+            if ($configOverrides.ContainsKey('DcHardening')) { $dcHardeningConfig = $configOverrides['DcHardening'] }
+            # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk takes them
+            # (PORT-PLAN C2e): the DC inventory where the DomainControllers section ran; otherwise
+            # the section's own enumeration of each scoped domain, because $dcNames then holds only
+            # what one unscoped call against the default server returned - the current domain's DCs.
+            $dcHardeningTargets = @($allDcInventory)
+            $dcHardeningFailures = @($dcInventoryFailures)
+            if (-not $dcInventoryCollected) {
+                $dcHardeningEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+                $dcHardeningTargets = @($dcHardeningEnumeration.Targets)
+                $dcHardeningFailures = @($dcHardeningEnumeration.Failures)
             }
             # Last resort, when no scoped domain gave a single DC: the host names the fallback
             # enumeration found. They carry no domain, and the section says so for each domain.
-            if ($ridPoolTargets.Count -eq 0) { $ridPoolTargets = @($dcNames) }
-            $sectionData['RID Pool'] = @(Get-AdfaRidPool -DomainControllers $ridPoolTargets -Config $ridPoolConfig -AdParams $adParams `
-                    -InventoryFailures $ridPoolFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
+            if ($dcHardeningTargets.Count -eq 0) { $dcHardeningTargets = @($dcNames) }
+            $sectionData['DC Hardening'] = @(Get-AdfaDcHardening -DomainControllers $dcHardeningTargets -Config $dcHardeningConfig -Credential $Credential `
+                    -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
+                    -InventoryFailures $dcHardeningFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
         }
-    }
-    if (Test-SectionSelected 'Backup' $Sections) {
-        Write-Stage 'Directory backup status (per DC)'
-        $sectionData['Backup Status'] = Get-AdfaBackupStatus -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains @ext
-    }
-    if (Test-SectionSelected 'TimeSync' $Sections) {
-        Write-Stage 'Time synchronization'
-        $sectionData['Time Sync'] = Get-AdfaTimeSync -TimeoutSeconds $script:Config.ExternalToolTimeoutSec
-    }
-    if (Test-SectionSelected 'DnsDepth' $Sections) {
-        Write-Stage 'DNS depth (SRV / secure updates)'
-        $ddRows = foreach ($d in $targetDomains) { Get-AdfaDnsDepth -DomainName $d -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs }
-        $sectionData['DNS Depth'] = @($ddRows)
-    }
-    if (Test-SectionSelected 'Redundancy' $Sections) {
-        Write-Stage 'Redundancy / availability'
-        $rdRows = foreach ($d in $targetDomains) { Get-AdfaRedundancy -DomainName $d -AdParams $adParams }
-        $sectionData['Redundancy & Availability'] = @($rdRows)
-    }
-
-    # ---- Recovery & consistency (post-incident) ----
-    if (Test-SectionSelected 'DnsAdConsistency' $Sections) {
-        Write-Stage 'DNS vs AD consistency (per DNS server; per DC: locator records, A records, records naming no DC)'
-        # The NTDS Settings objects of the forest, read once: the DCs a locator record may name and
-        # the DSA GUIDs a <guid>._msdcs CNAME may carry (PORT-PLAN C13).
-        $dnsDsa = @()
-        $dnsDsaError = ''
-        try { $dnsDsa = @(Get-AdfaDsaInventory -AdParams $adParams) }
-        catch {
-            $dnsDsaError = [string]$_.Exception.Message
-            Write-Log -Level ERROR -Section 'DnsAdConsistency' -Message ("DSA inventory failed, so no <guid>._msdcs CNAME can be judged: {0}" -f $dnsDsaError)
+        if (Test-SectionSelected 'DcSystem' $Sections) {
+            Write-Stage 'DC system (OS lifecycle; build, uptime and last update per DC)'
+            # As with the Exchange SE table, an override that cannot be read is fatal rather than
+            # swallowed.
+            $dcSystemConfig = $script:Config.DcSystem
+            if ($DcSystemConfigPath) {
+                $dcSystemConfig = Import-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Path $DcSystemConfigPath
+                Write-Log -Level INFO ("DC system table overridden from {0}" -f $DcSystemConfigPath)
+            }
+            $dcSystemRows = @()
+            # The lifecycle rows read only the inventory (directory attributes); the patch-level
+            # rows read each DC. They are separate so that a run without rights on the DCs still
+            # gets a lifecycle verdict for every one of them.
+            $dcSystemRows += Get-AdfaDcOsLifecycle -DomainControllers $allDcInventory -Config $dcSystemConfig -Today (Get-Date) `
+                -InventoryFailures $dcInventoryFailures
+            $dcSystemRows += Get-AdfaDcPatchLevel -DomainControllers $perDcTargets -Config $dcSystemConfig -Credential $Credential `
+                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
+            $sectionData['DC System'] = @($dcSystemRows)
         }
-        $dacRows = foreach ($d in $targetDomains) {
-            Get-AdfaDnsAdConsistency -DomainName $d -AdParams $adParams -DnsServers $perDcDnsServers -Config $dnsConfig -ForestRoot $rootDomain -DsaInventory $dnsDsa -DsaError $dnsDsaError `
-                -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec
+        if (Test-SectionSelected 'DcDisk' $Sections) {
+            Write-Stage 'DC disk space (NTDS database, NTDS log and SYSVOL volumes, per DC)'
+            # The table the file supplied where it supplied one, otherwise the built-in table. The
+            # file was validated before any section ran.
+            $dcDiskConfig = $script:Config.DcDisk
+            if ($configOverrides.ContainsKey('DcDisk')) { $dcDiskConfig = $configOverrides['DcDisk'] }
+            # The DCs of EVERY scoped domain, each carrying its domain. Where the DomainControllers
+            # section ran, that is its inventory. Where it did not, $allDcInventory is empty and
+            # $dcNames holds only what one unscoped call against the default server returned - the
+            # current domain's DCs - so on a run with -AllDomains every other domain would be
+            # missing from this section with no row to say so. The section therefore enumerates the
+            # scoped domains itself in that case.
+            $dcDiskTargets = @($allDcInventory)
+            $dcDiskFailures = @($dcInventoryFailures)
+            if (-not $dcInventoryCollected) {
+                $dcDiskEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+                $dcDiskTargets = @($dcDiskEnumeration.Targets)
+                $dcDiskFailures = @($dcDiskEnumeration.Failures)
+            }
+            # Last resort, when no scoped domain gave a single DC: the host names the fallback
+            # enumeration found. They carry no domain, and the section says so for each domain.
+            if ($dcDiskTargets.Count -eq 0) { $dcDiskTargets = @($dcNames) }
+            $sectionData['DC Disk Space'] = @(Get-AdfaDcDiskSpace -DomainControllers $dcDiskTargets -Config $dcDiskConfig -Credential $Credential `
+                    -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec `
+                    -InventoryFailures $dcDiskFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
         }
-        $sectionData['DNS vs AD Consistency'] = @($dacRows)
-    }
-    if (Test-SectionSelected 'DsaCname' $Sections) {
-        Write-Stage 'DSA GUID CNAME records (_msdcs, per DNS server)'
-        $sectionData['DSA GUID CNAMEs'] = Get-AdfaDsaGuidCname -ForestRoot $forest.Name -AdParams $adParams -DnsServers $perDcDnsServers
-    }
-    if (Test-SectionSelected 'GcConsistency' $Sections) {
-        Write-Stage 'Global Catalog consistency (AD flag vs DNS, per DNS server)'
-        $sectionData['Global Catalog Consistency'] = Get-AdfaGcConsistency -ForestRoot $forest.Name -AdParams $adParams -DnsServers $perDcDnsServers
-    }
-    if (Test-SectionSelected 'MsdcsDelegation' $Sections) {
-        Write-Stage 'Forest-wide locator zone delegation (_msdcs, per DNS server)'
-        # Without a forest name there is no zone name to query, and building one from the
-        # placeholder would put a nonsense zone in the report.
-        if ($forestError) {
-            $sectionData['_msdcs Zone Delegation'] = @(New-Finding -Area 'MsdcsDelegation' -Item 'Forest-wide locator zone' -Status $script:Status.NotAssessed `
-                    -Detail 'The forest name could not be read, so the name of the forest-wide locator zone is unknown and its delegation was not queried.')
+        if (Test-SectionSelected 'Laps' $Sections) {
+            Write-Stage 'Windows LAPS (schema, DSRM password backup per DC, computers with no LAPS expiry time visible; directory reads only)'
+            # The table the file supplied where it supplied one, otherwise the built-in table. The
+            # file was validated before any section ran.
+            $lapsConfig = $script:Config.Laps
+            if ($configOverrides.ContainsKey('Laps')) { $lapsConfig = $configOverrides['Laps'] }
+            # Directory reads only, per scoped domain: this section takes no DC list and connects to
+            # no DC. With the forest unreadable there is no schema to ask and no domain to scope, and
+            # the section says so in one row instead of querying whatever the default server is.
+            if ($forestError) {
+                $sectionData['Windows LAPS'] = @(New-AdfaLapsRow -Item 'Windows LAPS' -Status $script:Status.NotAssessed `
+                        -Detail ("The forest could not be read ({0}), so neither the schema nor any computer account was read. This is not a clean result." -f $forestError))
+            }
+            else {
+                # The stale threshold is the one the StaleObjects section uses (-StaleDays); there is
+                # no second one.
+                $sectionData['Windows LAPS'] = @(Get-AdfaLaps -Domains $targetDomains -AdParams $adParams -Config $lapsConfig `
+                        -StaleDays $script:Config.StaleDays -Now (Get-Date) -ForestName ([string]$forest.Name))
+            }
         }
-        else {
-            $sectionData['_msdcs Zone Delegation'] = @(Get-AdfaMsdcsDelegation -ForestRoot $forest.Name `
-                    -DnsServers $perDcDnsServers -AdDcHosts $perDcHosts -IncompleteDomains $perDcGapDomains)
+        if (Test-SectionSelected 'DcCertificates' $Sections) {
+            Write-Stage 'DC certificates (certificates published in the directory per DC; the LDAPS certificate each DC presents with -IncludeLdapsHandshake)'
+            # The table the file supplied where it supplied one, otherwise the built-in table. The
+            # file was validated before any section ran.
+            $dcCertificatesConfig = $script:Config.DcCertificates
+            if ($configOverrides.ContainsKey('DcCertificates')) { $dcCertificatesConfig = $configOverrides['DcCertificates'] }
+            # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk and
+            # DcHardening take them (PORT-PLAN C2e): the DC inventory where the DomainControllers
+            # section ran; otherwise the section's own enumeration of each scoped domain.
+            $dcCertificatesTargets = @($allDcInventory)
+            $dcCertificatesFailures = @($dcInventoryFailures)
+            if (-not $dcInventoryCollected) {
+                $dcCertificatesEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+                $dcCertificatesTargets = @($dcCertificatesEnumeration.Targets)
+                $dcCertificatesFailures = @($dcCertificatesEnumeration.Failures)
+            }
+            # Last resort, when no scoped domain gave a single DC: the host names the fallback
+            # enumeration found. They carry no domain, and the section says so for each domain.
+            if ($dcCertificatesTargets.Count -eq 0) { $dcCertificatesTargets = @($dcNames) }
+            $sectionData['DC Certificates'] = @(Get-AdfaDcCertificates -DomainControllers $dcCertificatesTargets -Config $dcCertificatesConfig -AdParams $adParams `
+                    -PortTimeoutMs $script:Config.RpcPortTimeoutMs -Now (Get-Date) -IncludeHandshake ([bool]$IncludeLdapsHandshake) `
+                    -InventoryFailures $dcCertificatesFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
         }
-    }
-    if (Test-SectionSelected 'TimeHierarchy' $Sections) {
-        Write-Stage 'Time hierarchy (per-DC source, PDC emulator roles)'
-        # The PDC emulator of each scoped domain, plus the forest root's, so the role-specific
-        # rules can be applied. A domain whose PDC cannot be read leaves its DCs graded as
-        # ordinary DCs, and the collector says so rather than assuming.
-        $pdcMap = @{}
-        $rootPdc = ''
-        $pdcErrors = @()
-        $pdcDomains = @($targetDomains)
-        if ($rootDomain -and $pdcDomains -notcontains $rootDomain) { $pdcDomains += $rootDomain }
-        foreach ($d in $pdcDomains) {
-            try {
-                $pdc = [string](Get-ADDomain -Identity $d @adParams).PDCEmulator
-                if ($pdc) {
-                    $pdcMap[$pdc] = $d
-                    if ($d -eq $rootDomain) { $rootPdc = $pdc }
+        if (Test-SectionSelected 'RidPool' $Sections) {
+            Write-Stage 'RID pool (allocation and global RID space per domain, the RID pool of each DC; directory reads only)'
+            # The table the file supplied where it supplied one, otherwise the built-in table. The
+            # file was validated before any section ran.
+            $ridPoolConfig = $script:Config.RidPool
+            if ($configOverrides.ContainsKey('RidPool')) { $ridPoolConfig = $configOverrides['RidPool'] }
+            # With the forest unreadable there is no domain to scope, and the section says so in one
+            # row instead of asking whatever the default server is, as the Laps section does.
+            if ($forestError) {
+                $sectionData['RID Pool'] = @(New-AdfaRidPoolRow -Item 'RID pool' -Status $script:Status.NotAssessed -Evidence 'none' `
+                        -Detail ("The forest could not be read ({0}), so no domain was scoped and neither CN=RID Manager`$ nor any RID Set was read. This is not a clean result." -f $forestError))
+            }
+            else {
+                # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcCertificates
+                # takes them: the DC inventory where the DomainControllers section ran; otherwise the
+                # section's own enumeration of each scoped domain.
+                $ridPoolTargets = @($allDcInventory)
+                $ridPoolFailures = @($dcInventoryFailures)
+                if (-not $dcInventoryCollected) {
+                    $ridPoolEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+                    $ridPoolTargets = @($ridPoolEnumeration.Targets)
+                    $ridPoolFailures = @($ridPoolEnumeration.Failures)
                 }
+                # Last resort, when no scoped domain gave a single DC: the host names the fallback
+                # enumeration found. They carry no domain, and the section says so for each domain.
+                if ($ridPoolTargets.Count -eq 0) { $ridPoolTargets = @($dcNames) }
+                $sectionData['RID Pool'] = @(Get-AdfaRidPool -DomainControllers $ridPoolTargets -Config $ridPoolConfig -AdParams $adParams `
+                        -InventoryFailures $ridPoolFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
+            }
+        }
+        if (Test-SectionSelected 'Backup' $Sections) {
+            Write-Stage 'Directory backup status (per DC)'
+            $sectionData['Backup Status'] = Get-AdfaBackupStatus -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains @ext
+        }
+        if (Test-SectionSelected 'TimeSync' $Sections) {
+            Write-Stage 'Time synchronization'
+            $sectionData['Time Sync'] = Get-AdfaTimeSync -TimeoutSeconds $script:Config.ExternalToolTimeoutSec
+        }
+        if (Test-SectionSelected 'DnsDepth' $Sections) {
+            Write-Stage 'DNS depth (SRV / secure updates)'
+            $ddRows = foreach ($d in $targetDomains) { Get-AdfaDnsDepth -DomainName $d -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs }
+            $sectionData['DNS Depth'] = @($ddRows)
+        }
+        if (Test-SectionSelected 'Redundancy' $Sections) {
+            Write-Stage 'Redundancy / availability'
+            $rdRows = foreach ($d in $targetDomains) { Get-AdfaRedundancy -DomainName $d -AdParams $adParams }
+            $sectionData['Redundancy & Availability'] = @($rdRows)
+        }
+
+        # ---- Recovery & consistency (post-incident) ----
+        if (Test-SectionSelected 'DnsAdConsistency' $Sections) {
+            Write-Stage 'DNS vs AD consistency (per DNS server; per DC: locator records, A records, records naming no DC)'
+            # The NTDS Settings objects of the forest, read once: the DCs a locator record may name and
+            # the DSA GUIDs a <guid>._msdcs CNAME may carry (PORT-PLAN C13).
+            $dnsDsa = @()
+            $dnsDsaError = ''
+            try { $dnsDsa = @(Get-AdfaDsaInventory -AdParams $adParams) }
+            catch {
+                $dnsDsaError = [string]$_.Exception.Message
+                Write-Log -Level ERROR -Section 'DnsAdConsistency' -Message ("DSA inventory failed, so no <guid>._msdcs CNAME can be judged: {0}" -f $dnsDsaError)
+            }
+            $dacRows = foreach ($d in $targetDomains) {
+                Get-AdfaDnsAdConsistency -DomainName $d -AdParams $adParams -DnsServers $perDcDnsServers -Config $dnsConfig -ForestRoot $rootDomain -DsaInventory $dnsDsa -DsaError $dnsDsaError `
+                    -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec
+            }
+            $sectionData['DNS vs AD Consistency'] = @($dacRows)
+        }
+        if (Test-SectionSelected 'DsaCname' $Sections) {
+            Write-Stage 'DSA GUID CNAME records (_msdcs, per DNS server)'
+            $sectionData['DSA GUID CNAMEs'] = Get-AdfaDsaGuidCname -ForestRoot $forest.Name -AdParams $adParams -DnsServers $perDcDnsServers
+        }
+        if (Test-SectionSelected 'GcConsistency' $Sections) {
+            Write-Stage 'Global Catalog consistency (AD flag vs DNS, per DNS server)'
+            $sectionData['Global Catalog Consistency'] = Get-AdfaGcConsistency -ForestRoot $forest.Name -AdParams $adParams -DnsServers $perDcDnsServers
+        }
+        if (Test-SectionSelected 'MsdcsDelegation' $Sections) {
+            Write-Stage 'Forest-wide locator zone delegation (_msdcs, per DNS server)'
+            # Without a forest name there is no zone name to query, and building one from the
+            # placeholder would put a nonsense zone in the report.
+            if ($forestError) {
+                $sectionData['_msdcs Zone Delegation'] = @(New-Finding -Area 'MsdcsDelegation' -Item 'Forest-wide locator zone' -Status $script:Status.NotAssessed `
+                        -Detail 'The forest name could not be read, so the name of the forest-wide locator zone is unknown and its delegation was not queried.')
+            }
+            else {
+                $sectionData['_msdcs Zone Delegation'] = @(Get-AdfaMsdcsDelegation -ForestRoot $forest.Name `
+                        -DnsServers $perDcDnsServers -AdDcHosts $perDcHosts -IncompleteDomains $perDcGapDomains)
+            }
+        }
+        if (Test-SectionSelected 'TimeHierarchy' $Sections) {
+            Write-Stage 'Time hierarchy (per-DC source, PDC emulator roles)'
+            # The PDC emulator of each scoped domain, plus the forest root's, so the role-specific
+            # rules can be applied. A domain whose PDC cannot be read leaves its DCs graded as
+            # ordinary DCs, and the collector says so rather than assuming.
+            $pdcMap = @{}
+            $rootPdc = ''
+            $pdcErrors = @()
+            $pdcDomains = @($targetDomains)
+            if ($rootDomain -and $pdcDomains -notcontains $rootDomain) { $pdcDomains += $rootDomain }
+            foreach ($d in $pdcDomains) {
+                try {
+                    $pdc = [string](Get-ADDomain -Identity $d @adParams).PDCEmulator
+                    if ($pdc) {
+                        $pdcMap[$pdc] = $d
+                        if ($d -eq $rootDomain) { $rootPdc = $pdc }
+                    }
+                }
+                catch {
+                    $pdcErrors += ("{0}: {1}" -f $d, $_.Exception.Message)
+                    Write-Log -Level ERROR -Section $d -Message ("PDC emulator lookup failed, so the time-hierarchy role rules could not be applied to that domain: {0}" -f $_.Exception.Message)
+                }
+            }
+            # The ClockSkew table the file supplied where it supplied one (PORT-PLAN C14): WarnSeconds and
+            # Samples only; the Kerberos maximum is never taken from a file.
+            $clockConfig = $script:Config.ClockSkew
+            if ($configOverrides.ContainsKey('ClockSkew')) { $clockConfig = $configOverrides['ClockSkew'] }
+            $timeRows = @(Get-AdfaTimeHierarchyHealth -DomainControllers $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains -PdcEmulators $pdcMap `
+                    -ForestRootPdc $rootPdc -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                    -TimeoutSeconds $script:Config.ExternalToolTimeoutSec `
+                    -SkewSamples $clockConfig.Samples `
+                    -WarnSeconds $clockConfig.WarnSeconds `
+                    -FailSeconds $clockConfig.KerberosMaxSeconds -ThresholdSource ([string]$clockConfig['ThresholdSource']))
+            if (@($pdcErrors).Count -gt 0) {
+                $timeRows += New-Finding -Area 'TimeHierarchy' -Item 'PDC emulator resolution' -Status $script:Status.NotAssessed `
+                    -Detail ("The PDC emulator could not be read for {0} domain(s), so the role-specific time rule was not applied there: {1}. Those DCs were graded as ordinary domain controllers, which is a partial result." -f @($pdcErrors).Count, (@($pdcErrors) -join '; '))
+            }
+            $sectionData['Time Hierarchy'] = @($timeRows)
+            # PORT-PLAN C15 (INV-015): Type, NtpServer and AnnounceFlags of every DC, read from the registry
+            # through the shared CIM transport loop; inventory only, no expected value.
+            Write-Stage 'W32Time configuration (Type, NtpServer, AnnounceFlags; per DC, read-only)'
+            $sectionData['Time Configuration'] = @(Get-AdfaW32TimeInventory -DomainControllers $c15Targets -InventoryFailures $c15Failures -ScopedDomains $targetDomains `
+                    -EnumerationError $script:DcEnumerationError -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                    -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec -Config $inventoryConfig)
+        }
+        if (Test-SectionSelected 'SiteGc' $Sections) {
+            Write-Stage 'Writeable global catalog coverage per site'
+            $sectionData['Site Global Catalog Coverage'] = @(Get-AdfaSiteGcCoverage -DomainControllers $allDcInventory)
+        }
+        if (Test-SectionSelected 'PortMatrix' $Sections) {
+            Write-Stage 'Port reachability matrix (replication port set)'
+            # PORT-PLAN C14: the reachability class of each DC, classified once before the first per-DC
+            # section, then the port matrix rows, unchanged.
+            $sectionData['Port Reachability'] = @(@($reachRows) + @(Get-AdfaPortMatrix -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs))
+        }
+        if (Test-SectionSelected 'DcSecureChannel' $Sections) {
+            Write-Stage 'DC machine-account passwords & secure channels'
+            $scRows = foreach ($d in $targetDomains) {
+                Get-AdfaDcSecureChannel -DomainName $d -AdParams $adParams -Credential $Credential -LiveVerify:$IncludeSecureChannelVerify `
+                    -WarnDays $script:Config.DcPasswordWarnDays -FailDays $script:Config.DcPasswordFailDays `
+                    -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+            }
+            $sectionData['DC Secure Channel & Machine Passwords'] = @($scRows)
+        }
+        if (Test-SectionSelected 'DsEvents' $Sections) {
+            Write-Stage 'Directory Service event log (lingering / rollback / DNS failures)'
+            $sectionData['Directory Service Events'] = Get-AdfaDsEventLog -DomainControllers $perDcTargets -Credential $Credential `
+                -LookbackDays $script:Config.DsEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
+            # PORT-PLAN C15 (INV-012): every configured log of every DC, by level (Critical, Error, Warning),
+            # bounded by -EventLookbackDays and EventMaxEvents, grouped by event ID; inventory only.
+            Write-Stage 'Event inventory (Critical, Error and Warning per log and DC; bounded reads)'
+            $sectionData['Event Inventory'] = @(Get-AdfaEventInventory -DomainControllers $c15Targets -InventoryFailures $c15Failures -ScopedDomains $targetDomains `
+                    -EnumerationError $script:DcEnumerationError -LookbackDays $script:Config.DsEventLookbackDays -Credential $Credential `
+                    -PortTimeoutMs $script:Config.RpcPortTimeoutMs -Config $inventoryConfig)
+        }
+        if (Test-SectionSelected 'RestoreIntegrity' $Sections) {
+            Write-Stage 'Restore integrity (USN rollback forensics, database instantiation)'
+            $riRows = @()
+            # The registry marker first: it is the only restore-integrity signal that does not depend
+            # on the Directory Service log still holding the event, which on a recovered forest it
+            # frequently does not.
+            $riRows += @(Get-AdfaUsnRollbackForensics -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains)
+            try {
+                $riRows += @(Get-AdfaInvocationIdVerdict -DsaInventory (Get-AdfaDsaInventory -AdParams $adParams))
             }
             catch {
-                $pdcErrors += ("{0}: {1}" -f $d, $_.Exception.Message)
-                Write-Log -Level ERROR -Section $d -Message ("PDC emulator lookup failed, so the time-hierarchy role rules could not be applied to that domain: {0}" -f $_.Exception.Message)
+                Write-Log -Level ERROR -Section 'RestoreIntegrity' -Message ("DSA inventory failed, so database instantiation could not be checked: {0}" -f $_.Exception.Message)
+                $riRows += New-Finding -Area 'RestoreIntegrity' -Item 'Database instantiation (invocationId)' -Status $script:Status.NotAssessed `
+                    -Detail ("The DSA inventory could not be read, so database instantiation identity is unknown: {0}" -f $_.Exception.Message)
+            }
+            $sectionData['Restore Integrity'] = @($riRows)
+        }
+
+        if ($IncludeLingeringObjectScan) {
+            Write-Stage 'Lingering object scan (repadmin advisory mode - no changes)'
+            $loRows = foreach ($d in $targetDomains) {
+                Get-AdfaLingeringObjectScan -DomainName $d -AdParams $adParams -TimeoutSeconds 300 -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+            }
+            $sectionData['Lingering Object Scan (advisory)'] = @($loRows)
+        }
+
+        if (Test-SectionSelected 'ExchangeSchema' $Sections) {
+            $sectionData['Exchange Schema Markers'] = Get-AdfaExchangeSchemaMarker -AdParams $adParams
+        }
+
+        if (Test-SectionSelected 'ExchangeSeReadiness' $Sections) {
+            Write-Stage 'Exchange Server SE compatibility (forest level + DC operating systems)'
+            # An override that cannot be read is fatal here rather than swallowed: the alternative
+            # is judging the forest against the built-in table while the operator believes theirs
+            # is in force.
+            $seConfig = $script:Config.ExchangeSe
+            if ($ExchangeSeConfigPath) {
+                $seConfig = Import-AdfaExchangeSeConfig -BaseConfig $script:Config.ExchangeSe -Path $ExchangeSeConfigPath
+                Write-Log -Level INFO ("Exchange SE prerequisite table overridden from {0}" -f $ExchangeSeConfigPath)
+            }
+            $forestMode = ''
+            if ($null -ne $forest) {
+                $fmProp = $forest.PSObject.Properties['ForestMode']   # $null when absent - StrictMode-safe
+                if ($null -ne $fmProp -and $null -ne $fmProp.Value) { $forestMode = [string]$fmProp.Value }
+            }
+            # The numeric level is what the verdict reads. When the forest itself was unreadable
+            # there is no Partitions container to ask, and the cause is the forest error.
+            $forestLevel = ''
+            $forestLevelError = ''
+            if ($forestError) { $forestLevelError = ("The forest could not be read: {0}" -f $forestError) }
+            else {
+                $bv = Get-AdfaForestBehaviorVersion -Forest $forest -AdParams $adParams
+                $forestLevel = [string]$bv.Level
+                $forestLevelError = [string]$bv.Error
+                if ($forestLevelError) { Write-Log -Level WARN -Section 'ExchangeSeReadiness' -Message $forestLevelError }
+            }
+            $sectionData['Exchange SE Compatibility'] = Get-AdfaExchangeSeCompatibility -ForestMode $forestMode `
+                -ForestLevel $forestLevel -ForestLevelError $forestLevelError `
+                -DomainSummaries $sectionData['Domain Summary'] -DomainControllers $allDcInventory -SeConfig $seConfig `
+                -ForestComplete ($scopeCoversForest -and $dcInventoryCollected -and @($dcInventoryFailures).Count -eq 0)
+        }
+
+        # ---- User and computer export (declared attribute lists) -> CSV; HTML gets a summary only ----
+        if (Test-SectionSelected 'Identity' $Sections) {
+            Write-Stage 'Identity inventory (user/computer export, declared attribute lists)'
+            $identitySummary = @()
+            # PORT-PLAN C4b: each domain's users and computers are read with the declared lists of the
+            # DirectoryRead table, never every attribute, capped at the Inventory table's MaxObjects (the
+            # table the file supplied where it supplied one). A failed, refused, empty or capped read is
+            # carried to the summary as its cause (PORT-PLAN C15: Not Assessed, never 0).
+            $exportConfig = $script:Config.DirectoryRead
+            $exportSecrets = @(Get-AdfaSecretAttributeName)
+            $exportMax = [int]$inventoryConfig['MaxObjects']
+            foreach ($d in $targetDomains) {
+                $userExport = ConvertTo-AdfaIdentityExport -Kind User -Columns @($exportConfig['UserExportProperties']) -MaxObjects $exportMax -AccountDisableBit ([int]$inventoryConfig['AccountDisableBit']) -CapSource $inventoryCapSource `
+                    -Raw (Get-AdfaIdentityExportRaw -DomainName $d -Kind User -Config $exportConfig -SecretNames $exportSecrets -MaxObjects $exportMax -AdParams $adParams)
+                $computerExport = ConvertTo-AdfaIdentityExport -Kind Computer -Columns @($exportConfig['ComputerExportProperties']) -MaxObjects $exportMax -AccountDisableBit ([int]$inventoryConfig['AccountDisableBit']) -CapSource $inventoryCapSource `
+                    -Raw (Get-AdfaIdentityExportRaw -DomainName $d -Kind Computer -Config $exportConfig -SecretNames $exportSecrets -MaxObjects $exportMax -AdParams $adParams)
+                $users = @($userExport.Rows); $computers = @($computerExport.Rows)
+                $usersError = [string]$userExport.Cause; $computersError = [string]$computerExport.Cause
+                if ($usersError) { Write-Warning ("User export for {0}: {1}" -f $d, $usersError) }
+                if ($computersError) { Write-Warning ("Computer export for {0}: {1}" -f $d, $computersError) }
+
+                $safeDom = New-SafeFileName $d
+                if (@($users).Count -gt 0) { Save-Csv -InputObject $users -Path (Join-Path $csvPath ("AllUsers_{0}.csv" -f $safeDom)) }
+                if (@($computers).Count -gt 0) { Save-Csv -InputObject $computers -Path (Join-Path $csvPath ("AllComputers_{0}.csv" -f $safeDom)) }
+                $identitySummary += Get-AdfaIdentitySummary -DomainName $d -Users $users -Computers $computers -StaleDays $script:Config.StaleDays `
+                    -UsersError $usersError -ComputersError $computersError
+            }
+            $sectionData['Identity Inventory'] = @($identitySummary)
+            # PORT-PLAN C15 (INV-008, INV-010): per scoped domain, thirteen object counts from seven capped,
+            # listed-property reads (never the export above), and the group inventory - scope and type,
+            # empty groups, direct member counts (member values counted, never kept). One CSV of groups per
+            # domain; inventory only.
+            Write-Stage 'Object counts and group inventory (capped reads, listed properties, per domain)'
+            $identityDepth = Get-AdfaIdentityInventoryDepth -Domains $targetDomains -ForestError $forestError -AdParams $adParams -Config $inventoryConfig
+            $sectionData['Object Counts'] = @($identityDepth.Counts)
+            $sectionData['Group Inventory'] = @($identityDepth.Groups)
+            foreach ($gd in @($identityDepth.GroupExport.Keys)) {
+                $groupRows = @($identityDepth.GroupExport[$gd])
+                if ($groupRows.Count -gt 0) { Save-Csv -InputObject $groupRows -Path (Join-Path $csvPath ("Groups_{0}.csv" -f (New-SafeFileName $gd))) }
             }
         }
-        # The ClockSkew table the file supplied where it supplied one (PORT-PLAN C14): WarnSeconds and
-        # Samples only; the Kerberos maximum is never taken from a file.
-        $clockConfig = $script:Config.ClockSkew
-        if ($configOverrides.ContainsKey('ClockSkew')) { $clockConfig = $configOverrides['ClockSkew'] }
-        $timeRows = @(Get-AdfaTimeHierarchyHealth -DomainControllers $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains -PdcEmulators $pdcMap `
-                -ForestRootPdc $rootPdc -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
-                -TimeoutSeconds $script:Config.ExternalToolTimeoutSec `
-                -SkewSamples $clockConfig.Samples `
-                -WarnSeconds $clockConfig.WarnSeconds `
-                -FailSeconds $clockConfig.KerberosMaxSeconds -ThresholdSource ([string]$clockConfig['ThresholdSource']))
-        if (@($pdcErrors).Count -gt 0) {
-            $timeRows += New-Finding -Area 'TimeHierarchy' -Item 'PDC emulator resolution' -Status $script:Status.NotAssessed `
-                -Detail ("The PDC emulator could not be read for {0} domain(s), so the role-specific time rule was not applied there: {1}. Those DCs were graded as ordinary domain controllers, which is a partial result." -f @($pdcErrors).Count, (@($pdcErrors) -join '; '))
+
+        # ---- DNS record export (PORT-PLAN C13, ADA-INV-014) -> one CSV per zone and server ----
+        # Opt-in: NOT part of 'All', because a zone can hold many records. Test-SectionSelected is not
+        # used for that reason - it is true for 'All'. The cap per zone is RecordExportCap.
+        if ($Sections -contains 'DnsRecordExport') {
+            Write-Stage 'DNS record export (every zone of every DC''s DNS server, capped per zone)'
+            $dnsExportTargets = @($allDcInventory)
+            $dnsExportFailures = @($dcInventoryFailures)
+            if (-not $dcInventoryCollected) {
+                $dnsExportEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
+                $dnsExportTargets = @($dnsExportEnumeration.Targets)
+                $dnsExportFailures = @($dnsExportEnumeration.Failures)
+            }
+            if ($dnsExportTargets.Count -eq 0) { $dnsExportTargets = @($dcNames) }
+            $sectionData['DNS Record Export'] = @(Export-AdfaDnsRecord -DomainControllers $dnsExportTargets -Config $dnsConfig -CsvPath $csvPath `
+                    -PortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $dnsExportFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
         }
-        $sectionData['Time Hierarchy'] = @($timeRows)
-        # PORT-PLAN C15 (INV-015): Type, NtpServer and AnnounceFlags of every DC, read from the registry
-        # through the shared CIM transport loop; inventory only, no expected value.
-        Write-Stage 'W32Time configuration (Type, NtpServer, AnnounceFlags; per DC, read-only)'
-        $sectionData['Time Configuration'] = @(Get-AdfaW32TimeInventory -DomainControllers $c15Targets -InventoryFailures $c15Failures -ScopedDomains $targetDomains `
-                -EnumerationError $script:DcEnumerationError -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
-                -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec -Config $inventoryConfig)
-    }
-    if (Test-SectionSelected 'SiteGc' $Sections) {
-        Write-Stage 'Writeable global catalog coverage per site'
-        $sectionData['Site Global Catalog Coverage'] = @(Get-AdfaSiteGcCoverage -DomainControllers $allDcInventory)
-    }
-    if (Test-SectionSelected 'PortMatrix' $Sections) {
-        Write-Stage 'Port reachability matrix (replication port set)'
-        # PORT-PLAN C14: the reachability class of each DC, classified once before the first per-DC
-        # section, then the port matrix rows, unchanged.
-        $sectionData['Port Reachability'] = @(@($reachRows) + @(Get-AdfaPortMatrix -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs))
-    }
-    if (Test-SectionSelected 'DcSecureChannel' $Sections) {
-        Write-Stage 'DC machine-account passwords & secure channels'
-        $scRows = foreach ($d in $targetDomains) {
-            Get-AdfaDcSecureChannel -DomainName $d -AdParams $adParams -Credential $Credential -LiveVerify:$IncludeSecureChannelVerify `
-                -WarnDays $script:Config.DcPasswordWarnDays -FailDays $script:Config.DcPasswordFailDays `
-                -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+
+        # ---- Raw diagnostics ----
+        if ($IncludeRepadmin -and (Test-CommandAvailable -Name 'repadmin.exe')) {
+            Write-Stage 'raw repadmin'
+            Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments '/replsummary * /bysrc /bydest /sort:delta' -OutFile (Join-Path $rawPath 'repadmin_replsummary.txt') @ext | Out-Null
+            foreach ($dc in $perDcHosts) {
+                if ((Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $script:Config.RpcPortTimeoutMs).Open[135]) {
+                    Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments ("/showrepl {0} /errorsonly" -f $dc) -OutFile (Join-Path $rawPath ("repadmin_showrepl_{0}.txt" -f (New-SafeFileName $dc))) @ext | Out-Null
+                }
+            }
         }
-        $sectionData['DC Secure Channel & Machine Passwords'] = @($scRows)
-    }
-    if (Test-SectionSelected 'DsEvents' $Sections) {
-        Write-Stage 'Directory Service event log (lingering / rollback / DNS failures)'
-        $sectionData['Directory Service Events'] = Get-AdfaDsEventLog -DomainControllers $perDcTargets -Credential $Credential `
-            -LookbackDays $script:Config.DsEventLookbackDays -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
-        # PORT-PLAN C15 (INV-012): every configured log of every DC, by level (Critical, Error, Warning),
-        # bounded by -EventLookbackDays and EventMaxEvents, grouped by event ID; inventory only.
-        Write-Stage 'Event inventory (Critical, Error and Warning per log and DC; bounded reads)'
-        $sectionData['Event Inventory'] = @(Get-AdfaEventInventory -DomainControllers $c15Targets -InventoryFailures $c15Failures -ScopedDomains $targetDomains `
-                -EnumerationError $script:DcEnumerationError -LookbackDays $script:Config.DsEventLookbackDays -Credential $Credential `
-                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -Config $inventoryConfig)
-    }
-    if (Test-SectionSelected 'RestoreIntegrity' $Sections) {
-        Write-Stage 'Restore integrity (USN rollback forensics, database instantiation)'
-        $riRows = @()
-        # The registry marker first: it is the only restore-integrity signal that does not depend
-        # on the Directory Service log still holding the event, which on a recovered forest it
-        # frequently does not.
-        $riRows += @(Get-AdfaUsnRollbackForensics -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains)
+        if ($IncludeDcdiag -and (Test-CommandAvailable -Name 'dcdiag.exe')) {
+            Write-Stage 'raw dcdiag'
+            foreach ($dc in $perDcHosts) {
+                if ((Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $script:Config.RpcPortTimeoutMs).Open[135]) {
+                    Invoke-ExternalCommand -FilePath 'dcdiag.exe' -Arguments ("/s:{0} /c /v" -f $dc) -OutFile (Join-Path $rawPath ("dcdiag_{0}.txt" -f (New-SafeFileName $dc))) @ext | Out-Null
+                }
+            }
+        }
+
+        # ---- Persist CSVs ----
+        Write-Stage 'Writing CSVs'
+        foreach ($key in $sectionData.Keys) {
+            $file = Join-Path $csvPath (("{0}.csv" -f (New-SafeFileName $key)))
+            Save-Csv -InputObject $sectionData[$key] -Path $file
+        }
+
+        # ---- Consolidated findings + detailed itemised log ----
+        # One row per status-bearing check across every section: the single actionable list.
+        $consolidated = @()
+        $unreadableRows = 0
+        foreach ($key in $sectionData.Keys) {
+            # Expand first: a nested collection here would present as a row with no Status and
+            # be skipped, which is how whole sections were once discarded without a word.
+            foreach ($row in @(Expand-AdfaRowList -Rows $sectionData[$key])) {
+                $names = $row.PSObject.Properties.Name
+                $statusCol = if ($names -contains 'Status') { 'Status' } elseif ($names -contains 'Health') { 'Health' } else { $null }
+                if (-not $statusCol) {
+                    # Rows with no status column are informational inventory (sites, subnets,
+                    # site links) and belong only in their own section - expected, not an error.
+                    # Anything that is not a plain object, though, means a collector returned a
+                    # shape this build did not expect: say so rather than dropping it in silence.
+                    if (($row -is [System.Collections.IEnumerable]) -and ($row -isnot [string])) {
+                        $unreadableRows++
+                        Write-Log -Level ERROR ("Section '{0}' produced a row of type {1} that carries no status - it is NOT in the consolidated findings. This is a tool defect; report it." -f $key, $row.GetType().Name)
+                    }
+                    continue
+                }
+                $consolidated += ConvertTo-AdfaConsolidatedFinding -Section $key -Row $row -StatusColumn $statusCol
+            }
+        }
+        # Severity order for the consolidated file and the log.
+        $sevRank = @{ 'Fail' = 0; 'Broken' = 0; 'Failed' = 0; 'Warning' = 1; 'Degraded' = 1; 'Not Assessed' = 2; 'Info' = 3; 'Pass' = 4; 'Healthy' = 4; 'Verified' = 4 }
+        $consolidated = $consolidated | Sort-Object @{ e = { $r = $sevRank[$_.Status]; if ($null -eq $r) { 5 } else { $r } } }, Section, Item
+        Save-Csv -InputObject $consolidated -Path (Join-Path $csvPath 'Findings-Consolidated.csv')
+
+        # ---- Section reconciliation ----
+        # Collected-vs-reported, per section. A section that produced rows but contributed no
+        # finding is either pure inventory (expected) or data loss (a defect). Stating the
+        # count for every section makes the second case impossible to miss - the failure mode
+        # that discarded twelve sections on the first multi-domain run showed no symptom at all.
+        $sectionAudit = @()
+        foreach ($key in $sectionData.Keys) {
+            $collected = @(Expand-AdfaRowList -Rows $sectionData[$key]).Count
+            $reported = @($consolidated | Where-Object { $_.Section -eq $key }).Count
+            $sectionAudit += [pscustomobject]@{
+                Section = $key; RowsCollected = $collected; FindingsReported = $reported
+                Note    = $(if ($collected -gt 0 -and $reported -eq 0) { 'No status-bearing rows (inventory section, or data loss - verify)' } else { '' })
+            }
+        }
+        Save-Csv -InputObject $sectionAudit -Path (Join-Path $csvPath 'Section-Coverage.csv')
+        Write-Log -Level RESULT ("Section reconciliation ({0} sections):" -f @($sectionAudit).Count)
+        foreach ($a in $sectionAudit) {
+            $lvl = if ($a.Note) { 'WARN' } else { 'RESULT' }
+            Write-Log -Level $lvl ('{0,-42} collected={1,-6} reported={2}{3}' -f $a.Section, $a.RowsCollected, $a.FindingsReported, $(if ($a.Note) { ' <- ' + $a.Note } else { '' }))
+        }
+        if ($unreadableRows -gt 0) {
+            Write-Log -Level ERROR ("{0} collected row(s) could not be interpreted and are absent from the consolidated findings. Treat this report as INCOMPLETE." -f $unreadableRows)
+            Write-Warning ("{0} collected row(s) could not be interpreted - the consolidated findings are INCOMPLETE. See the log." -f $unreadableRows)
+        }
+
+        # Detailed itemised log: every section's findings, worst first, with the exact detail text.
+        Write-Log -Level RESULT ("Assessment findings ({0} checks across {1} sections):" -f @($consolidated).Count, $sectionData.Keys.Count)
+        foreach ($f in $consolidated) {
+            $lvl = switch -Regex ($f.Status) {
+                '^(Fail|Broken|Failed)$' { 'ERROR'; break }
+                '^(Warning|Degraded)$' { 'WARN'; break }
+                '^(Not Assessed)$' { 'WARN'; break }
+                default { 'RESULT' }
+            }
+            $msg = '{0,-12} {1} :: {2}{3}{4}' -f $f.Status, $f.Section, $f.Item, $(if ($f.Detail) { " -> $($f.Detail)" } else { '' }), $(if ($f.Recommendation) { " || FIX: $($f.Recommendation)" } else { '' })
+            Write-Log -Level $lvl -Section $f.Scope -Message $msg
+        }
+
+        # ---- Roll-up badges ----
+        $flat = @($consolidated | ForEach-Object { $_.Status })
+        $countOk = @($flat | Where-Object { $_ -match '^(Pass|Healthy)$' }).Count
+        $countWarn = @($flat | Where-Object { $_ -match '^(Warning|Degraded)$' }).Count
+        $countBad = @($flat | Where-Object { $_ -match '^(Fail|Broken)$' }).Count
+        $countNa = @($flat | Where-Object { $_ -eq 'Not Assessed' }).Count
+        Write-Log -Level RESULT ("Summary: Pass={0} Warning={1} Fail={2} NotAssessed={3}" -f $countOk, $countWarn, $countBad, $countNa)
+        $badges = "<span class='b-ok'>Pass $countOk</span><span class='b-warn'>Warning $countWarn</span><span class='b-bad'>Fail $countBad</span><span class='b-na'>Not Assessed $countNa</span>"
+        # One summary object, consumed by the JSON document and by this function's return value,
+        # so the two can never disagree about the same run.
+        $runSummary = [pscustomobject]@{ Pass = $countOk; Warning = $countWarn; Fail = $countBad; NotAssessed = $countNa }
+
+        $meta = [pscustomobject]@{
+            Forest        = $forest.Name
+            Generated     = (Get-Date).ToString('u')
+            RunBy         = ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
+            Version       = $script:Config.Version
+            DomainsScoped = @($targetDomains)
+            DcCount       = @($perDcHosts).Count
+            Badges        = $badges
+        }
+
+        Write-Stage 'Writing HTML report'
+        $reportPath = Join-Path $runRoot 'Assessment.html'
+        # Lead the report with the consolidated, severity-sorted findings, then the detail sections.
+        $htmlSections = [ordered]@{}
+        $htmlSections['Findings (worst first)'] = @($consolidated | Where-Object { $_.Status -notmatch '^(Pass|Healthy|Verified|Info)$' })
+        # Reconciliation sits directly under the findings: what each section collected against
+        # what it contributed, so a silently empty section is visible in the report itself.
+        $htmlSections['Section Coverage (collected vs reported)'] = $sectionAudit
+        foreach ($k in $sectionData.Keys) { $htmlSections[$k] = $sectionData[$k] }
+        if (@($htmlSections['Findings (worst first)']).Count -eq 0) {
+            $htmlSections['Findings (worst first)'] = @([pscustomobject]@{ Section = '(none)'; Item = 'No warnings or failures'; Status = 'Pass'; Detail = 'All assessed checks passed.'; Recommendation = '' })
+        }
+        # The CSVs and the itemised log are already on disk at this point. A rendering fault
+        # must not discard them, stop the transcript from closing, or suppress the run summary
+        # - the collection is the expensive part and on a recovery it may not be repeatable
+        # cheaply. Report the failure loudly and carry on.
+        $reportRendered = $false
         try {
-            $riRows += @(Get-AdfaInvocationIdVerdict -DsaInventory (Get-AdfaDsaInventory -AdParams $adParams))
+            New-AdfaHtmlReport -Sections $htmlSections -Meta $meta -Path $reportPath | Out-Null
+            $reportRendered = $true
         }
         catch {
-            Write-Log -Level ERROR -Section 'RestoreIntegrity' -Message ("DSA inventory failed, so database instantiation could not be checked: {0}" -f $_.Exception.Message)
-            $riRows += New-Finding -Area 'RestoreIntegrity' -Item 'Database instantiation (invocationId)' -Status $script:Status.NotAssessed `
-                -Detail ("The DSA inventory could not be read, so database instantiation identity is unknown: {0}" -f $_.Exception.Message)
+            $reportPath = ''
+            Write-Log -Level ERROR ("HTML report generation FAILED: {0}" -f $_.Exception.Message)
+            Write-Warning ("HTML report could not be written: {0}" -f $_.Exception.Message)
+            Write-Warning ("All findings are still on disk: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv'))
         }
-        $sectionData['Restore Integrity'] = @($riRows)
-    }
+        if ($reportRendered) { Write-Log -Level INFO ("HTML report: {0}" -f $reportPath) }
 
-    if ($IncludeLingeringObjectScan) {
-        Write-Stage 'Lingering object scan (repadmin advisory mode - no changes)'
-        $loRows = foreach ($d in $targetDomains) {
-            Get-AdfaLingeringObjectScan -DomainName $d -AdParams $adParams -TimeoutSeconds 300 -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+        # JSON is the machine-readable twin of the HTML, for diffing one run against the next
+        # (a phased rollout re-runs this between phases). Guarded separately from the HTML so
+        # neither renderer can take the other down, and so a JSON fault cannot discard the CSVs.
+        Write-Stage 'Writing JSON report'
+        $jsonPath = Join-Path $runRoot 'Assessment.json'
+        try {
+            Export-AdfaJsonReport -Meta $meta -Findings $consolidated -Coverage $sectionAudit `
+                -Sections $sectionData -Summary $runSummary -Path $jsonPath | Out-Null
+            Write-Log -Level INFO ("JSON report: {0}" -f $jsonPath)
         }
-        $sectionData['Lingering Object Scan (advisory)'] = @($loRows)
-    }
-
-    if (Test-SectionSelected 'ExchangeSchema' $Sections) {
-        $sectionData['Exchange Schema Markers'] = Get-AdfaExchangeSchemaMarker -AdParams $adParams
-    }
-
-    if (Test-SectionSelected 'ExchangeSeReadiness' $Sections) {
-        Write-Stage 'Exchange Server SE compatibility (forest level + DC operating systems)'
-        # An override that cannot be read is fatal here rather than swallowed: the alternative
-        # is judging the forest against the built-in table while the operator believes theirs
-        # is in force.
-        $seConfig = $script:Config.ExchangeSe
-        if ($ExchangeSeConfigPath) {
-            $seConfig = Import-AdfaExchangeSeConfig -BaseConfig $script:Config.ExchangeSe -Path $ExchangeSeConfigPath
-            Write-Log -Level INFO ("Exchange SE prerequisite table overridden from {0}" -f $ExchangeSeConfigPath)
+        catch {
+            $jsonPath = ''
+            Write-Log -Level ERROR ("JSON report generation FAILED: {0}" -f $_.Exception.Message)
+            Write-Warning ("JSON report could not be written: {0}" -f $_.Exception.Message)
         }
-        $forestMode = ''
-        if ($null -ne $forest) {
-            $fmProp = $forest.PSObject.Properties['ForestMode']   # $null when absent - StrictMode-safe
-            if ($null -ne $fmProp -and $null -ne $fmProp.Value) { $forestMode = [string]$fmProp.Value }
-        }
-        # The numeric level is what the verdict reads. When the forest itself was unreadable
-        # there is no Partitions container to ask, and the cause is the forest error.
-        $forestLevel = ''
-        $forestLevelError = ''
-        if ($forestError) { $forestLevelError = ("The forest could not be read: {0}" -f $forestError) }
-        else {
-            $bv = Get-AdfaForestBehaviorVersion -Forest $forest -AdParams $adParams
-            $forestLevel = [string]$bv.Level
-            $forestLevelError = [string]$bv.Error
-            if ($forestLevelError) { Write-Log -Level WARN -Section 'ExchangeSeReadiness' -Message $forestLevelError }
-        }
-        $sectionData['Exchange SE Compatibility'] = Get-AdfaExchangeSeCompatibility -ForestMode $forestMode `
-            -ForestLevel $forestLevel -ForestLevelError $forestLevelError `
-            -DomainSummaries $sectionData['Domain Summary'] -DomainControllers $allDcInventory -SeConfig $seConfig `
-            -ForestComplete ($scopeCoversForest -and $dcInventoryCollected -and @($dcInventoryFailures).Count -eq 0)
-    }
 
-    # ---- User and computer export (declared attribute lists) -> CSV; HTML gets a summary only ----
-    if (Test-SectionSelected 'Identity' $Sections) {
-        Write-Stage 'Identity inventory (user/computer export, declared attribute lists)'
-        $identitySummary = @()
-        # PORT-PLAN C4b: each domain's users and computers are read with the declared lists of the
-        # DirectoryRead table, never every attribute, capped at the Inventory table's MaxObjects (the
-        # table the file supplied where it supplied one). A failed, refused, empty or capped read is
-        # carried to the summary as its cause (PORT-PLAN C15: Not Assessed, never 0).
-        $exportConfig = $script:Config.DirectoryRead
-        $exportSecrets = @(Get-AdfaSecretAttributeName)
-        $exportMax = [int]$inventoryConfig['MaxObjects']
-        foreach ($d in $targetDomains) {
-            $userExport = ConvertTo-AdfaIdentityExport -Kind User -Columns @($exportConfig['UserExportProperties']) -MaxObjects $exportMax -AccountDisableBit ([int]$inventoryConfig['AccountDisableBit']) -CapSource $inventoryCapSource `
-                -Raw (Get-AdfaIdentityExportRaw -DomainName $d -Kind User -Config $exportConfig -SecretNames $exportSecrets -MaxObjects $exportMax -AdParams $adParams)
-            $computerExport = ConvertTo-AdfaIdentityExport -Kind Computer -Columns @($exportConfig['ComputerExportProperties']) -MaxObjects $exportMax -AccountDisableBit ([int]$inventoryConfig['AccountDisableBit']) -CapSource $inventoryCapSource `
-                -Raw (Get-AdfaIdentityExportRaw -DomainName $d -Kind Computer -Config $exportConfig -SecretNames $exportSecrets -MaxObjects $exportMax -AdParams $adParams)
-            $users = @($userExport.Rows); $computers = @($computerExport.Rows)
-            $usersError = [string]$userExport.Cause; $computersError = [string]$computerExport.Cause
-            if ($usersError) { Write-Warning ("User export for {0}: {1}" -f $d, $usersError) }
-            if ($computersError) { Write-Warning ("Computer export for {0}: {1}" -f $d, $computersError) }
+        Write-Log -Level INFO ("Consolidated findings: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv'))
 
-            $safeDom = New-SafeFileName $d
-            if (@($users).Count -gt 0) { Save-Csv -InputObject $users -Path (Join-Path $csvPath ("AllUsers_{0}.csv" -f $safeDom)) }
-            if (@($computers).Count -gt 0) { Save-Csv -InputObject $computers -Path (Join-Path $csvPath ("AllComputers_{0}.csv" -f $safeDom)) }
-            $identitySummary += Get-AdfaIdentitySummary -DomainName $d -Users $users -Computers $computers -StaleDays $script:Config.StaleDays `
-                -UsersError $usersError -ComputersError $computersError
-        }
-        $sectionData['Identity Inventory'] = @($identitySummary)
-        # PORT-PLAN C15 (INV-008, INV-010): per scoped domain, thirteen object counts from seven capped,
-        # listed-property reads (never the export above), and the group inventory - scope and type,
-        # empty groups, direct member counts (member values counted, never kept). One CSV of groups per
-        # domain; inventory only.
-        Write-Stage 'Object counts and group inventory (capped reads, listed properties, per domain)'
-        $identityDepth = Get-AdfaIdentityInventoryDepth -Domains $targetDomains -ForestError $forestError -AdParams $adParams -Config $inventoryConfig
-        $sectionData['Object Counts'] = @($identityDepth.Counts)
-        $sectionData['Group Inventory'] = @($identityDepth.Groups)
-        foreach ($gd in @($identityDepth.GroupExport.Keys)) {
-            $groupRows = @($identityDepth.GroupExport[$gd])
-            if ($groupRows.Count -gt 0) { Save-Csv -InputObject $groupRows -Path (Join-Path $csvPath ("Groups_{0}.csv" -f (New-SafeFileName $gd))) }
-        }
-    }
+        # PORT-PLAN H21: the totals of the closing lines are the self-reconciling roll-up the JSON
+        # carries, and the exit code is computed from the same consolidated findings.
+        $runTotals = New-AdfaReportSummary -Summary $runSummary -Findings $consolidated
+        $reportsNotWritten = @()
+        if (-not $reportRendered) { $reportsNotWritten += 'HTML' }
+        if (-not $jsonPath) { $reportsNotWritten += 'JSON' }
+        $exitInfo = Get-AdfaRunExitCode -Findings $consolidated -UnreadableRows $unreadableRows -ReportsNotWritten $reportsNotWritten
 
-    # ---- DNS record export (PORT-PLAN C13, ADA-INV-014) -> one CSV per zone and server ----
-    # Opt-in: NOT part of 'All', because a zone can hold many records. Test-SectionSelected is not
-    # used for that reason - it is true for 'All'. The cap per zone is RecordExportCap.
-    if ($Sections -contains 'DnsRecordExport') {
-        Write-Stage 'DNS record export (every zone of every DC''s DNS server, capped per zone)'
-        $dnsExportTargets = @($allDcInventory)
-        $dnsExportFailures = @($dcInventoryFailures)
-        if (-not $dcInventoryCollected) {
-            $dnsExportEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
-            $dnsExportTargets = @($dnsExportEnumeration.Targets)
-            $dnsExportFailures = @($dnsExportEnumeration.Failures)
-        }
-        if ($dnsExportTargets.Count -eq 0) { $dnsExportTargets = @($dcNames) }
-        $sectionData['DNS Record Export'] = @(Export-AdfaDnsRecord -DomainControllers $dnsExportTargets -Config $dnsConfig -CsvPath $csvPath `
-                -PortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $dnsExportFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
-    }
-
-    # ---- Raw diagnostics ----
-    if ($IncludeRepadmin -and (Test-CommandAvailable -Name 'repadmin.exe')) {
-        Write-Stage 'raw repadmin'
-        Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments '/replsummary * /bysrc /bydest /sort:delta' -OutFile (Join-Path $rawPath 'repadmin_replsummary.txt') @ext | Out-Null
-        foreach ($dc in $perDcHosts) {
-            if ((Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $script:Config.RpcPortTimeoutMs).Open[135]) {
-                Invoke-ExternalCommand -FilePath 'repadmin.exe' -Arguments ("/showrepl {0} /errorsonly" -f $dc) -OutFile (Join-Path $rawPath ("repadmin_showrepl_{0}.txt" -f (New-SafeFileName $dc))) @ext | Out-Null
-            }
-        }
-    }
-    if ($IncludeDcdiag -and (Test-CommandAvailable -Name 'dcdiag.exe')) {
-        Write-Stage 'raw dcdiag'
-        foreach ($dc in $perDcHosts) {
-            if ((Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $script:Config.RpcPortTimeoutMs).Open[135]) {
-                Invoke-ExternalCommand -FilePath 'dcdiag.exe' -Arguments ("/s:{0} /c /v" -f $dc) -OutFile (Join-Path $rawPath ("dcdiag_{0}.txt" -f (New-SafeFileName $dc))) @ext | Out-Null
-            }
-        }
-    }
-
-    # ---- Persist CSVs ----
-    Write-Stage 'Writing CSVs'
-    foreach ($key in $sectionData.Keys) {
-        $file = Join-Path $csvPath (("{0}.csv" -f (New-SafeFileName $key)))
-        Save-Csv -InputObject $sectionData[$key] -Path $file
-    }
-
-    # ---- Consolidated findings + detailed itemised log ----
-    # One row per status-bearing check across every section: the single actionable list.
-    $consolidated = @()
-    $unreadableRows = 0
-    foreach ($key in $sectionData.Keys) {
-        # Expand first: a nested collection here would present as a row with no Status and
-        # be skipped, which is how whole sections were once discarded without a word.
-        foreach ($row in @(Expand-AdfaRowList -Rows $sectionData[$key])) {
-            $names = $row.PSObject.Properties.Name
-            $statusCol = if ($names -contains 'Status') { 'Status' } elseif ($names -contains 'Health') { 'Health' } else { $null }
-            if (-not $statusCol) {
-                # Rows with no status column are informational inventory (sites, subnets,
-                # site links) and belong only in their own section - expected, not an error.
-                # Anything that is not a plain object, though, means a collector returned a
-                # shape this build did not expect: say so rather than dropping it in silence.
-                if (($row -is [System.Collections.IEnumerable]) -and ($row -isnot [string])) {
-                    $unreadableRows++
-                    Write-Log -Level ERROR ("Section '{0}' produced a row of type {1} that carries no status - it is NOT in the consolidated findings. This is a tool defect; report it." -f $key, $row.GetType().Name)
-                }
-                continue
-            }
-            $consolidated += ConvertTo-AdfaConsolidatedFinding -Section $key -Row $row -StatusColumn $statusCol
-        }
-    }
-    # Severity order for the consolidated file and the log.
-    $sevRank = @{ 'Fail' = 0; 'Broken' = 0; 'Failed' = 0; 'Warning' = 1; 'Degraded' = 1; 'Not Assessed' = 2; 'Info' = 3; 'Pass' = 4; 'Healthy' = 4; 'Verified' = 4 }
-    $consolidated = $consolidated | Sort-Object @{ e = { $r = $sevRank[$_.Status]; if ($null -eq $r) { 5 } else { $r } } }, Section, Item
-    Save-Csv -InputObject $consolidated -Path (Join-Path $csvPath 'Findings-Consolidated.csv')
-
-    # ---- Section reconciliation ----
-    # Collected-vs-reported, per section. A section that produced rows but contributed no
-    # finding is either pure inventory (expected) or data loss (a defect). Stating the
-    # count for every section makes the second case impossible to miss - the failure mode
-    # that discarded twelve sections on the first multi-domain run showed no symptom at all.
-    $sectionAudit = @()
-    foreach ($key in $sectionData.Keys) {
-        $collected = @(Expand-AdfaRowList -Rows $sectionData[$key]).Count
-        $reported = @($consolidated | Where-Object { $_.Section -eq $key }).Count
-        $sectionAudit += [pscustomobject]@{
-            Section = $key; RowsCollected = $collected; FindingsReported = $reported
-            Note    = $(if ($collected -gt 0 -and $reported -eq 0) { 'No status-bearing rows (inventory section, or data loss - verify)' } else { '' })
-        }
-    }
-    Save-Csv -InputObject $sectionAudit -Path (Join-Path $csvPath 'Section-Coverage.csv')
-    Write-Log -Level RESULT ("Section reconciliation ({0} sections):" -f @($sectionAudit).Count)
-    foreach ($a in $sectionAudit) {
-        $lvl = if ($a.Note) { 'WARN' } else { 'RESULT' }
-        Write-Log -Level $lvl ('{0,-42} collected={1,-6} reported={2}{3}' -f $a.Section, $a.RowsCollected, $a.FindingsReported, $(if ($a.Note) { ' <- ' + $a.Note } else { '' }))
-    }
-    if ($unreadableRows -gt 0) {
-        Write-Log -Level ERROR ("{0} collected row(s) could not be interpreted and are absent from the consolidated findings. Treat this report as INCOMPLETE." -f $unreadableRows)
-        Write-Warning ("{0} collected row(s) could not be interpreted - the consolidated findings are INCOMPLETE. See the log." -f $unreadableRows)
-    }
-
-    # Detailed itemised log: every section's findings, worst first, with the exact detail text.
-    Write-Log -Level RESULT ("Assessment findings ({0} checks across {1} sections):" -f @($consolidated).Count, $sectionData.Keys.Count)
-    foreach ($f in $consolidated) {
-        $lvl = switch -Regex ($f.Status) {
-            '^(Fail|Broken|Failed)$' { 'ERROR'; break }
-            '^(Warning|Degraded)$' { 'WARN'; break }
-            '^(Not Assessed)$' { 'WARN'; break }
-            default { 'RESULT' }
-        }
-        $msg = '{0,-12} {1} :: {2}{3}{4}' -f $f.Status, $f.Section, $f.Item, $(if ($f.Detail) { " -> $($f.Detail)" } else { '' }), $(if ($f.Recommendation) { " || FIX: $($f.Recommendation)" } else { '' })
-        Write-Log -Level $lvl -Section $f.Scope -Message $msg
-    }
-
-    # ---- Roll-up badges ----
-    $flat = @($consolidated | ForEach-Object { $_.Status })
-    $countOk = @($flat | Where-Object { $_ -match '^(Pass|Healthy)$' }).Count
-    $countWarn = @($flat | Where-Object { $_ -match '^(Warning|Degraded)$' }).Count
-    $countBad = @($flat | Where-Object { $_ -match '^(Fail|Broken)$' }).Count
-    $countNa = @($flat | Where-Object { $_ -eq 'Not Assessed' }).Count
-    Write-Log -Level RESULT ("Summary: Pass={0} Warning={1} Fail={2} NotAssessed={3}" -f $countOk, $countWarn, $countBad, $countNa)
-    $badges = "<span class='b-ok'>Pass $countOk</span><span class='b-warn'>Warning $countWarn</span><span class='b-bad'>Fail $countBad</span><span class='b-na'>Not Assessed $countNa</span>"
-    # One summary object, consumed by the JSON document and by this function's return value,
-    # so the two can never disagree about the same run.
-    $runSummary = [pscustomobject]@{ Pass = $countOk; Warning = $countWarn; Fail = $countBad; NotAssessed = $countNa }
-
-    $meta = [pscustomobject]@{
-        Forest        = $forest.Name
-        Generated     = (Get-Date).ToString('u')
-        RunBy         = ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
-        Version       = $script:Config.Version
-        DomainsScoped = @($targetDomains)
-        DcCount       = @($perDcHosts).Count
-        Badges        = $badges
-    }
-
-    Write-Stage 'Writing HTML report'
-    $reportPath = Join-Path $runRoot 'Assessment.html'
-    # Lead the report with the consolidated, severity-sorted findings, then the detail sections.
-    $htmlSections = [ordered]@{}
-    $htmlSections['Findings (worst first)'] = @($consolidated | Where-Object { $_.Status -notmatch '^(Pass|Healthy|Verified|Info)$' })
-    # Reconciliation sits directly under the findings: what each section collected against
-    # what it contributed, so a silently empty section is visible in the report itself.
-    $htmlSections['Section Coverage (collected vs reported)'] = $sectionAudit
-    foreach ($k in $sectionData.Keys) { $htmlSections[$k] = $sectionData[$k] }
-    if (@($htmlSections['Findings (worst first)']).Count -eq 0) {
-        $htmlSections['Findings (worst first)'] = @([pscustomobject]@{ Section = '(none)'; Item = 'No warnings or failures'; Status = 'Pass'; Detail = 'All assessed checks passed.'; Recommendation = '' })
-    }
-    # The CSVs and the itemised log are already on disk at this point. A rendering fault
-    # must not discard them, stop the transcript from closing, or suppress the run summary
-    # - the collection is the expensive part and on a recovery it may not be repeatable
-    # cheaply. Report the failure loudly and carry on.
-    $reportRendered = $false
-    try {
-        New-AdfaHtmlReport -Sections $htmlSections -Meta $meta -Path $reportPath | Out-Null
-        $reportRendered = $true
+        if ($reportRendered) { Write-Stage ("DONE. Report: {0}" -f $reportPath) }
+        else { Write-Stage ("DONE (HTML report failed to render). Findings: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv')) }
     }
     catch {
-        $reportPath = ''
-        Write-Log -Level ERROR ("HTML report generation FAILED: {0}" -f $_.Exception.Message)
-        Write-Warning ("HTML report could not be written: {0}" -f $_.Exception.Message)
-        Write-Warning ("All findings are still on disk: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv'))
+        # House rule: an error that stops the run is logged with its step, type, position and
+        # stack, the exit code becomes 2, and the error goes on to the caller.
+        Write-AdfaErrorRecord -Step 'Invoke-Main' -ErrorRecord $_
+        $exitInfo = Get-AdfaRunExitCode -Fatal -FatalReason $_.Exception.Message
+        throw
     }
-    if ($reportRendered) { Write-Log -Level INFO ("HTML report: {0}" -f $reportPath) }
-
-    # JSON is the machine-readable twin of the HTML, for diffing one run against the next
-    # (a phased rollout re-runs this between phases). Guarded separately from the HTML so
-    # neither renderer can take the other down, and so a JSON fault cannot discard the CSVs.
-    Write-Stage 'Writing JSON report'
-    $jsonPath = Join-Path $runRoot 'Assessment.json'
-    try {
-        Export-AdfaJsonReport -Meta $meta -Findings $consolidated -Coverage $sectionAudit `
-            -Sections $sectionData -Summary $runSummary -Path $jsonPath | Out-Null
-        Write-Log -Level INFO ("JSON report: {0}" -f $jsonPath)
+    finally {
+        # On success, on an error and on Ctrl+C: the closing lines, the log path, the transcript.
+        $runClock.Stop()
+        foreach ($closingLine in @(Get-AdfaRunClosingLine -End (Get-Date) -Elapsed $runClock.Elapsed -Totals $runTotals -ExitInfo $exitInfo)) {
+            Write-Log -Level RESULT -Message $closingLine
+        }
+        Write-Log -Level INFO ("Detailed log: {0}" -f $script:LogFile)
+        try { Stop-Transcript | Out-Null } catch { }
     }
-    catch {
-        $jsonPath = ''
-        Write-Log -Level ERROR ("JSON report generation FAILED: {0}" -f $_.Exception.Message)
-        Write-Warning ("JSON report could not be written: {0}" -f $_.Exception.Message)
-    }
-
-    Write-Log -Level INFO ("Detailed log: {0}" -f $script:LogFile)
-    Write-Log -Level INFO ("Consolidated findings: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv'))
-    try { Stop-Transcript | Out-Null } catch { }
-
-    if ($reportRendered) { Write-Stage ("DONE. Report: {0}" -f $reportPath) }
-    else { Write-Stage ("DONE (HTML report failed to render). Findings: {0}" -f (Join-Path $csvPath 'Findings-Consolidated.csv')) }
 
     [pscustomobject]@{
         Forest        = $forest.Name
@@ -31970,10 +37088,32 @@ function Invoke-Main {
         Transcript    = $transcript
         Summary       = $runSummary
         Sections      = @($sectionData.Keys)
+        ExitCode      = [int]$exitInfo.ExitCode
+        ExitReason    = [string]$exitInfo.Reason
     }
 }
 
 # Only auto-run when executed as a script (not when dot-sourced for testing).
+# PORT-PLAN H21: the one exit statement of the script, here and only here, so a dot-sourced script
+# (the tests and harnesses) never ends its caller. The code is 2 until Invoke-Main returns a
+# summary that Get-AdfaScriptExitCode can read, and 2 again for any error that stops it: under
+# -File, Microsoft documents an unhandled exception as exit code 1, which would read as "completed
+# with findings", and a run interrupted with Ctrl+C as exit code 0 (about_PowerShell_exe, read
+# 2026-11-18). A pipeline stop (Ctrl+C) skips every catch, so the exit is in the finally, which
+# runs on it too (independent review of H21; measured with a PipelineStoppedException, which
+# ends a -File run with 0 when the exit is after the try and with 2 when it is in the finally).
 if ($MyInvocation.InvocationName -ne '.' -and -not $env:ADFA_NO_AUTORUN) {
-    Invoke-Main
+    $adfaExitCode = 2
+    try {
+        $adfaRun = @(Invoke-Main)
+        $adfaExitCode = Get-AdfaScriptExitCode -RunOutput $adfaRun
+        $adfaRun
+    }
+    catch {
+        Write-Warning ("Run stopped, exit code 2: {0}" -f $_.Exception.Message)
+        $adfaExitCode = 2
+    }
+    finally {
+        exit $adfaExitCode
+    }
 }

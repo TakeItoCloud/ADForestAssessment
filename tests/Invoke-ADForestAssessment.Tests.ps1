@@ -7588,9 +7588,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 
@@ -9245,9 +9245,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 
@@ -10235,9 +10235,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 
@@ -11174,9 +11174,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 
@@ -12168,9 +12168,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 
@@ -13408,9 +13408,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 
@@ -14626,9 +14626,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 
@@ -16492,9 +16492,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17163,9 +17163,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.37.0 (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries the same version in the script and the manifest: 1.38.0 (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17316,9 +17316,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.37.0 in the script and the manifest (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries version 1.38.0 in the script and the manifest (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 
@@ -18647,9 +18647,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.37.0 in the script and the manifest (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries version 1.38.0 in the script and the manifest (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 
@@ -19785,9 +19785,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.37.0 in the script and the manifest (bumped by PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'carries version 1.38.0 in the script and the manifest (bumped by PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 
@@ -24107,9 +24107,9 @@ Describe 'Promise triage: the README and help promises the code did not keep (C1
     }
 
     Context 'Version' {
-        It 'is 1.37.0 in the script and the manifest (bumped by PORT-PLAN H18, H20a, C1a)' {
-            $script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'is 1.38.0 in the script and the manifest (bumped by PORT-PLAN H21)' {
+            $script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 }
@@ -24452,16 +24452,16 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
             $stale | Should -BeNullOrEmpty
         }
         It 'declares its population: the exact counts of each kind, measured from the script' {
-            # Declared population of the script, measured on v1.37.0 after the review fix (each kind is
+            # Declared population of the script, measured on v1.38.0 (H21 added the instance method GetUnresolvedProviderPathFromPSPath; each kind is
             # counted from the parsed script, not from the inventory): 66 commands, 46 console tool forms
             # (25 dcdiag /test: forms, the dcdiag /c capture, 4 nltest /sc_ forms, nltest /dsgetdc, netdom
             # /Verify, 7 repadmin, 4 w32tm, dfsrmig, 2 nslookup), 5 CIM classes, 3 StdRegProv methods,
-            # 57 instance method names.
+            # 58 instance method names.
             $byKind = @{}
             foreach ($k in @($script:H20Pop.Keys)) { $kind = ($k -split ':', 2)[0]; if (-not $byKind.ContainsKey($kind)) { $byKind[$kind] = 0 }; $byKind[$kind]++ }
             $byKind['Command'] | Should -Be 66 -Because 'declared population: the 66 commands of the script'
             $byKind['Tool'] | Should -Be 46 -Because 'declared population: the 46 console tool forms of the script'
-            $byKind['Method'] | Should -Be 57 -Because 'declared population: the 57 instance method names of the script'
+            $byKind['Method'] | Should -Be 58 -Because 'declared population: the 58 instance method names of the script'
             @($script:H20Pop.Keys | Where-Object { $_ -like 'Tool:nltest.exe *' }).Count | Should -Be 5 -Because 'declared population: /sc_query and /sc_verify with and without /server:, and /dsgetdc'
             @($script:H20Pop.Keys | Where-Object { $_ -like 'CimClass:*' }) | Should -Be @('CimClass:Win32_NetworkAdapterConfiguration', 'CimClass:Win32_OperatingSystem', 'CimClass:Win32_QuickFixEngineering', 'CimClass:Win32_Service', 'CimClass:Win32_Volume')
             @($script:H20Pop.Keys | Where-Object { $_ -like 'CimMethod:*' }) | Should -Be @('CimMethod:StdRegProv.GetDWORDValue', 'CimMethod:StdRegProv.GetExpandedStringValue', 'CimMethod:StdRegProv.GetStringValue')
@@ -24568,7 +24568,7 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
             $readme | Should -Not -Match 'that audit is PORT-PLAN H20a'
             # Review fix: the README, the inventory and the plan row claim no Learn read for a page that
             # was not read. Declared population: the default rows whose source says the page was not read.
-            # (Environment.GetFolderPath is unread too, but reads a local path only, so it is in-process.)
+            # (Environment.GetFolderPath was one too, until H21 removed the Documents default.)
             $unreadAll = @($script:H20Rows | Where-Object { $_.Run -eq 'Default' -and $_.Key -notlike 'Effect:*' -and $_.Source -match 'not read in this session' })
             @($unreadAll | Where-Object { @('not documented', 'in-process') -notcontains $_.Verdict } | ForEach-Object { $_.Key }) | Should -BeNullOrEmpty
             $unread = @($unreadAll | Where-Object { $_.Verdict -eq 'not documented' })
@@ -24839,9 +24839,739 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
     }
 
     Context 'Version' {
-        It 'is 1.37.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a)' {
-            [string]$script:Config.Version | Should -Be '1.37.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.37.0'
+        It 'is 1.38.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a; bumped by H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
+        }
+    }
+}
+
+Describe 'House rules: one output folder per run, the closing log lines, exit codes 0/1/2 and the help of every function (H21)' {
+    # PORT-PLAN H21, by operator decision of 2026-11-18: the repository's CLAUDE.md output convention
+    # (C:\Scripts\Securnet\Reports\<ScriptName>-<yyyyMMdd-HHmmss>\) wins inside this repository over
+    # the operator's global C:\Scripts\Cannes default. No test may write under C:\Scripts: every path
+    # a test creates is under $TestDrive, and the default folder is only ever computed.
+    BeforeAll {
+        $script:H21Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:H21Text = [System.IO.File]::ReadAllText($script:Target)
+        $script:H21Out = $script:Config.Output
+        $script:H21Now = [datetime]::new(2026, 11, 18, 9, 30, 0)
+        $script:H21DefaultRunRoot = 'C:\Scripts\Securnet\Reports\ADForestAssessment-20261118-093000'
+        # Held in variables: PSAvoidUsingComputerNameHardcoded flags a literal computer name.
+        $script:H21Dc1 = 'dc1.contoso.com'
+        $script:H21Dc2 = 'dc2.contoso.com'
+        $script:H21Dc3 = 'dc3.fabrikam.com'
+        $script:H21Main = @($script:H21Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))[0]
+
+        # One consolidated finding, built the way Invoke-Main builds it.
+        function New-H21Finding {
+            param([string]$Section, [string]$Status, [string]$Item = 'item', [string]$Scope = 'contoso.com', [string]$Detail = '')
+            ConvertTo-AdfaConsolidatedFinding -Section $Section -Row (New-Finding -Scope $Scope -Area 'H21' -Item $Item -Status $Status -Detail $Detail) -StatusColumn 'Status'
+        }
+        # The help block of every function, read from the tokens of the source - not from Get-Help -
+        # so a comment above a parameter does not count as a .PARAMETER entry. A help block is the
+        # first block comment at the start of the body (only whitespace before it), or one that ends
+        # before the function keyword with at most one blank line between (Learn, about_Comment_Based_Help).
+        function Get-H21FunctionHelp {
+            param([string]$Text)
+            $tokens = $null
+            $errors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$errors)
+            $blocks = @($tokens | Where-Object { $_.Kind -eq 'Comment' -and $_.Text.StartsWith('<#') })
+            $fns = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true))
+            foreach ($fn in $fns) {
+                $declared = @()
+                if ($null -ne $fn.Parameters) { $declared += @($fn.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) }
+                if ($null -ne $fn.Body.ParamBlock) { $declared += @($fn.Body.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) }
+                $bodyStart = $fn.Body.Extent.StartOffset
+                $help = $null
+                foreach ($b in $blocks) {
+                    if ($b.Extent.StartOffset -gt $bodyStart -and $b.Extent.EndOffset -lt $fn.Body.Extent.EndOffset) {
+                        if ($Text.Substring($bodyStart + 1, $b.Extent.StartOffset - $bodyStart - 1) -match '^\s*$') { $help = $b }
+                        break
+                    }
+                }
+                if ($null -eq $help) {
+                    foreach ($b in $blocks) {
+                        if ($b.Extent.EndOffset -le $fn.Extent.StartOffset) {
+                            $gap = $Text.Substring($b.Extent.EndOffset, $fn.Extent.StartOffset - $b.Extent.EndOffset)
+                            if ($gap -match '^\s*$' -and ([regex]::Matches($gap, "`n")).Count -le 2) { $help = $b }
+                        }
+                    }
+                }
+                $helpText = ''
+                if ($null -ne $help) { $helpText = $help.Text }
+                $documented = @([regex]::Matches($helpText, '(?im)^\s*\.PARAMETER\s+([\w-]+)') | ForEach-Object { $_.Groups[1].Value })
+                [pscustomobject]@{
+                    Name        = $fn.Name
+                    HasHelp     = ($null -ne $help)
+                    HasSynopsis = ($helpText -match '(?im)^\s*\.SYNOPSIS\s*$')
+                    Declared    = $declared
+                    Missing     = @($declared | Where-Object { $documented -notcontains $_ })
+                    Extra       = @($documented | Where-Object { $declared -notcontains $_ })
+                }
+            }
+        }
+        $script:H21Help = @(Get-H21FunctionHelp -Text $script:H21Text)
+    }
+
+    Context 'Output folder: computed from the config table, never created by the computation' {
+        It 'holds the repository convention in the config table, each value a tool convention and not a Microsoft value' {
+            $script:H21Out['DefaultRoot'] | Should -Be 'C:\Scripts\Securnet\Reports'
+            $script:H21Out['RunFolderPrefix'] | Should -Be 'ADForestAssessment'
+            $script:H21Out['StampFormat'] | Should -Be 'yyyyMMdd-HHmmss'
+            [int]$script:H21Out['MaxRunFolderAttempts'] | Should -Be 99
+        }
+        It 'computes the default run folder exactly as CLAUDE.md says, with no -OutputPath' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $root = Resolve-AdfaOutputRoot -OutputPath '' -Config $script:H21Out
+            $root.Root | Should -Be 'C:\Scripts\Securnet\Reports'
+            $root.FromDefault | Should -BeTrue
+            $p = Get-AdfaRunFolderPath -Root $root.Root -Now $script:H21Now -Config $script:H21Out
+            $p.RunRoot | Should -Be $script:H21DefaultRunRoot
+            $p.RunFolderName | Should -Be 'ADForestAssessment-20261118-093000'
+            $p.Stamp | Should -Be '20261118-093000'
+            $p.LogFile | Should -Be (Join-Path $script:H21DefaultRunRoot 'ADForestAssessment-20261118-093000.log')
+            $p.TranscriptFile | Should -Be (Join-Path $script:H21DefaultRunRoot 'ADForestAssessment-20261118-093000-transcript.log')
+            $p.CsvPath | Should -Be (Join-Path $script:H21DefaultRunRoot 'csv')
+            $p.RawPath | Should -Be (Join-Path $script:H21DefaultRunRoot 'raw')
+        }
+        It 'stamps the hour on the 24-hour clock' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $p = Get-AdfaRunFolderPath -Root 'C:\Scripts\Securnet\Reports' -Now ([datetime]::new(2026, 11, 18, 21, 5, 9)) -Config $script:H21Out
+            $p.Stamp | Should -Be '20261118-210509'
+        }
+        It 'review fix (M5): the stamp does not depend on the culture of the host - th-TH, whose calendar is Buddhist' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $saved = [System.Threading.Thread]::CurrentThread.CurrentCulture
+            try {
+                [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('th-TH')
+                # Non-vacuity: under th-TH a culture-dependent format does not give 2026, so this guard can fail.
+                $script:H21Now.ToString('yyyyMMdd-HHmmss') | Should -Not -Be '20261118-093000'
+                (Get-AdfaRunFolderPath -Root 'C:\Scripts\Securnet\Reports' -Now $script:H21Now -Config $script:H21Out).Stamp | Should -Be '20261118-093000'
+            }
+            finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $saved }
+        }
+        It 'computes the default folder without creating anything (Select-AdfaRunFolder with no -OutputPath)' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            Mock New-Item { throw 'H21: New-Item must not be called' }
+            Mock Out-File { throw 'H21: Out-File must not be called' }
+            Mock Add-Content { throw 'H21: Add-Content must not be called' }
+            Mock Test-Path { $false }
+            $sel = Select-AdfaRunFolder -OutputPath '' -Now $script:H21Now -Config $script:H21Out
+            $sel.RunRoot | Should -Be $script:H21DefaultRunRoot
+            $sel.FromDefault | Should -BeTrue
+            $sel.RootExisted | Should -BeFalse
+            Should -Invoke New-Item -Times 0 -Exactly
+            Should -Invoke Out-File -Times 0 -Exactly
+            Should -Invoke Add-Content -Times 0 -Exactly
+        }
+        It 'contains no write command in the functions that compute the folder (AST)' {
+            # Declared population: the three functions that compute the run folder.
+            $names = @('Resolve-AdfaOutputRoot', 'Get-AdfaRunFolderPath', 'Select-AdfaRunFolder')
+            $fns = @($script:H21Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $names -contains $n.Name }, $true))
+            $fns.Count | Should -Be 3
+            foreach ($fn in $fns) {
+                $calls = @($fn.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() })
+                @($calls | Where-Object { $_ -match '^(New-Item|New-Folder|Out-File|Add-Content|Set-Content|Export-Csv|Start-Transcript|Remove-Item)$' }) | Should -BeNullOrEmpty -Because ('{0} only computes' -f $fn.Name)
+            }
+        }
+        It 'uses -OutputPath when it is given (the override), and says the root was not the default' {
+            $sel = Select-AdfaRunFolder -OutputPath $TestDrive -Now $script:H21Now -Config $script:H21Out
+            $sel.Root | Should -Be ([string](Resolve-Path -LiteralPath $TestDrive).ProviderPath)
+            $sel.FromDefault | Should -BeFalse
+            $sel.RootExisted | Should -BeTrue
+            $sel.RunRoot | Should -Be (Join-Path $sel.Root 'ADForestAssessment-20261118-093000')
+        }
+        It 'never reuses a run folder: a second run in the same second gets -2, a third -3' {
+            $root = Join-Path $TestDrive 'h21-collide'
+            New-Item -ItemType Directory -Path (Join-Path $root 'ADForestAssessment-20261118-093000') -Force | Out-Null
+            (Select-AdfaRunFolder -OutputPath $root -Now $script:H21Now -Config $script:H21Out).RunFolderName | Should -Be 'ADForestAssessment-20261118-093000-2'
+            New-Item -ItemType Directory -Path (Join-Path $root 'ADForestAssessment-20261118-093000-2') -Force | Out-Null
+            $third = Select-AdfaRunFolder -OutputPath $root -Now $script:H21Now -Config $script:H21Out
+            $third.RunFolderName | Should -Be 'ADForestAssessment-20261118-093000-3'
+            $third.LogFile | Should -Be (Join-Path $third.RunRoot 'ADForestAssessment-20261118-093000-3.log')
+        }
+        It 'stops, naming the folder, when every attempt is taken' {
+            $root = Join-Path $TestDrive 'h21-full'
+            New-Item -ItemType Directory -Path (Join-Path $root 'ADForestAssessment-20261118-093000') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $root 'ADForestAssessment-20261118-093000-2') -Force | Out-Null
+            $cfg = @{} + $script:H21Out
+            $cfg['MaxRunFolderAttempts'] = 2
+            { Select-AdfaRunFolder -OutputPath $root -Now $script:H21Now -Config $cfg } | Should -Throw '*ADForestAssessment-20261118-093000-2*'
+        }
+        It 'refuses an -OutputPath that is not on the file system before anything is created: <Name>' -ForEach @(
+            @{ Name = 'a registry key'; Path = 'HKCU:\Software\AdfaH21NeverCreated'; Expect = 'Registry' }
+            @{ Name = 'the variable drive'; Path = 'Variable:\AdfaH21'; Expect = 'Variable' }
+            @{ Name = 'a drive that does not exist'; Path = 'AdfaNoSuchDrive:\out'; Expect = 'AdfaNoSuchDrive' }
+        ) {
+            # The registry provider exists on Windows only; the tool runs on Windows only (CI runs on Linux).
+            if ($Expect -eq 'Registry' -and -not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) { Set-ItResult -Skipped -Because 'the Registry provider exists on Windows only'; return }
+            Mock New-Item { throw 'H21: New-Item must not be called' }
+            { Select-AdfaRunFolder -OutputPath $Path -Now $script:H21Now -Config $script:H21Out } | Should -Throw ('*{0}*' -f $Expect)
+            Should -Invoke New-Item -Times 0 -Exactly
+        }
+    }
+
+    Context 'Exit code: 0 completed, 1 completed with Fail findings or Not Assessed sections, 2 fatal (pure)' {
+        It 'normal data: Pass only is 0' {
+            $r = Get-AdfaRunExitCode -Findings @((New-H21Finding -Section 'DC System' -Status 'Pass' -Scope $script:H21Dc1), (New-H21Finding -Section 'DC System' -Status 'Pass' -Scope $script:H21Dc2))
+            $r.ExitCode | Should -Be 0
+            $r.Reason | Should -Match 'no Fail finding'
+        }
+        It 'Warning and Info do not raise the code' {
+            $r = Get-AdfaRunExitCode -Findings @((New-H21Finding -Section 'DNS Health' -Status 'Warning'), (New-H21Finding -Section 'Object Counts' -Status 'Info'), (New-H21Finding -Section 'DNS Health' -Status 'Pass'))
+            $r.ExitCode | Should -Be 0
+        }
+        It 'empty data: no status-bearing finding at all is 1, never 0' {
+            $r = Get-AdfaRunExitCode -Findings @()
+            $r.ExitCode | Should -Be 1
+            $r.Reason | Should -Match 'no status-bearing finding'
+            (Get-AdfaRunExitCode -Findings $null).ExitCode | Should -Be 1
+        }
+        It 'a finding with status <Status> is 1' -ForEach @(
+            @{ Status = 'Fail' }, @{ Status = 'Broken' }, @{ Status = 'Failed' }
+        ) {
+            $row = [pscustomobject]@{ Section = 'Trusts & Two-Way Health'; Scope = 'contoso.com'; Item = 'fabrikam.com'; Status = $Status; Detail = ''; Recommendation = '' }
+            $r = Get-AdfaRunExitCode -Findings @($row, (New-H21Finding -Section 'Trusts & Two-Way Health' -Status 'Pass'))
+            $r.ExitCode | Should -Be 1
+            $r.FailFindings | Should -Be 1
+            $r.Reason | Should -Match '1 Fail finding'
+        }
+        It 'counts every Fail finding, not one per section' {
+            $r = Get-AdfaRunExitCode -Findings @((New-H21Finding -Section 'DC System' -Status 'Fail' -Scope $script:H21Dc1), (New-H21Finding -Section 'DC System' -Status 'Fail' -Scope $script:H21Dc2), (New-H21Finding -Section 'DC System' -Status 'Pass' -Scope $script:H21Dc3))
+            $r.FailFindings | Should -Be 2
+        }
+        It 'unreachable DC: a section whose every DC is Not Assessed (unreachable) is 1 and is named' {
+            $rows = @(
+                (New-H21Finding -Section 'DC System' -Status 'Not Assessed' -Scope $script:H21Dc1 -Detail 'unreachable: no answer on WinRM or DCOM')
+                (New-H21Finding -Section 'DC System' -Status 'Not Assessed' -Scope $script:H21Dc2 -Detail 'unreachable: no answer on WinRM or DCOM')
+                (New-H21Finding -Section 'Forest Summary' -Status 'Pass'))
+            $r = Get-AdfaRunExitCode -Findings $rows
+            $r.ExitCode | Should -Be 1
+            @($r.NotAssessedSections) | Should -Be @('DC System')
+            $r.Reason | Should -Match 'Not Assessed: DC System'
+        }
+        It 'access denied on one DC while another was read: the section is assessed in part, so 0' {
+            $rows = @(
+                (New-H21Finding -Section 'DC System' -Status 'Pass' -Scope $script:H21Dc1)
+                (New-H21Finding -Section 'DC System' -Status 'Not Assessed' -Scope $script:H21Dc2 -Detail 'access denied')
+                (New-H21Finding -Section 'DC System' -Status 'Not Assessed' -Scope $script:H21Dc3 -Detail 'access denied'))
+            $r = Get-AdfaRunExitCode -Findings $rows
+            $r.ExitCode | Should -Be 0
+            @($r.NotAssessedSections).Count | Should -Be 0
+        }
+        It 'mixed result: Fail findings and a Not Assessed section are both named in the reason' {
+            $rows = @(
+                (New-H21Finding -Section 'DC Hardening' -Status 'Fail' -Scope $script:H21Dc1)
+                (New-H21Finding -Section 'DC Hardening' -Status 'Warning' -Scope $script:H21Dc2)
+                (New-H21Finding -Section 'DC Disk Space' -Status 'Not Assessed' -Scope $script:H21Dc1)
+                (New-H21Finding -Section 'DC Disk Space' -Status 'Not Assessed' -Scope $script:H21Dc2)
+                (New-H21Finding -Section 'Windows LAPS' -Status 'Pass'))
+            $r = Get-AdfaRunExitCode -Findings $rows
+            $r.ExitCode | Should -Be 1
+            $r.FailFindings | Should -Be 1
+            @($r.NotAssessedSections) | Should -Be @('DC Disk Space')
+            $r.Reason | Should -Match '1 Fail finding'
+            $r.Reason | Should -Match 'Not Assessed: DC Disk Space'
+        }
+        It 'rows that could not be interpreted make the run 1 (the report is incomplete)' {
+            $r = Get-AdfaRunExitCode -Findings @(New-H21Finding -Section 'Forest Summary' -Status 'Pass') -UnreadableRows 1
+            $r.ExitCode | Should -Be 1
+            $r.Reason | Should -Match '1 collected row'
+        }
+        It 'a report that was not written makes the run 1' {
+            $r = Get-AdfaRunExitCode -Findings @(New-H21Finding -Section 'Forest Summary' -Status 'Pass') -ReportsNotWritten @('HTML')
+            $r.ExitCode | Should -Be 1
+            $r.Reason | Should -Match 'HTML report not written'
+        }
+        It 'fatal is 2 whatever the findings say' {
+            $r = Get-AdfaRunExitCode -Findings @(New-H21Finding -Section 'Forest Summary' -Status 'Pass') -Fatal -FatalReason 'Config override refused'
+            $r.ExitCode | Should -Be 2
+            $r.Reason | Should -Match 'Config override refused'
+        }
+        It 'review fix: an Info row does not make a section assessed - the Exchange SE scope row beside two unread gates is 1' {
+            # Real shape: the Exchange SE verdict with the forest level unread and no DC; it always adds
+            # its Info "Scope of this check" row (the reviewer's reproduction).
+            $se = @(Get-AdfaExchangeSeCompatibility -ForestMode '' -ForestLevel '' -ForestLevelError 'access denied' -DomainSummaries @() -DomainControllers @() -SeConfig $script:Config.ExchangeSe)
+            @($se | Where-Object { $_.Status -eq 'Info' }).Count | Should -BeGreaterThan 0 -Because 'non-vacuity: the section carries its Info scope row'
+            @($se | Where-Object { $_.Status -eq 'Not Assessed' }).Count | Should -BeGreaterThan 0 -Because 'non-vacuity: the gates were not assessed'
+            @($se | Where-Object { $_.Status -match '^(Pass|Warning|Fail)$' }).Count | Should -Be 0 -Because 'non-vacuity: nothing in the section was graded'
+            $rows = @($se | ForEach-Object { ConvertTo-AdfaConsolidatedFinding -Section 'Exchange SE Readiness' -Row $_ -StatusColumn 'Status' }) + @(New-H21Finding -Section 'Forest Summary' -Status 'Pass')
+            $r = Get-AdfaRunExitCode -Findings $rows
+            $r.ExitCode | Should -Be 1
+            @($r.NotAssessedSections) | Should -Be @('Exchange SE Readiness')
+        }
+        It 'review fix: Not Assessed plus Info is a Not Assessed section; Info alone is not; one graded row makes it assessed' {
+            $na = Get-AdfaRunExitCode -Findings @((New-H21Finding -Section 'Port Reachability' -Status 'Not Assessed' -Scope $script:H21Dc1), (New-H21Finding -Section 'Port Reachability' -Status 'Info'), (New-H21Finding -Section 'Forest Summary' -Status 'Pass'))
+            $na.ExitCode | Should -Be 1
+            @($na.NotAssessedSections) | Should -Be @('Port Reachability')
+            (Get-AdfaRunExitCode -Findings @((New-H21Finding -Section 'Object Counts' -Status 'Info'), (New-H21Finding -Section 'Forest Summary' -Status 'Pass'))).ExitCode | Should -Be 0
+            (Get-AdfaRunExitCode -Findings @((New-H21Finding -Section 'Port Reachability' -Status 'Not Assessed' -Scope $script:H21Dc1), (New-H21Finding -Section 'Port Reachability' -Status 'Info'), (New-H21Finding -Section 'Port Reachability' -Status 'Warning' -Scope $script:H21Dc2))).ExitCode | Should -Be 0
+        }
+        It 'review fix: a finding whose status is <Name> is 1 and named, never 0' -ForEach @(
+            @{ Name = 'null' }, @{ Name = 'empty' }, @{ Name = 'Unknown' }, @{ Name = 'missing' }
+        ) {
+            $row = switch ($Name) {
+                'null' { [pscustomobject]@{ Section = 'DNS Health'; Item = 'x'; Status = $null } }
+                'empty' { [pscustomobject]@{ Section = 'DNS Health'; Item = 'x'; Status = '' } }
+                'Unknown' { [pscustomobject]@{ Section = 'DNS Health'; Item = 'x'; Status = 'Unknown' } }
+                default { [pscustomobject]@{ Section = 'DNS Health'; Item = 'x' } }
+            }
+            $r = Get-AdfaRunExitCode -Findings @($row, (New-H21Finding -Section 'DNS Health' -Status 'Pass'))
+            $r.ExitCode | Should -Be 1
+            $r.UnclassifiedFindings | Should -Be 1
+            $r.Reason | Should -Match '1 finding\(s\) with an empty or unclassified status'
+            # The closing lines then agree with each other: Unclassified=1 and exit code 1.
+            $totals = New-AdfaReportSummary -Summary ([pscustomobject]@{ Pass = 1; Warning = 0; Fail = 0; NotAssessed = 0 }) -Findings @($row, (New-H21Finding -Section 'DNS Health' -Status 'Pass'))
+            $lines = @(Get-AdfaRunClosingLine -End $script:H21Now -Elapsed ([timespan]::new(0, 0, 1)) -Totals $totals -ExitInfo $r)
+            $lines[1] | Should -Match 'Unclassified=1 '
+            $lines[2] | Should -Match '^Exit code: 1 '
+        }
+        It 'review fix: a row that is a dictionary is read too (a Fail in a hashtable is 1)' {
+            $r = Get-AdfaRunExitCode -Findings @(@{ Section = 'DC System'; Status = 'Fail' }, (New-H21Finding -Section 'DC System' -Status 'Pass' -Scope $script:H21Dc1))
+            $r.ExitCode | Should -Be 1
+            $r.FailFindings | Should -Be 1
+        }
+        It 'review fix: a fatal reason with line breaks stays on the one Exit code line' {
+            $exit = Get-AdfaRunExitCode -Fatal -FatalReason ('Config override file is not valid JSON: (7): { not json' + "`r`n")
+            $exit.Reason | Should -Be 'could not run or was stopped: Config override file is not valid JSON: (7): { not json'
+            $lines = @(Get-AdfaRunClosingLine -End $script:H21Now -Elapsed ([timespan]::new(0, 0, 1)) -Totals $null -ExitInfo ([pscustomobject]@{ ExitCode = 2; Reason = "first`r`n  second`n" }))
+            $lines.Count | Should -Be 3
+            $lines[2] | Should -Be 'Exit code: 2 (first / second)'
+        }
+        It 'review fix: the process exit code is the ExitCode of the run summary, and 2 when it cannot be read (M1)' {
+            Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = 0 }) | Should -Be 0
+            Get-AdfaScriptExitCode -RunOutput @('noise', [pscustomobject]@{ ExitCode = 1 }) | Should -Be 1
+            Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = 2 }) | Should -Be 2
+            Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = 1 }, 'not the summary') | Should -Be 2
+            Get-AdfaScriptExitCode -RunOutput @() | Should -Be 2
+            Get-AdfaScriptExitCode -RunOutput $null | Should -Be 2
+            Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = $null }) | Should -Be 2
+            Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = 7 }) | Should -Be 2
+            Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = 'one' }) | Should -Be 2
+        }
+    }
+
+    Context 'Closing log lines: end time, duration, totals per status, exit code (pure)' {
+        It 'states the end, the duration, every total and the exit code' {
+            $totals = [ordered]@{ pass = 1; warning = 2; fail = 3; notAssessed = 4; info = 5; unclassified = 0; total = 15 }
+            $exit = [pscustomobject]@{ ExitCode = 1; Reason = '3 Fail finding(s)' }
+            $lines = @(Get-AdfaRunClosingLine -End ([datetime]::new(2026, 11, 18, 10, 32, 3)) -Elapsed ([timespan]::new(1, 2, 3)) -Totals $totals -ExitInfo $exit)
+            $lines.Count | Should -Be 3
+            $lines[0] | Should -Match '^Run finished 2026-11-18T10:32:03'
+            $lines[0] | Should -Match 'duration 01:02:03 \(3723 s\)$'
+            $lines[1] | Should -Be 'Totals: Pass=1 Warning=2 Fail=3 NotAssessed=4 Info=5 Unclassified=0 Total=15'
+            $lines[2] | Should -Be 'Exit code: 1 (3 Fail finding(s))'
+        }
+        It 'counts hours past 24 in the duration' {
+            $lines = @(Get-AdfaRunClosingLine -End $script:H21Now -Elapsed ([timespan]::new(1, 1, 0, 0)) -Totals $null -ExitInfo ([pscustomobject]@{ ExitCode = 2; Reason = 'x' }))
+            $lines[0] | Should -Match 'duration 25:00:00 \(90000 s\)$'
+        }
+        It 'says the totals were not counted when the run stopped first - never zeros' {
+            $lines = @(Get-AdfaRunClosingLine -End $script:H21Now -Elapsed ([timespan]::new(0, 0, 4)) -Totals $null -ExitInfo ([pscustomobject]@{ ExitCode = 2; Reason = 'fatal' }))
+            $lines[1] | Should -Match '^Totals: not counted'
+            ($lines -join ' ') | Should -Not -Match 'Pass=0'
+            $lines[2] | Should -Be 'Exit code: 2 (fatal)'
+        }
+    }
+
+    Context 'Wiring (AST): Invoke-Main and the script tail' {
+        It 'has exactly one exit statement, at the top level, inside the guard that skips a dot-sourced run' {
+            $exits = @($script:H21Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ExitStatementAst] }, $true))
+            $exits.Count | Should -Be 1
+            $p = $exits[0].Parent
+            $guard = $null
+            while ($null -ne $p) {
+                $p | Should -Not -BeOfType ([System.Management.Automation.Language.FunctionDefinitionAst])
+                if ($p -is [System.Management.Automation.Language.IfStatementAst]) { $guard = $p }
+                $p = $p.Parent
+            }
+            $guard | Should -Not -BeNullOrEmpty
+            $guard.Parent.Parent | Should -Be $script:H21Ast -Because 'the guard is a statement of the script itself'
+            $cond = $guard.Clauses[0].Item1.Extent.Text
+            $cond | Should -Match "InvocationName -ne '\.'"
+            $cond | Should -Match 'ADFA_NO_AUTORUN'
+            # The code is a variable: 2 until Invoke-Main returns, and 2 again in the catch.
+            $exits[0].Pipeline.Extent.Text | Should -Match '^\$\w+$'
+            $var = $exits[0].Pipeline.Extent.Text.TrimStart('$')
+            $assigns = @($guard.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('$' + $var) }, $true))
+            @($assigns | Where-Object { $_.Right.Extent.Text -eq '2' }).Count | Should -Be 2
+            $catches = @($guard.FindAll({ param($n) $n -is [System.Management.Automation.Language.CatchClauseAst] }, $true))
+            $catches.Count | Should -Be 1
+            @($catches[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('$' + $var) -and $n.Right.Extent.Text -eq '2' }, $true)).Count | Should -Be 1
+            # Review fix (M1): the code comes from Get-AdfaScriptExitCode over what Invoke-Main returned,
+            # and from nothing else. Declared population: the three assignments of the exit variable.
+            @($assigns | ForEach-Object { $_.Right.Extent.Text }) | Should -Be @('2', 'Get-AdfaScriptExitCode -RunOutput $adfaRun', '2')
+            @($guard.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$adfaRun' }, $true) | ForEach-Object { $_.Right.Extent.Text }) | Should -Be @('@(Invoke-Main)')
+            # Review fix: the exit is in the finally, so a pipeline stop (Ctrl+C), which skips the catch,
+            # still ends the process with the code (2 until the run returned), never PowerShell's 0.
+            $tryAst = @($guard.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] }, $true))
+            $tryAst.Count | Should -Be 1
+            $tryAst[0].Finally | Should -Not -BeNullOrEmpty
+            @($tryAst[0].Finally.FindAll({ param($n) $n -is [System.Management.Automation.Language.ExitStatementAst] }, $true)).Count | Should -Be 1
+        }
+        It 'Invoke-Main claims the folder with New-AdfaRunFolder (review fix), which checks with Select-AdfaRunFolder; no Documents path' {
+            # Changed by the independent review of H21: Invoke-Main used to call Select-AdfaRunFolder and
+            # New-Folder itself, a check-then-create two runs could both pass.
+            @($script:H21Main.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'New-AdfaRunFolder' }, $true)).Count | Should -Be 1
+            @($script:H21Main.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Select-AdfaRunFolder' }, $true)).Count | Should -Be 0
+            $claim = @($script:H21Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'New-AdfaRunFolder' }, $true))
+            $claim.Count | Should -Be 1
+            @($claim[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Select-AdfaRunFolder' }, $true)).Count | Should -Be 1
+            # The claim is File.Open with FileMode CreateNew (Learn: it throws if the file already exists).
+            $opens = @($claim[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static -and $n.Member.Extent.Text -eq 'Open' }, $true))
+            $opens.Count | Should -Be 1
+            $opens[0].Expression.Extent.Text | Should -Be '[System.IO.File]'
+            $opens[0].Arguments[1].Extent.Text | Should -Be "'CreateNew'"
+            $script:H21Main.Extent.Text | Should -Not -Match 'GetFolderPath|MyDocuments|\$HOME'
+            $script:H21Text | Should -Not -Match "Join-Path \`$docs 'AdAssessment'"
+        }
+        It 'Invoke-Main sets exit code 2 before the try, so a stop that skips the catch closes the log with 2 (review fix, M6)' {
+            $endStatements = @($script:H21Main.Body.EndBlock.Statements)
+            $tryIndex = -1
+            for ($i = 0; $i -lt $endStatements.Count; $i++) {
+                if ($endStatements[$i] -is [System.Management.Automation.Language.TryStatementAst] -and $null -ne $endStatements[$i].Finally) { $tryIndex = $i }
+            }
+            $tryIndex | Should -BeGreaterThan 0
+            $before = @($endStatements[0..($tryIndex - 1)] | Where-Object { $_ -is [System.Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -eq '$exitInfo' })
+            $before.Count | Should -Be 1
+            $before[0].Right.Extent.Text | Should -Match '^Get-AdfaRunExitCode -Fatal -FatalReason '
+        }
+        It 'Invoke-Main passes the unreadable rows and the reports not written to the exit code (review fix, M2 and M7)' {
+            $calls = @($script:H21Main.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaRunExitCode' -and $n.Extent.Text -match '-Findings \$consolidated' }, $true))
+            $calls.Count | Should -Be 1
+            $bound = @{}
+            for ($i = 0; $i -lt $calls[0].CommandElements.Count; $i++) {
+                $e = $calls[0].CommandElements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and ($i + 1) -lt $calls[0].CommandElements.Count) { $bound[$e.ParameterName] = $calls[0].CommandElements[$i + 1].Extent.Text }
+            }
+            $bound['UnreadableRows'] | Should -Be '$unreadableRows'
+            $bound['ReportsNotWritten'] | Should -Be '$reportsNotWritten'
+        }
+        It 'Invoke-Main writes the closing lines in a finally, logs a fatal error in the catch and rethrows it' {
+            $tries = @($script:H21Main.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $null -ne $n.Finally }, $true))
+            $closing = @($tries | Where-Object { @($_.Finally.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaRunClosingLine' }, $true)).Count -eq 1 })
+            $closing.Count | Should -Be 1
+            $t = $closing[0]
+            @($t.CatchClauses).Count | Should -Be 1
+            @($t.CatchClauses[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Write-AdfaErrorRecord' }, $true)).Count | Should -Be 1
+            @($t.CatchClauses[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaRunExitCode' -and $n.Extent.Text -match '-Fatal' }, $true)).Count | Should -Be 1
+            @($t.CatchClauses[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.ThrowStatementAst] -and $null -eq $n.Pipeline }, $true)).Count | Should -Be 1
+            # The success path computes the code from the consolidated findings, inside the try.
+            @($t.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AdfaRunExitCode' -and $n.Extent.Text -match '-Findings \$consolidated' }, $true)).Count | Should -Be 1
+            # The try covers the collection: the ActiveDirectory import and the config override are inside it.
+            $t.Body.Extent.Text | Should -Match 'Import-Module ActiveDirectory'
+            $t.Body.Extent.Text | Should -Match 'Import-AdfaConfigOverride'
+            @($t.Finally.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Stop-Transcript' }, $true)).Count | Should -Be 1
+        }
+        It 'Invoke-Main returns ExitCode and ExitReason with the run summary' {
+            $hashes = @($script:H21Main.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] -and @($n.KeyValuePairs | ForEach-Object { $_.Item1.Extent.Text }) -contains 'OutputRoot' }, $true))
+            $hashes.Count | Should -Be 1
+            $keys = @($hashes[0].KeyValuePairs | ForEach-Object { $_.Item1.Extent.Text })
+            $keys | Should -Contain 'ExitCode'
+            $keys | Should -Contain 'ExitReason'
+        }
+        It 'Write-AdfaErrorRecord logs the step, the message, the exception type, the position and the stack' {
+            $script:H21Logged = @()
+            Mock Write-Log { $script:H21Logged += [pscustomobject]@{ Level = $Level; Message = $Message } }
+            try { throw [System.IO.IOException]::new('H21 planted failure') } catch { Write-AdfaErrorRecord -Step 'H21 step' -ErrorRecord $_ }
+            @($script:H21Logged).Count | Should -Be 1
+            $script:H21Logged[0].Level | Should -Be 'ERROR'
+            $script:H21Logged[0].Message | Should -Match 'H21 step'
+            $script:H21Logged[0].Message | Should -Match 'H21 planted failure'
+            $script:H21Logged[0].Message | Should -Match 'Type: System\.IO\.IOException'
+            $script:H21Logged[0].Message | Should -Match 'Position: '
+            $script:H21Logged[0].Message | Should -Match 'Stack: '
+        }
+        It 'review fix: Write-AdfaErrorRecord keeps a message that ends in a line break on one line (5.1 ConvertFrom-Json)' {
+            $script:H21Logged = @()
+            Mock Write-Log { $script:H21Logged += [pscustomobject]@{ Level = $Level; Message = $Message } }
+            try { throw ("Invalid object passed in, ':' or '}' expected. (7): { not json" + "`r`n") } catch { Write-AdfaErrorRecord -Step 'Invoke-Main' -ErrorRecord $_ }
+            @($script:H21Logged).Count | Should -Be 1
+            $script:H21Logged[0].Message | Should -Not -Match "[`r`n]"
+            $script:H21Logged[0].Message | Should -Match '\{ not json \| Type: '
+        }
+    }
+
+    Context 'Run folder claim (review fix): a folder another run claimed first is never written' {
+        It 'claims a fresh folder by creating its empty log' {
+            $root = Join-Path $TestDrive 'h21-claim-fresh'
+            $c = New-AdfaRunFolder -OutputPath $root -Now $script:H21Now -Config $script:H21Out
+            $c.RunFolderName | Should -Be 'ADForestAssessment-20261118-093000'
+            $c.Attempt | Should -Be 1
+            $c.RootExisted | Should -BeFalse
+            $c.LogFile | Should -Exist
+            (Get-Item -LiteralPath $c.LogFile).Length | Should -Be 0
+        }
+        It 'moves on, leaving the other run untouched, when another run claimed the name after the check (the race, reproduced)' {
+            $root = Join-Path $TestDrive 'h21-claim-race'
+            $other = Get-AdfaRunFolderPath -Root $root -Now $script:H21Now -Config $script:H21Out
+            # Select-AdfaRunFolder saw the name free; the other run then created the folder and its log.
+            New-Item -ItemType Directory -Path $other.RunRoot -Force | Out-Null
+            Set-Content -LiteralPath $other.LogFile -Value 'ADForestAssessment detailed log of the other run' -Encoding UTF8
+            $script:H21RaceSelection = [pscustomobject]@{ Root = $other.Root; RunRoot = $other.RunRoot; Attempt = 1; FromDefault = $false; RootExisted = $true }
+            Mock Select-AdfaRunFolder { $script:H21RaceSelection }
+            $hash = (Get-FileHash -LiteralPath $other.LogFile -Algorithm SHA256).Hash
+            $c = New-AdfaRunFolder -OutputPath $root -Now $script:H21Now -Config $script:H21Out
+            Should -Invoke Select-AdfaRunFolder -Times 1 -Exactly
+            $c.RunFolderName | Should -Be 'ADForestAssessment-20261118-093000-2'
+            $c.Attempt | Should -Be 2
+            $c.LogFile | Should -Exist
+            (Get-FileHash -LiteralPath $other.LogFile -Algorithm SHA256).Hash | Should -Be $hash -Because 'the log of the other run is never opened, truncated or written'
+            @(Get-ChildItem -LiteralPath $other.RunRoot -Force).Count | Should -Be 1 -Because 'nothing is added to the folder of the other run'
+        }
+        It 'stops, naming the folder, when every name is claimed by other runs' {
+            $root = Join-Path $TestDrive 'h21-claim-full'
+            $cfg = @{} + $script:H21Out
+            $cfg['MaxRunFolderAttempts'] = 2
+            foreach ($n in 1, 2) {
+                $p = Get-AdfaRunFolderPath -Root $root -Now $script:H21Now -Config $cfg -Attempt $n
+                New-Item -ItemType Directory -Path $p.RunRoot -Force | Out-Null
+                Set-Content -LiteralPath $p.LogFile -Value 'other run' -Encoding UTF8
+            }
+            $first = Get-AdfaRunFolderPath -Root $root -Now $script:H21Now -Config $cfg
+            $script:H21RaceSelection = [pscustomobject]@{ Root = $first.Root; RunRoot = $first.RunRoot; Attempt = 1; FromDefault = $false; RootExisted = $true }
+            Mock Select-AdfaRunFolder { $script:H21RaceSelection }
+            { New-AdfaRunFolder -OutputPath $root -Now $script:H21Now -Config $cfg } | Should -Throw '*ADForestAssessment-20261118-093000-2*claimed by other runs*'
+        }
+        It 'stops with the error, and does not move on, when the log cannot be created for another reason' {
+            $root = Join-Path $TestDrive 'h21-claim-error'
+            $p = Get-AdfaRunFolderPath -Root $root -Now $script:H21Now -Config $script:H21Out
+            # A folder where the log file should be: File.Open cannot create it, and it is not another run's log.
+            New-Item -ItemType Directory -Path $p.LogFile -Force | Out-Null
+            $script:H21RaceSelection = [pscustomobject]@{ Root = $p.Root; RunRoot = $p.RunRoot; Attempt = 1; FromDefault = $false; RootExisted = $true }
+            Mock Select-AdfaRunFolder { $script:H21RaceSelection }
+            { New-AdfaRunFolder -OutputPath $root -Now $script:H21Now -Config $script:H21Out } | Should -Throw
+            (Get-AdfaRunFolderPath -Root $root -Now $script:H21Now -Config $script:H21Out -Attempt 2).RunRoot | Should -Not -Exist
+        }
+    }
+
+    Context 'End to end in a child process: a run that cannot start exits 2 and still closes its log' {
+        It 'a refused -ConfigOverridePath under -File gives exit code 2, a log under -OutputPath ending with the closing lines' {
+            $exe = (Get-Process -Id $PID).Path
+            $out = Join-Path $TestDrive 'h21-exit2'
+            $bad = Join-Path $TestDrive 'h21-bad-override.json'
+            '{ "NoSuchSection": { "X": 1 } }' | Out-File -LiteralPath $bad -Encoding UTF8
+            $saved = $env:ADFA_NO_AUTORUN
+            Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
+            try {
+                $null = & $exe -NoProfile -ExecutionPolicy Bypass -File $script:Target -OutputPath $out -ConfigOverridePath $bad 2>&1
+                $code = $LASTEXITCODE
+            }
+            finally { $env:ADFA_NO_AUTORUN = $saved }
+            $code | Should -Be 2
+            $runs = @(Get-ChildItem -LiteralPath $out -Directory)
+            $runs.Count | Should -Be 1
+            $runs[0].Name | Should -Match '^ADForestAssessment-\d{8}-\d{6}$'
+            $log = Join-Path $runs[0].FullName ($runs[0].Name + '.log')
+            $log | Should -Exist
+            $lines = @(Get-Content -LiteralPath $log)
+            $text = $lines -join "`n"
+            $text | Should -Match 'ADForestAssessment v\d+\.\d+\.\d+ detailed log'
+            $text | Should -Match '\[ERROR \] Fatal error in Invoke-Main: .*Type: '
+            $text | Should -Match 'Run finished \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}'
+            $text | Should -Match 'Totals: not counted'
+            $text | Should -Match 'Exit code: 2 \('
+            $lines[-1] | Should -Match ('Detailed log: ' + [regex]::Escape($log))
+            @(Get-ChildItem -LiteralPath $runs[0].FullName -Recurse -Filter *.csv).Count | Should -Be 0 -Because 'nothing was collected'
+        }
+    }
+
+    Context 'End to end in a child process, after the independent review: exit 1 through the script tail, a stopped run, a broken JSON file, a binding error' {
+        BeforeAll {
+            $script:H21Exe = (Get-Process -Id $PID).Path
+            # The driver runs the script as a script (not dot-sourced), so its tail and its exit run.
+            # Every AD cmdlet the run reaches is a stub that throws, so no host with RSAT can reach a
+            # real directory, and Import-Module is a no-op (or a pipeline stop, as Ctrl+C makes one).
+            # The credential is fictional and empty: only its redaction in the log is under test.
+            $script:H21Driver = Join-Path $TestDrive 'h21-driver.ps1'
+            @'
+param([string]$Target, [string]$Out, [string]$Mode)
+function Import-Module { param([Parameter(ValueFromRemainingArguments)]$Rest) if ($Mode -eq 'Stop') { throw [System.Management.Automation.PipelineStoppedException]::new() } }
+function Get-ADForest { param([Parameter(ValueFromRemainingArguments)]$Rest) throw 'H21 stub: forest not contactable' }
+function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$Rest) throw 'H21 stub: domain not contactable' }
+function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$Rest) throw 'H21 stub: no domain controller' }
+function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$Rest) throw 'H21 stub: no directory' }
+function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$Rest) throw 'H21 stub: no directory' }
+$cred = New-Object System.Management.Automation.PSCredential -ArgumentList 'CONTOSO\h21-operator', (New-Object System.Security.SecureString)
+& $Target -OutputPath $Out -Sections Forest -Credential $cred | Out-Null
+exit $LASTEXITCODE
+'@ | Out-File -LiteralPath $script:H21Driver -Encoding UTF8
+            function Invoke-H21Child {
+                param([string]$Out, [string]$Mode)
+                $saved = $env:ADFA_NO_AUTORUN
+                Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
+                try {
+                    $ErrorActionPreference = 'Continue'
+                    $null = & $script:H21Exe -NoProfile -ExecutionPolicy Bypass -File $script:H21Driver -Target $script:Target -Out $Out -Mode $Mode 2>&1
+                    $LASTEXITCODE
+                }
+                finally { $env:ADFA_NO_AUTORUN = $saved }
+            }
+            function Get-H21RunLog {
+                param([string]$Out)
+                $runs = @(Get-ChildItem -LiteralPath $Out -Directory)
+                $runs.Count | Should -Be 1
+                Join-Path $runs[0].FullName ($runs[0].Name + '.log')
+            }
+        }
+        It 'a completed run with a Fail finding ends the process with 1 through the script tail; the log agrees, redacts the credential and says the root was created (M1, M3, M4)' {
+            $out = Join-Path $TestDrive 'h21-exit1'
+            $code = Invoke-H21Child -Out $out -Mode 'Run'
+            $code | Should -Be 1
+            $log = Get-H21RunLog -Out $out
+            $lines = @(Get-Content -LiteralPath $log)
+            $lines[-2] | Should -Match '\[RESULT\] Exit code: 1 \(1 Fail finding'
+            $lines[-3] | Should -Match '\[RESULT\] Totals: Pass=\d+ .*Total=\d+$'
+            $lines[-1] | Should -Match ('Detailed log: ' + [regex]::Escape($log) + '$')
+            (Join-Path (Split-Path -Parent $log) 'Assessment.json') | Should -Exist
+            $params = @($lines | Where-Object { $_ -match '\[INFO  \] Parameters: ' })
+            $params.Count | Should -Be 1
+            $params[0] | Should -Match ' Credential=<redacted> '
+            ($lines -join "`n") | Should -Not -Match 'h21-operator'
+            @($lines | Where-Object { $_ -match ('\[WARN  \] Output root {0} did not exist; it was created' -f [regex]::Escape($out)) }).Count | Should -Be 1
+        }
+        It 'a run stopped by a pipeline stop (as Ctrl+C makes) skips the catch, yet the log ends with exit code 2 and so does the process (M6)' {
+            $out = Join-Path $TestDrive 'h21-stopped'
+            $code = Invoke-H21Child -Out $out -Mode 'Stop'
+            $code | Should -Be 2 -Because 'about_PowerShell_exe: a -File run interrupted with Ctrl+C would otherwise end with 0'
+            $lines = @(Get-Content -LiteralPath (Get-H21RunLog -Out $out))
+            $lines[-3] | Should -Match 'Totals: not counted'
+            $lines[-2] | Should -Match '\[RESULT\] Exit code: 2 \(could not run or was stopped: the run stopped before it completed\)$'
+            @($lines | Where-Object { $_ -match 'Fatal error in Invoke-Main' }).Count | Should -Be 0 -Because 'the catch did not run: this is the path the pre-try code covers'
+        }
+        It 'a config override that is not JSON gives exit 2 and a log of whole lines that ends with its three closing lines (finding 1)' {
+            $out = Join-Path $TestDrive 'h21-notjson'
+            $bad = Join-Path $TestDrive 'h21-not-json.json'
+            '{ not json' | Out-File -LiteralPath $bad -Encoding UTF8
+            $saved = $env:ADFA_NO_AUTORUN
+            Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
+            try {
+                $ErrorActionPreference = 'Continue'
+                $null = & $script:H21Exe -NoProfile -ExecutionPolicy Bypass -File $script:Target -OutputPath $out -ConfigOverridePath $bad 2>&1
+                $code = $LASTEXITCODE
+            }
+            finally { $env:ADFA_NO_AUTORUN = $saved }
+            $code | Should -Be 2
+            $lines = @(Get-Content -LiteralPath (Get-H21RunLog -Out $out))
+            # Declared population: every line after the header is one record with its timestamp and level.
+            @($lines | Select-Object -Skip 1 | Where-Object { $_ -notmatch '^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[(INFO|STAGE|RESULT|WARN|ERROR) *\] ' }) | Should -BeNullOrEmpty
+            @($lines | Where-Object { $_ -match '\[ERROR \] Fatal error in Invoke-Main: .* \| Type: .* \| Position: .* \| Stack: ' }).Count | Should -Be 1
+            $lines[-4] | Should -Match '\[RESULT\] Run finished '
+            $lines[-3] | Should -Match '\[RESULT\] Totals: not counted'
+            $lines[-2] | Should -Match '\[RESULT\] Exit code: 2 \(could not run or was stopped: .*not valid JSON.*\)$'
+        }
+        It 'a run that never starts (a parameter binding error) ends with PowerShell''s own 1 and creates no folder - as the README says' {
+            $out = Join-Path $TestDrive 'h21-binding'
+            $saved = $env:ADFA_NO_AUTORUN
+            Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
+            try {
+                # Windows PowerShell 5.1 turns the child's stderr into error records, which 'Stop' would throw.
+                $ErrorActionPreference = 'Continue'
+                $null = & $script:H21Exe -NoProfile -ExecutionPolicy Bypass -File $script:Target -OutputPath $out -Sections NoSuchSection 2>&1
+                $code = $LASTEXITCODE
+            }
+            finally { $env:ADFA_NO_AUTORUN = $saved }
+            $code | Should -Be 1
+            $out | Should -Not -Exist
+            $readme = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'README.md'))
+            $readme | Should -Match 'parameter binding error'
+        }
+    }
+
+    Context 'Comment-based help of the script and of every function' {
+        It 'every function''s help documents each of its parameters with a .PARAMETER entry, and names none it lacks' {
+            # Declared population, measured from the parsed script on v1.38.0: 449 functions, 1670 parameters (the independent review fix added New-AdfaRunFolder, 3, and Get-AdfaScriptExitCode, 1).
+            $script:H21Help.Count | Should -Be @($script:H21Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)).Count
+            $script:H21Help.Count | Should -Be 449 -Because 'declared population: the 449 functions of the script'
+            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1670 -Because 'declared population: the 1670 parameters of those functions'
+            @($script:H21Help | Where-Object { -not $_.HasHelp } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
+            @($script:H21Help | Where-Object { -not $_.HasSynopsis } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
+            @($script:H21Help | Where-Object { @($_.Missing).Count -gt 0 } | ForEach-Object { '{0}: {1}' -f $_.Name, (@($_.Missing) -join ',') }) | Should -BeNullOrEmpty
+            @($script:H21Help | Where-Object { @($_.Extra).Count -gt 0 } | ForEach-Object { '{0}: {1}' -f $_.Name, (@($_.Extra) -join ',') }) | Should -BeNullOrEmpty
+        }
+        It 'the help check can fail: one .PARAMETER line removed is found (mutation shown red)' {
+            $w = $script:H21Text.IndexOf('function Write-Log {')
+            $w | Should -BeGreaterThan 0
+            $i = $script:H21Text.IndexOf('.PARAMETER Message', $w)
+            $i | Should -BeGreaterThan $w
+            $start = $script:H21Text.LastIndexOf("`n", $i) + 1
+            $end = $script:H21Text.IndexOf("`n", $i)
+            $mutated = $script:H21Text.Substring(0, $start) + '    .NOTES' + $script:H21Text.Substring($end)
+            $gaps = @(Get-H21FunctionHelp -Text $mutated | Where-Object { @($_.Missing).Count -gt 0 })
+            @($gaps | ForEach-Object { '{0}: {1}' -f $_.Name, (@($_.Missing) -join ',') }) | Should -Be @('Write-Log: Message')
+            # And a help block moved after a line of code is no help block at all.
+            $j = $script:H21Text.IndexOf("function Write-Stage {")
+            $k = $script:H21Text.IndexOf('<#', $j)
+            $moved = $script:H21Text.Substring(0, $k) + "`$null = 1`r`n    " + $script:H21Text.Substring($k)
+            @(Get-H21FunctionHelp -Text $moved | Where-Object { -not $_.HasHelp } | ForEach-Object { $_.Name }) | Should -Be @('Write-Stage')
+        }
+        It 'PowerShell itself reads the .PARAMETER entries of the new functions (second instrument)' {
+            # Declared population: the eight functions H21 adds (New-AdfaRunFolder and Get-AdfaScriptExitCode
+            # were added by the fix of the independent review).
+            $names = @('Resolve-AdfaOutputRoot', 'Get-AdfaRunFolderPath', 'Select-AdfaRunFolder', 'New-AdfaRunFolder', 'Get-AdfaRunExitCode', 'Get-AdfaRunClosingLine', 'Write-AdfaErrorRecord', 'Get-AdfaScriptExitCode')
+            $fns = @($script:H21Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $names -contains $n.Name }, $false))
+            $fns.Count | Should -Be 8
+            foreach ($fn in $fns) {
+                $h = $fn.GetHelpContent()
+                $h | Should -Not -BeNullOrEmpty -Because ('{0} has help PowerShell can read' -f $fn.Name)
+                foreach ($p in @($fn.Body.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })) {
+                    $h.Parameters.ContainsKey($p.ToUpperInvariant()) | Should -BeTrue -Because ('{0} -{1}' -f $fn.Name, $p)
+                }
+            }
+        }
+        It 'the script help carries the five .NOTES lines, and its Version is the Config version' {
+            $notes = [string]$script:H21Ast.GetHelpContent().Notes
+            $notes | Should -Match '(?m)^\s*Owner: Carlos Annes \(TakeItToCloud\)\s*$'
+            $version = [regex]::Match($notes, '(?m)^\s*Version: (\d+\.\d+\.\d+)\s*$')
+            $version.Success | Should -BeTrue
+            $version.Groups[1].Value | Should -Be ([string]$script:Config.Version)
+            $createdMatch = [regex]::Match($notes, '(?m)^\s*Created: (\d{4}-\d{2}-\d{2})\s*$')
+            $createdMatch.Success | Should -BeTrue
+            $created = [datetime]::ParseExact($createdMatch.Groups[1].Value, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+            $updatedMatch = [regex]::Match($notes, '(?m)^\s*Last updated: (\d{4}-\d{2}-\d{2})\s*$')
+            $updatedMatch.Success | Should -BeTrue
+            $updated = [datetime]::ParseExact($updatedMatch.Groups[1].Value, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+            ($updated -ge $created) | Should -BeTrue
+            $notes | Should -Match '(?m)^\s*Requires: .*5\.1.*ActiveDirectory'
+            $notes | Should -Match 'domain controller' -Because 'house rule 3: the reason the script targets 5.1'
+        }
+        It 'the script help documents every script parameter, the new default folder and the exit codes' {
+            $help = $script:H21Ast.GetHelpContent()
+            # Declared population: the 23 parameters of the script.
+            $params = @($script:H21Ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+            $params.Count | Should -Be 23
+            foreach ($p in $params) { $help.Parameters.ContainsKey($p.ToUpperInvariant()) | Should -BeTrue -Because ('-{0}' -f $p) }
+            $help.Parameters['OUTPUTPATH'] | Should -Match ([regex]::Escape('C:\Scripts\Securnet\Reports'))
+            $help.Parameters['OUTPUTPATH'] | Should -Match 'ADForestAssessment-yyyyMMdd-HHmmss'
+            $help.Description | Should -Not -Match 'Documents\\AdAssessment'
+            (@($help.Parameters.Values) -join ' ') | Should -Not -Match 'MyDocuments'
+            $all = (@($help.Outputs) -join ' ') + ' ' + [string]$help.Notes
+            $all | Should -Match 'Exit code 0'
+            $all | Should -Match 'Exit code 1'
+            $all | Should -Match 'Exit code 2'
+        }
+        It 'the first example is the safe run: no switch that is not read-only' {
+            $help = $script:H21Ast.GetHelpContent()
+            @($help.Examples).Count | Should -BeGreaterOrEqual 2
+            $help.Examples[0] | Should -Not -Match '-Include(Dcdiag|DcdiagActiveTests|SecureChannelVerify|LingeringObjectScan|LdapsHandshake)\b'
+            $help.Examples[0] | Should -Match 'Invoke-ADForestAssessment\.ps1'
+        }
+        It 'the README states the output folder, the exit codes and the closing log lines, and no longer the Documents folder' {
+            $readme = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'README.md'))
+            $readme | Should -Match ([regex]::Escape('C:\Scripts\Securnet\Reports\ADForestAssessment-yyyyMMdd-HHmmss\'))
+            # The old folder is named once, as what the breaking change moved away from.
+            $readme | Should -Not -Match 'bundle lands in the logged-on user''s Documents'
+            @([regex]::Matches($readme, [regex]::Escape('%USERPROFILE%\Documents\AdAssessment'))).Count | Should -Be 1
+            $readme | Should -Match ('default moved from\s+`' + [regex]::Escape('%USERPROFILE%\Documents\AdAssessment'))
+            $readme | Should -Not -Match 'falls back to `\$HOME/Documents`'
+            foreach ($code in 0, 1, 2) { $readme | Should -Match ('\|\s*`{0}`\s*\|' -f $code) }
+            $readme | Should -Match 'Exit code: '
+            $readme | Should -Match '-File'
+        }
+    }
+
+    Context 'Version' {
+        It 'is 1.38.0 in the script and the manifest (PORT-PLAN H21)' {
+            [string]$script:Config.Version | Should -Be '1.38.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.38.0'
         }
     }
 }
