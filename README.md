@@ -14,11 +14,19 @@ the untested direction named in `Reasons`, and a trust whose partner answers nei
 The whole tool is **coverage-aware and fail-closed**: any value that could not be collected
 comes back `Not Assessed`, never a false `Pass` or `0`.
 
-The script writes nothing to the directory itself. From v1.18.0, every command it can run
-that Microsoft documents as changing something, and that this project knows of, is off unless
-you give its switch. That is a statement about what is known, not a guarantee: the other
-commands a default run invokes have not each been audited. See
-[What a run can change](#what-a-run-can-change).
+The script writes nothing to the directory itself. Since v1.37.0 every command, console tool
+form (started through `Invoke-ExternalCommand` or directly), CIM class and method, static .NET
+member, `New-Object` type and instance method name the script holds is listed in
+[docs/SIDE-EFFECT-AUDIT.md](docs/SIDE-EFFECT-AUDIT.md), and a test fails on any the list does
+not hold (PORT-PLAN H20a). Not every row rests on a page that was read: where the Learn page
+was read (2026-11-18, or the earlier date the row gives), the row says what it documents; where
+it was not read, or there is none, the row says `not documented`, and reading the unread pages
+is PORT-PLAN H20c. Of the pages that were read, none documents a change of state for anything a
+default run invokes, and everything Microsoft documents as changing state is off unless you
+give its switch. That is not a claim about the pages not read, and it is not a statement that a
+default run leaves no trace: logon auditing on each DC, whether reading the remote registry
+starts the Remote Registry service, and the DNS client cache of the host running the assessment
+are not covered by any page read. See [What a run can change](#what-a-run-can-change).
 
 Extracted from
 `infra-scripting-suite/powershell/Assessments/ActiveDirectory/Invoke-ADForestAssessment.ps1`.
@@ -45,7 +53,7 @@ Extracted from
 | Dangerous ACLs | `-Sections Acl`. Directory reads of `nTSecurityDescriptor` only, per scoped domain, read in memory (nothing written). Every principal is a **SID**, matched by SID against an allowlist - Microsoft's published default holders plus labelled tool defaults - and **never by name**, so a group named like a default group is still flagged. **DCSync rights** (a replication right on the domain head, alone or through all extended rights or full control), **Domain root control rights** (WriteDacl, WriteOwner, write of all properties, full control, or a non-default owner), **AdminSDHolder rights**, and one row per **GPO** with a per-domain summary. A flagged SID is a `Warning` (a **tool default**, `Fail` by override) and every row says the allowlist is **provisional**. A descriptor not returned, without a DACL, or unreadable is `Not Assessed` with its cause; unreachable, access denied and timed out are told apart. Details under [Dangerous rights in the directory](#dangerous-rights-in-the-directory) |
 | Kerberos exposure | `-Sections Kerberos`. Kerberoastable (SPN) users, AS-REP-roastable accounts; per scoped domain, unconstrained delegation and protocol transition outside the domain controllers (excluded by the DN of their computer account from the configuration partition, never by name), Kerberos-only constrained delegation (inventory) and resource-based constrained delegation with the SIDs it allows |
 | **DC hardening** | `-Sections DcHardening`. Per DC, six registry values, two CIM classes and the SMB server configuration (`Get-SmbServerConfiguration`) read in one session: **LDAP server signing** (`LDAPServerIntegrity`) and its Windows Server 2025 **enforcement** (`LDAPServerEnforceIntegrity`), **LDAP channel binding** (`LdapEnforceChannelBinding`), **SMB server and client signing** (`RequireSecuritySignature`), the **LAN Manager authentication level** (`LmCompatibilityLevel`), the **Print Spooler** service and the **SMBv1** server. Each value is graded against what Microsoft's security baselines expect on a domain controller. A value that is **not set** is graded on the default Microsoft documents for the DC's OS build where it documents one, named as a default; where it documents none it is `Not Assessed`, never a pass and never a failure. Unreachable, access denied, not set, key absent and wrong type are separate results. These rows show the **configured policy, not what a client and the DC negotiate on the wire**. The **SMBv1** row and the second instrument of SMB server signing are read with Microsoft's documented cmdlet `Get-SmbServerConfiguration` in the same session (PORT-PLAN C3f); SMBv1 is a `Pass` only where the DC returned `EnableSMB1Protocol` False. Details under [DC hardening](#dc-hardening) |
-| **DC system** | `-Sections DcSystem`. **OS lifecycle**: each DC's operating system against Microsoft's extended support end date, from a versioned table. Past the date is a `Fail` whose text says whether an Extended Security Updates (ESU) programme is still running, has also ended, or was never published — and always that **ESU enrolment is not assessed**. An OS the table does not list, or one that could not be read, is `Not Assessed` with the raw values, never `Pass`. Reads only the directory, so it needs no rights on any DC. **Patch level**: per DC, OS build, uptime and the latest update install date over remote CIM. This half is **inventory** (`Info` or `Not Assessed`, never `Pass`): Microsoft publishes no maximum uptime or update age for a DC, so none is applied. Unreachable, access denied and other read failures are three different results
+| **DC system** | `-Sections DcSystem`. **OS lifecycle**: each DC's operating system against Microsoft's extended support end date, from a versioned table. Past the date is a `Fail` whose text says whether an Extended Security Updates (ESU) programme is still running, has also ended, or was never published — and always that **ESU enrolment is not assessed**. An OS the table does not list, or one that could not be read, is `Not Assessed` with the raw values, never `Pass`. Reads only the directory, so it needs no rights on any DC. **Patch level**: per DC, OS build, uptime and the latest update install date over remote CIM; since v1.37.0 the build is shown in full (for example `17763.6532`), its fourth part the registry value `UBR` read with `StdRegProv` `GetDWORDValue` in the same session, display only (PORT-PLAN C1a). This half is **inventory** (`Info` or `Not Assessed`, never `Pass`): Microsoft publishes no maximum uptime or update age for a DC, so none is applied. Unreachable, access denied and other read failures are three different results
 | **DC disk space** | `-Sections DcDisk`. Free space on the volumes that hold the **NTDS database**, the **NTDS logs** and **SYSVOL**, per DC. The three paths are read from each DC's own registry and matched to a volume by the longest mount path, so a database under a mounted folder is judged on the right volume. One row per distinct volume, listing the roles it holds. `Fail` below 10 % free or below 2 GB free, `Warning` below 20 % or below 5 GB — **tool defaults, not Microsoft values**, labelled as such in every finding and overridable with `-ConfigOverridePath`. A path or a volume that could not be read is `Not Assessed` with its cause; unreachable, access denied, a registry value that is not set and any other read failure are different results. Covers the DCs of every scoped domain, with or without `DomainControllers` selected; a domain whose DCs could not be enumerated gets its own `Not Assessed` row. Needs local Administrators rights on each DC |
 | **Windows LAPS** | `-Sections Laps`. Directory reads only, with domain read access. **Schema**: whether the forest schema carries the six attributes `Update-LapsADSchema` adds, and the legacy Microsoft LAPS ones; absent, present and "the query failed" are three different results. **DSRM password backup**, one row per domain controller: `Pass` where a Windows LAPS expiry time that is not past is visible on the DC's computer object, `Info` (not applicable) for a DC below Windows Server 2019 or a domain below functional level 2016, `Warning` where nothing is visible although the account can read the attribute elsewhere in the domain. **LAPS coverage**, one row per scoped domain: how many enabled Windows computers that can run Windows LAPS have **no LAPS expiry time visible to this account** (Windows LAPS or legacy), with counts for every class left out of the population and a capped list of names. The section **never reads a password**: no password, encrypted password or password history attribute is ever requested. An attribute the account has no right to read looks exactly like one that is not set, and a device that backs its password up to Microsoft Entra ID has nothing here either, so no row calls a computer unmanaged with certainty; where nothing at all is visible in a domain the rows are `Not Assessed`. The thresholds are **tool defaults, not Microsoft values**, overridable with `-ConfigOverridePath`. The policy in each DC's registry is not read (PORT-PLAN C4a). Details under [Windows LAPS](#windows-laps) |
 | **DC certificates** | `-Sections DcCertificates`. Per DC, two instruments, each named in every row's `Evidence` column. **Directory** (always, domain read access): the certificates a CA published on the DC's computer object (`userCertificate`), one row per certificate, graded on expiry. No published value is `Info`, never "no certificate": Microsoft's *Domain Controller Authentication* and *Kerberos Authentication* templates do not publish to the directory, and a value the account cannot read looks the same as none. **LDAPS** (only with `-IncludeLdapsHandshake`): the certificate the DC presents on port 636, read with one TLS handshake that sends no LDAP request, no bind and no credential and needs no right on the DC; without the switch each DC's `LDAPS certificate` row is `Not Assessed` and says why. Expired is `Fail`, at most 30 days left is `Warning`, not yet valid is `Warning` (this tool's rule) — the windows are **tool defaults, not Microsoft values**, overridable with `-ConfigOverridePath`. Refused, timed out, unresolved, handshake timed out and handshake failed are separate `Not Assessed` results, none of them read as "no certificate"; a refusal is told apart from a time-out within the handshake's own 5000 ms connection bound, and the whole handshake is bounded too. A published value that is not a single certificate (a PFX, a PKCS7 blob) is refused unopened. Trust, name and EKUs are reported in their own columns, not graded. The DC's own certificate stores are not read (PORT-PLAN C5a). Details under [DC certificates](#dc-certificates) |
@@ -81,8 +89,9 @@ mapped, never invented.
   it without reading the note in [PORT-PLAN.md](PORT-PLAN.md).
 - RSAT `ActiveDirectory` module — required
 - `DnsServer`, `GroupPolicy`, DFSR modules — optional; their sections degrade to `Not Assessed`
-- `nltest`, `netdom`, `dcdiag`, `repadmin`, `w32tm` — optional; used where present. Not all of
-  their uses are read-only: see [What a run can change](#what-a-run-can-change)
+- `nltest`, `netdom`, `dcdiag`, `repadmin`, `w32tm` — optional; used where present. The uses
+  Microsoft documents as changing state are opt-in: see [What a run can change](#what-a-run-can-change)
+  and [docs/SIDE-EFFECT-AUDIT.md](docs/SIDE-EFFECT-AUDIT.md)
 - [Pester](https://pester.dev) 5.0+ and
   [PSScriptAnalyzer](https://github.com/PowerShell/PSScriptAnalyzer) 1.21+ — for the quality gate
 
@@ -238,7 +247,7 @@ Off Windows it falls back to `$HOME/Documents`.
 
 | Gate | Supported for Exchange Server SE |
 | --- | --- |
-| Forest functional level | Windows Server 2016 (`msDS-Behavior-Version` 7) and Windows Server 2012 R2 (6). A lower level is a `Fail` that says to raise it. A **higher** level — Windows Server 2025 is 10 — is a `Fail` that says the level is not listed in the matrix, with no remediation command. An unreadable level is `Not Assessed` with its cause; a value that is not a known level is `Not Assessed` with the raw value shown |
+| Forest functional level | Windows Server 2016 (`msDS-Behavior-Version` 7) and Windows Server 2012 R2 (6). A lower level is a `Fail` that says to raise it; since v1.37.0 (PORT-PLAN H18) that advice no longer calls the raise permanent: Microsoft documents that a forest can be lowered again to a supported earlier level (no lower than Windows Server 2016 while any Windows Server 2025 DC is in the forest, otherwise Windows Server 2008), unless a feature tied to the new level has been enabled ([Lower domain and forest functional levels](https://learn.microsoft.com/windows-server/identity/ad-ds/plan/lower-domain-forest-functional-levels), read 2026-11-18). A **higher** level — Windows Server 2025 is 10 — is a `Fail` that says the level is not listed in the matrix, with no remediation command. An unreadable level is `Not Assessed` with its cause; a value that is not a known level is `Not Assessed` with the raw value shown |
 | DC operating system, **every DC in the forest** | Windows Server 2025 / 2022 / 2019 / 2016 / 2012 R2 — one unsupported DC anywhere is a `Fail` |
 | Read-only DCs | Not supported; reported as a `Warning`, since an RODC in a site no Exchange server enters does not stop Setup |
 
@@ -345,6 +354,20 @@ rows:
 - That class returns install dates as text with no stated culture. A date such as `11/10/2026`
   is read only when another record from the same DC proves the day/month order; otherwise the
   row says how many records could not be read, and does not guess.
+- Since v1.37.0 (PORT-PLAN C1a) the build is shown in full, for example `Build 17763.6532`. The
+  fourth part is the update build revision: the registry value `UBR` under
+  `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion`. Microsoft names that value and key and
+  compares it as an integer
+  ([Deploy Windows update packages in Intune](https://learn.microsoft.com/intune/app-management/deployment/deploy-win32-update-package),
+  read in full 2026-11-18), and calls it "the revision number of windows"
+  ([OEM deployment of Windows desktop editions](https://learn.microsoft.com/windows-hardware/manufacture/desktop/oem-deployment-of-windows-desktop-editions),
+  a search excerpt, 2026-11-18). `Win32_OperatingSystem` does not carry it. It is read with
+  `StdRegProv` `GetDWORDValue` in the same CIM session: no new CIM method (the seam `DcHardening`
+  already uses), but `DcSystem` now makes one CIM method call per DC.
+  It is shown, never graded. A revision that could not be read - not set, key absent, access
+  denied, not a `REG_DWORD` (Microsoft does not publish the registry type) or any other failure -
+  is written as `Update build revision not read` with its cause, and the build is shown without
+  it, never with `.0`. The key and value name cannot be set from `-DcSystemConfigPath`.
 
 ## DC disk space
 
@@ -440,7 +463,9 @@ not exist. WinError.h's own name for 1, `ERROR_INVALID_FUNCTION`, does not descr
 answers the same way is for the first real run to confirm (PORT-PLAN C17). Whatever the code,
 the role is `Not Assessed`.
 
-**Reading the registry is a CIM method call. Only this section and `DcHardening` make any.** The values are
+**Reading the registry is a CIM method call. Four sections make one: this section, `DcHardening`,
+`TimeHierarchy` (the W32Time configuration, since v1.32.0) and `DcSystem` (the update build
+revision, since v1.37.0); no other section does.** The values are
 read through the WMI registry provider, `StdRegProv`, over the same CIM session as the volume
 query, so WinRM and the DCOM fallback both carry them and the Remote Registry service is not
 needed. `StdRegProv` exposes no instances: a value can be read through it only by calling a
@@ -1376,23 +1401,54 @@ which keeps writing it; runs `w32tm /stripchart` once more for the forest root P
 among the DCs asked; and reads `msDS-LogonTimeSyncInterval`, the stale accounts (listed properties
 only), `CN=DFSR-GlobalSettings` and each DC's SYSVOL subscription and NTFRS subscriber. No
 `dfsrmig /setglobalstate`, no `w32tm /resync`, `/config`, `/register`, `/unregister` or `/debug`, no
-`Set-AD*`, `Disable-ADAccount` or `Remove-*`, no registry write; a test parses the script and fails on
-any of them outside the recommendation map and the finding rows.
+`Set-AD*`, `Disable-ADAccount` or `Remove-*`, no registry write through `Set-`, `New-`, `Remove-`,
+`Rename-` or `Clear-ItemProperty` or a `StdRegProv` `Set*`, `Create*` or `Delete*` method; a test parses
+the script and fails on any of them outside the recommendation map and the finding rows. That test
+reads command names only. A registry write through a .NET instance method (`SetValue`, or a key
+opened for writing with a two-argument `OpenSubKey`) is caught by the H20a test below instead.
 
-Everything a default run does invoke is used as a query: `nltest /sc_query` and `/dsgetdc`,
-`dfsrmig /getglobalstate`, `repadmin /replsummary`, `/showrepl * /csv` and `/showbackup`,
-`w32tm /query` and `/stripchart`, `nslookup`, the default `dcdiag` tests, and remote reads
-over WinRM, CIM, the remote registry, the DNS Server cmdlets and the event log. No side effect
-of those is documented by Microsoft that this project has found. The default `dcdiag` tests
-were each checked against Microsoft's description of them on 2026-11-16 (PORT-PLAN C11): none
-is described as writing or replicating - `Topology` is documented as analysing "without actually
-replicating changes", `RidManager` as checks only - except `FsmoCheck`, which is not in
-Microsoft's dcdiag reference at all (PORT-PLAN C11c). The other commands have not each been
-audited; that audit is PORT-PLAN H20a.
+Everything a default run invokes is listed in
+[docs/SIDE-EFFECT-AUDIT.md](docs/SIDE-EFFECT-AUDIT.md) (PORT-PLAN H20a), one row per command,
+console tool form (through `Invoke-ExternalCommand` or started directly, as `nltest.exe` is in the
+script block run over WinRM), CIM class and method, static .NET member, `New-Object` type and
+instance method name. Not every row was read on Microsoft Learn: 38 default rows rest on a page
+that was not read on 2026-11-18 (the ActiveDirectory Get cmdlets other than `Get-ADObject`,
+`Remove-CimSession`, most of the .NET entry points and the instance methods with reach), so they
+say `not documented`, and reading them is PORT-PLAN H20c. A test parses the script and fails on any
+command, tool form or instance method name the inventory does not hold, on a row the script no
+longer reaches, on a tool started with a name or arguments the test cannot read (a direct start is
+keyed by its tool form, never by the bare tool name), on `OpenSubKey` with more than one argument,
+on a method name it cannot read, on a dynamic call outside four named ones, and on a default row
+that carries a documented change. What it cannot see: the object an instance method is called on
+(a listed name called on another object passes), property assignments, and what a tool does that
+its page does not say. The result: of the pages read, none documents a change of state for anything
+a default run invokes, and no command had to be moved behind a new switch; nothing is claimed for
+the pages not read. The rows, by verdict:
 
-Two of those remote reads are CIM method calls rather than instance queries: `DcDisk` reads
+| Verdict | Rows |
+| --- | --- |
+| documented read | 56 |
+| documented change, opt-in | 7 |
+| not documented | 54 |
+| local output (by design) | 6 |
+| in-process | 127 |
+
+`documented read` means Learn describes it as a query, read or display; `not documented` means
+Learn says nothing either way, the page was not read in this session, or there is no page - never
+that nothing happens. `repadmin /showbackup` has no Learn reference page and `dcdiag
+/test:FsmoCheck` is not in Learn's dcdiag reference (PORT-PLAN C11c); both stay in the default run
+as `not documented`. `repadmin /showrepl * /csv` contacts every DC of the forest, and Learn warns
+that the wildcard can cause "a significant increase in network traffic". Four effects no page read
+covers are rows of their own: logon auditing on each DC, whether reading the remote registry
+starts the Remote Registry service (Learn documents only that the service must be running and
+stops after ten idle minutes), the DNS client cache of the host running the assessment, and
+Schannel events of the opt-in LDAPS handshake.
+
+Four sections' remote reads are CIM method calls rather than instance queries: `DcDisk` reads
 three registry values per DC with `StdRegProv` `GetStringValue` and `GetExpandedStringValue`,
-and `DcHardening` reads six with `GetDWORDValue`. Why they are treated as reads, and what
+`DcHardening` reads six with `GetDWORDValue`, `TimeHierarchy` reads the W32Time `Type`,
+`NtpServer` and `AnnounceFlags` values with `GetStringValue` and `GetDWORDValue` (since v1.32.0),
+and `DcSystem` reads `UBR` with `GetDWORDValue` (since v1.37.0). Why they are treated as reads, and what
 Microsoft does and does not say about it, is under [DC disk space](#dc-disk-space).
 
 ## Secure channel checks
