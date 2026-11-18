@@ -93,15 +93,16 @@
         - DC hardening, per DC: LDAP server signing and its Windows Server 2025 enforcement,
           LDAP channel binding, SMB server and client signing, the LAN Manager authentication
           level (LmCompatibilityLevel), the Print Spooler service and the SMBv1 server. Six
-          registry values and three CIM classes in one session per DC (remote CIM, needs local
-          admin on the DC). Each value is graded against the value Microsoft's security
-          baselines expect on a domain controller; a value that is not set is graded on the
-          default Microsoft documents for the DC's OS build where it documents one, and is
-          Not Assessed where it does not. These are registry reads: they show the policy
-          configured on each DC, not what a client and the DC negotiate on the wire, and no
-          LDAP bind or SMB session is attempted. The SMBv1 row is Not Assessed on any DC
-          whose SMB configuration class returns no instance to a query, which is what the
-          one host measured does; the cmdlet that would read it is not run (PORT-PLAN C3f)
+          registry values, two CIM classes and the SMB server configuration in one session
+          per DC (remote CIM, needs local admin on the DC). Each value is graded against the
+          value Microsoft's security baselines expect on a domain controller; a value that is
+          not set is graded on the default Microsoft documents for the DC's OS build where it
+          documents one, and is Not Assessed where it does not. These are registry reads: they
+          show the policy configured on each DC, not what a client and the DC negotiate on the
+          wire, and no LDAP bind or SMB session is attempted. The SMBv1 row and the second
+          instrument of SMB server signing are read with Get-SmbServerConfiguration, the read
+          cmdlet Microsoft documents, run in the same session (PORT-PLAN C3f); the SMBv1 row is
+          a Pass only where the DC returned EnableSMB1Protocol False
         - DC system: operating system past end of extended support, judged per DC from the
           directory against a table of Microsoft lifecycle dates; and per-DC inventory of OS
           build, uptime and latest update install date (remote CIM, needs local admin on the
@@ -246,8 +247,9 @@
     domain. A scoped domain whose DCs could not be enumerated gets a Not Assessed row of its
     own; it is never left out.
 
-    DcHardening reads six registry values and three CIM classes on each DC, over remote CIM,
-    and needs local Administrators rights there. Like DcDisk it covers the DCs of every scoped
+    DcHardening reads six registry values, two CIM classes and, with Get-SmbServerConfiguration
+    (module SmbShare, needed on the computer running the assessment), the SMB server
+    configuration of each DC, over remote CIM, and needs local Administrators rights there. Like DcDisk it covers the DCs of every scoped
     domain, from the DC inventory or from its own enumeration, and gives a scoped domain with
     no DC row a Not Assessed row of its own. Its rows show configured policy, not what is
     negotiated on the wire.
@@ -907,7 +909,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.34.0'
+    Version                 = '1.35.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1497,6 +1499,33 @@ $script:Config = @{
         # the ports the CIM session itself uses by default, and they cannot be set from a file.
         WsmanPort = 5985
         RpcPort   = 135
+        # --- The SMB server configuration: the SMBv1 row and the second instrument of SMB server
+        # signing (PORT-PLAN C3f). Provenance only: the cmdlet is called by its literal name in
+        # Get-AdfaDcHardeningRaw, where a test reads it from the parsed source, and nothing here
+        # can be changed from a file (a 'SmbServer' key in an override is refused).
+        # Every URL below was read on 2026-11-17.
+        #   Get-SmbServerConfiguration: "Retrieves the SMB server configuration." Syntax
+        #   "[-CimSession <CimSession[]>] [-ThrottleLimit <Int32>] [-AsJob] [-WhatIf] [-Confirm]";
+        #   -CimSession "Runs the cmdlet in a remote session or on a remote computer. Enter a
+        #   computer name or a session object, such as the output of a New-CimSession"; output
+        #   "The MSFT_SmbServerConfiguration object represents the configuration of the SMB server."
+        #     https://learn.microsoft.com/powershell/module/smbshare/get-smbserverconfiguration
+        #   Detection of SMBv1 on the server: "Get-SmbServerConfiguration | Select EnableSMB1Protocol"
+        #     https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+        #   EnableSMB1Protocol "Controls whether SMB1 protocol is enabled." and
+        #   RequireSecuritySignature "Controls whether security signature is required.", both
+        #   boolean (archived class page):
+        #     https://learn.microsoft.com/previous-versions/windows/desktop/smb/msft-smbserverconfiguration
+        # Not published, and so not claimed: whether the module runs under Windows PowerShell 5.1
+        # and PowerShell 7 (MEASURED on one Windows 11 workstation, not a DC, both: yes), the
+        # rights a remote run needs, and the error codes it raises (PORT-PLAN C17a).
+        SmbServer = @{
+            Instrument = 'Get-SmbServerConfiguration'
+            Module     = 'SmbShare'
+            Properties = @('EnableSMB1Protocol', 'RequireSecuritySignature')
+            SourceUrl  = 'https://learn.microsoft.com/powershell/module/smbshare/get-smbserverconfiguration ; https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3'
+            ReadDate   = '2026-11-17'
+        }
         Settings  = @(
             @{
                 Id = 'LdapServerIntegrity'; Catalogue = 'ADA-LDAP-001'; Item = 'LDAP server signing'
@@ -1622,23 +1651,13 @@ $script:Config = @{
                 ExpectedMinimum = 1; ExpectedChoices = @(1); OtherStatus = 'Warning'
                 ExpectedSource = 'Windows Server 2025 security baseline, Domain Controller = Equals(1): https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows-server-2025 ; and "By default, domain controllers require SMB signing of anyone connecting to them": https://learn.microsoft.com/windows-server/storage/file-server/smb-signing-overview (read 2026-11-13)'
                 AppliesFromBuild = $null
-                # The SMB server's own configuration object, asked for in the same session by an
-                # instance query. What Microsoft documents is the CMDLET, not this query:
-                #   "Get-SmbServerConfiguration | FL RequireSecuritySignature ... If the returned
-                #    information is True, then SMB signing is enabled"
+                # The SMB server's own configuration, read in the same session with the cmdlet
+                # Microsoft documents for exactly this check (PORT-PLAN C3f, see SmbServer below):
+                #   "If the returned information is True, then SMB signing is enabled, otherwise,
+                #    if the returned information is False, then SMB signing is disabled."
                 #     https://learn.microsoft.com/windows-server/storage/file-server/smb-signing
-                #   and the cmdlet's output is "The MSFT_SmbServerConfiguration object".
-                #     https://learn.microsoft.com/powershell/module/smbshare/get-smbserverconfiguration
-                #     Read: 2026-11-15 (both).
-                # The class schema is not published on Microsoft Learn. MEASURED on 2026-11-15 on
-                # ONE host (a Windows 11 build 26100 workstation, not a domain controller, not
-                # elevated, local session): an instance query of the class returns NO instance and
-                # no error, while the cmdlet returns the configuration - the cmdlet calls the
-                # class's static method GetConfiguration, whose only parameter is [out] Output.
-                # This tool does not invoke that method (PORT-PLAN C3f), so wherever a DC answers
-                # as that host did, this second instrument does not exist and the row says so.
-                # Whether a domain controller returns an instance has not been measured.
-                SecondInstrument = 'MSFT_SmbServerConfiguration.RequireSecuritySignature'
+                #     Read: 2026-11-17.
+                SecondInstrument = 'Get-SmbServerConfiguration RequireSecuritySignature'
                 Defaults = @(
                     @{ MinBuild = $null; MaxBuild = $null; Known = $false; Value = $null; Meets = $null
                        Reason = 'Microsoft does not publish what an absent value means on a domain controller. Its policy page lists "Default Domain Controller Policy: Enabled" and "DC Effective Default Settings: Enabled" beside "Stand-Alone Server Default Settings: Disabled", so on a DC the requirement normally arrives through Group Policy, which sets the value; and its two pages on Windows Server 2025 disagree on whether inbound signing is required by default'
@@ -13476,6 +13495,42 @@ function Get-AdfaRemoteReadErrorClass {
     return 'Error'
 }
 
+function Get-AdfaExceptionErrorCode {
+    <#
+    .SYNOPSIS
+        Pure: the CIM error code name (CimException.NativeErrorCode) an exception carries, on
+        itself or on an exception it wraps. '' where none does.
+    .DESCRIPTION
+        A CIM cmdlet raises a CimException, whose NativeErrorCode names the CIM status
+        (AccessDenied, InvalidNamespace, InvalidClass, NotFound ...):
+          https://learn.microsoft.com/dotnet/api/microsoft.management.infrastructure.nativeerrorcode?view=powershellsdk-7.6.0
+          Read: 2026-11-17.
+        A CDXML cmdlet such as Get-SmbServerConfiguration does not: MEASURED on 2026-11-17 on one
+        Windows 11 workstation (not a DC), under PowerShell 7 and Windows PowerShell 5.1, the
+        error that reaches a catch block from a CDXML cmdlet is a
+        Microsoft.PowerShell.Cmdletization.Cim.CimJobException with no NativeErrorCode of its
+        own (the case measured was a cmdletization "not found" error, which wraps nothing).
+        Whether a CIM failure on a remote DC arrives as an inner CimException carrying the code is
+        not measured (PORT-PLAN C17a), so the wrapped exceptions are read too, up to five deep.
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Exception)
+    $e = $Exception
+    $depth = 0
+    while ($null -ne $e -and $depth -lt 5) {
+        $code = $e.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $code -and $null -ne $code.Value -and ([string]$code.Value).Trim() -ne '') { return ([string]$code.Value).Trim() }
+        $inner = $e.PSObject.Properties['InnerException']
+        if ($null -eq $inner) { break }
+        $e = $inner.Value
+        $depth++
+    }
+    return ''
+}
+
 function Get-AdfaDcSystemRaw {
     <#
     .SYNOPSIS
@@ -15698,7 +15753,7 @@ function Get-AdfaHardeningVerdict {
             $measuredWord = 'not required'
             if ([bool]$secondValue) { $measuredStatus = $pass; $measuredWord = 'required' }
             return [pscustomobject]@{ Status = $measuredStatus
-                Detail = ("{0}, and Microsoft does not publish what that means on a domain controller. The row is graded on the SMB server's own configuration instead, which is a measurement and not a default: {1} = {2}, read here as signing being {3}. Microsoft's documented check of this property is the cmdlet Get-SmbServerConfiguration, which returns an object of this class; here the class was read by an instance query, and the cmdlet was not run." -f $own, $second, [bool]$secondValue, $measuredWord) }
+                Detail = ("{0}, and Microsoft does not publish what that means on a domain controller. The row is graded on the SMB server's own configuration instead, which is a measurement and not a default: {1} = {2}, read here as signing being {3}. Microsoft's documented check of this property is the cmdlet Get-SmbServerConfiguration, which is what was run here, in the session opened to this DC." -f $own, $second, [bool]$secondValue, $measuredWord) }
         }
         return [pscustomobject]@{ Status = $defaultStatus; Detail = ("{0} {1}." -f $defaultDetail, $notRead) }
     }
@@ -15769,6 +15824,165 @@ function Get-AdfaSpoolerVerdict {
     return [pscustomobject]@{ Status = $script:Status.Warning; Detail = ("Print Spooler is {0} ({1}), which is not Stopped. {2}" -f $state, $modeText, $guidance) }
 }
 
+function Resolve-AdfaSmbServerRead {
+    <#
+    .SYNOPSIS
+        Pure: one DC's SMB server configuration read (the Smb* fields of Get-AdfaDcHardeningRaw)
+        as one kind, with the two raw values and the cause. It feeds both the SMBv1 row and the
+        second instrument of the SMB server signing row (PORT-PLAN C3f).
+    .DESCRIPTION
+        Kind is one of:
+          Read           the cmdlet returned one configuration object. The two values are
+                         passed on as returned - never defaulted - and judged by the callers.
+          CmdletMissing  Get-SmbServerConfiguration is not available on the computer running the
+                         assessment (no SmbShare module), so the DC was not asked.
+          NoInstance     the cmdlet returned nothing and raised no error.
+          AccessDenied   refused: CIM code AccessDenied, or the text of a refusal
+                         (Get-AdfaRemoteReadErrorClass).
+          ClassMissing   the DC reports that the class or its namespace is not there: CIM code
+                         InvalidNamespace or InvalidClass, or - only where no code came back -
+                         those words in the error text. The code names come from the
+                         NativeErrorCode enumeration; which code a DC gives for a missing SMB
+                         class is not measured (PORT-PLAN C17a).
+          ReadFailed     anything else, the error quoted. Also a read that is marked as not done
+                         and carries no error at all, and a cause this tool wrote itself
+                         (SmbErrorByTool: more than one configuration object for one DC, or an
+                         error raised with no message), whose words are never read as a refusal
+                         or a missing class - only a CIM code the exception carried is.
+        FAIL CLOSED where the raw read contradicts itself: CmdletMissing, then NoInstance, win
+        over any value beside them, so a stray value is never taken for a read.
+
+        CauseSource says who wrote the cause, so a row never credits the DC with this tool's
+        own words: 'Error' is the text of an error the read raised; 'Tool' is a sentence this
+        tool wrote (cmdlet missing, no object, more than one object, nothing recorded); '' for
+        a read.
+    .OUTPUTS
+        [pscustomobject] Kind, Instrument, EnableSmb1, RequireSigning, Cause, CauseSource, ErrorCode.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)]$Raw)
+    $instrument = ([string](Get-AdfaConfigValue -Entry $Raw -Name 'SmbInstrument')).Trim()
+    if ($instrument -eq '') { $instrument = 'Get-SmbServerConfiguration' }
+    $errorText = ([string](Get-AdfaConfigValue -Entry $Raw -Name 'SmbError')).Trim()
+    $errorCode = ([string](Get-AdfaConfigValue -Entry $Raw -Name 'SmbErrorCode')).Trim()
+    $out = [pscustomobject]@{ Kind = 'ReadFailed'; Instrument = $instrument; EnableSmb1 = $null; RequireSigning = $null; Cause = ''; CauseSource = 'Tool'; ErrorCode = $errorCode }
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'SmbCmdletMissing')) {
+        $out.Kind = 'CmdletMissing'
+        $out.Cause = ("{0} (module SmbShare) is not available on the computer running the assessment, so the SMB server configuration of this DC was not asked for" -f $instrument)
+        return $out
+    }
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'SmbNoInstance')) {
+        $out.Kind = 'NoInstance'
+        $out.Cause = ("{0} returned no configuration object for this DC, and no error" -f $instrument)
+        return $out
+    }
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'SmbOk')) {
+        $out.Kind = 'Read'
+        $out.CauseSource = ''
+        $out.EnableSmb1 = Get-AdfaConfigValue -Entry $Raw -Name 'SmbEnableSmb1'
+        $out.RequireSigning = Get-AdfaConfigValue -Entry $Raw -Name 'SmbRequireSigning'
+        return $out
+    }
+    if ($errorText -eq '') {
+        $out.Cause = ("{0} was not recorded as read, and no error was recorded" -f $instrument)
+        return $out
+    }
+    $out.Cause = $errorText
+    # A sentence this tool wrote is quoted as the tool's, and never read for the words of a
+    # refusal or a missing class; a CIM code the exception carried is still the DC's answer.
+    if ([bool](Get-AdfaConfigValue -Entry $Raw -Name 'SmbErrorByTool')) {
+        if ($errorCode -match '(?i)^AccessDenied$') { $out.Kind = 'AccessDenied' }
+        elseif ($errorCode -match '(?i)^(InvalidNamespace|InvalidClass)$') { $out.Kind = 'ClassMissing' }
+        return $out
+    }
+    $out.CauseSource = 'Error'
+    if ((Get-AdfaRemoteReadErrorClass -Message $errorText -ErrorCode $errorCode) -eq 'AccessDenied') { $out.Kind = 'AccessDenied'; return $out }
+    $classMissing = $false
+    if ($errorCode -ne '') { $classMissing = ($errorCode -match '(?i)^(InvalidNamespace|InvalidClass)$') }
+    else { $classMissing = ($errorText -match '(?i)invalid namespace|invalid class') }
+    if ($classMissing) { $out.Kind = 'ClassMissing' }
+    return $out
+}
+
+function Get-AdfaSmb1Verdict {
+    <#
+    .SYNOPSIS
+        Pure: the SMBv1 row from one DC's resolved SMB server read (Resolve-AdfaSmbServerRead).
+        Status and Detail.
+    .DESCRIPTION
+        The rule the section has always had: the SMBv1 server enabled is a Fail. Microsoft's
+        documented detection is "Get-SmbServerConfiguration | Select EnableSMB1Protocol", and it
+        strongly recommends against using SMBv1:
+          https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+          https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/smbv1-not-installed-by-default-in-windows
+          Read: 2026-11-17 (both).
+        EnableSMB1Protocol "Controls whether SMB1 protocol is enabled" and is a boolean (archived
+        class page, https://learn.microsoft.com/previous-versions/windows/desktop/smb/msft-smbserverconfiguration,
+        read 2026-11-17).
+
+        PASS ONLY ON A RETURNED FALSE. Every other result is Not Assessed with its own cause:
+        the cmdlet missing on the assessing host, access denied, the class not present on the
+        DC, a read that failed, nothing returned, and a property that was not returned as true
+        or false (quoted). The OS build is never used to infer a pass: Windows Server 2019 and
+        later do not install SMBv1 on a clean installation, but nothing is published about an
+        upgraded DC. The LanmanServer\Parameters\SMB1 registry value is not read: under its
+        heading "Enable or disable SMB on Windows 7, Windows Server 2008 R2, Windows Vista, and
+        Windows Server 2008" the detect page says "The default configuration is Enabled. As a
+        result, no registry named value is created"; for later builds it publishes no meaning of
+        an absent value, so the value could not grade the row where it is not set (PORT-PLAN C3f,
+        option (c), not taken; scope re-read 2026-11-18).
+
+        The rights a remote read needs are not published and not measured (PORT-PLAN C17a), so
+        the access-denied row does not name any. A cause this tool wrote (CauseSource 'Tool') is
+        never said to be reported by the DC.
+    .OUTPUTS
+        [pscustomobject] Status, Detail.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Read,
+        [AllowEmptyString()][string]$Protocol = ''
+    )
+    $na = $script:Status.NotAssessed
+    $instrument = [string](Get-AdfaConfigValue -Entry $Read -Name 'Instrument')
+    $cause = ([string](Get-AdfaConfigValue -Entry $Read -Name 'Cause')).Trim()
+    $over = (" Read over {0}." -f $Protocol)
+    $unknown = 'so whether the SMBv1 server is enabled is not known. This is not a pass.'
+    # The quoted cause ends its own sentence, so it never runs into the transport.
+    $quoted = $cause
+    if ($quoted -ne '' -and $quoted -notmatch '[.!?]$') { $quoted = ("{0}." -f $quoted) }
+    $reported = ("Reported by the DC - {0}" -f $quoted)
+    if ([string](Get-AdfaConfigValue -Entry $Read -Name 'CauseSource') -ne 'Error') { $reported = ("Written by this tool, not an error from the DC - {0}" -f $quoted) }
+    switch ([string](Get-AdfaConfigValue -Entry $Read -Name 'Kind')) {
+        'CmdletMissing' {
+            return [pscustomobject]@{ Status = $na; Detail = ("Not read: {0}, {1} Run the assessment from a Windows computer that has the SmbShare module.{2}" -f $cause, $unknown, $over) }
+        }
+        'NoInstance' {
+            return [pscustomobject]@{ Status = $na; Detail = ("Not read: {0}, {1}{2}" -f $cause, $unknown, $over) }
+        }
+        'AccessDenied' {
+            return [pscustomobject]@{ Status = $na; Detail = ("Access denied: {0} could not read the SMB server configuration of this DC, {1} Which rights this read needs on a DC is not published and has not been measured (PORT-PLAN C17a). {2}{3}" -f $instrument, $unknown, $reported, $over) }
+        }
+        'ClassMissing' {
+            return [pscustomobject]@{ Status = $na; Detail = ("Not read: the DC reports that the SMB server configuration class (MSFT_SmbServerConfiguration, namespace root/Microsoft/Windows/SMB) or its namespace is not present, {0} {1}{2}" -f $unknown, $reported, $over) }
+        }
+        'Read' {
+            $raw = Get-AdfaConfigValue -Entry $Read -Name 'EnableSmb1'
+            $smb1 = ConvertTo-AdfaNullableBoolean -Value $raw
+            if ($null -eq $smb1) {
+                return [pscustomobject]@{ Status = $na; Detail = ("EnableSMB1Protocol was not returned as true or false by {0} on this DC (returned: '{1}'), {2}{3}" -f $instrument, [string]$raw, $unknown, $over) }
+            }
+            if ($smb1) {
+                return [pscustomobject]@{ Status = $script:Status.Fail; Detail = ("EnableSMB1Protocol = True: the SMBv1 server is enabled on this DC, as {0} reports it.{1}" -f $instrument, $over) }
+            }
+            return [pscustomobject]@{ Status = $script:Status.Pass; Detail = ("EnableSMB1Protocol = False: the SMBv1 server is not enabled on this DC, as {0} reports it.{1}" -f $instrument, $over) }
+        }
+    }
+    return [pscustomobject]@{ Status = $na; Detail = ("Read failed: {0} did not return the SMB server configuration of this DC, {1} {2}{3}" -f $instrument, $unknown, $reported, $over) }
+}
+
 function Get-AdfaDcHardeningFinding {
     <#
     .SYNOPSIS
@@ -15802,18 +16016,16 @@ function Get-AdfaDcHardeningFinding {
           https://learn.microsoft.com/windows-server/storage/file-server/smb-signing-overview
           Read: 2026-11-13 (both).
 
-        The SMBv1 row keeps its rule (enabled is a Fail) and fails closed where the old code
-        did not: a property that was not returned is Not Assessed, where it used to pass.
-        Microsoft's own detection is a cmdlet, "Get-SmbServerConfiguration | Select
-        EnableSMB1Protocol":
+        The SMBv1 row keeps its rule (enabled is a Fail) and fails closed: anything but a
+        returned False is never a Pass. Since PORT-PLAN C3f it is read the way Microsoft
+        documents, "Get-SmbServerConfiguration | Select EnableSMB1Protocol":
           https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
-          Read: 2026-11-15.
-        This tool does not run that cmdlet. It asks for the instance of the class the cmdlet
-        returns, and on the one host measured that query returns no instance (see
-        Get-AdfaDcHardeningRaw). A read that returned no instance is its own result here -
-        "Not read", Not Assessed, naming what was measured and PORT-PLAN C3f - kept apart from
-        access denied and from a query that failed. The same holds for the SMB server signing
-        row's second instrument, which comes from the same instance.
+          Read: 2026-11-17.
+        The one read is resolved once (Resolve-AdfaSmbServerRead) and feeds both the SMBv1 row
+        (Get-AdfaSmb1Verdict) and the SMB server signing row's second instrument, so the two
+        rows always describe the same answer: the cmdlet missing on the assessing host, access
+        denied, the class not present, a failed read, no object, and a property not returned
+        are each their own Not Assessed cause.
     .OUTPUTS
         [pscustomobject[]] Finding rows (Scope, Area, Item, Status, Detail, NotRun).
     #>
@@ -15861,14 +16073,28 @@ function Get-AdfaDcHardeningFinding {
         $states[$id] = Resolve-AdfaHardeningRead -Entry $entry
     }
 
-    $smbOk = [bool](Get-AdfaConfigValue -Entry $Raw -Name 'SmbOk')
-    $smbError = [string](Get-AdfaConfigValue -Entry $Raw -Name 'SmbError')
-    # The instance query completed and returned no instance: not an error, and not a read.
-    $smbNoInstance = ((-not $smbOk) -and [bool](Get-AdfaConfigValue -Entry $Raw -Name 'SmbNoInstance'))
-    if ($smbNoInstance) { $smbError = 'MSFT_SmbServerConfiguration returned no instance to an instance query, and this tool does not invoke the method the class is otherwise read through' }
+    # The SMB server configuration, read once with Get-SmbServerConfiguration (PORT-PLAN C3f):
+    # one resolved read feeds the SMBv1 row and the second instrument of SMB server signing.
+    $smbRead = Resolve-AdfaSmbServerRead -Raw $Raw
     $smbSigning = $null
-    if ($smbOk) { $smbSigning = ConvertTo-AdfaNullableBoolean -Value (Get-AdfaConfigValue -Entry $Raw -Name 'SmbRequireSigning') }
-    $secondInstrument = [pscustomobject]@{ Read = ($null -ne $smbSigning); Value = $smbSigning; Error = $smbError }
+    $smbWhy = ''
+    switch ([string]$smbRead.Kind) {
+        'Read' {
+            $smbSigning = ConvertTo-AdfaNullableBoolean -Value $smbRead.RequireSigning
+            if ($null -eq $smbSigning) { $smbWhy = ("RequireSecuritySignature was not returned as true or false (returned: '{0}')" -f [string]$smbRead.RequireSigning) }
+        }
+        'AccessDenied' { $smbWhy = ("access denied - {0}" -f [string]$smbRead.Cause) }
+        'ClassMissing' { $smbWhy = ("the SMB server configuration class or its namespace is not present on this DC - {0}" -f [string]$smbRead.Cause) }
+        'ReadFailed' { $smbWhy = ("the read failed - {0}" -f [string]$smbRead.Cause) }
+        default { $smbWhy = [string]$smbRead.Cause }
+    }
+    $secondInstrument = [pscustomobject]@{ Read = ($null -ne $smbSigning); Value = $smbSigning; Error = $smbWhy }
+    $smbSource = ''
+    $smbTable = Get-AdfaConfigValue -Entry $Config -Name 'SmbServer'
+    if ($null -ne $smbTable) {
+        $smbUrl = ([string](Get-AdfaConfigValue -Entry $smbTable -Name 'SourceUrl')).Trim()
+        if ($smbUrl -ne '') { $smbSource = (" Detection as Microsoft documents it: {0} (read {1})." -f $smbUrl, [string](Get-AdfaConfigValue -Entry $smbTable -Name 'ReadDate')) }
+    }
 
     $measured = 'The reading of return code 1 as "not set" is measured, not published by Microsoft: on the one host where it was measured (a Windows 11 workstation, not a domain controller) GetDWORDValue returns 1 for a value that is not set under a key that exists.'
     # Said in every row graded below the expectation: the expected VALUE is Microsoft's, the
@@ -15900,37 +16126,9 @@ function Get-AdfaDcHardeningFinding {
         -Detail ("{0} Read over {1}." -f [string]$spooler.Detail, $protocol)
 
     # ---- SMBv1 ----
-    $smbItem = ("SMBv1: {0}" -f $DomainController)
-    if ($smbNoInstance) {
-        # Not a refusal and not a failed query: the class answered, with nothing. Said as what
-        # it is, with what is known about why, so the row is not read as a fault on the DC.
-        $rows += New-AdfaDcHardeningRow -Scope $Scope -Item $smbItem -Status $script:Status.NotAssessed `
-            -Detail ("Not read: MSFT_SmbServerConfiguration returned no instance to an instance query on this DC, and no error, so whether the SMBv1 server is enabled is not known. This is not a pass. The one host this was measured on (a Windows 11 workstation, not a domain controller, not elevated) answers the same way: there the configuration is returned only by the class's static method GetConfiguration, which is what Microsoft's cmdlet Get-SmbServerConfiguration calls and which this tool does not invoke (PORT-PLAN C3f). Microsoft's own detection is that cmdlet, run on the DC: Get-SmbServerConfiguration | Select EnableSMB1Protocol. Read over {0}." -f $protocol)
-    }
-    elseif (-not $smbOk) {
-        $lead = 'Read failed: the SMB server configuration (MSFT_SmbServerConfiguration) could not be read.'
-        if ((Get-AdfaRemoteReadErrorClass -Message $smbError -ErrorCode ([string](Get-AdfaConfigValue -Entry $Raw -Name 'SmbErrorCode'))) -eq 'AccessDenied') {
-            $lead = 'Access denied: the SMB server configuration (MSFT_SmbServerConfiguration) could not be read. Local Administrators rights on the DC are needed for this read.'
-        }
-        $rows += New-AdfaDcHardeningRow -Scope $Scope -Item $smbItem -Status $script:Status.NotAssessed `
-            -Detail ("{0} Reported by the DC - {1} Read over {2}." -f $lead, $smbError, $protocol)
-    }
-    else {
-        $smb1Raw = Get-AdfaConfigValue -Entry $Raw -Name 'SmbEnableSmb1'
-        $smb1 = ConvertTo-AdfaNullableBoolean -Value $smb1Raw
-        if ($null -eq $smb1) {
-            $rows += New-AdfaDcHardeningRow -Scope $Scope -Item $smbItem -Status $script:Status.NotAssessed `
-                -Detail ("EnableSMB1Protocol was not returned as true or false by MSFT_SmbServerConfiguration on this DC (returned: '{0}'), so whether the SMBv1 server is enabled is not known. Read over {1}." -f [string]$smb1Raw, $protocol)
-        }
-        elseif ($smb1) {
-            $rows += New-AdfaDcHardeningRow -Scope $Scope -Item $smbItem -Status $script:Status.Fail `
-                -Detail ("EnableSMB1Protocol = True: the SMBv1 server is enabled on this DC. Read over {0}." -f $protocol)
-        }
-        else {
-            $rows += New-AdfaDcHardeningRow -Scope $Scope -Item $smbItem -Status $script:Status.Pass `
-                -Detail ("EnableSMB1Protocol = False. Read over {0}." -f $protocol)
-        }
-    }
+    $smb1Verdict = Get-AdfaSmb1Verdict -Read $smbRead -Protocol $protocol
+    $rows += New-AdfaDcHardeningRow -Scope $Scope -Item ("SMBv1: {0}" -f $DomainController) -Status ([string]$smb1Verdict.Status) `
+        -Detail ("{0}{1}" -f [string]$smb1Verdict.Detail, $smbSource)
     return @($rows)
 }
 
@@ -16026,39 +16224,51 @@ function Get-AdfaStdRegDwordValue {
 function Get-AdfaDcHardeningRaw {
     <#
     .SYNOPSIS
-        The one place C3 touches a DC: the registry values the config names and three instance
-        queries, in one bounded CIM session.
+        The one place C3 touches a DC: the registry values the config names, two instance
+        queries and the SMB server configuration, in one bounded CIM session.
     .DESCRIPTION
         One GetDWORDValue call per setting - no second method and no retry: a value that is not
         set, a refusal and a wrong type are all answers, and each is kept as the provider gave
-        it. Then three classes, read as instances with the properties named:
+        it. Then two classes, read as instances with the properties named:
           Win32_OperatingSystem         BuildNumber, the DC's own statement of its build, which
                                         decides which documented default applies.
-          MSFT_SmbServerConfiguration   (root/Microsoft/Windows/SMB) EnableSMB1Protocol and
-                                        RequireSecuritySignature.
           Win32_Service                 the Spooler service: Name, State, StartMode.
         Nothing is written and no other method is invoked. The classes have methods that change
         things (Win32_Service: StartService, StopService, ChangeStartMode ...); none is used.
 
-        MSFT_SmbServerConfiguration MAY RETURN NOTHING, and on the one host measured it does.
-        Measured on 2026-11-15 on a Windows 11 (build 26100) workstation - not a domain
-        controller, not elevated, a local session, under PowerShell 7 and Windows PowerShell
-        5.1: Get-CimInstance on the class returns no instance and no error, with -Property,
-        without it and as a WQL query, while Get-SmbServerConfiguration in the same process
-        returns the configuration. The class's methods, read from the class itself, are three
-        static ones: GetConfiguration (one parameter, [out] Output), SetConfiguration and
-        ResetConfiguration; the cmdlet calls the first. Microsoft Learn publishes the cmdlet
-        ("Retrieves the SMB server configuration", output "The MSFT_SmbServerConfiguration
-        object") and not the class or its methods:
+        THE SMB SERVER CONFIGURATION (PORT-PLAN C3f) is read with the cmdlet Microsoft documents
+        for it, Get-SmbServerConfiguration ("Retrieves the SMB server configuration"), given this
+        session through its -CimSession parameter ("Runs the cmdlet in a remote session or on a
+        remote computer. Enter a computer name or a session object, such as the output of a
+        New-CimSession"), and documented as the check of both properties read -
+        EnableSMB1Protocol and RequireSecuritySignature:
           https://learn.microsoft.com/powershell/module/smbshare/get-smbserverconfiguration
-          Read: 2026-11-15.
-        GetConfiguration is NOT invoked here. It is not on the allow-list of CIM methods this
-        script may call, it is not a method Microsoft documents, and adding it is the
-        operator's decision (PORT-PLAN C3f). So a query that returns no instance is reported
-        as exactly that - SmbNoInstance = $true, SmbOk = $false, both values $null - and the
-        SMBv1 row and the SMB signing second instrument are then Not Assessed. What a domain
-        controller, an elevated session or a remote session returns to the instance query has
-        not been measured (PORT-PLAN C17).
+          https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+          https://learn.microsoft.com/windows-server/storage/file-server/smb-signing
+          Read: 2026-11-17 (all three).
+        Chosen over invoking the class's GetConfiguration method (a fourth name on the
+        Invoke-CimMethod allow-list) and over the LanmanServer\Parameters\SMB1 registry value
+        (whose absence Microsoft documents as the default, Enabled, only under its Windows 7 /
+        Windows Server 2008 R2 / Windows Vista / Windows Server 2008 heading): a documented Get cmdlet,
+        and no new method name. Before C3f the class was asked for as instances, and on the one
+        host measured (2026-11-15, a Windows 11 workstation, not a DC) that query returns no
+        instance and no error; it is no longer made.
+        The cmdlet has no timeout parameter. It is bounded by the session: OperationTimeoutSec
+        on New-CimSession "Specifies the operation timeout for all operations in session"
+          https://learn.microsoft.com/dotnet/api/microsoft.management.infrastructure.cimcmdlets.newcimsessioncommand.operationtimeoutsec?view=powershellsdk-7.6.0
+          Read: 2026-11-17.
+        MEASURED on 2026-11-17 on ONE host - a Windows 11 build 26100 workstation, not a domain
+        controller, not elevated, a DCOM session to itself, under PowerShell 7.6 and Windows
+        PowerShell 5.1 - the cmdlet is a function of module SmbShare 2.0.0.0 with a -CimSession
+        parameter, and returns one MSFT_SmbServerConfiguration instance whose two properties are
+        CimType Boolean. What a domain controller returns, over WSMan and DCOM, the rights it
+        needs and the codes its errors carry are not measured (PORT-PLAN C17a). Microsoft
+        documents no side effect of the read; none is claimed either way.
+        Kept apart, never defaulted: the cmdlet not available on the assessing host
+        (SmbCmdletMissing - the DC is not asked), no object and no error (SmbNoInstance), more
+        than one object (SmbError with SmbErrorByTool, none is read), and a failure (SmbError -
+        this tool's own sentence, with SmbErrorByTool, where the error had no message - with the CIM code
+        from the exception or the one it wraps, Get-AdfaExceptionErrorCode).
 
         Values are read from the unadapted CIM store where there is one (Get-AdfaCimRawValue).
 
@@ -16072,8 +16282,11 @@ function Get-AdfaDcHardeningRaw {
     .OUTPUTS
         [pscustomobject] Ok, Protocol, Error, ErrorCode, BuildNumber, BuildError, BuildErrorCode,
         Values (one per setting: Id, Key, ValueName, Answered, ReturnValue, Value, Method, Error,
-        ErrorCode), SmbOk, SmbNoInstance, SmbEnableSmb1, SmbRequireSigning, SmbError, SmbErrorCode, SpoolerOk,
-        SpoolerFound, SpoolerState, SpoolerStartMode, SpoolerError, SpoolerErrorCode.
+        ErrorCode), SmbInstrument (the cmdlet named), SmbCmdletMissing ($true: the cmdlet is not
+        available on the assessing host and the DC was not asked), SmbOk, SmbNoInstance,
+        SmbEnableSmb1, SmbRequireSigning, SmbError, SmbErrorCode, SmbErrorByTool ($true: SmbError
+        is a sentence this tool wrote, not an error the read raised), SpoolerOk, SpoolerFound,
+        SpoolerState, SpoolerStartMode, SpoolerError, SpoolerErrorCode.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -16087,7 +16300,8 @@ function Get-AdfaDcHardeningRaw {
     $out = [pscustomobject]@{
         Ok = $false; Protocol = $Protocol; Error = ''; ErrorCode = ''
         BuildNumber = ''; BuildError = ''; BuildErrorCode = ''; Values = @()
-        SmbOk = $false; SmbNoInstance = $false; SmbEnableSmb1 = $null; SmbRequireSigning = $null; SmbError = ''; SmbErrorCode = ''
+        SmbInstrument = 'Get-SmbServerConfiguration'; SmbCmdletMissing = $false
+        SmbOk = $false; SmbNoInstance = $false; SmbEnableSmb1 = $null; SmbRequireSigning = $null; SmbError = ''; SmbErrorCode = ''; SmbErrorByTool = $false
         SpoolerOk = $false; SpoolerFound = $false; SpoolerState = ''; SpoolerStartMode = ''; SpoolerError = ''; SpoolerErrorCode = ''
     }
     $session = $null
@@ -16135,31 +16349,46 @@ function Get-AdfaDcHardeningRaw {
             if ($firstError -eq '') { $firstError = $out.BuildError; $firstCode = $out.BuildErrorCode }
         }
 
-        # ---- The SMB server configuration ----
-        try {
-            $smb = @(Get-CimInstance -CimSession $session -Namespace 'root/Microsoft/Windows/SMB' -ClassName 'MSFT_SmbServerConfiguration' `
-                    -Property 'EnableSMB1Protocol', 'RequireSecuritySignature' -OperationTimeoutSec ([uint32]$OperationTimeoutSec) -ErrorAction Stop)
-            # The query completed: the DC answered, whatever it returned.
-            $answered = $true
-            $smb = @($smb | Where-Object { $null -ne $_ })
-            if ($smb.Count -eq 0) {
-                # No instance and no error. NOT a read, and never filled in with a default: an
-                # invented False here would be an SMBv1 Pass nobody measured. SmbOk stays
-                # $false and the two values stay $null.
-                $out.SmbNoInstance = $true
-            }
-            else {
-                $out.SmbEnableSmb1 = Get-AdfaCimRawValue -Instance $smb[0] -Name 'EnableSMB1Protocol'
-                $out.SmbRequireSigning = Get-AdfaCimRawValue -Instance $smb[0] -Name 'RequireSecuritySignature'
-                $out.SmbOk = $true
-            }
+        # ---- The SMB server configuration (PORT-PLAN C3f) ----
+        # The documented read cmdlet, in this session. Not available on the assessing host (no
+        # SmbShare module): the DC is not asked, and that is not the DC's error.
+        if (-not (Test-CommandAvailable -Name 'Get-SmbServerConfiguration')) {
+            $out.SmbCmdletMissing = $true
         }
-        catch {
-            $out.SmbError = [string]$_.Exception.Message
-            if ($out.SmbError -eq '') { $out.SmbError = 'The SMB server configuration query failed without an error message.' }
-            $smbCode = $_.Exception.PSObject.Properties['NativeErrorCode']
-            if ($null -ne $smbCode -and $null -ne $smbCode.Value) { $out.SmbErrorCode = [string]$smbCode.Value }
-            if ($firstError -eq '') { $firstError = $out.SmbError; $firstCode = $out.SmbErrorCode }
+        else {
+            try {
+                # -WhatIf and -Confirm forced off: SmbShare declares this Get cmdlet with
+                # ConfirmImpact Medium (measured in SmbServerConfiguration.cdxml), so a caller's
+                # $ConfirmPreference of Medium would otherwise stop to ask, and a WhatIf
+                # preference must not skip a read.
+                $smb = @(Get-SmbServerConfiguration -CimSession $session -WhatIf:$false -Confirm:$false -ErrorAction Stop)
+                # The cmdlet completed: the DC answered, whatever it returned.
+                $answered = $true
+                $smb = @($smb | Where-Object { $null -ne $_ })
+                if ($smb.Count -eq 0) {
+                    # No object and no error. NOT a read, and never filled in with a default: an
+                    # invented False here would be an SMBv1 Pass nobody measured.
+                    $out.SmbNoInstance = $true
+                }
+                elseif ($smb.Count -gt 1) {
+                    # One session to one DC returns one configuration. More than one: which of
+                    # them describes the DC is not known, so none is read.
+                    $out.SmbError = ("Get-SmbServerConfiguration returned {0} configuration objects for one DC, where one was expected, so none of them is taken as this DC's configuration." -f $smb.Count)
+                    # This tool's sentence, not the DC's: a row must not say the DC reported it.
+                    $out.SmbErrorByTool = $true
+                }
+                else {
+                    $out.SmbEnableSmb1 = Get-AdfaCimRawValue -Instance $smb[0] -Name 'EnableSMB1Protocol'
+                    $out.SmbRequireSigning = Get-AdfaCimRawValue -Instance $smb[0] -Name 'RequireSecuritySignature'
+                    $out.SmbOk = $true
+                }
+            }
+            catch {
+                $out.SmbError = [string]$_.Exception.Message
+                if ($out.SmbError -eq '') { $out.SmbError = 'The SMB server configuration read failed without an error message.'; $out.SmbErrorByTool = $true }
+                $out.SmbErrorCode = Get-AdfaExceptionErrorCode -Exception $_.Exception
+                if ($firstError -eq '') { $firstError = $out.SmbError; $firstCode = $out.SmbErrorCode }
+            }
         }
 
         # ---- The Print Spooler service ----
@@ -16358,8 +16587,11 @@ function Merge-AdfaDcHardeningConfig {
         unreachable without a read being attempted. Both keys are refused, with that reason.
         DcDisk still accepts them and has the same gap (PORT-PLAN C3g).
 
+        Nor SmbServer (PORT-PLAN C3f): it names the cmdlet the SMB server configuration is read
+        with and the Microsoft pages behind it, and is refused with that reason.
+
         Anything this tool could not use is refused with the reason: an override that is not
-        one object, an empty object, an unknown key, a null, a port key,
+        one object, an empty object, an unknown key, a null, a port key, the SmbServer key,
         Settings that is not an object keyed by setting id (an array is refused), an unknown
         setting id, a setting that is null, not an object or empty, an unknown key under a
         setting, an ExpectedMinimum that is not a JSON number or is not one of the setting's
@@ -16411,6 +16643,11 @@ function Merge-AdfaDcHardeningConfig {
         $portMatch = @($portKeys | Where-Object { $_ -eq $given })
         if ($portMatch.Count -gt 0) {
             throw ("DC hardening config override names '{0}'. The ports of this section cannot be set from a file: its CIM session is always opened on the default WinRM port ({1}), or through the RPC endpoint mapper ({2}) for DCOM, so a different port here would change what is probed and not what is connected to. Remove the key." -f [string]$portMatch[0], [int]$BaseConfig['WsmanPort'], [int]$BaseConfig['RpcPort'])
+        }
+        # The SMB server read (PORT-PLAN C3f) is refused with its own reason: it names the cmdlet
+        # the tool runs and the Microsoft pages that document it, not a choice.
+        if ($given -eq 'SmbServer') {
+            throw "DC hardening config override names 'SmbServer'. The SMB server configuration read cannot be set from a file: it names the documented cmdlet this tool runs (Get-SmbServerConfiguration), the properties it reads and the Microsoft sources for them. Remove the key."
         }
         # A misspelt key would otherwise be accepted, ignored, and leave the operator believing
         # their value was applied.

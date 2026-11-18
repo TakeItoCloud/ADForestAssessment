@@ -10,6 +10,156 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-17 (SMB server configuration read with Get-SmbServerConfiguration: the SMBv1 row and the second instrument of SMB server signing, tool v1.35.0)
+
+**PORT-PLAN C3f, decision (a). No new `-Sections` value; `-Sections DcHardening`, the section key
+`DC Hardening` and the row families are unchanged.** **Run against stubs only** - nothing in this entry
+has been run against a real directory or a real DC (C17a). The cmdlet itself was run, read-only, on one
+Windows 11 workstation (not a DC), as recorded below.
+
+- **What was wrong.** The `SMBv1` row and the second instrument of `SMB server signing` read
+  `MSFT_SmbServerConfiguration` by instance query (`Get-CimInstance`). Measured on 2026-11-15 on one
+  Windows 11 workstation, that query returns no instance and no error, so wherever a DC answers the same
+  way SMBv1 was never graded and SMB server signing had no second instrument.
+- **The decision.** The section now runs `Get-SmbServerConfiguration -CimSession $session -WhatIf:$false
+  -Confirm:$false -ErrorAction Stop` in the CIM session it already opens to each DC
+  (`Get-AdfaDcHardeningRaw`), and no longer queries the class as instances. It is the read Microsoft
+  documents - "Retrieves the SMB server configuration", with `-CimSession` "Runs the cmdlet in a remote
+  session or on a remote computer" - and Microsoft's own detection command for both properties read. It
+  adds no name to the `Invoke-CimMethod` allow-list, which stays at the three `StdRegProv` `Get*` reads.
+  Not taken: invoking `GetConfiguration` (a fourth method name) and the `LanmanServer\Parameters\SMB1`
+  registry value (Microsoft documents its absence as the default, Enabled, only under its Windows 7 /
+  Windows Server 2008 R2 / Windows Vista / Windows Server 2008 heading, and publishes no meaning of an
+  absent value for later builds, so it could not grade an unset value). Learn does not say that the cmdlet calls `GetConfiguration`; that is not claimed. The cmdlet has
+  no timeout parameter and is bounded by the session's `OperationTimeoutSec`. `-WhatIf:$false
+  -Confirm:$false` are forced because `SmbShare` declares this Get cmdlet with `ConfirmImpact="Medium"`
+  (read in `SmbServerConfiguration.cdxml` on the workstation).
+- **Fail closed.** One pure resolver, `Resolve-AdfaSmbServerRead`, turns the read into one kind - `Read`,
+  `CmdletMissing` (no `SmbShare` module on the computer running the assessment; the DC is not asked),
+  `NoInstance` (nothing returned, no error), `AccessDenied` (CIM code, then text), `ClassMissing`
+  (`InvalidNamespace`/`InvalidClass`, or those words where no code came back) and `ReadFailed` (anything
+  else, quoted; also two or more objects for one DC) - and feeds both rows, so they always describe the
+  same answer. A flag that says nothing was read wins over any stray value. The SMBv1 row is its own pure
+  verdict, `Get-AdfaSmb1Verdict`: `EnableSMB1Protocol` True is `Fail`, False is `Pass`, and every other
+  result - including a property not returned as true or false - is `Not Assessed` with its cause. The OS
+  build is never used to infer a pass. Unreachable DCs still go through the C14 gate
+  (`Get-AdfaDcProbeGate`) and get the section's `DC hardening: <dc>` row; no SMBv1 row is made for them.
+  The CIM error code is now read from the exception or the one it wraps (`Get-AdfaExceptionErrorCode`):
+  a CDXML cmdlet's error was measured to reach the catch block as a `CimJobException` with no
+  `NativeErrorCode` of its own.
+- **SMB server signing.** The C3 rules are unchanged: the second instrument can veto a registry verdict,
+  and grades the row when the registry value is not set. The row now names the instrument
+  `Get-SmbServerConfiguration RequireSecuritySignature` (was `MSFT_SmbServerConfiguration.RequireSecuritySignature`),
+  says the cmdlet "is what was run here" (it used to say the cmdlet was not run), and says why the second
+  instrument is missing where it is.
+- **Config and override.** `$script:Config.DcHardening.SmbServer` records the cmdlet, its module, the two
+  properties and the sources (read 2026-11-17). It is provenance only and cannot be overridden: a
+  `SmbServer` key in a `DcHardening` override is refused with its reason.
+- **Read-only guard.** A new AST guard in the tests allows `Get-SmbServerConfiguration` only - exactly once,
+  inside `Get-AdfaDcHardeningRaw`, with `-CimSession $session`, `-WhatIf:$false`, `-Confirm:$false` and
+  `-ErrorAction Stop` - and fails on `Set-SmbServerConfiguration`, `Reset-SmbServerConfiguration`, the
+  CDXML aliases `ssmbsc`, `rsmbsc` and `gsmbsc`, any other `Set-Smb*`/`Reset-Smb*` or `*-Smb*` command, any
+  `Reset-*` command that is not one of this script's Adfa functions, and an `Invoke-CimMethod` naming
+  `GetConfiguration`, `SetConfiguration` or `ResetConfiguration`. It reads command names, not free strings,
+  so the recommendation map's advice text is not a hit. It cannot see a command name built at run time.
+- **Tests.** A new Describe (C3f, 71 tests): config and override (valid, a `SmbServer` key, and six
+  malformed shapes), the wrapped error code (and its five-deep bound), the resolver (thirteen inputs,
+  contradictory flags, and who wrote the cause), the
+  SMBv1 verdict (pass, fail, eight Not Assessed causes), both rows from one read, the seam against stubs in
+  the measured shape (one call, `-WhatIf`/`-Confirm` off, empty/null/two objects, wrapped access denied
+  and missing class, cmdlet missing), the collector over five DCs in two domains (one classified
+  Unreachable first, one refused, one with SMBv1 on, one off, one silent on every port), and the AST
+  wiring and guard with sixteen red cases and two green ones. `Run-SmokeTest.ps1` gained a
+  `Get-SmbServerConfiguration` stub in the measured shape (refusing a call without a session or without
+  both switches off) and a `Test-CommandAvailable` answer for it; the single-domain pass, the three-domain
+  pass (one call per domain's DC) and the failing-collector pass (no call, no SMBv1 row) assert the new
+  read, and four modes (missing, empty, denied, SMBv1 on) run end to end. `Run-Validation.ps1` gained the
+  pure-logic assertions.
+- **Existing tests changed, because the behaviour they pinned changed (none deleted):** the C2 count of
+  `Get-CimInstance` calls in the script (7 to 6) and the C3 count of bounded seam operations (4 to 3, classes
+  `Win32_OperatingSystem,Win32_Service`), because the instance query is gone; the C3 verdict test's
+  instrument name and "the cmdlet was not run" (now "which is what was run here"); the C3 "no instance"
+  finding test, now the cmdlet returning no object; the C3 seam context, whose stubs gained
+  `Get-SmbServerConfiguration` answering in the measured shape (one instance, SMBv1 False, signing True)
+  where the instance query used to answer nothing - so its first test now counts two queries plus one
+  cmdlet call, its seam-to-rows test expects SMBv1 `Pass` and an agreeing second instrument, and its
+  mixed-result test no longer lists SMBv1 among the Not Assessed rows; the smoke harness checks of the
+  same rows (four passes per DC became five); and every version pin, 1.34.0 to 1.35.0.
+- **Mutations.** Eighteen single mutations, each applied to a scratch copy of `src`, `tests` and the README
+  and restored byte-for-byte after its run (SHA-256 of the scratch script checked equal to the working
+  tree's, `8D14EB07...`, after each; the working-tree script unchanged throughout), run against the new
+  Describe (65 tests) - **all eighteen killed**: M1 verdict direction swapped (3 tests); M2 no object
+  returned made a Pass (2); M3 an unreachable DC read as reachable, WinRM taken as open (1); M4 access
+  denied reported as read failed (7); M5 the `SmbServer` override refusal removed (1); M6 the cmdlet call
+  dropped (6); M7 the SMBv1 row no longer from its verdict (9); M8 two objects accepted as a read, a
+  threshold off by one (1); M9 the per-DC loop stopping after the first DC (1); M10 `-WhatIf:$false`
+  dropped (2); M11 the class-missing classification removed (7); M12 the cmdlet-missing check removed (2);
+  M13 the wrapped CIM error code not read (3); M14 the no-object flag ignored (4); M15 the second
+  instrument fed a value that was not read (8); and three guard reds on the whole script, G1
+  `Set-SmbServerConfiguration`, G2 the `rsmbsc` alias, G3 an `Invoke-CimMethod ... ResetConfiguration`
+  (2 each).
+- **Found by an independent review of the diff before commit, and fixed in it.** (1) The SMBv1
+  access-denied row said "Local Administrators rights on the DC are needed for this read", while the
+  same change records those rights as not published; the row now says the rights are not published and
+  not measured (C17a) and names none. (2) The SMBv1 row said "Reported by the DC -" before sentences
+  this tool wrote itself (two configuration objects for one DC; nothing recorded), and a quoted cause
+  with no closing period ran into "Read over ...". The raw read now marks this tool's own sentences
+  (`SmbErrorByTool`: two or more objects, and an error raised with no message), the resolver says who
+  wrote each cause (`CauseSource` `Error` or `Tool`) and reads a tool sentence's words neither as a
+  refusal nor as a missing class (a CIM code the exception carried still counts), and the row says
+  "Written by this tool, not an error from the DC -" for those; every quoted cause now ends its sentence.
+  (3) The `SMB1` registry default was attributed without its scope: Microsoft states "The default
+  configuration is Enabled" only under its Windows 7 / Windows Server 2008 R2 / Windows Vista / Windows
+  Server 2008 heading (re-read 2026-11-18); the script help, README, PORT-PLAN and this entry now say so.
+  (4) The `Get-AdfaDcHardeningRaw` help listed neither `SmbInstrument` nor `SmbCmdletMissing`; it now
+  lists them and `SmbErrorByTool`. (5) Tests that could not fail, now red under the reviewer's mutation
+  on a scratch copy (restored by hash): `NotFound` added to the missing-class codes (2 tests), the
+  "invalid namespace" text fallback cut (1), the five-deep bound cut to two (1), and the empty-message
+  default of the SMB catch deleted (1). Not changed: the reviewer's mutation that deletes the SMB catch's
+  feed of the section error survives because it is unobservable - the build query runs before it and
+  either answers (so the section error is not used) or always sets that error first. Existing test
+  changed: the C3f Not Assessed case "access denied" and the smoke harness's `Denied` SMB mode expected
+  "Local Administrators" and now expect the not-published sentence.
+- **Not verified.** Everything against a real DC: that `Get-SmbServerConfiguration -CimSession` returns one
+  object over WSMan and over DCOM, under Windows PowerShell 5.1 and PowerShell 7, with the rights the tool
+  runs under; the exception shape and `NativeErrorCode` of a refusal, a missing class or namespace and a
+  timeout on a remote DC (so `ClassMissing` and `AccessDenied` by code are unmeasured); which rights the
+  read needs on a DC; whether an error raised on the assessing host (a WinRM client failure) is quoted
+  as "Reported by the DC", as in the other per-DC sections; that the session's
+  `OperationTimeoutSec` bounds the CDXML cmdlet in practice; whether the instance query is also empty on a
+  DC; and how an `SMB1` registry value relates to `EnableSMB1Protocol`. All of it is PORT-PLAN C17a.
+  WSMan to the workstation itself could not be measured (WinRM not running there).
+- **Measured on one Windows 11 build 26100 workstation, not a DC, not elevated, 2026-11-17:** under
+  PowerShell 7.6.9 and Windows PowerShell 5.1.26100.9711, `Get-SmbServerConfiguration` is a function of
+  `SmbShare` 2.0.0.0 with `-CimSession`, `-ThrottleLimit`, `-AsJob`, `-WhatIf` and `-Confirm`; over a DCOM
+  session to localhost it returned one `MSFT_SmbServerConfiguration` instance (namespace
+  `ROOT/Microsoft/Windows/Smb`) with `EnableSMB1Protocol` False and `RequireSecuritySignature` True, both
+  `CimType Boolean`; an error from a CDXML cmdlet (`Get-SmbShare` for a share that does not exist) reached
+  the catch block as `Microsoft.PowerShell.Cmdletization.Cim.CimJobException` with no `NativeErrorCode`;
+  `Get-CimInstance` for a missing class and a missing namespace gave `CimException` with `InvalidClass` and
+  `InvalidNamespace`. `SmbServerConfiguration.cdxml` declares Get `ConfirmImpact="Medium"` alias `gsmbsc`,
+  Reset `ConfirmImpact="High"` alias `rsmbsc`, Set `ConfirmImpact="High"` alias `ssmbsc`.
+- **Vendor sources, read 2026-11-17:**
+  https://learn.microsoft.com/powershell/module/smbshare/get-smbserverconfiguration ("Retrieves the SMB
+  server configuration", the syntax with `-CimSession`, output `MSFT_SmbServerConfiguration`),
+  https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+  (detection `Get-SmbServerConfiguration | Select EnableSMB1Protocol`; the `SMB1` registry value, its
+  default Enabled with no named value - stated under the heading for Windows 7, Windows Server 2008 R2,
+  Windows Vista and Windows Server 2008 only, re-read 2026-11-18; "Be careful when you disable SMBv1 on
+  domain controllers"),
+  https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/smbv1-not-installed-by-default-in-windows
+  (not installed by default from Windows Server 2019; "We strongly recommend that you don't reinstall
+  SMBv1"), https://learn.microsoft.com/windows-server/storage/file-server/smb-signing (the
+  `RequireSecuritySignature` check), https://learn.microsoft.com/previous-versions/windows/desktop/smb/msft-smbserverconfiguration
+  (archived: `EnableSMB1Protocol`, `RequireSecuritySignature`, boolean; methods `GetConfiguration` and
+  `SetConfiguration`),
+  https://learn.microsoft.com/dotnet/api/microsoft.management.infrastructure.cimcmdlets.newcimsessioncommand.operationtimeoutsec?view=powershellsdk-7.6.0
+  ("Specifies the operation timeout for all operations in session") and
+  https://learn.microsoft.com/dotnet/api/microsoft.management.infrastructure.nativeerrorcode?view=powershellsdk-7.6.0
+  (the code names `AccessDenied`, `InvalidNamespace`, `InvalidClass`). The smbv1-not-installed, smb-signing
+  and archived class pages were read by the research step of this session, not re-opened while writing the
+  code; the others were re-read.
+
 ### Changed - 2026-11-17 (Per-domain DC targets for every per-DC section, one probe per port, the reachability class in every section, CIM ports refused, tool v1.34.0)
 
 **PORT-PLAN C2e, C1b, C3g and the reachability part of C14c, in one change. No new `-Sections` value.
