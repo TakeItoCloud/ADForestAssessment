@@ -976,7 +976,9 @@ Describe 'Exchange Server SE compatibility' {
             )
             $r = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() `
                 -DomainControllers $dcs -SeConfig $script:SeCfg
-            [string](Get-SeTestRow $r 'Domain controller operating systems').Status | Should -Be 'Pass'
+            # PORT-PLAN C16 (GAP-P20): changed from Pass. Every DC in the forest must run a supported version, so
+            # the gate is not given while one DC is unread; before v1.36.0 it passed beside the row below.
+            [string](Get-SeTestRow $r 'Domain controller operating systems').Status | Should -Be 'Not Assessed'
             $unk = Get-SeTestRow $r 'Domain controller OS - not readable'
             $unk | Should -Not -BeNullOrEmpty
             [string]$unk.Status | Should -Be 'Not Assessed'
@@ -2747,10 +2749,12 @@ Describe 'Secure channel checks are read-only by default (H19)' {
             Mock Test-TcpPort { $true }
             Mock Test-AdfaSecureChannel { $script:H19Live += ("out:{0}" -f [bool]$LiveVerify); [pscustomobject]@{ Result = 'Verified'; Tool = 't'; Detail = 'd' } }
             Mock Test-AdfaRemoteSecureChannel { $script:H19Live += ("in:{0}" -f [bool]$LiveVerify); [pscustomobject]@{ Result = 'Verified'; Tool = 't'; Detail = 'd' } }
-            Get-AdfaTrustHealth -DomainName 'contoso.com' -AdParams @{} | Out-Null
+            # PORT-PLAN C16 (GAP-P3): the outbound direction is asked of a DC of the domain, so the
+            # collector is given one; without it the outbound check is not run at all.
+            Get-AdfaTrustHealth -DomainName 'contoso.com' -AdParams @{} -SourceDc 'dc1.contoso.com' | Out-Null
             ($script:H19Live -join ',') | Should -Be 'out:False,in:False'
             $script:H19Live = @()
-            Get-AdfaTrustHealth -DomainName 'contoso.com' -AdParams @{} -LiveVerify | Out-Null
+            Get-AdfaTrustHealth -DomainName 'contoso.com' -AdParams @{} -SourceDc 'dc1.contoso.com' -LiveVerify | Out-Null
             ($script:H19Live -join ',') | Should -Be 'out:True,in:True'
         }
     }
@@ -7340,7 +7344,10 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # the Identity export, Get-ADTrust of the trust health rows, Get-ADReplicationSiteLink and
         # Get-ADReplicationConnection) and added four declared lists: one in Get-AdfaTrustHealth, two in
         # Get-AdfaTopologyObjectRaw and one call of the C15 seam in Get-AdfaIdentityExportRaw.
-        $script:C4PropertiesArgumentCount = 37
+        # 38 since v1.36.0: PORT-PLAN C16 (GAP-P1) added one, the two subscription attributes (msDFSR-Enabled,
+        # msDFSR-options) the SYSVOL engine read in Get-AdfaSysvolEngineRaw now asks for; the reader it replaced,
+        # Get-AdfaDfsrSubscription, used a Properties key, not a -Properties argument.
+        $script:C4PropertiesArgumentCount = 38
         # 7 since v1.22.0: PORT-PLAN C5 added $computerArgs.Properties = @('userCertificate') in
         # Get-AdfaDcCertificateDirectoryRaw.
         # 12 since v1.23.0: PORT-PLAN C6 added five splatted property lists, two in Get-AdfaRidManagerRaw and
@@ -7358,7 +7365,10 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # Get-AdfaDirectoryObjectState (the caller's list, msDFSR-Flags or none).
         # 23 since v1.32.0: PORT-PLAN C15 added one splatted property list, in Get-AdfaInventoryDirectoryRaw
         # (the caller's list, refused when it holds a wildcard).
-        $script:C4PropertiesAssignmentCount = 23
+        # 22 since v1.36.0: PORT-PLAN C16 (GAP-P1) deleted Get-AdfaDfsrSubscription and its
+        # $p.Properties = @('msDFSR-Enabled', 'msDFSR-options'); the engine read asks for the same two as a
+        # -Properties argument (C4PropertiesArgumentCount above).
+        $script:C4PropertiesAssignmentCount = 22
         $script:C4SectionFunctionCount = 20
 
         function New-C4Schema {
@@ -7578,9 +7588,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 
@@ -9235,9 +9245,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 
@@ -10225,9 +10235,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 
@@ -11164,9 +11174,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 
@@ -12158,9 +12168,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 
@@ -13398,9 +13408,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 
@@ -14616,9 +14626,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 
@@ -16482,9 +16492,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17153,9 +17163,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries the same version in the script and the manifest: 1.36.0 (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17306,9 +17316,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.35.0 in the script and the manifest (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries version 1.36.0 in the script and the manifest (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 
@@ -18637,9 +18647,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.35.0 in the script and the manifest (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries version 1.36.0 in the script and the manifest (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 
@@ -19775,9 +19785,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.35.0 in the script and the manifest (bumped by PORT-PLAN C3f)' {
-            [string]$script:Config.Version | Should -Be '1.35.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
+        It 'carries version 1.36.0 in the script and the manifest (bumped by PORT-PLAN C16)' {
+            [string]$script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 
@@ -20936,7 +20946,9 @@ Describe 'Declared property lists: no read of every attribute, no secret attribu
         # Declared population: the -Properties arguments of the script after C4b (38 before it; five
         # "-Properties *" removed, three explicit lists added - Get-AdfaTrustHealth and the two cmdlet
         # calls of Get-AdfaTopologyObjectRaw - and one call of the C15 seam in Get-AdfaIdentityExportRaw).
-        $script:C4bArgumentCount = 37
+        # 38 since v1.36.0: PORT-PLAN C16 (GAP-P1) added the SYSVOL subscription list (msDFSR-Enabled,
+        # msDFSR-options) in Get-AdfaSysvolEngineRaw.
+        $script:C4bArgumentCount = 38
         $script:C4bAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
         $script:C4bMain = @($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
         function Get-C4bFunction { param([string]$Name) @($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
@@ -23225,6 +23237,879 @@ Describe 'SMB server configuration read with Get-SmbServerConfiguration: the SMB
             $row[0] | Should -Match 'Get-SmbServerConfiguration'
             $row[0] | Should -Not -Match 'returns no instance to a query'
             (($lines -join ' ') -replace '\s+', ' ') | Should -Match 'PORT-PLAN C17a'
+        }
+    }
+}
+Describe 'Promise triage: the README and help promises the code did not keep (C16, GAP-P1..P30)' {
+    BeforeAll {
+        $script:C16Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:C16Main = @($script:C16Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))[0]
+        # Held in variables: PSAvoidUsingComputerNameHardcoded flags a literal -ComputerName.
+        $script:C16Domain = 'contoso.com'
+        $script:C16Other = 'fabrikam.com'
+        $script:C16Dc1 = 'dc1.contoso.com'
+        $script:C16Dc2 = 'dc2.contoso.com'
+        $script:C16Dc3 = 'dc3.contoso.com'
+        $script:C16Dc4 = 'dc4.contoso.com'
+        $script:C16Dc5 = 'dc5.contoso.com'
+        $script:C16Dc6 = 'dc6.contoso.com'
+        if ($null -eq ('C16Stub.ADIdentityNotFoundException' -as [type])) {
+            Add-Type -TypeDefinition 'namespace C16Stub { public class ADIdentityNotFoundException : System.Exception { public ADIdentityNotFoundException(string m) : base(m) { } } }' -WarningAction SilentlyContinue
+        }
+        function Get-C16Row {
+            param($Rows, [string]$Item)
+            $m = @($Rows | Where-Object { $null -ne $_ -and [string]$_.Item -eq $Item })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
+        # The body of the Invoke-Main branch that runs a section: the if statement whose condition is
+        # Test-SectionSelected '<name>'.
+        function Get-C16Branch {
+            param([string]$Section)
+            $ifs = @($script:C16Main.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match ("^Test-SectionSelected '{0}' " -f [regex]::Escape($Section)) }, $true))
+            if ($ifs.Count -eq 0) { return $null }
+            return $ifs[0].Clauses[0].Item2
+        }
+        function Get-C16Call {
+            param($Ast, [string]$Name)
+            @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq $Name }, $true))
+        }
+        function Get-C16Argument {
+            param($Call, [string]$Parameter)
+            $els = @($Call.CommandElements)
+            for ($i = 0; $i -lt $els.Count; $i++) {
+                if ($els[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and $els[$i].ParameterName -eq $Parameter) {
+                    if ($null -ne $els[$i].Argument) { return $els[$i].Argument.Extent.Text }
+                    if (($i + 1) -lt $els.Count) { return $els[$i + 1].Extent.Text }
+                    return ''
+                }
+            }
+            return $null
+        }
+        # GAP-P21: every -Name in a README PowerShell block that calls the script must be one of its
+        # parameters (or a common parameter). Returns the names that bind to nothing.
+        function Get-C16ReadmeUnknownParameter {
+            param([string]$Text, [string[]]$Known)
+            $miss = @()
+            $blocks = [regex]::Matches($Text, '(?ms)^```powershell\r?\n(.*?)^```')
+            foreach ($b in $blocks) {
+                $lines = @($b.Groups[1].Value -split "`r?`n")
+                for ($i = 0; $i -lt $lines.Count; $i++) {
+                    if ($lines[$i] -notmatch 'Invoke-ADForestAssessment\.ps1') { continue }
+                    $cmd = $lines[$i]
+                    while ($cmd.TrimEnd().EndsWith('`') -and ($i + 1) -lt $lines.Count) { $i++; $cmd = $cmd.TrimEnd().TrimEnd('`') + ' ' + $lines[$i] }
+                    $tail = $cmd.Substring($cmd.IndexOf('Invoke-ADForestAssessment.ps1') + 'Invoke-ADForestAssessment.ps1'.Length)
+                    foreach ($m in [regex]::Matches($tail, '(?<![\w-])-([A-Za-z][A-Za-z0-9]*)')) {
+                        if ($Known -notcontains $m.Groups[1].Value) { $miss += $m.Groups[1].Value }
+                    }
+                }
+            }
+            return @($miss)
+        }
+    }
+
+    Context 'GAP-P1: the SYSVOL subscription is read from each DC''s own domain, and nothing passes on no DC read' {
+        BeforeEach {
+            $script:C16Asked = @()
+            function Get-ADDomainController { param([string]$Filter, [string]$Server, $Credential, $ErrorAction)
+                @([pscustomobject]@{ HostName = $script:C16Dc1; IsReadOnly = $false; ComputerObjectDN = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' },
+                    [pscustomobject]@{ HostName = $script:C16Dc2; IsReadOnly = $false; ComputerObjectDN = 'CN=DC2,OU=Domain Controllers,DC=contoso,DC=com' },
+                    [pscustomobject]@{ HostName = $script:C16Dc3; IsReadOnly = $false; ComputerObjectDN = 'CN=DC3,OU=Domain Controllers,DC=contoso,DC=com' },
+                    [pscustomobject]@{ HostName = $script:C16Dc4; IsReadOnly = $false; ComputerObjectDN = 'CN=DC4,OU=Domain Controllers,DC=contoso,DC=com' }) }
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; PDCEmulator = $script:C16Dc1 } }
+            # dc1: msDFSR-Enabled FALSE and msDFSR-options 1; dc2: neither returned (unset); dc3: the
+            # subscription read refused; dc4: no DFSR subscription (an FRS DC). No NTFRS subscriber anywhere
+            # except dc4.
+            function Get-ADObject { param([string]$Identity, [string]$Server, [string[]]$Properties, $Credential, $ErrorAction)
+                $script:C16Asked += ("{0}|{1}|{2}" -f $Identity, $Server, (@($Properties) -join ','))
+                if ($Identity -like 'CN=DFSR-GlobalSettings,*') { return [pscustomobject]@{ DistinguishedName = $Identity; 'msDFSR-Flags' = 48 } }
+                if ($Identity -like 'CN=Domain System Volume (SYSVOL share),*') {
+                    if ($Identity -like '*CN=DC4,*') { return [pscustomobject]@{ DistinguishedName = $Identity } }
+                    throw (New-Object C16Stub.ADIdentityNotFoundException ("Cannot find an object with identity: '{0}'" -f $Identity))
+                }
+                if ($Identity -like '*CN=DC1,*') { $o = [pscustomobject]@{ DistinguishedName = $Identity }; if (@($Properties) -contains 'msDFSR-Enabled') { $o | Add-Member -NotePropertyName 'msDFSR-Enabled' -NotePropertyValue $false; $o | Add-Member -NotePropertyName 'msDFSR-options' -NotePropertyValue 1 }; return $o }
+                if ($Identity -like '*CN=DC2,*') { return [pscustomobject]@{ DistinguishedName = $Identity } }
+                if ($Identity -like '*CN=DC3,*') { throw [System.UnauthorizedAccessException]'STUB: access to the subscription refused' }
+                throw (New-Object C16Stub.ADIdentityNotFoundException ("Cannot find an object with identity: '{0}'" -f $Identity))
+            }
+        }
+        It 'the verdict gives no Pass row when no DC''s subscription could be read (the "TRUE on all 0 DC(s)" fail-open)' {
+            $unknown = @([pscustomobject]@{ DcName = $script:C16Dc1; Enabled = $null; Options = $null; Error = 'x' }, [pscustomobject]@{ DcName = $script:C16Dc2; Enabled = $null; Options = $null; Error = 'y' })
+            $rows = @(Get-AdfaDfsrSubscriptionVerdict -DomainName $script:C16Domain -Subscriptions $unknown)
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+            (Get-C16Row $rows 'DFSR SYSVOL subscription - not readable').Status | Should -Be 'Not Assessed'
+            (Get-C16Row $rows 'DFSR SYSVOL subscription - not readable').Detail | Should -Match '2 DC\(s\)'
+            # Mixed: one read, one not - the Pass row counts the one read, and the other stays Not Assessed.
+            $mixed = @(Get-AdfaDfsrSubscriptionVerdict -DomainName $script:C16Domain -Subscriptions @([pscustomobject]@{ DcName = $script:C16Dc1; Enabled = $true; Options = $null; Error = '' }, $unknown[1]))
+            (Get-C16Row $mixed 'DFSR SYSVOL replication enabled').Detail | Should -Match 'on all 1 DC\(s\)'
+            (Get-C16Row $mixed 'DFSR SYSVOL subscription - not readable').Status | Should -Be 'Not Assessed'
+        }
+        It 'the engine read asks each DC''s subscription for msDFSR-Enabled and msDFSR-options, from the domain itself' {
+            $raw = Get-AdfaSysvolEngineRaw -DomainName $script:C16Domain -AdParams @{}
+            $subReads = @($script:C16Asked | Where-Object { $_ -like 'CN=SYSVOL Subscription,*' })
+            $subReads.Count | Should -Be 4 -Because 'declared population: the four DCs Get-ADDomainController returned'
+            foreach ($r in $subReads) { $r | Should -Match ('\|{0}\|msDFSR-Enabled,msDFSR-options$' -f [regex]::Escape($script:C16Domain)) }
+            $dc1 = @($raw.Dcs | Where-Object { $_.HostName -eq $script:C16Dc1 })[0]
+            $dc1.DfsrEnabled | Should -BeFalse
+            $dc1.DfsrOptions | Should -Be 1
+            $dc2 = @($raw.Dcs | Where-Object { $_.HostName -eq $script:C16Dc2 })[0]
+            $null -eq $dc2.DfsrEnabled | Should -BeTrue -Because 'not returned is kept as not returned in the raw record'
+        }
+        It 'a subscription with msDFSR-Enabled FALSE is a Fail, an unread one Not Assessed with its class, and a DC with no DFSR subscription is left out' {
+            $raw = Get-AdfaSysvolEngineRaw -DomainName $script:C16Domain -AdParams @{}
+            $list = ConvertTo-AdfaDfsrSubscriptionList -Raw $raw
+            @($list.Subscriptions).Count | Should -Be 3 -Because 'declared population: four DCs, one of which (dc4) has no DFSR subscription'
+            $list.NotDfsrCount | Should -Be 1
+            $rows = @(Get-AdfaDfsrSubscriptionVerdict -DomainName $script:C16Domain -Subscriptions $list.Subscriptions -NotDfsrCount $list.NotDfsrCount)
+            $fail = Get-C16Row $rows 'DFSR SYSVOL replication disabled'
+            $fail.Status | Should -Be 'Fail'
+            $fail.Detail | Should -Match 'dc1\.contoso\.com'
+            $fail.Detail | Should -Not -Match 'dc2\.contoso\.com'
+            $na = Get-C16Row $rows 'DFSR SYSVOL subscription - not readable'
+            $na.Status | Should -Be 'Not Assessed'
+            $na.Detail | Should -Match 'dc3\.contoso\.com'
+            ((@($list.Subscriptions) | Where-Object { $_.DcName -eq $script:C16Dc3 })[0].Error) | Should -Match 'access denied'
+            (Get-C16Row $rows 'Authoritative SYSVOL member set').Detail | Should -Match 'dc1\.contoso\.com'
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'an unreachable domain (the DC list could not be read) gives no subscription and no Pass' {
+            function Get-ADDomainController { param([string]$Filter, [string]$Server, $Credential, $ErrorAction) throw 'Unable to contact the server. This may be because this server does not exist, it is currently down, or it does not have the Active Directory Web Services running.' }
+            $raw = Get-AdfaSysvolEngineRaw -DomainName $script:C16Domain -AdParams @{}
+            $list = ConvertTo-AdfaDfsrSubscriptionList -Raw $raw
+            @($list.Subscriptions).Count | Should -Be 0
+            $rows = @(Get-AdfaDfsrSubscriptionVerdict -DomainName $script:C16Domain -Subscriptions $list.Subscriptions -NotDfsrCount $list.NotDfsrCount)
+            @($rows).Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'every DC without a DFSR subscription is Not Assessed, never "could not be read"' {
+            $rows = @(Get-AdfaDfsrSubscriptionVerdict -DomainName $script:C16Domain -Subscriptions @() -NotDfsrCount 2)
+            @($rows).Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match '2 DC\(s\)'
+        }
+        It 'Invoke-Main builds the subscription rows from the engine read of each scoped domain, never from the DC inventory' {
+            $branch = Get-C16Branch -Section 'Sysvol'
+            $branch | Should -Not -BeNullOrEmpty
+            @($branch.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -eq 'allDcInventory' }, $true)).Count | Should -Be 0
+            $convert = @(Get-C16Call -Ast $branch -Name 'ConvertTo-AdfaDfsrSubscriptionList')
+            $convert.Count | Should -Be 1
+            (Get-C16Argument -Call $convert[0] -Parameter 'Raw') | Should -Be '$engineRaw'
+            $loop = $convert[0].Parent
+            while ($null -ne $loop -and $loop -isnot [System.Management.Automation.Language.ForEachStatementAst]) { $loop = $loop.Parent }
+            $loop | Should -Not -BeNullOrEmpty
+            $loop.Condition.Extent.Text | Should -Be '$targetDomains'
+            @(Get-C16Call -Ast $loop.Body -Name 'Get-AdfaSysvolEngineRaw').Count | Should -Be 1
+            $verdict = @(Get-C16Call -Ast $loop.Body -Name 'Get-AdfaDfsrSubscriptionVerdict')
+            $verdict.Count | Should -Be 1
+            (Get-C16Argument -Call $verdict[0] -Parameter 'NotDfsrCount') | Should -Not -BeNullOrEmpty
+            @($script:C16Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AdfaDfsrSubscription' }, $true)).Count | Should -Be 0 -Because 'the reader of a property no inventory row carries is gone'
+        }
+    }
+
+    Context 'GAP-P2/P3: the outbound direction is read on a DC of the domain assessed, read-only' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            $script:C16Args = @()
+        }
+        It 'builds the /server: form of /sc_query (Learn Example 3) and /sc_verify only when asked' {
+            Get-AdfaNltestScArgument -Domain $script:C16Other -Server $script:C16Dc1 | Should -Be '/server:dc1.contoso.com /sc_query:fabrikam.com'
+            Get-AdfaNltestScArgument -Domain $script:C16Other -Server $script:C16Dc1 -LiveVerify | Should -Be '/server:dc1.contoso.com /sc_verify:fabrikam.com'
+            Get-AdfaNltestScArgument -Domain $script:C16Other | Should -Be '/sc_query:fabrikam.com'
+        }
+        It 'Test-AdfaSecureChannel sends /server: with the source DC to nltest and names that DC in the result' {
+            Mock Test-CommandAvailable { $true }
+            Mock Invoke-ExternalCommand { $script:C16Args += ("{0} {1}" -f $FilePath, $Arguments); [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = "Trusted DC Connection Status Status = 0 0x0 NERR_Success`nThe command completed successfully" } }
+            $r = Test-AdfaSecureChannel -SourceDomain $script:C16Domain -TargetDomain $script:C16Other -SourceDc $script:C16Dc1
+            $r.Result | Should -Be 'Verified'
+            @($script:C16Args).Count | Should -Be 1
+            $script:C16Args[0] | Should -Be 'nltest.exe /server:dc1.contoso.com /sc_query:fabrikam.com'
+            $r.Detail | Should -Match 'dc1\.contoso\.com'
+        }
+        It 'the trust collector passes its domain''s DC to the outbound check, and with none named reads nothing and says why' {
+            function Get-ADTrust { param([Parameter(ValueFromRemainingArguments)]$a)
+                [pscustomobject]@{ Name = 'fabrikam.com'; Source = 'contoso.com'; Target = 'fabrikam.com'; Direction = 'Outbound'; TrustType = 'Forest'
+                    IntraForest = $false; ForestTransitive = $true; SelectiveAuthentication = $true; SIDFilteringForestAware = $true
+                    SIDFilteringQuarantined = $true; TGTDelegation = $false; UsesRC4Encryption = $false; Created = (Get-Date); Modified = (Get-Date) } }
+            Mock Test-CommandAvailable { $false }
+            Mock Test-TcpPort { $true }
+            Mock Test-AdfaSecureChannel { $script:C16Args += [string]$SourceDc; [pscustomobject]@{ Result = 'Verified'; Tool = 'nltest /sc_query'; Detail = 'd' } }
+            $rows = @(Get-AdfaTrustHealth -DomainName $script:C16Domain -AdParams @{} -SourceDc $script:C16Dc2)
+            ($script:C16Args -join ',') | Should -Be 'dc2.contoso.com'
+            $rows[0].OutboundSecureChannel | Should -Be 'Verified'
+            $script:C16Args = @()
+            $none = @(Get-AdfaTrustHealth -DomainName $script:C16Domain -AdParams @{} -SourceDcError 'reading its PDC emulator failed (access denied): STUB')
+            @($script:C16Args).Count | Should -Be 0 -Because 'with no DC of the domain named, nltest is not run on the host running the assessment'
+            $none[0].OutboundSecureChannel | Should -Be 'Not Assessed'
+            $none[0].VerifyDetail | Should -Match 'access denied'
+            $none[0].Health | Should -Not -Be 'Healthy'
+        }
+        It 'a source DC classified Unreachable is not asked, and the row names its class' {
+            function Resolve-AdfaHostAddress { param([string]$HostName, [int]$TimeoutMs) [pscustomobject]@{ Ok = $false; Addresses = @(); SocketError = 'HostNotFound'; TimedOut = $false; Error = 'No such host is known.' } }
+            Get-AdfaDcReachability -HostName $script:C16Dc3 | Out-Null
+            function Get-ADTrust { param([Parameter(ValueFromRemainingArguments)]$a)
+                [pscustomobject]@{ Name = 'fabrikam.com'; Source = 'contoso.com'; Target = 'fabrikam.com'; Direction = 'Outbound'; TrustType = 'Forest'
+                    IntraForest = $false; ForestTransitive = $true; SelectiveAuthentication = $true; SIDFilteringForestAware = $true
+                    SIDFilteringQuarantined = $true; TGTDelegation = $false; UsesRC4Encryption = $false; Created = (Get-Date); Modified = (Get-Date) } }
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { $true }
+            Mock Invoke-ExternalCommand { $script:C16Args += ("{0} {1}" -f $FilePath, $Arguments); [pscustomobject]@{ Success = $true; ExitCode = 0; StdOut = 'Trusted DC Connection Status Status = 0 0x0 NERR_Success' } }
+            $direct = Test-AdfaSecureChannel -SourceDomain $script:C16Domain -TargetDomain $script:C16Other -SourceDc $script:C16Dc3
+            $direct.Result | Should -Be 'Not Assessed'
+            $direct.Detail | Should -Match 'Unreachable, classified once for this run'
+            @($script:C16Args).Count | Should -Be 0 -Because 'nltest is not asked of a DC classified Unreachable'
+            # Through the collector (nltest /dsgetdc is the only call it may make, for the partner).
+            $rows = @(Get-AdfaTrustHealth -DomainName $script:C16Domain -AdParams @{} -SourceDc $script:C16Dc3)
+            @($script:C16Args | Where-Object { $_ -match 'sc_query|sc_verify' }).Count | Should -Be 0
+            $rows[0].OutboundSecureChannel | Should -Be 'Not Assessed'
+            $rows[0].VerifyDetail | Should -Match 'Outbound direction not read on dc3\.contoso\.com: Unreachable, classified once for this run'
+            # Mixed: an unclassified DC of the same run is asked.
+            $script:C16Args = @()
+            (Test-AdfaSecureChannel -SourceDomain $script:C16Domain -TargetDomain $script:C16Other -SourceDc $script:C16Dc1).Result | Should -Be 'Verified'
+            ($script:C16Args -join ',') | Should -Be 'nltest.exe /server:dc1.contoso.com /sc_query:fabrikam.com'
+            Clear-AdfaDcPortCache
+        }
+        It 'Resolve-AdfaTrustSourceDc names the PDC emulator, and tells access denied, unreachable and a missing value apart' {
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; PDCEmulator = $script:C16Dc1 } }
+            $ok = Resolve-AdfaTrustSourceDc -DomainName $script:C16Domain -AdParams @{}
+            $ok.HostName | Should -Be $script:C16Dc1
+            $ok.Error | Should -Be ''
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction) throw [System.UnauthorizedAccessException]'STUB: refused' }
+            $denied = Resolve-AdfaTrustSourceDc -DomainName $script:C16Domain -AdParams @{}
+            $denied.HostName | Should -Be ''
+            $denied.Error | Should -Match 'access denied'
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction) throw 'Unable to contact the server.' }
+            (Resolve-AdfaTrustSourceDc -DomainName $script:C16Domain -AdParams @{}).Error | Should -Match 'unreachable'
+            function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com' } }
+            (Resolve-AdfaTrustSourceDc -DomainName $script:C16Domain -AdParams @{}).Error | Should -Match 'no PDCEmulator'
+        }
+        It 'Invoke-Main resolves a DC per scoped domain and passes it to the trust collector' {
+            $branch = Get-C16Branch -Section 'Trusts'
+            $loop = @($branch.FindAll({ param($n) $n -is [System.Management.Automation.Language.ForEachStatementAst] -and $n.Condition.Extent.Text -eq '$targetDomains' }, $true))[0]
+            $loop | Should -Not -BeNullOrEmpty
+            $resolve = @(Get-C16Call -Ast $loop.Body -Name 'Resolve-AdfaTrustSourceDc')
+            $resolve.Count | Should -Be 1
+            (Get-C16Argument -Call $resolve[0] -Parameter 'DomainName') | Should -Be '$d'
+            $health = @(Get-C16Call -Ast $loop.Body -Name 'Get-AdfaTrustHealth')
+            $health.Count | Should -Be 1
+            (Get-C16Argument -Call $health[0] -Parameter 'SourceDc') | Should -Be '$trustSource.HostName'
+            (Get-C16Argument -Call $health[0] -Parameter 'SourceDcError') | Should -Be '$trustSource.Error'
+        }
+        It 'GAP-P2: the help and README still list /sc_verify as opt-in, and the nltest page is cited with the 2026-11-18 read' {
+            $fn = @($script:C16Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AdfaNltestScArgument' }, $true))[0]
+            $fn.Extent.Text | Should -Match 'Read: 2026-11-18'
+            $readme = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md')) -join "`n"
+            $readme | Should -Match '\| `nltest /sc_verify`; `netdom trust /Verify` as its fallback \| Only with `-IncludeSecureChannelVerify` \|'
+        }
+    }
+
+    Context 'GAP-P5: replication is Pass only when both reads succeeded, and a failed read is never a count' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($ComputerName -ne $script:C16Dc4) }
+            function Get-ADReplicationPartnerMetadata { param([string]$Target, $Partition, $Credential, $ErrorAction)
+                if ($Target -eq $script:C16Dc2 -or $Target -eq $script:C16Dc6) { throw 'The RPC server is unavailable.' }
+                $bad = 0
+                if ($Target -eq $script:C16Dc5) { $bad = 3 }
+                [pscustomobject]@{ Partner = 'CN=NTDS Settings,CN=DC9'; Partition = 'DC=contoso,DC=com'; ConsecutiveReplicationFailures = $bad; LastReplicationSuccess = (Get-Date).AddMinutes(-5); LastReplicationResult = 0 } }
+            function Get-ADReplicationFailure { param([string]$Target, $Scope, $Credential, $ErrorAction)
+                if ($Target -eq $script:C16Dc1 -or $Target -eq $script:C16Dc5) { throw [System.UnauthorizedAccessException]'Access is denied.' }
+                if ($Target -eq $script:C16Dc6) { return [pscustomobject]@{ Partner = 'dc9'; FailureType = 'Link'; FailureCount = 4; FirstFailureTime = (Get-Date).AddHours(-3); LastError = 8453 } }
+                return @() }
+            function Get-ADReplicationQueueOperation { param([string]$Server, $Credential, $ErrorAction) return @() }
+        }
+        It 'grades each of six DCs on what was read (declared population: dc1..dc6)' {
+            $dcs = @($script:C16Dc1, $script:C16Dc2, $script:C16Dc3, $script:C16Dc4, $script:C16Dc5, $script:C16Dc6)
+            $rows = @(Get-AdfaReplicationHealth -DomainControllers $dcs -RpcPortTimeoutMs 100)
+            $rows.Count | Should -Be 6
+            $by = @{}
+            foreach ($r in $rows) { $by[[string]$r.DomainController] = $r }
+            # dc1: failure query refused - Not Assessed, and no fabricated count of 1.
+            $by[$script:C16Dc1].Status | Should -Be 'Not Assessed'
+            $null -eq $by[$script:C16Dc1].FailureCount | Should -BeTrue
+            $by[$script:C16Dc1].Detail | Should -Match 'ReplicationFailure: Access is denied'
+            # dc2: metadata unreadable, failure query empty - Not Assessed, never Pass.
+            $by[$script:C16Dc2].Status | Should -Be 'Not Assessed'
+            $null -eq $by[$script:C16Dc2].PartnerErrors | Should -BeTrue
+            $by[$script:C16Dc2].Detail | Should -Match 'PartnerMetadata: The RPC server is unavailable'
+            # dc3: both read, clean.
+            $by[$script:C16Dc3].Status | Should -Be 'Pass'
+            $by[$script:C16Dc3].FailureCount | Should -Be 0
+            $by[$script:C16Dc3].PartnerErrors | Should -Be 0
+            # dc4: unreachable - skipped, as before.
+            $by[$script:C16Dc4].Status | Should -Be 'Not Assessed'
+            $by[$script:C16Dc4].Detail | Should -Match 'SKIPPED'
+            # dc5: a measured partner error stands even though the failure query was refused.
+            $by[$script:C16Dc5].Status | Should -Be 'Fail'
+            $by[$script:C16Dc5].PartnerErrors | Should -Be 1
+            $null -eq $by[$script:C16Dc5].FailureCount | Should -BeTrue
+            # dc6: a measured failure stands even though the metadata could not be read.
+            $by[$script:C16Dc6].Status | Should -Be 'Fail'
+            $by[$script:C16Dc6].FailureCount | Should -Be 1
+        }
+        It 'no longer says the replication cmdlets take no -Server' {
+            $fn = @($script:C16Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AdfaReplicationHealth' }, $true))[0]
+            $fn.GetHelpContent().Synopsis | Should -Not -Match 'take no -Server'
+        }
+    }
+
+    Context 'GAP-P6: a site has a subnet only when a subnet names that site, and empty sites need the inventory' {
+        BeforeAll {
+            $script:C16Topology = [pscustomobject]@{
+                Sites   = @([pscustomobject]@{ Name = 'HQ' }, [pscustomobject]@{ Name = 'HQ-Branch' }, [pscustomobject]@{ Name = 'Lab,East' }, [pscustomobject]@{ Name = 'contoso' })
+                Subnets = @([pscustomobject]@{ Name = '192.0.2.0/25'; Site = 'CN=HQ-Branch,CN=Sites,CN=Configuration,DC=contoso,DC=com' },
+                    [pscustomobject]@{ Name = '192.0.2.128/25'; Site = 'CN=Lab\,East,CN=Sites,CN=Configuration,DC=contoso,DC=com' })
+            }
+            $script:C16SiteDcs = @([pscustomobject]@{ HostName = 'dc1.contoso.com'; Site = 'HQ' }, [pscustomobject]@{ HostName = 'dc2.contoso.com'; Site = 'HQ-Branch' },
+                [pscustomobject]@{ HostName = 'dc3.contoso.com'; Site = 'Lab,East' }, [pscustomobject]@{ HostName = 'dc4.contoso.com'; Site = 'contoso' })
+        }
+        It 'a site named HQ is not satisfied by a subnet of HQ-Branch, nor a site named like the domain label by the DN' {
+            $rows = @(Get-AdfaSiteHealthFinding -Topology $script:C16Topology -DomainControllers $script:C16SiteDcs)
+            (Get-C16Row $rows "Site 'HQ' has no subnets").Status | Should -Be 'Warning'
+            (Get-C16Row $rows "Site 'contoso' has no subnets").Status | Should -Be 'Warning'
+            Get-C16Row $rows "Site 'HQ-Branch' has no subnets" | Should -BeNullOrEmpty
+            Get-C16Row $rows "Site 'Lab,East' has no subnets" | Should -BeNullOrEmpty -Because 'an escaped comma in the site RDN is the site''s own name'
+            @($rows | Where-Object { $_.Item -like '*has no domain controllers' }).Count | Should -Be 0
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'without the DC inventory: no "no domain controllers" rows, one Not Assessed row naming DomainControllers, and no Pass' {
+            $one = [pscustomobject]@{ Sites = @([pscustomobject]@{ Name = 'HQ' }); Subnets = @([pscustomobject]@{ Name = '192.0.2.0/24'; Site = 'CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com' }) }
+            $rows = @(Get-AdfaSiteHealthFinding -Topology $one -DomainControllers @() -InventoryCollected $false)
+            @($rows).Count | Should -Be 1
+            $rows[0].Item | Should -Be 'Empty sites'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match 'DomainControllers'
+            # With it, the same topology passes; a plain site name (no DN) still matches exactly.
+            $plain = [pscustomobject]@{ Sites = @([pscustomobject]@{ Name = 'HQ' }); Subnets = @([pscustomobject]@{ Name = '192.0.2.0/24'; Site = 'HQ' }) }
+            $pass = @(Get-AdfaSiteHealthFinding -Topology $plain -DomainControllers @([pscustomobject]@{ HostName = 'dc1.contoso.com'; Site = 'HQ' }) -InventoryCollected $true)
+            @($pass).Count | Should -Be 1
+            $pass[0].Status | Should -Be 'Pass'
+            $pass[0].Detail | Should -Not -Match 'All sites have subnets and DCs'
+        }
+        It 'Invoke-Main runs the site check whenever Topology was read, telling it whether the inventory was collected' {
+            $branch = Get-C16Branch -Section 'Topology'
+            $calls = @(Get-C16Call -Ast $branch -Name 'Get-AdfaSiteHealthFinding')
+            $calls.Count | Should -Be 1
+            (Get-C16Argument -Call $calls[0] -Parameter 'InventoryCollected') | Should -Not -BeNullOrEmpty
+            $parentIf = $calls[0].Parent
+            while ($null -ne $parentIf -and $parentIf -isnot [System.Management.Automation.Language.IfStatementAst]) { $parentIf = $parentIf.Parent }
+            if ($null -ne $parentIf) { $parentIf.Clauses[0].Item1.Extent.Text | Should -Not -Match 'allDcInventory' }
+        }
+    }
+
+    Context 'GAP-P9/P18: the central store is Not Assessed when SYSVOL could not be listed, and the DC count uses the run''s credential' {
+        BeforeEach {
+            $script:C16Asked = @()
+            $script:C16Listed = @()
+            function Get-ADDomainController { param([string]$Filter, [string]$Server, $Credential, $ErrorAction)
+                $script:C16Asked += ("{0}|{1}" -f $Server, $PSBoundParameters.ContainsKey('Credential'))
+                @([pscustomobject]@{ HostName = ('dc1.{0}' -f $Server) }, [pscustomobject]@{ HostName = ('dc2.{0}' -f $Server) }) }
+            function Get-ADObject { param([string]$LDAPFilter, $Properties, [string]$Server, $Credential, $ErrorAction) @() }
+            # Keeps the code before C16 off the network: it asked Test-Path of a UNC path.
+            Mock Test-Path { $false }
+        }
+        It 'unreachable and access denied are Not Assessed with their class; a listed folder without PolicyDefinitions is a Warning; with it, a Pass' {
+            function Get-AdfaSysvolPolicyFolderRaw { param([string]$Path) $script:C16Listed += $Path
+                if ($Path -like '*contoso.com*') { return [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Names = @(); Error = 'Access to the path is denied.'; ErrorType = 'System.UnauthorizedAccessException'; HResult = -2147024891; Path = $Path } }
+                return [pscustomobject]@{ Ok = $false; Class = 'Unreachable'; Names = @(); Error = 'The network path was not found.'; ErrorType = 'System.IO.IOException'; HResult = -2147024843; Path = $Path } }
+            $cred = [System.Management.Automation.PSCredential]::Empty
+            $a = @(Get-AdfaRedundancy -DomainName $script:C16Domain -AdParams @{ Credential = $cred })
+            $b = @(Get-AdfaRedundancy -DomainName $script:C16Other -AdParams @{ Credential = $cred })
+            ($script:C16Listed -join ',') | Should -Be '\\contoso.com\SYSVOL\contoso.com\Policies,\\fabrikam.com\SYSVOL\fabrikam.com\Policies'
+            $ca = Get-C16Row $a 'GPO central store'
+            $ca.Status | Should -Be 'Not Assessed'
+            $ca.Detail | Should -Match 'access denied'
+            $cb = Get-C16Row $b 'GPO central store'
+            $cb.Status | Should -Be 'Not Assessed'
+            $cb.Detail | Should -Match 'unreachable'
+            ($script:C16Asked -join ',') | Should -Be 'contoso.com|True,fabrikam.com|True' -Because 'the DC count is read from each domain with the run''s credential'
+            (Get-C16Row $a 'Domain controller redundancy').Status | Should -Be 'Pass'
+            function Get-AdfaSysvolPolicyFolderRaw { param([string]$Path) [pscustomobject]@{ Ok = $true; Class = 'Read'; Names = @('{31B2F340-016D-11D2-945F-00C04FB984F9}'); Error = ''; ErrorType = ''; HResult = 0; Path = $Path } }
+            $warn = Get-C16Row @(Get-AdfaRedundancy -DomainName $script:C16Domain -AdParams @{}) 'GPO central store'
+            $warn.Status | Should -Be 'Warning'
+            $warn.Detail | Should -Match 'tool default'
+            function Get-AdfaSysvolPolicyFolderRaw { param([string]$Path) [pscustomobject]@{ Ok = $true; Class = 'Read'; Names = @('policydefinitions'); Error = ''; ErrorType = ''; HResult = 0; Path = $Path } }
+            (Get-C16Row @(Get-AdfaRedundancy -DomainName $script:C16Domain -AdParams @{}) 'GPO central store').Status | Should -Be 'Pass'
+        }
+        It 'no longer claims FSMO concentration' {
+            $fn = @($script:C16Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AdfaRedundancy' }, $true))[0]
+            $fn.GetHelpContent().Synopsis | Should -Not -Match 'FSMO concentration,'
+            ($fn.GetHelpContent().Synopsis -replace '\s+', ' ') | Should -Match 'FSMO concentration is not evaluated'
+        }
+    }
+
+    Context 'GAP-P16: an SRV lookup that failed is not a missing record, and a zone transfer setting read as safe is a row' {
+        It 'only the published no-record error is a Fail; a timeout is Not Assessed' {
+            Mock Test-CommandAvailable { $true }
+            function Resolve-DnsName { param([string]$Name, [string]$Type, $ErrorAction)
+                if ($Name -like '_ldap.*' -or $Name -like '_ldap._tcp*') { throw 'This operation returned because the timeout period expired' }
+                throw ("{0} : DNS name does not exist" -f $Name) }
+            $rows = @(Get-AdfaDnsDepth -DomainName $script:C16Domain)
+            (Get-C16Row $rows 'SRV _ldap._tcp.dc._msdcs.contoso.com').Status | Should -Be 'Not Assessed'
+            (Get-C16Row $rows 'SRV _ldap._tcp.dc._msdcs.contoso.com').Detail | Should -Match 'timeout'
+            (Get-C16Row $rows 'SRV _kerberos._tcp.contoso.com').Status | Should -Be 'Fail'
+            function Resolve-DnsName { param([string]$Name, [string]$Type, $ErrorAction) [pscustomobject]@{ Name = $Name; Type = 'SRV'; NameTarget = 'dc1.contoso.com' } }
+            (Get-C16Row @(Get-AdfaDnsDepth -DomainName $script:C16Domain) 'SRV _kerberos._tcp.contoso.com').Status | Should -Be 'Pass'
+        }
+        It 'every DNS server read gets a zone transfer row: Pass when no zone allows any server, Warning when one does, Not Assessed when the setting was not returned' {
+            Clear-AdfaDcPortCache
+            Mock Test-ModuleAvailable { $true }
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDnsServerRaw { param([string]$ComputerName)
+                $sec = @('NoTransfer', 'TransferToSecureServers')
+                if ($ComputerName -eq $script:C16Dc2) { $sec = @('NoTransfer', 'TransferAnyServer') }
+                if ($ComputerName -eq $script:C16Dc3) { $sec = @('NoTransfer', '') }
+                $zones = @(
+                    [pscustomobject]@{ ZoneName = 'contoso.com'; ZoneType = 'Primary'; IsAutoCreated = $false; IsDsIntegrated = $true; IsReverseLookupZone = $false; DynamicUpdate = 'Secure'; ReplicationScope = 'Domain'; SecureSecondaries = $sec[0] },
+                    [pscustomobject]@{ ZoneName = '2.0.192.in-addr.arpa'; ZoneType = 'Primary'; IsAutoCreated = $false; IsDsIntegrated = $true; IsReverseLookupZone = $true; DynamicUpdate = 'Secure'; ReplicationScope = 'Domain'; SecureSecondaries = $sec[1] })
+                $aging = @{}
+                foreach ($z in $zones) { $aging[$z.ZoneName.ToLowerInvariant()] = [pscustomobject]@{ Ok = $true; AgingEnabled = $true; NoRefreshInterval = [timespan]::FromDays(7); RefreshInterval = [timespan]::FromDays(7); ScavengeServers = @(); Error = '' } }
+                [pscustomobject]@{ Ok = $true; Error = ''; ErrorCode = ''; Zones = $zones; ScavengingOk = $true; ScavengingInterval = [timespan]::FromDays(7); ScavengingState = $true; ScavengingError = ''
+                    Aging = $aging; ForwardersOk = $true; Forwarders = @('192.0.2.53'); ForwarderError = '' } }
+            $dcs = @([pscustomobject]@{ HostName = $script:C16Dc1; Scope = $script:C16Domain }, [pscustomobject]@{ HostName = $script:C16Dc2; Scope = $script:C16Domain }, [pscustomobject]@{ HostName = $script:C16Dc3; Scope = $script:C16Domain })
+            $rows = @(Get-AdfaDnsHealth -DomainControllers $dcs -ScopedDomains @($script:C16Domain))
+            $xfer = @($rows | Where-Object { [string]$_.Item -like '*: zone transfer' })
+            $xfer.Count | Should -Be 3 -Because 'declared population: one row per DNS server read (three)'
+            (Get-C16Row $rows 'dc1.contoso.com: zone transfer').Status | Should -Be 'Pass'
+            (Get-C16Row $rows 'dc2.contoso.com: zone transfer').Status | Should -Be 'Warning'
+            (Get-C16Row $rows 'dc3.contoso.com: zone transfer').Status | Should -Be 'Not Assessed'
+            Clear-AdfaDcPortCache
+        }
+    }
+
+    Context 'GAP-P17/P19: SYSVOL global state and the time source say which host they read' {
+        It 'TimeSync: a w32tm query that failed or printed nothing is Not Assessed, never Info "Source: "' {
+            Mock Test-CommandAvailable { $true }
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $false; ExitCode = 1; Attempt = 1; Error = $null; StdOut = ''; OutFile = $null } }
+            $rows = @(Get-AdfaTimeSync)
+            @($rows).Count | Should -Be 1
+            $rows[0].Item | Should -Be 'Time source'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = "`r`n  `r`n"; OutFile = $null } }
+            (@(Get-AdfaTimeSync))[0].Status | Should -Be 'Not Assessed'
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = "time.contoso.com,0x8`r`n"; OutFile = $null } }
+            $ok = (@(Get-AdfaTimeSync))[0]
+            $ok.Status | Should -Be 'Info'
+            $ok.Detail | Should -Match ([regex]::Escape([Environment]::MachineName))
+            $ok.Detail | Should -Match 'Time Hierarchy'
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = "Local CMOS Clock`r`n"; OutFile = $null } }
+            (@(Get-AdfaTimeSync))[0].Status | Should -Be 'Warning'
+        }
+        It 'Sysvol: the dfsrmig global state row carries the domain of the host that read it and says so' {
+            Mock Test-CommandAvailable { $true }
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = "Current DFSR global state: 'Eliminated'`r`nSucceeded."; OutFile = $null } }
+            $row = (@(Get-AdfaSysvolHealth -HostDomain $script:C16Domain))[0]
+            $row.Status | Should -Be 'Pass'
+            $row.Scope | Should -Be $script:C16Domain
+            $row.Detail | Should -Match 'holds the PDC role'
+            $row.Detail | Should -Match 'SYSVOL engine rows'
+            # The added words attract no unrelated advice: a Warning row keeps the SYSVOL migration advice.
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = "Current DFSR global state: 'Redirected'"; OutFile = $null } }
+            $warn = (@(Get-AdfaSysvolHealth -HostDomain $script:C16Domain))[0]
+            $warn.Status | Should -Be 'Warning'
+            (Get-AdfaRecommendation -Section 'SYSVOL / DFSR' -Item $warn.Item -Detail $warn.Detail) | Should -Match 'dfsrmig /getmigrationstate'
+        }
+    }
+
+    Context 'GAP-P20: the Exchange SE DC gate passes only over a complete forest' {
+        BeforeAll {
+            $script:C16Se = $script:Config.ExchangeSe
+            $script:C16SeDcs = @([pscustomobject]@{ HostName = $script:C16Dc1; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false },
+                [pscustomobject]@{ HostName = $script:C16Dc2; OperatingSystem = 'Windows Server 2022 Standard'; IsReadOnly = $false })
+        }
+        It 'every DC supported over a complete forest is a Pass; over part of the forest it is Not Assessed naming -AllDomains' {
+            $full = Get-C16Row @(Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $script:C16SeDcs -SeConfig $script:C16Se -ForestComplete $true) 'Domain controller operating systems'
+            $full.Status | Should -Be 'Pass'
+            $part = Get-C16Row @(Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $script:C16SeDcs -SeConfig $script:C16Se) 'Domain controller operating systems'
+            $part.Status | Should -Be 'Not Assessed'
+            $part.Detail | Should -Match 'AllDomains'
+        }
+        It 'a DC whose OS was not read keeps the gate from passing, beside its own Not Assessed row' {
+            $mixed = @($script:C16SeDcs) + @([pscustomobject]@{ HostName = $script:C16Dc3; OperatingSystem = 'Not Assessed'; IsReadOnly = $false; EnrichmentError = 'STUB: referral' })
+            $rows = @(Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $mixed -SeConfig $script:C16Se -ForestComplete $true)
+            (Get-C16Row $rows 'Domain controller operating systems').Status | Should -Be 'Not Assessed'
+            (Get-C16Row $rows 'Domain controller OS - not readable').Status | Should -Be 'Not Assessed'
+            # A measured unsupported DC is a Fail whatever the scope.
+            $old = @($script:C16SeDcs) + @([pscustomobject]@{ HostName = $script:C16Dc4; OperatingSystem = 'Windows Server 2008 R2 Standard'; IsReadOnly = $false })
+            (Get-C16Row @(Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $old -SeConfig $script:C16Se) 'Domain controller operating systems').Status | Should -Be 'Fail'
+        }
+        It 'no DC enumerated names DomainControllers' {
+            (Get-C16Row @(Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers @() -SeConfig $script:C16Se) 'Domain controller operating systems').Detail | Should -Match 'DomainControllers'
+        }
+        It 'Invoke-Main tells the verdict whether the scope covers the forest' {
+            $branch = Get-C16Branch -Section 'ExchangeSeReadiness'
+            $calls = @(Get-C16Call -Ast $branch -Name 'Get-AdfaExchangeSeCompatibility')
+            $calls.Count | Should -Be 1
+            (Get-C16Argument -Call $calls[0] -Parameter 'ForestComplete') | Should -Match '\$scopeCoversForest'
+        }
+        It 'the README commands name DomainControllers wherever a section reads the DC inventory' {
+            $readme = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md')) -join "`n"
+            $calls = @([regex]::Matches($readme, '(?m)^\.\\src\\ADForestAssessment\\Invoke-ADForestAssessment\.ps1 [^\r\n]*(?:`\r?\n[^\r\n]*)*'))
+            $calls.Count | Should -BeGreaterThan 5
+            foreach ($c in $calls) {
+                $text = [string]$c.Value
+                if ($text -match '-Sections[ `\r\n]+([A-Za-z,]+)') {
+                    $named = @($Matches[1] -split ',')
+                    if (@($named | Where-Object { @('ExchangeSeReadiness', 'SiteGc') -contains $_ }).Count -gt 0) {
+                        $named | Should -Contain 'DomainControllers' -Because $text
+                    }
+                }
+            }
+        }
+    }
+
+    Context 'GAP-P24: Invoke-ExternalCommand drains both streams while the tool runs' {
+        BeforeAll {
+            $script:C16OnWindows = ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
+        }
+        It 'returns output far larger than a pipe buffer on stdout, without a false time-out' {
+            if ($script:C16OnWindows) { $r = Invoke-ExternalCommand -FilePath 'cmd.exe' -Arguments '/d /c "for /L %i in (1,1,20000) do @echo 0123456789"' -TimeoutSeconds 15 -Retries 1 }
+            else { $r = Invoke-ExternalCommand -FilePath '/bin/sh' -Arguments '-c "i=0; while [ $i -lt 20000 ]; do echo 0123456789; i=$((i+1)); done"' -TimeoutSeconds 15 -Retries 1 }
+            $r.Success | Should -BeTrue
+            $r.Error | Should -BeNullOrEmpty
+            $r.StdOut.Length | Should -BeGreaterThan 200000
+        }
+        It 'returns output far larger than a pipe buffer on stderr, without a false time-out' {
+            if ($script:C16OnWindows) { $r = Invoke-ExternalCommand -FilePath 'cmd.exe' -Arguments '/d /c "for /L %i in (1,1,20000) do @echo 0123456789 1>&2"' -TimeoutSeconds 15 -Retries 1 }
+            else { $r = Invoke-ExternalCommand -FilePath '/bin/sh' -Arguments '-c "i=0; while [ $i -lt 20000 ]; do echo 0123456789 1>&2; i=$((i+1)); done"' -TimeoutSeconds 15 -Retries 1 }
+            $r.Success | Should -BeTrue
+            $r.StdOut.Length | Should -BeGreaterThan 200000
+        }
+        It 'still times out a tool that does not finish, and keeps the return shape' {
+            if ($script:C16OnWindows) { $r = Invoke-ExternalCommand -FilePath 'cmd.exe' -Arguments '/d /c "ping -n 4 127.0.0.1 >nul"' -TimeoutSeconds 1 -Retries 1 }
+            else { $r = Invoke-ExternalCommand -FilePath '/bin/sh' -Arguments '-c "sleep 4"' -TimeoutSeconds 1 -Retries 1 }
+            $r.Success | Should -BeFalse
+            $r.Error | Should -Match 'Timeout after 1s'
+            (@($r.PSObject.Properties.Name) -join ',') | Should -Be 'Success,ExitCode,Attempt,Error,StdOut,OutFile'
+        }
+        It 'reads the streams asynchronously before the wait (the pattern the reference tool uses)' {
+            $fn = @($script:C16Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-ExternalCommand' }, $true))[0]
+            # Read from the parsed calls, not the text: the help of the function names both methods too.
+            $calls = @($fn.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true))
+            $async = @($calls | Where-Object { $_.Member.Extent.Text -eq 'ReadToEndAsync' })
+            $async.Count | Should -Be 2 -Because 'declared population: stdout and stderr'
+            (@($async | ForEach-Object { $_.Expression.Extent.Text }) -join ',') | Should -Be '$p.StandardOutput,$p.StandardError'
+            @($calls | Where-Object { $_.Member.Extent.Text -eq 'ReadToEnd' }).Count | Should -Be 0
+            $wait = @($calls | Where-Object { $_.Member.Extent.Text -eq 'WaitForExit' })
+            $wait.Count | Should -Be 2 -Because 'WaitForExit(timeout), then WaitForExit() as Microsoft says'
+            foreach ($a in $async) { $a.Extent.StartOffset | Should -BeLessThan $wait[0].Extent.StartOffset }
+        }
+    }
+
+    Context 'GAP-P25: an event scan that reached its cap says its counts are a floor' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaEventLogCoverageForLog { param([string]$ComputerName, [string]$LogName, $Credential, $WindowStart) [pscustomobject]@{ Coverage = 'Covered'; OldestRecord = (Get-Date).AddDays(-60); Reason = '' } }
+            # dc1's log returns as many events as the scan asks for; dc2's returns three.
+            function Get-WinEvent { param([string]$ComputerName, $FilterHashtable, [long]$MaxEvents, $Credential, $ErrorAction)
+                $n = 3
+                if ($ComputerName -eq $script:C16Dc1) { $n = $MaxEvents }
+                $id = [int]@($FilterHashtable['Id'])[0]
+                @(1..$n | ForEach-Object { [pscustomobject]@{ Id = $id; TimeCreated = (Get-Date).AddHours(-1 * $_) } }) }
+        }
+        It 'Directory Service events: the capped DC''s count is a MINIMUM naming the cap; the other DC''s is not (declared population: dc1, dc2)' {
+            $rows = @(Get-AdfaDsEventLog -DomainControllers @($script:C16Dc1, $script:C16Dc2) -MaxEvents 50)
+            $capped = @($rows | Where-Object { [string]$_.Item -like ('Event * on {0}' -f $script:C16Dc1) })
+            $plain = @($rows | Where-Object { [string]$_.Item -like ('Event * on {0}' -f $script:C16Dc2) })
+            $capped.Count | Should -Be 1
+            $plain.Count | Should -Be 1
+            $capped[0].Detail | Should -Match 'MINIMUM'
+            $capped[0].Detail | Should -Match 'cap of 50'
+            $plain[0].Detail | Should -Not -Match 'MINIMUM'
+        }
+        It 'DFS Replication events: the same, and the default cap is the config key' {
+            $script:Config.EventScanMaxEvents | Should -Be 500
+            $rows = @(Get-AdfaDfsrEventLog -DomainControllers @($script:C16Dc1, $script:C16Dc2) -MaxEvents 20)
+            (@($rows | Where-Object { [string]$_.Item -like ('Event * on {0}' -f $script:C16Dc1) })[0]).Detail | Should -Match 'cap of 20'
+            (@($rows | Where-Object { [string]$_.Item -like ('Event * on {0}' -f $script:C16Dc2) })[0]).Detail | Should -Not -Match 'MINIMUM'
+        }
+    }
+
+    Context 'GAP-P26: the lingering-object scan never passes on output it could not read' {
+        It 'exit 0 with no count is Not Assessed with the excerpt; a count of 0 is a Pass; a count above 0 a Fail (declared population: dc2..dc4)' {
+            Clear-AdfaDcPortCache
+            Mock Test-CommandAvailable { $true }
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; PDCEmulator = $script:C16Dc1 } }
+            function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
+                @($script:C16Dc1, $script:C16Dc2, $script:C16Dc3, $script:C16Dc4) | ForEach-Object { [pscustomobject]@{ HostName = $_ } } }
+            function Get-AdfaDsaInventory { param([Parameter(ValueFromRemainingArguments)]$a) @([pscustomobject]@{ DnsHostName = $script:C16Dc1; DsaGuid = '0f0e0d0c-0b0a-4909-8807-060504030201' }) }
+            Mock Invoke-ExternalCommand {
+                if ($Arguments -match 'dc2\.contoso\.com') { return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = 'RemoveLingeringObjects successful on dc2.contoso.com.'; OutFile = $null } }
+                if ($Arguments -match 'dc3\.contoso\.com') { return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = 'Found 0 lingering objects.'; OutFile = $null } }
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = 'Found 3 lingering objects.'; OutFile = $null } }
+            $rows = @(Get-AdfaLingeringObjectScan -DomainName $script:C16Domain -RpcPortTimeoutMs 100)
+            $rows.Count | Should -Be 3
+            $na = Get-C16Row $rows ('Advisory scan: {0}' -f $script:C16Dc2)
+            $na.Status | Should -Be 'Not Assessed'
+            $na.Detail | Should -Match 'RemoveLingeringObjects successful'
+            (Get-C16Row $rows ('Advisory scan: {0}' -f $script:C16Dc3)).Status | Should -Be 'Pass'
+            (Get-C16Row $rows ('Advisory scan: {0}' -f $script:C16Dc4)).Status | Should -Be 'Fail'
+            (Get-C16Row $rows ('Advisory scan: {0}' -f $script:C16Dc3)).Detail | Should -Match 'domain naming context only'
+            Clear-AdfaDcPortCache
+        }
+    }
+
+    Context 'GAP-P10: a security posture value that was not returned is not graded' {
+        It 'tombstone lifetime and machine account quota not returned are Not Assessed; measured values keep their grades' {
+            function Get-ADUser { param([Parameter(ValueFromRemainingArguments)]$a) @() }
+            function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ configurationNamingContext = 'CN=Configuration,DC=contoso,DC=com' } }
+            function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com' } }
+            # Asked for and returned with no value: before C16 both were graded Warning (" days", "= ").
+            function Get-ADObject { param([string]$Identity, $Properties, [string]$Server, $Credential, $ErrorAction) [pscustomobject]@{ DistinguishedName = $Identity; tombstoneLifetime = $null; 'ms-DS-MachineAccountQuota' = $null } }
+            $rows = @(Get-AdfaSecurityPosture -DomainName $script:C16Domain)
+            (Get-C16Row $rows 'Tombstone lifetime').Status | Should -Be 'Not Assessed'
+            (Get-C16Row $rows 'Tombstone lifetime').Detail | Should -Match 'not returned'
+            (Get-C16Row $rows 'Machine account quota').Status | Should -Be 'Not Assessed'
+            # Not returned at all.
+            function Get-ADObject { param([string]$Identity, $Properties, [string]$Server, $Credential, $ErrorAction) [pscustomobject]@{ DistinguishedName = $Identity } }
+            $rows = @(Get-AdfaSecurityPosture -DomainName $script:C16Domain)
+            (Get-C16Row $rows 'Tombstone lifetime').Status | Should -Be 'Not Assessed'
+            (Get-C16Row $rows 'Machine account quota').Status | Should -Be 'Not Assessed'
+            function Get-ADObject { param([string]$Identity, $Properties, [string]$Server, $Credential, $ErrorAction) [pscustomobject]@{ DistinguishedName = $Identity; tombstoneLifetime = 180; 'ms-DS-MachineAccountQuota' = 0 } }
+            $rows = @(Get-AdfaSecurityPosture -DomainName $script:C16Domain)
+            (Get-C16Row $rows 'Tombstone lifetime').Status | Should -Be 'Pass'
+            (Get-C16Row $rows 'Machine account quota').Status | Should -Be 'Pass'
+            function Get-ADObject { param([string]$Identity, $Properties, [string]$Server, $Credential, $ErrorAction) [pscustomobject]@{ DistinguishedName = $Identity; tombstoneLifetime = 60; 'ms-DS-MachineAccountQuota' = 10 } }
+            $rows = @(Get-AdfaSecurityPosture -DomainName $script:C16Domain)
+            (Get-C16Row $rows 'Tombstone lifetime').Status | Should -Be 'Warning'
+            (Get-C16Row $rows 'Machine account quota').Status | Should -Be 'Warning'
+        }
+    }
+
+    Context 'GAP-P29: no dead per-section status, and a failed forest summary is a row' {
+        It 'the script holds no $sectionStatus, and the Forest branch reports a failed summary as a Not Assessed row' {
+            @($script:C16Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -eq 'sectionStatus' }, $true)).Count | Should -Be 0
+            $branch = Get-C16Branch -Section 'Forest'
+            $try = @($branch.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] }, $true))
+            $try.Count | Should -BeGreaterThan 0
+            $catch = $try[0].CatchClauses[0].Body
+            $finding = @(Get-C16Call -Ast $catch -Name 'New-Finding')
+            $finding.Count | Should -Be 1
+            (Get-C16Argument -Call $finding[0] -Parameter 'Item') | Should -Be "'Forest summary'"
+            (Get-C16Argument -Call $finding[0] -Parameter 'Status') | Should -Be '$script:Status.NotAssessed'
+        }
+    }
+
+    Context 'GAP-P21/P22/P23/P30: the README and help say what the parameters do' {
+        It 'every parameter a README command names exists on the script' {
+            $known = @(@($script:C16Ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) + @('Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction', 'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable'))
+            $known.Count | Should -BeGreaterThan 30
+            $readme = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md')) -join "`n"
+            @([regex]::Matches($readme, '(?m)^\.\\src\\ADForestAssessment\\Invoke-ADForestAssessment\.ps1')).Count | Should -BeGreaterThan 5 -Because 'non-vacuity: the README commands were found'
+            (@(Get-C16ReadmeUnknownParameter -Text $readme -Known $known) -join ',') | Should -Be ''
+            # The guard can fail: the v1.16.0 example.
+            $bad = "x`n" + '```powershell' + "`n.\src\ADForestAssessment\Invoke-ADForestAssessment.ps1 -SkipVerification ``" + "`n    -Sections Trusts`n" + '```' + "`n"
+            (@(Get-C16ReadmeUnknownParameter -Text $bad -Known $known) -join ',') | Should -Be 'SkipVerification'
+        }
+        It 'the help documents every parameter, and no longer claims what the code does not do' {
+            $help = $script:C16Ast.GetHelpContent()
+            foreach ($p in @($script:C16Ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })) {
+                $help.Parameters.ContainsKey($p.ToUpperInvariant()) | Should -BeTrue -Because ("-{0} has a .PARAMETER entry" -f $p)
+            }
+            ($help.Outputs -join ' ') | Should -Not -Match 'per-section status'
+            ($help.Outputs -join ' ') | Should -Match 'Section-Coverage\.csv'
+            $help.Parameters['ALLDOMAINS'] | Should -Not -Match 'such as trusts'
+            $help.Parameters['SECTIONS'] | Should -Not -Match 'all-attributes export'
+            $help.Parameters['SECTIONS'] | Should -Match 'RestoreIntegrity'
+            $help.Parameters['CREDENTIAL'] | Should -Match 'GroupPolicy'
+        }
+    }
+
+    Context 'Independent review of the C16 diff: defects found before commit' {
+        BeforeAll {
+            $script:C16RvFab1 = 'dc1.fabrikam.com'
+            $script:C16RvHostile = 'backup-replication.contoso.com'
+        }
+        It 'findings 1/7: only answers of type SRV count; a NODATA answer (the zone SOA from the Authority section) is a Fail' {
+            Mock Test-CommandAvailable { $true }
+            function Resolve-DnsName { param([string]$Name, [string]$Type, $ErrorAction)
+                if ($Name -like '_kerberos.*') { return [pscustomobject]@{ Name = 'contoso.com'; Type = 'SOA'; Section = 'Authority'; PrimaryServer = 'dc1.contoso.com' } }
+                @([pscustomobject]@{ Name = $Name; Type = 'SRV'; Section = 'Answer'; NameTarget = 'dc1.contoso.com' },
+                    [pscustomobject]@{ Name = 'dc1.contoso.com'; Type = 'A'; Section = 'Additional'; IPAddress = '192.0.2.10' }) }
+            $rows = @(Get-AdfaDnsDepth -DomainName $script:C16Domain)
+            $krb = Get-C16Row $rows 'SRV _kerberos._tcp.contoso.com'
+            $krb.Status | Should -Be 'Fail'
+            $krb.Detail | Should -Match 'SOA'
+            $ldap = Get-C16Row $rows 'SRV _ldap._tcp.dc._msdcs.contoso.com'
+            $ldap.Status | Should -Be 'Pass'
+            $ldap.Detail | Should -Match '^1 SRV record' -Because 'the Additional-section A record is not an SRV record'
+        }
+        It 'findings 2/14: zone transfer is judged over primary zones; a forwarder or stub zone with no SecureSecondaries does not block the Pass, and a server with no primary zone is Not Assessed (declared population: dc1..dc3)' {
+            Clear-AdfaDcPortCache
+            Mock Test-ModuleAvailable { $true }
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-AdfaDnsServerRaw { param([string]$ComputerName)
+                $primary = [pscustomobject]@{ ZoneName = 'contoso.com'; ZoneType = 'Primary'; IsAutoCreated = $false; IsDsIntegrated = $true; IsReverseLookupZone = $false; DynamicUpdate = 'Secure'; ReplicationScope = 'Domain'; SecureSecondaries = 'TransferToSecureServers' }
+                $forwarder = [pscustomobject]@{ ZoneName = 'fabrikam.com'; ZoneType = 'Forwarder'; IsAutoCreated = $false; IsDsIntegrated = $true; IsReverseLookupZone = $false; DynamicUpdate = ''; ReplicationScope = 'Forest'; SecureSecondaries = '' }
+                $stub = [pscustomobject]@{ ZoneName = 'stub.fabrikam.com'; ZoneType = 'Stub'; IsAutoCreated = $false; IsDsIntegrated = $false; IsReverseLookupZone = $false; DynamicUpdate = ''; ReplicationScope = ''; SecureSecondaries = '' }
+                $zones = @($primary, $forwarder, $stub)
+                if ($ComputerName -eq $script:C16Dc2) { $zones = @($forwarder) }
+                if ($ComputerName -eq $script:C16Dc3) { $zones = @() }
+                $aging = @{}
+                foreach ($z in $zones) { $aging[$z.ZoneName.ToLowerInvariant()] = [pscustomobject]@{ Ok = $true; AgingEnabled = $true; NoRefreshInterval = [timespan]::FromDays(7); RefreshInterval = [timespan]::FromDays(7); ScavengeServers = @(); Error = '' } }
+                [pscustomobject]@{ Ok = $true; Error = ''; ErrorCode = ''; Zones = $zones; ScavengingOk = $true; ScavengingInterval = [timespan]::FromDays(7); ScavengingState = $true; ScavengingError = ''
+                    Aging = $aging; ForwardersOk = $true; Forwarders = @('192.0.2.53'); ForwarderError = '' } }
+            $dcs = @([pscustomobject]@{ HostName = $script:C16Dc1; Scope = $script:C16Domain }, [pscustomobject]@{ HostName = $script:C16Dc2; Scope = $script:C16Domain }, [pscustomobject]@{ HostName = $script:C16Dc3; Scope = $script:C16Domain })
+            $rows = @(Get-AdfaDnsHealth -DomainControllers $dcs -ScopedDomains @($script:C16Domain))
+            @($rows | Where-Object { [string]$_.Item -like '*: zone transfer' }).Count | Should -Be 3 -Because 'declared population: one row per DNS server read (three)'
+            $one = Get-C16Row $rows 'dc1.contoso.com: zone transfer'
+            $one.Status | Should -Be 'Pass'
+            $one.Detail | Should -Match 'None of the 1 Primary zone'
+            $two = Get-C16Row $rows 'dc2.contoso.com: zone transfer'
+            $two.Status | Should -Be 'Not Assessed'
+            $two.Detail | Should -Match 'No Primary zone'
+            $three = Get-C16Row $rows 'dc3.contoso.com: zone transfer'
+            $three.Status | Should -Be 'Not Assessed' -Because 'a server read with no zone is never "None of the 0 zone(s)"'
+            $three.Detail | Should -Not -Match 'None of the 0'
+            Clear-AdfaDcPortCache
+        }
+        It 'findings 3/9: empty sites need an inventory of every domain of the forest with no domain failed' {
+            (Get-AdfaSiteInventoryGap -Collected $true -DcCount 2 -ScopeCoversForest $true -Failures @()) | Should -Be ''
+            (Get-AdfaSiteInventoryGap -Collected $false -DcCount 0 -ScopeCoversForest $true) | Should -Match 'DomainControllers'
+            (Get-AdfaSiteInventoryGap -Collected $true -DcCount 0 -ScopeCoversForest $true) | Should -Match 'no DC'
+            (Get-AdfaSiteInventoryGap -Collected $true -DcCount 2 -ScopeCoversForest $false) | Should -Match 'AllDomains'
+            $failed = Get-AdfaSiteInventoryGap -Collected $true -DcCount 2 -ScopeCoversForest $true -Failures @([pscustomobject]@{ Domain = 'child.contoso.com'; Error = 'STUB' })
+            $failed | Should -Match 'child\.contoso\.com'
+            # A site holding only DCs of a domain not in the inventory is not called empty.
+            $topo = [pscustomobject]@{ Sites = @([pscustomobject]@{ Name = 'HQ' }, [pscustomobject]@{ Name = 'Branch' })
+                Subnets = @([pscustomobject]@{ Name = '192.0.2.0/25'; Site = 'CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com' }, [pscustomobject]@{ Name = '192.0.2.128/25'; Site = 'CN=Branch,CN=Sites,CN=Configuration,DC=contoso,DC=com' }) }
+            $rows = @(Get-AdfaSiteHealthFinding -Topology $topo -DomainControllers @([pscustomobject]@{ HostName = $script:C16Dc1; Site = 'HQ' }) -InventoryCollected ($failed -eq '') -InventoryGap $failed)
+            @($rows | Where-Object { $_.Item -like '*has no domain controllers' }).Count | Should -Be 0
+            (Get-C16Row $rows 'Empty sites').Status | Should -Be 'Not Assessed'
+            (Get-C16Row $rows 'Empty sites').Detail | Should -Match 'child\.contoso\.com'
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'findings 3/9: Invoke-Main judges empty sites on the gap of the whole forest, never on a non-empty inventory alone' {
+            $branch = Get-C16Branch -Section 'Topology'
+            $gap = @(Get-C16Call -Ast $branch -Name 'Get-AdfaSiteInventoryGap')
+            $gap.Count | Should -Be 1
+            (Get-C16Argument -Call $gap[0] -Parameter 'Collected') | Should -Be '$dcInventoryCollected'
+            (Get-C16Argument -Call $gap[0] -Parameter 'ScopeCoversForest') | Should -Be '$scopeCoversForest'
+            (Get-C16Argument -Call $gap[0] -Parameter 'Failures') | Should -Be '@($dcInventoryFailures)'
+            $site = @(Get-C16Call -Ast $branch -Name 'Get-AdfaSiteHealthFinding')
+            $site.Count | Should -Be 1
+            (Get-C16Argument -Call $site[0] -Parameter 'InventoryCollected') | Should -Be '($siteInventoryGap -eq '''')'
+            (Get-C16Argument -Call $site[0] -Parameter 'InventoryGap') | Should -Be '$siteInventoryGap'
+        }
+        It 'finding 4: the not-readable subscription row names each DC''s own cause' {
+            $subs = @([pscustomobject]@{ DcName = $script:C16Dc1; Enabled = $null; Options = $null; Error = 'access denied: STUB refused' },
+                [pscustomobject]@{ DcName = $script:C16Dc2; Enabled = $null; Options = $null; Error = 'unreachable: STUB no answer' },
+                [pscustomobject]@{ DcName = $script:C16Dc3; Enabled = $true; Options = $null; Error = '' })
+            $na = Get-C16Row @(Get-AdfaDfsrSubscriptionVerdict -DomainName $script:C16Domain -Subscriptions $subs) 'DFSR SYSVOL subscription - not readable'
+            $na.Status | Should -Be 'Not Assessed'
+            $na.Detail | Should -Match 'dc1\.contoso\.com \(access denied: STUB refused\)'
+            $na.Detail | Should -Match 'dc2\.contoso\.com \(unreachable: STUB no answer\)'
+        }
+        It 'findings 6/10: msDFSR-Enabled not returned is unknown with its cause, never TRUE, and gives no Pass' {
+            $raw = [pscustomobject]@{ Ok = $true; Error = ''; Dcs = @(
+                    [pscustomobject]@{ HostName = $script:C16Dc1; Dfsr = 'Present'; DfsrEnabled = $null; DfsrOptions = $null; DfsrError = '' },
+                    [pscustomobject]@{ HostName = $script:C16Dc2; Dfsr = 'Present'; DfsrEnabled = $null; DfsrOptions = $null; DfsrError = '' }) }
+            $list = ConvertTo-AdfaDfsrSubscriptionList -Raw $raw
+            @($list.Subscriptions).Count | Should -Be 2 -Because 'declared population: dc1 and dc2, both Present'
+            foreach ($s in @($list.Subscriptions)) {
+                $null -eq $s.Enabled | Should -BeTrue -Because $s.DcName
+                $s.Error | Should -Match 'not returned'
+            }
+            $rows = @(Get-AdfaDfsrSubscriptionVerdict -DomainName $script:C16Domain -Subscriptions $list.Subscriptions -NotDfsrCount $list.NotDfsrCount)
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+            (Get-C16Row $rows 'DFSR SYSVOL subscription - not readable').Detail | Should -Match 'dc2\.contoso\.com \(msDFSR-Enabled was not returned'
+            # A returned Boolean is still that value.
+            $raw.Dcs[0].DfsrEnabled = $true
+            (@((ConvertTo-AdfaDfsrSubscriptionList -Raw $raw).Subscriptions)[0]).Enabled | Should -BeTrue
+            # The help no longer gives the KB as the source of an "unset means enabled" rule.
+            $fn = @($script:C16Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'ConvertTo-AdfaDfsrSubscriptionList' }, $true))[0]
+            ($fn.GetHelpContent().Description -replace '\s+', ' ') | Should -Not -Match 'written only when replication is disabled'
+        }
+        It 'finding 5: a DC whose partner metadata came back empty, or with no last-success time, is Not Assessed, never Pass (declared population: dc1.fabrikam.com, dc2, dc3)' {
+            Clear-AdfaDcPortCache
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return $true }
+            function Get-ADReplicationPartnerMetadata { param([string]$Target, $Partition, $Credential, $ErrorAction)
+                if ($Target -eq $script:C16RvFab1) { return }
+                if ($Target -eq $script:C16Dc2) { return [pscustomobject]@{ Partner = 'CN=NTDS Settings,CN=DC9'; Partition = 'DC=contoso,DC=com'; ConsecutiveReplicationFailures = 0; LastReplicationSuccess = $null; LastReplicationResult = 0 } }
+                [pscustomobject]@{ Partner = 'CN=NTDS Settings,CN=DC9'; Partition = 'DC=contoso,DC=com'; ConsecutiveReplicationFailures = 0; LastReplicationSuccess = (Get-Date).AddMinutes(-5); LastReplicationResult = 0 } }
+            function Get-ADReplicationFailure { param([string]$Target, $Scope, $Credential, $ErrorAction) return }
+            function Get-ADReplicationQueueOperation { param([string]$Server, $Credential, $ErrorAction) return }
+            $dcs = @([pscustomobject]@{ HostName = $script:C16RvFab1; Scope = $script:C16Other }, [pscustomobject]@{ HostName = $script:C16Dc2; Scope = $script:C16Domain }, [pscustomobject]@{ HostName = $script:C16Dc3; Scope = $script:C16Domain })
+            $rows = @(Get-AdfaReplicationHealth -DomainControllers $dcs -RpcPortTimeoutMs 100 -ScopedDomains @($script:C16Domain, $script:C16Other))
+            $by = @{}
+            foreach ($r in @($rows | Where-Object { $_.PSObject.Properties['DomainController'] })) { $by[[string]$r.DomainController] = $r }
+            @($by.Keys).Count | Should -Be 3
+            $by[$script:C16RvFab1].Status | Should -Be 'Not Assessed'
+            $by[$script:C16RvFab1].PartnerCount | Should -Be 0
+            $by[$script:C16RvFab1].Detail | Should -Match 'no inbound replication partner'
+            $by[$script:C16RvFab1].Detail | Should -Match 'only DC of fabrikam\.com'
+            $by[$script:C16Dc2].Status | Should -Be 'Not Assessed'
+            $by[$script:C16Dc2].Detail | Should -Match 'LastReplicationSuccess'
+            $by[$script:C16Dc3].Status | Should -Be 'Pass'
+            $by[$script:C16Dc3].Detail | Should -Be ''
+            Clear-AdfaDcPortCache
+        }
+        It 'finding 8: a domain label holding "replication" does not pull the central store Warning to replication advice' {
+            function Get-ADDomainController { param([string]$Filter, [string]$Server, $Credential, $ErrorAction) @([pscustomobject]@{ HostName = 'dc1' }, [pscustomobject]@{ HostName = 'dc2' }) }
+            function Get-ADObject { param([string]$LDAPFilter, $Properties, [string]$Server, $Credential, $ErrorAction) @() }
+            function Get-AdfaSysvolPolicyFolderRaw { param([string]$Path) [pscustomobject]@{ Ok = $true; Class = 'Read'; Names = @('{31B2F340-016D-11D2-945F-00C04FB984F9}'); Error = ''; ErrorType = ''; HResult = 0; Path = $Path } }
+            foreach ($d in @($script:C16Domain, $script:C16RvHostile)) {
+                $warn = Get-C16Row @(Get-AdfaRedundancy -DomainName $d -AdParams @{}) 'GPO central store'
+                $warn.Status | Should -Be 'Warning' -Because $d
+                $warn.Detail | Should -Not -Match ([regex]::Escape($d))
+                $c = ConvertTo-AdfaConsolidatedFinding -Section 'Redundancy & Availability' -Row $warn -StatusColumn 'Status'
+                $c.Recommendation | Should -Match '^Create the GPO central store' -Because $d
+            }
+        }
+        It 'finding 11: a w32tm query that exited non-zero WITH output is Not Assessed, never Info "Source: <error>"' {
+            Mock Test-CommandAvailable { $true }
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $false; ExitCode = 1; Attempt = 1; Error = $null; StdOut = "The following error occurred: The service has not been started. (0x80070426)`r`n"; OutFile = $null } }
+            $rows = @(Get-AdfaTimeSync)
+            @($rows).Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+            $rows[0].Detail | Should -Match 'exit code 1'
+            $rows[0].Detail | Should -Not -Match '^Source:'
+        }
+        It 'finding 12: Invoke-Main passes the engine read''s own NotDfsrCount and subscriptions to the verdict' {
+            $branch = Get-C16Branch -Section 'Sysvol'
+            $verdict = @(Get-C16Call -Ast $branch -Name 'Get-AdfaDfsrSubscriptionVerdict')
+            $verdict.Count | Should -Be 1
+            (Get-C16Argument -Call $verdict[0] -Parameter 'NotDfsrCount') | Should -Be '([int]$subscriptionList.NotDfsrCount)'
+            (Get-C16Argument -Call $verdict[0] -Parameter 'Subscriptions') | Should -Be '@($subscriptionList.Subscriptions)'
+            (Get-C16Argument -Call $verdict[0] -Parameter 'DomainName') | Should -Be '$d'
+        }
+        It 'finding 13: output a grandchild holds open past the drain bound is a failure that is not retried and does not block' {
+            if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { $file = 'cmd.exe'; $argList = '/d /c "start /b ping -n 4 127.0.0.1"' }
+            else { $file = '/bin/sh'; $argList = '-c "sleep 3 &"' }
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $r = Invoke-ExternalCommand -FilePath $file -Arguments $argList -TimeoutSeconds 15 -Retries 2 -RetryDelaySeconds 1 -DrainTimeoutMs 300
+            $sw.Stop()
+            $r.Success | Should -BeFalse
+            $r.Error | Should -Match 'not complete within 300 ms'
+            $r.Attempt | Should -Be 1 -Because 'the tool ran and exited, so it is not run again'
+            $r.ExitCode | Should -Be 0
+            $r.StdOut | Should -Be ''
+            $sw.Elapsed.TotalSeconds | Should -BeLessThan 2.5 -Because 'the result is not read while another process holds the pipe'
+            (@($r.PSObject.Properties.Name) -join ',') | Should -Be 'Success,ExitCode,Attempt,Error,StdOut,OutFile'
+        }
+        It 'finding 15: the dfsrmig state is read from the line Learn publishes (no quotes), the quoted form still accepted' {
+            Mock Test-CommandAvailable { $true }
+            $cases = @(
+                @{ Out = "Current DFSR global state: Prepared`r`nSucceeded."; Status = 'Warning' },
+                @{ Out = "Current DFSR global state: Eliminated`r`nSucceeded."; Status = 'Pass' },
+                @{ Out = "Current DFSR global state: 'Eliminated'`r`nSucceeded."; Status = 'Pass' },
+                @{ Out = "Current DFSR global state: 'Start'"; Status = 'Warning' },
+                @{ Out = "Current DFSR global state: Preparing`r`nSucceeded."; Status = 'Not Assessed' },
+                @{ Out = "Unable to read the global state."; Status = 'Not Assessed' })
+            $cases.Count | Should -Be 6 -Because 'declared population: the four published states in both forms plus two unrecognised outputs'
+            Mock Invoke-ExternalCommand { [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = $script:C16RvOut; OutFile = $null } }
+            foreach ($c in $cases) {
+                $script:C16RvOut = $c.Out
+                (@(Get-AdfaSysvolHealth -HostDomain $script:C16Domain))[0].Status | Should -Be $c.Status -Because $c.Out
+            }
+        }
+    }
+
+    Context 'Version' {
+        It 'is 1.36.0 in the script and the manifest' {
+            $script:Config.Version | Should -Be '1.36.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.36.0'
         }
     }
 }

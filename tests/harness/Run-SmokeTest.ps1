@@ -877,7 +877,12 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
         if ([string]::IsNullOrWhiteSpace([string]$stubNamed['Server'])) { throw 'STUB: a SYSVOL engine object must be read from its own domain' }
         if ($stubIdentity -like 'CN=Domain System Volume (SYSVOL share),*') { throw (New-Object SmokeStub.ADIdentityNotFoundException ("Cannot find an object with identity: '{0}'" -f $stubIdentity)) }
         if ($stubIdentity -like 'CN=DFSR-GlobalSettings,*') { return [pscustomobject]@{ DistinguishedName = $stubIdentity; ObjectClass = 'msDFSR-GlobalSettings'; 'msDFSR-Flags' = 48 } }
-        return [pscustomobject]@{ DistinguishedName = $stubIdentity; ObjectClass = 'msDFSR-Subscription' }
+        # The subscription as Get-ADObject returns it when msDFSR-Enabled is asked for and set TRUE: since
+        # the independent review of the C16 diff (findings 6/10) a value not returned is no longer taken
+        # as TRUE, so the stub returns what it is asked for.
+        $stubSub = [pscustomobject]@{ DistinguishedName = $stubIdentity; ObjectClass = 'msDFSR-Subscription' }
+        if (@($stubNamed['Properties']) -contains 'msDFSR-Enabled') { $stubSub | Add-Member -NotePropertyName 'msDFSR-Enabled' -NotePropertyValue $true }
+        return $stubSub
     }
     # C10: told apart by what they ask for - the member and delegation property lists hold
     # primaryGroupID, no other section's does - and by the configuration searches under CN=Sites and
@@ -1784,6 +1789,28 @@ $c15TimeCsv = Join-Path $result.CsvPath 'Time Configuration.csv'
 if (Test-Path $c15TimeCsv) { Check (@(Import-Csv $c15TimeCsv | Where-Object { $_.Type -eq 'NT5DS' -and $_.NtpServer -eq '(not set)' -and $_.AnnounceFlags -eq '10' }).Count -eq 1) 'C15 INV-015: Type, NtpServer and AnnounceFlags are in their columns' }
 else { Check $false 'C15: Time Configuration CSV exists' }
 
+# PORT-PLAN C16 (GAP-P1..P30): the triaged sections in the single-domain run.
+$c16Text = { param($Row) (@($Row.PSObject.Properties | ForEach-Object { [string]$_.Value }) -join ' ') }
+$c16Sysvol = @($smokeFindings | Where-Object { $_.Section -eq 'SYSVOL / DFSR' })
+Check (@($c16Sysvol | Where-Object { $_.Item -eq 'DFSR SYSVOL replication enabled' -and $_.Status -eq 'Pass' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'on all 1 DC\(s\)' }).Count -eq 1) 'C16 GAP-P1: the stub DC''s SYSVOL subscription is read by the engine read from its own domain, and passes (declared population: 1 DC)'
+Check (@($c16Sysvol | Where-Object { $_.Item -like 'DFSR SYSVOL subscription*' }).Count -eq 0) 'C16 GAP-P1: no "not readable" or "state" row when the one subscription was read'
+Check (@($c16Sysvol | Where-Object { $_.Item -eq 'DFSR migration global state' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'the computer running the assessment' }).Count -eq 1) 'C16 GAP-P17: the dfsrmig row says it reads the host''s own domain, and is Not Assessed with no dfsrmig on the host'
+$c16Site = @($smokeFindings | Where-Object { $_.Section -eq 'Site Health' })
+Check (@($c16Site | Where-Object { $_.Item -eq 'Site/subnet topology' -and $_.Status -eq 'Pass' }).Count -eq 1 -and @($c16Site | Where-Object { $_.Item -eq 'Empty sites' }).Count -eq 0) 'C16 GAP-P6: with the DC inventory, the stub site has its subnet and its DC, and the topology row passes'
+$c16Cs = @($smokeFindings | Where-Object { $_.Section -eq 'Redundancy & Availability' -and $_.Item -eq 'GPO central store' })
+Check ($c16Cs.Count -eq 1 -and $c16Cs[0].Status -eq 'Pass' -and $c16Cs[0].Detail -match [regex]::Escape('\\contoso.com\SYSVOL\contoso.com\Policies')) 'C16 GAP-P9: the central store is read by listing the domain''s Policies folder, and passes with PolicyDefinitions in it'
+Check (@($script:SmokeGpoListCalls | Where-Object { $_ -eq '\\contoso.com\SYSVOL\contoso.com\Policies' }).Count -ge 1) 'C16 GAP-P9: the Policies listing went through the read-only folder seam'
+$c16Se = @($smokeFindings | Where-Object { $_.Section -eq 'Exchange SE Compatibility' -and $_.Item -eq 'Domain controller operating systems' })
+Check ($c16Se.Count -eq 1 -and $c16Se[0].Status -eq 'Pass' -and $c16Se[0].Detail -match 'every domain of the forest') 'C16 GAP-P20: a one-domain forest scoped whole, with its DC inventory, passes the Exchange SE DC gate'
+# Independent review of the C16 diff: a replication Pass needs a measured partner (finding 5). The SRV
+# rule (findings 1/7) is in Run-Validation and Pester: Resolve-DnsName is not available to these passes.
+$c16RepCsv = Join-Path $result.CsvPath 'Replication Health.csv'
+if (Test-Path $c16RepCsv) {
+    $c16Rep = @(Import-Csv $c16RepCsv | Where-Object { $_.DomainController -eq 'dc1.contoso.com' })
+    Check ($c16Rep.Count -eq 1 -and $c16Rep[0].Status -eq 'Pass' -and $c16Rep[0].PartnerCount -eq '1' -and $c16Rep[0].LastSuccessMinutesAgo -ne '') 'C16 review 5: the stub DC passes replication on one measured partner with a last-success time (declared population: dc1)'
+}
+else { Check $false 'C16 review 5: Replication Health CSV exists' }
+
 Write-Host ""
 Write-Host ("Output bundle: {0}" -f $result.OutputRoot)
 Get-ChildItem -Recurse $result.OutputRoot | Select-Object -First 30 FullName | ForEach-Object { Write-Host ("   {0}" -f $_.FullName) }
@@ -1857,6 +1884,12 @@ foreach ($c14cMode in @('Unresolved', 'Refused')) {
     Check ($passU.Count -eq 0) ("C14c {0}: no per-DC row of the unreachable DC passes ({1})" -f $c14cMode, (@($passU | ForEach-Object { "{0} :: {1}" -f $_.Section, $_.Item }) -join '; '))
     Check (@($script:SmokeTlsCalls).Count -eq 0 -and @($findingsU | Where-Object { $_.Section -eq 'DC Certificates' -and $_.Item -eq 'LDAPS certificate: dc1.contoso.com' -and $_.Detail -match 'port 636 was not probed' }).Count -eq 1) ("C14c {0}: with -IncludeLdapsHandshake, no handshake is attempted with the DC and its row names the class" -f $c14cMode)
     # The SYSVOL read of Gpo on the PDC (the same DC): every row names the class, none says 445 did not answer.
+    # PORT-PLAN C16 (GAP-P3): the outbound direction is asked of the domain's PDC emulator (the stub DC),
+    # so a PDC classified Unreachable is not asked, and the trust row names its class.
+    Check (@($findingsU | Where-Object { $_.Section -eq 'Trusts & Two-Way Health' -and (& $c16Text $_) -match 'Outbound direction not read on dc1\.contoso\.com: Unreachable, classified once for this run' }).Count -eq 1) ("C16 GAP-P3 {0}: the outbound direction is asked of the domain's own DC, which is not asked once classified Unreachable" -f $c14cMode)
+    # PORT-PLAN C16 (GAP-P19): w32tm answers here, and the time source row names the host it read.
+    $tsU = @($findingsU | Where-Object { $_.Section -eq 'Time Sync' -and $_.Item -eq 'Time source' })
+    Check ($tsU.Count -eq 1 -and $tsU[0].Status -eq 'Info' -and $tsU[0].Detail -match 'the computer running the assessment' -and $tsU[0].Detail -match 'Time Hierarchy') ("C16 GAP-P19 {0}: the time source row says it is the host's, not a DC's" -f $c14cMode)
     $gpoU = @($findingsU | Where-Object { $_.Section -eq 'GPO Inventory' -and ($_.Item -like 'GPO folder listing: *' -or $_.Item -like 'GPO version: {*') })
     Check ($gpoU.Count -ge 1 -and @($gpoU | Where-Object { $_.Status -ne 'Not Assessed' -or $_.Detail -notmatch 'classified once for this run' -or $_.Detail -match 'did not answer' }).Count -eq 0) ("C14c {0}: the GPO SYSVOL rows of the PDC name its class, never a 445 probe that was not made ({1} rows)" -f $c14cMode, $gpoU.Count)
     Remove-Item -Recurse -Force $outU -ErrorAction SilentlyContinue
@@ -2072,6 +2105,51 @@ foreach ($d in $multiDomains) {
 Check (@($pa2 | Where-Object { $_.Item -match '^(Schema|Enterprise) Admins members: contoso\.com$' }).Count -eq 2) 'Multi-domain: the Schema Admins and Enterprise Admins rows appear once, for the forest root'
 Check (@($pa2 | Where-Object { $_.Item -match '^Privileged group: (Schema Admins|Enterprise Admins): (north|south)\.' }).Count -eq 0) 'Multi-domain: no child domain is given a forest-root group'
 Check (@($pa2 | Where-Object { $_.Item -match '^Privileged group: (Administrators|Domain Admins): ' }).Count -eq 6 -and @($pa2 | Where-Object { $_.Item -match '^Privileged group: (Administrators|Domain Admins): ' -and $_.Status -ne 'Not Assessed' }).Count -eq 0) 'Multi-domain: no count of a group with members is given on members it could not route (6 rows, all Not Assessed)'
+
+# PORT-PLAN C16 (GAP-P1, P9, P20) in the three-domain run: one subscription verdict and one central
+# store row per scoped domain, each read from that domain, and the DC gate over the whole forest.
+foreach ($d in $multiDomains) {
+    Check (@($findings2 | Where-Object { $_.Section -eq 'SYSVOL / DFSR' -and $_.Item -eq 'DFSR SYSVOL replication enabled' -and $_.Scope -eq $d -and $_.Status -eq 'Pass' }).Count -eq 1) ("C16 GAP-P1 multi-domain: the SYSVOL subscription of '{0}' is read from that domain and graded once" -f $d)
+    Check (@($findings2 | Where-Object { $_.Section -eq 'Redundancy & Availability' -and $_.Item -eq 'GPO central store' -and $_.Scope -eq $d -and $_.Status -eq 'Pass' -and $_.Detail -match [regex]::Escape(('\\{0}\SYSVOL\{0}\Policies' -f $d)) }).Count -eq 1) ("C16 GAP-P9 multi-domain: the central store of '{0}' is read under that domain's own SYSVOL" -f $d)
+}
+Check (@($findings2 | Where-Object { $_.Section -eq 'Exchange SE Compatibility' -and $_.Item -eq 'Domain controller operating systems' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C16 GAP-P20 multi-domain: every domain of the forest scoped, so the DC gate can pass'
+# The same forest with each section alone: the SYSVOL subscription needs no DC inventory (GAP-P1), the
+# site check runs without it and says empty sites were not assessed (GAP-P6), and the DC gate over one
+# domain of three is not a Pass (GAP-P20).
+# The multi-domain checks further down read what the stubs recorded in the run above; these two runs
+# keep it as it was.
+$c16Recorded = @{}
+foreach ($name in @('SmokeC4bCalls', 'SmokeExportCalls', 'SmokeGptIniCalls', 'SmokeAclCalls', 'SmokePrivCalls', 'SmokeSmbCalls', 'SmokeDcdiagCalls', 'SmokeGpoListCalls', 'SmokeInventoryCalls', 'SmokeEventCalls', 'SmokeTcpCalls', 'SmokeReachCalls', 'SmokeNetlogonCalls', 'SmokeStaleCalls', 'SmokePopulationCalls', 'SmokeDisabledCalls', 'SmokeUsnCalls', 'SmokeDnsCalls')) {
+    $c16Var = Get-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+    if ($null -ne $c16Var) { $c16Recorded[$name] = @($c16Var.Value) }
+}
+$out16 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_c16_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $out16
+$script:Sections = @('Sysvol', 'Topology')
+$result16 = Invoke-Main
+$findings16 = @(Import-Csv $result16.FindingsFile)
+foreach ($d in $multiDomains) {
+    Check (@($findings16 | Where-Object { $_.Section -eq 'SYSVOL / DFSR' -and $_.Item -eq 'DFSR SYSVOL replication enabled' -and $_.Scope -eq $d -and $_.Status -eq 'Pass' }).Count -eq 1) ("C16 GAP-P1 Sysvol alone: '{0}' has its subscription verdict without the DC inventory" -f $d)
+}
+$site16 = @($findings16 | Where-Object { $_.Section -eq 'Site Health' })
+Check (@($site16 | Where-Object { $_.Item -eq 'Empty sites' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'DomainControllers' }).Count -eq 1 -and @($site16 | Where-Object { $_.Item -eq 'Site/subnet topology' -or $_.Item -like '*has no domain controllers' }).Count -eq 0) 'C16 GAP-P6 Topology alone: empty sites are Not Assessed naming DomainControllers, and the topology row does not pass'
+$script:Sections = @('Forest', 'Domains', 'DomainControllers', 'ExchangeSeReadiness', 'Topology')
+$script:AllDomains = $false
+$result16b = Invoke-Main
+$findings16b = @(Import-Csv $result16b.FindingsFile)
+$se16 = @($findings16b | Where-Object { $_.Section -eq 'Exchange SE Compatibility' -and $_.Item -eq 'Domain controller operating systems' })
+Check ($se16.Count -eq 1 -and $se16[0].Status -eq 'Not Assessed' -and $se16[0].Detail -match 'AllDomains') 'C16 GAP-P20: one domain of a three-domain forest is not a forest-wide Pass of the DC gate; the row names -AllDomains'
+# Independent review of the C16 diff (findings 3/9): the DC inventory of one domain of three does not
+# say any site of the forest is empty, nor that the topology passes.
+$site16b = @($findings16b | Where-Object { $_.Section -eq 'Site Health' })
+Check (@($site16b | Where-Object { $_.Item -eq 'Empty sites' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'AllDomains' }).Count -eq 1 -and @($site16b | Where-Object { $_.Item -eq 'Site/subnet topology' -or $_.Item -like '*has no domain controllers' }).Count -eq 0) 'C16 review 3: one domain of three scoped, so empty sites are Not Assessed naming -AllDomains and nothing passes'
+# The whole forest scoped (the three-domain run above): the inventory covers it, so empty sites are judged.
+Check (@($findings2 | Where-Object { $_.Section -eq 'Site Health' -and $_.Item -eq 'Empty sites' }).Count -eq 0) 'C16 review 3: every domain scoped and every inventory read, so empty sites are judged, not Not Assessed'
+Remove-Item -Recurse -Force $out16 -ErrorAction SilentlyContinue
+foreach ($name in @($c16Recorded.Keys)) { Set-Variable -Scope Script -Name $name -Value @($c16Recorded[$name]) }
+$script:Sections = @('All')
+$script:AllDomains = $true
+$script:OutputPath = $out2
 
 # C2: the same three domains with DcDisk selected WITHOUT DomainControllers. There is then no DC
 # inventory, and the section used to fall back to one unscoped Get-ADDomainController call,
@@ -2769,6 +2847,8 @@ function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]
 function Get-ADFineGrainedPasswordPolicy { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: FGPP query denied' }
 function Get-AdfaDomainSummary { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: domain summary unavailable' }
 function Get-AdfaFsmoRole { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: FSMO lookup denied' }
+# C16 (GAP-P29): the forest summary fails too, and must become a Not Assessed row of its section.
+function Get-AdfaForestSummary { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: forest summary unavailable' }
 # C4: the Laps section does not use Get-ADDomainController, so breaking that leaves it working.
 # Its own two reads are made to fail instead: the schema query and the computer query throw.
 $script:SmokeLapsFail = $true
@@ -2828,6 +2908,15 @@ if ($dcEnum.Count -ge 1) {
     Check ($dcEnum[0].Detail -match 'ADWS unreachable') 'Failure mode: the underlying cause is carried into the report'
     Check ($dcEnum[0].Detail -match 'UNASSESSED, not clean') 'Failure mode: the finding refuses to imply the per-DC checks are clean'
 }
+# PORT-PLAN C16: the triaged rows with every DC list refused - Not Assessed with a cause, never Pass.
+Check (@($findings3 | Where-Object { $_.Section -eq 'Forest Summary' -and $_.Item -eq 'Forest summary' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'STUB: forest summary unavailable' }).Count -eq 1) 'Failure mode C16 GAP-P29: a forest summary that could not be read is a Not Assessed row with its cause, not a missing section'
+$sv3 = @($findings3 | Where-Object { $_.Section -eq 'SYSVOL / DFSR' -and $_.Item -like 'DFSR SYSVOL*' })
+Check (@($sv3 | Where-Object { $_.Item -eq 'DFSR SYSVOL subscription state' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' }).Count -eq 1 -and @($sv3 | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0) 'Failure mode C16 GAP-P1: no DC list, so no subscription read and no Pass row'
+Check (@($findings3 | Where-Object { $_.Section -eq 'Redundancy & Availability' -and $_.Item -eq 'Domain controller redundancy' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'ADWS unreachable' }).Count -eq 1) 'Failure mode C16 GAP-P18: the DC count is Not Assessed with the cause'
+$site3 = @($findings3 | Where-Object { $_.Section -eq 'Site Health' })
+Check (@($site3 | Where-Object { $_.Item -eq 'Empty sites' -and $_.Status -eq 'Not Assessed' }).Count -eq 1 -and @($site3 | Where-Object { $_.Item -eq 'Site/subnet topology' }).Count -eq 0) 'Failure mode C16 GAP-P6: with the DC inventory failed, empty sites are Not Assessed and the topology row does not pass'
+Check (@($findings3 | Where-Object { $_.Section -eq 'Replication Health' -and $_.Status -eq 'Pass' }).Count -eq 0) 'Failure mode C16 review 5: nothing read, so no replication row passes'
+Check (@($findings3 | Where-Object { $_.Section -eq 'Exchange SE Compatibility' -and $_.Item -eq 'Domain controller operating systems' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'DomainControllers' }).Count -eq 1) 'Failure mode C16 GAP-P20: no DC enumerated, so the DC gate is Not Assessed and names DomainControllers'
 
 $dsRow = @($findings3 | Where-Object { $_.Item -match 'Domain summary' })
 Check ($dsRow.Count -ge 1) 'Failure mode: a domain whose summary failed appears as a row, not a gap'
