@@ -3185,7 +3185,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.37.0' ([string]$script:Config.Version) 'C14: version 1.37.0 in the script (bumped by PORT-PLAN H18, H20a, C1a)'
+Assert-Equal '1.38.0' ([string]$script:Config.Version) 'C14: version 1.38.0 in the script (bumped by PORT-PLAN H21)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3278,7 +3278,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.37.0' ([string]$script:Config.Version) 'C15: version 1.37.0 in the script (bumped by PORT-PLAN H18, H20a, C1a)'
+Assert-Equal '1.38.0' ([string]$script:Config.Version) 'C15: version 1.38.0 in the script (bumped by PORT-PLAN H21)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3502,7 +3502,7 @@ $c16Src2 = & {
     Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
 }
 Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
-Assert-Equal '1.37.0' ([string]$script:Config.Version) 'C16: version 1.37.0 in the script (bumped by PORT-PLAN H18, H20a, C1a)'
+Assert-Equal '1.38.0' ([string]$script:Config.Version) 'C16: version 1.38.0 in the script (bumped by PORT-PLAN H21)'
 
 # ---- PORT-PLAN C1a: the update build revision (pure) -----------------------------------------
 $c1aKey = [string]$script:Config.DcSystem['UbrKey']
@@ -3536,6 +3536,42 @@ Assert-Throws { Merge-AdfaDcSystemConfig -BaseConfig $script:Config.DcSystem -Ov
 $h20aDoc = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'docs\SIDE-EFFECT-AUDIT.md'
 Assert-True ((Test-Path -LiteralPath $h20aDoc) -and ([System.IO.File]::ReadAllText($h20aDoc) -match 'Read 2026-11-18')) 'H20a: docs/SIDE-EFFECT-AUDIT.md exists with its read date'
 Assert-True ([System.IO.File]::ReadAllText($h20aDoc) -notmatch '(?i)\bno side[- ]effects?\b') 'H20a: the inventory never says "no side effect"'
+
+# ---- PORT-PLAN H21: run folder, exit code and closing log lines (pure) ------------------------
+$h21Out = $script:Config.Output
+$h21Now = Get-Date -Year 2026 -Month 11 -Day 18 -Hour 9 -Minute 30 -Second 0
+$h21Root = Resolve-AdfaOutputRoot -OutputPath '' -Config $h21Out
+Assert-True ($h21Root.Root -eq 'C:\Scripts\Securnet\Reports' -and $h21Root.FromDefault) 'H21: with no -OutputPath the root is C:\Scripts\Securnet\Reports (the repository convention)'
+$h21Path = Get-AdfaRunFolderPath -Root $h21Root.Root -Now $h21Now -Config $h21Out
+Assert-Equal 'C:\Scripts\Securnet\Reports\ADForestAssessment-20261118-093000' ([string]$h21Path.RunRoot) 'H21: the default run folder is computed, not created'
+Assert-True (-not (Test-Path -LiteralPath $h21Path.RunRoot)) 'H21: computing the default run folder created nothing (it does not exist after the call)'
+Assert-Equal 'ADForestAssessment-20261118-093000.log' ([string](Split-Path -Leaf $h21Path.LogFile)) 'H21: the log is named after the run folder'
+Assert-Equal 'ADForestAssessment-20261118-093000-2' ([string](Get-AdfaRunFolderPath -Root $h21Root.Root -Now $h21Now -Config $h21Out -Attempt 2).RunFolderName) 'H21: a second attempt in the same second adds -2'
+Assert-Equal '20261118-213000' ([string](Get-AdfaRunFolderPath -Root $h21Root.Root -Now $h21Now.AddHours(12) -Config $h21Out).Stamp) 'H21: the hour is on the 24-hour clock'
+Assert-Throws { Resolve-AdfaOutputRoot -OutputPath 'HKCU:\Software\AdfaH21NeverCreated' -Config $h21Out | Out-Null } 'Registry provider' 'H21: an -OutputPath on the registry is refused before anything is created'
+function New-H21ValidationFinding { param([string]$Section, [string]$Status) ConvertTo-AdfaConsolidatedFinding -Section $Section -Row (New-Finding -Area 'H21' -Item 'item' -Status $Status) -StatusColumn 'Status' }
+Assert-Equal 0 ([int](Get-AdfaRunExitCode -Findings @((New-H21ValidationFinding 'A' 'Pass'), (New-H21ValidationFinding 'A' 'Warning'), (New-H21ValidationFinding 'B' 'Info'))).ExitCode) 'H21: Pass, Warning and Info only is exit code 0'
+Assert-Equal 1 ([int](Get-AdfaRunExitCode -Findings @((New-H21ValidationFinding 'A' 'Pass'), (New-H21ValidationFinding 'A' 'Fail'))).ExitCode) 'H21: a Fail finding is exit code 1'
+Assert-Equal 1 ([int](Get-AdfaRunExitCode -Findings @((New-H21ValidationFinding 'A' 'Pass'), (New-H21ValidationFinding 'B' 'Not Assessed'), (New-H21ValidationFinding 'B' 'Not Assessed'))).ExitCode) 'H21: a section whose every finding is Not Assessed is exit code 1'
+Assert-Equal 0 ([int](Get-AdfaRunExitCode -Findings @((New-H21ValidationFinding 'B' 'Pass'), (New-H21ValidationFinding 'B' 'Not Assessed'))).ExitCode) 'H21: a section assessed in part is not a Not Assessed section'
+Assert-Equal 1 ([int](Get-AdfaRunExitCode -Findings @()).ExitCode) 'H21: no finding at all is exit code 1, never 0'
+Assert-Equal 2 ([int](Get-AdfaRunExitCode -Findings @(New-H21ValidationFinding 'A' 'Pass') -Fatal -FatalReason 'stub').ExitCode) 'H21: a fatal run is exit code 2'
+$h21Lines = @(Get-AdfaRunClosingLine -End $h21Now -Elapsed (New-TimeSpan -Seconds 3723) -Totals $null -ExitInfo ([pscustomobject]@{ ExitCode = 2; Reason = 'stub' }))
+Assert-True ($h21Lines.Count -eq 3 -and $h21Lines[0] -match 'duration 01:02:03 \(3723 s\)$' -and $h21Lines[1] -match '^Totals: not counted' -and $h21Lines[2] -eq 'Exit code: 2 (stub)') 'H21: the closing lines state the duration, that the totals were not counted (never zeros) and the exit code'
+$h21Exits = @([System.Management.Automation.Language.Parser]::ParseFile($target, [ref]$null, [ref]$null).FindAll({ param($n) $n -is [System.Management.Automation.Language.ExitStatementAst] }, $true))
+Assert-Equal 1 $h21Exits.Count 'H21: the script holds exactly one exit statement (the guarded tail)'
+# Independent review fixes of H21 (pure).
+Assert-Equal 1 ([int](Get-AdfaRunExitCode -Findings @((New-H21ValidationFinding 'A' 'Pass'), (New-H21ValidationFinding 'B' 'Not Assessed'), (New-H21ValidationFinding 'B' 'Info'))).ExitCode) 'H21 review fix: Not Assessed beside an Info row is a section left Not Assessed (exit 1)'
+Assert-Equal 0 ([int](Get-AdfaRunExitCode -Findings @((New-H21ValidationFinding 'A' 'Pass'), (New-H21ValidationFinding 'B' 'Info'))).ExitCode) 'H21 review fix: an Info-only section is not a Not Assessed section (exit 0)'
+Assert-Equal 1 ([int](Get-AdfaRunExitCode -Findings @((New-H21ValidationFinding 'A' 'Pass'), [pscustomobject]@{ Section = 'A'; Status = '' })).ExitCode) 'H21 review fix: an empty status is exit 1, never 0'
+Assert-Equal 1 ([int](Get-AdfaRunExitCode -Findings @((New-H21ValidationFinding 'A' 'Pass'), [pscustomobject]@{ Section = 'A'; Status = 'Unknown' })).ExitCode) 'H21 review fix: an unknown status is exit 1, never 0'
+Assert-Equal 1 ([int](Get-AdfaRunExitCode -Findings @((New-H21ValidationFinding 'A' 'Pass'), @{ Section = 'A'; Status = 'Fail' })).ExitCode) 'H21 review fix: a Fail in a dictionary row is exit 1'
+Assert-True ([string](Get-AdfaRunExitCode -Fatal -FatalReason ("not valid JSON: { not json" + "`r`n")).Reason -notmatch "[`r`n]") 'H21 review fix: a fatal reason with a line break is flattened'
+Assert-Equal 'Exit code: 2 (a / b)' ([string]@(Get-AdfaRunClosingLine -End $h21Now -Elapsed (New-TimeSpan -Seconds 1) -Totals $null -ExitInfo ([pscustomobject]@{ ExitCode = 2; Reason = "a`r`nb`n" }))[2]) 'H21 review fix: the Exit code line stays one line'
+Assert-Equal 0 ([int](Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = 0 }))) 'H21 review fix: the process exit code is the summary ExitCode 0'
+Assert-Equal 1 ([int](Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = 1 }))) 'H21 review fix: the process exit code is the summary ExitCode 1'
+Assert-Equal 2 ([int](Get-AdfaScriptExitCode -RunOutput @())) 'H21 review fix: no summary is exit code 2'
+Assert-Equal 2 ([int](Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = 7 }))) 'H21 review fix: an ExitCode outside 0/1/2 is exit code 2'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue

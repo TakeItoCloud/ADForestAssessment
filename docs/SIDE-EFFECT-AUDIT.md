@@ -1,6 +1,6 @@
 # Side-effect audit of every command the script can run
 
-PORT-PLAN H20a, v1.37.0. Read 2026-11-18 on Microsoft Learn unless a row says otherwise.
+PORT-PLAN H20a, v1.37.0; updated by H21, v1.38.0. Read 2026-11-18 on Microsoft Learn unless a row says otherwise.
 
 This file is the inventory of everything `src/ADForestAssessment/Invoke-ADForestAssessment.ps1`
 can reach outside its own PowerShell process, and of every command, type and static member it
@@ -93,7 +93,7 @@ Decisions taken where Learn was silent:
 | documented read | 56 |
 | documented change, opt-in | 7 |
 | not documented | 54 |
-| local output (by design) | 6 |
+| local output (by design) | 7 |
 | in-process | 127 |
 
 ## External console tools: every form the script can start
@@ -220,7 +220,7 @@ Keyed by method name only: the test cannot tell the type of the object a method 
 | `Method:GetValue` | Get-AdfaUsnRollbackRaw, per DC, on the remote key above (RestoreIntegrity) | Default | API reference not read in this session (No Learn page read for a side effect) | Reads one value of the key opened read-only above. | not documented |
 | `Method:GetValueNames` | Get-AdfaUsnRollbackRaw, per DC, on the remote key above (RestoreIntegrity) | Default | API reference not read in this session (No Learn page read for a side effect) | Lists the value names of the key opened read-only above. | not documented |
 | `Method:Close` | The remote registry keys of Get-AdfaUsnRollbackRaw and the TcpClient of Test-TcpPort, Test-AdfaTcpAddress and the LDAPS handshake | Default | API reference not read in this session (No Learn page read for a side effect) | Closes a key or a connection this script opened. | not documented |
-| `Method:Dispose` | The FileStream of GPT.INI and netlogon.log, and the runspace, event and SslStream of the opt-in LDAPS handshake | Default | API reference not read in this session (No Learn page read for a side effect) | Releases an object this script created. | not documented |
+| `Method:Dispose` | The FileStream of GPT.INI and netlogon.log, the empty log file New-AdfaRunFolder creates to claim the run folder (since v1.38.0, PORT-PLAN H21), and the runspace, event and SslStream of the opt-in LDAPS handshake | Default | API reference not read in this session (No Learn page read for a side effect) | Releases an object this script created. | not documented |
 | `Method:BeginConnect` | The TcpClient of Test-TcpPort, Test-AdfaTcpAddress and the LDAPS handshake | Default | API reference not read in this session (No Learn page read for a side effect) | Starts the one TCP connection of the TcpClient row. | not documented |
 | `Method:EndConnect` | As the row above | Default | API reference not read in this session (No Learn page read for a side effect) | Completes the connection started above. | not documented |
 | `Method:Read` | The FileStream of GPT.INI (Gpo) and netlogon.log (Site Health), opened for reading | Default | API reference not read in this session (No Learn page read for a side effect) | Reads bytes from a file opened over SMB for reading. | not documented |
@@ -236,7 +236,7 @@ Keyed by method name only: the test cannot tell the type of the object a method 
 | `Method:BeginInvoke` | The bounded runspace of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `Method:EndInvoke` | The bounded runspace of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `Method:Set` | The time-out event of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
-| `Method:Stop` | The stopwatch of the LDAPS handshake | Opt-in: -IncludeLdapsHandshake | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
+| `Method:Stop` | The stopwatch of the run in Invoke-Main's finally (every run, since v1.38.0, PORT-PLAN H21) and the stopwatch of the LDAPS handshake | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `Method:Add` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `Method:AddDays` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `Method:Append` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
@@ -278,18 +278,19 @@ Keyed by method name only: the test cannot tell the type of the object a method 
 
 | Key | Where | Run | Learn source (read 2026-11-18 unless stated) | What Learn documents | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| `Command:Add-Content` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, under -OutputPath. | local output (by design) |
-| `Command:New-Item` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, under -OutputPath. | local output (by design) |
-| `Command:Export-Csv` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, under -OutputPath. | local output (by design) |
-| `Command:Out-File` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, under -OutputPath. | local output (by design) |
-| `Command:Start-Transcript` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, under -OutputPath. | local output (by design) |
-| `Command:Stop-Transcript` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, under -OutputPath. | local output (by design) |
+| `Command:Add-Content` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, in one new folder per run under -OutputPath (default C:\Scripts\Securnet\Reports since v1.38.0, PORT-PLAN H21). | local output (by design) |
+| `Command:New-Item` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, in one new folder per run under -OutputPath (default C:\Scripts\Securnet\Reports since v1.38.0, PORT-PLAN H21). | local output (by design) |
+| `Command:Export-Csv` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, in one new folder per run under -OutputPath (default C:\Scripts\Securnet\Reports since v1.38.0, PORT-PLAN H21). | local output (by design) |
+| `Command:Out-File` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, in one new folder per run under -OutputPath (default C:\Scripts\Securnet\Reports since v1.38.0, PORT-PLAN H21). | local output (by design) |
+| `Command:Start-Transcript` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, in one new folder per run under -OutputPath (default C:\Scripts\Securnet\Reports since v1.38.0, PORT-PLAN H21). | local output (by design) |
+| `Command:Stop-Transcript` | The run's own output folder (log, CSV, JSON, HTML, transcript) | Default | n/a: writes the output folder of the run only | Writes files of the run on the host running the assessment, in one new folder per run under -OutputPath (default C:\Scripts\Securnet\Reports since v1.38.0, PORT-PLAN H21). | local output (by design) |
+| `DotNet:[System.IO.File]::Open` | New-AdfaRunFolder: creates the run's empty log file with FileMode CreateNew to claim the run folder, so two runs started in the same second never share one (since v1.38.0, PORT-PLAN H21, independent review fix) | Default | https://learn.microsoft.com/dotnet/api/system.io.filemode | CreateNew: "Specifies that the operating system should create a new file... If the file already exists, an IOException exception is thrown." The FileMode parameter is the one the Open methods of File take. Writes one empty file in the run folder on the host running the assessment. | local output (by design) |
 
 ## In-process commands, types and members
 
 | Key | Where | Run | Learn source (read 2026-11-18 unless stated) | What Learn documents | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| `DotNet:[Environment]::GetFolderPath` | Invoke-Main, the default output folder | Default | API reference not read in this session (No Learn page read for a side effect) | Reads a local folder path. | in-process |
+| `Method:GetUnresolvedProviderPathFromPSPath` | Resolve-AdfaOutputRoot: resolves -OutputPath, or the default root, to a provider path and its provider, to refuse any provider but FileSystem (since v1.38.0, PORT-PLAN H21) | Default | https://learn.microsoft.com/dotnet/api/system.management.automation.pathintrinsics.getunresolvedproviderpathfrompspath | Converts a drive or provider qualified absolute or relative path into a provider-internal path, without resolving wildcards; throws DriveNotFoundException for a drive that cannot be found. Nothing about a change of state. | in-process |
 | `Command:Add-Member` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `Command:ConvertFrom-Csv` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |
 | `Command:ConvertFrom-Json` | In-process helper | Default | n/a: reaches no DC and no other computer | Runs in the PowerShell process or reads the local computer only. | in-process |

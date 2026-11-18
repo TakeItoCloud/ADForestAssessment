@@ -200,18 +200,84 @@ passwords.
     DomainControllers,DnsAdConsistency,DsaCname,GcConsistency,MsdcsDelegation,PortMatrix,Replication,Trusts,DcSecureChannel,DsEvents,RestoreIntegrity,TimeSync,TimeHierarchy,SiteGc,Sysvol,Backup
 ```
 
-The report bundle lands in the logged-on user's Documents:
+### Output folder
+
+Each run writes one new timestamped folder on the computer running the assessment, never on a
+domain controller. **Breaking change in v1.38.0 (PORT-PLAN H21):** the default moved from
+`%USERPROFILE%\Documents\AdAssessment\yyyy-MM-dd_HH-mm-ss\` to this repository's output
+convention, and the log and transcript file names changed with it:
 
 ```text
-%USERPROFILE%\Documents\AdAssessment\yyyy-MM-dd_HH-mm-ss\
-    Assessment.html
-    Assessment.json                 the whole run, machine-readable (see below)
+C:\Scripts\Securnet\Reports\ADForestAssessment-yyyyMMdd-HHmmss\
+    ADForestAssessment-yyyyMMdd-HHmmss.log              the detailed log (see "Log" below)
+    ADForestAssessment-yyyyMMdd-HHmmss-transcript.log   the PowerShell transcript
+    Assessment.html                 the human-readable report
+    Assessment.json                 the raw JSON of the run: every finding, the coverage and every section's rows (see below)
     csv\Findings-Consolidated.csv   all findings, severity-sorted, with recommendations
     csv\Section-Coverage.csv        rows collected vs findings reported, per section
-    csv\        one CSV per topic
+    csv\        the raw CSV: one file per topic
     raw\        optional repadmin / dcdiag capture
-    transcript
 ```
+
+`-OutputPath <folder>` replaces `C:\Scripts\Securnet\Reports`; the run folder is always created
+inside it. A root that does not exist is created, and the screen and the log say so. Two runs
+started in the same second never share a folder, also when they start at the same moment: a run
+claims its folder by creating the folder's log file with .NET `FileMode.CreateNew`, which Microsoft
+documents as throwing when the file already exists
+([FileMode](https://learn.microsoft.com/dotnet/api/system.io.filemode), read 2026-11-18). A run
+that finds the log already there leaves that folder untouched and takes the next name, `-2`, `-3`,
+up to 99, after which it stops with exit code 2. An `-OutputPath` that is not on the file system (a
+registry key, the variable drive) is refused before anything is created. The default comes from
+this repository's `CLAUDE.md`; the operator's general default, `C:\Scripts\Cannes`, was considered
+and the repository's rule taken, because it is the rule written for this repository (PORT-PLAN H21).
+
+### Log
+
+Each line is `[yyyy-MM-dd HH:mm:ss] [LEVEL ] [Scope] message`, in local time, with the levels
+`INFO`, `STAGE`, `RESULT`, `WARN` and `ERROR`. The first lines give the tool and its version with
+the start time, the PowerShell version, the computer and the user, every parameter of the run (a
+credential is logged as `<redacted>`, never its name or password) and the log path, which is also
+shown on screen. The last lines are written in a `finally` block, so a run that stops with an error
+or Ctrl+C closes its log too:
+
+```text
+[2026-11-18 09:41:12] [RESULT] Run finished 2026-11-18T09:41:12+00:00; duration 00:11:12 (672 s)
+[2026-11-18 09:41:12] [RESULT] Totals: Pass=96 Warning=12 Fail=3 NotAssessed=20 Info=31 Unclassified=0 Total=162
+[2026-11-18 09:41:12] [RESULT] Exit code: 1 (3 Fail finding(s); 1 section(s) Not Assessed: DC Disk Space)
+[2026-11-18 09:41:12] [INFO  ] Detailed log: C:\Scripts\Securnet\Reports\ADForestAssessment-20261118-093000\ADForestAssessment-20261118-093000.log
+```
+
+The numbers above illustrate the format; they are not from a measured run. A run that stopped
+before its findings were consolidated says `Totals: not counted - ...`, never zeros. An error that
+stops the run is logged at `ERROR` with the step, the message, the exception type, the position
+and the script stack trace. The house rule's log format (an ISO timestamp, and `DEBUG` in place of
+`STAGE` and `RESULT`) is not adopted yet: the harnesses and the readers of the log depend on the
+current format, and the change is PORT-PLAN H21a.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The run completed with at least one finding, no `Fail` finding, no section left `Not Assessed`, no finding with an empty or unknown status, and every report written. `Warning` and `Info` do not raise the code |
+| `1` | The run completed, but with a finding whose status is `Fail`, `Broken` or `Failed`; a section left `Not Assessed` - one with a `Not Assessed` finding and no graded finding (`Pass`, `Healthy`, `Warning`, `Degraded`, `Fail`, `Broken`, `Failed`); an `Info` row, such as a scope statement or a population count, assesses nothing and does not make a section assessed, while a section with one graded finding beside `Not Assessed` ones is not counted, because a default run always carries `Not Assessed` rows for the opt-in tests it did not run; a finding whose status is empty, missing or outside the statuses above and `Not Assessed` and `Info` (the `Unclassified` total); no finding at all; collected rows that could not be interpreted; or the HTML or JSON report not written. A forest that could not be read is `1`: the run completes with a `Fail` headline finding and a bundle. **Also `1`, from PowerShell itself: a run that never started because of a parameter binding error** (an unknown parameter, a `-Sections` value that is not in the list, a value out of range): the script body never runs, so there is no run folder and no log. A wrapper that reads `1` should check that a run folder with a log exists before it reads `1` as "completed" |
+| `2` | The run could not run or was stopped: a refused config file, the ActiveDirectory module not loadable, the output folder not creatable or claimed by other runs, a pipeline stop, or any other error that stopped it once it had started |
+
+The reason is the log's `Exit code:` line and the `ExitReason` of the returned object (beside
+`ExitCode`). The mapping is this tool's convention; Microsoft says only that "a nonzero exit code
+typically signals a failure"
+([about_Scripts](https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_scripts),
+read 2026-11-18). Run the script with `-File` to see a 2: Microsoft documents that under
+`-Command` a script exit code other than 0 or 1 is converted to 1
+([about_PowerShell_exe](https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_powershell_exe),
+read 2026-11-18), unless the command ends with `exit $LASTEXITCODE`. The same page documents that
+a script-terminating error under `-File` is 1 - which is why a parameter binding error, which
+stops the script before its body runs, is 1 (measured with `powershell.exe` 5.1 and `pwsh` 7) - and
+that an interrupted `-File` run (Ctrl+C) returns 0 when the script sets no code. The script's one
+`exit` is in a `finally`, which runs on a pipeline stop too, so a stopped run's log ends with
+`Exit code: 2` and the process ends with 2: measured with a `PipelineStoppedException`, the
+exception a Ctrl+C raises in the pipeline; a Ctrl+C typed at a real console has not been tried.
+The script sets the code only when it is run, never when it is dot-sourced (as the tests and
+harnesses do).
 
 ### `Assessment.json`
 
@@ -238,8 +304,6 @@ CSVs and the log are on disk, so a serialisation fault costs no data.
 collected against what it contributed to the findings. A status-bearing section showing
 `FindingsReported = 0` is either pure inventory or data loss — the report says which rather
 than leaving the two indistinguishable.
-
-Off Windows it falls back to `$HOME/Documents`.
 
 ## Exchange Server SE compatibility
 
@@ -1430,7 +1494,7 @@ the pages not read. The rows, by verdict:
 | documented read | 56 |
 | documented change, opt-in | 7 |
 | not documented | 54 |
-| local output (by design) | 6 |
+| local output (by design) | 7 |
 | in-process | 127 |
 
 `documented read` means Learn describes it as a query, read or display; `not documented` means

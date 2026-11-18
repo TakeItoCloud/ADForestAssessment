@@ -10,6 +10,128 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-18 (House rules: one output folder per run, closing log lines, exit codes 0/1/2, help of every function, tool v1.38.0)
+
+**PORT-PLAN H21, closing GAP-P7. BREAKING: the default output folder moves, the log and transcript
+file names change, and a run now sets a process exit code.** No new `-Sections` value, no section
+key, no finding Item text or status changed. **Run against stubs only** - nothing in this entry has
+been run against a real directory or DC. What was not verified: where a real run lands and that
+nothing is written on a DC; the exit code `powershell.exe -File` returns on a real host for each of
+0, 1 and 2; how often a real default run ends with 1 only because a whole section is Not Assessed
+(on the single-domain stub forest 17 sections are; 15 before the review fix stopped counting an Info row as assessed); the transcript encoding under Windows PowerShell 5.1 (not
+read); a Ctrl+C typed at a real console (the pipeline stop it raises was reproduced with a
+`PipelineStoppedException` in a child `-File` run, which now ends with 2 and a closed log; the key
+press itself was not tried); two runs racing for one folder in two real processes (the race was
+reproduced in one process, with the other run's folder and log created between the check and the
+claim). First real run: H21-R.
+
+- **Output folder (BREAKING).** By operator decision this repository's `CLAUDE.md` convention wins
+  inside this repository: one new folder per run,
+  `C:\Scripts\Securnet\Reports\ADForestAssessment-yyyyMMdd-HHmmss\`, on the computer running the
+  assessment only, overridable by `-OutputPath`. It was `%USERPROFILE%\Documents\AdAssessment\yyyy-MM-dd_HH-mm-ss\`.
+  The operator's general default `C:\Scripts\Cannes` was considered; the repository rule is the one
+  written for this repository. The log is now `ADForestAssessment-<stamp>.log` and the transcript
+  `ADForestAssessment-<stamp>-transcript.log` (they were `assessment_<stamp>.log` and
+  `transcript_<stamp>.log`). The folder holds the detailed log, the raw CSV, the raw JSON
+  (`Assessment.json`, unchanged; no second JSON file) and the HTML report, as before. A run claims
+  its folder by creating the folder's log with .NET `FileMode.CreateNew`; a second run in the same
+  second, also one started at the same moment, gets `-2`, `-3`, up to 99 (tool default), then stops
+  rather than write into a folder another run claimed. A
+  root that does not exist is created and the screen and the log say so. An `-OutputPath` that is
+  not on the file system is refused before anything is created. The folder is computed by three new
+  functions that create nothing, from a new `Output` config table, and claimed by a fourth,
+  `New-AdfaRunFolder`.
+- **Exit codes (new).** `0` completed with at least one finding, no Fail finding, no section left
+  Not Assessed, no finding with an empty or unknown status and every report written; `1` completed
+  with a Fail, Broken or Failed finding, a section left Not Assessed (a Not Assessed finding and no
+  graded one - an Info row is not graded), a finding with an empty or unknown status, no finding at
+  all, uninterpretable rows or a report not written; `2` could not run or was stopped once started.
+  PowerShell itself gives `1` for a run that never started (a parameter binding error): then there
+  is no run folder and no log, and the README tells a wrapper to check for them. A caller that relied
+  on 0 now gets 1 when the run has findings to act on. Set only by the script's one `exit`, in the
+  `finally` of its tail, only when the script is run, never when dot-sourced. The returned object
+  carries `ExitCode` and `ExitReason`. A tool convention, not a Microsoft value.
+- **Log.** Everything after the log opens runs in one try/catch/finally. An error that stops the
+  run is logged with the step, message, exception type, position and script stack trace, and the
+  log always ends with `Run finished <time>; duration hh:mm:ss (n s)`, `Totals: ...` per status (or
+  `not counted`, never zeros), `Exit code: n (reason)` and the log path. The first lines now carry
+  the version, the start time, every parameter (a credential as `<redacted>`) and the log path,
+  which is also shown on screen. The line format and levels are unchanged (H21a).
+- **Help.** The script's `.NOTES` carries `Owner: Carlos Annes (TakeItToCloud)`, `Version`,
+  `Created: 2026-07-22`, `Last updated` and `Requires` (with why it targets 5.1); the first
+  `.EXAMPLE` is the safe run, and the example that is not read-only says so. Every one of the 449
+  functions now documents each of its 1670 parameters with a `.PARAMETER` entry, and the 17 that
+  had no help block have one. Most of the 1664 entries added were generated from the param block
+  (type, mandatory, default, allowed values) with a sentence from the author's syntax comment, a
+  vocabulary of parameter names, or the name itself; H21b replaces the generic ones.
+- **Side-effect audit.** `[Environment]::GetFolderPath` is gone (the Documents default); the
+  instance method `GetUnresolvedProviderPathFromPSPath`, used to refuse a non-file-system output
+  path, is a new in-process row. In-process stays 127; the instance-method population is 58.
+  `[System.IO.File]::Open`, the claim of the run folder, is a new local-output row (local output 6
+  to 7); the `Method:Stop` row now says the run's stopwatch is stopped on every default run, and
+  `Method:Dispose` names the claim's file stream.
+- **Tests.** A new Pester Describe (folder computed and never created, the `-OutputPath` override
+  and the paths it refuses, folder collision, every exit-code case, the closing lines, the wiring
+  of the one `exit` and of the try/catch/finally read from the AST, a child `-File` run that exits
+  2 and still closes its log, and the help of every function read from the tokens), new pure
+  assertions in Run-Validation, and checks of the folder, the closing lines and the exit code in
+  the single-domain, three-domain, failing-collector, refused-override and unreadable-forest smoke
+  passes. Existing tests changed: the version pins (1.37.0 to 1.38.0), and the H20a population
+  count of instance method names (57 to 58).
+- Sources, read on Microsoft Learn 2026-11-18:
+  https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_language_keywords
+  (exit sets $LASTEXITCODE; with no exit, an unhandled exception gives 1; finally runs on Ctrl+C and exit),
+  https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_powershell_exe
+  (under -Command a code other than 0 or 1 becomes 1; Ctrl+C under -File gives 0),
+  https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_scripts
+  ("a nonzero exit code typically signals a failure"),
+  https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_comment_based_help
+  (one .PARAMETER per parameter; .NOTES is free text, so the five lines are a house convention),
+  https://learn.microsoft.com/powershell/module/microsoft.powershell.management/new-item
+  (-Force returns an existing folder intact; on a registry key it overwrites the key),
+  https://learn.microsoft.com/dotnet/api/system.management.automation.pathintrinsics.getunresolvedproviderpathfrompspath
+  (converts a path to a provider path; DriveNotFoundException for an unknown drive),
+  https://learn.microsoft.com/dotnet/standard/base-types/custom-date-and-time-format-strings
+  ("HH" is the hour from 00 to 23),
+  https://learn.microsoft.com/dotnet/api/system.io.filemode
+  (CreateNew: "If the file already exists, an IOException exception is thrown"),
+  https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1
+  (re-read for the review fix: under -File a script-terminating error gives 1, and an interrupted
+  run gives 0).
+
+Found by an independent review of the diff before commit, and fixed in it:
+
+- A fatal error whose message ends in a line break (Windows PowerShell 5.1's ConvertFrom-Json
+  message does) split the `Fatal error in Invoke-Main` record and the `Exit code:` line over two log
+  lines, so the log no longer ended with its three closing lines. The message, the fatal reason and
+  the `Exit code:` reason are now flattened (`" / "`), and so is the `Config override refused` line.
+- An Info row beside Not Assessed rows hid a section in which nothing was assessed (the Exchange SE
+  scope row, the Port Reachability population row), so such a run exited 0. A section is now left
+  Not Assessed when it has a Not Assessed finding and no graded one.
+- A finding with an empty, missing or unknown status, and a dictionary row, were counted as clean,
+  so the run exited 0 beside `Unclassified=1`. Such a status now gives 1 and is named in the reason.
+- Two runs started at the same moment with the same `-OutputPath` could both choose one folder (a
+  check, then `New-Item -Force`), and the second truncated the first run's log. The folder is now
+  claimed atomically by creating its log with `FileMode.CreateNew` (`New-AdfaRunFolder`); a run
+  that loses moves on to `-2` and leaves the other run's files untouched.
+- A run stopped by a pipeline stop (Ctrl+C) skips every catch: the script tail's `exit` was after
+  the try, so such a `-File` run ended with PowerShell's 0. The `exit` is now in the tail's
+  `finally` (measured: 0 before, 2 after).
+- The README said 2 means "could not run" for every run that did not run; a parameter binding error
+  never reaches the script and gives PowerShell's 1. The README and the help now say so, and a test
+  shows it.
+- docs/SIDE-EFFECT-AUDIT.md still called `Method:Stop` opt-in; every run now stops the run's stopwatch.
+- Tests that could not fail, rewritten so the reviewer's mutation fails them: the script tail is a
+  pure `Get-AdfaScriptExitCode` with its own tests, an AST test of its three assignments, and a child
+  run that ends with 1 through the real tail (M1); the same child run checks `Credential=<redacted>`
+  (M3) and the "did not exist" warning (M4); a smoke pass with both report writers failing and a
+  collector returning a dictionary checks the wiring of `-ReportsNotWritten` and `-UnreadableRows`
+  (M2, M7), as does an AST test; a child run stopped by a `PipelineStoppedException` checks the
+  exit code set before the try (M6); and a test under the th-TH culture checks the stamp (M5).
+  Existing tests changed because behaviour changed: the AST test that Invoke-Main calls
+  Select-AdfaRunFolder now asserts New-AdfaRunFolder (which calls it), the help population is 449
+  functions and 1670 parameters (was 447 and 1666), and the list of new H21 functions is eight.
+
 ### Changed - 2026-11-18 (Functional level wording, side-effect audit of every command, update build revision, tool v1.37.0)
 
 **PORT-PLAN H18, H20a and C1a, in one change. No new `-Sections` value and no new section key.**

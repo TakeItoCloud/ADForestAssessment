@@ -1336,6 +1336,31 @@ if (Test-Path $result.LogFile) {
     Check ($log -match '\[RESULT\]' -and $log -match 'Summary: Pass=') 'Log contains itemised results and summary line'
     Check ($log -match '\[STAGE') 'Log contains stage entries'
 }
+# PORT-PLAN H21: one ADForestAssessment-yyyyMMdd-HHmmss folder under -OutputPath, the log named after
+# it, the closing lines at the end of the log, and the exit code in the return object.
+function Test-SmokeH21Run {
+    param($Result, [string]$Root, [string]$Name, [int]$ExpectedCode, [string]$ReasonPattern)
+    $leaf = Split-Path -Leaf $Result.OutputRoot
+    Check ($leaf -match '^ADForestAssessment-\d{8}-\d{6}(-\d+)?$') ("H21 {0}: the run folder is ADForestAssessment-yyyyMMdd-HHmmss ({1})" -f $Name, $leaf)
+    Check ((Split-Path -Parent $Result.OutputRoot).TrimEnd('\', '/') -eq $Root.TrimEnd('\', '/')) ("H21 {0}: the run folder is directly under -OutputPath" -f $Name)
+    Check ((Split-Path -Leaf $Result.LogFile) -eq ($leaf + '.log') -and (Split-Path -Parent $Result.LogFile) -eq $Result.OutputRoot) ("H21 {0}: the log is <run folder>\<run folder name>.log" -f $Name)
+    $lines = @(Get-Content -LiteralPath $Result.LogFile)
+    Check ($lines.Count -ge 4) ("H21 {0}: the log has its closing lines ({1} lines)" -f $Name, $lines.Count)
+    if ($lines.Count -ge 4) {
+        Check ($lines[$lines.Count - 4] -match '\[RESULT\] Run finished \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*; duration \d{2,}:\d{2}:\d{2} \(\d+ s\)$') ("H21 {0}: closing line 1 states the end time and the duration" -f $Name)
+        Check ($lines[$lines.Count - 3] -match '\[RESULT\] Totals: Pass=\d+ Warning=\d+ Fail=\d+ NotAssessed=\d+ Info=\d+ Unclassified=\d+ Total=\d+$') ("H21 {0}: closing line 2 states the totals per status" -f $Name)
+        Check ($lines[$lines.Count - 2] -match ('\[RESULT\] Exit code: {0} \(' -f $ExpectedCode)) ("H21 {0}: closing line 3 states exit code {1} ({2})" -f $Name, $ExpectedCode, $lines[$lines.Count - 2])
+        Check ($lines[$lines.Count - 1] -match ('Detailed log: ' + [regex]::Escape($Result.LogFile) + '$')) ("H21 {0}: the last line is the log path" -f $Name)
+        # The Total of the closing line is the number of consolidated findings, never zeros by default.
+        $fnd = @(Import-Csv -LiteralPath $Result.FindingsFile)
+        Check ($lines[$lines.Count - 3] -match ('Total={0}$' -f $fnd.Count)) ("H21 {0}: the closing Total is the {1} consolidated findings" -f $Name, $fnd.Count)
+    }
+    Check ($Result.ExitCode -eq $ExpectedCode) ("H21 {0}: ExitCode {1} (got {2}: {3})" -f $Name, $ExpectedCode, $Result.ExitCode, $Result.ExitReason)
+    Check ([string]$Result.ExitReason -match $ReasonPattern) ("H21 {0}: the exit reason names the cause ({1})" -f $Name, $Result.ExitReason)
+    Check ($Result.ExitCode -ne 0) ("H21 {0}: a run with Fail findings or Not Assessed sections is never exit code 0" -f $Name)
+}
+Write-Host ("    H21 single-domain exit: {0} - {1}" -f $result.ExitCode, $result.ExitReason) -ForegroundColor DarkGray
+Test-SmokeH21Run -Result $result -Root $out -Name 'single-domain' -ExpectedCode 1 -ReasonPattern 'Fail finding'
 Check (Test-Path $result.FindingsFile) 'Consolidated findings CSV written'
 if (Test-Path $result.FindingsFile) {
     $fnd = Import-Csv $result.FindingsFile
@@ -1991,6 +2016,9 @@ $h20aRemote2Domains = @($h20aRemote2 | Where-Object { $_.Arguments -match '^/sc_
 Check (@($multiDomains | Where-Object { $h20aRemote2Domains -notcontains $_ }).Count -eq 0 -and @($h20aRemote2Bad).Count -eq 0 -and @($script:SmokeDirectToolCalls).Count -eq 0) ("Multi-domain H20a: every WinRM nltest start is /sc_query, for each of the three domains, and none is direct ({0} calls; domains queried: {1})" -f @($h20aRemote2).Count, ($h20aRemote2Domains -join ', '))
 
 Check ($null -ne $result2) 'Multi-domain: Invoke-Main returned a summary object'
+# PORT-PLAN H21: the three-domain pass, one run folder, the closing lines and its exit code.
+Write-Host ("    H21 three-domain exit: {0} - {1}" -f $result2.ExitCode, $result2.ExitReason) -ForegroundColor DarkGray
+Test-SmokeH21Run -Result $result2 -Root $out2 -Name 'three-domain' -ExpectedCode 1 -ReasonPattern 'Fail finding'
 Check (@($result2.DomainsScoped).Count -eq 3) ("Multi-domain: three domains scoped ({0})" -f @($result2.DomainsScoped).Count)
 
 # The core assertion: per-domain sections must contribute findings, not vanish.
@@ -2821,11 +2849,41 @@ foreach ($bad in $badFiles) {
     try { Invoke-Main | Out-Null } catch { $thrown = [string]$_.Exception.Message }
     Check ($thrown -match [regex]::Escape($bad.Expect)) ("Override: {0} stops the run ({1})" -f $bad.Name, $bad.Expect)
     Check ($thrown -match [regex]::Escape([IO.Path]::GetFileName($overrideFile))) ("Override: the refusal of {0} names the file" -f $bad.Name)
+    # PORT-PLAN H21: the refused run still closes its log, with exit code 2 and totals not counted.
+    $h21Logs = @(Get-ChildItem -Path $outB -Recurse -Filter 'ADForestAssessment-*.log' -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*-transcript.log' })
+    $h21Text = ''
+    if ($h21Logs.Count -eq 1) { $h21Text = [IO.File]::ReadAllText($h21Logs[0].FullName) }
+    Check ($h21Logs.Count -eq 1 -and $h21Text -match 'Exit code: 2 \(' -and $h21Text -match 'Totals: not counted' -and $h21Text -match 'Fatal error in Invoke-Main: ') ("Override: with {0}, the log closes with exit code 2 and the fatal error ({1} log)" -f $bad.Name, $h21Logs.Count)
+    # Review fix of H21: line by line, not over the whole text - the closing lines are the last
+    # lines, and every line after the header is one whole record.
+    if ($h21Logs.Count -eq 1) {
+        $h21Lines = @(Get-Content -LiteralPath $h21Logs[0].FullName)
+        Check ($h21Lines.Count -ge 4 -and $h21Lines[$h21Lines.Count - 2] -match '\[RESULT\] Exit code: 2 \(.*\)$' -and $h21Lines[$h21Lines.Count - 3] -match '\[RESULT\] Totals: not counted') ("Override: with {0}, the last lines are the closing lines" -f $bad.Name)
+        Check (@($h21Lines | Select-Object -Skip 1 | Where-Object { $_ -notmatch '^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[(INFO|STAGE|RESULT|WARN|ERROR) *\] ' }).Count -eq 0) ("Override: with {0}, every log line is one whole record" -f $bad.Name)
+    }
     $written = @(Get-ChildItem -Path $outB -Recurse -Filter *.csv -ErrorAction SilentlyContinue)
     Check ($written.Count -eq 0) ("Override: with {0}, nothing was collected before the run stopped ({1} CSV files)" -f $bad.Name, $written.Count)
     Remove-Item -Recurse -Force $outB -ErrorAction SilentlyContinue
 }
 Check (@($badFiles).Count -eq 17) 'Override: non-vacuity - seventeen declared unusable files were tried'
+# Review fix of H21 (finding 1): a file that is not JSON at all. On Windows PowerShell 5.1 the
+# ConvertFrom-Json message ends in a line break, which used to split the fatal-error record and the
+# Exit code line in two. Every line must stay one record and the log must end with its closing lines.
+'{ not json' | Out-File -LiteralPath $overrideFile -Encoding UTF8
+$outJ = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_notjson_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outJ
+$thrownJ = ''
+try { Invoke-Main | Out-Null } catch { $thrownJ = [string]$_.Exception.Message }
+Check ($thrownJ -match 'Config override file is not valid JSON') 'Override: a file that is not JSON stops the run'
+$jLogs = @(Get-ChildItem -Path $outJ -Recurse -Filter 'ADForestAssessment-*.log' -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*-transcript.log' })
+Check ($jLogs.Count -eq 1) ("Override: the run refused for a file that is not JSON has one log ({0})" -f $jLogs.Count)
+if ($jLogs.Count -eq 1) {
+    $jLines = @(Get-Content -LiteralPath $jLogs[0].FullName)
+    Check (@($jLines | Select-Object -Skip 1 | Where-Object { $_ -notmatch '^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[(INFO|STAGE|RESULT|WARN|ERROR) *\] ' }).Count -eq 0) 'Override: not JSON - every log line is one whole record (no message split over two lines)'
+    Check (@($jLines | Where-Object { $_ -match 'Fatal error in Invoke-Main: .*not valid JSON.* \| Type: ' }).Count -eq 1) 'Override: not JSON - one fatal-error record, message and type on the same line'
+    Check ($jLines.Count -ge 4 -and $jLines[$jLines.Count - 2] -match '\[RESULT\] Exit code: 2 \(could not run or was stopped: .*not valid JSON.*\)$') 'Override: not JSON - the next-to-last line is the whole Exit code line'
+}
+Remove-Item -Recurse -Force $outJ -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $overrideFile -Force -ErrorAction SilentlyContinue
 # The parameter carries [ValidateNotNullOrEmpty()], and the attribute stays on the variable, so
 # it cannot simply be set back to empty: the variable is removed and re-created without it.
@@ -2974,6 +3032,10 @@ $script:IncludeSysvolBacklog = $false
 Check (@($script:SmokeRemoteCalls | Where-Object { $_.Arguments -notmatch '^/sc_query:\S+$' }).Count -eq 0 -and @($script:SmokeDirectToolCalls).Count -eq 0) ("Failure mode H20a: no WinRM nltest start other than /sc_query, none direct ({0} remote calls)" -f @($script:SmokeRemoteCalls).Count)
 
 Check ($null -ne $result3) 'Failure mode: Invoke-Main still returns a summary rather than dying'
+# PORT-PLAN H21: with failing collectors the run still completes (exit code 1, never 0) and names the
+# sections left wholly Not Assessed.
+Write-Host ("    H21 failing-collector exit: {0} - {1}" -f $result3.ExitCode, $result3.ExitReason) -ForegroundColor DarkGray
+Test-SmokeH21Run -Result $result3 -Root $out3 -Name 'failing collectors' -ExpectedCode 1 -ReasonPattern 'section\(s\) Not Assessed: '
 Check (Test-Path $result3.FindingsFile) 'Failure mode: consolidated findings still written'
 $findings3 = @(Import-Csv $result3.FindingsFile)
 Check ($findings3.Count -gt 0) ("Failure mode: findings are not empty ({0} rows)" -f $findings3.Count)
@@ -3277,6 +3339,11 @@ catch { $noForestOk = $false; Write-Host ("    unexpected throw: {0}" -f $_.Exce
 Check $noForestOk 'No forest: Invoke-Main completes instead of dying with a raw exception'
 Check ($null -ne $result4) 'No forest: a summary object is still returned'
 if ($null -ne $result4) {
+    # PORT-PLAN H21: an unreadable forest completes with a bundle and its Fail headline finding: exit code 1.
+    Write-Host ("    H21 no-forest exit: {0} - {1}" -f $result4.ExitCode, $result4.ExitReason) -ForegroundColor DarkGray
+    Test-SmokeH21Run -Result $result4 -Root $out4 -Name 'no forest' -ExpectedCode 1 -ReasonPattern 'Fail finding'
+}
+if ($null -ne $result4) {
     Check (Test-Path $result4.FindingsFile) 'No forest: a findings bundle still lands on disk'
     Check (Test-Path $result4.ReportPath) 'No forest: the HTML report is still written'
     Check (Test-Path $result4.JsonPath) 'No forest: the JSON report is still written'
@@ -3327,6 +3394,42 @@ if ($null -ne $result4) {
     Check ($findings4.Count -ge 5) ("No forest: non-vacuity - sections were evaluated and degraded ({0} rows)" -f $findings4.Count)
 }
 Remove-Item -Recurse -Force $out4 -ErrorAction SilentlyContinue
+
+# ---- PORT-PLAN H21, independent review fix (M2, M7): reports not written and an uninterpretable row ----
+# Both report writers fail and a collector returns a dictionary where a finding belongs. The run must
+# still complete, and its exit code must be 1 naming each cause: the wiring of -ReportsNotWritten and
+# -UnreadableRows from Invoke-Main into Get-AdfaRunExitCode, which the pure tests cannot see.
+Write-Host ""
+Write-Host "== Running Invoke-Main with failing report writers and an uninterpretable row (H21 review fix) ==" -ForegroundColor Cyan
+$savedHtmlWriter = ${function:New-AdfaHtmlReport}
+$savedJsonWriter = ${function:Export-AdfaJsonReport}
+$savedForestSummary = ${function:Get-AdfaForestSummary}
+function New-AdfaHtmlReport { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: HTML writer failed' }
+function Export-AdfaJsonReport { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: JSON writer failed' }
+function Get-AdfaForestSummary { param([Parameter(ValueFromRemainingArguments)]$a)
+    New-Finding -Area 'Forest' -Item 'Forest name' -Status $script:Status.Pass -Detail 'stub'
+    @{ Shape = 'a dictionary where a finding belongs' } }
+$out5 = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_writers_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $out5
+$script:Sections = @('Forest')
+$result5 = $null
+try { $result5 = Invoke-Main }
+catch { Write-Host ("    unexpected throw: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow }
+finally {
+    ${function:New-AdfaHtmlReport} = $savedHtmlWriter
+    ${function:Export-AdfaJsonReport} = $savedJsonWriter
+    ${function:Get-AdfaForestSummary} = $savedForestSummary
+    $script:Sections = @('All')
+}
+Check ($null -ne $result5) 'H21 writers: the run completes although both report writers failed'
+if ($null -ne $result5) {
+    Write-Host ("    H21 writers exit: {0} - {1}" -f $result5.ExitCode, $result5.ExitReason) -ForegroundColor DarkGray
+    Test-SmokeH21Run -Result $result5 -Root $out5 -Name 'report writers failed' -ExpectedCode 1 -ReasonPattern 'HTML report not written'
+    Check ([string]$result5.ExitReason -match 'JSON report not written') 'H21 writers: the exit reason names the JSON report not written'
+    Check ([string]$result5.ExitReason -match '1 collected row\(s\) could not be interpreted') ("H21 writers: the exit reason names the uninterpretable row ({0})" -f $result5.ExitReason)
+    Check ([string]$result5.ReportPath -eq '' -and [string]$result5.JsonPath -eq '') 'H21 writers: the summary says neither report was written'
+}
+Remove-Item -Recurse -Force $out5 -ErrorAction SilentlyContinue
 
 # cleanup
 Remove-Item -Recurse -Force $out2 -ErrorAction SilentlyContinue
