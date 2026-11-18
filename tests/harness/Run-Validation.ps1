@@ -153,7 +153,8 @@ function Test-AdfaRemoteSecureChannel {
     param([string]$PartnerDomain, [string]$VerifyDomain, [string]$PartnerDc, [pscredential]$Credential, [int]$RpcPortTimeoutMs)
     [pscustomobject]@{ Result = 'Verified'; Tool = 'stub'; Detail = 'stub remote verify' }
 }
-$rows = Get-AdfaTrustHealth -DomainName 'a.local' -AdParams @{}
+# PORT-PLAN C16 (GAP-P3): the outbound direction is asked of a DC of the domain, which the caller names.
+$rows = Get-AdfaTrustHealth -DomainName 'a.local' -AdParams @{} -SourceDc 'dc1.a.local'
 Assert-Equal 1 (@($rows).Count) 'One trust row returned'
 Assert-Equal 'Healthy' $rows[0].Health 'Healthy forest trust, both directions verified'
 Assert-Equal 'Verified' $rows[0].OutboundSecureChannel 'Outbound recorded Verified'
@@ -165,7 +166,7 @@ function Test-AdfaRemoteSecureChannel {
     param([string]$PartnerDomain, [string]$VerifyDomain, [string]$PartnerDc, [pscredential]$Credential, [int]$RpcPortTimeoutMs)
     [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'winrm'; Detail = "WinRM not reachable. Run 'nltest /sc_verify:$VerifyDomain' on a DC in $PartnerDomain." }
 }
-$rows = Get-AdfaTrustHealth -DomainName 'a.local' -AdParams @{}
+$rows = Get-AdfaTrustHealth -DomainName 'a.local' -AdParams @{} -SourceDc 'dc1.a.local'
 Assert-Equal 'Not Assessed' $rows[0].InboundSecureChannel 'Inbound honestly Not Assessed when the partner side is unreachable'
 Assert-Equal 'Healthy' $rows[0].Health 'Outbound-verified trust stays Healthy with the inbound coverage gap noted'
 Assert-True ($rows[0].Reasons -match 'Inbound') 'Coverage gap for inbound is stated in Reasons'
@@ -526,7 +527,9 @@ $dcUnknown = @(
     [pscustomobject]@{ HostName = 'dc2.contoso.com'; OperatingSystem = 'Not Assessed';        IsReadOnly = $false }
 )
 $rUnk = Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $dcUnknown -SeConfig $seCfg
-Assert-Equal 'Pass' ([string](Get-SeRow $rUnk 'Domain controller operating systems').Status) 'SE DC OS: a readable DC still passes on its own merits'
+# PORT-PLAN C16 (GAP-P20): changed from Pass. Every DC in the forest must run a supported version, so the
+# gate is not given while one is unread; before v1.36.0 this was a Pass beside the row below that said so.
+Assert-Equal 'Not Assessed' ([string](Get-SeRow $rUnk 'Domain controller operating systems').Status) 'SE DC OS: a readable DC does not make the gate pass while another DC is unread (C16)'
 $unkRow = Get-SeRow $rUnk 'Domain controller OS - not readable'
 Assert-True ($null -ne $unkRow) 'SE DC OS: an unreadable OS gets its own row, so a partial pass cannot hide it'
 # Guarded: if the row is missing the assertion above has already failed, and dereferencing
@@ -3178,7 +3181,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.35.0' ([string]$script:Config.Version) 'C14: version 1.35.0 in the script (bumped by PORT-PLAN C3f)'
+Assert-Equal '1.36.0' ([string]$script:Config.Version) 'C14: version 1.36.0 in the script (bumped by PORT-PLAN C16)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3271,7 +3274,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.35.0' ([string]$script:Config.Version) 'C15: version 1.35.0 in the script (bumped by PORT-PLAN C3f)'
+Assert-Equal '1.36.0' ([string]$script:Config.Version) 'C15: version 1.36.0 in the script (bumped by PORT-PLAN C16)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3430,6 +3433,72 @@ $c2eGpo = & {
     @($rows | Where-Object { $_.Item -eq 'GPO folder listing: contoso.com' })[0]
 }
 Assert-True ([string]$c2eGpo.Detail -match '^Unreachable, classified once for this run by the reachability probe: the host name does not resolve' -and [string]$c2eGpo.Detail -notmatch 'did not answer') 'C14c review: the GPO folder listing of a PDC classified Unreachable names the class, never a probe that was not made'
+
+Write-Host "== C16. Promise triage (GAP-P1..P30), pure logic ==" -ForegroundColor Cyan
+$c16Dom = 'contoso.com'
+# GAP-P3: the outbound direction is asked of a DC of the domain assessed (Learn Example 3 form).
+Assert-Equal '/server:dc1.contoso.com /sc_query:fabrikam.com' (Get-AdfaNltestScArgument -Domain 'fabrikam.com' -Server 'dc1.contoso.com') 'C16 GAP-P3: /server:<dc> /sc_query:<partner>'
+Assert-Equal '/sc_query:fabrikam.com' (Get-AdfaNltestScArgument -Domain 'fabrikam.com') 'C16 GAP-P3: with no server the argument is unchanged'
+Assert-Equal '/server:dc1.contoso.com /sc_verify:fabrikam.com' (Get-AdfaNltestScArgument -Domain 'fabrikam.com' -Server 'dc1.contoso.com' -LiveVerify) 'C16 GAP-P2: /sc_verify only with the opt-in'
+# GAP-P1: no Pass row when no subscription was read; one read gives a Pass counted on it alone.
+$c16Unknown = @([pscustomobject]@{ DcName = 'dc1.contoso.com'; Enabled = $null; Options = $null; Error = 'x' }, [pscustomobject]@{ DcName = 'dc2.contoso.com'; Enabled = $null; Options = $null; Error = 'y' })
+$c16Rows = @(Get-AdfaDfsrSubscriptionVerdict -DomainName $c16Dom -Subscriptions $c16Unknown)
+Assert-True (@($c16Rows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0 -and @($c16Rows | Where-Object { $_.Item -eq 'DFSR SYSVOL subscription - not readable' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'C16 GAP-P1: two DCs unread give no Pass row, one Not Assessed row'
+$c16Raw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; DomainDn = 'DC=contoso,DC=com'; GlobalState = 'Present'; GlobalFlags = 48; GlobalError = ''; Dcs = @(
+        [pscustomobject]@{ HostName = 'dc1.contoso.com'; IsReadOnly = $false; ComputerDn = 'CN=DC1'; Dfsr = 'Present'; DfsrError = ''; Frs = 'Absent'; FrsError = ''; DfsrEnabled = $false; DfsrOptions = 1 },
+        [pscustomobject]@{ HostName = 'dc2.contoso.com'; IsReadOnly = $false; ComputerDn = 'CN=DC2'; Dfsr = 'Present'; DfsrError = ''; Frs = 'Absent'; FrsError = ''; DfsrEnabled = $null; DfsrOptions = $null },
+        [pscustomobject]@{ HostName = 'dc3.contoso.com'; IsReadOnly = $false; ComputerDn = 'CN=DC3'; Dfsr = 'Unread'; DfsrError = 'access denied: STUB'; Frs = 'Unread'; FrsError = ''; DfsrEnabled = $null; DfsrOptions = $null },
+        [pscustomobject]@{ HostName = 'dc4.contoso.com'; IsReadOnly = $false; ComputerDn = 'CN=DC4'; Dfsr = 'Absent'; DfsrError = ''; Frs = 'Present'; FrsError = ''; DfsrEnabled = $null; DfsrOptions = $null }) }
+$c16List = ConvertTo-AdfaDfsrSubscriptionList -Raw $c16Raw
+Assert-True (@($c16List.Subscriptions).Count -eq 3 -and $c16List.NotDfsrCount -eq 1) 'C16 GAP-P1: four DCs give three subscriptions and one DC without DFSR (declared population: dc1..dc4)'
+$c16By = @{}; foreach ($s in @($c16List.Subscriptions)) { $c16By[$s.DcName] = $s }
+# Changed by the independent review of the C16 diff (findings 6, 10): msDFSR-Enabled not returned is
+# unknown with its cause, no longer taken as TRUE.
+Assert-True ($c16By['dc1.contoso.com'].Enabled -eq $false -and $c16By['dc1.contoso.com'].Options -eq 1 -and $null -eq $c16By['dc2.contoso.com'].Enabled -and $c16By['dc2.contoso.com'].Error -match 'not returned' -and $null -eq $c16By['dc3.contoso.com'].Enabled -and $c16By['dc3.contoso.com'].Error -match 'access denied') 'C16 GAP-P1: FALSE kept, not returned unknown with its cause (review 6/10), unread kept unknown with its class'
+$c16ListRows = @(Get-AdfaDfsrSubscriptionVerdict -DomainName $c16Dom -Subscriptions $c16List.Subscriptions -NotDfsrCount $c16List.NotDfsrCount)
+$c16NotRead = @($c16ListRows | Where-Object { $_.Item -eq 'DFSR SYSVOL subscription - not readable' })
+Assert-True ($c16NotRead.Count -eq 1 -and $c16NotRead[0].Detail -match 'dc2\.contoso\.com \(msDFSR-Enabled was not returned' -and $c16NotRead[0].Detail -match 'dc3\.contoso\.com \(access denied: STUB\)' -and @($c16ListRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0) 'C16 review 4: the not-readable row names each DC with its own cause, and nothing passes'
+Assert-Equal 0 @((ConvertTo-AdfaDfsrSubscriptionList -Raw ([pscustomobject]@{ Ok = $false; Dcs = @() })).Subscriptions).Count 'C16 GAP-P1: an unread DC list gives no subscription'
+# GAP-P6: the site name is the first RDN of the subnet's site DN, compared whole.
+$c16Topo = [pscustomobject]@{ Sites = @([pscustomobject]@{ Name = 'HQ' }, [pscustomobject]@{ Name = 'HQ-Branch' }); Subnets = @([pscustomobject]@{ Name = '192.0.2.0/24'; Site = 'CN=HQ-Branch,CN=Sites,CN=Configuration,DC=contoso,DC=com' }) }
+$c16Site = @(Get-AdfaSiteHealthFinding -Topology $c16Topo -DomainControllers @([pscustomobject]@{ HostName = 'dc1.contoso.com'; Site = 'HQ' }, [pscustomobject]@{ HostName = 'dc2.contoso.com'; Site = 'HQ-Branch' }))
+Assert-True (@($c16Site | Where-Object { $_.Item -eq "Site 'HQ' has no subnets" -and $_.Status -eq 'Warning' }).Count -eq 1 -and @($c16Site | Where-Object { $_.Item -eq "Site 'HQ-Branch' has no subnets" }).Count -eq 0) 'C16 GAP-P6: a subnet of HQ-Branch does not give HQ a subnet'
+$c16NoInv = @(Get-AdfaSiteHealthFinding -Topology $c16Topo -DomainControllers @() -InventoryCollected $false)
+Assert-True (@($c16NoInv | Where-Object { $_.Item -eq 'Empty sites' -and $_.Status -eq 'Not Assessed' }).Count -eq 1 -and @($c16NoInv | Where-Object { $_.Status -eq 'Pass' -or $_.Item -like '*has no domain controllers' }).Count -eq 0) 'C16 GAP-P6: without the inventory, empty sites are Not Assessed and nothing passes'
+# Review 3/9: the inventory must cover every domain of the forest, with no domain's read failed.
+Assert-Equal '' (Get-AdfaSiteInventoryGap -Collected $true -DcCount 2 -ScopeCoversForest $true -Failures @()) 'C16 review 3: a forest-wide inventory with no failure has no gap'
+Assert-True ((Get-AdfaSiteInventoryGap -Collected $true -DcCount 2 -ScopeCoversForest $false) -match 'AllDomains') 'C16 review 3: a run that did not scope the forest has a gap naming -AllDomains'
+Assert-True ((Get-AdfaSiteInventoryGap -Collected $true -DcCount 2 -ScopeCoversForest $true -Failures @([pscustomobject]@{ Domain = 'child.contoso.com'; Error = 'x' })) -match 'child\.contoso\.com') 'C16 review 9: a failed domain inventory is a gap naming the domain'
+$c16Gap = Get-AdfaSiteInventoryGap -Collected $true -DcCount 1 -ScopeCoversForest $false
+$c16Partial = @(Get-AdfaSiteHealthFinding -Topology $c16Topo -DomainControllers @([pscustomobject]@{ HostName = 'dc2.contoso.com'; Site = 'HQ-Branch' }) -InventoryCollected ($c16Gap -eq '') -InventoryGap $c16Gap)
+Assert-True (@($c16Partial | Where-Object { $_.Item -like '*has no domain controllers' }).Count -eq 0 -and @($c16Partial | Where-Object { $_.Item -eq 'Empty sites' -and $_.Detail -match 'AllDomains' }).Count -eq 1) 'C16 review 3: a partial inventory calls no site empty, and the Not Assessed row names the gap'
+# Review 1/7: only answers of type SRV count; a NODATA answer (the zone SOA) is a Fail.
+$c16Srv = & {
+    function Test-CommandAvailable { param([string]$Name) $true }
+    function Resolve-DnsName { param([string]$Name, [string]$Type, $ErrorAction) [pscustomobject]@{ Name = 'contoso.com'; Type = 'SOA'; Section = 'Authority' } }
+    @(Get-AdfaDnsDepth -DomainName 'contoso.com')
+}
+Assert-Equal 2 @($c16Srv | Where-Object { $_.Item -like 'SRV *' -and $_.Status -eq 'Fail' }).Count 'C16 review 1/7: both SRV names answered with the SOA only are a Fail (declared population: the _ldap and _kerberos names)'
+# GAP-P25: the cap sentence only at the cap.
+Assert-True ((Get-AdfaEventCapText -Count 500 -Cap 500) -match 'MINIMUM' -and (Get-AdfaEventCapText -Count 499 -Cap 500) -eq '' -and (Get-AdfaEventCapText -Count 0 -Cap 500) -eq '') 'C16 GAP-P25: a scan that returned its cap says its counts are a minimum, one below it does not'
+# GAP-P20: the DC gate passes only over a complete forest.
+$c16SeDcs = @([pscustomobject]@{ HostName = 'dc1.contoso.com'; OperatingSystem = 'Windows Server 2019 Datacenter'; IsReadOnly = $false })
+$c16SePart = @(Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $c16SeDcs -SeConfig $script:Config.ExchangeSe)
+$c16SeFull = @(Get-AdfaExchangeSeCompatibility -ForestMode 'Windows2016Forest' -ForestLevel '7' -DomainSummaries @() -DomainControllers $c16SeDcs -SeConfig $script:Config.ExchangeSe -ForestComplete $true)
+Assert-Equal 'Not Assessed' ([string]@($c16SePart | Where-Object { $_.Item -eq 'Domain controller operating systems' })[0].Status) 'C16 GAP-P20: part of the forest is Not Assessed'
+Assert-Equal 'Pass' ([string]@($c16SeFull | Where-Object { $_.Item -eq 'Domain controller operating systems' })[0].Status) 'C16 GAP-P20: the whole forest passes'
+# GAP-P3: the source DC is the PDC emulator; a failed read names its class.
+$c16Src = & {
+    function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction) throw [System.UnauthorizedAccessException]'STUB: refused' }
+    Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
+}
+Assert-True ($c16Src.HostName -eq '' -and $c16Src.Error -match 'access denied') 'C16 GAP-P3: a refused PDC lookup gives no DC and names access denied'
+$c16Src2 = & {
+    function Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction) [pscustomobject]@{ PDCEmulator = 'dc1.contoso.com' } }
+    Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
+}
+Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
+Assert-Equal '1.36.0' ([string]$script:Config.Version) 'C16: version 1.36.0 in the script'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue

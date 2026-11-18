@@ -25,9 +25,9 @@
           DC is known (Microsoft: a single point of failure); the rest is inventory
         - Replication health (partner metadata, failures, queue) and topology
           (sites, subnets, site links, connection objects)
-        - FOREST & DOMAIN TRUSTS with verified TWO-WAY trust health
-          (secure-channel verification per direction via nltest/netdom, plus SID filtering,
-          selective authentication, TGT delegation and encryption posture)
+        - FOREST & DOMAIN TRUSTS with TWO-WAY trust health: the secure channel read per direction
+          with nltest (outbound on a DC of the domain assessed, inbound on a DC of the partner),
+          plus SID filtering, selective authentication, TGT delegation and encryption posture
         - Parsed DC diagnostics (dcdiag key tests + core service state) as PASS/FAIL per DC,
           with Topology per domain, CheckSDRefDom and CrossRefValidation per partition of the
           forest, and Intersite per site (opt-in); a partition's or the enterprise's result is
@@ -38,7 +38,9 @@
           recommends Secure only), zone aging and server scavenging (tool defaults; Microsoft
           publishes no requirement), a zone configuration inventory, forwarders and zone
           transfer. Get-DnsServer* reads only                              [DnsServer optional]
-        - SYSVOL / DFSR replication migration state                          [DFSR optional]
+        - SYSVOL / DFSR: the DFSR migration global state of the domain of the computer running the
+          assessment (dfsrmig /getglobalstate), and per scoped domain each DC's SYSVOL engine and
+          the msDFSR-Enabled / msDFSR-options of its DFSR SYSVOL subscription         [DFSR optional]
         - GPO inventory (linked / unlinked)                                  [GroupPolicy optional]
         - GPO directory inventory, without the GroupPolicy module: status flags, WMI filter and
           links of each GPO, links per site, domain and OU (inventory only)
@@ -48,7 +50,8 @@
           is missing, and SYSVOL GPO folders with no container. A directory read and a
           read-only file read over SMB; the GroupPolicy module is not needed for it and nothing
           is written
-        - Password & lockout policy (default + fine-grained)
+        - Password policy and the lockout threshold (default domain policy; fine-grained policies as
+          inventory - lockout duration, observation window, precedence and applies-to are not read)
         - Privileged groups, per scoped domain: Schema Admins and Enterprise Admins membership
           (forest root; a member is a Warning, as Microsoft says both should be empty day to
           day), and the transitive member count of every privileged group, each located by SID
@@ -56,8 +59,9 @@
           principals (by SID) followed; a member that could not be resolved makes the count Not
           Assessed, never lower
         - Security posture
-          (krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota,
-          stale / never-expiring / RC4-DES accounts; the permissions of AdminSDHolder are in
+          (krbtgt password age, AD Recycle Bin, tombstone lifetime, machine account quota, and
+          accounts with reversible password encryption or DES-only keys; RC4 is not evaluated, stale
+          and never-expiring accounts are in StaleObjects, the permissions of AdminSDHolder are in
           the Dangerous ACLs section)
         - SID history, per scoped domain (rows of the security posture section): how many
           security principals carry sIDHistory, whether a historic SID belongs to the
@@ -74,7 +78,8 @@
           this script asks the directory for every attribute, and none names a password, password
           hash, LAPS password, trust secret or other secret attribute. The CSV columns are the
           declared list plus Enabled and ListComplete; a capped read marks every row "No"
-        - AD CS / PKI: enrolment CAs and ESC1-susceptible certificate templates
+        - AD CS / PKI: enrolment CAs, and an ESC1 heuristic over the configuration of every
+          certificate template object (whether a CA publishes it and who may enrol are not read)
         - Dangerous ACLs, per scoped domain: principals outside an allowlist, matched by SID and
           never by name, that hold a replication (DCSync) right, WriteDacl, WriteOwner, write of
           all properties or full control on the domain head, or a write or control right or
@@ -134,12 +139,15 @@
           Info, never "no certificate": Microsoft's Domain Controller Authentication and
           Kerberos Authentication templates do not publish to the directory. The DC's own
           certificate stores are not read (PORT-PLAN C5a)
-        - Directory backup status (repadmin /showbackup), time synchronization (w32tm), and each
-          DC's W32Time Type, NtpServer and AnnounceFlags from the registry (inventory only)
+        - Directory backup status (repadmin /showbackup), the time source of the computer running
+          the assessment (w32tm /query /source; per-DC time is in Time Hierarchy), and each DC's
+          W32Time Type, NtpServer and AnnounceFlags from the registry (inventory only)
         - Event inventory per DC: Critical, Error and Warning events of five logs, bounded by a
           time window and a per-log cap, grouped by event ID (inventory only)
-        - DNS depth: critical SRV records (secure dynamic updates moved to DNS health in v1.30.0)
-        - Redundancy: DC count, GPO central store, duplicate SPNs
+        - DNS depth: two critical SRV records through the local resolver (secure dynamic updates
+          moved to DNS health in v1.30.0; root hints are not read)
+        - Redundancy: DC count, GPO central store (Not Assessed when SYSVOL could not be listed),
+          duplicate SPNs; FSMO concentration is not evaluated
         - RECOVERY & CONSISTENCY (post-incident, e.g. after a restore-from-backup):
             * DNS vs AD divergence - DC locator SRV records compared against the DCs the
               directory actually contains (stale entries for removed DCs, live DCs not
@@ -159,7 +167,8 @@
               recovery: lingering objects (1988), tombstone-lifetime exceeded (2042),
               USN rollback (2095), unsupported restore (2103), GUID DNS lookup failures
               (2087/2088), KCC topology failures (1311/1865/1925)
-        - Exchange schema markers
+        - Exchange schema marker: one marker (ms-Exch-Schema-Version-Pt rangeUpper), inventory with
+          no verdict; organisation and domain objectVersion are not read
         - Optional raw repadmin / dcdiag capture
 
     Every Fail / Warning / Broken / Degraded row in the consolidated findings carries a
@@ -170,8 +179,11 @@
         %USERPROFILE%\Documents\AdAssessment\yyyy-MM-dd_HH-mm-ss\
 
     Coverage-aware & fail-closed: any value that could not be collected is reported as
-    "Not Assessed" (never a false Pass / 0). Trust directions that could not be tested from
-    the local side are reported "Not Assessed", never "Verified".
+    "Not Assessed" (never a false Pass / 0). A trust direction that could not be read is
+    reported "Not Assessed", never "Verified". The roll-up Health of a trust is a different
+    claim (PORT-PLAN C16a): a bidirectional trust with one direction Verified and the other Not
+    Assessed is "Healthy", with the untested direction named in Reasons, and a trust whose partner
+    answers neither TCP 135 nor 389 from the computer running the assessment is "Broken".
 
     The script writes nothing to the directory itself. Every command that Microsoft documents
     as changing something, and that this project knows of, is off unless its switch is given:
@@ -222,19 +234,25 @@
     Default: <MyDocuments>\AdAssessment
 
 .PARAMETER AllDomains
-    Assess every domain in the forest. Without it, only the current/target domain is assessed
-    (forest-wide sections such as trusts and topology are still collected).
+    Assess every domain in the forest. Without it, only the current/target domain is assessed:
+    the per-domain and per-DC sections, trusts included (the trusts of the scoped domains only),
+    cover that domain. Forest-wide sections such as Topology (sites, subnets, site links) are still
+    collected for the whole forest. A forest-wide verdict - the Exchange SE DC gate, a DNS zone
+    hosted beyond one domain - needs every domain, and says so when it was not given.
 
 .PARAMETER Sections
-    Restrict collection to the named sections. Default: All. 'Identity' performs a full
-    all-attributes export of every user and computer (heavy on large domains) to CSV; use
-    -Sections to exclude it for a quick health-only run. Cross-forest note: -AllDomains covers
-    domains WITHIN the target forest only. To assess another forest, run again with -Server /
-    -Credential pointed at a DC in that forest.
+    Restrict collection to the named sections. Default: All. 'Identity' exports every user and
+    computer to CSV with a declared attribute list (never every attribute, since v1.33.0), which
+    is still heavy on a large domain. -Sections has no exclusion form: to leave Identity out, name
+    every other section you want. Cross-forest note: -AllDomains covers domains WITHIN the target
+    forest only. To assess another forest, run again with -Server / -Credential pointed at a DC in
+    that forest; the external tools (dcdiag, repadmin, nltest, w32tm, dfsrmig) run as the account
+    running the script, against the names this tool gives them.
 
     Recovery sections (post-incident): DnsAdConsistency, DsaCname, GcConsistency, PortMatrix,
-    DcSecureChannel, DsEvents. For a focused post-restore triage run:
-    -Sections DnsAdConsistency,DsaCname,GcConsistency,PortMatrix,Replication,Trusts,DcSecureChannel,DsEvents,TimeSync,Sysvol,Backup
+    DcSecureChannel, DsEvents, RestoreIntegrity, MsdcsDelegation, TimeHierarchy, SiteGc. For a
+    focused post-restore triage run (SiteGc reads the DC inventory, so DomainControllers is named):
+    -Sections DomainControllers,DnsAdConsistency,DsaCname,GcConsistency,MsdcsDelegation,PortMatrix,Replication,Trusts,DcSecureChannel,DsEvents,RestoreIntegrity,TimeSync,TimeHierarchy,SiteGc,Sysvol,Backup
 
     DcSystem judges each DC's operating system against Microsoft's lifecycle dates and lists
     its build, uptime and latest update install date. The lifecycle verdict reads the DC
@@ -437,9 +455,9 @@
     Hierarchy, the port matrix, DsEvents, RestoreIntegrity, the DNS server set of the DNS-vs-AD
     sections and the raw repadmin/dcdiag captures - take the DCs of every scoped domain, each row
     carrying its domain, even when DomainControllers is not among -Sections; a scoped domain whose DCs
-    could not be enumerated, or returned none, gets its own Not Assessed "(population)" row. Not yet
-    the SYSVOL subscription verdict, which still takes its DCs from the DC inventory only (PORT-PLAN
-    C2i).
+    could not be enumerated, or returned none, gets its own Not Assessed "(population)" row. Since
+    v1.36.0 (PORT-PLAN C16) the SYSVOL subscription verdict is read from each scoped domain's own DC
+    list too, by the SYSVOL engine read below.
 
     Topology also gives the forest one "Subnets without a site" row (siteObject of every subnet
     object; a Warning when any has none, a tool default) and every DC of every scoped domain one
@@ -471,7 +489,10 @@
     "SYSVOL replication engine" row, from the directory of that domain: the DC's DFSR SYSVOL
     subscription and its NTFRS subscriber. A writable DC still on FRS, or between FRS and DFSR, is a
     Warning (Fail by override); every writable DC on DFSR is a Pass; an engine not known is Not
-    Assessed. msDFSR-Flags is quoted as corroboration only.
+    Assessed. msDFSR-Flags is quoted as corroboration only. The same read gives the msDFSR-Enabled and
+    msDFSR-options of each DC's DFSR SYSVOL subscription (PORT-PLAN C16): FALSE on any DC is a Fail,
+    more than one authoritative member a Fail, one a Warning; a domain where no subscription was read
+    is Not Assessed, never a Pass.
 
     Inventory depth (PORT-PLAN C15). Every row below is Info when it was read and Not Assessed with
     its cause (unreachable, access denied, timed out, cap reached, not set, not returned) when it was
@@ -729,10 +750,12 @@
 .PARAMETER IncludeLingeringObjectScan
     Proactively enumerate lingering objects per DC with
     'repadmin /removelingeringobjects ... /advisory_mode' (each DC compared against its
-    domain's PDC emulator). Advisory mode changes NOTHING in the directory, but it does
-    write events (1938/1942/1946) to the target DCs' Directory Service logs - hence
-    opt-in. Strongly recommended in a post-restore recovery, where tombstone lifetime
-    may already have been exceeded.
+    domain's PDC emulator), in the DOMAIN naming context only: the configuration partition,
+    application partitions and global catalog partial replicas are not scanned. Advisory mode
+    changes NOTHING in the directory, but it does write events (1938/1942/1946) to the target
+    DCs' Directory Service logs - hence opt-in. A DC whose output carries no count this tool can
+    read is Not Assessed, never a Pass. Strongly recommended in a post-restore recovery, where
+    tombstone lifetime may already have been exceeded.
 
 .PARAMETER IncludeSysvolBacklog
     Measure the SYSVOL replication backlog in both directions between every DC and its domain's
@@ -749,16 +772,25 @@
     Run the live secure channel test, nltest /sc_verify, in place of the default nltest
     /sc_query. NOT read-only: Microsoft's nltest reference says that if the secure channel does
     not work, /sc_verify removes the existing channel and builds a new one. It runs on the host
-    running the assessment (outbound trust direction), on a domain controller of each trust
-    partner (inbound direction), and on every domain controller of the scoped domains
+    running the assessment against a domain controller of the domain assessed (outbound trust
+    direction, nltest /server:<dc>), on a domain controller of each trust partner (inbound
+    direction), and on every domain controller of the scoped domains
     (DcSecureChannel section). Without this switch those checks report the state recorded the
     last time each channel was used, which can miss a channel that has broken since.
 
 .PARAMETER Server
-    Optional DC / ADWS endpoint to target for AD cmdlets.
+    Optional DC / ADWS endpoint for the forest and current-domain reads (Get-ADForest,
+    Get-ADDomain and the reads that take the run's default server). Most per-domain collectors
+    replace it with the domain's DNS name, so their queries go to a DC the locator picks in that
+    domain, not to this server. The external tools are not pointed at it.
 
 .PARAMETER Credential
-    Optional credential for AD cmdlets and trust verification.
+    Optional credential for the ActiveDirectory module cmdlets, the remote CIM sessions, the event
+    log reads and the inbound trust check over WinRM. It is NOT applied to: the GroupPolicy module
+    (Get-GPO has no -Credential), the DnsServer module reads (called with -ComputerName only), the
+    SYSVOL file reads (GPT.INI, the Policies folder, the central store, netlogon.log), the remote
+    registry read of the USN marker, and every external tool (nltest, netdom, dcdiag, repadmin,
+    w32tm, dfsrmig), which run as the account running the script.
 
 .PARAMETER StaleDays
     Age (days since the last logon timestamp, or since creation for an account that never logged on)
@@ -782,7 +814,21 @@
     Max attempts for external tools before marking FAIL. Default: 2.
 
 .PARAMETER RetryDelaySeconds
-    Delay between external-tool retries. Default: 2.
+    Delay between external-tool retries. Default: 2. A retry is made only when a tool could not be
+    started or timed out; a tool that ran and exited non-zero, or exited with its output not complete
+    within the drain bound (ExternalToolDrainMs), is not retried.
+
+.PARAMETER ExchangeSeConfigPath
+    Path to a JSON file that replaces the built-in Exchange Server SE prerequisite table (supported
+    forest functional levels and DC operating systems), so a revision of Microsoft's supportability
+    matrix is a config edit. Keys omitted keep their built-in value; a missing or malformed file is a
+    terminating error, never a silent fall back. The DC gate reads the DC inventory, so name
+    DomainControllers with ExchangeSeReadiness, and it passes only with -AllDomains.
+
+.PARAMETER EventLookbackDays
+    How far back, in days (1 to 365), the Directory Service and DFS Replication event scans and the
+    event inventory look. Default: 14. A log that does not reach back that far is reported as not
+    covering the window, never as a clean scan.
 
 .EXAMPLE
     .\Invoke-ADForestAssessment.ps1 -AllDomains -IncludeDcdiag -IncludeRepadmin -Verbose
@@ -796,8 +842,9 @@
     Collect only trust configuration and replication, without running external trust checks.
 
 .OUTPUTS
-    [pscustomobject] run summary (paths, counts, per-section status). Data files are written
-    as CSV and a single HTML report.
+    [pscustomobject] run summary: paths, the Pass/Warning/Fail/Not Assessed counts and the names of
+    the report sections. The rows collected and reported per section are in csv\Section-Coverage.csv.
+    Data files are written as CSV, JSON and a single HTML report.
 
 .NOTES
     Author  : TakeItToCloud (Carlos Annes)
@@ -909,13 +956,23 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.35.0'
+    Version                 = '1.36.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
     ExternalToolTimeoutSec  = $ExternalToolTimeoutSeconds
     Retries                 = $Retries
     RetryDelaySeconds       = $RetryDelaySeconds
+    # PORT-PLAN C16 (GAP-P24): how long Invoke-ExternalCommand waits for the two stream reads to
+    # complete once a tool has exited. A tool default, not a Microsoft value: the reads normally
+    # complete as soon as the pipes close, and the bound only stops a grandchild that keeps a pipe
+    # open from hanging the run.
+    ExternalToolDrainMs     = 10000
+    # PORT-PLAN C16 (GAP-P25): the most events the Directory Service and DFS Replication scans read
+    # per DC, across every event ID of interest, newest first. A tool default, not a Microsoft value
+    # (the value the scans always used). A scan that returns this many reports every count as a
+    # minimum, because older events, and an event ID absent from the result, may have been cut off.
+    EventScanMaxEvents      = 500
     ReplicationStaleMinutes = 180
     # --- Replication convergence lag ------------------------------------------------------
     # OURS, not vendor limits, and the findings say so. Reasoning: intra-site replication is
@@ -995,11 +1052,10 @@ $script:Config = @{
     DfsrBacklogDisplayCap   = 100
     SysvolReplicationGroup  = 'Domain System Volume'
     SysvolReplicatedFolder  = 'SYSVOL Share'
-    # DN template for the SYSVOL subscription object, per KB 2218556. msDFSR-Enabled=FALSE means
-    # SYSVOL replication is switched off on that DC; msDFSR-options=1 marks it authoritative (the
-    # DFSR equivalent of FRS D4). Both are set by hand during a recovery and are easy to leave
-    # behind, and neither is visible anywhere else in this report.
-    SysvolSubscriptionDn    = 'CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,{0}'
+    # The DN template of the SYSVOL subscription object (KB 2218556) is SysvolEngine.DfsrSubscriptionDn
+    # since v1.36.0 (PORT-PLAN C16): the second copy that lived here served only the reader that was
+    # removed. msDFSR-Enabled=FALSE means SYSVOL replication is switched off on that DC;
+    # msDFSR-options=1 marks it authoritative (the DFSR equivalent of FRS D4).
     SysvolShares            = @('SYSVOL', 'NETLOGON')
     # --- Exchange Server SE: the AD prerequisites, as a versioned table -------------------
     # Volatile vendor facts, so they live here with their source and read date and can be
@@ -3654,7 +3710,25 @@ function Test-TcpPort {
 function Invoke-ExternalCommand {
     <#
     .SYNOPSIS
-        Runs a console tool with a hard timeout and retries, capturing stdout/stderr.
+        Runs a console tool with a hard timeout, capturing stdout and stderr; a start failure or a
+        time-out is retried, a non-zero exit code is not.
+    .DESCRIPTION
+        Both redirected streams are drained by asynchronous reads (ReadToEndAsync) started BEFORE the
+        wait, so a tool that writes more than the pipe buffer holds cannot block on a full pipe while
+        this function waits for it to exit. Before v1.36.0 (PORT-PLAN C16, GAP-P24) both streams were
+        read only after WaitForExit, the pattern Microsoft documents as a deadlock: "A deadlock
+        condition results if the parent process calls p.StandardOutput.ReadToEnd followed by
+        p.StandardError.ReadToEnd and the child process writes enough text to fill its error stream"
+        (https://learn.microsoft.com/dotnet/api/system.diagnostics.process.standarderror, read
+        2026-11-18). A large output then ran to the time-out and came back as an empty 'Timeout'.
+        After WaitForExit(timeout) returns true, the parameterless WaitForExit() is called as well,
+        as Microsoft says to do so that output handling has completed
+        (https://learn.microsoft.com/dotnet/api/system.diagnostics.process.waitforexit, read
+        2026-11-18), and the two reads are then waited for at most ExternalToolDrainMs (a tool
+        default, not a Microsoft value), so a grandchild that keeps a pipe open cannot hang the run;
+        output not complete within that bound is a failure that is not retried, with the exit code.
+        The pattern is the reference tool's (AdAssessment26 Invoke-AdaProcess); unlike it, the
+        retries are kept (PORT-PLAN C16a). Only .NET is used, so it runs on Windows PowerShell 5.1.
     .OUTPUTS
         [pscustomobject] Success, ExitCode, Attempt, Error, StdOut, OutFile
     #>
@@ -3666,7 +3740,9 @@ function Invoke-ExternalCommand {
         [string]$OutFile,
         [int]$TimeoutSeconds = 90,
         [int]$Retries = 2,
-        [int]$RetryDelaySeconds = 2
+        [int]$RetryDelaySeconds = 2,
+        # How long the two stream reads are waited for once the tool has exited (a tool default).
+        [ValidateRange(100, 600000)][int]$DrainTimeoutMs = [int]$script:Config.ExternalToolDrainMs
     )
 
     if ($OutFile) { New-Folder -Path (Split-Path -Path $OutFile -Parent) | Out-Null }
@@ -3684,14 +3760,30 @@ function Invoke-ExternalCommand {
             $p = New-Object System.Diagnostics.Process
             $p.StartInfo = $psi
             [void]$p.Start()
+            # Started before the wait, so neither pipe can fill while this function waits.
+            $stdOutTask = $p.StandardOutput.ReadToEndAsync()
+            $stdErrTask = $p.StandardError.ReadToEndAsync()
 
             if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
                 try { $p.Kill() } catch { }
                 throw ("Timeout after {0}s" -f $TimeoutSeconds)
             }
+            $p.WaitForExit()
+            if (-not $stdOutTask.Wait($DrainTimeoutMs) -or -not $stdErrTask.Wait($DrainTimeoutMs)) {
+                # Not retried (independent review of the C16 diff, finding 13): the tool started and
+                # exited, so running it again would not be the retry the help describes, and the
+                # output it gave is not complete. Returned as a failure without reading .Result,
+                # which would block for as long as the other process holds the pipe open.
+                $drainMsg = ("The tool exited (exit code {0}) but its output was not complete within {1} ms (another process may still hold its output open), so no output is returned" -f $p.ExitCode, $DrainTimeoutMs)
+                if ($OutFile) { ("FAILED: {0}`r`nArguments: {1}" -f $drainMsg, $Arguments) | Out-File -Encoding UTF8 -FilePath $OutFile -Force }
+                return [pscustomobject]@{
+                    Success = $false; ExitCode = $p.ExitCode; Attempt = $attempt
+                    Error   = $drainMsg; StdOut = ''; OutFile = $OutFile
+                }
+            }
 
-            $stdout = $p.StandardOutput.ReadToEnd()
-            $stderr = $p.StandardError.ReadToEnd()
+            $stdout = [string]$stdOutTask.Result
+            $stderr = [string]$stdErrTask.Result
             $combined = $stdout + [Environment]::NewLine + $stderr
 
             if ($OutFile) { $combined | Out-File -Encoding UTF8 -FilePath $OutFile -Force }
@@ -3846,9 +3938,16 @@ function Get-AdfaNltestScArgument {
         channel, and then builds a new one", and of /sc_query that it "reports on the state of
         the secure channel the last time that you used it".
           https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc731935(v=ws.11)
-          Read: 2026-11-13. An archived page; no current nltest reference was found on Learn.
+          Read: 2026-11-18 (PORT-PLAN C16, GAP-P2; first read 2026-11-13, unchanged). An archived
+          page; the current address (windows-commands/nltest) could not be retrieved on
+          2026-11-18, so no current nltest reference was found on Learn.
         A read-only assessment must therefore default to /sc_query. Kept as its own function so
         a test can assert the argument instead of assuming it.
+
+        -Server (PORT-PLAN C16, GAP-P3) prefixes /server:<dc>, which the same page documents as
+        "Runs nltest at a remote domain controller that you specify"; its Example 3 is
+        "nltest.exe /server:fourthcoffee-dc-01 /sc_query:fourthcoffee". The outbound direction of a
+        trust is asked of a DC of the domain assessed, not of the host running the assessment.
     .OUTPUTS
         [string]
     #>
@@ -3856,10 +3955,13 @@ function Get-AdfaNltestScArgument {
     [OutputType([string])]
     param(
         [Parameter(Mandatory)][string]$Domain,
-        [switch]$LiveVerify
+        [switch]$LiveVerify,
+        [AllowNull()][AllowEmptyString()][string]$Server = ''
     )
-    if ($LiveVerify) { return ("/sc_verify:{0}" -f $Domain) }
-    return ("/sc_query:{0}" -f $Domain)
+    $prefix = ''
+    if (-not [string]::IsNullOrWhiteSpace($Server)) { $prefix = ("/server:{0} " -f $Server.Trim()) }
+    if ($LiveVerify) { return ("{0}/sc_verify:{1}" -f $prefix, $Domain) }
+    return ("{0}/sc_query:{1}" -f $prefix, $Domain)
 }
 
 function Get-AdfaScQueryOutcome {
@@ -3950,6 +4052,11 @@ function Test-AdfaSecureChannel {
 
         netdom trust /Verify stays as the fallback in both modes: Learn documents it as
         verifying the secure channel secrets, and resetting them is a separate /reset switch.
+
+        -SourceDc (PORT-PLAN C16, GAP-P3): the DC of the source domain nltest is asked to report
+        on, with /server:<dc>. The trust collector always names one (or reports the direction Not
+        Assessed when it has none); without it nltest reports the Netlogon of the host running
+        the assessment, which is that host's own channel, not the source domain's trust channel.
     .OUTPUTS
         [pscustomobject] Result, Tool, Detail
     #>
@@ -3959,10 +4066,20 @@ function Test-AdfaSecureChannel {
         [Parameter(Mandatory)][string]$SourceDomain,
         [Parameter(Mandatory)][string]$TargetDomain,
         [switch]$LiveVerify,
+        [AllowNull()][AllowEmptyString()][string]$SourceDc = '',
         [int]$TimeoutSeconds = 90,
         [int]$Retries = 2,
         [int]$RetryDelaySeconds = 2
     )
+    $onDc = ''
+    if (-not [string]::IsNullOrWhiteSpace($SourceDc)) {
+        $onDc = (" (asked of {0}, a DC of {1})" -f $SourceDc.Trim(), $SourceDomain)
+        # A DC the reachability probe classified Unreachable in this run is not asked (PORT-PLAN C14c).
+        $sourceCause = Get-AdfaDcReachCause -HostName $SourceDc
+        if (-not [string]::IsNullOrWhiteSpace($sourceCause)) {
+            return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'nltest'; Detail = ("Outbound direction not read on {0}: {1}" -f $SourceDc.Trim(), (Get-AdfaDcGateText -Cause $sourceCause -NotRead 'nltest was not asked of it')) }
+        }
+    }
 
     $haveNltest = Test-CommandAvailable -Name 'nltest.exe'
     $haveNetdom = Test-CommandAvailable -Name 'netdom.exe'
@@ -3972,16 +4089,16 @@ function Test-AdfaSecureChannel {
     }
 
     if ($haveNltest) {
-        $r = Invoke-ExternalCommand -FilePath 'nltest.exe' -Arguments (Get-AdfaNltestScArgument -Domain $TargetDomain -LiveVerify:$LiveVerify) `
+        $r = Invoke-ExternalCommand -FilePath 'nltest.exe' -Arguments (Get-AdfaNltestScArgument -Domain $TargetDomain -LiveVerify:$LiveVerify -Server $SourceDc) `
             -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
         $out = [string]$r.StdOut
         if ($LiveVerify) {
             $v = Get-AdfaScVerifyOutcome -Output $out
             if ($v.Outcome -eq 'Ok') {
-                return [pscustomobject]@{ Result = 'Verified'; Tool = 'nltest'; Detail = ("nltest /sc_verify reported status {0}. This is a live test; /sc_verify resets a channel that is not working, so a channel that was broken before this run may have been rebuilt by it." -f $v.Status) }
+                return [pscustomobject]@{ Result = 'Verified'; Tool = 'nltest'; Detail = ("nltest /sc_verify{0} reported status {1}. This is a live test; /sc_verify resets a channel that is not working, so a channel that was broken before this run may have been rebuilt by it." -f $onDc, $v.Status) }
             }
             if ($v.Outcome -eq 'Bad') {
-                return [pscustomobject]@{ Result = 'Failed'; Tool = 'nltest'; Detail = ("nltest /sc_verify reported status {0}: {1}" -f $v.Status, (Get-AdfaOutputExcerpt -Output $out -Lines 4)) }
+                return [pscustomobject]@{ Result = 'Failed'; Tool = 'nltest'; Detail = ("nltest /sc_verify{0} reported status {1}: {2}" -f $onDc, $v.Status, (Get-AdfaOutputExcerpt -Output $out -Lines 4)) }
             }
             # Unparsed: nothing is concluded from it. netdom below may still answer.
         }
@@ -3991,12 +4108,12 @@ function Test-AdfaSecureChannel {
             # would not be the "last recorded state" this mode promises to report.
             $q = Get-AdfaScQueryOutcome -Output $out
             if ($q.Outcome -eq 'Ok') {
-                return [pscustomobject]@{ Result = 'Verified'; Tool = 'nltest /sc_query'; Detail = ("Secure channel to {0}: last recorded status {1}. {2}" -f $TargetDomain, $q.Status, $script:ScQueryCaveat) }
+                return [pscustomobject]@{ Result = 'Verified'; Tool = 'nltest /sc_query'; Detail = ("Secure channel to {0}{1}: last recorded status {2}. {3}" -f $TargetDomain, $onDc, $q.Status, $script:ScQueryCaveat) }
             }
             if ($q.Outcome -eq 'Bad') {
-                return [pscustomobject]@{ Result = 'Failed'; Tool = 'nltest /sc_query'; Detail = ("Secure channel to {0}: last recorded status {1}. {2}" -f $TargetDomain, $q.Status, $script:ScQueryCaveat) }
+                return [pscustomobject]@{ Result = 'Failed'; Tool = 'nltest /sc_query'; Detail = ("Secure channel to {0}{1}: last recorded status {2}. {3}" -f $TargetDomain, $onDc, $q.Status, $script:ScQueryCaveat) }
             }
-            return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'nltest /sc_query'; Detail = ("nltest /sc_query:{0} printed no connection status line this tool can read (the match is on English text): {1}" -f $TargetDomain, (Get-AdfaOutputExcerpt -Output $out)) }
+            return [pscustomobject]@{ Result = 'Not Assessed'; Tool = 'nltest /sc_query'; Detail = ("nltest /sc_query:{0}{1} printed no connection status line this tool can read (the match is on English text; Microsoft publishes only the success form): {2}" -f $TargetDomain, $onDc, (Get-AdfaOutputExcerpt -Output $out)) }
         }
     }
     elseif (-not $LiveVerify) {
@@ -4141,6 +4258,43 @@ function Get-AdfaTrustSecurityWarning {
     return $warnings.ToArray()
 }
 
+function Resolve-AdfaTrustSourceDc {
+    <#
+    .SYNOPSIS
+        The DC of a domain that the outbound direction of its trusts is asked of: the domain's PDC
+        emulator, from Get-ADDomain. Never throws. PORT-PLAN C16 (GAP-P3).
+    .DESCRIPTION
+        The PDC emulator is a tool choice (PORT-PLAN C16a): nltest /server: accepts any DC, Microsoft
+        names no preferred one for /sc_query, and the PDC emulator is one writable DC every domain has
+        and the directory names. A read that failed, or a domain with no PDCEmulator returned, gives
+        no host name and the cause, worded so unreachable, access denied and timed out are told apart.
+    .OUTPUTS
+        [pscustomobject] HostName ('' when not resolved), Error ('' when resolved).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [hashtable]$AdParams = @{}
+    )
+    try {
+        $query = @{} + $AdParams
+        $query.Identity = $DomainName
+        $query.ErrorAction = 'Stop'
+        $domain = Get-ADDomain @query
+        $pdc = [string](Get-AdfaConfigValue -Entry $domain -Name 'PDCEmulator')
+        if ([string]::IsNullOrWhiteSpace($pdc)) {
+            return [pscustomobject]@{ HostName = ''; Error = ("Get-ADDomain returned no PDCEmulator for {0}" -f $DomainName) }
+        }
+        return [pscustomobject]@{ HostName = $pdc.Trim(); Error = '' }
+    }
+    catch {
+        $message = ([string]$_.Exception.Message).Trim()
+        $class = Get-AdfaDirectoryReadErrorClass -Message $message -TypeName ([string]$_.Exception.GetType().FullName)
+        return [pscustomobject]@{ HostName = ''; Error = ("reading the PDCEmulator of {0} failed ({1}): {2}" -f $DomainName, (Get-AdfaReadClassPhrase -Class $class), $message.TrimEnd('.')) }
+    }
+}
+
 function Get-AdfaTrustHealth {
     <#
     .SYNOPSIS
@@ -4169,10 +4323,24 @@ function Get-AdfaTrustHealth {
         [ValidateRange(1, 1000000)][int]$MaxObjects = [int]$script:Config.Inventory['MaxObjects'],
         # Where MaxObjects came from, in the row's words (Get-AdfaCapSource): the built-in value, or
         # the -ConfigOverridePath file's.
-        [string]$CapSource = 'Inventory.MaxObjects, a tool default'
+        [string]$CapSource = 'Inventory.MaxObjects, a tool default',
+        # PORT-PLAN C16 (GAP-P3): the DC of THIS domain the outbound direction is asked of
+        # (nltest /server:<dc>), from Resolve-AdfaTrustSourceDc. With none, the outbound direction is
+        # Not Assessed with -SourceDcError as its cause: before v1.36.0 it ran nltest on the host
+        # running the assessment, whose own channel is not this domain's trust channel.
+        [AllowNull()][AllowEmptyString()][string]$SourceDc = '',
+        [AllowNull()][AllowEmptyString()][string]$SourceDcError = ''
     )
 
     $results = @()
+    # Why the outbound direction cannot be read, decided once per domain (PORT-PLAN C16, GAP-P3).
+    $outboundBlocked = ''
+    if ([string]::IsNullOrWhiteSpace($SourceDc)) {
+        $why = 'no domain controller of it was named to the trust check'
+        if (-not [string]::IsNullOrWhiteSpace($SourceDcError)) { $why = $SourceDcError.Trim().TrimEnd('.') }
+        $outboundBlocked = ("Outbound direction not read: {0}, so nltest /server:<dc> /sc_query could not be asked of a DC of {1}. It is not run on the host running the assessment, whose own secure channel is not this domain's trust channel." -f $why, $DomainName)
+    }
+    # A source DC classified Unreachable in this run is not asked: Test-AdfaSecureChannel consults the class.
     $refused = @(Get-AdfaRefusedPropertyName -PropertyNames $PropertyNames -SecretNames $SecretNames)
     if ($refused.Count -gt 0) {
         return @([pscustomobject]@{
@@ -4231,9 +4399,12 @@ function Get-AdfaTrustHealth {
 
         if (-not $SkipVerification -and $reachable) {
             if ($direction -eq 'Outbound' -or $direction -eq 'Bidirectional') {
-                $o = Test-AdfaSecureChannel -SourceDomain $DomainName -TargetDomain $target -LiveVerify:$LiveVerify `
-                    -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
-                $outbound = $o.Result; $outboundDetail = $o.Detail
+                if ($outboundBlocked) { $outboundDetail = $outboundBlocked }
+                else {
+                    $o = Test-AdfaSecureChannel -SourceDomain $DomainName -TargetDomain $target -LiveVerify:$LiveVerify -SourceDc $SourceDc `
+                        -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
+                    $outbound = $o.Result; $outboundDetail = $o.Detail
+                }
             }
             if ($direction -eq 'Inbound' -or $direction -eq 'Bidirectional') {
                 # The inbound direction can only be proven from the partner's side. A local
@@ -4412,8 +4583,18 @@ function Get-AdfaDomainControllerInventory {
 function Get-AdfaReplicationHealth {
     <#
     .SYNOPSIS
-        Per-DC replication health with reachability gating. Get-ADReplication* take no -Server.
+        Per-DC replication health with reachability gating: partner metadata and failures by
+        -Target, the queue by -Server.
     .DESCRIPTION
+        Graded on what was read (PORT-PLAN C16, GAP-P5): Pass needs BOTH the partner metadata and
+        the failure list read, no partner error, no failure and a last success within
+        -StaleMinutes; a partner error or a failure that WAS read is a Fail even when the other read
+        failed; anything else is Not Assessed with the read that failed in Detail. A read that
+        failed leaves its count $null (PartnerErrors, FailureCount), never 0 and never 1 - before
+        v1.36.0 a failed failure query counted as one failure (@($null).Count is 1) and a failed
+        metadata read beside an empty failure list was a Pass. A metadata read that succeeded but
+        returned no partner, or no partner with a LastReplicationSuccess time, is Not Assessed with
+        that cause (PartnerCount 0 is then a measured count), never a Pass.
         Takes the DCs of every scoped domain (PORT-PLAN C2e): rows (HostName, Scope) so each row
         carries its domain, or plain host names. A scoped domain with no DC row gets its own
         "Replication health (population): <domain>" Not Assessed row. A DC is probed through the
@@ -4471,15 +4652,16 @@ function Get-AdfaReplicationHealth {
         }
 
         $meta = $null; $fail = $null; $qCount = $null; $notes = @()
-        $metaOk = $false; $failOk = $false; $queueOk = $false
+        $metaOk = $false; $failOk = $false
         try { $meta = Get-ADReplicationPartnerMetadata -Target $dc -Partition * @RepParams -ErrorAction Stop; $metaOk = $true }
         catch { $notes += ("PartnerMetadata: {0}" -f $_.Exception.Message) }
         try { $fail = Get-ADReplicationFailure -Target $dc -Scope Server @RepParams -ErrorAction Stop; $failOk = $true }
         catch { $notes += ("ReplicationFailure: {0}" -f $_.Exception.Message) }
-        try { $q = Get-ADReplicationQueueOperation -Server $dc @RepParams -ErrorAction Stop; $queueOk = $true; $qCount = @($q).Count }
+        try { $q = Get-ADReplicationQueueOperation -Server $dc @RepParams -ErrorAction Stop; $qCount = @($q | Where-Object { $null -ne $_ }).Count }
         catch { $notes += ("QueueOperation: {0}" -f $_.Exception.Message) }
 
-        $partnerErrors = 0; $partnerCount = $null; $lastMin = $null
+        $partnerErrors = $null; $partnerCount = $null; $lastMin = $null
+        if ($metaOk) { $partnerErrors = 0; $partnerCount = 0 }
         $failingList = New-Object System.Collections.Generic.List[string]
         if ($meta) {
             $badPartners = @($meta | Where-Object { $_.ConsecutiveReplicationFailures -gt 0 })
@@ -4496,23 +4678,38 @@ function Get-AdfaReplicationHealth {
                     $bp.Partner, $bp.Partition, $bp.LastReplicationResult, $bp.ConsecutiveReplicationFailures))
             }
         }
-        $failureCount = @($fail).Count
+        # Counted only when the failure query succeeded: @($null).Count is 1, so a failed query must
+        # not be counted at all (PORT-PLAN C16, GAP-P5).
+        $failureCount = $null
+        $failRows = @()
+        if ($failOk) { $failRows = @($fail | Where-Object { $null -ne $_ }); $failureCount = $failRows.Count }
         $oldest = $null
-        if ($fail -and @($fail).Count -gt 0) {
-            $oldest = ($fail | Sort-Object FirstFailureTime | Select-Object -First 1).FirstFailureTime
-            foreach ($fr in @($fail)) {
+        if ($failRows.Count -gt 0) {
+            $oldest = ($failRows | Sort-Object FirstFailureTime | Select-Object -First 1).FirstFailureTime
+            foreach ($fr in $failRows) {
                 $failingList.Add(("partner={0} failureType={1} count={2} since={3} lastError={4}" -f `
                     $fr.Partner, $fr.FailureType, $fr.FailureCount, $fr.FirstFailureTime, $fr.LastError))
             }
         }
 
-        $anyQueried = ($metaOk -or $failOk -or $queueOk)
         $status = $script:Status.NotAssessed
-        if ($anyQueried) {
-            if ($partnerErrors -eq 0 -and $failureCount -eq 0 -and ($null -eq $lastMin -or $lastMin -le $StaleMinutes)) {
-                $status = $script:Status.Pass
+        $measuredError = (($metaOk -and $partnerErrors -gt 0) -or ($failOk -and $failureCount -gt 0))
+        if ($measuredError) { $status = $script:Status.Fail }
+        elseif ($metaOk -and $failOk) {
+            # A Pass needs a measured inbound replication (independent review of the C16 diff,
+            # finding 5): metadata read but empty (no inbound partner), or partners none of which
+            # carries a LastReplicationSuccess, is not a replication measured as healthy. Not
+            # Assessed, also for a DC that is the only one of its domain in this run, because the
+            # configuration and schema partitions replicate between the DCs of every domain.
+            if ($partnerCount -eq 0) {
+                $notes += 'PartnerMetadata: the read succeeded but returned no inbound replication partner, so no replication of this DC was measured.'
+                $sameScope = @($targets | Where-Object { [string](ConvertTo-AdfaDcTarget -Target $_).Scope -eq $scope })
+                if ($scope -ne '' -and $sameScope.Count -eq 1) { $notes += ("It is the only DC of {0} in this run; a DC with no partner at all is not graded as healthy." -f $scope) }
             }
-            elseif ($partnerErrors -gt 0 -or $failureCount -gt 0) { $status = $script:Status.Fail }
+            elseif ($null -eq $lastMin) {
+                $notes += ("PartnerMetadata: none of the {0} partner(s) returned a LastReplicationSuccess time, so the last successful replication was not measured." -f $partnerCount)
+            }
+            elseif ($lastMin -le $StaleMinutes) { $status = $script:Status.Pass }
             else { $status = $script:Status.Warning }
         }
 
@@ -4678,7 +4875,23 @@ function Get-AdfaReplicationTopology {
 function Get-AdfaSiteHealthFinding {
     <#
     .SYNOPSIS
-        Derives findings from topology (sites without subnets, subnets without sites, empty sites).
+        Pure: sites without subnets, and sites without a domain controller of the inventory. Subnets
+        without a site are Get-AdfaSubnetSiteVerdict's (PORT-PLAN C14).
+    .DESCRIPTION
+        A site has a subnet when a subnet's Site names exactly that site (PORT-PLAN C16, GAP-P6): the
+        first RDN of the subnet's site DN, its escapes undone (\, is a comma of the name), compared to
+        the site name ordinally and without case; a Site value that is not a DN is compared whole.
+        Before v1.36.0 the site name was matched as a substring of the DN, so a site named HQ was
+        satisfied by a subnet of HQ-Branch, and a site named like a domain label by any subnet. A hex
+        escape (\0A) is not decoded; such a name compares as written.
+
+        Empty sites need the DC inventory of the WHOLE forest, because the sites are the forest's:
+        with -InventoryCollected $false (DomainControllers not among -Sections, its read gave no DC,
+        the run did not scope every domain of the forest, or a domain's inventory failed - see
+        Get-AdfaSiteInventoryGap) there are no "has no domain controllers" rows, one "Empty sites"
+        row is Not Assessed naming -InventoryGap, and no Pass row is given. Before the independent
+        review of the C16 diff (findings 3 and 9) a partial inventory was enough, so a site holding
+        only DCs of an unscoped or failed domain was reported empty.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -4686,23 +4899,68 @@ function Get-AdfaSiteHealthFinding {
     [OutputType([pscustomobject[]])]
     param([Parameter(Mandatory)][pscustomobject]$Topology,
         # See the note on Get-AdfaReplicationHealth: an empty inventory must degrade, not abort.
-        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DomainControllers)
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DomainControllers,
+        [bool]$InventoryCollected = $true,
+        # Why the inventory does not cover the forest, in the row's words (Get-AdfaSiteInventoryGap).
+        [AllowEmptyString()][string]$InventoryGap = '')
     $findings = @()
-    $dcSites = @($DomainControllers | ForEach-Object { $_.Site } | Sort-Object -Unique)
+    $dcSites = @($DomainControllers | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Site') } | Where-Object { $_ -ne '' } | Sort-Object -Unique)
+    $subnetSites = @(@(Get-AdfaConfigValue -Entry $Topology -Name 'Subnets') | Where-Object { $null -ne $_ } | ForEach-Object {
+            $v = ([string](Get-AdfaConfigValue -Entry $_ -Name 'Site')).Trim()
+            $m = [regex]::Match($v, '^CN=((?:\\.|[^,\\])+),')
+            if ($m.Success) { [regex]::Replace($m.Groups[1].Value, '\\(.)', '$1') } else { $v }
+        })
 
-    foreach ($s in @($Topology.Sites)) {
-        $hasSubnet = @($Topology.Subnets | Where-Object { $_.Site -match [regex]::Escape($s.Name) }).Count -gt 0
+    foreach ($s in @(@(Get-AdfaConfigValue -Entry $Topology -Name 'Sites') | Where-Object { $null -ne $_ })) {
+        $siteName = [string](Get-AdfaConfigValue -Entry $s -Name 'Name')
+        $hasSubnet = @($subnetSites | Where-Object { [string]::Equals([string]$_, $siteName, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
         if (-not $hasSubnet) {
-            $findings += New-Finding -Area 'Sites' -Item ("Site '{0}' has no subnets" -f $s.Name) -Status $script:Status.Warning -Detail 'Clients may not map to this site.'
+            $findings += New-Finding -Area 'Sites' -Item ("Site '{0}' has no subnets" -f $siteName) -Status $script:Status.Warning -Detail 'No subnet object names this site, so clients may not map to it.'
         }
-        if ($dcSites -notcontains $s.Name) {
-            $findings += New-Finding -Area 'Sites' -Item ("Site '{0}' has no domain controllers" -f $s.Name) -Status $script:Status.Info -Detail 'Empty site.'
+        if ($InventoryCollected -and @($dcSites | Where-Object { [string]::Equals([string]$_, $siteName, [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+            $findings += New-Finding -Area 'Sites' -Item ("Site '{0}' has no domain controllers" -f $siteName) -Status $script:Status.Info -Detail 'Empty site: no domain controller of the inventory is in it.'
         }
     }
-    if (@($findings).Count -eq 0) {
-        $findings += New-Finding -Area 'Sites' -Item 'Site/subnet topology' -Status $script:Status.Pass -Detail 'All sites have subnets and DCs.'
+    if (-not $InventoryCollected) {
+        $gap = $InventoryGap.Trim().TrimEnd('.')
+        if ($gap -eq '') { $gap = 'DomainControllers is not among -Sections, or its read gave no DC' }
+        $findings += New-Finding -Area 'Sites' -Item 'Empty sites' -Status $script:Status.NotAssessed `
+            -Detail ("Whether any site has no domain controller was not assessed: this needs the DC inventory of every domain of the forest, which this run does not hold ({0})." -f $gap)
+    }
+    elseif (@($findings).Count -eq 0) {
+        $findings += New-Finding -Area 'Sites' -Item 'Site/subnet topology' -Status $script:Status.Pass -Detail 'Every site has at least one subnet naming it and at least one domain controller of the inventory.'
     }
     return @($findings)
+}
+
+function Get-AdfaSiteInventoryGap {
+    <#
+    .SYNOPSIS
+        Pure: why the DC inventory of a run does not cover every site of the forest, or '' when it
+        does (independent review of the C16 diff, findings 3 and 9).
+    .DESCRIPTION
+        The sites read by Topology are the forest's, so an empty site is asserted only when the
+        inventory was collected, holds at least one DC, the scoped domains are every domain of the
+        forest, and no domain's inventory read failed - the condition the Exchange SE DC gate
+        already uses (-ForestComplete).
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [bool]$Collected,
+        [int]$DcCount,
+        [bool]$ScopeCoversForest,
+        [AllowNull()][AllowEmptyCollection()]$Failures = @()
+    )
+    if (-not $Collected) { return 'DomainControllers is not among -Sections' }
+    if ($DcCount -le 0) { return 'the DomainControllers read gave no DC' }
+    $failed = @(@($Failures) | Where-Object { $null -ne $_ } | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Domain') } | Where-Object { $_ -ne '' })
+    $parts = @()
+    if (-not $ScopeCoversForest) { $parts += 'the run did not scope every domain of the forest (use -AllDomains), and a site may hold only DCs of a domain not scoped' }
+    if ($failed.Count -gt 0) { $parts += ("the DC inventory of {0} could not be read" -f ($failed -join ', ')) }
+    return ($parts -join '; ')
 }
 
 # ===========================================================================
@@ -7296,9 +7554,15 @@ function Get-AdfaDnsHealth {
         and no inventory failure. Any other scope - Legacy, none, not returned, or servers that
         disagree - never gets that Warning, because the servers that host it are not known.
 
-        The forwarder and zone transfer rows of earlier versions are kept as they were; the
-        "<dc>: zones" and "<dc>: scavenging" rows are replaced by the zone rows (the old scavenging
-        row passed a zone whose aging property was not returned).
+        The forwarder and zone transfer rows of earlier versions are kept as they were, and since
+        v1.36.0 (PORT-PLAN C16, GAP-P16) a server with no zone open to any server gets a "zone
+        transfer" Pass row (Not Assessed where a graded - primary - zone's SecureSecondaries was not
+        returned, or no primary zone was read; secondary, stub and forwarder zones carry no such
+        setting on Learn and are not counted) instead of no row; the "<dc>: zones" and "<dc>: scavenging" rows are replaced by the zone rows (the
+        old scavenging row passed a zone whose aging property was not returned).
+
+        -Credential is NOT used: the DnsServer cmdlets are called with -ComputerName only, so they
+        run as the account running the script (PORT-PLAN C16b).
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -7410,6 +7674,35 @@ function Get-AdfaDnsHealth {
         if ($insecureXfer.Count -gt 0) {
             $rows += New-AdfaDnsRow -Scope $scope -Item ("{0}: zone transfer" -f $label) -Status $script:Status.Warning -Server $label `
                 -Detail ("Zones allowing transfer to ANY server: {0}" -f ((@($insecureXfer | ForEach-Object { [string]$_.ZoneName }) | Select-Object -First 8) -join ', '))
+        }
+        else {
+            # PORT-PLAN C16 (GAP-P16): a measured "none" is its own row, because no row at all reads
+            # the same as a server that was never asked. It passes only when every zone read returned
+            # its SecureSecondaries setting. The population is the graded zone types (GradedZoneTypes,
+            # Primary): Microsoft documents SecureSecondaries as a zone transfer setting of a primary
+            # zone (Set-DnsServerPrimaryZone; "Configure zone transfer settings" is written for a
+            # primary DNS zone), and Set-DnsServerSecondaryZone and the conditional forwarder cmdlets
+            # expose no such setting, so a forwarder, stub or secondary zone that returns no
+            # SecureSecondaries is not an unread setting
+            # (https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserverprimaryzone,
+            # https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserversecondaryzone,
+            # https://learn.microsoft.com/windows-server/networking/dns/manage-dns-zones, read
+            # 2026-11-18). Independent review of the C16 diff, finding 2.
+            $xferZones = @($zones | Where-Object { $graded -contains [string]$_.ZoneType })
+            $xferUnread = @($xferZones | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.SecureSecondaries) })
+            $xferTypes = ($graded -join ', ')
+            if ($xferZones.Count -eq 0) {
+                $rows += New-AdfaDnsRow -Scope $scope -Item ("{0}: zone transfer" -f $label) -Status $script:Status.NotAssessed -Server $label `
+                    -Detail ("No {0} zone that is not auto-created was read from this DNS server ({1} other zone(s) read), so there is no zone transfer setting to judge." -f $xferTypes, ($zones.Count - $xferZones.Count))
+            }
+            elseif ($xferUnread.Count -gt 0) {
+                $rows += New-AdfaDnsRow -Scope $scope -Item ("{0}: zone transfer" -f $label) -Status $script:Status.NotAssessed -Server $label `
+                    -Detail ("No zone read allows transfer to any server, but SecureSecondaries was not returned for {0} of {1} {2} zone(s): {3}." -f $xferUnread.Count, $xferZones.Count, $xferTypes, ((@($xferUnread | ForEach-Object { [string]$_.ZoneName }) | Select-Object -First 8) -join ', '))
+            }
+            else {
+                $rows += New-AdfaDnsRow -Scope $scope -Item ("{0}: zone transfer" -f $label) -Status $script:Status.Pass -Server $label `
+                    -Detail ("None of the {0} {1} zone(s) read allows transfer to any server (SecureSecondaries read for every one); {2} zone(s) of other types (secondary, stub, forwarder) carry no such setting and are not counted." -f $xferZones.Count, $xferTypes, ($zones.Count - $xferZones.Count))
+            }
         }
     }
     # Each graded zone's replication scope, over every server of the run that reported it. Domain:
@@ -7944,23 +8237,47 @@ function Merge-AdfaDnsConfig {
 function Get-AdfaSysvolHealth {
     <#
     .SYNOPSIS
-        SYSVOL replication migration state (dfsrmig) and per-DC SysVolCheck.
+        The DFSR SYSVOL migration global state of ONE domain - the domain of the computer running
+        the assessment - from dfsrmig /getglobalstate run on that computer. Per DC and per scoped
+        domain, the SYSVOL engine is in the "SYSVOL replication engine" rows (PORT-PLAN C14); the
+        per-DC SysVolCheck test is in DcDiagnostics.
+    .DESCRIPTION
+        PORT-PLAN C16 (GAP-P17): the row carries that domain as its Scope and says which host read it.
+        Microsoft: /getglobalstate "Retrieves the current global migration state for the domain" and
+        "You should only run this command on the PDC emulator"; elsewhere replication latency can
+        make it inconsistent (https://learn.microsoft.com/windows-server/administration/windows-commands/dfsrmig,
+        read 2026-11-18). This tool does not check that the host is the PDC emulator, and the row
+        says so. The state names are matched in English, on the "Current DFSR global state:" line in
+        the unquoted form the page shows and in a quoted form Microsoft does not publish. Only a read: /setglobalstate and the
+        /delete* and /createglobalobjects switches are never used.
     .OUTPUTS
         [pscustomobject[]]
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([int]$TimeoutSeconds = 90, [int]$Retries = 2, [int]$RetryDelaySeconds = 2)
+    param([int]$TimeoutSeconds = 90, [int]$Retries = 2, [int]$RetryDelaySeconds = 2,
+        # The DNS domain of the computer running the assessment; '' when it is not joined to one.
+        [AllowNull()][AllowEmptyString()][string]$HostDomain = ([System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().DomainName))
     $rows = @()
+    $scope = ''
+    if (-not [string]::IsNullOrWhiteSpace($HostDomain)) { $scope = $HostDomain.Trim().TrimEnd('.') }
+    $whose = ("Read with dfsrmig /getglobalstate on {0}, the computer running the assessment, so it is the global state of that computer's domain ({1}) only; Microsoft says to run it only on the domain controller that holds the PDC role, which this tool does not check. The SYSVOL engine of every DC of every scoped domain is in the SYSVOL engine rows of this section; the state names are matched in English." -f [Environment]::MachineName, $(if ($scope) { $scope } else { 'none found' }))
     if (Test-CommandAvailable -Name 'dfsrmig.exe') {
         $r = Invoke-ExternalCommand -FilePath 'dfsrmig.exe' -Arguments '/getglobalstate' -TimeoutSeconds $TimeoutSeconds -Retries $Retries -RetryDelaySeconds $RetryDelaySeconds
         $state = $script:Status.NotAssessed; $detail = ($r.StdOut -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 2) -join ' '
-        if ($r.StdOut -match "'Eliminated'") { $state = $script:Status.Pass; $detail = 'SYSVOL migrated to DFSR (Eliminated state).' }
-        elseif ($r.StdOut -match "'Prepared'|'Redirected'|'Start'") { $state = $script:Status.Warning; $detail = 'SYSVOL DFSR migration not fully complete (still FRS-capable).' }
-        $rows += New-Finding -Area 'SYSVOL' -Item 'DFSR migration global state' -Status $state -Detail $detail
+        # The state is read from the line Learn publishes, "Current DFSR global state: Prepared"
+        # (no quotes, dfsrmig page read 2026-11-18); the quoted form this tool matched before is
+        # accepted as well, since it is not known which form each Windows release prints
+        # (independent review of the C16 diff, finding 15). Anything else stays Not Assessed.
+        $globalState = ''
+        $stateLine = [regex]::Match([string]$r.StdOut, "(?im)^\s*Current DFSR global state:\s*'?(Start|Prepared|Redirected|Eliminated)'?\s*\.?\s*$")
+        if ($stateLine.Success) { $globalState = $stateLine.Groups[1].Value }
+        if ($globalState -eq 'Eliminated') { $state = $script:Status.Pass; $detail = 'SYSVOL migrated to DFSR (Eliminated state).' }
+        elseif ($globalState -ne '') { $state = $script:Status.Warning; $detail = ("SYSVOL DFSR migration not fully complete ({0} state; still FRS-capable)." -f $globalState) }
+        $rows += New-Finding -Scope $scope -Area 'SYSVOL' -Item 'DFSR migration global state' -Status $state -Detail ("{0} {1}" -f ([string]$detail).Trim(), $whose)
     }
     else {
-        $rows += New-Finding -Area 'SYSVOL' -Item 'DFSR migration global state' -Status $script:Status.NotAssessed -Detail 'dfsrmig.exe not available on this host.'
+        $rows += New-Finding -Scope $scope -Area 'SYSVOL' -Item 'DFSR migration global state' -Status $script:Status.NotAssessed -Detail ("dfsrmig.exe not available on this host. {0}" -f $whose)
     }
     return @($rows)
 }
@@ -7973,7 +8290,9 @@ function Get-AdfaGpoInventory {
     <#
     .SYNOPSIS
         GPO inventory: links and unlinked GPOs (GroupPolicy module; degrades if absent). WMI
-        filters are not read. The version check of the same section is Get-AdfaGpoVersion.
+        filters are not read here (the GPO Directory Inventory reads them, PORT-PLAN C15). The
+        version check of the same section is Get-AdfaGpoVersion. Get-GPO has no -Credential, so
+        this runs as the account running the script (PORT-PLAN C16, GAP-P23).
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -9145,8 +9464,18 @@ function Get-AdfaSecurityPosture {
         $cnc = (Get-ADRootDSE @srv).configurationNamingContext
         $dsDn = "CN=Directory Service,CN=Windows NT,CN=Services,$cnc"
         $ds = Get-ADObject -Identity $dsDn -Properties tombstoneLifetime @srv
-        $tsl = $ds.tombstoneLifetime
-        $rows += New-Finding -Scope $DomainName -Area 'Security' -Item 'Tombstone lifetime' -Status $(if ($null -ne $tsl -and $tsl -ge 180) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0} days" -f $tsl)
+        # PORT-PLAN C16 (GAP-P10): a value not returned is not graded. Before v1.36.0 it was a
+        # Warning reading " days". What an unset tombstoneLifetime means was not read on Learn in
+        # that session, so it is not inferred here.
+        $tsl = Get-AdfaConfigValue -Entry $ds -Name 'tombstoneLifetime'
+        $tslDays = 0
+        if ($null -eq $tsl -or -not [int]::TryParse(([string]$tsl).Trim(), [ref]$tslDays)) {
+            $rows += New-Finding -Scope $DomainName -Area 'Security' -Item 'Tombstone lifetime' -Status $script:Status.NotAssessed `
+                -Detail ("tombstoneLifetime was not returned on {0} (a value that is not set and one this account may not read look the same), so it was not graded." -f $dsDn)
+        }
+        else {
+            $rows += New-Finding -Scope $DomainName -Area 'Security' -Item 'Tombstone lifetime' -Status $(if ($tslDays -ge 180) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0} days" -f $tslDays)
+        }
     }
     catch { $rows += New-Finding -Scope $DomainName -Area 'Security' -Item 'Tombstone lifetime' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
 
@@ -9155,12 +9484,22 @@ function Get-AdfaSecurityPosture {
         $dp = @{} + $AdParams; $dp.Identity = $DomainName
         $dn = (Get-ADDomain @dp).DistinguishedName
         $mq = Get-ADObject -Identity $dn -Properties 'ms-DS-MachineAccountQuota' @srv
-        $q = $mq.'ms-DS-MachineAccountQuota'
-        $rows += New-Finding -Scope $DomainName -Area 'Security' -Item 'Machine account quota' -Status $(if ($q -eq 0) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("ms-DS-MachineAccountQuota = {0} (0 recommended)" -f $q)
+        # PORT-PLAN C16 (GAP-P10): not returned is Not Assessed, never a Warning "= ".
+        $q = Get-AdfaConfigValue -Entry $mq -Name 'ms-DS-MachineAccountQuota'
+        $quota = 0
+        if ($null -eq $q -or -not [int]::TryParse(([string]$q).Trim(), [ref]$quota)) {
+            $rows += New-Finding -Scope $DomainName -Area 'Security' -Item 'Machine account quota' -Status $script:Status.NotAssessed `
+                -Detail ("ms-DS-MachineAccountQuota was not returned on {0}, so it was not graded." -f $dn)
+        }
+        else {
+            $rows += New-Finding -Scope $DomainName -Area 'Security' -Item 'Machine account quota' -Status $(if ($quota -eq 0) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("ms-DS-MachineAccountQuota = {0} (0 recommended)" -f $quota)
+        }
     }
     catch { $rows += New-Finding -Scope $DomainName -Area 'Security' -Item 'Machine account quota' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
 
-    # Privileged accounts with reversible/DES/RC4 or password-not-required
+    # Accounts of any kind (not only privileged ones) with reversible password encryption
+    # (ENCRYPTED_TEXT_PWD, 0x80) or DES-only Kerberos keys (USE_DES_KEY_ONLY, 0x200000). RC4 and
+    # PASSWD_NOTREQD are NOT evaluated here (PORT-PLAN C16b).
     try {
         $weak = @(Get-ADUser -Filter { (UserAccountControl -band 0x80) -or (UserAccountControl -band 0x200000) } -Properties UserAccountControl @srv)
         $rows += New-Finding -Scope $DomainName -Area 'Security' -Item 'DES/reversible-encryption accounts' -Status $(if ($weak.Count -eq 0) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0} accounts flagged" -f $weak.Count)
@@ -9610,7 +9949,14 @@ function Find-AdfaDuplicateSpn {
 function Get-AdfaPkiHealth {
     <#
     .SYNOPSIS
-        Enterprise PKI (AD CS): enrolment CAs and ESC1-susceptible certificate templates.
+        Enterprise PKI (AD CS): enrolment CAs and an ESC1 heuristic over the configuration of
+        every certificate template object.
+    .DESCRIPTION
+        A configuration-only heuristic (PORT-PLAN C16, GAP-P12): every object in the Certificate
+        Templates container is graded, whether or not a CA publishes it (the CA's certificateTemplates
+        attribute is not read), and the template ACL is not read, so who may enrol is not known. A
+        template with no EKU counts as authentication-capable. Published templates and enrolment
+        rights are PORT-PLAN C16b.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -21981,6 +22327,13 @@ function Get-AdfaLingeringObjectScan {
         the check that finds lingering objects BEFORE they block replication with event
         1988, instead of after. Opt-in via -IncludeLingeringObjectScan because it writes
         events (1938/1942/1946) to the target DCs' Directory Service logs.
+
+        Scope: the DOMAIN naming context of each DC's own domain only. The configuration
+        partition, application partitions and the partial replicas a global catalog holds are not
+        scanned (PORT-PLAN C16b). Fail closed (PORT-PLAN C16, GAP-P26): a count is read from the
+        output ("<n> lingering object(s)", or one line per object); repadmin exiting 0 with no
+        count this tool can read is Not Assessed with an excerpt - before v1.36.0 it was a Pass.
+        The advisory-mode output format is not published by Microsoft (PORT-PLAN C16c).
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -22049,17 +22402,24 @@ function Get-AdfaLingeringObjectScan {
         else {
             $perLine = ([regex]::Matches($out, '(?i)^\s*lingering obj', [System.Text.RegularExpressions.RegexOptions]::Multiline)).Count
             if ($perLine -gt 0) { $count = $perLine }
-            elseif ($r.Success) { $count = 0 }
+            # No "elseif exit 0 then 0" (PORT-PLAN C16, GAP-P26): a clean exit with no count read is
+            # not a count of 0.
         }
+        $ncScope = 'the domain naming context only; the configuration partition, application partitions and global catalog partial replicas were not scanned'
         if ($count -gt 0) {
-            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.Fail -Detail ("{0} lingering object(s) found relative to {1} on {2}. Directory Service events 1946 on {3} list each object." -f $count, $refDc, $domainNc, $dc)
+            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.Fail -Detail ("{0} lingering object(s) found relative to {1} on {2} ({3}). Directory Service events 1946 on {4} list each object." -f $count, $refDc, $domainNc, $ncScope, $dc)
         }
         elseif ($count -eq 0) {
-            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.Pass -Detail ("No lingering objects relative to {0} on {1}." -f $refDc, $domainNc)
+            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.Pass -Detail ("No lingering objects relative to {0} on {1} ({2})." -f $refDc, $domainNc, $ncScope)
         }
         else {
             $excerpt = (($out -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First 3) -join ' | '
-            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail ("Inconclusive output: {0}" -f $(if ($excerpt) { $excerpt } else { $r.Error }))
+            if (-not $excerpt) { $excerpt = [string]$r.Error }
+            if (-not $excerpt) { $excerpt = 'no output' }
+            $exitText = 'did not complete'
+            if ($r.Success) { $exitText = 'exited 0' }
+            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.NotAssessed `
+                -Detail ("repadmin {0} but printed no count of lingering objects this tool can read, so none is concluded (the advisory-mode output format is not published): {1}" -f $exitText, $excerpt)
         }
     }
     if (@($rows).Count -eq 0) {
@@ -22071,7 +22431,15 @@ function Get-AdfaLingeringObjectScan {
 function Get-AdfaTimeSync {
     <#
     .SYNOPSIS
-        Local w32time source/status (run on a DC for domain-relevant results).
+        The time source of the host running the assessment only (w32tm /query /source, no
+        /computer). Each DC's own time source and offset are in the Time Hierarchy section.
+    .DESCRIPTION
+        Microsoft: w32tm /query /computer:<target> "Queries the information of <target>. If not
+        specified, the default value is the local computer"
+        (https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings,
+        read 2026-11-18). This row therefore says which host it read. A query that failed (non-zero
+        exit, time-out) or printed nothing is Not Assessed with the cause (PORT-PLAN C16, GAP-P19) -
+        before v1.36.0 it was Info "Source: ". The text is matched in English.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -22082,34 +22450,77 @@ function Get-AdfaTimeSync {
         return @(New-Finding -Area 'TimeSync' -Item 'w32time' -Status $script:Status.NotAssessed -Detail 'w32tm.exe not available on this host.')
     }
     $rows = @()
+    $hostName = [Environment]::MachineName
     $src = Invoke-ExternalCommand -FilePath 'w32tm.exe' -Arguments '/query /source' -TimeoutSeconds $TimeoutSeconds -Retries 1 -RetryDelaySeconds 1
-    $source = ($src.StdOut -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
+    $source = [string](@([string]$src.StdOut -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1) -join '')
+    $source = $source.Trim()
+    if (-not [bool]$src.Success -or [string]::IsNullOrWhiteSpace($source)) {
+        $why = 'it printed nothing'
+        if (-not [bool]$src.Success) {
+            $why = ("exit code {0}" -f [string]$src.ExitCode)
+            if (-not [string]::IsNullOrWhiteSpace([string]$src.Error)) { $why = [string]$src.Error }
+        }
+        $rows += New-Finding -Area 'TimeSync' -Item 'Time source' -Status $script:Status.NotAssessed `
+            -Detail ("w32tm /query /source on {0}, the computer running the assessment, did not return a time source ({1}): {2}. Each DC's own time source is in the Time Hierarchy section." -f $hostName, $why, (Get-AdfaOutputExcerpt -Output ([string]$src.StdOut)))
+        return @($rows)
+    }
     $status = $script:Status.Info
     if ($source -match 'Local CMOS Clock|Free-running') { $status = $script:Status.Warning }
-    $rows += New-Finding -Area 'TimeSync' -Item 'Time source' -Status $status -Detail ("Source: {0}" -f ("$source".Trim()))
+    $rows += New-Finding -Area 'TimeSync' -Item 'Time source' -Status $status `
+        -Detail ("Source: {0}. This is the time source of {1}, the computer running the assessment (w32tm /query /source reads the local computer only); each DC's own time source is in the Time Hierarchy section." -f $source, $hostName)
     return @($rows)
 }
 
 function Get-AdfaDnsDepth {
     <#
     .SYNOPSIS
-        DNS depth: critical SRV records resolvable, root hints (the secure dynamic updates check
-        moved to DNS Health in v1.30.0, PORT-PLAN C13; one Info row says so).
+        DNS depth: two critical SRV records resolvable through the resolver of the host running the
+        assessment (the secure dynamic updates check moved to DNS Health in v1.30.0, PORT-PLAN C13;
+        one Info row says so). Root hints are not read (PORT-PLAN C13c).
+    .DESCRIPTION
+        A lookup that threw is a Fail only when the error is the one this tool reads as "no such
+        record" (Dns.NoRecordPattern: WIN32 9701/9714, or "DNS name/record does not exist");
+        anything else - a time-out, no server answering - is Not Assessed with the error quoted
+        (PORT-PLAN C16, GAP-P16), because a lookup that failed is not a record found missing.
     .OUTPUTS
         [pscustomobject[]]
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string]$DomainName, [string[]]$DomainControllers, [int]$RpcPortTimeoutMs = 1200)
+    param([Parameter(Mandatory)][string]$DomainName, [string[]]$DomainControllers, [int]$RpcPortTimeoutMs = 1200, [hashtable]$Config = $script:Config.Dns)
     $rows = @()
+    $noRecord = [string]$Config['NoRecordPattern']
     # SRV record resolution (needs Resolve-DnsName; degrade if absent)
     if (Test-CommandAvailable -Name 'Resolve-DnsName') {
         foreach ($rec in @("_ldap._tcp.dc._msdcs.$DomainName", "_kerberos._tcp.$DomainName")) {
             try {
-                $ans = @(Resolve-DnsName -Name $rec -Type SRV -ErrorAction Stop)
-                $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item ("SRV {0}" -f $rec) -Status $(if ($ans.Count -gt 0) { $script:Status.Pass } else { $script:Status.Fail }) -Detail ("{0} record(s)" -f $ans.Count)
+                $ans = @(Resolve-DnsName -Name $rec -Type SRV -ErrorAction Stop | Where-Object { $null -ne $_ })
+                # Only answers of Type SRV count (independent review of the C16 diff, findings 1 and
+                # 7): on a name that exists but holds no SRV record (NODATA) Resolve-DnsName does not
+                # throw, it returns the zone's SOA from the Authority section, and an Additional
+                # section can carry A records - neither is the SRV record asked for.
+                $srvAns = @($ans | Where-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Type') -eq 'SRV' })
+                if ($srvAns.Count -gt 0) {
+                    $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item ("SRV {0}" -f $rec) -Status $script:Status.Pass -Detail ("{0} SRV record(s)" -f $srvAns.Count)
+                }
+                else {
+                    $other = @($ans | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Type') } | Where-Object { $_ -ne '' } | Sort-Object -Unique)
+                    $otherText = 'nothing'
+                    if ($other.Count -gt 0) { $otherText = ("{0} record(s) of type {1} only" -f $ans.Count, ($other -join ', ')) }
+                    $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item ("SRV {0}" -f $rec) -Status $script:Status.Fail `
+                        -Detail ("No SRV record was returned for this name: the lookup returned {0} (a name with no SRV data answers with the zone's SOA)." -f $otherText)
+                }
             }
-            catch { $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item ("SRV {0}" -f $rec) -Status $script:Status.Fail -Detail $_.Exception.Message }
+            catch {
+                $message = ([string]$_.Exception.Message).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($noRecord) -and $message -match $noRecord) {
+                    $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item ("SRV {0}" -f $rec) -Status $script:Status.Fail -Detail $message
+                }
+                else {
+                    $rows += New-Finding -Scope $DomainName -Area 'DNSDepth' -Item ("SRV {0}" -f $rec) -Status $script:Status.NotAssessed `
+                        -Detail ("The lookup failed without saying the record does not exist, so whether it exists is not known: {0}" -f $message)
+                }
+            }
         }
     }
     else {
@@ -22128,7 +22539,22 @@ function Get-AdfaDnsDepth {
 function Get-AdfaRedundancy {
     <#
     .SYNOPSIS
-        Availability: DC count / FSMO concentration, GPO central store, duplicate SPNs.
+        Availability: DC count, GPO central store, duplicate SPNs. FSMO concentration is not
+        evaluated (PORT-PLAN C16b); the FSMO holders are listed by the Fsmo section.
+    .DESCRIPTION
+        The DC count is read from the domain with the run's -Credential (PORT-PLAN C16, GAP-P18;
+        before v1.36.0 it took -Server only).
+
+        GPO central store (PORT-PLAN C16, GAP-P9): \\<domain>\SYSVOL\<domain>\Policies is listed with
+        the read-only folder seam of the Gpo section (Get-AdfaSysvolPolicyFolderRaw), as the account
+        running the script (-Credential is not used for file reads). A folder that could not be
+        listed is Not Assessed with its class (unreachable, access denied, not found, timed out) -
+        before v1.36.0 any of those was a Warning "not found". A listed folder holding no
+        PolicyDefinitions is a Warning, a tool default: Microsoft describes the central store as what
+        "you must create" "to take advantage of the benefits of .admx files" and publishes no
+        severity for its absence
+        (https://learn.microsoft.com/troubleshoot/windows-client/group-policy/create-and-manage-central-store,
+        read 2026-11-18). It is never a Fail.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -22138,16 +22564,33 @@ function Get-AdfaRedundancy {
     $rows = @()
     $srv = @{} + $AdParams; $srv.Server = $DomainName
     try {
-        $dcs = @(Get-ADDomainController -Filter * -Server $DomainName)
+        $dcArgs = @{} + $srv
+        $dcArgs.Filter = '*'
+        $dcs = @(Get-ADDomainController @dcArgs)
         $rows += New-Finding -Scope $DomainName -Area 'Redundancy' -Item 'Domain controller redundancy' -Status $(if ($dcs.Count -ge 2) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("{0} DC(s) in domain (>=2 recommended for resilience)." -f $dcs.Count)
     }
     catch { $rows += New-Finding -Scope $DomainName -Area 'Redundancy' -Item 'Domain controller redundancy' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
 
     # GPO central store (PolicyDefinitions in SYSVOL)
     try {
-        $cs = "\\{0}\SYSVOL\{0}\Policies\PolicyDefinitions" -f $DomainName
-        $exists = Test-Path -LiteralPath $cs -ErrorAction SilentlyContinue
-        $rows += New-Finding -Scope $DomainName -Area 'Redundancy' -Item 'GPO central store' -Status $(if ($exists) { $script:Status.Pass } else { $script:Status.Warning }) -Detail ("PolicyDefinitions {0} in SYSVOL." -f $(if ($exists) { 'present' } else { 'not found' }))
+        $policies = "\\{0}\SYSVOL\{0}\Policies" -f $DomainName
+        $listing = Get-AdfaSysvolPolicyFolderRaw -Path $policies
+        if ($null -eq $listing -or -not [bool](Get-AdfaConfigValue -Entry $listing -Name 'Ok')) {
+            $class = ''; $err = 'the listing returned nothing'
+            if ($null -ne $listing) { $class = [string](Get-AdfaConfigValue -Entry $listing -Name 'Class'); $err = ([string](Get-AdfaConfigValue -Entry $listing -Name 'Error')).Trim().TrimEnd('.') }
+            $rows += New-Finding -Scope $DomainName -Area 'Redundancy' -Item 'GPO central store' -Status $script:Status.NotAssessed `
+                -Detail ("{0} could not be listed ({1}): {2}. Whether the central store (PolicyDefinitions) exists is not known; this is not a missing central store." -f $policies, (Get-AdfaReadClassPhrase -Class $class), $err)
+        }
+        elseif (@(@(Get-AdfaConfigValue -Entry $listing -Name 'Names') | Where-Object { [string]::Equals([string]$_, 'PolicyDefinitions', [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
+            $rows += New-Finding -Scope $DomainName -Area 'Redundancy' -Item 'GPO central store' -Status $script:Status.Pass -Detail ("PolicyDefinitions present in SYSVOL ({0})." -f $policies)
+        }
+        else {
+            $rows += New-Finding -Scope $DomainName -Area 'Redundancy' -Item 'GPO central store' -Status $script:Status.Warning `
+                -Detail 'PolicyDefinitions not found in \\<domain>\SYSVOL\<domain>\Policies (the domain is this row''s Scope), which was listed. Microsoft describes the central store as needed to take advantage of .admx files and publishes no severity for its absence; Warning is a tool default.'
+            # The domain name is kept out of this Detail (independent review of the C16 diff, finding
+            # 8): the recommendation map matches on the whole text, first match wins, and an earlier
+            # unscoped entry (replication, clock, w32tm) would take a domain label that holds one.
+        }
     }
     catch { $rows += New-Finding -Scope $DomainName -Area 'Redundancy' -Item 'GPO central store' -Status $script:Status.NotAssessed -Detail $_.Exception.Message }
 
@@ -22473,7 +22916,12 @@ function Get-AdfaExchangeSeCompatibility {
         [AllowNull()][AllowEmptyString()][string]$ForestLevelError,
         [AllowNull()][AllowEmptyCollection()]$DomainSummaries = @(),
         [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
-        [Parameter(Mandatory)][hashtable]$SeConfig
+        [Parameter(Mandatory)][hashtable]$SeConfig,
+        # PORT-PLAN C16 (GAP-P20): whether -DomainControllers is every DC of the forest - every domain
+        # of the forest scoped and its inventory read (Invoke-Main). The DC gate passes only then;
+        # otherwise "every DC in the forest" was not seen and the gate is Not Assessed. Off unless
+        # the caller says so.
+        [bool]$ForestComplete = $false
     )
     $rows = @()
     $release = [string]$SeConfig['Release']
@@ -22577,7 +23025,7 @@ function Get-AdfaExchangeSeCompatibility {
     $dcs = @($DomainControllers | Where-Object { $null -ne $_ })
     if ($dcs.Count -eq 0) {
         $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.NotAssessed `
-            -Detail ("No domain controllers were enumerated, so no OS could be checked against the {0} supported list ({1})." -f $release, ($osLabels -join ', '))
+            -Detail ("No domain controllers were enumerated, so no OS could be checked against the {0} supported list ({1}). This check reads the DC inventory, which is collected only when DomainControllers is among -Sections: name it with ExchangeSeReadiness (and use -AllDomains for every domain of the forest)." -f $release, ($osLabels -join ', '))
     }
     else {
         $unsupported = @()
@@ -22621,9 +23069,22 @@ function Get-AdfaExchangeSeCompatibility {
                 -Detail ("No DC operating system could be read ({0} DC(s): {1}), so {2} compatibility is unverified. Supported: {3}." -f `
                     $unknown.Count, ($unknown -join ', '), $release, ($osLabels -join ', '))
         }
+        elseif ($unknown.Count -gt 0) {
+            # PORT-PLAN C16 (GAP-P20): "every DC in the forest must run a supported version", so the
+            # gate cannot pass while one DC is unread. Before v1.36.0 this was a Pass beside the
+            # Not Assessed row below.
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.NotAssessed `
+                -Detail ("{0} DC(s) whose OS could be read run a version supported for {1}, but {2} DC(s) did not return an operating system (see 'Domain controller OS - not readable'), so the forest-wide gate is not given. Supported: {3}. {4}" -f `
+                    $supported.Count, $release, $unknown.Count, ($osLabels -join ', '), $provenance)
+        }
+        elseif (-not $ForestComplete) {
+            $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.NotAssessed `
+                -Detail ("All {0} DC(s) of the scoped domains run a version supported for {1}, but this run did not read every domain of the forest (run with -AllDomains, and DomainControllers among -Sections), and every DC in the forest must run a supported version, so the gate is not given. Supported: {2}. {3}" -f `
+                    $supported.Count, $release, ($osLabels -join ', '), $provenance)
+        }
         else {
             $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Domain controller operating systems' -Status $script:Status.Pass `
-                -Detail ("All {0} DC(s) whose OS could be read run a version supported for {1}. Supported: {2}. {3}" -f `
+                -Detail ("All {0} DC(s) of every domain of the forest run a version supported for {1}. Supported: {2}. {3}" -f `
                     $supported.Count, $release, ($osLabels -join ', '), $provenance)
         }
 
@@ -24643,17 +25104,25 @@ function Get-AdfaDfsrSubscriptionVerdict {
     [OutputType([pscustomobject[]])]
     param(
         [Parameter(Mandatory)][string]$DomainName,
-        [AllowNull()][AllowEmptyCollection()]$Subscriptions = @()
+        [AllowNull()][AllowEmptyCollection()]$Subscriptions = @(),
+        # PORT-PLAN C16 (GAP-P1): DCs of the domain read to have no DFSR SYSVOL subscription (an FRS
+        # DC); they are not in -Subscriptions, and are named in the row when nothing else is.
+        [ValidateRange(0, 1000000)][int]$NotDfsrCount = 0
     )
     $rows = @()
     $subs = @($Subscriptions | Where-Object { $null -ne $_ })
     if ($subs.Count -eq 0) {
+        if ($NotDfsrCount -gt 0) {
+            return @(New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'DFSR SYSVOL subscription state' -Status $script:Status.NotAssessed `
+                    -Detail ("{0} DC(s) of this domain have no DFSR SYSVOL subscription object (their engine is in the 'SYSVOL replication engine' rows), and no other DC's subscription was read, so msDFSR-Enabled and msDFSR-options were not graded." -f $NotDfsrCount))
+        }
         return @(New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'DFSR SYSVOL subscription state' -Status $script:Status.NotAssessed `
                 -Detail 'No SYSVOL subscription object could be read, so it is unknown whether SYSVOL replication is enabled on these DCs. This is not a clean result.')
     }
 
     $disabled = @()
     $unknown = @()
+    $unknownText = @()
     $authoritative = @()
     foreach ($sub in $subs) {
         $name = '(unnamed)'
@@ -24661,24 +25130,36 @@ function Get-AdfaDfsrSubscriptionVerdict {
         if ($null -ne $nProp -and $null -ne $nProp.Value) { $name = [string]$nProp.Value }
         $eProp = $sub.PSObject.Properties['Enabled']
         $oProp = $sub.PSObject.Properties['Options']
-        if ($null -eq $eProp -or $null -eq $eProp.Value) { $unknown += $name }
+        if ($null -eq $eProp -or $null -eq $eProp.Value) {
+            $unknown += $name
+            # Each DC's own cause (independent review of the C16 diff, finding 4): access denied,
+            # unreachable and a value not returned or malformed are different results.
+            $why = ''
+            $wProp = $sub.PSObject.Properties['Error']
+            if ($null -ne $wProp -and $null -ne $wProp.Value) { $why = ([string]$wProp.Value).Trim().TrimEnd('.') }
+            if ($why -eq '') { $why = 'no cause was given' }
+            $unknownText += ("{0} ({1})" -f $name, $why)
+        }
         elseif (-not [bool]$eProp.Value) { $disabled += $name }
         if ($null -ne $oProp -and $null -ne $oProp.Value -and [int]$oProp.Value -eq 1) { $authoritative += $name }
     }
+    $readable = $subs.Count - $unknown.Count
 
     if ($disabled.Count -gt 0) {
         $rows += New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'DFSR SYSVOL replication disabled' -Status $script:Status.Fail `
             -Detail ("msDFSR-Enabled=FALSE on {0} of {1} DC(s): {2}. SYSVOL is NOT replicating on those DCs and they will not share SYSVOL. This attribute is only set by hand, during a D2/D4-equivalent reinitialisation - if that procedure was interrupted it must be completed by setting msDFSR-Enabled=TRUE and running 'dfsrdiag pollad'." -f `
                 $disabled.Count, $subs.Count, ($disabled -join ', '))
     }
-    else {
+    elseif ($readable -gt 0) {
+        # PORT-PLAN C16 (GAP-P1): a Pass needs at least one DC whose subscription was read. Before
+        # v1.36.0 a domain where none was read had a Pass row "TRUE on all 0 DC(s)".
         $rows += New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'DFSR SYSVOL replication enabled' -Status $script:Status.Pass `
-            -Detail ("msDFSR-Enabled is TRUE on all {0} DC(s) whose subscription object could be read." -f ($subs.Count - $unknown.Count))
+            -Detail ("msDFSR-Enabled is TRUE on all {0} DC(s) whose subscription object could be read." -f $readable)
     }
 
     if ($unknown.Count -gt 0) {
         $rows += New-Finding -Scope $DomainName -Area 'SYSVOL' -Item 'DFSR SYSVOL subscription - not readable' -Status $script:Status.NotAssessed `
-            -Detail ("msDFSR-Enabled could not be read on {0} DC(s): {1}. Those DCs are unverified, not healthy." -f $unknown.Count, ($unknown -join ', '))
+            -Detail ("msDFSR-Enabled could not be read on {0} DC(s): {1}. Those DCs are unverified, not healthy." -f $unknown.Count, ($unknownText -join '; '))
     }
 
     if ($authoritative.Count -gt 1) {
@@ -24693,57 +25174,68 @@ function Get-AdfaDfsrSubscriptionVerdict {
     return @($rows)
 }
 
-function Get-AdfaDfsrSubscription {
+function ConvertTo-AdfaDfsrSubscriptionList {
     <#
     .SYNOPSIS
-        Reads each DC's SYSVOL subscription object (msDFSR-Enabled, msDFSR-options).
+        Pure: the DFSR SYSVOL subscription of each DC of one domain, from the SYSVOL engine read
+        (Get-AdfaSysvolEngineRaw), in the shape Get-AdfaDfsrSubscriptionVerdict takes. PORT-PLAN C16
+        (GAP-P1).
+    .DESCRIPTION
+        Replaces Get-AdfaDfsrSubscription, which built each subscription DN from a ComputerObjectDN
+        property the DC inventory never carries, so in a real run no subscription was ever read
+        (GAP-P1). The engine read takes each DC's computer DN from its own Get-ADDomainController
+        -Server <domain> and reads CN=SYSVOL Subscription from that domain.
+
+        Per DC: a subscription that is Present gives its values; Absent (no DFSR subscription, an
+        FRS DC) is left out of the list and counted in NotDfsrCount; Unread, or a DC returned with
+        no computer DN, gives Enabled $null with the cause. A DC list that could not be read gives
+        an empty list (the engine verdict reports that cause).
+
+        msDFSR-Enabled returned as a Boolean is that value. NOT returned is unknown (Enabled $null,
+        with the cause in Error), never TRUE: an attribute that is not set and one this account
+        cannot read look the same, and KB 2218556 publishes only the procedure that sets the
+        attribute to FALSE and back to TRUE - it does not say the attribute is normally unset
+        (https://learn.microsoft.com/troubleshoot/windows-server/group-policy/force-authoritative-non-authoritative-synchronization,
+        read 2026-11-18). Before the independent review of the C16 diff (findings 6 and 10) a value
+        not returned was taken as TRUE and fed the Pass row. Returned as anything else, it is
+        unknown. msDFSR-options is read as an integer where it is one.
     .OUTPUTS
-        [pscustomobject[]] DcName, Enabled, Options, Error
+        [pscustomobject] Subscriptions (DcName, Enabled, Options, Error), NotDfsrCount.
     #>
     [CmdletBinding()]
-    [OutputType([pscustomobject[]])]
-    param(
-        [Parameter(Mandatory)][string]$DomainName,
-        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
-        [hashtable]$AdParams = @{}
-    )
-    $out = @()
-    foreach ($dc in @($DomainControllers | Where-Object { $null -ne $_ })) {
-        $dn = ''
-        $name = ''
-        $hostProp = $dc.PSObject.Properties['HostName']
-        $dnProp = $dc.PSObject.Properties['ComputerObjectDN']
-        if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $name = [string]$hostProp.Value }
-        if ($null -ne $dnProp -and $null -ne $dnProp.Value) { $dn = [string]$dnProp.Value }
-        if (-not $dn) {
-            $out += [pscustomobject]@{ DcName = $name; Enabled = $null; Options = $null; Error = 'No computer object DN on the inventory row, so the subscription DN could not be built.' }
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Raw)
+    $list = New-Object System.Collections.ArrayList
+    $notDfsr = 0
+    if ($null -eq $Raw -or -not [bool](Get-AdfaConfigValue -Entry $Raw -Name 'Ok')) {
+        return [pscustomobject]@{ Subscriptions = @(); NotDfsrCount = 0 }
+    }
+    foreach ($dc in @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Dcs') | Where-Object { $null -ne $_ })) {
+        $name = [string](Get-AdfaConfigValue -Entry $dc -Name 'HostName')
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = '(unnamed)' }
+        $state = [string](Get-AdfaConfigValue -Entry $dc -Name 'Dfsr')
+        if ($state -eq 'Absent') { $notDfsr++; continue }
+        if ($state -ne 'Present') {
+            $why = [string](Get-AdfaConfigValue -Entry $dc -Name 'DfsrError')
+            if ([string]::IsNullOrWhiteSpace($why)) { $why = 'the subscription object was not read' }
+            [void]$list.Add([pscustomobject]@{ DcName = $name; Enabled = $null; Options = $null; Error = $why })
             continue
         }
-        $subDn = $script:Config.SysvolSubscriptionDn -f $dn
-        try {
-            $p = @{} + $AdParams
-            $p.Identity = $subDn
-            $p.Properties = @('msDFSR-Enabled', 'msDFSR-options')
-            $obj = Get-ADObject @p -ErrorAction Stop
-            $en = $null
-            $op = $null
-            $eProp = $obj.PSObject.Properties['msDFSR-Enabled']
-            $oProp = $obj.PSObject.Properties['msDFSR-options']
-            if ($null -ne $eProp -and $null -ne $eProp.Value) { $en = [bool]$eProp.Value }
-            if ($null -ne $oProp -and $null -ne $oProp.Value) { $op = [int]$oProp.Value }
-            # An unset msDFSR-Enabled is the default-enabled state, not "unknown": the attribute
-            # is only written when someone disables replication. Treated as TRUE so a healthy DC
-            # is not reported as unverified, which would cry wolf on every normal forest.
-            if ($null -eq $en) { $en = $true }
-            $out += [pscustomobject]@{ DcName = $name; Enabled = $en; Options = $op; Error = '' }
-        }
-        catch {
-            $out += [pscustomobject]@{ DcName = $name; Enabled = $null; Options = $null; Error = $_.Exception.Message }
-        }
+        $rawEnabled = Get-AdfaConfigValue -Entry $dc -Name 'DfsrEnabled'
+        $enabled = $null
+        $err = ''
+        if ($null -eq $rawEnabled) { $err = 'msDFSR-Enabled was not returned (an attribute that is not set and one this account cannot read look the same), so whether SYSVOL replication is enabled on it is not known' }
+        elseif ($rawEnabled -is [bool]) { $enabled = [bool]$rawEnabled }
+        elseif (([string]$rawEnabled).Trim() -match '^(?i)(true|false)$') { $enabled = (([string]$rawEnabled).Trim() -eq 'true') }
+        else { $err = ("msDFSR-Enabled was returned as '{0}', not a Boolean" -f [string]$rawEnabled) }
+        $rawOptions = Get-AdfaConfigValue -Entry $dc -Name 'DfsrOptions'
+        $options = $null
+        $n = 0
+        if ($null -ne $rawOptions -and [int]::TryParse(([string]$rawOptions).Trim(), [ref]$n)) { $options = $n }
+        [void]$list.Add([pscustomobject]@{ DcName = $name; Enabled = $enabled; Options = $options; Error = $err })
     }
-    return @($out)
+    return [pscustomobject]@{ Subscriptions = @($list.ToArray()); NotDfsrCount = $notDfsr }
 }
-
 
 function Get-AdfaDfsrBacklogCount {
     <#
@@ -24937,6 +25429,12 @@ function Get-AdfaDfsrEventLog {
         The SYSVOL counterpart of Get-AdfaDsEventLog, and gated on log coverage the same way:
         finding no events only means something if the log reaches back across the window. After
         a ransomware recovery it frequently does not.
+
+        PORT-PLAN C16 (GAP-P25): the scan reads at most -MaxEvents events per DC across every ID of
+        interest, newest first (EventScanMaxEvents, a tool default). A scan that returned that many
+        says on every event row that its count is a minimum and that older events, and any ID of
+        interest it does not list, may have been cut off - before v1.36.0 it said so only when the
+        log did not cover the window.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -24950,7 +25448,8 @@ function Get-AdfaDfsrEventLog {
         [int]$RpcPortTimeoutMs = 1200,
         # Domains whose DC enumeration threw (Domain, Error), and the domains of the run.
         [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
-        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [ValidateRange(1, 100000)][int]$MaxEvents = [int]$script:Config.EventScanMaxEvents
     )
     $targets = @($DomainControllers | Where-Object { $null -ne $_ })
     $population = @(Get-AdfaDcPopulationRow -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains -Area 'DfsrEvents' `
@@ -24998,11 +25497,12 @@ function Get-AdfaDfsrEventLog {
             $gwe = @{
                 ComputerName    = $dc
                 FilterHashtable = @{ LogName = 'DFS Replication'; Id = $ids; StartTime = $windowStart }
-                MaxEvents       = 500
+                MaxEvents       = $MaxEvents
                 ErrorAction     = 'Stop'
             }
             if ($Credential) { $gwe.Credential = $Credential }
             $events = @(Get-WinEvent @gwe)
+            $capText = Get-AdfaEventCapText -Count @($events).Count -Cap $MaxEvents
             if (@($events).Count -eq 0) {
                 if ($cov.Coverage -eq 'Covered') {
                     # Not a Pass: SYSVOL health is proven by seeing 4604, not by silence.
@@ -25028,6 +25528,7 @@ function Get-AdfaDfsrEventLog {
                 $last = ($g.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1).TimeCreated
                 $floor = ''
                 if ($cov.Coverage -ne 'Covered') { $floor = (" Count is a MINIMUM - {0}" -f $covNote) }
+                $floor += $capText
                 $rows += New-Finding -Scope $scope -Area 'DfsrEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev `
                     -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}{4}" -f $g.Count, $LookbackDays, $last, $meaning, $floor)
             }
@@ -25045,6 +25546,19 @@ function Get-AdfaDfsrEventLog {
     return @(@($population) + @($rows))
 }
 
+function Get-AdfaEventCapText {
+    <#
+    .SYNOPSIS
+        Pure: '' unless an event scan returned as many events as its cap; then the sentence every
+        event row of that scan carries, saying its count is a minimum. PORT-PLAN C16 (GAP-P25).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([int]$Count, [int]$Cap)
+    if ($Cap -lt 1 -or $Count -lt $Cap) { return '' }
+    return (" Count is a MINIMUM - the scan stopped at its cap of {0} events (EventScanMaxEvents, a tool default), newest first, so older occurrences, and any event ID of interest not listed for this DC, may have been cut off." -f $Cap)
+}
+
 function Get-AdfaDsEventLog {
     <#
     .SYNOPSIS
@@ -25059,6 +25573,10 @@ function Get-AdfaDsEventLog {
         same reason a healthy one is. So a clean scan over an incomplete window reports
         Not Assessed naming where coverage begins, never Pass, and a scan that DOES find events
         over an incomplete window reports the count as a floor rather than a total.
+
+        PORT-PLAN C16 (GAP-P25): so does a scan that reached its cap of -MaxEvents events
+        (EventScanMaxEvents, a tool default), on every event row, because a noisy ID can push older
+        occurrences, and a rarer ID of interest, out of the result.
     .OUTPUTS
         [pscustomobject[]]
     #>
@@ -25072,7 +25590,8 @@ function Get-AdfaDsEventLog {
         [int]$RpcPortTimeoutMs = 1200,
         # Domains whose DC enumeration threw (Domain, Error), and the domains of the run.
         [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
-        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [ValidateRange(1, 100000)][int]$MaxEvents = [int]$script:Config.EventScanMaxEvents
     )
     $rows = @()
     $targets = @($DomainControllers | Where-Object { $null -ne $_ })
@@ -25120,11 +25639,12 @@ function Get-AdfaDsEventLog {
             $gwe = @{
                 ComputerName    = $dc
                 FilterHashtable = @{ LogName = 'Directory Service'; Id = $ids; StartTime = $windowStart }
-                MaxEvents       = 500
+                MaxEvents       = $MaxEvents
                 ErrorAction     = 'Stop'
             }
             if ($Credential) { $gwe.Credential = $Credential }
             $events = @(Get-WinEvent @gwe)
+            $capText = Get-AdfaEventCapText -Count @($events).Count -Cap $MaxEvents
             if (@($events).Count -eq 0) {
                 # The fail-closed branch: silence over an incomplete window is not a clean bill
                 # of health. Reporting Pass here is what let a wiped log look healthy.
@@ -25149,6 +25669,7 @@ function Get-AdfaDsEventLog {
                 # A count taken from a partial log is a lower bound, and saying so costs nothing.
                 $floor = ''
                 if ($cov.Coverage -ne 'Covered') { $floor = (" Count is a MINIMUM - {0}" -f $covNote) }
+                $floor += $capText
                 $rows += New-Finding -Scope $scope -Area 'DsEvents' -Item ("Event {0} on {1}" -f $id, $dc) -Status $sev -Detail ("{0} occurrence(s) in {1} day(s), last {2:yyyy-MM-dd HH:mm}. {3}{4}" -f $g.Count, $LookbackDays, $last, $meaning, $floor)
             }
         }
@@ -27071,7 +27592,9 @@ function Get-AdfaSysvolEngineRaw {
         CN=Domain System Volume (SYSVOL share),CN=NTFRS Subscriptions,<computer DN>. Reads only.
     .OUTPUTS
         [pscustomobject] Ok, Error, ErrorType, DomainDn, GlobalState, GlobalFlags, GlobalError, Dcs
-        (HostName, IsReadOnly, ComputerDn, Dfsr, DfsrError, Frs, FrsError).
+        (HostName, IsReadOnly, ComputerDn, Dfsr, DfsrError, Frs, FrsError, DfsrEnabled, DfsrOptions -
+        the raw msDFSR-Enabled and msDFSR-options of a DFSR subscription that is Present, $null when
+        not returned; PORT-PLAN C16).
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27120,16 +27643,23 @@ function Get-AdfaSysvolEngineRaw {
         $isRo = $null
         if ($ro -is [bool]) { $isRo = [bool]$ro }
         $computerDn = [string](Get-AdfaConfigValue -Entry $dc -Name 'ComputerObjectDN')
-        $record = [pscustomobject]@{ HostName = $hostName; IsReadOnly = $isRo; ComputerDn = $computerDn; Dfsr = 'Unread'; DfsrError = ''; Frs = 'Unread'; FrsError = '' }
+        $record = [pscustomobject]@{ HostName = $hostName; IsReadOnly = $isRo; ComputerDn = $computerDn; Dfsr = 'Unread'; DfsrError = ''; Frs = 'Unread'; FrsError = ''; DfsrEnabled = $null; DfsrOptions = $null }
         if ([string]::IsNullOrWhiteSpace($computerDn)) {
             $record.DfsrError = 'the DC was returned with no computer object DN, so its objects could not be named'
             $record.FrsError = $record.DfsrError
         }
         else {
-            $d = Get-AdfaDirectoryObjectState -Identity ([string]$Config['DfsrSubscriptionDn'] -f $computerDn) -Server $DomainName -AdParams $AdParams -Config $Config
+            # PORT-PLAN C16 (GAP-P1): the same read of the DFSR SYSVOL subscription asks for the two
+            # attributes a D2/D4-equivalent rebuild edits by hand, so the subscription verdict is read
+            # from each DC's own domain. A value not returned stays $null here.
+            $d = Get-AdfaDirectoryObjectState -Identity ([string]$Config['DfsrSubscriptionDn'] -f $computerDn) -Server $DomainName -Properties @('msDFSR-Enabled', 'msDFSR-options') -AdParams $AdParams -Config $Config
             $f = Get-AdfaDirectoryObjectState -Identity ([string]$Config['FrsSubscriberDn'] -f $computerDn) -Server $DomainName -AdParams $AdParams -Config $Config
             $record.Dfsr = $d.State
             $record.Frs = $f.State
+            if ($d.State -eq 'Present') {
+                $record.DfsrEnabled = Get-AdfaConfigValue -Entry $d.Object -Name 'msDFSR-Enabled'
+                $record.DfsrOptions = Get-AdfaConfigValue -Entry $d.Object -Name 'msDFSR-options'
+            }
             if ($d.State -eq 'Unread') { $record.DfsrError = ("{0}: {1}" -f (Get-AdfaReadClassPhrase -Class $d.Class), $d.Error) }
             if ($f.State -eq 'Unread') { $record.FrsError = ("{0}: {1}" -f (Get-AdfaReadClassPhrase -Class $f.Class), $f.Error) }
         }
@@ -30202,7 +30732,6 @@ function Invoke-Main {
     Write-Stage ("Forest: {0}; assessing domains: {1}" -f $forest.Name, ($targetDomains -join ', '))
 
     $sectionData = [ordered]@{}
-    $sectionStatus = [ordered]@{}
     # Scope problems lead the report: if the forest or the domain list could not be resolved,
     # every section below is unassessed and the reader needs to know that before reading them.
     if (@($scopeRows).Count -gt 0) { $sectionData['Forest & Domain Scope'] = @($scopeRows) }
@@ -30210,8 +30739,14 @@ function Invoke-Main {
 
     # ---- Forest-level sections ----
     if (Test-SectionSelected 'Forest' $Sections) {
-        try { $sectionData['Forest Summary'] = @(Get-AdfaForestSummary -AdParams $adParams); $sectionStatus['Forest'] = 'ok' }
-        catch { $sectionStatus['Forest'] = 'error'; Write-Warning $_.Exception.Message }
+        # PORT-PLAN C16 (GAP-P29): a summary that could not be read is a row of the section, not a
+        # warning on the console and a section silently missing from the report.
+        try { $sectionData['Forest Summary'] = @(Get-AdfaForestSummary -AdParams $adParams) }
+        catch {
+            Write-Log -Level ERROR -Section 'Forest' -Message ("Forest summary failed: {0}" -f $_.Exception.Message)
+            $sectionData['Forest Summary'] = @(New-Finding -Area 'Forest' -Item 'Forest summary' -Status $script:Status.NotAssessed `
+                    -Detail ("The forest summary (name, root domain, mode, domains, sites, global catalogs, forest FSMO holders, UPN suffixes) could not be read: {0}" -f $_.Exception.Message))
+        }
     }
 
     $allDcInventory = @()
@@ -30402,9 +30937,13 @@ function Invoke-Main {
             $sectionData['AD Subnets'] = $topology.Subnets
             $sectionData['Site Links'] = $topology.SiteLinks
             $sectionData['Replication Connections'] = $topology.Connections
-            if ($allDcInventory.Count -gt 0) {
-                $siteRows += @(Get-AdfaSiteHealthFinding -Topology $topology -DomainControllers $allDcInventory)
-            }
+            # PORT-PLAN C16 (GAP-P6): sites without subnets need no inventory and are always checked;
+            # empty sites need it, and say so when it was not collected, instead of the whole check
+            # being skipped silently.
+            # Independent review of the C16 diff (findings 3, 9): the sites are the forest's, so the
+            # inventory must cover the forest, with no domain's read failed.
+            $siteInventoryGap = Get-AdfaSiteInventoryGap -Collected $dcInventoryCollected -DcCount @($allDcInventory).Count -ScopeCoversForest $scopeCoversForest -Failures @($dcInventoryFailures)
+            $siteRows += @(Get-AdfaSiteHealthFinding -Topology $topology -DomainControllers @($allDcInventory) -InventoryCollected ($siteInventoryGap -eq '') -InventoryGap $siteInventoryGap)
         }
         catch {
             $topologyError = [string]$_.Exception.Message
@@ -30433,10 +30972,16 @@ function Invoke-Main {
         $trustRows = @()
         foreach ($d in $targetDomains) {
             $tp = @{} + $adParams; $tp.Server = $d
+            # PORT-PLAN C16 (GAP-P3): the outbound direction is asked of a DC of this domain
+            # (nltest /server:<dc>), not of the host running the assessment. Not looked up when
+            # verification is skipped, since nothing would be asked of it.
+            $trustSource = [pscustomobject]@{ HostName = ''; Error = '' }
+            if (-not $SkipTrustVerification) { $trustSource = Resolve-AdfaTrustSourceDc -DomainName $d -AdParams $adParams }
             $trustRows += Get-AdfaTrustHealth -DomainName $d -AdParams $tp -SkipVerification:$SkipTrustVerification -LiveVerify:$IncludeSecureChannelVerify `
                 -TimeoutSeconds $script:Config.ExternalToolTimeoutSec -Retries $script:Config.Retries `
                 -RetryDelaySeconds $script:Config.RetryDelaySeconds -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
-                -PropertyNames @($script:Config.DirectoryRead['TrustHealthProperties']) -MaxObjects ([int]$inventoryConfig['MaxObjects']) -CapSource $inventoryCapSource
+                -PropertyNames @($script:Config.DirectoryRead['TrustHealthProperties']) -MaxObjects ([int]$inventoryConfig['MaxObjects']) -CapSource $inventoryCapSource `
+                -SourceDc $trustSource.HostName -SourceDcError $trustSource.Error
         }
         $sectionData['Trusts & Two-Way Health'] = $trustRows
         # PORT-PLAN C15 (INV-006): the trustedDomain objects of every scoped domain, read from that
@@ -30493,20 +31038,13 @@ function Invoke-Main {
         # does not share SYSVOL until the replicated folder has initialised.
         $sysvolRows += @(Get-AdfaSysvolShareHealth -DomainControllers $perDcTargets -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $perDcFailures -ScopedDomains $targetDomains)
 
-        # The two attributes a D2/D4-equivalent rebuild edits by hand, per KB 2218556. Read
-        # per domain, because "exactly one member is authoritative" is a cross-DC rule that
-        # cannot be checked from any single DC.
-        foreach ($d in $targetDomains) {
-            $domainDcs = @($allDcInventory | Where-Object {
-                    $sc = $_.PSObject.Properties['Scope']   # $null when absent - StrictMode-safe
-                    $null -ne $sc -and [string]$sc.Value -eq $d
-                })
-            $subs = @(Get-AdfaDfsrSubscription -DomainName $d -DomainControllers $domainDcs -AdParams $adParams)
-            $sysvolRows += @(Get-AdfaDfsrSubscriptionVerdict -DomainName $d -Subscriptions $subs)
-        }
         # PORT-PLAN C14 (SYSVOL-004): the SYSVOL replication engine of each DC and each scoped domain,
         # from the DFSR SYSVOL subscription and the NTFRS subscriber of every DC, read from its own
         # domain. The table the file supplied where it supplied one.
+        # PORT-PLAN C16 (GAP-P1): the same read gives the two attributes a D2/D4-equivalent rebuild
+        # edits by hand, per KB 2218556 (msDFSR-Enabled, msDFSR-options), graded per domain because
+        # "exactly one member is authoritative" is a cross-DC rule. Before v1.36.0 they were read from
+        # a DC inventory row property that no inventory row carried, so no subscription was read.
         $sysvolEngineConfig = $script:Config.SysvolEngine
         if ($configOverrides.ContainsKey('SysvolEngine')) { $sysvolEngineConfig = $configOverrides['SysvolEngine'] }
         if ($forestError) {
@@ -30516,6 +31054,8 @@ function Invoke-Main {
         else {
             foreach ($d in $targetDomains) {
                 $engineRaw = Get-AdfaSysvolEngineRaw -DomainName $d -AdParams $adParams -Config $sysvolEngineConfig
+                $subscriptionList = ConvertTo-AdfaDfsrSubscriptionList -Raw $engineRaw
+                $sysvolRows += @(Get-AdfaDfsrSubscriptionVerdict -DomainName $d -Subscriptions @($subscriptionList.Subscriptions) -NotDfsrCount ([int]$subscriptionList.NotDfsrCount))
                 $sysvolRows += @(Get-AdfaSysvolEngineVerdict -DomainName $d -Raw $engineRaw -Config $sysvolEngineConfig)
             }
         }
@@ -31030,7 +31570,8 @@ function Invoke-Main {
         }
         $sectionData['Exchange SE Compatibility'] = Get-AdfaExchangeSeCompatibility -ForestMode $forestMode `
             -ForestLevel $forestLevel -ForestLevelError $forestLevelError `
-            -DomainSummaries $sectionData['Domain Summary'] -DomainControllers $allDcInventory -SeConfig $seConfig
+            -DomainSummaries $sectionData['Domain Summary'] -DomainControllers $allDcInventory -SeConfig $seConfig `
+            -ForestComplete ($scopeCoversForest -and $dcInventoryCollected -and @($dcInventoryFailures).Count -eq 0)
     }
 
     # ---- User and computer export (declared attribute lists) -> CSV; HTML gets a summary only ----

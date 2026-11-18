@@ -10,6 +10,135 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Fixed - 2026-11-18 (Promise triage: the README and help promises the code did not keep, GAP-P1..P30, tool v1.36.0)
+
+**PORT-PLAN C16. No new `-Sections` value and no new section key.** **Run against stubs only** - nothing in
+this entry has been run against a real directory, DC or trust (C16c, with C17). The only real processes run
+were `cmd.exe` loops on the build workstation, for the stream test below. The 30 items of
+docs/GAP-ANALYSIS.md "Promises the code does not keep" (written at v1.15.0) are called GAP-P1..GAP-P30 here,
+because PORT-PLAN already has rows P1-P6. Each was re-measured against v1.35.0 and classified; the full
+outcome table, with receipts and the tests that pin each item, is the new "C16 triage (2026-11-18)" section
+of docs/GAP-ANALYSIS.md (the original table is kept).
+
+| Item | Outcome |
+| --- | --- |
+| GAP-P1 SYSVOL subscription | **FixCode**: read by the SYSVOL engine read from each scoped domain's own DCs (`msDFSR-Enabled`, `msDFSR-options` asked on the same `CN=SYSVOL Subscription` read, `-Server <domain>`); `ConvertTo-AdfaDfsrSubscriptionList` replaces `Get-AdfaDfsrSubscription`, which read a `ComputerObjectDN` no inventory row carries, so no subscription was ever read; the Pass row needs a DC read. Graded with `-Sections Sysvol` alone. Closes C2i(5), C14b(5) |
+| GAP-P2 `/sc_verify` | **AlreadyFixed** (H19 v1.17.0, H20 v1.18.0); re-read on Learn 2026-11-18 |
+| GAP-P3 trust directions | (1) **FixCode**: outbound asked of the PDC emulator of the domain assessed, `nltest /server:<pdc> /sc_query:<partner>`; Not Assessed with the cause when no DC is resolved or it is classified Unreachable. (2)-(4) **AlreadyFixed** (H19). (5)-(6) **Accept + FixWording** (C16a(1)) |
+| GAP-P4 dcdiag | **AlreadyFixed** (C11 v1.28.0); README now says `Ping` is a TCP 135 probe |
+| GAP-P5 replication | **FixCode**: Pass needs both reads; a failed read is `$null`, never a count of 1 or 0; synopsis corrected |
+| GAP-P6 sites | Subnets without a site **AlreadyFixed** (C14); **FixCode**: exact site match on the first RDN; runs without the inventory, with one Not Assessed "Empty sites" row |
+| GAP-P7 output folder | **Deferred to H21** |
+| GAP-P8 DC hardening | **AlreadyFixed** (C3 v1.20.0, C3f v1.35.0) |
+| GAP-P9 GPO / central store | WMI filters **AlreadyFixed** (C15); central store **FixCode** (Not Assessed with its class when SYSVOL could not be listed); wording |
+| GAP-P10 security posture | AdminSDHolder **AlreadyFixed** (C9); **FixWording** (no RC4 evaluation, C16b); **FixCode** found while measuring: tombstone lifetime and machine account quota not returned are Not Assessed, not Warning |
+| GAP-P11 privilege | **AlreadyFixed** (C10 v1.27.0) |
+| GAP-P12 ESC1 | **FixWording** (a configuration heuristic over every template object); published templates and enrolment ACL: C16b |
+| GAP-P13 dangerous ACLs | **AlreadyFixed** (C9 v1.26.0) |
+| GAP-P14 Exchange markers | **FixWording** (one marker, no verdict); objectVersion: C16b |
+| GAP-P15 delegation | **AlreadyFixed** (C10) |
+| GAP-P16 DNS | Scavenging, secure update **AlreadyFixed** (C13); **FixCode**: an SRV lookup that failed is Not Assessed unless "no such record"; a measured "no open zone transfer" row; wording (root hints C13c, `-Credential` unused) |
+| GAP-P17 dfsrmig | **FixWording** with a Scope fix: the row carries the host's domain and says it was read there |
+| GAP-P18 redundancy | **FixWording** (no FSMO concentration, C16b); **FixCode**: the DC count uses `-Credential` |
+| GAP-P19 time sync | **FixCode**: Not Assessed when w32tm failed or printed nothing; the row names the host; wording |
+| GAP-P20 Exchange SE DC gate | **FixCode**: Pass only over every domain of the forest with no DC unread (`-ForestComplete`); README commands name `DomainControllers` |
+| GAP-P21 `-SkipVerification` | **AlreadyFixed** (H19); README parameter guard added |
+| GAP-P22 `-AllDomains` help | **FixWording** |
+| GAP-P23 `-Server` / `-Credential` help | **FixWording**; `-Credential` for DNS reads: C16b |
+| GAP-P24 Invoke-ExternalCommand | **FixCode**: asynchronous reads of both streams started before the wait; retries kept (C16a(5)) |
+| GAP-P25 event cap | **FixCode**: `EventScanMaxEvents` (500, tool default); a scan at its cap marks every count a minimum |
+| GAP-P26 lingering objects | **FixCode**: no readable count is Not Assessed, not Pass; domain NC only, said in every row; wording |
+| GAP-P27 lockout policy | **FixWording**; the rest: C16b |
+| GAP-P28 stale objects | **AlreadyFixed** (C14 v1.31.0) |
+| GAP-P29 `$sectionStatus` | **FixCode**: removed; a failed forest summary is a Not Assessed row; `.OUTPUTS` corrected |
+| GAP-P30 `-Sections` help | **FixWording**; `.PARAMETER EventLookbackDays` and `.PARAMETER ExchangeSeConfigPath` added |
+
+- **Fail closed, by item.** No new row passes on a value not read: the subscription Pass needs a DC read;
+  replication Pass needs both queries; the central store, the time source, an SRV lookup, a lingering scan
+  and two security posture values are Not Assessed with the cause where they were graded before; the Exchange
+  SE DC gate is Not Assessed over part of the forest. Unreachable, access denied and not found are told
+  apart by the classes the script already has (`Get-AdfaDirectoryReadErrorClass`, the file classes of the Gpo
+  section, the C14 reachability class).
+- **Read-only.** No new command. `nltest /server:<dc>` is the query form of the same `/sc_query`; the
+  central store is listed with the Gpo section's read-only folder seam (`[System.IO.Directory]::GetDirectories`);
+  `Invoke-ExternalCommand` only changes how output is read. The H19 AST guards (the one `/sc_verify`
+  builder, the remote script blocks, the `-LiveVerify` wiring) are unchanged and green.
+- **Item texts.** Every existing Item is kept. New Items: `<server>: zone transfer` as Pass and Not Assessed
+  (it was Warning only), `Empty sites`, `Forest summary`, and `DFSR SYSVOL subscription state` with a new
+  cause (no DFSR subscription). Changed Detail texts: the "has no subnets" and "has no domain controllers"
+  rows, the site topology Pass, the central store rows, the time source row, the dfsrmig row, the lingering
+  scan rows, the Exchange SE DC gate Pass and its no-DC row.
+- **Existing tests changed, because the behaviour changed on purpose:** Pester `passes it from the trust
+  collector to both directions` (H19) now gives `Get-AdfaTrustHealth` a `-SourceDc`, without which the
+  outbound check is no longer run; Run-Validation section 6 likewise (two calls); Pester `treats an unreadable
+  OS as absent, not unsupported` and Run-Validation `SE DC OS: a readable DC ...` now expect the DC gate Not
+  Assessed (it was Pass beside a row saying no forest-wide verdict could be given); the C4 and C4b non-vacuity
+  counts of `-Properties` arguments go from 37 to 38 (the subscription list) and the C4 count of Properties
+  key assignments from 23 to 22 (the deleted reader's); and every "carries version"
+  test moves to 1.36.0. No test was deleted or weakened.
+- **New tests.** Pester `Promise triage: ... (C16, GAP-P1..P30)`, 41 tests, 39 of them red against v1.35.0
+  (the two that were green are the README parameter guard - GAP-P21 was already fixed; it is shown able to
+  fail on the v1.16.0 example - and the time-out test of `Invoke-ExternalCommand`, which keeps a behaviour);
+  Run-Validation `C16` (15 assertions); smoke harness C16 checks in the single-domain, unreachable-DC,
+  three-domain, sections-alone and failing-collector passes.
+- **Not verified.** Everything against a real forest (C16c): `nltest /server:<dc> /sc_query` from a member
+  server and from a DC and the rights it needs; its output for a broken channel (Learn shows only the success
+  line); large `repadmin` and `dcdiag` output through the new reader; the advisory-mode output of
+  `repadmin /removelingeringobjects` with no lingering object; whether an unset `msDFSR-Enabled` is returned
+  and in what type; the exception a refused or unreachable SYSVOL Policies listing raises; what
+  `Get-ADReplicationFailure` returns for a DC with no failure. Nothing was run under a localised Windows.
+- **Vendor sources, read 2026-11-18:**
+  https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc731935(v=ws.11)
+  (nltest: `/sc_verify`, `/sc_query`, `/server`, Example 3; archived - the current windows-commands/nltest
+  address could not be retrieved);
+  https://learn.microsoft.com/dotnet/api/system.diagnostics.process.standarderror and
+  https://learn.microsoft.com/dotnet/api/system.diagnostics.process.waitforexit (the redirected-stream
+  deadlock; WaitForExit() after WaitForExit(timeout));
+  https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings
+  (w32tm /query reads the local computer unless /computer is given);
+  https://learn.microsoft.com/windows-server/administration/windows-commands/dfsrmig (/getglobalstate: run it
+  on the PDC emulator);
+  https://learn.microsoft.com/troubleshoot/windows-client/group-policy/create-and-manage-central-store (the
+  central store; no severity published).
+
+**Found by an independent review of the diff before commit, and fixed in it.** Each fix has a test in the new
+Pester context `Independent review of the C16 diff: defects found before commit` (12 tests), and each was shown
+red by a mutation on a scratch copy of the repository restoring the old behaviour (or the reviewer's own
+mutation), the script then restored byte-for-byte and verified by hash.
+
+| Review finding | Fix |
+| --- | --- |
+| 1, 7 DnsDepth SRV | Only answers of type SRV count. A name with no SRV data (NODATA) answers with its zone's SOA from the Authority section and no error; that was a Pass reading "1 record(s)" and is now a Fail naming the types returned. An Additional-section A record no longer inflates the count |
+| 2 zone transfer | The Pass row is judged over the graded zone types (`GradedZoneTypes`, Primary) only: Learn documents `SecureSecondaries` on `Set-DnsServerPrimaryZone`, and `Set-DnsServerSecondaryZone` and the conditional forwarder cmdlets expose no such setting, so a forwarder or stub zone returning no value no longer makes the row Not Assessed for ever. A `TransferAnyServer` on any zone is still the Warning |
+| 14 zone transfer, no zone | A server read with no primary zone is Not Assessed; pinned by a test with zero zones (the reviewer's `if ($false)` mutant now fails) |
+| 3, 9 empty sites | Asserted only when the DC inventory covers every domain of the forest and no domain's read failed (new pure `Get-AdfaSiteInventoryGap`, the condition the Exchange SE gate already used); otherwise one "Empty sites" Not Assessed row naming the gap (`-AllDomains`, or the failed domains). Before, a site holding only DCs of an unscoped or failed domain was "has no domain controllers" |
+| 4 subscription causes | The "not readable" row names each DC with its own cause (access denied, unreachable, not returned, malformed) |
+| 5 replication | Partner metadata read but empty, or with no `LastReplicationSuccess` on any partner, is Not Assessed with that cause (PartnerCount 0 is then measured), never Pass; also for the only DC of a domain, since the configuration and schema partitions replicate between domains |
+| 6, 10 `msDFSR-Enabled` not returned | Unknown with its cause, so Not Assessed - no longer TRUE (C16a(3) reversed). Re-read on Learn 2026-11-18: KB 2218556 gives only the procedure (set FALSE, then TRUE); it does not say the attribute is normally unset, so the citation is removed from the help and PORT-PLAN |
+| 8 central store advice | The Warning Detail no longer quotes `\\<domain>\...` with the domain filled in, so a domain label holding "replication" or "clock" cannot take an earlier unscoped recommendation; the domain is the row's Scope |
+| 11 TimeSync | Pinned: a w32tm query that exited non-zero with error text is Not Assessed, never Info "Source: <error>" (the reviewer's mutant now fails) |
+| 12 `-NotDfsrCount` wiring | Pinned by the AST argument text `([int]$subscriptionList.NotDfsrCount)` (the reviewer's `-NotDfsrCount 0` mutant now fails) |
+| 13 drain bound | Output not complete within `ExternalToolDrainMs` is returned as a failure with the exit code and is **not retried** (the help says a retry follows only a start failure or a time-out), and `.Result` is never read while another process holds the pipe; pinned on a real `cmd.exe /c start /b ping` (`sh -c "sleep 3 &"` elsewhere) |
+| 15 dfsrmig output | The state is read from the "Current DFSR global state:" line in the unquoted form Learn publishes, and in the quoted form matched before; any other text stays Not Assessed. Which form each Windows release prints is not verified (C16c) |
+
+Existing assertions changed by these fixes, because the behaviour changed on purpose: Run-Validation
+`C16 GAP-P1: FALSE kept, ...` now expects the subscription whose `msDFSR-Enabled` was not returned to be
+unknown with its cause (it expected TRUE); the smoke stub of the SYSVOL subscription now returns
+`msDFSR-Enabled` TRUE when asked for it, the shape Get-ADObject gives for a set attribute (it returned none and
+relied on the TRUE rule). New: Run-Validation 6 assertions; smoke checks in the single-domain pass (replication
+Pass on a measured partner), the three-domain pass (empty sites judged with the forest scoped, Not Assessed
+naming `-AllDomains` with one domain of three) and the failing-collector pass (no replication Pass). Not
+verified, added to C16c: Resolve-DnsName's NODATA shape against an AD zone (seen on this workstation for a
+public name only), the properties `Get-DnsServerZone` returns for forwarder, stub and secondary zones, the
+dfsrmig output form per release, the partner metadata of the only DC of a forest, and a real helper process
+holding stdout open. Left out: C16d. Vendor sources read 2026-11-18 for these fixes:
+https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserverprimaryzone (`-SecureSecondaries`);
+https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserversecondaryzone (no such parameter);
+https://learn.microsoft.com/windows-server/networking/dns/manage-dns-zones (zone transfer settings, for a primary
+zone); https://learn.microsoft.com/windows-server/administration/windows-commands/dfsrmig (the published
+`/getglobalstate` output); https://learn.microsoft.com/troubleshoot/windows-server/group-policy/force-authoritative-non-authoritative-synchronization
+(KB 2218556, re-read for finding 10).
+
 ### Changed - 2026-11-17 (SMB server configuration read with Get-SmbServerConfiguration: the SMBv1 row and the second instrument of SMB server signing, tool v1.35.0)
 
 **PORT-PLAN C3f, decision (a). No new `-Sections` value; `-Sections DcHardening`, the section key
