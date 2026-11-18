@@ -3634,11 +3634,12 @@ Describe 'DC disk space, and the generic config override (C2)' {
             foreach ($banned in @('Set-CimInstance', 'New-CimInstance', 'Remove-CimInstance', 'Invoke-WmiMethod', 'Set-WmiInstance', 'Remove-WmiObject')) {
                 $names | Should -Not -Contain $banned
             }
-            # Non-vacuity, declared population: the six instance reads this script makes -
+            # Non-vacuity, declared population: the instance reads this script makes -
             # Win32_OperatingSystem and Win32_QuickFixEngineering (DcSystem), Win32_Volume (DcDisk),
-            # Win32_OperatingSystem, MSFT_SmbServerConfiguration and Win32_Service (DcHardening, C3), and
-            # Win32_NetworkAdapterConfiguration (C13): seven.
-            @($names | Where-Object { $_ -eq 'Get-CimInstance' }).Count | Should -Be 7
+            # Win32_OperatingSystem and Win32_Service (DcHardening, C3), and
+            # Win32_NetworkAdapterConfiguration (C13): six. The MSFT_SmbServerConfiguration instance
+            # query is gone since PORT-PLAN C3f: the class is read with Get-SmbServerConfiguration.
+            @($names | Where-Object { $_ -eq 'Get-CimInstance' }).Count | Should -Be 6
         }
         It 'reads Win32_Volume as instances only, naming the properties it wants' {
             $vol = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Get-CimInstance' -and $_.Extent.Text -match 'Win32_Volume' })
@@ -5417,8 +5418,10 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             foreach ($f in $fns) {
                 $bounded += @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and @('Invoke-CimMethod', 'Get-CimInstance') -contains $n.GetCommandName() }, $true))
             }
-            # Declared population: GetDWORDValue, and the Win32_OperatingSystem, MSFT_SmbServerConfiguration and Win32_Service queries.
-            $bounded.Count | Should -Be 4
+            # Declared population: GetDWORDValue, and the Win32_OperatingSystem and Win32_Service queries. The SMB
+            # server configuration is read with Get-SmbServerConfiguration, which has no timeout parameter and is
+            # bounded by the session's (PORT-PLAN C3f; asserted in the C3f Describe).
+            $bounded.Count | Should -Be 3
             foreach ($call in $bounded) {
                 $t = Get-C3Parameter -Call $call -Name 'OperationTimeoutSec'
                 $t | Should -Not -BeNullOrEmpty -Because "$($call.GetCommandName()) on line $($call.Extent.StartLineNumber) must be bounded"
@@ -5429,7 +5432,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
                     $c | Should -BeOfType ([System.Management.Automation.Language.StringConstantExpressionAst])
                     [string]$c.Value
                 })
-            (@($classes | Sort-Object) -join ',') | Should -Be 'MSFT_SmbServerConfiguration,Win32_OperatingSystem,Win32_Service'
+            (@($classes | Sort-Object) -join ',') | Should -Be 'Win32_OperatingSystem,Win32_Service'
             foreach ($call in @($bounded | Where-Object { $_.GetCommandName() -eq 'Get-CimInstance' })) {
                 (Get-C3Parameter -Call $call -Name 'Property') | Should -Not -BeNullOrEmpty -Because 'each query names the properties it wants'
             }
@@ -5705,7 +5708,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
         It 'grades SMB server signing on the registry, lets the second instrument veto it, and uses it when the value is not set' {
             $agree = Get-C3Verdict -Id 'SmbServerSigning' -Number 1 -Second (New-C3Second -Value $true)
             $agree.Status | Should -Be 'Pass'
-            $agree.Detail | Should -Match 'MSFT_SmbServerConfiguration\.RequireSecuritySignature = True'
+            $agree.Detail | Should -Match 'Get-SmbServerConfiguration RequireSecuritySignature = True'
             $agree.Detail | Should -Match 'agrees'
             $veto = Get-C3Verdict -Id 'SmbServerSigning' -Number 1 -Second (New-C3Second -Value $false)
             $veto.Status | Should -Be 'Not Assessed'
@@ -5722,9 +5725,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             $measured.Status | Should -Be 'Pass'
             $measured.Detail | Should -Match 'is not set in the registry of this DC'
             $measured.Detail | Should -Match 'graded on the SMB server''s own configuration'
-            # What Microsoft documents is the cmdlet. The row does not claim the instance query is it.
+            # What Microsoft documents is the cmdlet, and since PORT-PLAN C3f it is what is run.
             $measured.Detail | Should -Match 'documented check of this property is the cmdlet Get-SmbServerConfiguration'
-            $measured.Detail | Should -Match 'the cmdlet was not run'
+            $measured.Detail | Should -Match 'which is what was run here'
             $measured.Detail | Should -Not -Match 'Microsoft documents reading that property'
             (Get-C3Verdict -Id 'SmbServerSigning' -Second (New-C3Second -Value $false)).Status | Should -Be 'Warning'
             # Not set and nothing else to go on: on no build is that a Pass or a Warning.
@@ -6188,25 +6191,22 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             $failed = Get-C3Smb1 (New-C3Raw -SmbOk $false -SmbError 'Invalid namespace' -SmbErrorCode 'Failed')
             $failed.Detail | Should -Match '^Read failed'
         }
-        It 'reports an SMB configuration class that returned no instance as not read - the shape measured on a real host - and passes nothing on it' {
-            # Measured 2026-11-15 on one Windows 11 workstation (not a DC, not elevated): the
-            # instance query returns no instance and no error. A hardened DC answering that way:
+        It 'reports an SMB configuration read that returned no object as not read, and passes nothing on it' {
+            # Since PORT-PLAN C3f the read is Get-SmbServerConfiguration; SmbNoInstance is that cmdlet
+            # returning nothing and raising no error. A hardened DC answering that way:
             $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope 'contoso.com' -Raw (New-C3Raw -Numbers (New-C3GoodNumbers) -SmbNoInstance) -Config $script:Hc)
             # Declared population: the six registry settings, Print Spooler and SMBv1.
             $rows.Count | Should -Be 8
             $smb1 = Get-C3Row $rows 'SMBv1: dc1.contoso.com'
             $smb1.Status | Should -Be 'Not Assessed' -Because 'nothing was read, so nothing may pass'
-            [string]$smb1.Detail | Should -Match '^Not read: MSFT_SmbServerConfiguration returned no instance to an instance query'
+            [string]$smb1.Detail | Should -Match '^Not read: Get-SmbServerConfiguration returned no configuration object for this DC, and no error'
             [string]$smb1.Detail | Should -Match 'This is not a pass'
-            [string]$smb1.Detail | Should -Match 'GetConfiguration'
-            [string]$smb1.Detail | Should -Match 'this tool does not invoke'
-            [string]$smb1.Detail | Should -Match 'PORT-PLAN C3f'
             # It is its own result: not a refusal, and not a failed query.
             [string]$smb1.Detail | Should -Not -Match '^(Access denied|Read failed)'
             # SMB server signing is then graded on the registry alone, and says the second instrument is missing and why.
             $server = Get-C3Row $rows 'SMB server signing: dc1.contoso.com'
             $server.Status | Should -Be 'Pass'
-            [string]$server.Detail | Should -Match 'second instrument, MSFT_SmbServerConfiguration\.RequireSecuritySignature, was not read \(MSFT_SmbServerConfiguration returned no instance to an instance query'
+            [string]$server.Detail | Should -Match 'second instrument, Get-SmbServerConfiguration RequireSecuritySignature, was not read \(Get-SmbServerConfiguration returned no configuration object'
             [string]$server.Detail | Should -Not -Match 'agrees|disagree'
             # With the registry value not set there is nothing to grade the row on: Not Assessed, on every build.
             foreach ($b in @('17763', '26100', '')) {
@@ -6696,18 +6696,24 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
                 if ($answer -is [hashtable]) { return [pscustomobject]@{ ReturnValue = [uint32]$answer.Code; uValue = $answer['UValue']; PSComputerName = 'x' } }
                 return [pscustomobject]@{ ReturnValue = [uint32]0; uValue = [uint32]$answer; PSComputerName = 'x' }
             }
-            # The three classes. Win32_OperatingSystem.BuildNumber is a string; Win32_Service.State
-            # and StartMode are strings. MSFT_SmbServerConfiguration is stubbed, by default, as what
-            # the real class was MEASURED to return to an instance query on 2026-11-15 (one Windows
-            # 11 build 26100 workstation, not a DC, not elevated, PowerShell 7 and 5.1): NO instance
-            # and no error. The cmdlet reads the class through its static method GetConfiguration,
-            # which this script does not invoke. A test that hands back an instance says so: that
-            # shape has not been measured on any host, and its two properties are booleans.
+            # The two classes. Win32_OperatingSystem.BuildNumber is a string; Win32_Service.State
+            # and StartMode are strings.
             function Get-CimInstance {
                 param($CimSession, [string]$Namespace, [string]$ClassName, [string[]]$Property, [string]$Filter, [uint32]$OperationTimeoutSec, $ErrorAction)
                 $script:C3QueryCalls += [pscustomobject]@{ ClassName = $ClassName; Namespace = $Namespace; Property = (@($Property) -join ','); Filter = $Filter
                     Bounded = $PSBoundParameters.ContainsKey('OperationTimeoutSec'); OperationTimeoutSec = $OperationTimeoutSec }
                 $answer = $script:C3Classes[$ClassName]
+                if ($answer -is [System.Exception]) { throw $answer }
+                return $answer
+            }
+            # The SMB server configuration, read with Get-SmbServerConfiguration since PORT-PLAN C3f. Its
+            # answer is kept under the class name it returns, MSFT_SmbServerConfiguration, and is by
+            # default the shape MEASURED on 2026-11-17 (one Windows 11 build 26100 workstation, not a DC,
+            # PowerShell 7 and 5.1): one instance, both properties booleans.
+            function Get-SmbServerConfiguration {
+                param($CimSession)
+                $script:C3SmbCalls += [pscustomobject]@{ Session = $CimSession; WhatIf = (Get-C3Switch -Arguments $args -Name 'WhatIf'); Confirm = (Get-C3Switch -Arguments $args -Name 'Confirm') }
+                $answer = $script:C3Classes['MSFT_SmbServerConfiguration']
                 if ($answer -is [System.Exception]) { throw $answer }
                 return $answer
             }
@@ -6720,6 +6726,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             $script:C3SessionError = $null
             $script:C3AbsentKeys = @()
             $script:C3QueryCalls = @()
+            $script:C3SmbCalls = @()
             $script:C3Opts = @()
             $script:C3Calls = @()
             $script:C3Registry = @{
@@ -6729,15 +6736,15 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
                 ("{0}|RequireSecuritySignature" -f $script:C3ClientKey) = 0
                 ("{0}|LmCompatibilityLevel" -f $script:C3LsaKey)        = 5
             }
+            # The measured shape of the cmdlet's answer (see the stub above).
+            $script:C3SmbInstance = [pscustomobject]@{ EnableSMB1Protocol = $false; RequireSecuritySignature = $true }
             $script:C3Classes = @{
                 Win32_OperatingSystem       = [pscustomobject]@{ BuildNumber = '17763' }
-                MSFT_SmbServerConfiguration = @()
+                MSFT_SmbServerConfiguration = $script:C3SmbInstance
                 Win32_Service               = [pscustomobject]@{ Name = 'Spooler'; State = 'Running'; StartMode = 'Auto' }
             }
-            # The unmeasured shape, for the tests that name it.
-            $script:C3SmbInstance = [pscustomobject]@{ EnableSMB1Protocol = $false; RequireSecuritySignature = $true }
         }
-        It 'reads the six values from HKLM with GetDWORDValue, then the three classes, and closes the session' {
+        It 'reads the six values from HKLM with GetDWORDValue, then the two classes and the SMB configuration, and closes the session' {
             $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
             $r.Ok | Should -BeTrue
             $r.Protocol | Should -Be 'Wsman'
@@ -6760,19 +6767,22 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
                     "$($script:C3NtdsKey)\LDAPServerIntegrity", "$($script:C3NtdsKey)\LDAPServerEnforceIntegrity", "$($script:C3NtdsKey)\LdapEnforceChannelBinding",
                     "$($script:C3ServerKey)\RequireSecuritySignature", "$($script:C3ClientKey)\RequireSecuritySignature", "$($script:C3LsaKey)\LmCompatibilityLevel") -join '|')
             (@($r.Values | ForEach-Object { [string]$_.Id }) -join ',') | Should -Be ($script:C3Ids -join ',')
-            # Declared population: the three instance queries, each bounded and naming its properties.
-            @($script:C3QueryCalls).Count | Should -Be 3
-            (@($script:C3QueryCalls | ForEach-Object { [string]$_.ClassName }) -join ',') | Should -Be 'Win32_OperatingSystem,MSFT_SmbServerConfiguration,Win32_Service'
+            # Declared population: the two instance queries, each bounded and naming its properties.
+            @($script:C3QueryCalls).Count | Should -Be 2
+            (@($script:C3QueryCalls | ForEach-Object { [string]$_.ClassName }) -join ',') | Should -Be 'Win32_OperatingSystem,Win32_Service'
             foreach ($q in $script:C3QueryCalls) {
                 $q.Bounded | Should -BeTrue
                 $q.OperationTimeoutSec | Should -Be 30
                 [string]$q.Property | Should -Not -BeNullOrEmpty
             }
             $script:C3QueryCalls[0].Property | Should -Be 'BuildNumber'
-            $script:C3QueryCalls[1].Namespace | Should -Be 'root/Microsoft/Windows/SMB'
-            $script:C3QueryCalls[1].Property | Should -Be 'EnableSMB1Protocol,RequireSecuritySignature'
-            $script:C3QueryCalls[2].Filter | Should -Be "Name='Spooler'"
-            $script:C3QueryCalls[2].Property | Should -Be 'Name,State,StartMode'
+            $script:C3QueryCalls[1].Filter | Should -Be "Name='Spooler'"
+            $script:C3QueryCalls[1].Property | Should -Be 'Name,State,StartMode'
+            # And the SMB server configuration: one cmdlet call, in the session, -WhatIf and -Confirm off (PORT-PLAN C3f).
+            @($script:C3SmbCalls).Count | Should -Be 1
+            $script:C3SmbCalls[0].Session.ComputerName | Should -Be $script:C3Dc1
+            $script:C3SmbCalls[0].WhatIf | Should -Be $false
+            $script:C3SmbCalls[0].Confirm | Should -Be $false
             @($script:C3Sessions).Count | Should -Be 1
             $script:C3Sessions[0].OperationTimeoutSec | Should -Be 30
             $script:C3Sessions[0].User | Should -Be '(none)'
@@ -6781,11 +6791,11 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             $script:C3CloseCalls[0].WhatIf | Should -Be $false
             $script:C3CloseCalls[0].Confirm | Should -Be $false
             $r.BuildNumber | Should -Be '17763'
-            # The SMB class answered with no instance: asked, and not read.
-            $r.SmbOk | Should -BeFalse
-            $r.SmbNoInstance | Should -BeTrue
-            ($null -eq $r.SmbEnableSmb1) | Should -BeTrue
-            ($null -eq $r.SmbRequireSigning) | Should -BeTrue
+            # The cmdlet answered with the configuration, in the measured shape.
+            $r.SmbOk | Should -BeTrue
+            $r.SmbNoInstance | Should -BeFalse
+            $r.SmbEnableSmb1 | Should -Be $false
+            $r.SmbRequireSigning | Should -Be $true
             $r.SpoolerOk | Should -BeTrue
             $r.SpoolerFound | Should -BeTrue
             $r.SpoolerState | Should -Be 'Running'
@@ -6813,13 +6823,13 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             (Get-C3Row $rows 'SMB client signing: dc1.contoso.com').Status | Should -Be 'Warning'
             (Get-C3Row $rows 'SMB client signing: dc1.contoso.com').Detail | Should -Match 'RequireSecuritySignature = 0'
             (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Status | Should -Be 'Pass'
-            (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Detail | Should -Match 'second instrument.*was not read \(MSFT_SmbServerConfiguration returned no instance'
+            (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Detail | Should -Match 'The second instrument agrees: Get-SmbServerConfiguration RequireSecuritySignature = True'
             (Get-C3Row $rows 'LDAP server signing enforcement: dc1.contoso.com').Status | Should -Be 'Info'
             (Get-C3Row $rows 'Print Spooler: dc1.contoso.com').Status | Should -Be 'Warning'
-            # The class returned no instance, as measured: the SMBv1 row has nothing to pass on.
-            (Get-C3Row $rows 'SMBv1: dc1.contoso.com').Status | Should -Be 'Not Assessed'
+            # The cmdlet returned EnableSMB1Protocol False, as measured on the workstation: a Pass.
+            (Get-C3Row $rows 'SMBv1: dc1.contoso.com').Status | Should -Be 'Pass'
         }
-        It 'does not turn an SMB configuration class that returned no instance into a read: no SMBv1 False, no signing True' {
+        It 'does not turn an SMB configuration read that returned no object into a read: no SMBv1 False, no signing True' {
             # Declared population: the three ways a query can come back holding nothing - an empty
             # result, a single $null, and an array holding only $null.
             $empties = @{ 'empty result' = @(); 'a single null' = $null; 'an array of null' = @($null) }
@@ -6836,9 +6846,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
                 $rows = @(Get-AdfaDcHardeningFinding -DomainController $script:C3Dc1 -Scope '' -Raw $r -Config $script:Hc)
                 $smb1 = Get-C3Row $rows 'SMBv1: dc1.contoso.com'
                 $smb1.Status | Should -Be 'Not Assessed' -Because $name
-                [string]$smb1.Detail | Should -Match '^Not read: MSFT_SmbServerConfiguration returned no instance'
+                [string]$smb1.Detail | Should -Match '^Not read: Get-SmbServerConfiguration returned no configuration object'
             }
-            # The answer of the class is an answer: with nothing else answering, the DC still answered.
+            # The answer of the cmdlet is an answer: with nothing else answering, the DC still answered.
             $boom = New-Object System.Exception 'The RPC server is unavailable.'
             foreach ($k in @($script:C3Registry.Keys)) { $script:C3Registry[$k] = $boom }
             $script:C3Registry[("{0}|LDAPServerEnforceIntegrity" -f $script:C3NtdsKey)] = $boom
@@ -6854,7 +6864,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             $with.SmbOk | Should -BeTrue
             $with.SmbNoInstance | Should -BeFalse
         }
-        It 'reads both properties from an instance where the class returns one (a shape not measured on any host)' {
+        It 'reads both properties from the instance the cmdlet returns (the shape measured on one workstation, not a DC)' {
             $script:C3Classes['MSFT_SmbServerConfiguration'] = $script:C3SmbInstance
             $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3Dc1 -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3Settings
             $r.SmbOk | Should -BeTrue
@@ -6899,9 +6909,9 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             (Get-C3Row $rows 'SMB client signing: dc1.contoso.com').Detail | Should -Match '^Not found: StdRegProv returned 2,'
             (Get-C3Row $rows 'SMB server signing: dc1.contoso.com').Detail | Should -Match '^Access denied: StdRegProv returned 5,'
             (Get-C3Row $rows 'LAN Manager authentication level: dc1.contoso.com').Detail | Should -Match 'is not a REG_DWORD'
-            # Declared population: the three settings whose read gave no number, and SMBv1, whose
-            # class returned no instance.
-            (@($rows | Where-Object { $_.Status -eq 'Not Assessed' } | ForEach-Object { [string]$_.Item -replace ': .*$', '' }) -join '|') | Should -Be 'SMB server signing|SMB client signing|LAN Manager authentication level|SMBv1'
+            # Declared population: the three settings whose read gave no number. SMBv1 is read by
+            # Get-SmbServerConfiguration since PORT-PLAN C3f, which answers here in the measured shape.
+            (@($rows | Where-Object { $_.Status -eq 'Not Assessed' } | ForEach-Object { [string]$_.Item -replace ': .*$', '' }) -join '|') | Should -Be 'SMB server signing|SMB client signing|LAN Manager authentication level'
             (Get-C3Row $rows 'LDAP server signing: dc1.contoso.com').Status | Should -Be 'Pass'
         }
         It 'keeps the error and CIM error code of a read that threw, and still reads the others' {
@@ -7568,9 +7578,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
     }
 
@@ -9225,9 +9235,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
     }
 
@@ -10215,9 +10225,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
     }
 
@@ -11154,9 +11164,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
     }
 
@@ -12148,9 +12158,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
     }
 
@@ -13388,9 +13398,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
     }
 
@@ -14606,9 +14616,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
     }
 
@@ -16472,9 +16482,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17143,9 +17153,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.34.0 (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries the same version in the script and the manifest: 1.35.0 (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17296,9 +17306,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.34.0 in the script and the manifest (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries version 1.35.0 in the script and the manifest (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
     }
 
@@ -18627,9 +18637,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.34.0 in the script and the manifest (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries version 1.35.0 in the script and the manifest (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
     }
 
@@ -19765,9 +19775,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.34.0 in the script and the manifest (bumped by PORT-PLAN C2e, C1b, C14c, C3g)' {
-            [string]$script:Config.Version | Should -Be '1.34.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.34.0'
+        It 'carries version 1.35.0 in the script and the manifest (bumped by PORT-PLAN C3f)' {
+            [string]$script:Config.Version | Should -Be '1.35.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.35.0'
         }
     }
 
@@ -22567,6 +22577,654 @@ Describe 'Per-domain DC targets, one probe per port, the reachability class in e
             $own.Count | Should -Be 1
             (Get-C2eGuard $c15[1]) | Should -Be (Get-C2eGuard $own[0]) -Because 'the flag is set in the block that enumerates'
             (Get-C2eGuard $own[0]) | Should -Match '^-not \$c14PerDomain -and '
+        }
+    }
+}
+
+Describe 'SMB server configuration read with Get-SmbServerConfiguration: the SMBv1 row and the second instrument of SMB server signing (C3f)' {
+    BeforeAll {
+        # Fictional names only, held in variables (PSAvoidUsingComputerNameHardcoded). Five DCs in two
+        # domains: the first is classified Unreachable, the last answers on no port, so a per-DC loop
+        # that stops early, or that reads an unreachable DC, is caught.
+        $script:C3fDcUnreach = 'dc1.contoso.com'
+        $script:C3fDcDenied = 'dc2.contoso.com'
+        $script:C3fDcOn = 'dc3.fabrikam.com'
+        $script:C3fDcOff = 'dc4.fabrikam.com'
+        $script:C3fDcSilent = 'dc5.fabrikam.com'
+        $script:C3fHc = $script:Config.DcHardening
+        $script:C3fAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        function Get-C3fFunction {
+            param([string]$Name)
+            return @($script:C3fAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true))
+        }
+        function Get-C3fCall {
+            param($Node, [string]$Name)
+            return @($Node.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq $Name }.GetNewClosure(), $true))
+        }
+        function Get-C3fParameter {
+            param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-C3fEnclosing {
+            param($Node)
+            $f = $Node.Parent
+            while ($null -ne $f -and $f -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $f = $f.Parent }
+            if ($null -eq $f) { return '<top>' }
+            return [string]$f.Name
+        }
+        # The read-only guard of C3f over a parsed script. Anywhere: a command named
+        # Set-SmbServerConfiguration or Reset-SmbServerConfiguration, or their aliases ssmbsc and
+        # rsmbsc (SmbShare's CDXML declares them), any other Set-Smb* or Reset-Smb* command, any
+        # Reset-* command that is not one of this script's own Adfa functions, any other *-Smb*
+        # command, and an Invoke-CimMethod naming GetConfiguration, SetConfiguration or
+        # ResetConfiguration (the one read this tool takes goes through the documented cmdlet
+        # instead). The allow-list: the one SMB cmdlet the script may call is
+        # Get-SmbServerConfiguration, only inside Get-AdfaDcHardeningRaw, with -CimSession $session,
+        # -WhatIf:$false, -Confirm:$false and -ErrorAction Stop; with -RequireRead there must be
+        # exactly one such call. Free strings are not inspected, so advice text in the
+        # recommendation map that names Set-SmbServerConfiguration is not a hit.
+        # What it cannot see: a command name assembled at run time from pieces.
+        function Get-C3fWriteHit {
+            param($Ast, [switch]$RequireRead)
+            $hits = @()
+            $allowed = @('Get-SmbServerConfiguration')
+            # gsmbsc is the Get cmdlet's own alias: refused too, so the one read is always written by
+            # its full name and the parameter checks below see it.
+            $named = @('Set-SmbServerConfiguration', 'Reset-SmbServerConfiguration', 'ssmbsc', 'rsmbsc', 'gsmbsc')
+            $reads = @()
+            foreach ($c in @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+                $name = [string]$c.GetCommandName()
+                if ($name -eq '') { continue }
+                if (@($named | Where-Object { $_ -eq $name }).Count -gt 0) { $hits += ("SMB configuration write: {0}" -f $c.Extent.Text); continue }
+                if ($name -match '(?i)^(Set|Reset)-Smb') { $hits += ("SMB write: {0}" -f $c.Extent.Text); continue }
+                if ($name -match '(?i)^Reset-' -and $name -notmatch '(?i)^\w+-Adfa') { $hits += ("reset: {0}" -f $c.Extent.Text); continue }
+                if ($name -match '(?i)-Smb' -and @($allowed | Where-Object { $_ -eq $name }).Count -eq 0) { $hits += ("SMB cmdlet not on the allow-list: {0}" -f $c.Extent.Text); continue }
+                if ($name -eq 'Invoke-CimMethod') {
+                    $words = @($c.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { [string]$_.Value })
+                    if (@($words | Where-Object { $_ -match '(?i)^(Get|Set|Reset)Configuration$' }).Count -gt 0) { $hits += ("SMB class method: {0}" -f $c.Extent.Text) }
+                }
+                if ($name -eq 'Get-SmbServerConfiguration') {
+                    $reads += $c
+                    if ((Get-C3fEnclosing $c) -ne 'Get-AdfaDcHardeningRaw') { $hits += ("read outside the seam: {0}" -f $c.Extent.Text) }
+                    $expect = [ordered]@{ CimSession = '$session'; WhatIf = '$false'; Confirm = '$false'; ErrorAction = 'Stop' }
+                    foreach ($p in @($expect.Keys)) {
+                        $given = Get-C3fParameter -Call $c -Name $p
+                        if ($null -eq $given -or $given.Extent.Text -ne $expect[$p]) { $hits += ("read without -{0} {1}: {2}" -f $p, $expect[$p], $c.Extent.Text) }
+                    }
+                }
+            }
+            if ($reads.Count -gt 1) { $hits += ("{0} Get-SmbServerConfiguration calls, where one is allowed" -f $reads.Count) }
+            if ($RequireRead -and $reads.Count -ne 1) { $hits += ("{0} Get-SmbServerConfiguration calls, where exactly one is required" -f $reads.Count) }
+            # The allow-list is part of the guard: an empty one would pass anything named -Smb.
+            if (@($allowed).Count -eq 0) { $hits += 'the allow-list is empty' }
+            return @($hits)
+        }
+        function Get-C3fRow {
+            param($Rows, [string]$Item)
+            $m = @($Rows | Where-Object { [string]$_.Item -eq $Item })
+            if ($m.Count -eq 0) { return $null }
+            return $m[0]
+        }
+        # One DC's raw read in the seam's shape: six values (each at its expected number unless
+        # -Numbers says otherwise, the enforcement value not set), the build, the spooler, and the
+        # SMB part named by the caller.
+        function New-C3fRaw {
+            param($Smb1 = $false, $Signing = $true, [bool]$SmbOk = $true, [switch]$NoInstance, [switch]$CmdletMissing,
+                [string]$SmbError = '', [string]$SmbErrorCode = '',
+                [hashtable]$Numbers = @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 2; SmbServerSigning = 1; SmbClientSigning = 1; LmCompatibilityLevel = 5 })
+            $values = @()
+            foreach ($s in @($script:C3fHc['Settings'])) {
+                $id = [string]$s['Id']
+                $n = $null; $rv = 1
+                if ($Numbers.ContainsKey($id)) { $n = $Numbers[$id]; $rv = 0 }
+                $values += [pscustomobject]@{ Id = $id; Key = [string]$s['Key']; ValueName = [string]$s['ValueName']; Answered = $true; ReturnValue = $rv; Value = $n; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' }
+            }
+            if ($NoInstance -or $CmdletMissing -or $SmbError -ne '') { $SmbOk = $false }
+            if (-not $SmbOk) { $Smb1 = $null; $Signing = $null }
+            [pscustomobject]@{ Ok = $true; Protocol = 'Wsman'; Error = ''; ErrorCode = ''; BuildNumber = '17763'; BuildError = ''; BuildErrorCode = ''; Values = @($values)
+                SmbInstrument = 'Get-SmbServerConfiguration'; SmbCmdletMissing = [bool]$CmdletMissing; SmbOk = $SmbOk; SmbNoInstance = [bool]$NoInstance
+                SmbEnableSmb1 = $Smb1; SmbRequireSigning = $Signing; SmbError = $SmbError; SmbErrorCode = $SmbErrorCode
+                SpoolerOk = $true; SpoolerFound = $true; SpoolerState = 'Stopped'; SpoolerStartMode = 'Disabled'; SpoolerError = ''; SpoolerErrorCode = '' }
+        }
+        function Get-C3fRows {
+            param($Raw, [string]$Dc = $script:C3fDcOn)
+            @(Get-AdfaDcHardeningFinding -DomainController $Dc -Scope 'fabrikam.com' -Raw $Raw -Config $script:C3fHc)
+        }
+        # An exception as a CDXML cmdlet raises it. Measured on 2026-11-17 on one Windows 11
+        # workstation (not a DC): the error that reaches the catch block is a CimJobException with no
+        # NativeErrorCode of its own. Whether a remote CIM failure is carried as an inner exception
+        # with a NativeErrorCode is not measured (PORT-PLAN C17a); the seam looks for it either way.
+        function New-C3fWrapped {
+            param([string]$Message, [string]$Code)
+            $inner = New-Object System.Exception $Message
+            if ($Code -ne '') { $inner | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue $Code }
+            return (New-Object System.Exception -ArgumentList ("dc: {0}" -f $Message), $inner)
+        }
+    }
+
+    Context 'Config table and the override' {
+        It 'names the cmdlet, its module, the two properties and the Microsoft sources, read 2026-11-17' {
+            $smb = $script:C3fHc['SmbServer']
+            $smb | Should -Not -BeNullOrEmpty
+            [string]$smb['Instrument'] | Should -Be 'Get-SmbServerConfiguration'
+            [string]$smb['Module'] | Should -Be 'SmbShare'
+            # Declared population: the two properties read.
+            (@($smb['Properties']) -join ',') | Should -Be 'EnableSMB1Protocol,RequireSecuritySignature'
+            [string]$smb['SourceUrl'] | Should -Match 'learn\.microsoft\.com/powershell/module/smbshare/get-smbserverconfiguration'
+            [string]$smb['SourceUrl'] | Should -Match 'detect-enable-and-disable-smbv1-v2-v3'
+            [string]$smb['ReadDate'] | Should -Be '2026-11-17'
+            $signing = @($script:C3fHc['Settings'] | Where-Object { [string]$_['Id'] -eq 'SmbServerSigning' })
+            $signing.Count | Should -Be 1
+            [string]$signing[0]['SecondInstrument'] | Should -Be 'Get-SmbServerConfiguration RequireSecuritySignature'
+        }
+        It 'keeps the SMB read out of the override: a SmbServer key is refused with its reason, a valid file still merges' {
+            { Merge-AdfaDcHardeningConfig -BaseConfig $script:C3fHc -Override @{ SmbServer = @{ Instrument = 'x' } } } | Should -Throw -ExpectedMessage "*'SmbServer'*cannot be set from a file*"
+            { Merge-AdfaDcHardeningConfig -BaseConfig $script:C3fHc -Override ('{ "SmbServer": { "ReadDate": "2026-01-01" }, "Settings": { "SmbServerSigning": { "OtherStatus": "Fail" } } }' | ConvertFrom-Json) } |
+                Should -Throw -ExpectedMessage "*'SmbServer'*"
+            # The second instrument of a setting is not an override key either.
+            { Merge-AdfaDcHardeningConfig -BaseConfig $script:C3fHc -Override @{ Settings = @{ SmbServerSigning = @{ SecondInstrument = 'x' } } } } | Should -Throw -ExpectedMessage "*unknown key 'SecondInstrument'*"
+            # Valid: merges, and the SMB table comes through untouched.
+            $m = Merge-AdfaDcHardeningConfig -BaseConfig $script:C3fHc -Override @{ Settings = @{ SmbServerSigning = @{ OtherStatus = 'Fail' } } } -OverrideSource 'C:\cfg\hardening.json'
+            [string]$m['SmbServer']['Instrument'] | Should -Be 'Get-SmbServerConfiguration'
+            [string](@($m['Settings'] | Where-Object { [string]$_['Id'] -eq 'SmbServerSigning' })[0]['OtherStatus']) | Should -Be 'Fail'
+        }
+        It 'refuses each malformed shape of the file: <Name>' -ForEach @(
+            @{ Name = 'not an object'; O = 'x'; Want = '*single object*' }
+            @{ Name = 'an empty object'; O = @{}; Want = '*empty object*' }
+            @{ Name = 'a null key'; O = ('{ "Settings": null }' | ConvertFrom-Json); Want = "*'Settings' to null*" }
+            @{ Name = 'an unknown key'; O = @{ SmbSrv = 1 }; Want = "*unknown key 'SmbSrv'*" }
+            @{ Name = 'a list of settings'; O = @{ Settings = @(1) }; Want = '*object keyed by setting id*' }
+            @{ Name = 'a bad status'; O = @{ Settings = @{ SmbServerSigning = @{ OtherStatus = 'Pass' } } }; Want = '*Warning or Fail*' }
+        ) {
+            { Merge-AdfaDcHardeningConfig -BaseConfig $script:C3fHc -Override $O } | Should -Throw -ExpectedMessage $Want
+        }
+    }
+
+    Context 'Get-AdfaExceptionErrorCode (pure)' {
+        It 'reads the CIM error code from the exception or from the exception it wraps, and nothing where none carries one' {
+            $outer = New-Object System.Exception 'x'
+            $outer | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+            Get-AdfaExceptionErrorCode -Exception $outer | Should -Be 'AccessDenied'
+            Get-AdfaExceptionErrorCode -Exception (New-C3fWrapped -Message 'Acesso negado.' -Code 'AccessDenied') | Should -Be 'AccessDenied'
+            Get-AdfaExceptionErrorCode -Exception (New-C3fWrapped -Message 'Classe invalida' -Code 'InvalidClass') | Should -Be 'InvalidClass'
+            Get-AdfaExceptionErrorCode -Exception (New-C3fWrapped -Message 'x' -Code '') | Should -Be ''
+            Get-AdfaExceptionErrorCode -Exception $null | Should -Be ''
+        }
+        It 'reads the code up to five exceptions deep - the outer one and four it wraps - and no deeper' {
+            function New-C3fChain {
+                # $Levels exceptions, each wrapping the next; the code is on the innermost.
+                param([int]$Levels)
+                $e = New-Object System.Exception 'level 1'
+                $e | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+                for ($i = 2; $i -le $Levels; $i++) { $e = New-Object System.Exception -ArgumentList ("level {0}" -f $i), $e }
+                return $e
+            }
+            # Declared population: chains of 1 to 6 exceptions. Five are read; the sixth is past the bound.
+            $levels = @(1, 2, 3, 4, 5, 6)
+            $got = @($levels | ForEach-Object { [string](Get-AdfaExceptionErrorCode -Exception (New-C3fChain -Levels $_)) })
+            $got.Count | Should -Be 6
+            ($got -join ',') | Should -Be 'AccessDenied,AccessDenied,AccessDenied,AccessDenied,AccessDenied,'
+        }
+    }
+
+    Context 'Resolve-AdfaSmbServerRead (pure: one DC''s SMB read to a kind)' {
+        It 'tells apart each result: <Name>' -ForEach @(
+            @{ Name = 'a read'; Raw = { New-C3fRaw }; Kind = 'Read' }
+            @{ Name = 'no object and no error'; Raw = { New-C3fRaw -NoInstance }; Kind = 'NoInstance' }
+            @{ Name = 'cmdlet missing on the assessing host'; Raw = { New-C3fRaw -CmdletMissing }; Kind = 'CmdletMissing' }
+            @{ Name = 'access denied by code, in another language'; Raw = { New-C3fRaw -SmbError 'Acesso negado.' -SmbErrorCode 'AccessDenied' }; Kind = 'AccessDenied' }
+            @{ Name = 'access denied by text'; Raw = { New-C3fRaw -SmbError 'Access is denied.' }; Kind = 'AccessDenied' }
+            @{ Name = 'namespace not present'; Raw = { New-C3fRaw -SmbError 'Espaco de nomes invalido' -SmbErrorCode 'InvalidNamespace' }; Kind = 'ClassMissing' }
+            @{ Name = 'class not present'; Raw = { New-C3fRaw -SmbError 'x' -SmbErrorCode 'InvalidClass' }; Kind = 'ClassMissing' }
+            @{ Name = 'class not present, no code, English text'; Raw = { New-C3fRaw -SmbError 'Invalid class ' }; Kind = 'ClassMissing' }
+            @{ Name = 'namespace not present, no code, English text'; Raw = { New-C3fRaw -SmbError 'Invalid namespace ' }; Kind = 'ClassMissing' }
+            @{ Name = 'a code that says something else wins over the text'; Raw = { New-C3fRaw -SmbError 'Invalid namespace' -SmbErrorCode 'Failed' }; Kind = 'ReadFailed' }
+            @{ Name = 'NotFound is a failed read, not a missing class'; Raw = { New-C3fRaw -SmbError 'x' -SmbErrorCode 'NotFound' }; Kind = 'ReadFailed' }
+            @{ Name = 'a timeout'; Raw = { New-C3fRaw -SmbError 'The operation has timed out.' -SmbErrorCode 'Failed' }; Kind = 'ReadFailed' }
+            @{ Name = 'not read and no error recorded'; Raw = { New-C3fRaw -SmbOk $false }; Kind = 'ReadFailed' }
+        ) {
+            $r = Resolve-AdfaSmbServerRead -Raw (& $Raw)
+            [string]$r.Kind | Should -Be $Kind
+            [string]$r.Instrument | Should -Be 'Get-SmbServerConfiguration'
+            if ($Kind -ne 'Read') {
+                [string]$r.Cause | Should -Not -BeNullOrEmpty -Because 'every result that is not a read names its cause'
+                ($null -eq $r.EnableSmb1) | Should -BeTrue
+                ($null -eq $r.RequireSigning) | Should -BeTrue
+            }
+        }
+        It 'fails closed on a contradictory raw read: a flag that says nothing was read wins over stray values' {
+            $stray = New-C3fRaw
+            $stray.SmbNoInstance = $true
+            [string](Resolve-AdfaSmbServerRead -Raw $stray).Kind | Should -Be 'NoInstance'
+            $missing = New-C3fRaw
+            $missing.SmbCmdletMissing = $true
+            [string](Resolve-AdfaSmbServerRead -Raw $missing).Kind | Should -Be 'CmdletMissing'
+            # A raw read with no instrument named is still resolved.
+            $old = [pscustomobject]@{ SmbOk = $true; SmbNoInstance = $false; SmbEnableSmb1 = $false; SmbRequireSigning = $true; SmbError = ''; SmbErrorCode = '' }
+            $o = Resolve-AdfaSmbServerRead -Raw $old
+            [string]$o.Kind | Should -Be 'Read'
+            [string]$o.Instrument | Should -Be 'Get-SmbServerConfiguration'
+        }
+        It 'says who wrote the cause, and never reads the words of a sentence this tool wrote as a refusal or a missing class' {
+            # Declared population: the five results whose cause this tool wrote, and the one an error raised.
+            $tool = [ordered]@{
+                'cmdlet missing'        = (New-C3fRaw -CmdletMissing)
+                'no object'             = (New-C3fRaw -NoInstance)
+                'nothing recorded'      = (New-C3fRaw -SmbOk $false)
+                'two objects'           = (New-C3fRaw -SmbError "Get-SmbServerConfiguration returned 2 configuration objects for one DC, where one was expected, so none of them is taken as this DC's configuration.")
+                'refusal words by tool' = (New-C3fRaw -SmbError 'Access is denied. Invalid class')
+            }
+            $tool['two objects'] | Add-Member -NotePropertyName SmbErrorByTool -NotePropertyValue $true
+            $tool['refusal words by tool'] | Add-Member -NotePropertyName SmbErrorByTool -NotePropertyValue $true
+            @($tool.Keys).Count | Should -Be 5
+            foreach ($name in @($tool.Keys)) { [string](Resolve-AdfaSmbServerRead -Raw $tool[$name]).CauseSource | Should -Be 'Tool' -Because $name }
+            [string](Resolve-AdfaSmbServerRead -Raw $tool['refusal words by tool']).Kind | Should -Be 'ReadFailed' -Because 'the tool''s own words are not the DC''s refusal'
+            # A CIM code the exception carried is still the DC's answer, even where the text is the tool's.
+            $coded = New-C3fRaw -SmbError 'The SMB server configuration read failed without an error message.' -SmbErrorCode 'AccessDenied'
+            $coded | Add-Member -NotePropertyName SmbErrorByTool -NotePropertyValue $true
+            $c = Resolve-AdfaSmbServerRead -Raw $coded
+            [string]$c.Kind | Should -Be 'AccessDenied'
+            [string]$c.CauseSource | Should -Be 'Tool'
+            # Non-vacuity: an error the read raised is marked as such.
+            [string](Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -SmbError 'Access is denied.')).CauseSource | Should -Be 'Error'
+            [string](Resolve-AdfaSmbServerRead -Raw (New-C3fRaw)).CauseSource | Should -Be ''
+        }
+    }
+
+    Context 'Get-AdfaSmb1Verdict (pure)' {
+        It 'grades EnableSMB1Protocol True as Fail and False as Pass, naming the instrument and the transport' {
+            $on = Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -Smb1 $true)) -Protocol 'Dcom'
+            $on.Status | Should -Be 'Fail'
+            $on.Detail | Should -Match '^EnableSMB1Protocol = True'
+            $on.Detail | Should -Match 'Get-SmbServerConfiguration'
+            $on.Detail | Should -Match 'Read over Dcom\.$'
+            $off = Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -Smb1 $false)) -Protocol 'Wsman'
+            $off.Status | Should -Be 'Pass'
+            $off.Detail | Should -Match '^EnableSMB1Protocol = False'
+            # A boolean returned as text is read as the boolean it names.
+            (Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -Smb1 'True')) -Protocol 'Wsman').Status | Should -Be 'Fail'
+            (Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -Smb1 'False')) -Protocol 'Wsman').Status | Should -Be 'Pass'
+        }
+        It 'is Not Assessed, with its own cause and never a Pass, for: <Name>' -ForEach @(
+            @{ Name = 'a property not returned'; Raw = { New-C3fRaw -Smb1 $null }; Lead = '^EnableSMB1Protocol was not returned as true or false' }
+            @{ Name = 'a value that is not a boolean'; Raw = { New-C3fRaw -Smb1 'maybe' }; Lead = "returned: 'maybe'" }
+            @{ Name = 'a number'; Raw = { New-C3fRaw -Smb1 0 }; Lead = "returned: '0'" }
+            @{ Name = 'no object'; Raw = { New-C3fRaw -NoInstance }; Lead = '^Not read: Get-SmbServerConfiguration returned no configuration object' }
+            @{ Name = 'cmdlet missing'; Raw = { New-C3fRaw -CmdletMissing }; Lead = '^Not read: Get-SmbServerConfiguration \(module SmbShare\) is not available on the computer running the assessment' }
+            @{ Name = 'access denied'; Raw = { New-C3fRaw -SmbError 'Acesso negado.' -SmbErrorCode 'AccessDenied' }; Lead = '^Access denied: .*Which rights this read needs on a DC is not published and has not been measured' }
+            @{ Name = 'class not present'; Raw = { New-C3fRaw -SmbError 'Invalid namespace ' -SmbErrorCode 'InvalidNamespace' }; Lead = '^Not read: the DC reports that the SMB server configuration class .* is not present' }
+            @{ Name = 'read failed'; Raw = { New-C3fRaw -SmbError 'The operation has timed out.' -SmbErrorCode 'Failed' }; Lead = '^Read failed: .*The operation has timed out' }
+        ) {
+            $v = Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (& $Raw)) -Protocol 'Wsman'
+            $v.Status | Should -Be 'Not Assessed'
+            $v.Detail | Should -Match $Lead
+        }
+        It 'keeps the three ways of not reading apart: access denied is not read failed, and neither is a missing class' {
+            $denied = (Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -SmbError 'Acesso negado.' -SmbErrorCode 'AccessDenied')) -Protocol 'Wsman').Detail
+            $failed = (Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -SmbError 'x' -SmbErrorCode 'Failed')) -Protocol 'Wsman').Detail
+            $absent = (Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -SmbError 'x' -SmbErrorCode 'InvalidClass')) -Protocol 'Wsman').Detail
+            $denied | Should -Match '^Access denied'
+            $failed | Should -Match '^Read failed'
+            $absent | Should -Match '^Not read'
+            $denied | Should -Not -Match 'not present'
+            $failed | Should -Not -Match 'Local Administrators'
+            # The rights a remote read needs are not published (PORT-PLAN C17a): no row names any.
+            $denied | Should -Not -Match 'Local Administrators|rights on the DC are needed'
+            # NotFound is not a missing class: it is quoted as a failed read.
+            $notFound = (Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -SmbError 'x' -SmbErrorCode 'NotFound')) -Protocol 'Wsman').Detail
+            $notFound | Should -Match '^Read failed'
+            $notFound | Should -Not -Match 'not present'
+        }
+        It 'never says the DC reported a cause this tool wrote, and ends a quoted cause before the transport' {
+            $twoRaw = New-C3fRaw -SmbError "Get-SmbServerConfiguration returned 2 configuration objects for one DC, where one was expected, so none of them is taken as this DC's configuration."
+            $twoRaw | Add-Member -NotePropertyName SmbErrorByTool -NotePropertyValue $true
+            $two = Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw $twoRaw) -Protocol 'Wsman'
+            $two.Status | Should -Be 'Not Assessed'
+            $two.Detail | Should -Not -Match 'Reported by the DC'
+            $two.Detail | Should -Match 'Written by this tool, not an error from the DC - Get-SmbServerConfiguration returned 2 configuration objects'
+            $none = Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -SmbOk $false)) -Protocol 'Wsman'
+            $none.Status | Should -Be 'Not Assessed'
+            $none.Detail | Should -Not -Match 'Reported by the DC'
+            $none.Detail | Should -Match 'no error was recorded\. Read over Wsman\.$'
+            # Non-vacuity: an error the read raised is still quoted as the DC's, and ends its sentence.
+            (Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -SmbError 'Invalid class ')) -Protocol 'Wsman').Detail |
+                Should -Match 'Reported by the DC - Invalid class\. Read over Wsman\.$'
+            (Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fRaw -SmbError 'The operation has timed out.' -SmbErrorCode 'Failed')) -Protocol 'Wsman').Detail |
+                Should -Match 'Reported by the DC - The operation has timed out\. Read over Wsman\.$'
+        }
+    }
+
+    Context 'Get-AdfaDcHardeningFinding: both rows from the one read' {
+        It 'grades SMB server signing on the cmdlet where the registry value is not set, and lets it veto a registry pass' {
+            $unset = @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 2; SmbClientSigning = 1; LmCompatibilityLevel = 5 }
+            $graded = Get-C3fRow (Get-C3fRows (New-C3fRaw -Numbers $unset -Signing $true)) ("SMB server signing: {0}" -f $script:C3fDcOn)
+            $graded.Status | Should -Be 'Pass'
+            $graded.Detail | Should -Match 'Get-SmbServerConfiguration RequireSecuritySignature = True'
+            $graded.Detail | Should -Match 'which is what was run here'
+            $graded.Detail | Should -Not -Match 'was not run'
+            (Get-C3fRow (Get-C3fRows (New-C3fRaw -Numbers $unset -Signing $false)) ("SMB server signing: {0}" -f $script:C3fDcOn)).Status | Should -Be 'Warning'
+            $veto = Get-C3fRow (Get-C3fRows (New-C3fRaw -Signing $false)) ("SMB server signing: {0}" -f $script:C3fDcOn)
+            $veto.Status | Should -Be 'Not Assessed'
+            $veto.Detail | Should -Match 'two instruments disagree'
+            # Not set and not read: nothing to grade on.
+            (Get-C3fRow (Get-C3fRows (New-C3fRaw -Numbers $unset -NoInstance)) ("SMB server signing: {0}" -f $script:C3fDcOn)).Status | Should -Be 'Not Assessed'
+        }
+        It 'says why the second instrument is missing, and grades the registry alone, for: <Name>' -ForEach @(
+            @{ Name = 'cmdlet missing'; Raw = { New-C3fRaw -CmdletMissing }; Why = 'is not available on the computer running the assessment' }
+            @{ Name = 'access denied'; Raw = { New-C3fRaw -SmbError 'Acesso negado.' -SmbErrorCode 'AccessDenied' }; Why = 'access denied - Acesso negado' }
+            @{ Name = 'class not present'; Raw = { New-C3fRaw -SmbError 'x' -SmbErrorCode 'InvalidClass' }; Why = 'class or its namespace is not present on this DC' }
+            @{ Name = 'read failed'; Raw = { New-C3fRaw -SmbError 'The operation has timed out.' -SmbErrorCode 'Failed' }; Why = 'the read failed - The operation has timed out' }
+            @{ Name = 'no object'; Raw = { New-C3fRaw -NoInstance }; Why = 'returned no configuration object' }
+            @{ Name = 'property not returned'; Raw = { New-C3fRaw -Signing $null }; Why = "RequireSecuritySignature was not returned as true or false \(returned: ''\)" }
+        ) {
+            $rows = Get-C3fRows (& $Raw)
+            $row = Get-C3fRow $rows ("SMB server signing: {0}" -f $script:C3fDcOn)
+            $row.Status | Should -Be 'Pass' -Because 'the registry value 1 is still read'
+            $row.Detail | Should -Match ("second instrument, Get-SmbServerConfiguration RequireSecuritySignature, was not read \(.*{0}" -f $Why)
+            $row.Detail | Should -Not -Match 'agrees|disagree'
+            if ($Name -ne 'property not returned') {
+                # The SMBv1 row from the same read is never a Pass.
+                (Get-C3fRow $rows ("SMBv1: {0}" -f $script:C3fDcOn)).Status | Should -Be 'Not Assessed'
+            }
+        }
+        It 'names the Microsoft detection source in the SMBv1 row, and gives the DC its eight rows' {
+            $rows = Get-C3fRows (New-C3fRaw)
+            # Declared population: the six registry settings, Print Spooler and SMBv1.
+            $rows.Count | Should -Be 8
+            $smb1 = Get-C3fRow $rows ("SMBv1: {0}" -f $script:C3fDcOn)
+            $smb1.Status | Should -Be 'Pass'
+            $smb1.Detail | Should -Match 'detect-enable-and-disable-smbv1-v2-v3 \(read 2026-11-17\)'
+            [string]$smb1.NotRun | Should -Be ''
+        }
+    }
+
+    Context 'Get-AdfaDcHardeningRaw and the collector, against stubs in the real shape' {
+        BeforeAll {
+            function New-CimSessionOption { param([string]$Protocol) [pscustomobject]@{ Protocol = $Protocol } }
+            function Get-C3fSwitch {
+                param($Arguments, [string]$Name)
+                for ($i = 0; $i -lt @($Arguments).Count; $i++) {
+                    if ([string]$Arguments[$i] -eq ("-{0}:" -f $Name) -and ($i + 1) -lt @($Arguments).Count) { return $Arguments[$i + 1] }
+                }
+                return $null
+            }
+            function New-CimSession {
+                param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
+                $script:C3fSessions += [pscustomobject]@{ ComputerName = $ComputerName; OperationTimeoutSec = $OperationTimeoutSec }
+                [pscustomobject]@{ ComputerName = $ComputerName }
+            }
+            function Remove-CimSession { param($CimSession) $script:C3fClosed++ }
+            # StdRegProv.GetDWORDValue: each value at its expected number, the enforcement value not set (1).
+            function Invoke-CimMethod {
+                param($CimSession, [string]$Namespace, [string]$ClassName, [string]$MethodName, $Arguments, [uint32]$OperationTimeoutSec, $ErrorAction)
+                $n = $script:C3fNumbers[[string]$Arguments['sValueName']]
+                if ($null -eq $n) { return [pscustomobject]@{ ReturnValue = [uint32]1; uValue = $null } }
+                return [pscustomobject]@{ ReturnValue = [uint32]0; uValue = [uint32]$n }
+            }
+            function Get-CimInstance {
+                param($CimSession, [string]$Namespace, [string]$ClassName, [string[]]$Property, [string]$Filter, [uint32]$OperationTimeoutSec, $ErrorAction)
+                $script:C3fQueries += $ClassName
+                if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ BuildNumber = '20348' } }
+                if ($ClassName -eq 'Win32_Service') { return [pscustomobject]@{ Name = 'Spooler'; State = 'Stopped'; StartMode = 'Disabled' } }
+                throw ("no stub for class {0}" -f $ClassName)
+            }
+            # The cmdlet, in the shape MEASURED on 2026-11-17 on one Windows 11 workstation (not a DC),
+            # under PowerShell 7 and Windows PowerShell 5.1: one CimInstance of MSFT_SmbServerConfiguration
+            # whose two properties are CimType Boolean, held in the unadapted CimInstanceProperties store.
+            # -WhatIf and -Confirm are not declared, so the values the caller passes arrive in $args.
+            # The answer is chosen by the host the session was opened to.
+            function Get-SmbServerConfiguration {
+                param($CimSession)
+                $script:C3fSmbCalls += [pscustomobject]@{ Host = [string]$CimSession.ComputerName; WhatIf = (Get-C3fSwitch -Arguments $args -Name 'WhatIf'); Confirm = (Get-C3fSwitch -Arguments $args -Name 'Confirm') }
+                $answer = $script:C3fSmb[[string]$CimSession.ComputerName]
+                if ($answer -is [System.Exception]) { throw $answer }
+                return $answer
+            }
+            function New-C3fInstance {
+                param($Smb1, $Signing)
+                $store = @{}
+                if ($null -ne $Smb1) { $store['EnableSMB1Protocol'] = [pscustomobject]@{ Value = $Smb1; CimType = 'Boolean' } }
+                if ($null -ne $Signing) { $store['RequireSecuritySignature'] = [pscustomobject]@{ Value = $Signing; CimType = 'Boolean' } }
+                [pscustomobject]@{ CimClass = 'ROOT/Microsoft/Windows/Smb:MSFT_SmbServerConfiguration'; CimInstanceProperties = $store }
+            }
+        }
+        BeforeEach {
+            $script:C3fSessions = @()
+            $script:C3fClosed = 0
+            $script:C3fQueries = @()
+            $script:C3fSmbCalls = @()
+            $script:C3fNumbers = @{ LDAPServerIntegrity = 2; LdapEnforceChannelBinding = 2; RequireSecuritySignature = 1; LmCompatibilityLevel = 5 }
+            $script:C3fSmb = @{}
+            foreach ($dc in @($script:C3fDcUnreach, $script:C3fDcDenied, $script:C3fDcOn, $script:C3fDcOff, $script:C3fDcSilent)) { $script:C3fSmb[$dc] = New-C3fInstance -Smb1 $false -Signing $true }
+        }
+        It 'reads the configuration once, with the cmdlet, in the session it opened, with -WhatIf and -Confirm forced off' {
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3fDcOn -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3fHc['Settings']
+            $r.Ok | Should -BeTrue
+            @($script:C3fSmbCalls).Count | Should -Be 1
+            $script:C3fSmbCalls[0].Host | Should -Be $script:C3fDcOn
+            ($null -ne $script:C3fSmbCalls[0].WhatIf) | Should -BeTrue -Because '-WhatIf must be passed'
+            $script:C3fSmbCalls[0].WhatIf | Should -Be $false
+            ($null -ne $script:C3fSmbCalls[0].Confirm) | Should -BeTrue -Because '-Confirm must be passed'
+            $script:C3fSmbCalls[0].Confirm | Should -Be $false
+            # The session that bounds it carries the caller's timeout.
+            @($script:C3fSessions).Count | Should -Be 1
+            $script:C3fSessions[0].OperationTimeoutSec | Should -Be 30
+            # Declared population: the two instance queries left, the OS build and the Spooler service.
+            ($script:C3fQueries -join ',') | Should -Be 'Win32_OperatingSystem,Win32_Service'
+            $r.SmbInstrument | Should -Be 'Get-SmbServerConfiguration'
+            $r.SmbCmdletMissing | Should -BeFalse
+            $r.SmbOk | Should -BeTrue
+            $r.SmbNoInstance | Should -BeFalse
+            $r.SmbEnableSmb1 | Should -Be $false
+            $r.SmbRequireSigning | Should -Be $true
+            $script:C3fClosed | Should -Be 1
+        }
+        It 'does not turn an empty answer, a missing property or two objects into a read' {
+            # Declared population: no object, a single null, an array of null.
+            $empties = @{ 'no object' = @(); 'a single null' = $null; 'an array of null' = @($null) }
+            $empties.Count | Should -Be 3
+            foreach ($name in @($empties.Keys)) {
+                $script:C3fSmb[$script:C3fDcOn] = $empties[$name]
+                $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3fDcOn -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3fHc['Settings']
+                $r.SmbOk | Should -BeFalse -Because $name
+                $r.SmbNoInstance | Should -BeTrue -Because $name
+                ($null -eq $r.SmbEnableSmb1) | Should -BeTrue -Because "$name must not become False"
+                [string]$r.SmbError | Should -Be '' -Because 'the cmdlet did not fail'
+            }
+            $script:C3fSmb[$script:C3fDcOn] = New-C3fInstance -Smb1 $null -Signing $true
+            $partial = Get-AdfaDcHardeningRaw -ComputerName $script:C3fDcOn -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3fHc['Settings']
+            $partial.SmbOk | Should -BeTrue
+            ($null -eq $partial.SmbEnableSmb1) | Should -BeTrue
+            (Get-C3fRow (Get-C3fRows $partial) ("SMBv1: {0}" -f $script:C3fDcOn)).Status | Should -Be 'Not Assessed'
+            # Two objects for one DC: which one describes it is not known. One is the most that is read.
+            $script:C3fSmb[$script:C3fDcOn] = @((New-C3fInstance -Smb1 $false -Signing $true), (New-C3fInstance -Smb1 $false -Signing $true))
+            $two = Get-AdfaDcHardeningRaw -ComputerName $script:C3fDcOn -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3fHc['Settings']
+            $two.SmbOk | Should -BeFalse
+            [string]$two.SmbError | Should -Match 'returned 2 configuration objects'
+            $two.SmbErrorByTool | Should -BeTrue -Because 'the sentence is this tool''s, not the DC''s'
+            $twoRow = Get-C3fRow (Get-C3fRows $two) ("SMBv1: {0}" -f $script:C3fDcOn)
+            $twoRow.Status | Should -Be 'Not Assessed'
+            $twoRow.Detail | Should -Not -Match 'Reported by the DC'
+            # Non-vacuity: one object is a read.
+            $script:C3fSmb[$script:C3fDcOn] = @((New-C3fInstance -Smb1 $true -Signing $true))
+            (Get-AdfaDcHardeningRaw -ComputerName $script:C3fDcOn -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3fHc['Settings']).SmbOk | Should -BeTrue
+        }
+        It 'keeps the CIM error code a wrapped exception carries, so access denied is told apart from a missing class in any language' {
+            $script:C3fSmb[$script:C3fDcOn] = New-C3fWrapped -Message 'Acesso negado.' -Code 'AccessDenied'
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3fDcOn -Protocol 'Dcom' -OperationTimeoutSec 30 -Settings $script:C3fHc['Settings']
+            $r.Ok | Should -BeTrue -Because 'the registry and the other classes still answered'
+            $r.SmbOk | Should -BeFalse
+            $r.SmbErrorCode | Should -Be 'AccessDenied'
+            $r.SmbErrorByTool | Should -BeFalse -Because 'the text is the error the read raised'
+            [string](Resolve-AdfaSmbServerRead -Raw $r).Kind | Should -Be 'AccessDenied'
+            $script:C3fSmb[$script:C3fDcOn] = New-C3fWrapped -Message 'Classe invalida' -Code 'InvalidClass'
+            [string](Resolve-AdfaSmbServerRead -Raw (Get-AdfaDcHardeningRaw -ComputerName $script:C3fDcOn -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3fHc['Settings'])).Kind | Should -Be 'ClassMissing'
+        }
+        It 'names an SMB error raised with no message as this tool''s sentence, and keeps the code it carried' {
+            # Declared population: an empty message without a code, and one wrapping AccessDenied.
+            $script:C3fSmb[$script:C3fDcOn] = New-Object System.Exception ''
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3fDcOn -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3fHc['Settings']
+            $r.SmbOk | Should -BeFalse
+            [string]$r.SmbError | Should -Be 'The SMB server configuration read failed without an error message.'
+            $r.SmbErrorByTool | Should -BeTrue
+            $row = Get-C3fRow (Get-C3fRows $r) ("SMBv1: {0}" -f $script:C3fDcOn)
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match '^Read failed'
+            $row.Detail | Should -Not -Match 'Reported by the DC'
+            $inner = New-Object System.Exception ''
+            $inner | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+            $script:C3fSmb[$script:C3fDcOn] = New-Object System.Exception -ArgumentList '', $inner
+            $coded = Get-AdfaDcHardeningRaw -ComputerName $script:C3fDcOn -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3fHc['Settings']
+            [string]$coded.SmbError | Should -Be 'The SMB server configuration read failed without an error message.'
+            $coded.SmbErrorByTool | Should -BeTrue
+            [string]$coded.SmbErrorCode | Should -Be 'AccessDenied'
+            [string](Resolve-AdfaSmbServerRead -Raw $coded).Kind | Should -Be 'AccessDenied'
+        }
+        It 'asks nothing of the DC when the cmdlet is not available on the assessing host, and says so' {
+            function Test-CommandAvailable { param([string]$Name) if ($Name -eq 'Get-SmbServerConfiguration') { return $false } return $true }
+            $r = Get-AdfaDcHardeningRaw -ComputerName $script:C3fDcOn -Protocol 'Wsman' -OperationTimeoutSec 30 -Settings $script:C3fHc['Settings']
+            @($script:C3fSmbCalls).Count | Should -Be 0
+            $r.SmbCmdletMissing | Should -BeTrue
+            $r.SmbOk | Should -BeFalse
+            $r.Ok | Should -BeTrue
+            $row = Get-C3fRow (Get-C3fRows $r) ("SMBv1: {0}" -f $script:C3fDcOn)
+            $row.Status | Should -Be 'Not Assessed'
+            $row.Detail | Should -Match 'module SmbShare'
+        }
+        It 'runs every DC of every domain: unreachable and silent DCs are not read, the others each get their own SMBv1 row' {
+            $script:C3fSmb[$script:C3fDcDenied] = New-C3fWrapped -Message 'Acesso negado.' -Code 'AccessDenied'
+            $script:C3fSmb[$script:C3fDcOn] = New-C3fInstance -Smb1 $true -Signing $true
+            $script:C3fSmb[$script:C3fDcOff] = New-C3fInstance -Smb1 $false -Signing $true
+            function Get-AdfaDcReachCause { param([string]$HostName) if ($HostName -eq $script:C3fDcUnreach) { return 'Unreachable, classified once for this run by the reachability probe: the name did not resolve' } return '' }
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutMs) return ($ComputerName -ne $script:C3fDcSilent) }
+            Clear-AdfaDcPortCache
+            $targets = @(
+                [pscustomobject]@{ HostName = $script:C3fDcUnreach; Scope = 'contoso.com' }
+                [pscustomobject]@{ HostName = $script:C3fDcDenied; Scope = 'contoso.com' }
+                [pscustomobject]@{ HostName = $script:C3fDcOn; Scope = 'fabrikam.com' }
+                [pscustomobject]@{ HostName = $script:C3fDcOff; Scope = 'fabrikam.com' }
+                [pscustomobject]@{ HostName = $script:C3fDcSilent; Scope = 'fabrikam.com' }
+            )
+            $rows = @(Get-AdfaDcHardening -DomainControllers $targets -Config $script:C3fHc -ScopedDomains @('contoso.com', 'fabrikam.com') -PortTimeoutMs 50)
+            Clear-AdfaDcPortCache
+            # Declared population: 1 + 8 + 8 + 8 + 1 rows - one section row for each DC that was not read.
+            $rows.Count | Should -Be 26
+            # The cmdlet ran against the three DCs that answered, each in its own session, and no other.
+            (@($script:C3fSmbCalls | ForEach-Object { $_.Host }) -join ',') | Should -Be (@($script:C3fDcDenied, $script:C3fDcOn, $script:C3fDcOff) -join ',')
+            $unreach = Get-C3fRow $rows ("DC hardening: {0}" -f $script:C3fDcUnreach)
+            $unreach.Status | Should -Be 'Not Assessed'
+            $unreach.Detail | Should -Match '^Unreachable, classified once'
+            (Get-C3fRow $rows ("SMBv1: {0}" -f $script:C3fDcUnreach)) | Should -BeNullOrEmpty
+            $silent = Get-C3fRow $rows ("DC hardening: {0}" -f $script:C3fDcSilent)
+            $silent.Status | Should -Be 'Not Assessed'
+            $silent.Detail | Should -Match '^Unreachable: neither WinRM'
+            $denied = Get-C3fRow $rows ("SMBv1: {0}" -f $script:C3fDcDenied)
+            $denied.Status | Should -Be 'Not Assessed'
+            $denied.Detail | Should -Match '^Access denied'
+            $denied.Scope | Should -Be 'contoso.com'
+            (Get-C3fRow $rows ("SMBv1: {0}" -f $script:C3fDcOn)).Status | Should -Be 'Fail'
+            (Get-C3fRow $rows ("SMBv1: {0}" -f $script:C3fDcOff)).Status | Should -Be 'Pass'
+            (Get-C3fRow $rows ("SMBv1: {0}" -f $script:C3fDcOff)).Scope | Should -Be 'fabrikam.com'
+            # Mixed within one DC: the registry still graded SMB server signing where the cmdlet was refused.
+            $sign = Get-C3fRow $rows ("SMB server signing: {0}" -f $script:C3fDcDenied)
+            $sign.Status | Should -Be 'Pass'
+            $sign.Detail | Should -Match 'was not read \(access denied'
+            # Nothing that was not read passes.
+            $unread = @($rows | Where-Object { [string]$_.Item -match ('{0}|{1}' -f [regex]::Escape($script:C3fDcUnreach), [regex]::Escape($script:C3fDcSilent)) })
+            $unread.Count | Should -Be 2
+            @($unread | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Wiring and read-only guards (AST)' {
+        It 'reads through the documented cmdlet once, in the seam, and no longer queries the class as instances' {
+            $raw = @(Get-C3fFunction -Name 'Get-AdfaDcHardeningRaw')
+            $raw.Count | Should -Be 1
+            $calls = @(Get-C3fCall $script:C3fAst 'Get-SmbServerConfiguration')
+            # Declared population: the one read, in the DcHardening seam.
+            $calls.Count | Should -Be 1
+            (Get-C3fEnclosing $calls[0]) | Should -Be 'Get-AdfaDcHardeningRaw'
+            (Get-C3fParameter -Call $calls[0] -Name 'CimSession').Extent.Text | Should -Be '$session'
+            # The session it runs in is the one opened with the caller's timeout: the cmdlet has no timeout of its own.
+            @(Get-C3fCall $raw[0] 'New-CimSession').Count | Should -Be 1
+            $assign = @($raw[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$session' -and $n.Right.Extent.Text -match 'New-CimSession @sessionArgs' }, $true))
+            $assign.Count | Should -Be 1
+            $splat = @($raw[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$sessionArgs' }, $true))
+            $splat.Count | Should -Be 1
+            $splat[0].Right.Extent.Text | Should -Match 'OperationTimeoutSec = \[uint32\]\$OperationTimeoutSec'
+            # Looked for on the assessing host first, by its literal name.
+            $check = @(Get-C3fCall $raw[0] 'Test-CommandAvailable' | Where-Object { (Get-C3fParameter -Call $_ -Name 'Name').Extent.Text -eq "'Get-SmbServerConfiguration'" })
+            $check.Count | Should -Be 1
+            @(Get-C3fCall $script:C3fAst 'Get-CimInstance' | Where-Object { $_.Extent.Text -match 'MSFT_SmbServerConfiguration' }).Count | Should -Be 0
+        }
+        It 'turns the read into both rows: the finding function calls the resolver and the SMBv1 verdict once each' {
+            $f = @(Get-C3fFunction -Name 'Get-AdfaDcHardeningFinding')
+            $f.Count | Should -Be 1
+            # Declared population: one resolver call, one verdict call.
+            @(Get-C3fCall $f[0] 'Resolve-AdfaSmbServerRead').Count | Should -Be 1
+            @(Get-C3fCall $f[0] 'Get-AdfaSmb1Verdict').Count | Should -Be 1
+            # Section wiring is unchanged: one DcHardening branch in Invoke-Main calling the collector once.
+            $main = @(Get-C3fFunction -Name 'Invoke-Main')
+            $main.Count | Should -Be 1
+            $branch = @($main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match "^Test-SectionSelected 'DcHardening' " }, $true))
+            $branch.Count | Should -Be 1
+            @(Get-C3fCall $branch[0] 'Get-AdfaDcHardening').Count | Should -Be 1
+        }
+        It 'the whole script passes the C3f read-only guard' {
+            $cmds = @($script:C3fAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+            # Non-vacuity: the commands the guard must see are there.
+            @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Get-SmbServerConfiguration' }).Count | Should -Be 1
+            @($cmds | Where-Object { [string]$_.GetCommandName() -eq 'Invoke-CimMethod' }).Count | Should -BeGreaterThan 0
+            $hits = Get-C3fWriteHit -Ast $script:C3fAst -RequireRead
+            ($hits -join ' | ') | Should -Be ''
+        }
+        It 'the read-only guard fails on: <Name>' -ForEach @(
+            @{ Name = 'Set-SmbServerConfiguration'; Code = "function Invoke-C3fInjected { Set-SmbServerConfiguration -EnableSMB1Protocol `$false -Force }" }
+            @{ Name = 'Reset-SmbServerConfiguration'; Code = 'function Invoke-C3fInjected { Reset-SmbServerConfiguration -All -Force }' }
+            @{ Name = 'the ssmbsc alias'; Code = "function Invoke-C3fInjected { ssmbsc -RequireSecuritySignature `$true }" }
+            @{ Name = 'the rsmbsc alias'; Code = 'function Invoke-C3fInjected { rsmbsc -All }' }
+            @{ Name = 'the read under its gsmbsc alias'; Code = "function Get-AdfaDcHardeningRaw { gsmbsc -CimSession `$session -WhatIf:`$false -Confirm:`$false -ErrorAction Stop }" }
+            @{ Name = 'Set-SmbClientConfiguration'; Code = "function Invoke-C3fInjected { Set-SmbClientConfiguration -RequireSecuritySignature `$true }" }
+            @{ Name = 'any Reset- command'; Code = 'function Invoke-C3fInjected { Reset-ComputerMachinePassword }' }
+            @{ Name = 'another SMB cmdlet'; Code = "function Get-AdfaDcHardeningRaw { Get-SmbShare -CimSession `$session }" }
+            @{ Name = 'the SetConfiguration method'; Code = 'function Invoke-C3fInjected { Invoke-CimMethod -ClassName MSFT_SmbServerConfiguration -MethodName SetConfiguration -Arguments @{} }' }
+            @{ Name = 'the ResetConfiguration method'; Code = "function Invoke-C3fInjected { Invoke-CimMethod -ClassName MSFT_SmbServerConfiguration -MethodName 'ResetConfiguration' }" }
+            @{ Name = 'the GetConfiguration method'; Code = 'function Invoke-C3fInjected { Invoke-CimMethod -ClassName MSFT_SmbServerConfiguration -MethodName GetConfiguration }' }
+            @{ Name = 'the read outside the seam'; Code = "function Get-AdfaOther { Get-SmbServerConfiguration -CimSession `$session -WhatIf:`$false -Confirm:`$false -ErrorAction Stop }" }
+            @{ Name = 'the read without -WhatIf:$false'; Code = "function Get-AdfaDcHardeningRaw { Get-SmbServerConfiguration -CimSession `$session -Confirm:`$false -ErrorAction Stop }" }
+            @{ Name = 'the read without -Confirm:$false'; Code = "function Get-AdfaDcHardeningRaw { Get-SmbServerConfiguration -CimSession `$session -WhatIf:`$false -ErrorAction Stop }" }
+            @{ Name = 'the read on the local host'; Code = "function Get-AdfaDcHardeningRaw { Get-SmbServerConfiguration -WhatIf:`$false -Confirm:`$false -ErrorAction Stop }" }
+            @{ Name = 'two reads'; Code = "function Get-AdfaDcHardeningRaw { Get-SmbServerConfiguration -CimSession `$session -WhatIf:`$false -Confirm:`$false -ErrorAction Stop; Get-SmbServerConfiguration -CimSession `$session -WhatIf:`$false -Confirm:`$false -ErrorAction Stop }" }
+        ) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($Code, [ref]$null, [ref]$null)
+            @(Get-C3fWriteHit -Ast $ast).Count | Should -BeGreaterThan 0
+        }
+        It 'passes the one allowed read, this script''s own Reset- functions and advice text naming the write cmdlets; and requires the read' {
+            $ok = "function Get-AdfaDcHardeningRaw { `$smb = @(Get-SmbServerConfiguration -CimSession `$session -WhatIf:`$false -Confirm:`$false -ErrorAction Stop) }; function Reset-AdfaCache { }; Reset-AdfaCache; `$script:RecommendationMap = @( @{ Match = 'x'; Text = 'Run Set-SmbServerConfiguration -EnableSMB1Protocol `$false.' } )"
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($ok, [ref]$null, [ref]$null)
+            @(Get-C3fWriteHit -Ast $ast -RequireRead).Count | Should -Be 0
+            $none = [System.Management.Automation.Language.Parser]::ParseInput('function Get-AdfaDcHardeningRaw { }', [ref]$null, [ref]$null)
+            @(Get-C3fWriteHit -Ast $none -RequireRead).Count | Should -BeGreaterThan 0
+        }
+        It 'documents the cmdlet in the help and the README, and no longer says the cmdlet is not run' {
+            $help = $script:C3fAst.GetHelpContent()
+            $text = (([string]$help.Description + ' ' + [string]$help.Parameters['SECTIONS']) -replace '\s+', ' ')
+            $text | Should -Match 'Get-SmbServerConfiguration'
+            $text | Should -Not -Match 'the cmdlet that would read it is not run'
+            $lines = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+            $row = @($lines | Where-Object { $_ -match '^\| \*\*DC hardening\*\* \|' })
+            $row.Count | Should -Be 1
+            $row[0] | Should -Match 'Get-SmbServerConfiguration'
+            $row[0] | Should -Not -Match 'returns no instance to a query'
+            (($lines -join ' ') -replace '\s+', ' ') | Should -Match 'PORT-PLAN C17a'
         }
     }
 }

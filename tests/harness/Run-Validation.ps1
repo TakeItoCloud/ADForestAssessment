@@ -1933,9 +1933,9 @@ function Get-HardVerdict {
     if (-not $NoRelatedSettings) { foreach ($s in @($Config['Settings'])) { $byId[[string]$s['Id']] = $s } }
     Get-AdfaHardeningVerdict -Setting (Get-HardSetting -Id $Id -Config $Config) -State (Get-HardState -Id $Id -Number $Number -ReturnValue $ReturnValue) -Build $Build -Related $Related -SecondInstrument $Second -RelatedSettings $byId
 }
-# The SMB part has two shapes. The default (an instance, with both properties) has NOT been
-# measured on any host. -SmbNoInstance is what one Windows 11 workstation was measured to return
-# to the instance query on 2026-11-15: no instance and no error.
+# The SMB part, as Get-SmbServerConfiguration returns it since PORT-PLAN C3f. The default (one object,
+# both properties booleans) is the shape measured on one Windows 11 workstation (not a DC) on
+# 2026-11-17. -SmbNoInstance is the cmdlet returning nothing and raising no error.
 function New-HardRaw {
     param([hashtable]$Numbers = @{}, [string]$Build = '17763', $Smb1 = $false, $SmbSigning = $true, [string]$SpoolerState = 'Stopped', [string]$SpoolerStartMode = 'Disabled', [switch]$SmbNoInstance)
     $values = @()
@@ -2109,14 +2109,72 @@ Assert-Equal 3 (@($sigBesideTwo | Where-Object { [string]$_.Status -eq 'Not Asse
 # 4. A build below the LAN Manager default's lower bound is not told it is "20348 and below".
 $lmLow = [string](Resolve-AdfaHardeningDefault -Setting (Get-HardSetting -Id 'LmCompatibilityLevel') -Build 6003).Reason
 Assert-True ($lmLow -match 'no default for OS build 6003' -and $lmLow -match 'builds 7101 to 20348, and for build 26100 and later only' -and $lmLow -notmatch '20348 and below') 'Hardening default: a build below the LAN Manager lower bound is given that setting''s own ranges, not a sentence that contradicts itself'
-# 5. The SMB class returned no instance - the shape measured on a real host.
+# 5. The SMB read returned no object and no error (Get-SmbServerConfiguration, PORT-PLAN C3f).
 $hardNoInst = @(Get-AdfaDcHardeningFinding -DomainController 'dc1.contoso.com' -Scope 'contoso.com' -Config $hardCfg -Raw (New-HardRaw -Numbers @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 2; SmbServerSigning = 1; SmbClientSigning = 1; LmCompatibilityLevel = 5 } -SmbNoInstance))
 $hardNoInstSmb1 = @($hardNoInst | Where-Object { [string]$_.Item -eq 'SMBv1: dc1.contoso.com' })[0]
-Assert-True ([string]$hardNoInstSmb1.Status -eq 'Not Assessed' -and [string]$hardNoInstSmb1.Detail -match '^Not read: MSFT_SmbServerConfiguration returned no instance to an instance query' -and [string]$hardNoInstSmb1.Detail -match 'this tool does not invoke') 'Hardening rows: an SMB class that returned no instance leaves SMBv1 Not Assessed, never Pass, and the row says why'
+Assert-True ([string]$hardNoInstSmb1.Status -eq 'Not Assessed' -and [string]$hardNoInstSmb1.Detail -match '^Not read: Get-SmbServerConfiguration returned no configuration object for this DC, and no error' -and [string]$hardNoInstSmb1.Detail -match 'This is not a pass') 'Hardening rows: an SMB read that returned no object leaves SMBv1 Not Assessed, never Pass, and the row says why'
 $hardNoInstSrv = @($hardNoInst | Where-Object { [string]$_.Item -eq 'SMB server signing: dc1.contoso.com' })[0]
-Assert-True ([string]$hardNoInstSrv.Status -eq 'Pass' -and [string]$hardNoInstSrv.Detail -match 'was not read \(MSFT_SmbServerConfiguration returned no instance' -and [string]$hardNoInstSrv.Detail -notmatch 'agrees') 'Hardening rows: SMB server signing is then graded on the registry alone and claims no second instrument'
+Assert-True ([string]$hardNoInstSrv.Status -eq 'Pass' -and [string]$hardNoInstSrv.Detail -match 'was not read \(Get-SmbServerConfiguration returned no configuration object' -and [string]$hardNoInstSrv.Detail -notmatch 'agrees') 'Hardening rows: SMB server signing is then graded on the registry alone and claims no second instrument'
 $hardNoInstUnset = @(Get-AdfaDcHardeningFinding -DomainController 'dc1.contoso.com' -Scope '' -Config $hardCfg -Raw (New-HardRaw -SmbNoInstance))
-Assert-Equal 'Not Assessed,Not Assessed' ((@('SMB server signing', 'SMBv1') | ForEach-Object { $f = $_; [string]@($hardNoInstUnset | Where-Object { [string]$_.Item -eq ("{0}: dc1.contoso.com" -f $f) })[0].Status }) -join ',') 'Hardening rows: with the registry value not set and no instance, SMB server signing and SMBv1 are both Not Assessed'
+Assert-Equal 'Not Assessed,Not Assessed' ((@('SMB server signing', 'SMBv1') | ForEach-Object { $f = $_; [string]@($hardNoInstUnset | Where-Object { [string]$_.Item -eq ("{0}: dc1.contoso.com" -f $f) })[0].Status }) -join ',') 'Hardening rows: with the registry value not set and no object, SMB server signing and SMBv1 are both Not Assessed'
+# 6. C3f: the SMB server configuration read resolved once, and the SMBv1 verdict on it. Pure, no directory.
+function New-C3fValRaw {
+    param($Smb1 = $false, $Signing = $true, [switch]$NoInstance, [switch]$CmdletMissing, [string]$Err = '', [string]$Code = '')
+    $r = New-HardRaw -Numbers @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 2; SmbServerSigning = 1; SmbClientSigning = 1; LmCompatibilityLevel = 5 } -Smb1 $Smb1 -SmbSigning $Signing -SmbNoInstance:$NoInstance
+    $r | Add-Member -NotePropertyName SmbInstrument -NotePropertyValue 'Get-SmbServerConfiguration'
+    $r | Add-Member -NotePropertyName SmbCmdletMissing -NotePropertyValue ([bool]$CmdletMissing)
+    if ($CmdletMissing -or $Err -ne '') { $r.SmbOk = $false; $r.SmbEnableSmb1 = $null; $r.SmbRequireSigning = $null }
+    $r.SmbError = $Err; $r.SmbErrorCode = $Code
+    return $r
+}
+# Declared population: the six kinds the resolver gives, each reached once.
+$c3fKinds = [ordered]@{
+    Read          = (New-C3fValRaw)
+    NoInstance    = (New-C3fValRaw -NoInstance)
+    CmdletMissing = (New-C3fValRaw -CmdletMissing)
+    AccessDenied  = (New-C3fValRaw -Err 'Acesso negado.' -Code 'AccessDenied')
+    ClassMissing  = (New-C3fValRaw -Err 'x' -Code 'InvalidNamespace')
+    ReadFailed    = (New-C3fValRaw -Err 'The operation has timed out.' -Code 'Failed')
+}
+Assert-Equal 6 (@($c3fKinds.Keys).Count) 'C3f: six kinds of SMB read (declared population)'
+foreach ($k in @($c3fKinds.Keys)) { Assert-Equal $k ([string](Resolve-AdfaSmbServerRead -Raw $c3fKinds[$k]).Kind) ("C3f: the resolver tells the {0} read apart" -f $k) }
+Assert-Equal 'Pass,Fail' ((@($false, $true) | ForEach-Object { [string](Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fValRaw -Smb1 $_)) -Protocol 'Wsman').Status }) -join ',') 'C3f: SMBv1 passes on a returned False and fails on True'
+$c3fNa = @(@('NoInstance', 'CmdletMissing', 'AccessDenied', 'ClassMissing', 'ReadFailed') | ForEach-Object { [string](Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw $c3fKinds[$_]) -Protocol 'Wsman').Status })
+Assert-Equal 'Not Assessed,Not Assessed,Not Assessed,Not Assessed,Not Assessed' ($c3fNa -join ',') 'C3f: each result that is not a read is Not Assessed, never Pass (declared population: five)'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fValRaw -Smb1 $null)) -Protocol 'Wsman').Status) 'C3f: an EnableSMB1Protocol that was not returned is Not Assessed, not False'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fValRaw -Smb1 0)) -Protocol 'Wsman').Status) 'C3f: a number is not a boolean'
+$c3fStray = New-C3fValRaw
+$c3fStray.SmbNoInstance = $true
+Assert-Equal 'NoInstance' ([string](Resolve-AdfaSmbServerRead -Raw $c3fStray).Kind) 'C3f: a flag that says nothing was read wins over stray values'
+Assert-Equal 'ReadFailed' ([string](Resolve-AdfaSmbServerRead -Raw (New-C3fValRaw -Err 'Invalid namespace' -Code 'Failed')).Kind) 'C3f: a code that says something else wins over the words of the text'
+$c3fWrapInner = New-Object System.Exception 'Acesso negado.'
+$c3fWrapInner | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+Assert-Equal 'AccessDenied' (Get-AdfaExceptionErrorCode -Exception (New-Object System.Exception -ArgumentList 'dc: Acesso negado.', $c3fWrapInner)) 'C3f: the CIM code is read from the exception a CDXML error wraps'
+Assert-Equal '' (Get-AdfaExceptionErrorCode -Exception (New-Object System.Exception 'x')) 'C3f: no code, no invented code'
+# Up to five exceptions deep, the code on the innermost (declared population: chains of 1 to 6).
+$c3fDepth = @(1, 2, 3, 4, 5, 6 | ForEach-Object {
+        $e = New-Object System.Exception 'level 1'
+        $e | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+        for ($i = 2; $i -le $_; $i++) { $e = New-Object System.Exception -ArgumentList ("level {0}" -f $i), $e }
+        [string](Get-AdfaExceptionErrorCode -Exception $e)
+    })
+Assert-Equal 'AccessDenied,AccessDenied,AccessDenied,AccessDenied,AccessDenied,' ($c3fDepth -join ',') 'C3f: the CIM code is read up to five exceptions deep, and no deeper'
+Assert-Equal 'ReadFailed' ([string](Resolve-AdfaSmbServerRead -Raw (New-C3fValRaw -Err 'x' -Code 'NotFound')).Kind) 'C3f: the code NotFound is a failed read, not a missing class'
+Assert-Equal 'ClassMissing' ([string](Resolve-AdfaSmbServerRead -Raw (New-C3fValRaw -Err 'Invalid namespace ')).Kind) 'C3f: with no code, the words "invalid namespace" are a missing class'
+$c3fToolRaw = New-C3fValRaw -Err 'Access is denied. Invalid class'
+$c3fToolRaw | Add-Member -NotePropertyName SmbErrorByTool -NotePropertyValue $true
+$c3fTool = Resolve-AdfaSmbServerRead -Raw $c3fToolRaw
+Assert-True ([string]$c3fTool.Kind -eq 'ReadFailed' -and [string]$c3fTool.CauseSource -eq 'Tool') 'C3f: a sentence this tool wrote is never read as a refusal or a missing class'
+$c3fToolDetail = [string](Get-AdfaSmb1Verdict -Read $c3fTool -Protocol 'Wsman').Detail
+Assert-True ($c3fToolDetail -notmatch 'Reported by the DC' -and $c3fToolDetail -match 'Written by this tool, not an error from the DC - ') 'C3f: the SMBv1 row never says the DC reported this tool''s own sentence'
+$c3fDcDetail = [string](Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw (New-C3fValRaw -Err 'Invalid class ')) -Protocol 'Wsman').Detail
+Assert-True ($c3fDcDetail -match 'Reported by the DC - Invalid class\. Read over Wsman\.$') 'C3f: an error the DC raised is quoted as its own and ends its sentence before the transport'
+$c3fDeniedDetail = [string](Get-AdfaSmb1Verdict -Read (Resolve-AdfaSmbServerRead -Raw $c3fKinds['AccessDenied']) -Protocol 'Wsman').Detail
+Assert-True ($c3fDeniedDetail -match '^Access denied: ' -and $c3fDeniedDetail -notmatch 'Local Administrators' -and $c3fDeniedDetail -match 'not published') 'C3f: the access-denied row names no rights, which are not published'
+$c3fRows = @(Get-AdfaDcHardeningFinding -DomainController 'dc1.contoso.com' -Scope '' -Config $hardCfg -Raw (New-C3fValRaw -Err 'Acesso negado.' -Code 'AccessDenied'))
+$c3fSign = @($c3fRows | Where-Object { [string]$_.Item -eq 'SMB server signing: dc1.contoso.com' })[0]
+Assert-True ([string]$c3fSign.Status -eq 'Pass' -and [string]$c3fSign.Detail -match 'second instrument, Get-SmbServerConfiguration RequireSecuritySignature, was not read \(access denied - Acesso negado') 'C3f: a refused SMB read leaves SMB server signing on the registry, with the cause of the missing second instrument'
+Assert-Throws { Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -Override @{ SmbServer = @{ Instrument = 'x' } } } "names 'SmbServer'" 'C3f: the SMB server read cannot be set from a file'
 # 7. Advice and finding name one target when a file moved the expectation.
 $hardMoved = Merge-AdfaDcHardeningConfig -BaseConfig $hardCfg -OverrideSource 'C:\cfg\hard.json' -Override @{ Settings = @{ LmCompatibilityLevel = @{ ExpectedMinimum = 3 }; LdapEnforceChannelBinding = @{ ExpectedMinimum = 1 } } }
 $hardMovedRows = @(Get-AdfaDcHardeningFinding -DomainController 'dc1.contoso.com' -Scope '' -Config $hardMoved -Raw (New-HardRaw -Build '20348' -Numbers @{ LdapServerIntegrity = 2; LdapEnforceChannelBinding = 0; SmbServerSigning = 1; SmbClientSigning = 1; LmCompatibilityLevel = 0 }) |
@@ -3120,7 +3178,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.34.0' ([string]$script:Config.Version) 'C14: version 1.34.0 in the script (bumped by PORT-PLAN C2e, C1b, C14c, C3g)'
+Assert-Equal '1.35.0' ([string]$script:Config.Version) 'C14: version 1.35.0 in the script (bumped by PORT-PLAN C3f)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3213,7 +3271,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.34.0' ([string]$script:Config.Version) 'C15: version 1.34.0 in the script (bumped by PORT-PLAN C2e, C1b, C14c, C3g)'
+Assert-Equal '1.35.0' ([string]$script:Config.Version) 'C15: version 1.35.0 in the script (bumped by PORT-PLAN C3f)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }

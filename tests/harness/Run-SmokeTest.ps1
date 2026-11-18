@@ -410,24 +410,12 @@ function Get-CimInstance {
     if ($ClassName -eq 'Win32_OperatingSystem') {
         return [pscustomobject]@{ LastBootUpTime = $now.AddDays(-9); BuildNumber = '17763'; Version = '10.0.17763' }
     }
-    # C3 (DcHardening): the SMB server configuration, and the Print Spooler service as
-    # Win32_Service returns it - State and StartMode are strings. The service query is answered
-    # only for the filter the section sends, so a section that asked for every service would get
-    # nothing rather than a Spooler it did not ask for.
-    #
-    # MSFT_SmbServerConfiguration answers, BY DEFAULT, what the real class was MEASURED to answer
-    # to an instance query on 2026-11-15 (one Windows 11 build 26100 workstation, not a DC, not
-    # elevated, PowerShell 7 and Windows PowerShell 5.1): no instance and no error. The real
-    # configuration comes from the class's static method GetConfiguration, which the tool does
-    # not invoke and which the Invoke-CimMethod stub below refuses. An earlier version of this
-    # stub handed back an instance, a shape nobody had measured, and so proved only itself.
-    # $script:SmokeSmbInstance = $true selects that unmeasured shape for the one pass that
-    # checks the code path a DC would take if it did return an instance; the two properties are
-    # booleans there.
-    if ($ClassName -eq 'MSFT_SmbServerConfiguration' -and $Namespace -eq 'root/Microsoft/Windows/SMB') {
-        if ($script:SmokeSmbInstance) { return [pscustomobject]@{ EnableSMB1Protocol = $false; RequireSecuritySignature = $true } }
-        return @()
-    }
+    # C3 (DcHardening): the Print Spooler service as Win32_Service returns it - State and StartMode
+    # are strings. The service query is answered only for the filter the section sends, so a section
+    # that asked for every service would get nothing rather than a Spooler it did not ask for.
+    # MSFT_SmbServerConfiguration is NOT answered here: since PORT-PLAN C3f the SMB server
+    # configuration is read with Get-SmbServerConfiguration (stubbed below), and an instance query of
+    # the class falls through to the throw at the end, so a return to it would show.
     if ($ClassName -eq 'Win32_Service') {
         if ($Filter -ne "Name='Spooler'") { return @() }
         return [pscustomobject]@{ Name = 'Spooler'; State = 'Stopped'; StartMode = 'Disabled' }
@@ -485,7 +473,34 @@ $script:SmokeDnsClientServers = @('192.0.2.20', '127.0.0.1')
 # has: a value Group Policy never set is simply not there. A value of the wrong type answers
 # 2147749893 (0x80041005) to either kind of method, as measured.
 $script:SmokeAbsentValues = @()
-$script:SmokeSmbInstance = $false
+# C3f (DcHardening): the SMB server configuration, read with Get-SmbServerConfiguration -CimSession. By
+# default the stub answers the shape MEASURED on 2026-11-17 on one Windows 11 workstation (not a DC,
+# PowerShell 7 and Windows PowerShell 5.1): one MSFT_SmbServerConfiguration instance whose two
+# properties are CimType Boolean, held in CimInstanceProperties - EnableSMB1Protocol False,
+# RequireSecuritySignature True. $script:SmokeSmbMode selects the other answers: 'Empty' (no object,
+# no error), 'Denied' (a refusal wrapped as a CDXML cmdlet raises it, the CIM code on the inner
+# exception) and 'Smb1On'. -WhatIf and -Confirm are not declared, so the values the caller passes fall
+# into $args; a call that does not pass both as $false is refused here, as is a call with no session.
+$script:SmokeSmbMode = 'Instance'
+# C3f: whether the cmdlet exists on the computer running the assessment (the Test-CommandAvailable stub).
+$script:SmokeSmbCmdlet = $true
+$script:SmokeSmbCalls = @()
+function Get-SmbServerConfiguration {
+    param($CimSession)
+    if ($null -eq $CimSession) { throw 'STUB: Get-SmbServerConfiguration was called without -CimSession, so it would read the computer running the assessment' }
+    $flags = (@($args) -join ' ')
+    if ($flags -notmatch '-WhatIf: False' -or $flags -notmatch '-Confirm: False') { throw ("STUB: Get-SmbServerConfiguration was called without -WhatIf:`$false -Confirm:`$false ({0})" -f $flags) }
+    $script:SmokeSmbCalls += [string]$CimSession.ComputerName
+    if ($script:SmokeSmbMode -eq 'Empty') { return @() }
+    if ($script:SmokeSmbMode -eq 'Denied') {
+        $inner = New-Object System.Exception 'Acesso negado.'
+        $inner | Add-Member -NotePropertyName NativeErrorCode -NotePropertyValue 'AccessDenied'
+        throw (New-Object System.Exception -ArgumentList ('{0}: Acesso negado.' -f [string]$CimSession.ComputerName), $inner)
+    }
+    $smb1 = ($script:SmokeSmbMode -eq 'Smb1On')
+    $store = @{ EnableSMB1Protocol = [pscustomobject]@{ Value = $smb1; CimType = 'Boolean' }; RequireSecuritySignature = [pscustomobject]@{ Value = $true; CimType = 'Boolean' } }
+    return [pscustomobject]@{ CimClass = 'ROOT/Microsoft/Windows/Smb:MSFT_SmbServerConfiguration'; CimInstanceProperties = $store }
+}
 function Invoke-CimMethod {
     param($CimSession, [string]$Namespace, [string]$ClassName, [string]$MethodName, $Arguments, [uint32]$OperationTimeoutSec, $ErrorAction)
     if ($ClassName -ne 'StdRegProv' -or @('GetStringValue', 'GetExpandedStringValue', 'GetDWORDValue') -notcontains $MethodName) {
@@ -985,7 +1000,7 @@ $script:SmokeDnsResolver = $false
 # PORT-PLAN C2e: repadmin.exe is present only in the per-domain pass ($script:SmokeRepadmin), where it answers /showbackup.
 $script:SmokeRepadmin = $false
 $script:SmokeRepadminCalls = @()
-function Test-CommandAvailable { param([string]$Name) return ($Name -eq 'dcdiag.exe' -or ($script:SmokeDnsResolver -and $Name -eq 'Resolve-DnsName') -or ($script:SmokeW32tm -and $Name -eq 'w32tm.exe') -or ($script:SmokeRepadmin -and $Name -eq 'repadmin.exe')) }
+function Test-CommandAvailable { param([string]$Name) return ($Name -eq 'dcdiag.exe' -or ($script:SmokeDnsResolver -and $Name -eq 'Resolve-DnsName') -or ($script:SmokeW32tm -and $Name -eq 'w32tm.exe') -or ($script:SmokeRepadmin -and $Name -eq 'repadmin.exe') -or ($script:SmokeSmbCmdlet -and $Name -eq 'Get-SmbServerConfiguration')) }
 # C11 (DcDiagnostics): dcdiag, answered in the shape the dcdiag command reference prints (Learn,
 # read 2026-11-16): a banner, the initial Connectivity block under "Testing server: <site>\<DC>",
 # then the test's own block. CheckSDRefDom and CrossRefValidation answer one verdict per partition
@@ -1437,7 +1452,8 @@ Check ($diskC[0].Detail -match '110 %' -and $diskE[0].Detail -notmatch '110 %') 
 Check (@($diskRows | Where-Object { @('Pass', 'Warning', 'Fail', 'Not Assessed') -notcontains $_.Status }).Count -eq 0) 'DC Disk Space: no row is Info - a row is a verdict or it is Not Assessed'
 Check (@($diskRows | Where-Object { $_.Recommendation }).Count -eq 0) 'DC Disk Space: a passing row carries no advice'
 # C3: the DcHardening section must be wired, must read the six values through the GetDWORDValue
-# stub and the three classes through the Get-CimInstance stub in ONE session per DC, and must
+# stub, the two classes through the Get-CimInstance stub and the SMB server configuration through the
+# Get-SmbServerConfiguration stub (PORT-PLAN C3f) in ONE session per DC, and must
 # report every setting exactly once, family first.
 $hardFamilies = @('LDAP server signing', 'LDAP server signing enforcement', 'LDAP channel binding', 'SMB server signing', 'SMB client signing', 'LAN Manager authentication level', 'Print Spooler', 'SMBv1')
 $hardRows = @($smokeFindings | Where-Object { $_.Section -eq 'DC Hardening' })
@@ -1453,14 +1469,15 @@ $hardCb = Get-HardRow $hardRows 'LDAP channel binding'
 Check ($hardCb.Status -eq 'Warning' -and $hardCb.Detail -match 'is not set in the registry of this DC' -and $hardCb.Detail -match "documented default" -and $hardCb.Detail -match "'Never'") 'DC Hardening: channel binding is not set, and is graded on the documented default for the build, named as a default'
 Check ($hardCb.Detail -match 'measured, not published by Microsoft') 'DC Hardening: the reading of return code 1 as "not set" is labelled as measured'
 Check ((Get-HardRow $hardRows 'SMB server signing').Status -eq 'Pass' -and (Get-HardRow $hardRows 'SMB server signing').Detail -match 'RequireSecuritySignature = 1') 'DC Hardening: SMB server signing passes on the registry value'
-Check ((Get-HardRow $hardRows 'SMB server signing').Detail -match 'second instrument, MSFT_SmbServerConfiguration\.RequireSecuritySignature, was not read \(MSFT_SmbServerConfiguration returned no instance' -and (Get-HardRow $hardRows 'SMB server signing').Detail -notmatch 'agrees') 'DC Hardening: the SMB class returned no instance, as measured, so the row says its second instrument was not read and claims no agreement'
+Check ((Get-HardRow $hardRows 'SMB server signing').Detail -match 'The second instrument agrees: Get-SmbServerConfiguration RequireSecuritySignature = True') 'DC Hardening: the second instrument, read with Get-SmbServerConfiguration in the measured shape, agrees with the registry value (PORT-PLAN C3f)'
 $hardClient = Get-HardRow $hardRows 'SMB client signing'
 Check ($hardClient.Status -eq 'Warning' -and $hardClient.Detail -match 'documented default' -and $hardClient.Detail -match 'Disabled') 'DC Hardening: SMB client signing is not set, and the documented pre-2025 default (Disabled) is a Warning'
 Check ((Get-HardRow $hardRows 'LAN Manager authentication level').Status -eq 'Pass' -and (Get-HardRow $hardRows 'LAN Manager authentication level').Detail -match 'LmCompatibilityLevel = 5') 'DC Hardening: the LAN Manager level passes at 5'
 Check ((Get-HardRow $hardRows 'Print Spooler').Status -eq 'Pass' -and (Get-HardRow $hardRows 'Print Spooler').Detail -match 'Stopped') 'DC Hardening: Print Spooler is read from Win32_Service and passes when Stopped'
-Check ((Get-HardRow $hardRows 'SMBv1').Status -eq 'Not Assessed' -and (Get-HardRow $hardRows 'SMBv1').Detail -match '^Not read: MSFT_SmbServerConfiguration returned no instance to an instance query') 'DC Hardening: SMBv1 is Not Assessed, never Pass, when the SMB class returns no instance - the shape measured on a real host'
-Check ((Get-HardRow $hardRows 'SMBv1').Detail -match 'GetConfiguration' -and (Get-HardRow $hardRows 'SMBv1').Detail -match 'PORT-PLAN C3f' -and -not (Get-HardRow $hardRows 'SMBv1').Recommendation) 'DC Hardening: the SMBv1 row names the method it does not invoke and the plan row, and carries no advice'
-Check (@($hardRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 4) ("DC Hardening: four rows pass on the stub DC - LDAP signing, SMB server signing, LAN Manager level, Print Spooler ({0})" -f @($hardRows | Where-Object { $_.Status -eq 'Pass' }).Count)
+Check ((Get-HardRow $hardRows 'SMBv1').Status -eq 'Pass' -and (Get-HardRow $hardRows 'SMBv1').Detail -match '^EnableSMB1Protocol = False: the SMBv1 server is not enabled on this DC, as Get-SmbServerConfiguration reports it') 'DC Hardening: SMBv1 is graded on EnableSMB1Protocol as Get-SmbServerConfiguration returned it (PORT-PLAN C3f)'
+Check ((Get-HardRow $hardRows 'SMBv1').Detail -match 'detect-enable-and-disable-smbv1-v2-v3 \(read 2026-11-17\)' -and -not (Get-HardRow $hardRows 'SMBv1').Recommendation) 'DC Hardening: the SMBv1 row names the Microsoft detection source, and a Pass carries no advice'
+Check ((@($script:SmokeSmbCalls) -join ',') -eq 'dc1.contoso.com') ("DC Hardening: Get-SmbServerConfiguration ran once, in the session opened to the stub DC, with -WhatIf and -Confirm off ({0})" -f (@($script:SmokeSmbCalls) -join ','))
+Check (@($hardRows | Where-Object { $_.Status -eq 'Pass' }).Count -eq 5) ("DC Hardening: five rows pass on the stub DC - LDAP signing, SMB server signing, LAN Manager level, Print Spooler, SMBv1 ({0})" -f @($hardRows | Where-Object { $_.Status -eq 'Pass' }).Count)
 Check (@($hardRows | Where-Object { $_.Scope -eq 'contoso.com' }).Count -eq 8) 'DC Hardening: every row carries its domain as Scope'
 Check (@($hardRows | Where-Object { $_.Detail -match 'Read over Wsman' }).Count -eq 8) 'DC Hardening: the transport that answered is stated on every row'
 Check (@($hardRows | Where-Object { $_.Detail -match 'OS build 17763' }).Count -eq 6) 'DC Hardening: each of the six setting rows states the OS build the default was chosen for'
@@ -1878,6 +1895,8 @@ $script:SmokeDcdiagMode = 'PartitionFail'
 # C4b: the export and trust reads of each of the three domains, recorded for this pass alone.
 $script:SmokeExportCalls = @()
 $script:SmokeC4bCalls = @()
+# C3f: the Get-SmbServerConfiguration calls of this pass alone.
+$script:SmokeSmbCalls = @()
 $result2 = Invoke-Main
 $script:SmokeDcdiagMode = 'Pass'
 
@@ -1947,9 +1966,15 @@ Check (@($hard2).Count -eq 24) ("Multi-domain: DC Hardening has eight rows for e
 foreach ($d in $multiDomains) {
     $forDomainH = @($hard2 | Where-Object { $_.Scope -eq $d })
     Check (@($forDomainH).Count -eq 8) ("Multi-domain: DC Hardening has eight rows scoped '{0}' ({1})" -f $d, @($forDomainH).Count)
-    Check (@($forDomainH | Where-Object { $_.Status -eq 'Pass' }).Count -eq 4) ("Multi-domain: the DC Hardening settings of '{0}' are judged, not skipped" -f $d)
-    Check (@($forDomainH | Where-Object { $_.Item -like 'SMBv1: *' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) ("Multi-domain: the SMBv1 row of '{0}' is Not Assessed, never Pass, on a class that returned no instance" -f $d)
+    Check (@($forDomainH | Where-Object { $_.Status -eq 'Pass' }).Count -eq 5) ("Multi-domain: the DC Hardening settings of '{0}' are judged, not skipped" -f $d)
+    Check (@($forDomainH | Where-Object { $_.Item -like 'SMBv1: *' -and $_.Status -eq 'Pass' -and $_.Detail -match 'Get-SmbServerConfiguration' }).Count -eq 1) ("Multi-domain: the SMBv1 row of '{0}' is graded on its own DC's Get-SmbServerConfiguration read (PORT-PLAN C3f)" -f $d)
 }
+# C3f: one Get-SmbServerConfiguration call per domain's DC, each in its own session - not one read
+# shared by the three domains. (The stub names the DC of every domain dc1.contoso.com, so the calls
+# are told apart by count and by the per-domain rows above, not by host.) Declared population: the
+# three domains' DCs.
+$smbHosts2 = @($script:SmokeSmbCalls)
+Check (@($smbHosts2).Count -eq 3 -and @($hard2 | Where-Object { $_.Item -like 'SMBv1: *' }).Count -eq 3) ("Multi-domain: Get-SmbServerConfiguration ran once for each of the three domains' DCs, and each domain has its SMBv1 row ({0} calls)" -f @($smbHosts2).Count)
 
 # C4: one schema row for the forest, and for EACH of the three domains its own coverage row and
 # its own DSRM row, each carrying its domain and naming that domain's computers - not three
@@ -2080,7 +2105,7 @@ Check (@($resultH.DomainsScoped).Count -eq 3) ("Multi-domain, DcHardening alone:
 Check (@($hardH).Count -eq 24) ("Multi-domain, DcHardening alone: eight rows for each of the three domains' DC, with no DC inventory ({0}, expected 24)" -f @($hardH).Count)
 foreach ($d in $multiDomains) {
     $forDomainHH = @($hardH | Where-Object { $_.Scope -eq $d })
-    Check (@($forDomainHH).Count -eq 8 -and @($forDomainHH | Where-Object { $_.Status -eq 'Pass' }).Count -eq 4) ("Multi-domain, DcHardening alone: domain '{0}' is in the section and judged ({1} rows)" -f $d, @($forDomainHH).Count)
+    Check (@($forDomainHH).Count -eq 8 -and @($forDomainHH | Where-Object { $_.Status -eq 'Pass' }).Count -eq 5) ("Multi-domain, DcHardening alone: domain '{0}' is in the section and judged ({1} rows)" -f $d, @($forDomainHH).Count)
 }
 Check (@($hardH | Where-Object { -not $_.Scope }).Count -eq 0) 'Multi-domain, DcHardening alone: no row is without a domain'
 Check (-not (Test-Path (Join-Path $resultH.CsvPath 'Domain Controllers.csv'))) 'Multi-domain, DcHardening alone: non-vacuity - the DomainControllers section itself was not run'
@@ -2475,20 +2500,40 @@ Check (@($hardO | Where-Object { $_.Item -eq 'LDAP channel binding: dc1.contoso.
 Check ((Get-Content $resultOH.LogFile -Raw) -match 'Config override: section DcHardening taken from') 'Override: the log records that the DcHardening section was taken from the file'
 Remove-Item -Recurse -Force $outOH -ErrorAction SilentlyContinue
 
-# C3: the other shape of the SMB class - an instance returned to the query. NOT MEASURED on any
-# host; run once so the code a DC would take if it did return one is exercised end to end. (The
-# override file above is still in force; it touches SMB client signing only.)
-$script:SmokeSmbInstance = $true
-$outSI = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_smbinstance_" + [guid]::NewGuid().ToString('N'))
-$script:OutputPath = $outSI
-$script:Sections = @('DomainControllers', 'DcHardening')
-$resultSI = Invoke-Main
-$hardSI = @(@(Import-Csv $resultSI.FindingsFile) | Where-Object { $_.Section -eq 'DC Hardening' })
-Check (@($hardSI).Count -eq 8) ("SMB instance returned (unmeasured shape): DC Hardening gives one row per setting ({0}, expected 8)" -f @($hardSI).Count)
-Check (@($hardSI | Where-Object { $_.Item -eq 'SMBv1: dc1.contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match 'EnableSMB1Protocol = False' }).Count -eq 1) 'SMB instance returned (unmeasured shape): SMBv1 is graded on EnableSMB1Protocol'
-Check (@($hardSI | Where-Object { $_.Item -eq 'SMB server signing: dc1.contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match 'second instrument agrees' }).Count -eq 1) 'SMB instance returned (unmeasured shape): the second instrument agrees with the registry value'
-$script:SmokeSmbInstance = $false
-Remove-Item -Recurse -Force $outSI -ErrorAction SilentlyContinue
+# C3f: the other answers Get-SmbServerConfiguration can give, each run end to end through Invoke-Main
+# so the SMBv1 row and the second instrument of SMB server signing are seen to move together. (The
+# override file above is still in force; it touches SMB client signing only.) Declared population:
+# the four modes - no object, a refusal, SMBv1 enabled, and the cmdlet missing on the assessing host.
+$smbModes = @(
+    @{ Mode = 'Missing'; Status = 'Not Assessed'; Smb1 = '^Not read: Get-SmbServerConfiguration \(module SmbShare\) is not available on the computer running the assessment'; Second = 'was not read \(Get-SmbServerConfiguration \(module SmbShare\) is not available' }
+    @{ Mode = 'Empty'; Status = 'Not Assessed'; Smb1 = '^Not read: Get-SmbServerConfiguration returned no configuration object for this DC, and no error'; Second = 'was not read \(Get-SmbServerConfiguration returned no configuration object' }
+    @{ Mode = 'Denied'; Status = 'Not Assessed'; Smb1 = '^Access denied: Get-SmbServerConfiguration could not read the SMB server configuration of this DC, so whether the SMBv1 server is enabled is not known\. This is not a pass\. Which rights this read needs on a DC is not published and has not been measured \(PORT-PLAN C17a\)\. Reported by the DC - dc1\.contoso\.com: Acesso negado'; Second = 'was not read \(access denied - dc1\.contoso\.com: Acesso negado' }
+    @{ Mode = 'Smb1On'; Status = 'Fail'; Smb1 = '^EnableSMB1Protocol = True: the SMBv1 server is enabled on this DC'; Second = 'The second instrument agrees' }
+)
+Check (@($smbModes).Count -eq 4) 'SMB server configuration: four answers exercised (declared population)'
+foreach ($m in $smbModes) {
+    $script:SmokeSmbMode = $m.Mode
+    $script:SmokeSmbCmdlet = ($m.Mode -ne 'Missing')
+    $script:SmokeSmbCalls = @()
+    $outSI = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_smb_" + [guid]::NewGuid().ToString('N'))
+    $script:OutputPath = $outSI
+    $script:Sections = @('DomainControllers', 'DcHardening')
+    $resultSI = Invoke-Main
+    $hardSI = @(@(Import-Csv $resultSI.FindingsFile) | Where-Object { $_.Section -eq 'DC Hardening' })
+    Check (@($hardSI).Count -eq 8) ("SMB {0}: DC Hardening gives one row per setting ({1}, expected 8)" -f $m.Mode, @($hardSI).Count)
+    $wantCalls = 1
+    if ($m.Mode -eq 'Missing') { $wantCalls = 0 }
+    Check (@($script:SmokeSmbCalls).Count -eq $wantCalls) ("SMB {0}: the cmdlet was asked {1} time(s), as expected ({2})" -f $m.Mode, @($script:SmokeSmbCalls).Count, $wantCalls)
+    $smb1SI = @($hardSI | Where-Object { $_.Item -eq 'SMBv1: dc1.contoso.com' })
+    Check (@($smb1SI).Count -eq 1 -and $smb1SI[0].Status -eq $m.Status -and $smb1SI[0].Detail -match $m.Smb1) ("SMB {0}: the SMBv1 row is {1} with its own cause" -f $m.Mode, $m.Status)
+    $signSI = @($hardSI | Where-Object { $_.Item -eq 'SMB server signing: dc1.contoso.com' })
+    Check (@($signSI).Count -eq 1 -and $signSI[0].Status -eq 'Pass' -and $signSI[0].Detail -match $m.Second) ("SMB {0}: SMB server signing is graded on the registry value and states its second instrument" -f $m.Mode)
+    if ($m.Status -ne 'Fail') { Check (-not $smb1SI[0].Recommendation) ("SMB {0}: an SMBv1 row that read nothing carries no advice" -f $m.Mode) }
+    else { Check ($smb1SI[0].Recommendation -match 'EnableSMB1Protocol \$false') 'SMB Smb1On: the SMBv1 Fail carries its own family''s advice' }
+    Remove-Item -Recurse -Force $outSI -ErrorAction SilentlyContinue
+}
+$script:SmokeSmbMode = 'Instance'
+$script:SmokeSmbCmdlet = $true
 '{ "DcDisk": { "WarnBelowPercent": 70, "FailBelowPercent": 55 } }' | Out-File -LiteralPath $overrideFile -Encoding UTF8
 
 # The same file with a section this run does not select: validated, logged as unused, no effect.
@@ -2757,6 +2802,9 @@ $script:SmokeExportCalls = @()
 $script:SmokeC4bCalls = @()
 $script:SmokeReachCalls = @()
 $script:SmokeNetlogonCalls = @()
+# C3f: the SMB server configuration read is refused too (access denied), and its calls recorded.
+$script:SmokeSmbMode = 'Denied'
+$script:SmokeSmbCalls = @()
 
 $script:SmokeDcdiagCalls = @()
 $out3 =Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
@@ -2847,6 +2895,10 @@ Check (@($hard3 | Where-Object { $_.Item -eq 'DC hardening' -and $_.Status -eq '
 Check (@($hard3 | Where-Object { $_.Item -eq 'DC hardening - contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' -and $_.Detail -match 'could not be enumerated\. Cause: STUB: ADWS unreachable' -and $_.Detail -match 'None of its hardening settings was read' }).Count -eq 1) 'Failure mode: DC Hardening gives the domain whose inventory failed its own Not Assessed row, with the cause'
 Check (@($hard3).Count -eq 2 -and @($hard3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode: DC Hardening reports nothing but Not Assessed, and never Pass ({0} rows, expected 2)" -f @($hard3).Count)
 Check (@($hard3 | Where-Object { $_.Recommendation }).Count -eq 0) 'Failure mode: a DC Hardening row that measured nothing carries no advice'
+# C3f: with no DC there is nobody to ask - the SMB server configuration cmdlet is not called, and no
+# SMBv1 row exists to pass or fail.
+Check (@($script:SmokeSmbCalls).Count -eq 0) ("Failure mode: Get-SmbServerConfiguration is not called when no DC was enumerated ({0} calls)" -f @($script:SmokeSmbCalls).Count)
+Check (@($hard3 | Where-Object { $_.Item -like 'SMBv1: *' }).Count -eq 0) 'Failure mode: no SMBv1 row is invented for a DC nobody enumerated'
 # C4: the same for Laps. The schema could not be read, so no domain is queried; the forest row
 # and both rows of the scoped domain are Not Assessed, name the cause, and nothing passes.
 $laps3 = @($findings3 | Where-Object { $_.Section -eq 'Windows LAPS' })

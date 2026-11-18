@@ -40,7 +40,7 @@ Extracted from
 | AD CS / PKI | Enrolment CAs, ESC1-susceptible certificate templates |
 | Dangerous ACLs | `-Sections Acl`. Directory reads of `nTSecurityDescriptor` only, per scoped domain, read in memory (nothing written). Every principal is a **SID**, matched by SID against an allowlist - Microsoft's published default holders plus labelled tool defaults - and **never by name**, so a group named like a default group is still flagged. **DCSync rights** (a replication right on the domain head, alone or through all extended rights or full control), **Domain root control rights** (WriteDacl, WriteOwner, write of all properties, full control, or a non-default owner), **AdminSDHolder rights**, and one row per **GPO** with a per-domain summary. A flagged SID is a `Warning` (a **tool default**, `Fail` by override) and every row says the allowlist is **provisional**. A descriptor not returned, without a DACL, or unreadable is `Not Assessed` with its cause; unreachable, access denied and timed out are told apart. Details under [Dangerous rights in the directory](#dangerous-rights-in-the-directory) |
 | Kerberos exposure | `-Sections Kerberos`. Kerberoastable (SPN) users, AS-REP-roastable accounts; per scoped domain, unconstrained delegation and protocol transition outside the domain controllers (excluded by the DN of their computer account from the configuration partition, never by name), Kerberos-only constrained delegation (inventory) and resource-based constrained delegation with the SIDs it allows |
-| **DC hardening** | `-Sections DcHardening`. Per DC, six registry values and three CIM classes read in one session: **LDAP server signing** (`LDAPServerIntegrity`) and its Windows Server 2025 **enforcement** (`LDAPServerEnforceIntegrity`), **LDAP channel binding** (`LdapEnforceChannelBinding`), **SMB server and client signing** (`RequireSecuritySignature`), the **LAN Manager authentication level** (`LmCompatibilityLevel`), the **Print Spooler** service and the **SMBv1** server. Each value is graded against what Microsoft's security baselines expect on a domain controller. A value that is **not set** is graded on the default Microsoft documents for the DC's OS build where it documents one, named as a default; where it documents none it is `Not Assessed`, never a pass and never a failure. Unreachable, access denied, not set, key absent and wrong type are separate results. These rows show the **configured policy, not what a client and the DC negotiate on the wire**. The **SMBv1** row is `Not Assessed` on any DC whose SMB configuration class returns no instance to a query, which is what the one host measured does (PORT-PLAN C3f). Details under [DC hardening](#dc-hardening) |
+| **DC hardening** | `-Sections DcHardening`. Per DC, six registry values, two CIM classes and the SMB server configuration (`Get-SmbServerConfiguration`) read in one session: **LDAP server signing** (`LDAPServerIntegrity`) and its Windows Server 2025 **enforcement** (`LDAPServerEnforceIntegrity`), **LDAP channel binding** (`LdapEnforceChannelBinding`), **SMB server and client signing** (`RequireSecuritySignature`), the **LAN Manager authentication level** (`LmCompatibilityLevel`), the **Print Spooler** service and the **SMBv1** server. Each value is graded against what Microsoft's security baselines expect on a domain controller. A value that is **not set** is graded on the default Microsoft documents for the DC's OS build where it documents one, named as a default; where it documents none it is `Not Assessed`, never a pass and never a failure. Unreachable, access denied, not set, key absent and wrong type are separate results. These rows show the **configured policy, not what a client and the DC negotiate on the wire**. The **SMBv1** row and the second instrument of SMB server signing are read with Microsoft's documented cmdlet `Get-SmbServerConfiguration` in the same session (PORT-PLAN C3f); SMBv1 is a `Pass` only where the DC returned `EnableSMB1Protocol` False. Details under [DC hardening](#dc-hardening) |
 | **DC system** | `-Sections DcSystem`. **OS lifecycle**: each DC's operating system against Microsoft's extended support end date, from a versioned table. Past the date is a `Fail` whose text says whether an Extended Security Updates (ESU) programme is still running, has also ended, or was never published — and always that **ESU enrolment is not assessed**. An OS the table does not list, or one that could not be read, is `Not Assessed` with the raw values, never `Pass`. Reads only the directory, so it needs no rights on any DC. **Patch level**: per DC, OS build, uptime and the latest update install date over remote CIM. This half is **inventory** (`Info` or `Not Assessed`, never `Pass`): Microsoft publishes no maximum uptime or update age for a DC, so none is applied. Unreachable, access denied and other read failures are three different results
 | **DC disk space** | `-Sections DcDisk`. Free space on the volumes that hold the **NTDS database**, the **NTDS logs** and **SYSVOL**, per DC. The three paths are read from each DC's own registry and matched to a volume by the longest mount path, so a database under a mounted folder is judged on the right volume. One row per distinct volume, listing the roles it holds. `Fail` below 10 % free or below 2 GB free, `Warning` below 20 % or below 5 GB — **tool defaults, not Microsoft values**, labelled as such in every finding and overridable with `-ConfigOverridePath`. A path or a volume that could not be read is `Not Assessed` with its cause; unreachable, access denied, a registry value that is not set and any other read failure are different results. Covers the DCs of every scoped domain, with or without `DomainControllers` selected; a domain whose DCs could not be enumerated gets its own `Not Assessed` row. Needs local Administrators rights on each DC |
 | **Windows LAPS** | `-Sections Laps`. Directory reads only, with domain read access. **Schema**: whether the forest schema carries the six attributes `Update-LapsADSchema` adds, and the legacy Microsoft LAPS ones; absent, present and "the query failed" are three different results. **DSRM password backup**, one row per domain controller: `Pass` where a Windows LAPS expiry time that is not past is visible on the DC's computer object, `Info` (not applicable) for a DC below Windows Server 2019 or a domain below functional level 2016, `Warning` where nothing is visible although the account can read the attribute elsewhere in the domain. **LAPS coverage**, one row per scoped domain: how many enabled Windows computers that can run Windows LAPS have **no LAPS expiry time visible to this account** (Windows LAPS or legacy), with counts for every class left out of the population and a capped list of names. The section **never reads a password**: no password, encrypted password or password history attribute is ever requested. An attribute the account has no right to read looks exactly like one that is not set, and a device that backs its password up to Microsoft Entra ID has nothing here either, so no row calls a computer unmanaged with certainty; where nothing at all is visible in a domain the rows are `Not Assessed`. The thresholds are **tool defaults, not Microsoft values**, overridable with `-ConfigOverridePath`. The policy in each DC's registry is not read (PORT-PLAN C4a). Details under [Windows LAPS](#windows-laps) |
@@ -489,25 +489,32 @@ refusal), needing local Administrators rights on the DC:
 | `LDAP server signing: <dc>` | `Services\NTDS\Parameters`, `LDAPServerIntegrity` | 2 (Require signing) | Windows Server 2022 and earlier: the documented default, None, a `Warning`. Windows Server 2025: see below |
 | `LDAP server signing enforcement: <dc>` | `Services\NTDS\Parameters`, `LDAPServerEnforceIntegrity` | 1 | Windows Server 2025 only; `Info`, not applicable, on earlier builds. See below |
 | `LDAP channel binding: <dc>` | `Services\NTDS\Parameters`, `LdapEnforceChannelBinding` | 2 (Always) | 2022 and earlier: documented default Never, a `Warning`. 2025: `Not Assessed` - the default "When supported" is published for new deployments only |
-| `SMB server signing: <dc>` | `Services\LanManServer\Parameters`, `RequireSecuritySignature` | 1 | Not published for a DC on any build: graded on the SMB server's own configuration where the DC returned it (see "second instrument" below - on the one host measured it is not returned), otherwise `Not Assessed` |
+| `SMB server signing: <dc>` | `Services\LanManServer\Parameters`, `RequireSecuritySignature` | 1 | Not published for a DC on any build: graded on the SMB server's own configuration where `Get-SmbServerConfiguration` returned it (see "second instrument" below), otherwise `Not Assessed` |
 | `SMB client signing: <dc>` | `Services\LanManWorkstation\Parameters`, `RequireSecuritySignature` | 1 | 2022 and earlier: documented default Disabled, a `Warning`. 2025: documented default required, a `Pass` named as a default |
 | `LAN Manager authentication level: <dc>` | `Control\Lsa`, `LmCompatibilityLevel` | 5 | 2008 R2 to 2022: documented default 3, a `Warning`. 2025: `Not Assessed` - NTLMv1 is removed there and the default is not restated |
 | `Print Spooler: <dc>` | `Win32_Service`, not the registry | Stopped | - |
-| `SMBv1: <dc>` | `MSFT_SmbServerConfiguration.EnableSMB1Protocol`, by instance query | False | - |
+| `SMBv1: <dc>` | `EnableSMB1Protocol` from `Get-SmbServerConfiguration -CimSession`, not the registry | False | - |
 
-**The SMBv1 row may be `Not Assessed` on every DC.** It asks for the instance of
-`MSFT_SmbServerConfiguration`. Measured on 2026-11-15 on one host - a Windows 11 (build 26100)
-workstation, not a domain controller, not elevated, under PowerShell 7 and Windows PowerShell
-5.1 - that query returns **no instance and no error**, while `Get-SmbServerConfiguration` on the
-same host returns the configuration: the cmdlet calls the class's static method
-`GetConfiguration`. This tool does not invoke that method. It is not one of the three `Get*`
-registry methods the script is held to, Microsoft Learn documents the cmdlet and not the class
-or its methods, and adding it is the operator's decision (PORT-PLAN C3f). So where a DC answers
-as that host did, the row reads `Not read: MSFT_SmbServerConfiguration returned no instance`,
-`Not Assessed`, never `Pass` - and it is kept apart from access denied and from a query that
-failed. What a real DC returns has not been measured (PORT-PLAN C17). Until one of those two rows
-is done, check SMBv1 with Microsoft's own command on the DC:
-`Get-SmbServerConfiguration | Select EnableSMB1Protocol`.
+**SMBv1 is read with Microsoft's documented cmdlet (PORT-PLAN C3f, v1.35.0).** Microsoft's
+detection of SMBv1 on a server is `Get-SmbServerConfiguration | Select EnableSMB1Protocol`, and
+the cmdlet "Retrieves the SMB server configuration" and takes a `-CimSession`. The section runs
+it in the session it already opened to the DC, with `-WhatIf:$false -Confirm:$false` (the
+module declares this Get cmdlet with ConfirmImpact Medium), bounded by the session's timeout.
+Before v1.35.0 the class was asked for as instances, and on the one host measured that query
+returns nothing, so the row could never be graded. The row is a `Pass` only on a returned
+`False`, and a `Fail` on `True`. Each other result is `Not Assessed` with its own cause:
+the cmdlet not available on the computer running the assessment (the `SmbShare` module is
+needed there), access denied, the class or its namespace not present on the DC, a read that
+failed, no object returned, more than one object returned, and a property not returned as true
+or false. A cause the tool wrote itself is said to be the tool's, never "Reported by the DC", and
+the access-denied row names no rights, because the rights a remote read needs are not published.
+The `LanmanServer\Parameters\SMB1` registry value is not read: Microsoft documents its absence as
+the default, Enabled, only for Windows 7, Windows Server 2008 R2, Windows Vista and Windows Server
+2008, and publishes no meaning of an absent value for later builds, so it could not grade the row
+where it is not set. Measured on
+one Windows 11 workstation (not a DC): the cmdlet runs under Windows PowerShell 5.1 and
+PowerShell 7 and returns both properties as booleans. What a real DC returns, over WSMan and
+DCOM, with which rights and with which error codes is PORT-PLAN C17a.
 
 The OS build that decides the default is the one the DC itself reports
 (`Win32_OperatingSystem.BuildNumber`), read in the same session. The only boundary Microsoft
@@ -561,20 +568,16 @@ does not take a signing value of 3 for "at least 2, so signing is required", and
 row says of an enforcement value of 2 that it was read and what it holds, not that it was not
 read.
 
-**SMB server signing has a second instrument, where the DC returns one.** The section asks
-for the instance of `MSFT_SmbServerConfiguration` for SMBv1, and that instance also carries
-`RequireSecuritySignature`. Microsoft's own verification is the **cmdlet**
-(`Get-SmbServerConfiguration | FL RequireSecuritySignature`: "If the returned information is
-True, then SMB signing is enabled"), which returns an object of that class; this tool does not
-run the cmdlet, it queries the class, and on the one host measured that query returns no
-instance (see the SMBv1 note above). So:
+**SMB server signing has a second instrument.** The same `Get-SmbServerConfiguration` read
+that gives the SMBv1 row also carries `RequireSecuritySignature`, and that cmdlet is Microsoft's
+own verification ("If the returned information is True, then SMB signing is enabled"). So:
 
-- Where the instance was returned and the registry value is set, the row is graded on the
-  registry and says whether the second instrument agrees; if the two **disagree** the row is
+- Where the cmdlet returned the property and the registry value is set, the row is graded on
+  the registry and says whether the second instrument agrees; if the two **disagree** the row is
   `Not Assessed`.
-- Where the instance was returned and the registry value is not set, the row is graded on the
-  second instrument, which is a measurement.
-- Where no instance was returned - the measured case - a registry value that is set is graded
+- Where the cmdlet returned the property and the registry value is not set, the row is graded
+  on the second instrument, which is a measurement.
+- Where it did not - any of the causes listed for SMBv1 - a registry value that is set is graded
   on the registry alone and the row says the second instrument was not read and why; a registry
   value that is not set is `Not Assessed`.
 
@@ -617,10 +620,12 @@ Limits to keep in mind:
 - None of this has met a real domain controller. The reads have run against stubs only; the
   first run against a real forest is PORT-PLAN C17.
 - The timeout note under the patch-level rows above applies here too: up to nine CIM
-  operations per transport for one DC (six registry reads and three queries).
-- The SMBv1 row, and the second instrument of SMB server signing, depend on a query that
-  returned nothing on the one host it was measured on; both may be `Not Assessed` on every DC
-  until PORT-PLAN C3f is decided.
+  operations per transport for one DC (six registry reads, two queries and the
+  `Get-SmbServerConfiguration` call, which has no timeout of its own and is bounded by the
+  session's).
+- The SMBv1 row, and the second instrument of SMB server signing, need the `SmbShare` module on
+  the computer running the assessment; without it both are `Not Assessed` and say so. The cmdlet
+  has been run against one Windows 11 workstation only, never against a DC (PORT-PLAN C17a).
 - A value delivered by Group Policy and a value set by hand look the same in the registry, and
   the section does not say which it is (PORT-PLAN C3d).
 - `Print Spooler` is graded on whether the service is running. Its start mode is stated in the
@@ -635,6 +640,12 @@ Spooler and SMBv1 are read through the same CIM session as everything else, so t
 `-Credential` and work under PowerShell 7; a missing `EnableSMB1Protocol` property, which used
 to pass, is now `Not Assessed`, and so is a class that returns no instance at all. The registry values are read with `StdRegProv` `GetDWORDValue`,
 a third `Get*` method beside the two `DcDisk` uses, on the same reasoning.
+
+**Changed in v1.35.0 (PORT-PLAN C3f).** The SMB server configuration is read with
+`Get-SmbServerConfiguration -CimSession` instead of an instance query of
+`MSFT_SmbServerConfiguration`, so the SMBv1 row can be graded and SMB server signing has its
+second instrument. A `SmbServer` key in a `DcHardening` override is refused: the read is not
+configurable.
 
 ## Windows LAPS
 
