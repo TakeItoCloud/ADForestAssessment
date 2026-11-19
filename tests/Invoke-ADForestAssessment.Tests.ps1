@@ -2437,10 +2437,15 @@ Describe 'dcdiag tests that change state are not run by default (H20)' {
         }
         It 'proves the note WOULD change the advice if it were part of the failure text' {
             # Non-vacuity: without this, the test above could pass because the note is harmless.
+            # Since PORT-PLAN C11h a grid row's advice is chosen by its "<Test>: " prefix alone, so the
+            # note can no longer change it in DC Diagnostics; the words of the note are shown to choose
+            # other advice where only unscoped entries apply (PKI / AD CS has no scoped entry, and its name no word an entry matches).
             $failure = 'SysVolCheck: no diagnostic lines captured'
-            $clean = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $failure
-            $polluted = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail ("{0} | {1}" -f $failure, $script:H20Note)
+            $clean = Get-AdfaRecommendation -Section 'PKI / AD CS' -Item 'dc1.contoso.com' -Detail $failure
+            $polluted = Get-AdfaRecommendation -Section 'PKI / AD CS' -Item 'dc1.contoso.com' -Detail ("{0} | {1}" -f $failure, $script:H20Note)
             $polluted | Should -Not -Be $clean
+            # And in DC Diagnostics the note in the failure text no longer matters at all.
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail ("{0} | {1}" -f $failure, $script:H20Note)) | Should -Be (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $failure)
         }
         It 'still puts the note in the finding detail, after the failure' {
             $f = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row (New-H20Row 'Fail' 'SysVolCheck: x' $script:H20Note) -StatusColumn 'Status'
@@ -7588,9 +7593,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 
@@ -9245,9 +9250,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 
@@ -10235,9 +10240,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 
@@ -11174,9 +11179,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 
@@ -12168,9 +12173,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 
@@ -13408,9 +13413,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 
@@ -14626,9 +14631,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 
@@ -16054,7 +16059,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             [string]$two.NotRun | Should -Match 'Not run after Connectivity failed: Replications'
             [string]$two.Failures | Should -Not -Match 'Not run after|Replications|SysVolCheck'
             $finding = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $two -StatusColumn 'Status'
-            [string]$finding.Recommendation | Should -Be $script:C11DcdiagAdvice
+            # Since PORT-PLAN C11h the Connectivity entry, not the unscoped dcdiag advice.
+            [string]$finding.Recommendation | Should -Match '^dcdiag''s Connectivity test failed'
+            [string]$finding.Recommendation | Should -Not -Be $script:C11ReplAdvice
             [string]$finding.Detail | Should -Match 'Not run after Connectivity failed'
             foreach ($other in @($script:C11Dc1, $script:C11Dc3)) {
                 [string]@($grid | Where-Object { $_.DomainController -eq $other })[0].Status | Should -Be 'Pass' -Because $other
@@ -16134,7 +16141,8 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             [string]$one.DCDIAG_Netlogons | Should -Be 'Fail'
             [string]$one.Failures | Should -Match 'KB 3073945'
             $finding = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $one -StatusColumn 'Status'
-            [string]$finding.Recommendation | Should -Be $script:C11DcdiagAdvice
+            # Since PORT-PLAN C11h the NetLogons entry, not the unscoped dcdiag advice.
+            [string]$finding.Recommendation | Should -Match '^dcdiag''s NetLogons test failed'
             [string]$finding.Recommendation | Should -Not -Be $script:C11ReplAdvice
         }
         It 'gives a row with one unrecognised (possibly localised) cell the dcdiag advice, not the event-log coverage advice' {
@@ -16148,7 +16156,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
                 [string]$row.DCDIAG_KccEvent | Should -Be 'Not Assessed' -Because $row.DomainController
                 [string]$row.Status | Should -Be 'Warning' -Because $row.DomainController
                 $finding = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $row -StatusColumn 'Status'
-                [string]$finding.Recommendation | Should -Be $script:C11DcdiagAdvice -Because $row.DomainController
+                # Since PORT-PLAN C11h the Not Assessed grid entry, not the unscoped dcdiag advice.
+                [string]$finding.Recommendation | Should -Match 'gave no verdict this tool could read' -Because $row.DomainController
+                [string]$finding.Recommendation | Should -Not -Match 'cleared or wrapped' -Because $row.DomainController
             }
         }
         It 'reports localised output as not recognised on every cell, and the row Not Assessed, never Pass' {
@@ -16408,9 +16418,11 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
                 Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $item -Detail $script:C11Hostile | Should -Be '' -Because $item
             }
         }
-        It 'leaves the grid rows on the unscoped advice they had' {
-            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:C11Dc1 -Detail 'SysVolCheck: no diagnostic lines captured') | Should -Match 'dfsrmig'
-            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:C11Dc1 -Detail 'Advertising: no diagnostic lines captured') | Should -Match 'raw\\dcdiag_'
+        It 'gives the grid rows their own section-scoped advice per failing test, no longer the unscoped advice (PORT-PLAN C11h)' {
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:C11Dc1 -Detail 'SysVolCheck: no diagnostic lines captured') | Should -Match '^dcdiag''s SysVolCheck test failed'
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:C11Dc1 -Detail 'Advertising: no diagnostic lines captured') | Should -Match '^dcdiag''s Advertising test failed'
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:C11Dc1 -Detail 'SysVolCheck: no diagnostic lines captured') | Should -Not -Match 'dfsrmig'
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:C11Dc1 -Detail 'Advertising: no diagnostic lines captured') | Should -Not -Be $script:C11DcdiagAdvice
         }
         It 'sits ahead of the first unscoped entry' {
             $map = @($script:RecommendationMap)
@@ -16418,8 +16430,10 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $firstUnscoped = $i; break } }
             $ours = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Section -eq '(?i)^dc diagnostics') { $i } })
             # Declared population: four families, the seven DNS test groups (since PORT-PLAN C12) and
-            # the catch-all.
-            $ours.Count | Should -Be 12
+            # the catch-all; since PORT-PLAN C11h also the 21 grid tests, the Not Assessed entry, the
+            # two not-reachable entries (silent on RPC/135; classified Unreachable, never probed on
+            # 135) and the grid catch-all.
+            $ours.Count | Should -Be 37
             @($ours | Where-Object { $_ -gt $firstUnscoped }).Count | Should -Be 0
             $firstUnscoped | Should -BeGreaterThan 0
         }
@@ -16492,9 +16506,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17070,8 +17084,10 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
                 Dyn = 'secure dynamic updates'; RReg = 'well-known service \(SRV\)'; Ext = 'proxy server' }
         }
         It 'gives each test group its own advice, per DC and per domain, whatever its Detail says' {
-            # Non-vacuity: the hostile Detail does reach unscoped advice on a row with no scoped entry.
-            $baseline = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:C12Dc1 -Detail $script:C12Hostile
+            # Non-vacuity: the hostile Detail does reach unscoped advice on a row with no scoped entry
+            # (since PORT-PLAN C11h a DC Diagnostics grid row has its own entries, so the baseline is a
+            # section with none).
+            $baseline = Get-AdfaRecommendation -Section 'Replication Health' -Item $script:C12Dc1 -Detail $script:C12Hostile
             $baseline | Should -Not -BeNullOrEmpty
             # Declared population: seven groups, two Item forms each.
             $n = 0
@@ -17112,8 +17128,10 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $dns.Count | Should -Be 7
             @($dns | Where-Object { $_ -gt $firstUnscoped }).Count | Should -Be 0
             $catch = @($map | Where-Object { $_.ContainsKey('Section') -and [string]$_.Section -eq '(?i)^dc diagnostics' -and [string]$_.Text -eq '' })
-            $catch.Count | Should -Be 1
-            [string]$catch[0].Match | Should -Match '\|DNS\)'
+            # Declared population: the family catch-all and, since PORT-PLAN C11h, the grid catch-all.
+            $catch.Count | Should -Be 2
+            @($catch | Where-Object { [string]$_.Match -match '\|DNS\)' }).Count | Should -Be 1
+            @($catch | Where-Object { [string]$_.Match -eq '(?i)^DC Diagnostics :: [^\s:]+ :: ' }).Count | Should -Be 1
         }
         It 'gives a failed group the advice of that group, and a Not Assessed row none, through the consolidated finding' {
             $script:C12Answer = { param($Server, $Test)
@@ -17163,9 +17181,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.39.0 (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17316,9 +17334,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.39.0 in the script and the manifest (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries version 1.40.0 in the script and the manifest (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 
@@ -18647,9 +18665,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.39.0 in the script and the manifest (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries version 1.40.0 in the script and the manifest (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 
@@ -19785,9 +19803,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.39.0 in the script and the manifest (bumped by PORT-PLAN H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'carries version 1.40.0 in the script and the manifest (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 
@@ -20506,7 +20524,8 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             function Get-ADObject { param([string]$Server, [string]$Identity, [string[]]$Properties, $ErrorAction) throw (New-Object Fabrikam.Stub.ADIdentityNotFoundException ("Cannot find an object with identity: '{0}'" -f $Identity)) }
             $missing = Get-AdfaInventoryDirectoryRaw -Server $script:C15Forest -Identity 'CN=RID Manager$,CN=System,DC=contoso,DC=com' -Properties @('fSMORoleOwner')
             $missing.NotFound | Should -BeTrue
-            (Get-AdfaInventoryReadCause -Raw $missing -What 'the role object') | Should -Match '\(not found\)'
+            # -CapSource is mandatory since v1.40.0 (PORT-PLAN C4b4).
+            (Get-AdfaInventoryReadCause -Raw $missing -What 'the role object' -CapSource 'Inventory.MaxObjects, a tool default') | Should -Match '\(not found\)'
         }
         It 'reads events with -MaxEvents, a level filter and a start time, and tells no events, no log, a refusal and the bound apart' {
             $script:C15Gwe = @()
@@ -21503,7 +21522,10 @@ Describe 'Declared property lists: no read of every attribute, no secret attribu
             $t.Connections[0].DistinguishedName | Should -Match ',CN=NTDS Settings,CN=DC1,'
             $t.Connections[0].Enabled | Should -BeTrue
             $t.Connections[0].Options | Should -Be 1
-            (@($t.Connections[0].PSObject.Properties.Name) -join ',') | Should -Be 'Name,FromServer,DistinguishedName,Enabled,Options'
+            # Since v1.40.0 (PORT-PLAN C4b3): ToServer, AutoGenerated, OptionFlags and Detail, decoded per MS-ADTS.
+            (@($t.Connections[0].PSObject.Properties.Name) -join ',') | Should -Be 'Name,FromServer,ToServer,DistinguishedName,Enabled,Options,AutoGenerated,OptionFlags,Detail'
+            $t.Connections[0].ToServer | Should -Match '^CN=NTDS Settings,CN=DC1,'
+            $t.Connections[0].AutoGenerated | Should -Be 'Yes'
         }
         It 'a site link read refused by the directory is one Not Assessed row with "access denied", and the sites, subnets and connections survive' {
             $script:C4bLinkThrow = [System.UnauthorizedAccessException]'Access is denied'
@@ -24107,9 +24129,9 @@ Describe 'Promise triage: the README and help promises the code did not keep (C1
     }
 
     Context 'Version' {
-        It 'is 1.39.0 in the script and the manifest (bumped by PORT-PLAN H20c and H20d)' {
-            $script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'is 1.40.0 in the script and the manifest (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
+            $script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 }
@@ -25538,9 +25560,9 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
     }
 
     Context 'Version' {
-        It 'is 1.39.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'is 1.40.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C4b3, C4b4, C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 }
@@ -26177,10 +26199,10 @@ exit $LASTEXITCODE
 
     Context 'Comment-based help of the script and of every function' {
         It 'every function''s help documents each of its parameters with a .PARAMETER entry, and names none it lacks' {
-            # Declared population, measured from the parsed script on v1.38.0: 449 functions, 1670 parameters (the independent review fix added New-AdfaRunFolder, 3, and Get-AdfaScriptExitCode, 1).
+            # Declared population, measured from the parsed script on v1.38.0: 449 functions, 1670 parameters (the independent review fix added New-AdfaRunFolder, 3, and Get-AdfaScriptExitCode, 1); v1.40.0 (PORT-PLAN C4b3, C4b4) added ConvertFrom-AdfaConnectionOptions, Get-AdfaConnectionDestination and Resolve-AdfaCapSource (452 functions) and 26 parameters (1696: those three functions 7, -OptionsConfig 1, -CapSource on 18 functions).
             $script:H21Help.Count | Should -Be @($script:H21Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)).Count
-            $script:H21Help.Count | Should -Be 449 -Because 'declared population: the 449 functions of the script'
-            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1670 -Because 'declared population: the 1670 parameters of those functions'
+            $script:H21Help.Count | Should -Be 452 -Because 'declared population: the 452 functions of the script'
+            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1696 -Because 'declared population: the 1696 parameters of those functions'
             @($script:H21Help | Where-Object { -not $_.HasHelp } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { -not $_.HasSynopsis } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { @($_.Missing).Count -gt 0 } | ForEach-Object { '{0}: {1}' -f $_.Name, (@($_.Missing) -join ',') }) | Should -BeNullOrEmpty
@@ -26268,9 +26290,711 @@ exit $LASTEXITCODE
     }
 
     Context 'Version' {
-        It 'is 1.39.0 in the script and the manifest (PORT-PLAN H21; bumped by H20c and H20d)' {
-            [string]$script:Config.Version | Should -Be '1.39.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.39.0'
+        It 'is 1.40.0 in the script and the manifest (PORT-PLAN H21; bumped by C4b3, C4b4 and C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        }
+    }
+}
+Describe 'Replication connection options and destination, the cap source of every C15 and Stale row, one advice entry per dcdiag grid test (C4b3, C4b4, C11h)' {
+    # PORT-PLAN C4b3, C4b4 and C11h (v1.40.0). No new -Sections value: the rows stay in Topology,
+    # the C15 inventory sections, StaleObjects and DcDiagnostics. Every name is fictional (contoso,
+    # fabrikam) and held in a variable. Vendor facts: MS-ADTS and dcdiag pages on Learn, read 2026-11-19.
+    BeforeAll {
+        $script:LhAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:LhMain = @($script:LhAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))[0]
+        function Get-LhFunction { param([string]$Name) @($script:LhAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true))[0] }
+        function Get-LhCall { param($Ast, [string]$Name) @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq $Name }.GetNewClosure(), $true)) }
+        function Get-LhParameter { param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        $script:LhDom1 = 'contoso.com'
+        $script:LhDom2 = 'north.contoso.com'
+        $script:LhDom3 = 'fabrikam.com'
+        $script:LhDom4 = 'south.contoso.com'
+        $script:LhDc1 = 'dc1.contoso.com'
+        $script:LhDc2 = 'dc2.contoso.com'
+        $script:LhDc3 = 'dc3.fabrikam.com'
+        $script:LhRunner = 'runner01'
+        $script:LhConn = $script:Config['ConnectionOptions']
+        $script:LhInv = $script:Config.Inventory
+        $script:LhStale = $script:Config.Stale
+        $script:LhFile = 'set in the -ConfigOverridePath file'
+        # A read seam result in the shape the C15 seam returns: Ok, Error, ErrorType, NotFound, Records, Count, Capped.
+        function New-LhRaw { param($Records = @(), [bool]$Ok = $true, [bool]$Capped = $false, [string]$ErrorText = '', [string]$ErrorType = '')
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = $ErrorType; NotFound = $false; Refused = $false; Records = @($Records); Count = @($Records).Count; Capped = $Capped; Filter = '(x)'; Identity = '' } }
+        # A connection object as Get-ADReplicationConnection -Properties hands it on: the LDAP names asked for.
+        function New-LhConnection { param([string]$Name, [string]$Dn, [string]$From, $Options, [switch]$NoOptions)
+            $r = [ordered]@{ name = $Name; distinguishedName = $Dn; fromServer = $From; enabledConnection = $true }
+            if (-not $NoOptions) { $r['options'] = $Options }
+            [pscustomobject]$r }
+        $script:LhSite = 'CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com'
+        $script:LhDsa1 = ('CN=NTDS Settings,CN=DC1,CN=Servers,{0}' -f $script:LhSite)
+        $script:LhDsa2 = ('CN=NTDS Settings,CN=DC2,CN=Servers,{0}' -f $script:LhSite)
+        # The unscoped advice texts: no grid row may reach any of them.
+        $script:LhUnscoped = @($script:RecommendationMap | Where-Object { -not $_.ContainsKey('Section') } | ForEach-Object { [string]$_.Text })
+        $script:LhPerDc = @($script:Config.DcDiag.PerDcTests | ForEach-Object { [string]$_.Test })
+        # dcdiag output in the shape of Learn's sample, one test per invocation.
+        function New-LhDcdiagOutput { param([string]$Dc, [string]$Test, [string]$Verdict = 'passed', [string[]]$Lines = @())
+            $b = New-Object System.Collections.Generic.List[string]
+            foreach ($l in @('Directory Server Diagnosis', '', 'Performing initial setup:', ("   Home Server = {0}" -f $Dc), '   * Identified AD Forest.', '   Done gathering initial info.', '', 'Doing initial required tests', '',
+                    ("   Testing server: Default-First-Site-Name\{0}" -f $Dc), '      Starting test: Connectivity')) { $b.Add($l) }
+            $conn = 'passed'
+            if ($Test -eq 'Connectivity') { $conn = $Verdict; foreach ($l in $Lines) { $b.Add(("         {0}" -f $l)) } }
+            $b.Add(("         ......................... {0} {1} test Connectivity" -f $Dc, $conn))
+            if ($Test -ne 'Connectivity') {
+                foreach ($l in @('', 'Doing primary tests', '', ("   Testing server: Default-First-Site-Name\{0}" -f $Dc), ("      Starting test: {0}" -f $Test))) { $b.Add($l) }
+                foreach ($l in $Lines) { $b.Add(("         {0}" -f $l)) }
+                $b.Add(("         ......................... {0} {1} test {2}" -f $Dc, $Verdict, $Test))
+            }
+            return ($b -join "`r`n")
+        }
+        # The grid collector with the dcdiag, port and command seams stubbed: $script:LhAnswer (server, test) answers.
+        function Invoke-LhGrid { param([object[]]$Targets, [string[]]$Down = @(), [bool]$HaveDcdiag = $true)
+            $script:LhDown = @($Down)
+            $script:LhHave = $HaveDcdiag
+            Clear-AdfaDcPortCache
+            Mock Test-CommandAvailable { [bool]$script:LhHave }
+            Mock Test-TcpPort { $script:LhDown -notcontains [string]$ComputerName }
+            Mock Invoke-ExternalCommand {
+                $t = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
+                $s = ([regex]::Match([string]$Arguments, '/s:(\S+)')).Groups[1].Value
+                & $script:LhAnswer $s $t
+            }
+            $rows = @(Get-AdfaDcDiagnostic -DomainControllers $Targets -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 -ScopedDomains @($script:LhDom1) -ForestRoot $script:LhDom1)
+            return , @($rows | Where-Object { $null -ne $_.PSObject.Properties['DomainController'] })
+        }
+        function New-LhResult { param([string]$StdOut, [bool]$Success = $true, $ExitCode = 0)
+            [pscustomobject]@{ Success = $Success; ExitCode = $ExitCode; Attempt = 1; Error = $null; StdOut = $StdOut; OutFile = $null } }
+        function Get-LhShort { param([string]$HostName) $HostName.Split('.')[0].ToUpperInvariant() }
+        function Get-LhEntryText { param([string]$Test)
+            [string]@($script:RecommendationMap | Where-Object { $_.ContainsKey('Section') -and [string]$_.Match -eq ("(?i)^DC Diagnostics :: [^\s:]+ :: {0}: (?!NOT ASSESSED)" -f $Test) })[0].Text }
+    }
+
+    Context 'C4b3: the ConnectionOptions table (MS-ADTS, read 2026-11-19)' {
+        It 'is versioned, dated and sourced from the three MS-ADTS sections' {
+            $script:LhConn | Should -Not -BeNullOrEmpty
+            $script:LhConn['Version'] | Should -Be '1.40.0'
+            $script:LhConn['ReadDate'] | Should -Be '2026-11-19'
+            foreach ($id in @('d6cca73b-9696-4700-9dab-7c4e54502960', '6c846dd8-cbaf-43bb-8354-44cfd2195c4c', '8ebf2419-1169-4413-88e2-12a5ad499cf5')) { [string]$script:LhConn['SourceUrl'] | Should -Match $id }
+            [string]$script:LhConn['ThresholdSource'] | Should -Match 'MS-ADTS'
+        }
+        It 'pins every MS-ADTS bit by name and value, and nothing else (declared population: seven bits)' {
+            $expected = [ordered]@{ NTDSCONN_OPT_IS_GENERATED = 1; NTDSCONN_OPT_TWOWAY_SYNC = 2; NTDSCONN_OPT_OVERRIDE_NOTIFY_DEFAULT = 4; NTDSCONN_OPT_USE_NOTIFY = 8
+                NTDSCONN_OPT_DISABLE_INTERSITE_COMPRESSION = 16; NTDSCONN_OPT_USER_OWNED_SCHEDULE = 32; NTDSCONN_OPT_RODC_TOPOLOGY = 64 }
+            $bits = @($script:LhConn['Bits'])
+            $bits.Count | Should -Be $expected.Count
+            foreach ($k in @($expected.Keys)) {
+                $hit = @($bits | Where-Object { [string]$_['Name'] -eq $k })
+                $hit.Count | Should -Be 1 -Because $k
+                [int]$hit[0]['Value'] | Should -Be $expected[$k] -Because $k
+            }
+            [int]$script:LhConn['GeneratedBit'] | Should -Be 1
+            $script:LhConn['DestinationParentRdn'] | Should -Be 'CN=NTDS Settings'
+            $script:LhConn['ServersContainerRdn'] | Should -Be 'CN=Servers'
+        }
+        It 'cannot be set from the override file: the section is unknown there, and any shape of it is refused' {
+            @($script:ConfigOverrideSections.Keys) | Should -Not -Contain 'ConnectionOptions'
+            foreach ($json in @('{ "ConnectionOptions": { "GeneratedBit": 2 } }', '{ "ConnectionOptions": {} }', '{ "ConnectionOptions": null }', '{ "ConnectionOptions": [1] }', '{ "ConnectionOptions": "x" }')) {
+                { Resolve-AdfaConfigOverride -Override ($json | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\c4b3.json' } | Should -Throw -Because $json
+            }
+        }
+    }
+
+    Context 'C4b3: decoding options (pure)' {
+        It 'reads a generated connection (IG set) as Yes, a manual one as No, each from a read integer' {
+            $g = ConvertFrom-AdfaConnectionOptions -Value 1 -Config $script:LhConn
+            $g.Read | Should -BeTrue
+            $g.Generated | Should -Be 'Yes'
+            (@($g.Flags) -join ',') | Should -Be 'NTDSCONN_OPT_IS_GENERATED'
+            $m = ConvertFrom-AdfaConnectionOptions -Value 0 -Config $script:LhConn
+            $m.Generated | Should -Be 'No'
+            @($m.Flags).Count | Should -Be 0
+            $two = ConvertFrom-AdfaConnectionOptions -Value 2 -Config $script:LhConn
+            $two.Generated | Should -Be 'No'
+            (@($two.Flags) -join ',') | Should -Be 'NTDSCONN_OPT_TWOWAY_SYNC'
+        }
+        It 'names every bit of the table, in table order, and keeps an unknown bit raw, never named, never dropped' {
+            $all = ConvertFrom-AdfaConnectionOptions -Value 127 -Config $script:LhConn
+            # Declared population: the seven bits of the table.
+            @($all.Flags).Count | Should -Be 7
+            (@($all.Flags) -join ',') | Should -Be ((@($script:LhConn['Bits']) | ForEach-Object { [string]$_['Name'] }) -join ',')
+            $odd = ConvertFrom-AdfaConnectionOptions -Value 0x181 -Config $script:LhConn
+            (@($odd.Unknown) -join ',') | Should -Be '0x80,0x100'
+            (@($odd.Flags) -join ',') | Should -Be 'NTDSCONN_OPT_IS_GENERATED'
+            $odd.Generated | Should -Be 'Yes'
+            $rodc = ConvertFrom-AdfaConnectionOptions -Value 65 -Config $script:LhConn
+            (@($rodc.Flags) -join ',') | Should -Be 'NTDSCONN_OPT_IS_GENERATED,NTDSCONN_OPT_RODC_TOPOLOGY'
+        }
+        It 'takes a negative value as unsigned 32 bits, and a string that is a whole number as that number' {
+            $neg = ConvertFrom-AdfaConnectionOptions -Value ([int32]-2147483647) -Config $script:LhConn
+            $neg.Read | Should -BeTrue
+            $neg.Generated | Should -Be 'Yes'
+            (@($neg.Unknown) -join ',') | Should -Be '0x80000000'
+            (ConvertFrom-AdfaConnectionOptions -Value '9' -Config $script:LhConn).Generated | Should -Be 'Yes'
+        }
+        It 'decodes both edges the range checks name: [int32]::MinValue (the high bit read as signed) and 0xFFFFFFFF; one past either edge is Not read' {
+            # Lower edge: -2147483648 is the high bit only, taken as unsigned 0x80000000, IG clear.
+            $min = ConvertFrom-AdfaConnectionOptions -Value ([int32]::MinValue) -Config $script:LhConn
+            $min.Read | Should -BeTrue
+            $min.Value | Should -Be ([int64]2147483648)
+            $min.Generated | Should -Be 'No'
+            (@($min.Unknown) -join ',') | Should -Be '0x80000000'
+            # Upper edge: every one of the 32 bits set - the seven named bits and the other 25 raw.
+            $max = ConvertFrom-AdfaConnectionOptions -Value ([int64]4294967295) -Config $script:LhConn
+            $max.Read | Should -BeTrue
+            $max.Value | Should -Be ([int64]4294967295)
+            $max.Generated | Should -Be 'Yes'
+            @($max.Flags).Count | Should -Be 7
+            # Declared population: bits 7 to 31, the 25 bits the MS-ADTS table does not name.
+            @($max.Unknown).Count | Should -Be 25
+            @($max.Unknown)[24] | Should -Be '0x80000000'
+            # One past each edge.
+            foreach ($v in @([int64]-2147483649, [int64]4294967296)) {
+                $x = ConvertFrom-AdfaConnectionOptions -Value $v -Config $script:LhConn
+                $x.Read | Should -BeFalse -Because $v
+                $x.Generated | Should -Be 'Not read' -Because $v
+                $x.Cause | Should -Match 'outside 32 bits' -Because $v
+            }
+        }
+        It 'never says in a Not read cause that the KCC generated the connection: MS-ADTS gives IG another meaning on an RODC NTFRS connection' {
+            $cfg = @{} + $script:LhConn
+            $cfg.Remove('GeneratedBit')
+            # Declared population: the four Not read causes (not returned, not a number, outside 32 bits, no GeneratedBit).
+            $causes = @(
+                (ConvertFrom-AdfaConnectionOptions -Value $null -Config $script:LhConn).Cause,
+                (ConvertFrom-AdfaConnectionOptions -Value 'abc' -Config $script:LhConn).Cause,
+                (ConvertFrom-AdfaConnectionOptions -Value ([int64]4294967296) -Config $script:LhConn).Cause,
+                (ConvertFrom-AdfaConnectionOptions -Value 1 -Config $cfg).Cause)
+            $causes.Count | Should -Be 4
+            foreach ($c in $causes) {
+                [string]$c | Should -Not -BeNullOrEmpty
+                [string]$c | Should -Not -Match 'KCC'
+                [string]$c | Should -Match 'NTDSCONN_OPT_IS_GENERATED'
+            }
+        }
+        It 'is Not read, with a cause and never No, when options is <Name>' -ForEach @(
+            @{ Name = 'absent'; Value = $null; Cause = 'not returned' }
+            @{ Name = 'empty'; Value = ''; Cause = 'not returned' }
+            @{ Name = 'text'; Value = 'abc'; Cause = 'not a whole number' }
+            @{ Name = 'a fraction'; Value = 1.5; Cause = 'not a whole number' }
+            @{ Name = 'a boolean'; Value = $true; Cause = 'not a whole number' }
+            @{ Name = 'a list'; Value = @(1, 2); Cause = 'not a whole number' }
+            @{ Name = 'wider than 32 bits'; Value = [int64]4294967296; Cause = 'outside 32 bits' }
+        ) {
+            $d = ConvertFrom-AdfaConnectionOptions -Value $Value -Config $script:LhConn
+            $d.Generated | Should -Be 'Not read'
+            $d.Read | Should -BeFalse
+            $d.Cause | Should -Match $Cause
+            @($d.Flags).Count | Should -Be 0
+        }
+        It 'says Not read when the table holds no GeneratedBit, rather than reading every connection as manual' {
+            $cfg = @{} + $script:LhConn
+            $cfg.Remove('GeneratedBit')
+            $d = ConvertFrom-AdfaConnectionOptions -Value 1 -Config $cfg
+            $d.Generated | Should -Be 'Not read'
+            $d.Cause | Should -Match 'GeneratedBit'
+        }
+    }
+
+    Context 'C4b3: the destination from the parent of the DN (pure)' {
+        It 'derives the destination NTDS Settings DN and its server object from a connection under CN=NTDS Settings in CN=Servers' {
+            $d = Get-AdfaConnectionDestination -DistinguishedName ('CN=8a1c7e52-0000-4000-8000-000000000001,{0}' -f $script:LhDsa1) -Config $script:LhConn
+            $d.Ok | Should -BeTrue
+            $d.DsaDn | Should -Be $script:LhDsa1
+            $d.ServerDn | Should -Be ('CN=DC1,CN=Servers,{0}' -f $script:LhSite)
+        }
+        It 'does not split at an escaped comma in a name' {
+            $d = Get-AdfaConnectionDestination -DistinguishedName ('CN=conn\,manual,{0}' -f $script:LhDsa2) -Config $script:LhConn
+            $d.Ok | Should -BeTrue
+            $d.DsaDn | Should -Be $script:LhDsa2
+        }
+        It 'is not derived, with the cause, for <Name>' -ForEach @(
+            @{ Name = 'no DN'; Dn = ''; Cause = 'not returned' }
+            @{ Name = 'a DN with no parent'; Dn = 'CN=lonely'; Cause = 'no parent' }
+            @{ Name = 'an NTFRS member parent'; Dn = 'CN=c1,CN=DC1,CN=Domain System Volume (SYSVOL share),CN=File Replication Service,CN=System,DC=contoso,DC=com'; Cause = 'the parent RDN of this connection is not CN=NTDS Settings' }
+            @{ Name = 'NTDS Settings outside a Servers container'; Dn = 'CN=c1,CN=NTDS Settings,CN=DC1,CN=Elsewhere,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com'; Cause = 'not under a server object in a CN=Servers container' }
+            @{ Name = 'NTDS Settings at the top'; Dn = 'CN=c1,CN=NTDS Settings'; Cause = 'the parent RDN of this connection is not CN=NTDS Settings' }
+            @{ Name = 'a name-conflict (CNF) NTDS Settings parent'; Dn = 'CN=x,CN=NTDS Settings\0ACNF:0f0e0d0c-0000-0000-0000-000000000001,CN=DC01,CN=Servers,CN=S1,CN=Sites,CN=Configuration,DC=contoso,DC=local'; Cause = 'the parent RDN of this connection is not CN=NTDS Settings' }
+        ) {
+            $d = Get-AdfaConnectionDestination -DistinguishedName $Dn -Config $script:LhConn
+            $d.Ok | Should -BeFalse
+            $d.DsaDn | Should -Be ''
+            $d.Cause | Should -Match ([regex]::Escape($Cause))
+            # Only the RDN text is compared; objectClass is not read, so no cause may state the parent's class.
+            $d.Cause | Should -Not -Match '(?i)is not an nTDSDSA'
+        }
+        It 'says the parent''s objectClass was not read when only the RDN text differs (a CNF-mangled NTDS Settings)' {
+            $d = Get-AdfaConnectionDestination -DistinguishedName 'CN=x,CN=NTDS Settings\0ACNF:0f0e0d0c-0000-0000-0000-000000000001,CN=DC01,CN=Servers,CN=S1,CN=Sites,CN=Configuration,DC=contoso,DC=local' -Config $script:LhConn
+            $d.Ok | Should -BeFalse
+            $d.Cause | Should -Match ([regex]::Escape("the parent's objectClass is not read"))
+        }
+    }
+
+    Context 'C4b3: the Replication Connections rows' {
+        It 'gives each connection of two DCs its ToServer, AutoGenerated and OptionFlags (declared population: two connections), in the new column order' {
+            $raw = New-LhRaw -Records @(
+                (New-LhConnection -Name 'k1' -Dn ('CN=k1,{0}' -f $script:LhDsa1) -From $script:LhDsa2 -Options 1),
+                (New-LhConnection -Name 'm2' -Dn ('CN=m2,{0}' -f $script:LhDsa2) -From $script:LhDsa1 -Options 0))
+            $rows = @(ConvertTo-AdfaTopologyListRow -Kind Connection -Raw $raw)
+            $rows.Count | Should -Be 2
+            (@($rows[0].PSObject.Properties.Name) -join ',') | Should -Be 'Name,FromServer,ToServer,DistinguishedName,Enabled,Options,AutoGenerated,OptionFlags,Detail'
+            $rows[0].ToServer | Should -Be $script:LhDsa1
+            $rows[0].FromServer | Should -Be $script:LhDsa2
+            $rows[0].AutoGenerated | Should -Be 'Yes'
+            $rows[0].OptionFlags | Should -Be 'NTDSCONN_OPT_IS_GENERATED'
+            $rows[0].Detail | Should -Be ''
+            $rows[1].ToServer | Should -Be $script:LhDsa2
+            $rows[1].AutoGenerated | Should -Be 'No'
+            $rows[1].OptionFlags | Should -Be '(none)'
+            $rows[1].Options | Should -Be 0
+        }
+        It 'shows a connection whose options was not returned as Not read with the cause, never No, and still derives its ToServer' {
+            $raw = New-LhRaw -Records @((New-LhConnection -Name 'x' -Dn ('CN=x,{0}' -f $script:LhDsa1) -From $script:LhDsa2 -NoOptions))
+            $r = @(ConvertTo-AdfaTopologyListRow -Kind Connection -Raw $raw)[0]
+            $r.AutoGenerated | Should -Be 'Not read'
+            $r.OptionFlags | Should -Be ''
+            $r.Detail | Should -Match '^AutoGenerated: options was not returned'
+            $r.ToServer | Should -Be $script:LhDsa1
+        }
+        It 'leaves ToServer empty with the cause when the parent is not an NTDS Settings object, and names an unknown bit raw' {
+            $raw = New-LhRaw -Records @((New-LhConnection -Name 'f' -Dn 'CN=f,CN=DC1,CN=Domain System Volume (SYSVOL share),CN=File Replication Service,CN=System,DC=contoso,DC=com' -From $script:LhDsa2 -Options 0x201))
+            $r = @(ConvertTo-AdfaTopologyListRow -Kind Connection -Raw $raw)[0]
+            $r.ToServer | Should -Be ''
+            $r.Detail | Should -Match 'ToServer: the parent RDN of this connection is not CN=NTDS Settings'
+            $r.Detail | Should -Not -Match '(?i)is not an nTDSDSA'
+            $r.OptionFlags | Should -Be 'NTDSCONN_OPT_IS_GENERATED; 0x200 (not in the MS-ADTS table)'
+        }
+        It 'an empty complete read is an empty list, and no row says No' {
+            @(ConvertTo-AdfaTopologyListRow -Kind Connection -Raw (New-LhRaw -Records @())).Count | Should -Be 0
+        }
+        It 'an unreachable read and an access-denied read stay one Not Assessed row each, told apart, with no AutoGenerated column' {
+            $down = @(ConvertTo-AdfaTopologyListRow -Kind Connection -Raw (New-LhRaw -Ok $false -ErrorText 'Unable to contact the server.'))
+            $denied = @(ConvertTo-AdfaTopologyListRow -Kind Connection -Raw (New-LhRaw -Ok $false -ErrorText 'Zugriff verweigert' -ErrorType 'System.UnauthorizedAccessException'))
+            foreach ($x in @(, $down) + @(, $denied)) {
+                @($x).Count | Should -Be 1
+                $x[0].Status | Should -Be 'Not Assessed'
+                $x[0].PSObject.Properties['AutoGenerated'] | Should -BeNullOrEmpty
+            }
+            $down[0].Detail | Should -Match '\(unreachable\)'
+            $down[0].Detail | Should -Not -Match 'access denied'
+            $denied[0].Detail | Should -Match '\(access denied\)'
+            $denied[0].Detail | Should -Not -Match 'unreachable'
+        }
+        It 'decodes each row with the ConnectionOptions table: wired by the AST, the default table is the script''s' {
+            $fn = Get-LhFunction 'ConvertTo-AdfaTopologyListRow'
+            $p = @($fn.Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'OptionsConfig' })
+            $p.Count | Should -Be 1
+            $p[0].DefaultValue.Extent.Text | Should -Be '$script:Config.ConnectionOptions'
+            foreach ($name in @('ConvertFrom-AdfaConnectionOptions', 'Get-AdfaConnectionDestination')) {
+                $calls = @(Get-LhCall -Ast $fn -Name $name)
+                $calls.Count | Should -Be 1 -Because $name
+                (Get-LhParameter -Call $calls[0] -Name 'Config').Extent.Text | Should -Be '$OptionsConfig' -Because $name
+            }
+            # Still the Topology branch's rows, and still the declared DirectoryRead list: nothing new is read.
+            (@($script:Config.DirectoryRead['ConnectionProperties']) -join ',') | Should -Be 'name,distinguishedName,fromServer,enabledConnection,options'
+            $assign = @($script:LhMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$sectionData['Replication Connections']" }, $true))
+            $assign.Count | Should -Be 1
+            $assign[0].Right.Extent.Text | Should -Be '$topology.Connections'
+        }
+    }
+
+    Context 'C4b4: every C15 caller passes a cap source' {
+        It 'makes -CapSource of Get-AdfaInventoryReadCause mandatory, with no default' {
+            $fn = Get-LhFunction 'Get-AdfaInventoryReadCause'
+            $p = @($fn.Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'CapSource' })
+            $p.Count | Should -Be 1
+            $p[0].DefaultValue | Should -BeNullOrEmpty
+            $mandatory = @($p[0].Attributes | Where-Object { $_.TypeName.Name -eq 'Parameter' -and $_.Extent.Text -match 'Mandatory' })
+            $mandatory.Count | Should -Be 1
+        }
+        It 'passes -CapSource at every call of Get-AdfaInventoryReadCause (declared population: 14 calls, counted from the AST)' {
+            $calls = @(Get-LhCall -Ast $script:LhAst -Name 'Get-AdfaInventoryReadCause')
+            $calls.Count | Should -Be 14
+            foreach ($c in $calls) { (Get-LhParameter -Call $c -Name 'CapSource') | Should -Not -BeNullOrEmpty -Because ("line {0}" -f $c.Extent.StartLineNumber) }
+        }
+        It 'gives none of the C15 and Stale row functions a default that says "a tool default", and no string says "(MaxObjects, a tool default)"' {
+            $names = @('Get-AdfaLevelRow', 'Get-AdfaFsmoRow', 'Get-AdfaSuffixListRow', 'Get-AdfaUpnSuffixRow', 'Get-AdfaAllowedDnsSuffixRow', 'Get-AdfaTopologyInventory',
+                'Get-AdfaTrustInventoryRows', 'Get-AdfaTrustInventory', 'Get-AdfaObjectCountRows', 'Get-AdfaGroupInventoryRows', 'ConvertTo-AdfaGroupExportRow',
+                'Get-AdfaIdentityInventoryDepth', 'Get-AdfaGpoDirectoryRows', 'Get-AdfaGpoDirectoryInventory', 'Get-AdfaStaleCountVerdict', 'Get-AdfaPasswordAgeVerdict',
+                'Get-AdfaStaleDisabledVerdict', 'Get-AdfaStaleObject')
+            # Declared population: the 18 functions this row threads -CapSource through, each with the parameter.
+            $names.Count | Should -Be 18
+            foreach ($n in $names) {
+                $fn = Get-LhFunction $n
+                $fn | Should -Not -BeNullOrEmpty -Because $n
+                $p = @($fn.Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'CapSource' })
+                $p.Count | Should -Be 1 -Because $n
+                [string]$p[0].DefaultValue.Extent.Text | Should -Not -Match 'tool default' -Because $n
+            }
+            $strings = @($script:LhAst.FindAll({ param($n) ($n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) -and $n.Value -match '\(MaxObjects, a tool default\)' }, $true))
+            $strings.Count | Should -Be 0
+        }
+        It 'computes a Stale cap source from the Stale table in force, and passes the two cap sources to every wrapper of Invoke-Main (declared population: nine calls)' {
+            $assign = @($script:LhMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$staleCapSource' }, $true))
+            $assign.Count | Should -Be 1
+            $src = @(Get-LhCall -Ast $assign[0] -Name 'Get-AdfaCapSource')
+            $src.Count | Should -Be 1
+            (Get-LhParameter -Call $src[0] -Name 'Config').Extent.Text | Should -Be '$staleConfig'
+            (Get-LhParameter -Call $src[0] -Name 'BaseConfig').Extent.Text | Should -Be '$script:Config.Stale'
+            (Get-LhParameter -Call $src[0] -Name 'Label').Extent.Text | Should -Be "'Stale'"
+            $cfg = @($script:LhMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq "`$configOverrides.ContainsKey('Stale')" }, $true))
+            $cfg.Count | Should -Be 1
+            $assign[0].Extent.StartOffset | Should -BeGreaterThan $cfg[0].Extent.EndOffset
+            $expect = [ordered]@{ 'Get-AdfaReplicationTopology' = '$inventoryCapSource'; 'Get-AdfaTrustHealth' = '$inventoryCapSource'; 'ConvertTo-AdfaIdentityExport' = '$inventoryCapSource'
+                'Get-AdfaTopologyInventory' = '$inventoryCapSource'; 'Get-AdfaTrustInventory' = '$inventoryCapSource'; 'Get-AdfaGpoDirectoryInventory' = '$inventoryCapSource'
+                'Get-AdfaIdentityInventoryDepth' = '$inventoryCapSource'; 'Get-AdfaStaleObject' = '$staleCapSource' }
+            $users = @()
+            foreach ($name in @($expect.Keys)) {
+                foreach ($c in @(Get-LhCall -Ast $script:LhMain -Name $name)) { $users += [pscustomobject]@{ Name = $name; Source = [string](Get-LhParameter -Call $c -Name 'CapSource').Extent.Text } }
+            }
+            $users.Count | Should -Be 9
+            foreach ($u in $users) { $u.Source | Should -Be $expect[$u.Name] -Because $u.Name }
+        }
+    }
+
+    Context 'C4b4: a cap the file set is never called a tool default, row by row' {
+        BeforeAll {
+            $script:LhInvFile = Merge-AdfaSpecConfig -BaseConfig $script:LhInv -Override @{ MaxObjects = 2 } -OverrideSource 'C:\cfg\c4b4.json'
+            $script:LhStaleFile = Merge-AdfaSpecConfig -BaseConfig $script:LhStale -Override @{ MaxObjects = 2 } -OverrideSource 'C:\cfg\c4b4.json'
+            $script:LhCapped = New-LhRaw -Records @([pscustomobject]@{ Name = 'g1'; sAMAccountName = 'g1'; groupType = -2147483646; memberCount = 0 }, [pscustomobject]@{ Name = 'g2'; sAMAccountName = 'g2'; groupType = -2147483646; memberCount = 1 }, [pscustomobject]@{ Name = 'g3'; sAMAccountName = 'g3'; groupType = -2147483646; memberCount = 1 }) -Capped $true
+            $script:LhNow = [datetime]::new(2026, 11, 19, 9, 0, 0, [System.DateTimeKind]::Utc)
+            # One scriptblock per row family: it returns the text that names the cap.
+            $script:LhFamilies = [ordered]@{
+                'Forest functional level'   = { param($Cfg, $Cap) $a = @{ Kind = 'Forest'; Scope = $script:LhDom1; Raw = $script:LhCapped; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (Get-AdfaLevelRow @a).Detail }
+                'FSMO role holder'          = { param($Cfg, $Cap) $a = @{ Role = 'RID master'; Scope = $script:LhDom1; Raw = $script:LhCapped; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (Get-AdfaFsmoRow @a).Detail }
+                'UPN suffixes'              = { param($Cfg, $Cap) $a = @{ ForestName = $script:LhDom1; Raw = $script:LhCapped; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (Get-AdfaUpnSuffixRow @a).Detail }
+                'Allowed DNS suffixes'      = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Raw = $script:LhCapped; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (Get-AdfaAllowedDnsSuffixRow @a).Detail }
+                'Trusts (population)'       = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Raw = $script:LhCapped; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; @(Get-AdfaTrustInventoryRows @a)[0].Detail }
+                'Object count'              = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Reads = @{ Users = $script:LhCapped }; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; $r = @(Get-AdfaObjectCountRows @a)[0]; ("{0} || {1}" -f $r.Detail, $r.Evidence) }
+                'Groups (three rows)'       = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Raw = $script:LhCapped; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (@(Get-AdfaGroupInventoryRows @a) | ForEach-Object { "{0} || {1}" -f $_.Detail, $_.Evidence }) -join ' ## ' }
+                'Group export ListComplete' = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Raw = $script:LhCapped; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (@(ConvertTo-AdfaGroupExportRow @a) | ForEach-Object { $_.ListComplete }) -join ' ## ' }
+                'GPO directory inventory'   = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Gpc = $script:LhCapped; Som = $script:LhCapped; Site = $script:LhCapped; Wmi = $script:LhCapped; Config = $Cfg; GpoConfig = $script:Config.Gpo }; if ($Cap) { $a.CapSource = $Cap }; @(Get-AdfaGpoDirectoryRows @a)[0].Detail }
+            }
+            $script:LhStaleFamilies = [ordered]@{
+                'Inactive enabled users'             = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Kind = 'User'; Raw = $script:LhCapped; Interval = $null; StaleDays = 90; Now = $script:LhNow; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (Get-AdfaStaleCountVerdict @a).Detail }
+                'Inactive enabled computers'         = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Kind = 'Computer'; Raw = $script:LhCapped; Interval = $null; StaleDays = 90; Now = $script:LhNow; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (Get-AdfaStaleCountVerdict @a).Detail }
+                'Enabled users with an old password' = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Raw = $script:LhCapped; Now = $script:LhNow; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (Get-AdfaPasswordAgeVerdict @a).Detail }
+                'Stale disabled users'               = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Kind = 'User'; Raw = $script:LhCapped; Interval = $null; StaleDays = 90; Now = $script:LhNow; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (Get-AdfaStaleDisabledVerdict @a).Detail }
+                'Stale disabled computers'           = { param($Cfg, $Cap) $a = @{ DomainName = $script:LhDom1; Kind = 'Computer'; Raw = $script:LhCapped; Interval = $null; StaleDays = 90; Now = $script:LhNow; Config = $Cfg }; if ($Cap) { $a.CapSource = $Cap }; (Get-AdfaStaleDisabledVerdict @a).Detail }
+            }
+        }
+        It 'the override is valid for both tables, and Get-AdfaCapSource names the file for each' {
+            [int]$script:LhInvFile['MaxObjects'] | Should -Be 2
+            [int]$script:LhStaleFile['MaxObjects'] | Should -Be 2
+            Get-AdfaCapSource -Config $script:LhStaleFile -BaseConfig $script:LhStale -Key 'MaxObjects' -Label 'Stale' | Should -Be ('Stale.MaxObjects, {0}' -f $script:LhFile)
+            Get-AdfaCapSource -Config $script:LhStale -BaseConfig $script:LhStale -Key 'MaxObjects' -Label 'Stale' | Should -Be 'Stale.MaxObjects, a tool default'
+        }
+        It 'refuses a malformed Stale MaxObjects in the file: <Name>' -ForEach @(
+            @{ Name = 'text'; Value = '5' }, @{ Name = 'zero'; Value = 0 }, @{ Name = 'over the range'; Value = 1000001 }, @{ Name = 'a fraction'; Value = 2.5 }, @{ Name = 'a list'; Value = @(5) }, @{ Name = 'null'; Value = $null }
+        ) {
+            { Merge-AdfaSpecConfig -BaseConfig $script:LhStale -Override @{ MaxObjects = $Value } -OverrideSource 'C:\cfg\c4b4.json' } | Should -Throw
+        }
+        It 'Inventory row family <Family>: a file-set cap is named as the file''s, with and without -CapSource; the built-in cap is a tool default' -ForEach @(
+            @{ Family = 'Forest functional level' }, @{ Family = 'FSMO role holder' }, @{ Family = 'UPN suffixes' }, @{ Family = 'Allowed DNS suffixes' }, @{ Family = 'Trusts (population)' },
+            @{ Family = 'Object count' }, @{ Family = 'Groups (three rows)' }, @{ Family = 'Group export ListComplete' }, @{ Family = 'GPO directory inventory' }
+        ) {
+            $block = $script:LhFamilies[$Family]
+            $fileCap = Get-AdfaCapSource -Config $script:LhInvFile -BaseConfig $script:LhInv -Key 'MaxObjects' -Label 'Inventory'
+            foreach ($cap in @($null, $fileCap)) {
+                $text = [string](& $block $script:LhInvFile $cap)
+                $text | Should -Match ([regex]::Escape(('Inventory.MaxObjects, {0}' -f $script:LhFile))) -Because $Family
+                $text | Should -Not -Match 'a tool default' -Because $Family
+            }
+            $builtIn = [string](& $block $script:LhInv $null)
+            $builtIn | Should -Match ([regex]::Escape('Inventory.MaxObjects, a tool default')) -Because $Family
+            $builtIn | Should -Not -Match ([regex]::Escape($script:LhFile)) -Because $Family
+        }
+        It 'GPO directory read <Read>, capped alone after a complete groupPolicyContainer read: a file-set cap is named as the file''s, with and without -CapSource; the built-in cap is a tool default' -ForEach @(
+            # Declared population: the four reads of Get-AdfaGpoDirectoryRows past the Gpc early return
+            # ($somCause, $siteCause, $wmiCause and $otherCause).
+            @{ Read = 'Som'; What = 'the gPLink of the domain head and its OUs' }
+            @{ Read = 'Site'; What = 'the gPLink of the sites' }
+            @{ Read = 'Wmi'; What = 'the WMI filters (msWMI-Som)' }
+            @{ Read = 'OtherSom'; What = "the gPLink of another forest domain's head and OUs" }
+        ) {
+            $guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+            $gpc = New-LhRaw -Records @([pscustomobject]@{ Name = $guid; DistinguishedName = ('CN={0},CN=Policies,CN=System,DC=contoso,DC=com' -f $guid); displayName = 'Default Domain Policy'; flags = 0; versionNumber = 1; gPCWQLFilter = '' })
+            $complete = New-LhRaw -Records @()
+            $reads = @{ Som = $complete; Site = $complete; Wmi = $complete; Other = $complete }
+            if ($Read -eq 'OtherSom') { $reads.Other = $script:LhCapped } else { $reads[$Read] = $script:LhCapped }
+            $run = { param($Cfg, $Cap)
+                $a = @{ DomainName = $script:LhDom1; Gpc = $gpc; Som = $reads.Som; Site = $reads.Site; Wmi = $reads.Wmi; Config = $Cfg; GpoConfig = $script:Config.Gpo
+                    ForestDomains = @($script:LhDom1, $script:LhDom2); OtherSom = @([pscustomobject]@{ Domain = $script:LhDom2; Raw = $reads.Other }) }
+                if ($Cap) { $a.CapSource = $Cap }
+                $sum = @(@(Get-AdfaGpoDirectoryRows @a) | Where-Object { [string]$_.Item -eq ('GPO directory inventory: {0}' -f $script:LhDom1) })
+                $sum.Count | Should -Be 1 -Because $Read
+                [string]$sum[0].Detail
+            }
+            $fileCap = Get-AdfaCapSource -Config $script:LhInvFile -BaseConfig $script:LhInv -Key 'MaxObjects' -Label 'Inventory'
+            foreach ($cap in @($null, $fileCap)) {
+                $text = [string](& $run $script:LhInvFile $cap)
+                # The capped read is the one named, so the cap text is that read's own cause.
+                $text | Should -Match ([regex]::Escape($What)) -Because $Read
+                $text | Should -Match ([regex]::Escape(('Inventory.MaxObjects, {0}' -f $script:LhFile))) -Because $Read
+                $text | Should -Not -Match 'a tool default' -Because $Read
+            }
+            $builtIn = [string](& $run $script:LhInv $null)
+            $builtIn | Should -Match ([regex]::Escape('Inventory.MaxObjects, a tool default')) -Because $Read
+            $builtIn | Should -Not -Match ([regex]::Escape($script:LhFile)) -Because $Read
+        }
+        It 'Stale row family <Family>: a file-set cap is named as the file''s, with and without -CapSource; the built-in cap is a tool default' -ForEach @(
+            @{ Family = 'Inactive enabled users' }, @{ Family = 'Inactive enabled computers' }, @{ Family = 'Enabled users with an old password' }, @{ Family = 'Stale disabled users' }, @{ Family = 'Stale disabled computers' }
+        ) {
+            $block = $script:LhStaleFamilies[$Family]
+            $fileCap = Get-AdfaCapSource -Config $script:LhStaleFile -BaseConfig $script:LhStale -Key 'MaxObjects' -Label 'Stale'
+            foreach ($cap in @($null, $fileCap)) {
+                $text = [string](& $block $script:LhStaleFile $cap)
+                $text | Should -Match ([regex]::Escape(('cap of 2 objects (Stale.MaxObjects, {0})' -f $script:LhFile))) -Because $Family
+                $text | Should -Not -Match 'a tool default' -Because $Family
+            }
+            ([string](& $block $script:LhStale $null)) | Should -Match ([regex]::Escape('(Stale.MaxObjects, a tool default)')) -Because $Family
+        }
+        It 'a passed cap source wins over the table: what Invoke-Main computes is what every row of the family says' {
+            foreach ($f in @($script:LhFamilies.Keys)) { ([string](& $script:LhFamilies[$f] $script:LhInv 'Inventory.MaxObjects, C4b4-SENTINEL')) | Should -Match 'C4b4-SENTINEL' -Because $f }
+            foreach ($f in @($script:LhStaleFamilies.Keys)) { ([string](& $script:LhStaleFamilies[$f] $script:LhStale 'Stale.MaxObjects, C4b4-SENTINEL')) | Should -Match 'C4b4-SENTINEL' -Because $f }
+        }
+    }
+
+    Context 'C4b4: the wrappers hand the cap source to every domain''s rows' {
+        BeforeEach {
+            Mock Get-AdfaInventoryDomainDn { [pscustomobject]@{ Ok = $true; Dn = ('DC={0}' -f ($DomainName -replace '\.', ',DC=')); Error = ''; ErrorType = '' } }
+            Mock Get-AdfaInventoryDirectoryRaw { New-LhRaw -Records @([pscustomobject]@{ Name = 'x'; DistinguishedName = 'CN=x,DC=contoso,DC=com' }) -Capped $true }
+            Mock Get-AdfaRootDseRaw { [pscustomobject]@{ Ok = $true; DnsHostName = $script:LhDc1; ConfigurationNamingContext = 'CN=Configuration,DC=contoso,DC=com'; Error = ''; ErrorType = '' } }
+            $script:LhSentinel = 'Inventory.MaxObjects, C4b4-SENTINEL'
+            $script:LhTwo = @($script:LhDom2, $script:LhDom4)
+            $script:LhNow = [datetime]::new(2026, 11, 19, 9, 0, 0, [System.DateTimeKind]::Utc)
+        }
+        It 'Get-AdfaTopologyInventory: every capped row of both domains (declared population: two domains)' {
+            $rows = @(Get-AdfaTopologyInventory -ForestName $script:LhDom1 -RootDomain $script:LhDom1 -Domains $script:LhTwo -ScopedDomains $script:LhTwo -Config $script:LhInv -CapSource $script:LhSentinel -ComputerName $script:LhRunner)
+            # Declared population: the forest's level, its two FSMO roles and its UPN suffixes ...
+            $forestRows = @($rows | Where-Object { [string]$_.Scope -eq $script:LhDom1 -and [string]$_.Detail -match 'reached its cap' })
+            $forestRows.Count | Should -Be 4
+            foreach ($r in $forestRows) { $r.Detail | Should -Match 'C4b4-SENTINEL' -Because $r.Item }
+            foreach ($d in $script:LhTwo) {
+                $mine = @($rows | Where-Object { [string]$_.Scope -eq $d -and [string]$_.Detail -match 'reached its cap' })
+                # ... and, per domain, its level, its three FSMO roles and its allowed DNS suffixes.
+                $mine.Count | Should -Be 5 -Because $d
+                foreach ($r in $mine) { $r.Detail | Should -Match 'C4b4-SENTINEL' -Because $r.Item }
+            }
+        }
+        It 'Get-AdfaTrustInventory: both domains' {
+            $rows = @(Get-AdfaTrustInventory -Domains $script:LhTwo -Config $script:LhInv -CapSource $script:LhSentinel)
+            $rows.Count | Should -Be 2
+            foreach ($r in $rows) { $r.Detail | Should -Match 'C4b4-SENTINEL' -Because $r.Scope }
+        }
+        It 'Get-AdfaIdentityInventoryDepth: the counts, the group rows and the group export of both domains' {
+            $x = Get-AdfaIdentityInventoryDepth -Domains $script:LhTwo -Config $script:LhInv -CapSource $script:LhSentinel
+            foreach ($d in $script:LhTwo) {
+                $c = @($x.Counts | Where-Object { [string]$_.Scope -eq $d })
+                $c.Count | Should -BeGreaterThan 0 -Because $d
+                foreach ($r in $c) { $r.Evidence | Should -Match 'C4b4-SENTINEL' -Because $r.Item }
+                @($x.Groups | Where-Object { [string]$_.Scope -eq $d -and [string]$_.Detail -match 'C4b4-SENTINEL' }).Count | Should -Be 3 -Because $d
+                @($x.GroupExport[$d]).Count | Should -BeGreaterThan 0 -Because $d
+                foreach ($g in @($x.GroupExport[$d])) { $g.ListComplete | Should -Match 'C4b4-SENTINEL' -Because $d }
+            }
+        }
+        It 'Get-AdfaGpoDirectoryInventory: both domains' {
+            $rows = @(Get-AdfaGpoDirectoryInventory -Domains $script:LhTwo -ForestDomains $script:LhTwo -RootDomain $script:LhDom1 -Config $script:LhInv -GpoConfig $script:Config.Gpo -CapSource $script:LhSentinel)
+            foreach ($d in $script:LhTwo) {
+                $mine = @($rows | Where-Object { [string]$_.Scope -eq $d })
+                $mine.Count | Should -Be 1 -Because $d
+                $mine[0].Detail | Should -Match 'C4b4-SENTINEL' -Because $d
+            }
+        }
+        It 'Get-AdfaStaleObject: the five capped verdicts of each domain' {
+            function Get-ADUser { param([Parameter(ValueFromRemainingArguments)]$Rest) @() }
+            Mock Get-AdfaLogonSyncIntervalRaw { [pscustomobject]@{ Ok = $true; Present = $false; Value = $null; Error = '' } }
+            Mock Get-AdfaStalePopulationRaw { [pscustomobject]@{ Ok = $true; Count = 5; Capped = $false; Error = ''; ErrorType = ''; Filter = '(x)' } }
+            Mock Get-AdfaStaleRaw { [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Records = @(); Capped = $true; Filter = '(x)'; Properties = @() } }
+            foreach ($d in $script:LhTwo) {
+                $rows = @(Get-AdfaStaleObject -DomainName $d -StaleDays 90 -Now $script:LhNow -CapSource 'Stale.MaxObjects, C4b4-SENTINEL')
+                # Declared population: inactive users and computers, old passwords, stale disabled users and computers.
+                @($rows | Where-Object { [string]$_.Detail -match 'reached its cap' }).Count | Should -Be 5 -Because $d
+                @($rows | Where-Object { [string]$_.Detail -match 'reached its cap' -and [string]$_.Detail -notmatch 'C4b4-SENTINEL' }).Count | Should -Be 0 -Because $d
+            }
+        }
+    }
+
+    Context 'C11h: one section-scoped advice entry per grid test' {
+        It 'has exactly one entry per test of DcDiag.PerDcTests (declared population: 21 tests), each ahead of the first unscoped entry' {
+            $script:LhPerDc.Count | Should -Be 21
+            $map = @($script:RecommendationMap)
+            $firstUnscoped = -1
+            for ($i = 0; $i -lt $map.Count; $i++) { if (-not $map[$i].ContainsKey('Section')) { $firstUnscoped = $i; break } }
+            $firstUnscoped | Should -BeGreaterThan 0
+            foreach ($t in $script:LhPerDc) {
+                $at = @(for ($i = 0; $i -lt $map.Count; $i++) { if ($map[$i].ContainsKey('Section') -and [string]$map[$i].Match -eq ("(?i)^DC Diagnostics :: [^\s:]+ :: {0}: (?!NOT ASSESSED)" -f $t)) { $i } })
+                $at.Count | Should -Be 1 -Because $t
+                $at[0] | Should -BeLessThan $firstUnscoped -Because $t
+                [string]$map[$at[0]].Section | Should -Be '(?i)^dc diagnostics' -Because $t
+                $text = [string]$map[$at[0]].Text
+                $text | Should -Match ("^dcdiag's {0} test failed on this domain controller" -f [regex]::Escape($t)) -Because $t
+                $text | Should -Match 'changes nothing' -Because $t
+            }
+            # Declared population of the section's entries: four families, seven DNS test groups and the
+            # family catch-all (C11, C12); 21 grid tests, the Not Assessed entry, the two not-reachable
+            # entries (silent on RPC/135; classified Unreachable, never probed on 135) and the grid catch-all (C11h).
+            @($map | Where-Object { $_.ContainsKey('Section') -and [string]$_.Section -eq '(?i)^dc diagnostics' }).Count | Should -Be 37
+        }
+        It 'never tells the reader to run a repair switch, and says plainly where Learn has no page' {
+            foreach ($t in $script:LhPerDc) {
+                Get-LhEntryText $t | Should -Not -Match '(?i)\brun\b[^.]*(/fix\b|/FixMachineAccount|/RecreateMachineAccount)' -Because $t
+            }
+            Get-LhEntryText 'MachineAccount' | Should -Match 'calls /RecreateMachineAccount not a recommended fix'
+            Get-LhEntryText 'MachineAccount' | Should -Match 'runs neither option'
+            Get-LhEntryText 'FsmoCheck' | Should -Match 'not in the known-tests table'
+            Get-LhEntryText 'FsmoCheck' | Should -Match 'there is no Microsoft Learn troubleshooting page'
+            Get-LhEntryText 'FsmoCheck' | Should -Match 'no fix is given'
+            foreach ($t in @('Connectivity', 'Advertising', 'KnowsOfRoleHolders', 'ObjectsReplicated', 'VerifyReferences', 'VerifyReplicas')) { Get-LhEntryText $t | Should -Match 'No Microsoft Learn troubleshooting page for' -Because $t }
+            Get-LhEntryText 'NCSecDesc' | Should -Match 'false positive errors'
+            Get-LhEntryText 'SysVolCheck' | Should -Match 'unnecessary in most cases and may cause data loss'
+            Get-LhEntryText 'RidManager' | Should -Match ([regex]::Escape('dcdiag /test:ridmanager /v'))
+            Get-LhEntryText 'VerifyEnterpriseReferences' | Should -Match 'migrate SYSVOL from FRS to DFSR'
+        }
+        It 'red before C11h, green after: a quoted dcdiag line no longer chooses another section''s advice for <Test>' -ForEach @(
+            @{ Test = 'Advertising'; Quote = 'Warning: DC1 is not advertising as a time server. The replication access was denied.'; Old = 'repadmin /replsummary' }
+            @{ Test = 'MachineAccount'; Quote = 'The account DC1 is not trusted for delegation . It cannot replicate.'; Old = 'Remove unconstrained delegation' }
+            @{ Test = 'KccEvent'; Quote = 'An error event occurred. time skew between partners; replication failed'; Old = 'repadmin /replsummary' }
+            @{ Test = 'SysVolCheck'; Quote = 'SYSVOL is not ready; DFSR reports a backup in progress'; Old = 'dfsrmig' }
+            @{ Test = 'Services'; Quote = 'Invalid service type: W32Time time sync clock krbtgt'; Old = 'w32tm' }
+        ) {
+            $rec = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:LhDc1 -Detail ("{0}: {1}" -f $Test, $Quote)
+            $rec | Should -Be (Get-LhEntryText $Test)
+            $rec | Should -Not -Match ([regex]::Escape($Old))
+            $script:LhUnscoped | Should -Not -Contain $rec
+        }
+        It 'no grid text reaches an unscoped entry, whatever follows its prefix (declared population: 21 tests plus three other prefixes, on three DC names)' {
+            $hostile = 'replication sysvol dfsr backup global catalog delegation time sync clock krbtgt port 389 not reachable does not resolve NOT a pass pdc emulator dcdiag event 1311 on dc1 C:\Backup\stale.json'
+            $prefixes = @(@($script:LhPerDc | ForEach-Object { "{0}: " -f $_ }) + @('Replications: NOT ASSESSED - ', 'DC not reachable - no dcdiag tests run. ', 'DC not reachable (RPC/135) - no dcdiag tests run. ', 'Unexpected: '))
+            $prefixes.Count | Should -Be 25
+            foreach ($p in $prefixes) {
+                foreach ($dc in @($script:LhDc1, $script:LhDc3, '(unnamed)')) {
+                    $rec = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $dc -Detail ($p + $hostile)
+                    $script:LhUnscoped | Should -Not -Contain $rec -Because ("{0} on {1}" -f $p, $dc)
+                }
+            }
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:LhDc1 -Detail ('Unexpected: ' + $hostile)) | Should -Be ''
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:LhDc1 -Detail ('KccEvent: NOT ASSESSED - ' + $hostile)) | Should -Match 'Remote Event Log Management'
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:LhDc1 -Detail 'DC not reachable (RPC/135) - no dcdiag tests run.') | Should -Match 'did not answer on RPC/135'
+        }
+        It 'red before the fix, green after: a DC classified Unreachable, never probed on 135, gets no advice that states an RPC/135 result (<Name>)' -ForEach @(
+            @{ Name = 'the name does not resolve'; Cause = 'Unreachable, classified once for this run by the reachability probe: the name does not resolve' }
+            @{ Name = 'LDAP 389 answered on no address'; Cause = 'Unreachable, classified once for this run by the reachability probe: LDAP 389 did not answer on any address' }
+        ) {
+            # The Failures text Get-AdfaDcDiagnostic writes for a gated DC.
+            $failures = ("DC not reachable - no dcdiag tests run. {0}" -f (Get-AdfaDcGateText -Cause $Cause -NotRead 'it was not probed again'))
+            $rec = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:LhDc1 -Detail $failures
+            $rec | Should -Not -BeNullOrEmpty
+            $rec | Should -Not -Match 'did not answer on RPC/135'
+            $rec | Should -Match 'classified this domain controller Unreachable'
+            $rec | Should -Match 'was not probed on RPC/135'
+            $rec | Should -Not -Be (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $script:LhDc1 -Detail 'DC not reachable (RPC/135) - no dcdiag tests run.')
+            $script:LhUnscoped | Should -Not -Contain $rec
+        }
+        It 'leaves the scoped family rows on their own entries' {
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dcdiag Topology: contoso.com' -Detail 'Advertising: x') | Should -Match 'automatic intra-site and inter-site topology generation'
+            (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dcdiag coverage: contoso.com' -Detail 'Replications: x') | Should -Be ''
+        }
+    }
+
+    Context 'C11h: the grid puts failed cells first and each DC gets its own advice' {
+        BeforeEach {
+            $script:LhTargets = @(
+                [pscustomobject]@{ HostName = $script:LhDc1; Scope = $script:LhDom1; Site = 'HQ'; IsReadOnly = $false }
+                [pscustomobject]@{ HostName = $script:LhDc2; Scope = $script:LhDom1; Site = 'HQ'; IsReadOnly = $false }
+                [pscustomobject]@{ HostName = $script:LhDc3; Scope = $script:LhDom3; Site = 'HQ'; IsReadOnly = $false })
+            $script:LhAnswer = { param($Server, $Test)
+                $short = Get-LhShort $Server
+                if ($Server -eq $script:LhDc1 -and $Test -eq 'Advertising') { return (New-LhResult ("Directory Server Diagnosis`r`nPerforming initial setup:")) }
+                if ($Server -eq $script:LhDc1 -and $Test -eq 'MachineAccount') { return (New-LhResult (New-LhDcdiagOutput -Dc $short -Test $Test -Verdict 'failed' -Lines @('The account DC1 is not trusted for delegation . It cannot replicate.', 'Warning: Attribute userAccountControl of DC1 is 0x1000')) -Success $false -ExitCode 1) }
+                if ($Server -eq $script:LhDc2 -and $Test -eq 'KccEvent') { return (New-LhResult (New-LhDcdiagOutput -Dc $short -Test $Test -Verdict 'failed' -Lines @('An error event occurred. EventID: 0xC0000B50', 'time skew; replication access was denied')) -Success $false -ExitCode 1) }
+                return (New-LhResult (New-LhDcdiagOutput -Dc $short -Test $Test))
+            }
+        }
+        It 'lists the failed cell first though a Not Assessed cell comes earlier in test order, and gives each DC the advice of its own failed test (declared population: three DCs)' {
+            $grid = Invoke-LhGrid -Targets $script:LhTargets -Down @($script:LhDc3)
+            $grid.Count | Should -Be 3
+            $one = @($grid | Where-Object { $_.DomainController -eq $script:LhDc1 })[0]
+            [string]$one.DCDIAG_Advertising | Should -Be 'Not Assessed'
+            [string]$one.DCDIAG_MachineAccount | Should -Be 'Fail'
+            [string]$one.Failures | Should -Match '^MachineAccount: '
+            [string]$one.Failures | Should -Match ' \| Advertising: NOT ASSESSED - '
+            $f1 = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $one -StatusColumn 'Status'
+            $f1.Recommendation | Should -Be (Get-LhEntryText 'MachineAccount')
+            $two = @($grid | Where-Object { $_.DomainController -eq $script:LhDc2 })[0]
+            [string]$two.Status | Should -Be 'Fail'
+            $f2 = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $two -StatusColumn 'Status'
+            $f2.Recommendation | Should -Be (Get-LhEntryText 'KccEvent')
+            $three = @($grid | Where-Object { $_.DomainController -eq $script:LhDc3 })[0]
+            [string]$three.Status | Should -Be 'Fail'
+            $f3 = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $three -StatusColumn 'Status'
+            $f3.Recommendation | Should -Match 'did not answer on RPC/135'
+            foreach ($f in @($f1, $f2, $f3)) { $script:LhUnscoped | Should -Not -Contain $f.Recommendation }
+        }
+        It 'a DC silent on RPC/135 and a DC classified Unreachable each get advice that says only what was measured (declared population: two down DCs)' {
+            # dc2 is classified Unreachable by the reachability probe, so 135 is never probed on it;
+            # dc3 answers nothing on 135 when it is probed.
+            Mock Get-AdfaDcReachCause { if ([string]$HostName -eq $script:LhDc2) { return 'Unreachable, classified once for this run by the reachability probe: the name does not resolve' }; return '' }
+            $grid = Invoke-LhGrid -Targets $script:LhTargets -Down @($script:LhDc3)
+            $grid.Count | Should -Be 3
+            Should -Invoke Test-TcpPort -Times 0 -Exactly -ParameterFilter { [string]$ComputerName -eq $script:LhDc2 }
+            Should -Invoke Test-TcpPort -Times 1 -ParameterFilter { [string]$ComputerName -eq $script:LhDc3 }
+            $gated = @($grid | Where-Object { $_.DomainController -eq $script:LhDc2 })[0]
+            [string]$gated.Status | Should -Be 'Fail'
+            [string]$gated.Failures | Should -Match '^DC not reachable - no dcdiag tests run\. Unreachable'
+            $fg = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $gated -StatusColumn 'Status'
+            $fg.Recommendation | Should -Not -Match 'did not answer on RPC/135'
+            $fg.Recommendation | Should -Match 'classified this domain controller Unreachable'
+            $silent = @($grid | Where-Object { $_.DomainController -eq $script:LhDc3 })[0]
+            [string]$silent.Failures | Should -Match '^DC not reachable \(RPC/135\)'
+            $fs = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $silent -StatusColumn 'Status'
+            $fs.Recommendation | Should -Match 'did not answer on RPC/135'
+            foreach ($f in @($fg, $fs)) { $script:LhUnscoped | Should -Not -Contain $f.Recommendation }
+        }
+        It 'a row with no failed cell and one unreadable cell is a Warning with the Not Assessed advice, never Pass (declared population: two DCs)' {
+            $script:LhAnswer = { param($Server, $Test)
+                if ($Test -eq 'KccEvent') { return (New-LhResult ("Diagnostic du serveur d'annuaire`r`n{0} a reussi le test KccEvent" -f (Get-LhShort $Server))) }
+                return (New-LhResult (New-LhDcdiagOutput -Dc (Get-LhShort $Server) -Test $Test))
+            }
+            $grid = Invoke-LhGrid -Targets @($script:LhTargets[0], $script:LhTargets[1])
+            $grid.Count | Should -Be 2
+            foreach ($row in $grid) {
+                [string]$row.Status | Should -Be 'Warning' -Because $row.DomainController
+                [string]$row.Failures | Should -Match '^KccEvent: NOT ASSESSED - ' -Because $row.DomainController
+                (ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $row -StatusColumn 'Status').Recommendation | Should -Match 'gave no verdict this tool could read' -Because $row.DomainController
+            }
+        }
+        It 'an access-denied DC and a host without dcdiag are Not Assessed, never Pass, and carry no advice' {
+            $script:LhAnswer = { param($Server, $Test)
+                if ($Server -eq $script:LhDc2) { return (New-LhResult ("Directory Server Diagnosis`r`nPerforming initial setup:`r`n[DC2] LDAP bind failed with error 5,`r`nAccess is denied.") -Success $false -ExitCode 1) }
+                return (New-LhResult (New-LhDcdiagOutput -Dc (Get-LhShort $Server) -Test $Test))
+            }
+            $grid = Invoke-LhGrid -Targets @($script:LhTargets[0], $script:LhTargets[1])
+            $two = @($grid | Where-Object { $_.DomainController -eq $script:LhDc2 })[0]
+            [string]$two.Status | Should -Be 'Not Assessed'
+            [string]$two.Failures | Should -Match 'access denied'
+            [string]$two.Failures | Should -Not -Match 'not reachable'
+            (ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $two -StatusColumn 'Status').Recommendation | Should -Be ''
+            [string]@($grid | Where-Object { $_.DomainController -eq $script:LhDc1 })[0].Status | Should -Be 'Pass'
+            $none = Invoke-LhGrid -Targets @($script:LhTargets[0], $script:LhTargets[1]) -HaveDcdiag $false
+            @($none).Count | Should -Be 2
+            foreach ($row in $none) { [string]$row.Status | Should -Be 'Not Assessed' -Because $row.DomainController }
+        }
+    }
+
+    Context 'Version' {
+        It 'is 1.40.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h)' {
+            [string]$script:Config.Version | Should -Be '1.40.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
         }
     }
 }
