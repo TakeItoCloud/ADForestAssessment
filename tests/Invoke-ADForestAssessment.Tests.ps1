@@ -29513,6 +29513,16 @@ Describe 'Inventory leftovers: W32Time policy source, raw event occurrences, ran
             $f.Why | Should -Not -Match 'access denied'
             (Resolve-AdfaRunnerRole -Raw $null -Config $script:LzCfg).IsDc | Should -Be 'Unknown'
         }
+        It 'folds an error message that spans lines into one line, so the log line stays whole (found by CI, v1.43.0)' {
+            $twoLines = "The term 'Get-CimInstance' is not recognized as a name of a cmdlet.`nCheck the spelling of the name, or if a path was included, verify that the path is correct and try again."
+            $m = Resolve-AdfaRunnerRole -Raw (New-LzRunnerRaw -CsOk $false -CsError $twoLines -OsOk $false) -Config $script:LzCfg
+            $m.IsDc | Should -Be 'Unknown'
+            $m.Why | Should -Not -Match '[\r\n]'
+            $m.Why | Should -Match 'cmdlet\. Check the spelling'
+            $a = Resolve-AdfaRunnerRole -Raw (New-LzRunnerRaw -CsOk $false -CsError "Access denied`r`nsecond line" -OsOk $false) -Config $script:LzCfg
+            $a.Why | Should -Not -Match '[\r\n]'
+            $a.Why | Should -Match 'access denied'
+        }
         It 'the local reader reads the two classes by name, properties only, and a property not returned is $null, never 0 (stub in the CIM shape)' {
             $script:LzCim = @()
             function Get-CimInstance { param([string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $CimSession, $ErrorAction)

@@ -34798,6 +34798,9 @@ function Resolve-AdfaRunnerRole {
     if ($null -eq $Raw) { $out.Why = 'the role of the computer running the assessment was not read'; return $out }
     $readWhy = {
         param([string]$Class, [string]$Err)
+        # An exception message can span lines (found by CI, v1.43.0: the command-not-found text on
+        # Linux); the cause lands in one log line, so it is folded to one line here.
+        $Err = ($Err -replace '\s+', ' ')
         if ((Get-AdfaRemoteReadErrorClass -Message $Err -ErrorCode '') -eq 'AccessDenied') { return ("{0} read: access denied ({1})" -f $Class, $Err.Trim().TrimEnd('.')) }
         return ("{0} read failed ({1})" -f $Class, $Err.Trim().TrimEnd('.'))
     }
