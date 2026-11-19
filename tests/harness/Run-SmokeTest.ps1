@@ -416,6 +416,17 @@ function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$
 function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) }
 function Get-CimInstance {
     param($CimSession, [string]$ComputerName, [string]$ClassName, [string]$Namespace, [string[]]$Property, [string]$Filter, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
+    # PORT-PLAN C15c: the role of the computer running the assessment, read on that computer (no session):
+    # Win32_ComputerSystem.DomainRole (uint16) and Win32_OperatingSystem.ProductType (uint32), each asked for
+    # by name. The stub runner is a member server (DomainRole 3, ProductType 3); $script:SmokeRunnerFail
+    # refuses both reads (access denied).
+    if ($null -eq $CimSession -and ($ClassName -eq 'Win32_ComputerSystem' -or $ClassName -eq 'Win32_OperatingSystem')) {
+        if (@($Property).Count -eq 0) { throw ("STUB: the local {0} read must name its properties" -f $ClassName) }
+        $script:SmokeRunnerCalls += $ClassName
+        if ($script:SmokeRunnerFail) { throw [System.UnauthorizedAccessException]'Access denied' }
+        if ($ClassName -eq 'Win32_ComputerSystem') { return [pscustomobject]@{ Name = 'ADMIN01'; Domain = 'contoso.com'; DomainRole = [uint16]3 } }
+        return [pscustomobject]@{ ProductType = [uint32]3 }
+    }
     if ($ClassName -eq 'Win32_OperatingSystem') {
         return [pscustomobject]@{ LastBootUpTime = $now.AddDays(-9); BuildNumber = '17763'; Version = '10.0.17763' }
     }
@@ -461,6 +472,15 @@ function Get-CimInstance {
     throw ("STUB: CIM class '{0}' is not stubbed" -f $ClassName)
 }
 $script:SmokeDnsClientServers = @('192.0.2.20', '127.0.0.1')
+# PORT-PLAN C15c: the runner role reads and their refusal (failing-collectors pass).
+$script:SmokeRunnerCalls = @()
+$script:SmokeRunnerFail = $false
+# PORT-PLAN C15c: values in the W32Time policy area, '<key>|<value name>' -> value (strings only); empty by
+# default, so every policy candidate answers "key absent" (2), as on a DC that no W32Time policy applies to.
+$script:SmokeW32TimePolicy = @{}
+# PORT-PLAN C15c: a group of 1600 members in south.contoso.com, for the three-domain pass only.
+$script:SmokeBigGroup = $false
+$script:SmokeBigGroupMembers = 1600
 # C2 (DcDisk): the registry is read through StdRegProv, which has no instances - a value comes
 # back from a METHOD call, as an object carrying ReturnValue (uint32, 0 for success) and the
 # method's [out] parameter sValue. The stub answers GetStringValue for the three values the
@@ -522,6 +542,8 @@ function Invoke-CimMethod {
         # C15 (INV-015): W32Time Type, as a domain member has it; NtpServer is not set under the same key.
         'SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type'                 = 'NT5DS'
     }
+    # PORT-PLAN C15c: the W32Time policy-area values of the pass, if any.
+    foreach ($stubPolicyKey in @($script:SmokeW32TimePolicy.Keys)) { $stubRegistry[[string]$stubPolicyKey] = [string]$script:SmokeW32TimePolicy[$stubPolicyKey] }
     $stubDwords = @{
         'SYSTEM\CurrentControlSet\Services\NTDS\Parameters|LDAPServerIntegrity'              = [uint32]2
         'SYSTEM\CurrentControlSet\Services\LanManServer\Parameters|RequireSecuritySignature' = [uint32]1
@@ -821,7 +843,10 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubInvGpo = ($stubInvFilter -eq '(objectClass=groupPolicyContainer)' -and $stubInvAsked -contains 'gPCWQLFilter')
     $stubInvSom = ($stubInvFilter -eq '(gPLink=*)' -or $stubInvFilter -eq '(&(objectClass=site)(gPLink=*))')
     $stubInvWmi = ($stubInvFilter -eq '(objectClass=msWMI-Som)')
-    if ($stubInvTopology -or $stubInvTrust -or $stubInvCountKind -ne '' -or $stubInvGpo -or $stubInvSom -or $stubInvWmi) {
+    # PORT-PLAN C15c: the one primary-group read of a domain and the ranged member reads of a large group.
+    $stubInvPrimary = ($stubInvFilter -eq [string]$script:Config.Inventory['PrimaryGroupFilter'])
+    $stubInvRanged = (@($stubInvAsked | Where-Object { $_ -match '^member;range=' }).Count -gt 0)
+    if ($stubInvTopology -or $stubInvTrust -or $stubInvCountKind -ne '' -or $stubInvGpo -or $stubInvSom -or $stubInvWmi -or $stubInvPrimary -or $stubInvRanged) {
         foreach ($p in $stubInvAsked) { if ($p -match '[*?]') { throw 'STUB: an inventory read asked for every attribute' } }
         if ([string]::IsNullOrWhiteSpace([string]$stubNamed['Server'])) { throw 'STUB: an inventory read must name its domain' }
         $stubInvWhat = $stubInvIdentity
@@ -830,6 +855,32 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
         if ($script:SmokeInventoryFail) { throw [System.UnauthorizedAccessException]'STUB: inventory read refused' }
         $stubGpo0 = $script:SmokeGpoGuids[0]
         $stubGpo1 = $script:SmokeGpoGuids[1]
+        # PORT-PLAN C15c: the objects with a primaryGroupID, as Get-ADObject returns them with that one property
+        # (an Int32): the three users in Domain Users (513), the DC in Domain Controllers (516) and the
+        # workstation in Domain Computers (515). None of the stub groups is one of those, so Smoke-Empty stays empty.
+        if ($stubInvPrimary) {
+            if (($stubInvAsked -join ',') -ne 'primaryGroupID') { throw ("STUB: the primary-group read must ask for primaryGroupID only ({0})" -f ($stubInvAsked -join ',')) }
+            return @(foreach ($pg in @(@('smoke.one', 513), @('smoke.two', 513), @('smoke.three', 513), @('DC1', 516), @('WS-RETIRED', 515))) {
+                    [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Users,DC=contoso,DC=com" -f $pg[0]); Name = $pg[0]; ObjectClass = 'user'; primaryGroupID = [int]$pg[1] } })
+        }
+        # PORT-PLAN C15c: a ranged read of member, by the group's DN, with a numeric high bound and nothing else asked
+        # for. The answer names the range it holds, as MS-ADTS 3.1.1.3.1.3.3 describes: "<low>-<high>", or
+        # "<low>-*" when it holds the last value.
+        if ($stubInvRanged) {
+            if ($stubInvIdentity -eq '') { throw 'STUB: a ranged read must name its group' }
+            $stubRange = [regex]::Match(($stubInvAsked -join ','), '^member;range=([0-9]+)-([0-9]+)$')
+            if (-not $stubRange.Success) { throw ("STUB: a ranged read must ask for member;range=<low>-<high>, numeric, and nothing else ({0})" -f ($stubInvAsked -join ',')) }
+            $stubLow = [int]$stubRange.Groups[1].Value
+            $stubHigh = [int]$stubRange.Groups[2].Value
+            $stubTotal = [int]$script:SmokeBigGroupMembers
+            $stubLast = [Math]::Min($stubHigh, $stubTotal - 1)
+            $stubValues = @(for ($i = $stubLow; $i -le $stubLast; $i++) { "CN=m{0},CN=Users,{1}" -f $i, ('DC=' + ([string]$stubNamed['Server'] -replace '\.', ',DC=')) })
+            $stubRangeName = ("member;range={0}-{1}" -f $stubLow, $stubLast)
+            if ($stubLast -ge ($stubTotal - 1)) { $stubRangeName = ("member;range={0}-*" -f $stubLow) }
+            $stubRangedObject = [ordered]@{ DistinguishedName = $stubInvIdentity; Name = 'Smoke-All'; ObjectClass = 'group' }
+            $stubRangedObject[$stubRangeName] = $stubValues
+            return [pscustomobject]$stubRangedObject
+        }
         if ($stubInvTopology) {
             $stubTopo = [pscustomobject]@{ DistinguishedName = $stubInvIdentity; Name = ($stubInvIdentity -replace '^(?:CN|DC)=([^,]+),?.*$', '$1'); ObjectClass = 'container'
                 fSMORoleOwner = 'CN=NTDS Settings,CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,CN=Configuration,DC=contoso,DC=com' }
@@ -847,11 +898,27 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
                 'Users' { return @(foreach ($u in @(@('smoke.one', 512), @('smoke.two', 514), @('smoke.three', 66048))) { [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Users,DC=contoso,DC=com" -f $u[0]); Name = $u[0]; ObjectClass = 'user'; userAccountControl = $u[1] } }) }
                 'Computers' { return @(foreach ($c in @(@('DC1', 532480), @('WS-RETIRED', 4098))) { [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Computers,DC=contoso,DC=com" -f $c[0]); Name = $c[0]; ObjectClass = 'computer'; userAccountControl = $c[1] } }) }
                 'Groups' {
-                    return @(
+                    $stubGroups = @(
                         [pscustomobject]@{ DistinguishedName = 'CN=Smoke-Staff,CN=Users,DC=contoso,DC=com'; Name = 'Smoke-Staff'; ObjectClass = 'group'; sAMAccountName = 'Smoke-Staff'; groupType = -2147483646; member = @('CN=smoke.one,CN=Users,DC=contoso,DC=com', 'CN=smoke.two,CN=Users,DC=contoso,DC=com') }
                         [pscustomobject]@{ DistinguishedName = 'CN=Smoke-Empty,CN=Users,DC=contoso,DC=com'; Name = 'Smoke-Empty'; ObjectClass = 'group'; sAMAccountName = 'Smoke-Empty'; groupType = -2147483644 }
                         [pscustomobject]@{ DistinguishedName = 'CN=Smoke-List,CN=Users,DC=contoso,DC=com'; Name = 'Smoke-List'; ObjectClass = 'group'; sAMAccountName = 'Smoke-List'; groupType = 8; member = @('CN=smoke.one,CN=Users,DC=contoso,DC=com') }
                     )
+                    # PORT-PLAN C15c: in the three-domain pass, south.contoso.com also holds a group whose member
+                    # attribute returns 1500 values (the MaxValRange default), so it is counted by range.
+                    if ($script:SmokeBigGroup -and [string]$stubNamed['Server'] -eq 'south.contoso.com') {
+                        $stubGroups += [pscustomobject]@{ DistinguishedName = 'CN=Smoke-All,CN=Users,DC=south,DC=contoso,DC=com'; Name = 'Smoke-All'; ObjectClass = 'group'; sAMAccountName = 'Smoke-All'; groupType = -2147483646
+                            member = @(for ($i = 0; $i -lt 1500; $i++) { "CN=m{0},CN=Users,DC=south,DC=contoso,DC=com" -f $i }) }
+                    }
+                    # PORT-PLAN C15c: objectSid, when asked for, as the module returns it (a SecurityIdentifier), from
+                    # the domain the read names.
+                    if ($stubInvAsked -contains 'objectSid') {
+                        $stubRid = 1101
+                        foreach ($stubGroup in $stubGroups) {
+                            $stubGroup | Add-Member -NotePropertyName objectSid -NotePropertyValue (New-Object System.Security.Principal.SecurityIdentifier ("{0}-{1}" -f $script:SmokeDomainSids[[string]$stubNamed['Server']], $stubRid))
+                            $stubRid++
+                        }
+                    }
+                    return $stubGroups
                 }
                 'Contacts' { return [pscustomobject]@{ DistinguishedName = 'CN=Ext Contact,CN=Users,DC=contoso,DC=com'; Name = 'Ext Contact'; ObjectClass = 'contact' } }
                 'OUs' { return @([pscustomobject]@{ DistinguishedName = 'OU=Domain Controllers,DC=contoso,DC=com'; Name = 'Domain Controllers'; ObjectClass = 'organizationalUnit' }, [pscustomobject]@{ DistinguishedName = 'OU=Staff,DC=contoso,DC=com'; Name = 'Staff'; ObjectClass = 'organizationalUnit' }) }
@@ -1307,7 +1374,8 @@ function Get-WinEvent {
         $script:SmokeEventCalls += ("{0}|{1}" -f $ComputerName, $stubLog)
         if ($script:SmokeEventsFail) { throw [System.UnauthorizedAccessException]'Attempted to perform an unauthorized operation.' }
         if ($stubLog -eq 'System') {
-            return @([pscustomobject]@{ Id = 7; Level = [byte]2; ProviderName = 'Disk'; TimeCreated = $now.AddDays(-2) }, [pscustomobject]@{ Id = 41; Level = [byte]1; ProviderName = 'Microsoft-Windows-Kernel-Power'; TimeCreated = $now.AddDays(-1) })
+            # RecordId (Int64, EventRecord.RecordId) since PORT-PLAN C15c, which keeps it with each raw occurrence.
+            return @([pscustomobject]@{ Id = 7; Level = [byte]2; ProviderName = 'Disk'; TimeCreated = $now.AddDays(-2); RecordId = [long]5001 }, [pscustomobject]@{ Id = 41; Level = [byte]1; ProviderName = 'Microsoft-Windows-Kernel-Power'; TimeCreated = $now.AddDays(-1); RecordId = [long]5002 })
         }
         if ($stubLog -eq 'DNS Server') { throw ('There is not an event log on the {0} computer that matches "DNS Server".' -f $ComputerName) }
         throw 'No events were found that match the specified selection criteria.'
@@ -1957,6 +2025,26 @@ $c15TimeCsv = Join-Path $result.CsvPath 'Time Configuration.csv'
 if (Test-Path $c15TimeCsv) { Check (@(Import-Csv $c15TimeCsv | Where-Object { $_.Type -eq 'NT5DS' -and $_.NtpServer -eq '(not set)' -and $_.AnnounceFlags -eq '10' }).Count -eq 1) 'C15 INV-015: Type, NtpServer and AnnounceFlags are in their columns' }
 else { Check $false 'C15: Time Configuration CSV exists' }
 
+# PORT-PLAN C15c (v1.43.0): the leftovers batch in the single-domain pass - each family wired into its existing
+# section, read from the domain, Info only where it was measured.
+if (Test-Path $c15TimeCsv) {
+    Check (@(Import-Csv $c15TimeCsv | Where-Object { $_.Item -eq 'W32Time configuration: dc1.contoso.com' -and $_.Status -eq 'Info' -and $_.TypeSource -like 'Local*' -and $_.NtpServerSource -like 'Local*' -and $_.AnnounceFlagsSource -like 'Local*' -and $_.PolicyType -eq '(not set)' -and $_.PolicyAnnounceFlags -eq '(not set)' }).Count -eq 1) 'C15c W32Time: with no value in the policy area (every candidate answers key absent) each source is Local'
+}
+if (Test-Path $c15EvCsv) {
+    $c15cEv = @(Import-Csv $c15EvCsv | Where-Object { $_.Item -like 'Event group: System * on dc1.contoso.com' })
+    Check ($c15cEv.Count -eq 2 -and @($c15cEv | Where-Object { $_.RecentOccurrences -match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} record 500[12] level [12]$' -and $_.OccurrencesShown -eq '1 of at least 1' -and $_.RawEventCap -eq '20 (Inventory.RawEventCap, a tool default; not a Microsoft value)' }).Count -eq 2) 'C15c events: each System group keeps its raw occurrence (time, record ID, level), the shown count over a partial read, and the cap with its source (declared population: the two System groups)'
+}
+Check ((Test-Path $c15GroupCsv) -and @(Import-Csv $c15GroupCsv | Where-Object { $_.Name -eq 'Smoke-Staff' -and $_.PrimaryGroupMembers -eq '0' -and $_.TotalMembers -eq '2' -and $_.MemberCountMethod -eq 'Direct read' }).Count -eq 1) 'C15c groups: the CSV states the primary-group and total members of each group'
+Check (@($script:SmokeInventoryCalls | Where-Object { $_ -eq '(primaryGroupID=*)@contoso.com' }).Count -eq 1) ("C15c groups: one primary-group read, from the domain ({0})" -f (@($script:SmokeInventoryCalls | Where-Object { $_ -like '(primaryGroupID*' }) -join ', '))
+Check (@($smokeFindings | Where-Object { $_.Section -eq 'Group Inventory' -and $_.Item -eq 'Empty groups: contoso.com' -and $_.Status -eq 'Info' -and $_.Detail -match '^1 group\(s\) with no direct member and no primary-group member' }).Count -eq 1) 'C15c groups: the empty group has neither a direct nor a primary-group member, and the row says both were counted'
+if (Test-Path $c15GpoCsv) {
+    $c15cSom = @(Import-Csv $c15GpoCsv | Where-Object { $_.Item -eq 'GPO links on a SOM: contoso.com' })
+    Check ($c15cSom.Count -eq 2 -and @($c15cSom | Where-Object { $_.Som -eq 'DC=contoso,DC=com' -and $_.GpOptionsMeaning -like '0 inheritance not blocked*' }).Count -eq 1 -and @($c15cSom | Where-Object { $_.Som -eq 'OU=Domain Controllers,DC=contoso,DC=com' -and $_.GpOptionsMeaning -like 'not returned*' }).Count -eq 1) 'C15c GPO: gPOptions 0 is read as inheritance not blocked, and a value not returned is said so, never 0'
+}
+if (Test-Path $c15TrustCsv) { Check (@(Import-Csv $c15TrustCsv | Where-Object { $_.TrustAttributeFlags -eq 'FOREST_TRANSITIVE' -and $_.TrustAttributeFlags -notmatch 'RESERVED|OBSOLETE|unknown' }).Count -eq 1) 'C15c trusts: a value with no reserved or obsolete bit names none' }
+if (Test-Path $c15TopoCsv) { Check (@(Import-Csv $c15TopoCsv | Where-Object { $_.Item -eq 'Runner DC: contoso.com' -and $_.RunnerIsDc -eq 'No' -and $_.RunnerRole -eq '3 Member Server' }).Count -eq 1) 'C15c runner: the runner row says the member server running the run is not a DC' }
+Check ([string]$result.RunnerIsDc -eq 'No' -and (@($script:SmokeRunnerCalls) -join ',') -eq 'Win32_ComputerSystem,Win32_OperatingSystem') ("C15c runner: the role is read once per run, both classes on this computer, and returned in the summary ({0}; {1})" -f [string]$result.RunnerIsDc, (@($script:SmokeRunnerCalls) -join ','))
+
 # PORT-PLAN C16 (GAP-P1..P30): the triaged sections in the single-domain run.
 $c16Text = { param($Row) (@($Row.PSObject.Properties | ForEach-Object { [string]$_.Value }) -join ' ') }
 $c16Sysvol = @($smokeFindings | Where-Object { $_.Section -eq 'SYSVOL / DFSR' })
@@ -2102,7 +2190,16 @@ $script:SmokeC4bCalls = @()
 $script:SmokeSmbCalls = @()
 $script:SmokeRemoteCalls = @()
 $script:SmokeDirectToolCalls = @()
+# PORT-PLAN C15c: in this pass the policy area holds Type under \TimeProviders\NtpClient, south.contoso.com holds a
+# group of 1600 members, and the inventory reads of this pass are told from those of the first.
+$script:SmokeW32TimePolicy = @{ 'SOFTWARE\Policies\Microsoft\W32Time\TimeProviders\NtpClient|Type' = 'NTP' }
+$script:SmokeBigGroup = $true
+$script:SmokeRunnerCalls = @()
+$c15cCallsBefore2 = @($script:SmokeInventoryCalls).Count
 $result2 = Invoke-Main
+$script:SmokeW32TimePolicy = @{}
+$script:SmokeBigGroup = $false
+$c15cCalls2 = @(@($script:SmokeInventoryCalls) | Select-Object -Skip $c15cCallsBefore2)
 $script:SmokeDcdiagMode = 'Pass'
 # H20a (review fix): over three domains, every WinRM script block starts nltest.exe with /sc_query only,
 # and no tool is started directly in this process. Declared population: the DcSecureChannel query of
@@ -2576,6 +2673,8 @@ if (Test-Path $result2.JsonPath) {
     Check (-not [string]::IsNullOrWhiteSpace([string]$doc.tool.version)) 'JSON: tool version present'
     Check ($doc.run.forest -eq 'contoso.com') 'JSON: run.forest recorded'
     Check (@($doc.run.domainsScoped).Count -eq 3) ("JSON: all three domains recorded ({0})" -f @($doc.run.domainsScoped).Count)
+    # PORT-PLAN C15c: whether the computer running the assessment is a DC, in the run block.
+    Check ([string]$doc.run.runnerIsDc -eq 'No' -and [string]$doc.run.runnerRole -eq '3 Member Server' -and [string]$doc.run.runnerRoleWhy -match 'ProductType 3') 'JSON C15c: the run block says the runner computer is not a DC, with both readings'
 
     # The JSON summary and the CSV findings must describe the same run.
     $jf = @($doc.findings)
@@ -2674,6 +2773,23 @@ if (Test-Path $c15GpoCsv2) {
 }
 else { Check $false 'Multi-domain C15: GPO Directory Inventory CSV exists' }
 Check (@($findings2 | Where-Object { ($_.Section -in @('Topology Inventory', 'Trust Inventory', 'Object Counts', 'Group Inventory', 'GPO Directory Inventory', 'Event Inventory', 'Time Configuration') -or $_.Item -like 'Stale disabled *') -and @('Info', 'Not Assessed') -notcontains $_.Status }).Count -eq 0) 'Multi-domain C15: no inventory row is Pass, Warning or Fail'
+# PORT-PLAN C15c, per scoped domain: the policy value is the source in force for each domain's DC, and each
+# domain's primary groups are read once, from that domain.
+$c15cTimeCsv2 = Join-Path $result2.CsvPath 'Time Configuration.csv'
+$c15cTime2 = @()
+if (Test-Path $c15cTimeCsv2) { $c15cTime2 = @(Import-Csv $c15cTimeCsv2) }
+foreach ($d in $multiDomains) {
+    Check (@($c15cTime2 | Where-Object { $_.Scope -eq $d -and $_.Item -like 'W32Time configuration: *' -and $_.Status -eq 'Info' -and $_.TypeSource -eq 'Policy (SOFTWARE\Policies\Microsoft\W32Time\TimeProviders\NtpClient)' -and $_.PolicyType -eq 'NTP' -and $_.Type -eq 'NT5DS' -and $_.NtpServerSource -like 'Local*' }).Count -eq 1) ("Multi-domain C15c: the DC of '{0}' states the policy Type as the source in force, beside the service value" -f $d)
+    Check (@($c15cCalls2 | Where-Object { $_ -eq ('(primaryGroupID=*)@{0}' -f $d) }).Count -eq 1) ("Multi-domain C15c: one primary-group read of '{0}', from that domain" -f $d)
+    Check (Test-Path (Join-Path $result2.CsvPath ("Groups_{0}.csv" -f (New-SafeFileName $d)))) ("Multi-domain C15c: '{0}' has its own group CSV" -f $d)
+}
+$c15cSouthCsv = Join-Path $result2.CsvPath ("Groups_{0}.csv" -f (New-SafeFileName 'south.contoso.com'))
+$c15cSouth = @()
+if (Test-Path $c15cSouthCsv) { $c15cSouth = @(Import-Csv $c15cSouthCsv) }
+Check (@($c15cSouth | Where-Object { $_.Name -eq 'Smoke-All' -and $_.DirectMembers -eq '1600' -and $_.MemberCountMethod -eq 'Ranged retrieval' -and $_.TotalMembers -eq '1600' }).Count -eq 1) 'Multi-domain C15c: the group of 1600 members in south.contoso.com is counted exactly by range'
+Check ((@($c15cCalls2 | Where-Object { $_ -like 'CN=Smoke-All,*' }) -join ',') -eq 'CN=Smoke-All,CN=Users,DC=south,DC=contoso,DC=com@south.contoso.com,CN=Smoke-All,CN=Users,DC=south,DC=contoso,DC=com@south.contoso.com') ("Multi-domain C15c: two ranged pages of that group, from its domain, and none elsewhere ({0})" -f (@($c15cCalls2 | Where-Object { $_ -like 'CN=Smoke-All,*' }) -join ', '))
+Check (@($findings2 | Where-Object { $_.Section -eq 'Group Inventory' -and $_.Item -eq 'Group member counts: south.contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'Multi-domain C15c: the member counts row of south is Info with the ranged count'
+Check ([string]$result2.RunnerIsDc -eq 'No' -and @($script:SmokeRunnerCalls).Count -eq 2) ("Multi-domain C15c: the runner role is read once in the run ({0} reads)" -f @($script:SmokeRunnerCalls).Count)
 Check (@($findings2 | Where-Object { $_.Section -eq 'Site Health' -and $_.Item -eq 'Subnets without a site: contoso.com' }).Count -eq 1) 'Multi-domain C14: one subnet row for the forest'
 
 # C14 (TIME-001): TimeHierarchy with w32tm answering, for two DCs of the forest root domain - dc1, the
@@ -3273,6 +3389,11 @@ $script:SmokeNetlogonCalls = @()
 $script:SmokeSmbMode = 'Denied'
 $script:SmokeSmbCalls = @()
 
+# PORT-PLAN C15c: the runner role reads are refused too (access denied).
+$script:SmokeRunnerFail = $true
+$script:SmokeRunnerCalls = @()
+$c15cCallsBefore3 = @($script:SmokeInventoryCalls).Count
+
 $script:SmokeDcdiagCalls = @()
 $out3 =Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_fail_" + [guid]::NewGuid().ToString('N'))
 $script:OutputPath = $out3
@@ -3488,6 +3609,15 @@ Check (@($c15Fail | Where-Object { $_.Item -eq 'Trusts (population): contoso.com
 Check (@($c15Fail | Where-Object { $_.Item -eq 'GPO directory inventory: contoso.com' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode C15: the GPO directory inventory is Not Assessed, never 0 GPOs'
 Check (@($c15Fail | Where-Object { $_.Section -eq 'Event Inventory' -and $_.Status -eq 'Not Assessed' -and $_.Scope -eq 'contoso.com' -and $_.Item -eq 'Events (population): contoso.com' }).Count -eq 1 -and @($script:SmokeEventCalls).Count -eq 0) 'Failure mode C15: with no DC enumerated no event log is read, and the domain says why'
 Check (@($c15Fail | Where-Object { $_.Section -eq 'Time Configuration' -and $_.Item -eq 'W32Time configuration (population): contoso.com' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'Failure mode C15: with no DC enumerated no W32Time value is read, and the domain says why'
+# PORT-PLAN C15c: the group read refused, so no primary-group or ranged read is made, and "empty" is never
+# claimed; the runner role refused, so it is Unknown with the refusal named, never "No".
+$c15cCalls3 = @(@($script:SmokeInventoryCalls) | Select-Object -Skip $c15cCallsBefore3)
+Check (@($c15cCalls3 | Where-Object { $_ -like '(primaryGroupID=*)@*' -or $_ -like 'CN=Smoke-All,*' }).Count -eq 0 -and @($c15cCalls3 | Where-Object { $_ -eq '(objectClass=group)@contoso.com' }).Count -eq 1) ("Failure mode C15c: with the group read refused no primary-group or ranged read follows ({0} reads)" -f $c15cCalls3.Count)
+Check (@($c15Fail | Where-Object { $_.Item -eq 'Empty groups: contoso.com' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '\(access denied\)' -and $_.Detail -match 'not zero' }).Count -eq 1) 'Failure mode C15c: the empty groups row is Not Assessed, access denied, never Info 0'
+Check ([string]$result3.RunnerIsDc -eq 'Unknown' -and @($script:SmokeRunnerCalls).Count -eq 2) ("Failure mode C15c: a refused runner read is Unknown, never No ({0})" -f [string]$result3.RunnerIsDc)
+$c15cTopo3 = Join-Path $result3.CsvPath 'Topology Inventory.csv'
+if (Test-Path $c15cTopo3) { Check (@(Import-Csv $c15cTopo3 | Where-Object { $_.Item -eq 'Runner DC: contoso.com' -and $_.RunnerIsDc -eq 'Unknown' -and $_.RunnerRoleWhy -match 'access denied' }).Count -eq 1) 'Failure mode C15c: the runner row names the refusal of the role read' }
+else { Check $false 'Failure mode C15c: Topology Inventory CSV exists' }
 $c15Dis3 = @($findings3 | Where-Object { $_.Section -eq 'Stale Objects' -and $_.Item -like 'Stale disabled *' })
 Check (@($c15Dis3).Count -eq 2 -and @($c15Dis3 | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match '\(access denied\)' }).Count -eq 2) 'Failure mode C15: the stale disabled rows are Not Assessed, access denied'
 # C4b: the export, trust, site link and connection reads were each refused. Each says so with its cause;
@@ -3512,6 +3642,7 @@ $c11hDd3 = @($findings3 | Where-Object { $_.Section -eq 'DC Diagnostics' })
 Check ($c11hDd3.Count -gt 0 -and @($c11hDd3 | Where-Object { $_.Status -eq 'Pass' -or ($_.Recommendation -ne '' -and $c11hUnscoped3 -contains $_.Recommendation) }).Count -eq 0) ("Failure mode C11h: no DC Diagnostics row is Pass or carries an unscoped advice ({0} rows)" -f $c11hDd3.Count)
 $script:SmokeC4bFail = $false
 $script:SmokeInventoryFail = $false
+$script:SmokeRunnerFail = $false
 $script:SmokeEventsFail = $false
 $script:SmokeStaleFail = $false
 $script:SmokePrivFail = $false

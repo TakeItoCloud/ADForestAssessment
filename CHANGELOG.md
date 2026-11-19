@@ -10,6 +10,140 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-19 (W32Time policy source, raw event occurrences, ranged and primary-group member counts, gPOptions meaning, whether the runner is a DC, trust bits and type by name, tool v1.43.0)
+
+**PORT-PLAN C15c** (the leftovers batch of C15; every choice approved upfront by the operator). No new
+`-Sections` value, no new section key and no new script parameter: the rows stay in `Time Configuration`,
+`Event Inventory`, `Group Inventory`, `GPO Directory Inventory`, `Trust Inventory` and `Topology Inventory`,
+every one `Info` or `Not Assessed` (the catalogue grades none), and no Item text changes. **Run against stubs
+only** - nothing in this entry has been read from a real registry, event log, directory or computer. What was
+not verified: whether `Get-ADObject` through ADWS accepts `member;range=<low>-<high>` in `-Properties` and under
+which name the answer carries it; whether ADWS returns more than 1500 `member` values on an unranged read; the
+subkey and registry type a real W32Time policy writes `Type`, `NtpServer` and `AnnounceFlags` with; that
+`RecordId` comes back on remote `Get-WinEvent` events; what `Win32_ComputerSystem` and `Win32_OperatingSystem`
+answer a non-elevated account locally; the cost of the `(primaryGroupID=*)` read on a large domain. First real
+run is row C15e, with C17.
+
+- **W32Time policy area (INV-015).** In the CIM session the W32Time seam already opens, with the same two
+  StdRegProv Get methods (no new seam, session or method), the policy candidates of the new
+  `Inventory.W32TimePolicyValues` are read beside the service values: `Type` and `NtpServer` under
+  `SOFTWARE\Policies\Microsoft\W32Time\TimeProviders\NtpClient` and `\Parameters`, `AnnounceFlags` under
+  `\Config`. Learn does not publish which policy subkey holds `Type` and `NtpServer`, so both candidates are
+  read and must agree. `Resolve-AdfaW32TimeEffectiveSource` (pure) gives each value Policy (with its subkey) or
+  Local (every candidate answered "key absent" 2 or "value not set" 1, a measured absence); a candidate not
+  answered, refused, of another type or failed, or two candidates that disagree, make the row `Not Assessed`
+  naming it. New columns on "W32Time configuration: <dc>": `TypeSource`, `NtpServerSource`,
+  `AnnounceFlagsSource`, `PolicyType`, `PolicyNtpServer`, `PolicyAnnounceFlags`. Detail text change: the
+  sentence "the policy area is not read, so this may not be the effective configuration" is replaced by the
+  sources in force; the Evidence names the policy subkeys.
+- **Raw event occurrences (INV-012).** The event seam keeps each event's `RecordId`. Each "Event group" row
+  gains `RecentOccurrences` (newest first, "<time> record <RecordId> level <Level>", never the message;
+  `Select-AdfaEventOccurrence`, pure), `OccurrencesShown` ("<n> of <count>", "of at least" over a partial read)
+  and `RawEventCap` with its source. `RawEventCap` 20 is the reference SPEC's `-RawEventCap`: a **tool default,
+  not a Microsoft value**, settable 0 to 1000 in the `Inventory` key of `-ConfigOverridePath`. The columns go
+  to `csv\Event Inventory.csv` and the JSON sections. Detail text change: every group row's Detail adds the
+  RawEventCap sentence.
+- **Exact member counts above 1500 (INV-010).** A group returning 1500 member values or more, or whose answer
+  carries a `member;range=` attribute beside an empty `member` (MS-ADTS 3.1.1.3.1.3.3), is counted by ranged
+  retrieval through the C15 seam (new `-RangedAttribute`, `-RangeLow`, `-RangeHigh` on
+  `Get-AdfaInventoryDirectoryRaw`; no new `Get-ADObject` call site): base reads of the group asking
+  `member;range=<low>-<low+999>`, never `*`, the returned range found by pattern and only its number of values
+  kept; at most `MemberRangeMaxPages` (100, a **tool default, not a Microsoft value**, settable 1 to 1000)
+  pages (`Get-AdfaGroupRangedMemberCount`). `Measure-AdfaRangedMemberCount` (pure) gives a count only for
+  pages that follow each other from 0, each holding exactly the values its range names, the last ending with
+  `*`; anything else (a failed page - unreachable and access denied told apart -, a missing or doubled range,
+  a gap, the cap) keeps "1500 or more (not counted exactly; ranged retrieval: <cause>)", never a partial number.
+- **Primary-group members counted in (INV-010).** Where a domain's groups were read, one capped read of
+  `(primaryGroupID=*)`, `primaryGroupID` only, counts the members per RID (`ConvertTo-AdfaPrimaryGroupCount`,
+  pure); the group read now also asks `objectSid`. A builtin group gets 0; a group whose SID was not read is
+  `Not Assessed`. `csv\Groups_<domain>.csv` gains `PrimaryGroupMembers`, `TotalMembers` (direct plus
+  primary-group members, stated as such) and `MemberCountMethod`; "Group member counts" gains `CountedByRange`
+  and `PrimaryGroupMembers`. **Output change**: "Empty groups" now means no direct and no primary-group
+  member, so Domain Users and Domain Computers are no longer listed for their primary members; a failed or
+  capped primary-group read, or one that holds no object whose `primaryGroupID` is 513 or none whose
+  `primaryGroupID` is 516 (the new `Inventory.PrimaryGroupExpectedRids`, the declared population every domain
+  holds; not settable from a file), makes it `Not Assessed` (status change from `Info` for that case). Detail
+  text change on "Empty groups" and "Group member counts".
+- **gPOptions meaning (INV-011).** New SOM column `GpOptionsMeaning` (`Get-AdfaGpOptionsMeaning`, pure): MS-GPOL
+  2.2.2 - 1 blocks inheritance, 0 does not; any other value "unknown <raw>"; a value not returned "not
+  returned", never a measured 0. Detail text change: "the value that means block inheritance is not
+  published" is replaced. (The plan row said "0 and 1 = block inheritance"; MS-GPOL says only 1 does.)
+- **Whether the runner computer is a DC (INV-001).** `Get-AdfaRunnerRoleRaw` reads `Win32_ComputerSystem`
+  (`DomainRole`, `Name`, `Domain`) and `Win32_OperatingSystem` (`ProductType`) on the computer running the
+  assessment, properties only, no session, no method, once per run whatever `-Sections`;
+  `Resolve-AdfaRunnerRole` (pure) gives Yes (DomainRole 4 or 5; ProductType 2 or not measured), No (DomainRole
+  0 to 3 and a measured ProductType other than 2 - a negative needs both instruments) or Unknown (a refused or
+  failed read, a role not returned or outside 0 to 5, or the two disagreeing). New columns on "Runner DC:
+  <forest>": `RunnerIsDc`, `RunnerRole`, `RunnerRoleWhy`; new properties `RunnerIsDc` and `RunnerRole` on the
+  Invoke-Main return object; new keys `runnerIsDc`, `runnerRole` and `runnerRoleWhy` in the JSON `run` block;
+  one new INFO log line "Runner computer: ...".
+- **Trust bits and type by name (INV-006).** The new `Inventory.TrustAttributeRanges` names the MS-ADTS
+  6.1.6.7.9 ranges without per-bit names - "RESERVED 0x.." (0x2000-0x200000, 0x1000000-0x80000000) and
+  "OBSOLETE 0x.." (0x400000-0x800000) - so every bit has a name; "unknown 0x.." is left for a table that leaves
+  a bit out. A trust of type 5 gets a Detail sentence naming TRUST_TYPE_AAD (label still "5 AAD"). Output
+  change: `TrustAttributeFlags` shows "RESERVED 0x.." / "OBSOLETE 0x.." where it showed "unknown 0x..".
+- Tests changed because behaviour legitimately changed: the C15 `New-C15TimeRead` helper answers the five
+  policy candidates "key absent" unless a test gives one; the C15 trust-bit test shows "unknown 0x.." with a
+  table that has no ranges; the C15 function population (29 to 38), the C2 `Get-CimInstance` count (6 to 8),
+  the C4 and C4b `-Properties` argument counts (38 to 39), the C4b4 `Get-AdfaInventoryReadCause` call count (14
+  to 15), the H20a CimClass list (`Win32_ComputerSystem`), the H21 populations (479 functions, 1804
+  parameters) and every version pin (1.43.0). New Pester Describe "Inventory leftovers: ... (C15c)"; new
+  Run-Validation assertions; new smoke checks in the single-domain, three-domain and failing-collector passes
+  (a policy `Type`, a group of 1600 members counted by range, the runner role refused).
+
+Found by CI on the pull request, and fixed in it: on the Linux runner `Get-CimInstance` does not
+exist, and its two-line "not recognized" message went into the runner-role cause unchanged, so the
+run log gained a line with no timestamp (the H21 end-to-end test of whole log lines failed). The
+cause now folds the error text to one line. A new C15c test feeds a two-line error and was shown
+red without the fold; the C15c and H21 Describes pass on pwsh 7 and 5.1 (174 each).
+
+Found by an independent review of the diff before commit, and fixed in it:
+- **A primary-group read that returned no object counted as complete.** An account that cannot read
+  `primaryGroupID` gets no object and no error back from `(primaryGroupID=*)`, so `ConvertTo-AdfaPrimaryGroupCount`
+  returned `Ok` with no counts, and Domain Users (and any builtin group with no direct member) was listed as
+  `Info` "Empty groups" with `PrimaryGroupMembers` 0 - an unmeasured value reported as a fact. The read now
+  must hold RIDs 513 (Domain Users: the krbtgt and Administrator accounts) and 516 (Domain Controllers: the
+  DC accounts), the new `Inventory.PrimaryGroupExpectedRids`; a read missing either, or a table declaring none,
+  is not a count, and "Empty groups" is `Not Assessed` naming the missing RID. The "Empty groups" Detail now
+  says the read held those RIDs instead of "Domain Users and Domain Computers are not listed". Existing C15c
+  tests whose primary-group stub held only 513 (or only a custom RID) gained RID 516 (and 513) so they keep
+  testing what they name; the C15c test that called an empty read `Ok` now asserts the opposite; the
+  Run-Validation primary-group fixture gained a 516 object.
+- **The `memberRangeReturned` trigger of the ranged read had no test through `Get-AdfaIdentityInventoryDepth`.**
+  Removing `-or memberRangeReturned` from the large-group filter left every test green. A new test sends a
+  group with `memberCount` 0 and `memberRangeReturned` beside a group of 4 through the depth function and
+  asserts the ranged read of that group only and its exact count (1700, "Ranged retrieval").
+- **A trust of type 5 whose `trustAttributes` was not returned got no TRUST_TYPE_AAD sentence.** The sentence
+  is now built before the decode and added to the `Not Assessed` row as well; the row's recommendation is
+  asserted unchanged by the added sentence.
+
+Vendor sources, each read on Microsoft Learn on 2026-11-19:
+- Windows Time service tools and settings (policy-to-registry table, precedence, policy removal):
+  https://learn.microsoft.com/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings
+- Policy CSP ADMX_W32Time (Configure Windows NTP Client key `Software\Policies\Microsoft\W32time\TimeProviders\NtpClient`,
+  Global Configuration Settings key `Software\Policies\Microsoft\W32Time\Config`):
+  https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-w32time
+- EventRecord.RecordId: https://learn.microsoft.com/dotnet/api/system.diagnostics.eventing.reader.eventrecord.recordid
+- Get-WinEvent (newest first, -MaxEvents): https://learn.microsoft.com/powershell/module/microsoft.powershell.diagnostics/get-winevent?view=powershell-5.1
+  (read by C15 on 2026-11-17 and by this row's research brief on 2026-11-19; not re-read by this build)
+- MS-ADTS 3.1.1.3.1.3.3 Range Retrieval of Attribute Values:
+  https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/e27b48db-6f82-44cd-9038-2e54f790cc1f
+- Attribute range retrieval (1000 per request): https://learn.microsoft.com/windows/win32/adsi/attribute-range-retrieval
+- Range retrieval with IDirectorySearch (the renamed `-*` column): https://learn.microsoft.com/windows/win32/adsi/using-idirectorysearch-and-idirectoryobject-for-range-retrieval
+- primaryGroupID: https://learn.microsoft.com/windows/win32/adschema/a-primarygroupid; security properties
+  (the primary group is not in memberOf): https://learn.microsoft.com/windows/win32/ad/security-properties
+- Active Directory accounts (krbtgt and Administrator: "The Primary Group ID of all user accounts is Domain
+  Users"): https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-default-user-accounts
+- Defender for Identity account assessments (default primaryGroupID of domain controller accounts: 516):
+  https://learn.microsoft.com/defender-for-identity/security-posture-assessments/accounts
+- MS-GPOL 2.2.2 Domain SOM Search (gPOptions): https://learn.microsoft.com/openspecs/windows_protocols/ms-gpol/08090b22-bc16-49f4-8e10-f27a8fb16d18
+- Win32_ComputerSystem (DomainRole; Rename, JoinDomainOrWorkgroup, UnjoinDomainOrWorkgroup not called):
+  https://learn.microsoft.com/windows/win32/cimwin32prov/win32-computersystem
+- Win32_OperatingSystem (ProductType): https://learn.microsoft.com/windows/win32/cimwin32prov/win32-operatingsystem
+- MS-ADTS 6.1.6.7.9 trustAttributes (reserved and obsolete ranges):
+  https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646fdb51a3c
+- MS-ADTS 6.1.6.7.15 trustType (TRUST_TYPE_AAD): https://learn.microsoft.com/openspecs/windows_protocols/ms-adts/36565693-b5e4-4f37-b0a8-c1b12138e18e
+
 ### Changed - 2026-11-19 (Intersite for every site of the forest, a per-DC dcdiag circuit breaker, reachability classified for every per-DC section, DcSecureChannel and the lingering scan on the shared DC list, the opt-in gPLink of unscoped domains, tool v1.42.0)
 
 **PORT-PLAN C11f, C2i, C15d(2) and C16d** (row C11f+C2i+C15d(2)+C16d; every choice approved upfront by the

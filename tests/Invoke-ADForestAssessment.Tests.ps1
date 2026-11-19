@@ -3658,7 +3658,9 @@ Describe 'DC disk space, and the generic config override (C2)' {
             # Win32_OperatingSystem and Win32_Service (DcHardening, C3), and
             # Win32_NetworkAdapterConfiguration (C13): six. The MSFT_SmbServerConfiguration instance
             # query is gone since PORT-PLAN C3f: the class is read with Get-SmbServerConfiguration.
-            @($names | Where-Object { $_ -eq 'Get-CimInstance' }).Count | Should -Be 6
+            # Eight since v1.43.0: PORT-PLAN C15c reads Win32_ComputerSystem and Win32_OperatingSystem on the
+            # computer running the assessment (Get-AdfaRunnerRoleRaw, no session).
+            @($names | Where-Object { $_ -eq 'Get-CimInstance' }).Count | Should -Be 8
         }
         It 'reads Win32_Volume as instances only, naming the properties it wants' {
             $vol = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Get-CimInstance' -and $_.Extent.Text -match 'Win32_Volume' })
@@ -7362,7 +7364,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # 38 since v1.36.0: PORT-PLAN C16 (GAP-P1) added one, the two subscription attributes (msDFSR-Enabled,
         # msDFSR-options) the SYSVOL engine read in Get-AdfaSysvolEngineRaw now asks for; the reader it replaced,
         # Get-AdfaDfsrSubscription, used a Properties key, not a -Properties argument.
-        $script:C4PropertiesArgumentCount = 38
+        # 39 since v1.43.0: PORT-PLAN C15c added the primary-group read of Get-AdfaIdentityInventoryDepth (a call of the
+        # C15 seam with -Properties @('primaryGroupID'), a non-secret attribute).
+        $script:C4PropertiesArgumentCount = 39
         # 7 since v1.22.0: PORT-PLAN C5 added $computerArgs.Properties = @('userCertificate') in
         # Get-AdfaDcCertificateDirectoryRaw.
         # 12 since v1.23.0: PORT-PLAN C6 added five splatted property lists, two in Get-AdfaRidManagerRaw and
@@ -7603,9 +7607,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries the same version in the script and the manifest: 1.43.0 (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 
@@ -9261,9 +9265,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries the same version in the script and the manifest: 1.43.0 (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 
@@ -10251,9 +10255,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries the same version in the script and the manifest: 1.43.0 (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 
@@ -11190,9 +11194,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries the same version in the script and the manifest: 1.43.0 (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 
@@ -12184,9 +12188,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries the same version in the script and the manifest: 1.43.0 (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 
@@ -13424,9 +13428,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries the same version in the script and the manifest: 1.43.0 (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 
@@ -14642,9 +14646,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries the same version in the script and the manifest: 1.43.0 (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 
@@ -16518,9 +16522,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries the same version in the script and the manifest: 1.43.0 (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17194,9 +17198,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries the same version in the script and the manifest: 1.43.0 (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17347,9 +17351,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.42.0 in the script and the manifest (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries version 1.43.0 in the script and the manifest (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 
@@ -18678,9 +18682,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.42.0 in the script and the manifest (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries version 1.43.0 in the script and the manifest (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 
@@ -19699,7 +19703,10 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             'Get-AdfaObjectCountRows', 'Get-AdfaGroupInventoryRows', 'ConvertTo-AdfaGroupExportRow', 'Get-AdfaIdentityInventoryDepth',
             'Get-AdfaStaleDisabledVerdict', 'ConvertFrom-AdfaGpLink', 'Get-AdfaGpoDirectoryRows', 'Get-AdfaGpoDirectoryInventory',
             'Get-AdfaEventInventoryRaw', 'Get-AdfaEventInventoryRows', 'Get-AdfaEventInventory', 'Get-AdfaDcW32TimeRaw', 'Get-AdfaW32TimeConfigRow',
-            'Get-AdfaW32TimeInventory')
+            'Get-AdfaW32TimeInventory',
+            # PORT-PLAN C15c (v1.43.0): the leftovers batch functions fall under the same guard.
+            'Resolve-AdfaW32TimeEffectiveSource', 'Select-AdfaEventOccurrence', 'Measure-AdfaRangedMemberCount', 'Get-AdfaGroupRangedMemberCount',
+            'ConvertTo-AdfaPrimaryGroupCount', 'Get-AdfaGroupMemberFigure', 'Get-AdfaGpOptionsMeaning', 'Get-AdfaRunnerRoleRaw', 'Resolve-AdfaRunnerRole')
         function New-C15Read { param($Records = @(), [bool]$Ok = $true, [string]$ErrorText = '', [string]$ErrorType = '', [bool]$Capped = $false, [bool]$NotFound = $false)
             [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = $ErrorType; NotFound = $NotFound; Records = @($Records); Count = @($Records).Count; Capped = $Capped; Filter = '(x)'; Identity = '' } }
         function New-C15Object { param([hashtable]$Values) [pscustomobject]$Values }
@@ -19723,8 +19730,12 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
         function New-C15Coverage { param([string]$Coverage = 'Covered') [pscustomobject]@{ Coverage = $Coverage; OldestRecord = $script:C15Now.AddDays(-60); RecordCount = 100; Reason = '' } }
         function New-C15RegValue { param([string]$Id, $ReturnValue = 0, $Value = $null, [bool]$Answered = $true, [string]$ErrorText = '', [string]$ErrorCode = '')
             [pscustomobject]@{ Id = $Id; Key = 'k'; ValueName = $Id; Answered = $Answered; ReturnValue = $ReturnValue; Value = $Value; Method = 'GetStringValue'; Error = $ErrorText; ErrorCode = $ErrorCode } }
+        # Since v1.43.0 (PORT-PLAN C15c) the read also answers the five W32Time policy candidates: unless a test gives
+        # one, each answers "key absent" (StdRegProv 2) - a policy area that holds none of the values, as before.
         function New-C15TimeRead { param($Values = @(), [bool]$Ok = $true, [bool]$Denied = $false, [string]$ErrorText = '')
-            [pscustomobject]@{ Raw = [pscustomobject]@{ Ok = $Ok; Protocol = 'Wsman'; Error = $ErrorText; ErrorCode = ''; Values = @($Values) }; Denied = $Denied; Attempts = @() } }
+            $all = @($Values)
+            if (@($all | Where-Object { [string]$_.Id -like 'Policy.*' }).Count -eq 0) { $all += @($script:Config.Inventory['W32TimePolicyValues'] | ForEach-Object { New-C15RegValue -Id ([string]$_.Id) -ReturnValue 2 }) }
+            [pscustomobject]@{ Raw = [pscustomobject]@{ Ok = $Ok; Protocol = 'Wsman'; Error = $ErrorText; ErrorCode = ''; Values = @($all) }; Denied = $Denied; Attempts = @() } }
         $script:C15Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
         $script:C15Main = @($script:C15Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
         function Get-C15Function { param([string]$Name) @($script:C15Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true)) }
@@ -19826,9 +19837,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.42.0 in the script and the manifest (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'carries version 1.43.0 in the script and the manifest (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 
@@ -20022,10 +20033,15 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             $d.Measured | Should -BeTrue
             (@($d.Flags) -join ',') | Should -Be 'QUARANTINED_DOMAIN,WITHIN_FOREST'
             @($d.Unknown).Count | Should -Be 0
-            $u = Get-AdfaTrustAttributeDecode -Value 0x2008 -Config $script:C15Cfg
+            # Since v1.43.0 (PORT-PLAN C15c) the shipped table names the reserved and obsolete ranges of MS-ADTS
+            # 6.1.6.7.9, so an unknown bit is shown with a table that leaves the ranges out.
+            $noRanges = @{} + $script:C15Cfg
+            $noRanges['TrustAttributeRanges'] = @()
+            $u = Get-AdfaTrustAttributeDecode -Value 0x2008 -Config $noRanges
             (@($u.Flags) -join ',') | Should -Be 'FOREST_TRANSITIVE'
             (@($u.Unknown) -join ',') | Should -Be 'unknown 0x2000'
-            $h = Get-AdfaTrustAttributeDecode -Value '-2147483640' -Config $script:C15Cfg
+            (@((Get-AdfaTrustAttributeDecode -Value 0x2008 -Config $script:C15Cfg).Reserved) -join ',') | Should -Be 'RESERVED 0x2000'
+            $h = Get-AdfaTrustAttributeDecode -Value '-2147483640' -Config $noRanges
             [int64]$h.Value | Should -Be 2147483656
             (@($h.Unknown) -join ',') | Should -Be 'unknown 0x80000000'
             (Get-AdfaTrustAttributeDecode -Value 0 -Config $script:C15Cfg).Measured | Should -BeTrue
@@ -20864,8 +20880,8 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
     }
 
     Context 'Wiring and read-only guards (AST)' {
-        It 'declares every C15 function (declared population: 29 functions)' {
-            $script:C15Functions.Count | Should -Be 29
+        It 'declares every C15 function (declared population: 38 functions, 29 of C15 and 9 of C15c)' {
+            $script:C15Functions.Count | Should -Be 38
             foreach ($n in $script:C15Functions) { @(Get-C15Function $n).Count | Should -Be 1 -Because $n }
         }
         It 'wires each family into its section with the Inventory table, override included: <Section>' -ForEach @(
@@ -20990,7 +21006,9 @@ Describe 'Declared property lists: no read of every attribute, no secret attribu
         # calls of Get-AdfaTopologyObjectRaw - and one call of the C15 seam in Get-AdfaIdentityExportRaw).
         # 38 since v1.36.0: PORT-PLAN C16 (GAP-P1) added the SYSVOL subscription list (msDFSR-Enabled,
         # msDFSR-options) in Get-AdfaSysvolEngineRaw.
-        $script:C4bArgumentCount = 38
+        # 39 since v1.43.0: PORT-PLAN C15c added the primary-group read (-Properties @('primaryGroupID')) of
+        # Get-AdfaIdentityInventoryDepth.
+        $script:C4bArgumentCount = 39
         $script:C4bAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
         $script:C4bMain = @($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
         function Get-C4bFunction { param([string]$Name) @($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
@@ -24154,9 +24172,9 @@ Describe 'Promise triage: the README and help promises the code did not keep (C1
     }
 
     Context 'Version' {
-        It 'is 1.42.0 in the script and the manifest (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
-            $script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'is 1.43.0 in the script and the manifest (bumped by PORT-PLAN C15c)' {
+            $script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 }
@@ -24974,7 +24992,8 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
             @($script:H20Pop.Keys | Where-Object { $_ -like 'Untyped:*.Add' }).Count | Should -Be 4 -Because 'declared population: the 4 untyped Add calls (Get-AdfaDnsHealth, Find-AdfaDuplicateSpn, Get-AdfaSidHistoryHolderText, Get-AdfaDcReachabilityRows)'
             $byKind['Property'] | Should -Be 7 -Because 'declared population: the 6 ProcessStartInfo properties and Process.StartInfo set in Invoke-ExternalCommand'
             @($script:H20Pop.Keys | Where-Object { $_ -like 'Tool:nltest.exe *' }).Count | Should -Be 5 -Because 'declared population: /sc_query and /sc_verify with and without /server:, and /dsgetdc'
-            @($script:H20Pop.Keys | Where-Object { $_ -like 'CimClass:*' }) | Should -Be @('CimClass:Win32_NetworkAdapterConfiguration', 'CimClass:Win32_OperatingSystem', 'CimClass:Win32_QuickFixEngineering', 'CimClass:Win32_Service', 'CimClass:Win32_Volume')
+            # Win32_ComputerSystem since v1.43.0 (PORT-PLAN C15c, the runner role).
+            @($script:H20Pop.Keys | Where-Object { $_ -like 'CimClass:*' }) | Should -Be @('CimClass:Win32_ComputerSystem', 'CimClass:Win32_NetworkAdapterConfiguration', 'CimClass:Win32_OperatingSystem', 'CimClass:Win32_QuickFixEngineering', 'CimClass:Win32_Service', 'CimClass:Win32_Volume')
             @($script:H20Pop.Keys | Where-Object { $_ -like 'CimMethod:*' }) | Should -Be @('CimMethod:StdRegProv.GetDWORDValue', 'CimMethod:StdRegProv.GetExpandedStringValue', 'CimMethod:StdRegProv.GetStringValue')
             # The dcdiag forms, from the script's own config: every test of the four scope lists, and as
             # Default exactly those not in DcdiagActiveTests (declared population: 25 tests, 22 default).
@@ -25587,9 +25606,9 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
     }
 
     Context 'Version' {
-        It 'is 1.42.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'is 1.43.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 }
@@ -26233,8 +26252,13 @@ exit $LASTEXITCODE
             # Register-AdfaDcdiagOutcome 2, ConvertTo-AdfaDsaSiteName 1, Get-AdfaIntersiteSitePopulation 2, Resolve-AdfaIntersiteSiteState 4,
             # Select-AdfaDomainDcTarget 4, Get-AdfaGpoSomRaw 5) and 29 parameters (1772: those 21, -SitePopulation, -DomainControllers,
             # -InventoryFailures and -ScopedDomains on Get-AdfaDcSecureChannel and Get-AdfaLingeringObjectScan, -IncludeUnscopedDomains).
-            $script:H21Help.Count | Should -Be 470 -Because 'declared population: the 470 functions of the script'
-            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1772 -Because 'declared population: the 1772 parameters of those functions'
+            # v1.43.0 (PORT-PLAN C15c) added nine functions (479: Resolve-AdfaW32TimeEffectiveSource 3, Select-AdfaEventOccurrence 2,
+            # Measure-AdfaRangedMemberCount 2, Get-AdfaGroupRangedMemberCount 4, ConvertTo-AdfaPrimaryGroupCount 3, Get-AdfaGroupMemberFigure 4,
+            # Get-AdfaGpOptionsMeaning 2, Get-AdfaRunnerRoleRaw 1, Resolve-AdfaRunnerRole 2) and 32 parameters (1804: those 23, -RangedAttribute,
+            # -RangeLow and -RangeHigh on Get-AdfaInventoryDirectoryRaw, -PrimaryCounts and -RangedCounts on Get-AdfaGroupInventoryRows and
+            # ConvertTo-AdfaGroupExportRow, -RunnerRole on Get-AdfaRunnerRow and Get-AdfaTopologyInventory).
+            $script:H21Help.Count | Should -Be 479 -Because 'declared population: the 479 functions of the script'
+            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1804 -Because 'declared population: the 1804 parameters of those functions'
             @($script:H21Help | Where-Object { -not $_.HasHelp } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { -not $_.HasSynopsis } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { @($_.Missing).Count -gt 0 } | ForEach-Object { '{0}: {1}' -f $_.Name, (@($_.Missing) -join ',') }) | Should -BeNullOrEmpty
@@ -26322,9 +26346,9 @@ exit $LASTEXITCODE
     }
 
     Context 'Version' {
-        It 'is 1.42.0 in the script and the manifest (PORT-PLAN H21; bumped by C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'is 1.43.0 in the script and the manifest (PORT-PLAN H21; bumped by C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 }
@@ -26648,9 +26672,10 @@ Describe 'Replication connection options and destination, the cap source of ever
             $mandatory = @($p[0].Attributes | Where-Object { $_.TypeName.Name -eq 'Parameter' -and $_.Extent.Text -match 'Mandatory' })
             $mandatory.Count | Should -Be 1
         }
-        It 'passes -CapSource at every call of Get-AdfaInventoryReadCause (declared population: 14 calls, counted from the AST)' {
+        It 'passes -CapSource at every call of Get-AdfaInventoryReadCause (declared population: 15 calls, counted from the AST)' {
             $calls = @(Get-LhCall -Ast $script:LhAst -Name 'Get-AdfaInventoryReadCause')
-            $calls.Count | Should -Be 14
+            # 15 since v1.43.0: PORT-PLAN C15c added the call of ConvertTo-AdfaPrimaryGroupCount.
+            $calls.Count | Should -Be 15
             foreach ($c in $calls) { (Get-LhParameter -Call $c -Name 'CapSource') | Should -Not -BeNullOrEmpty -Because ("line {0}" -f $c.Extent.StartLineNumber) }
         }
         It 'gives none of the C15 and Stale row functions a default that says "a tool default", and no string says "(MaxObjects, a tool default)"' {
@@ -27025,9 +27050,9 @@ Describe 'Replication connection options and destination, the cap source of ever
     }
 
     Context 'Version' {
-        It 'is 1.42.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'is 1.43.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 }
@@ -27960,9 +27985,9 @@ Describe 'Second SYSVOL instrument, the per-DC engine in the dcdiag grid, netlog
     }
 
     Context 'Version' {
-        It 'is 1.42.0 in the script and the manifest (PORT-PLAN C14c and C11e; bumped by C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'is 1.43.0 in the script and the manifest (PORT-PLAN C14c and C11e; bumped by C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
         }
     }
 }
@@ -28780,9 +28805,885 @@ Describe 'Intersite for every site, the dcdiag circuit breaker, reachability for
     }
 
     Context 'Version' {
-        It 'is 1.42.0 in the script and the manifest (PORT-PLAN C11f, C2i, C15d and C16d)' {
-            [string]$script:Config.Version | Should -Be '1.42.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        It 'is 1.43.0 in the script and the manifest (PORT-PLAN C11f, C2i, C15d and C16d; bumped by C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
+        }
+    }
+}
+
+Describe 'Inventory leftovers: W32Time policy source, raw event occurrences, ranged and primary-group member counts, gPOptions meaning, runner role, trust bit names (C15c)' {
+    # PORT-PLAN C15c (v1.43.0). No new -Sections value, no new section key and no new script parameter: the rows stay
+    # in 'Time Configuration', 'Event Inventory', 'Group Inventory', 'GPO Directory Inventory', 'Trust Inventory' and
+    # 'Topology Inventory', and the runner role is run metadata. Every name is fictional (contoso, fabrikam) and held
+    # in a variable (PSAvoidUsingComputerNameHardcoded). Vendor facts read on Learn 2026-11-19 (URLs in the config
+    # table and the CHANGELOG); RawEventCap and MemberRangeMaxPages are tool defaults, not Microsoft values.
+    BeforeAll {
+        $script:LzCfg = $script:Config.Inventory
+        $script:LzDom1 = 'contoso.com'
+        $script:LzDom2 = 'north.contoso.com'
+        $script:LzDc1 = 'dc1.contoso.com'
+        $script:LzDc2 = 'dc2.contoso.com'
+        $script:LzRunner = 'ADMIN01'
+        $script:LzNow = [datetime]::SpecifyKind([datetime]'2026-11-19 12:00:00', [System.DateTimeKind]::Utc)
+        $script:LzSidBase = 'S-1-5-21-1004336348-1177238915-682003330'
+        $script:LzBigDn = 'CN=All-Staff,OU=Groups,DC=contoso,DC=com'
+        $script:LzAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:LzMain = @($script:LzAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))[0]
+        function Get-LzFunction { param([string]$Name) @($script:LzAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
+        function Get-LzCall { param($Ast, [string]$Name) @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq $Name }.GetNewClosure(), $true)) }
+        function Get-LzParameter { param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        # The comma keeps a one-row answer an array, so .Count works under StrictMode on Windows PowerShell 5.1.
+        function Get-LzRow { param($Rows, [string]$Item) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -eq $Item }) }
+        function Get-LzLike { param($Rows, [string]$Pattern) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like $Pattern }) }
+        function New-LzTarget { param([string]$HostName, [string]$Scope) [pscustomobject]@{ HostName = $HostName; Scope = $Scope } }
+        # One StdRegProv answer in the shape Get-AdfaDcW32TimeRaw keeps (Id, Key, ValueName, Kind, Answered, ReturnValue, Value, Method, Error, ErrorCode).
+        function New-LzReg { param([string]$Id, $ReturnValue = 0, $Value = $null, [bool]$Answered = $true, [string]$ErrorText = '', [string]$ErrorCode = '')
+            [pscustomobject]@{ Id = $Id; Key = 'k'; ValueName = $Id; Kind = 'String'; Answered = $Answered; ReturnValue = $ReturnValue; Value = $Value; Method = 'GetStringValue'; Error = $ErrorText; ErrorCode = $ErrorCode } }
+        function New-LzLocal { @((New-LzReg -Id 'Type' -Value 'NT5DS'), (New-LzReg -Id 'NtpServer' -ReturnValue 1), (New-LzReg -Id 'AnnounceFlags' -Value 10)) }
+        # The five policy candidates, each answered "key absent" (StdRegProv 2) unless -Set names a value for it.
+        function New-LzPolicy { param([hashtable]$Set = @{}, [hashtable]$Code = @{})
+            @(foreach ($p in @($script:LzCfg['W32TimePolicyValues'])) {
+                    $id = [string]$p.Id
+                    if ($Set.ContainsKey($id)) { New-LzReg -Id $id -Value $Set[$id] }
+                    elseif ($Code.ContainsKey($id)) { if ($Code[$id] -is [string]) { New-LzReg -Id $id -ReturnValue $null -ErrorText $Code[$id] } else { New-LzReg -Id $id -ReturnValue $Code[$id] } }
+                    else { New-LzReg -Id $id -ReturnValue 2 }
+                }) }
+        function New-LzTimeRead { param($Values = @(), [bool]$Ok = $true, [bool]$Denied = $false, [string]$ErrorText = '')
+            [pscustomobject]@{ Raw = [pscustomobject]@{ Ok = $Ok; Protocol = 'Wsman'; Error = $ErrorText; ErrorCode = ''; Values = @($Values) }; Denied = $Denied; Attempts = @() } }
+        function New-LzRead { param($Records = @(), [bool]$Ok = $true, [string]$ErrorText = '', [string]$ErrorType = '', [bool]$Capped = $false)
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = $ErrorType; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Capped; Filter = '(x)'; Identity = '' } }
+        function New-LzObject { param([hashtable]$Values) [pscustomobject]$Values }
+        function New-LzEvent { param([int]$Id = 1311, [int]$Level = 2, [int]$MinutesAgo = 1, $RecordId = 100)
+            [pscustomobject]@{ Id = $Id; Level = $Level; ProviderName = 'Microsoft-Windows-ActiveDirectory_DomainService'; TimeCreated = $script:LzNow.AddMinutes(-1 * $MinutesAgo); RecordId = $RecordId } }
+        function New-LzEventRaw { param($Events = @(), [bool]$Truncated = $false)
+            [pscustomobject]@{ Ok = $true; NoEvents = $false; LogAbsent = $false; Events = @($Events); Truncated = $Truncated; Error = ''; ErrorId = ''; ErrorCode = '' } }
+        function New-LzCoverage { [pscustomobject]@{ Coverage = 'Covered'; OldestRecord = $script:LzNow.AddDays(-60); RecordCount = 100; Reason = '' } }
+        # One ranged page as Get-AdfaInventoryDirectoryRaw records it (RangedMatches: how many member;range= names came back).
+        function New-LzPage { param([bool]$Ok = $true, $Low = 0, [string]$High = '*', [int]$Count = 0, [int]$Names = 1, [string]$ErrorText = '')
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = ''; RangedMatches = $Names; RangedLow = $Low; RangedHigh = $High; RangedCount = $Count } }
+        function New-LzRangedRaw { param($Low, [string]$High, [int]$Count, [int]$Names = 1)
+            $rec = [pscustomobject]@{ DistinguishedName = $script:LzBigDn; Name = 'All-Staff'; RangedName = ('member;range={0}-{1}' -f $Low, $High); RangedMatches = $Names; RangedLow = $Low; RangedHigh = $High; RangedCount = $Count }
+            [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Records = @($rec); Count = 1; Capped = $false; Filter = ''; Identity = $script:LzBigDn } }
+        function New-LzGroup { param([string]$Name, $Rid = $null, $MemberCount = 0, [string]$Sid = '', [string]$Dn = '')
+            $s = $Sid
+            if ($s -eq '' -and $null -ne $Rid) { $s = ('{0}-{1}' -f $script:LzSidBase, $Rid) }
+            $d = $Dn
+            if ($d -eq '') { $d = ('CN={0},CN=Users,DC=contoso,DC=com' -f $Name) }
+            $o = [ordered]@{ DistinguishedName = $d; Name = $Name; sAMAccountName = $Name; groupType = -2147483646; memberCount = $MemberCount }
+            if ($s -ne '') { $o['objectSid'] = $s } else { $o['objectSid'] = $null }
+            [pscustomobject]$o }
+        function New-LzPrimary { param([hashtable]$PerRid, [bool]$Ok = $true, [string]$ErrorText = '', [string]$ErrorType = '', [bool]$Capped = $false)
+            $recs = @(foreach ($k in @($PerRid.Keys)) { for ($i = 0; $i -lt [int]$PerRid[$k]; $i++) { [pscustomobject]@{ DistinguishedName = ('CN=u{0}-{1},DC=contoso,DC=com' -f $k, $i); Name = ('u{0}' -f $i); primaryGroupID = [int]$k } } })
+            New-LzRead -Records $recs -Ok $Ok -ErrorText $ErrorText -ErrorType $ErrorType -Capped $Capped }
+        function New-LzRunnerRaw { param([bool]$CsOk = $true, $DomainRole = $null, [bool]$OsOk = $true, $ProductType = $null, [string]$CsError = '', [string]$OsError = '')
+            [pscustomobject]@{ ComputerSystemOk = $CsOk; DomainRole = $DomainRole; ComputerName = 'ADMIN01'; ComputerSystemError = $CsError; OperatingSystemOk = $OsOk; ProductType = $ProductType; OperatingSystemError = $OsError } }
+    }
+    BeforeEach {
+        Clear-AdfaDcPortCache
+    }
+
+    Context 'Config table (Learn, read 2026-11-19) and version' {
+        It 'labels RawEventCap and MemberRangeMaxPages as tool defaults and takes the page size from Learn' {
+            [int]$script:LzCfg['RawEventCap'] | Should -Be 20
+            [int]$script:LzCfg['MemberRangePageSize'] | Should -Be 1000
+            [int]$script:LzCfg['MemberRangeMaxPages'] | Should -Be 100
+            [string]$script:LzCfg['MemberRangeAttribute'] | Should -Be 'member'
+            [string]$script:LzCfg['PrimaryGroupFilter'] | Should -Be '(primaryGroupID=*)'
+            $text = [System.IO.File]::ReadAllText($script:Target)
+            $text | Should -Match 'RawEventCap 20 raw occurrences per event group \(the reference SPEC''s -RawEventCap'
+            $text | Should -Match 'MemberRangeMaxPages: tool default, not a Microsoft value'
+            $text | Should -Match ([regex]::Escape('"a maximum number of 1000 should be used"'))
+        }
+        It 'reads five W32Time policy candidates under HKLM\SOFTWARE\Policies\Microsoft\W32Time (declared population: 5 candidates for the 3 local values)' {
+            $p = @($script:LzCfg['W32TimePolicyValues'])
+            $p.Count | Should -Be 5
+            @($p | Where-Object { [string]$_.Key -notlike 'SOFTWARE\Policies\Microsoft\W32Time\*' }).Count | Should -Be 0
+            (@($p | ForEach-Object { [string]$_.LocalId } | Sort-Object -Unique) -join ',') | Should -Be 'AnnounceFlags,NtpServer,Type'
+            (@($p | Where-Object { $_.LocalId -eq 'Type' } | ForEach-Object { [string]$_.Key } | Sort-Object) -join ',') | Should -Be 'SOFTWARE\Policies\Microsoft\W32Time\Parameters,SOFTWARE\Policies\Microsoft\W32Time\TimeProviders\NtpClient'
+            [string](@($p | Where-Object { $_.LocalId -eq 'AnnounceFlags' })[0].Key) | Should -Be 'SOFTWARE\Policies\Microsoft\W32Time\Config'
+            [string](@($p | Where-Object { $_.LocalId -eq 'AnnounceFlags' })[0].Kind) | Should -Be 'Dword'
+            # The local values are unchanged (declared population: 3).
+            @($script:LzCfg['W32TimeValues']).Count | Should -Be 3
+        }
+        It 'names every one of the 32 trustAttributes bits exactly once: 13 named bits and the reserved and obsolete ranges of MS-ADTS 6.1.6.7.9' {
+            $named = @($script:LzCfg['TrustAttributeFlags'] | ForEach-Object { [int64]$_.Bit })
+            $covered = @{}
+            for ($i = 0; $i -lt 32; $i++) {
+                $b = [int64]1 -shl $i
+                $hits = @($named | Where-Object { $_ -eq $b }).Count
+                foreach ($r in @($script:LzCfg['TrustAttributeRanges'])) { if ($b -ge [int64]$r.Low -and $b -le [int64]$r.High) { $hits++ } }
+                $covered[$i] = $hits
+            }
+            # Declared population: 32 bit positions, each covered once.
+            @($covered.Keys).Count | Should -Be 32
+            @($covered.Keys | Where-Object { $covered[$_] -ne 1 }).Count | Should -Be 0
+            (@($script:LzCfg['TrustAttributeRanges'] | ForEach-Object { '{0}:{1:X}-{2:X}' -f $_.Name, [int64]$_.Low, [int64]$_.High }) -join ',') | Should -Be 'RESERVED:2000-200000,OBSOLETE:400000-800000,RESERVED:1000000-80000000'
+        }
+        It 'labels gPOptions 0 and 1 from MS-GPOL 2.2.2 and the runner DomainRole 4 and 5 as domain controllers' {
+            (@($script:LzCfg['GpOptionsLabels'].Keys | Sort-Object) -join ',') | Should -Be '0,1'
+            [string]$script:LzCfg['GpOptionsLabels']['1'] | Should -Match 'block inheritance'
+            [string]$script:LzCfg['GpOptionsLabels']['0'] | Should -Match 'not blocked'
+            (@($script:LzCfg['RunnerRole']['DcDomainRoles']) -join ',') | Should -Be '4,5'
+            [int]$script:LzCfg['RunnerRole']['DcProductType'] | Should -Be 2
+            (@($script:LzCfg['RunnerRole']['DomainRoleLabels'].Keys | Sort-Object) -join ',') | Should -Be '0,1,2,3,4,5'
+        }
+        It 'carries version 1.43.0 in the script and the manifest (bumped by PORT-PLAN C15c)' {
+            [string]$script:Config.Version | Should -Be '1.43.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.43.0'
+        }
+    }
+
+    Context 'Config override: RawEventCap and MemberRangeMaxPages (Merge-AdfaSpecConfig)' {
+        It 'merges a valid override and names the file for what it supplied' {
+            $m = Merge-AdfaSpecConfig -BaseConfig $script:LzCfg -Override ([pscustomobject]@{ RawEventCap = 0; MemberRangeMaxPages = 3 }) -OverrideSource 'C:\Scripts\inv.json'
+            [int]$m['RawEventCap'] | Should -Be 0
+            [int]$m['MemberRangeMaxPages'] | Should -Be 3
+            [int]$m['MemberRangePageSize'] | Should -Be 1000
+            [string]$m['ThresholdSource'] | Should -Match 'inv\.json .*for RawEventCap, MemberRangeMaxPages'
+            (Get-AdfaCapSource -Config $m -BaseConfig $script:LzCfg -Key 'RawEventCap' -Label 'Inventory') | Should -Be 'Inventory.RawEventCap, set in the -ConfigOverridePath file'
+        }
+        It 'refuses a malformed override: <Name>' -ForEach @(
+            @{ Name = 'a negative raw cap'; Override = [pscustomobject]@{ RawEventCap = -1 }; Pattern = 'from 0 to 1000' }
+            @{ Name = 'a raw cap above the maximum'; Override = [pscustomobject]@{ RawEventCap = 1001 }; Pattern = 'from 0 to 1000' }
+            @{ Name = 'a raw cap written as text'; Override = [pscustomobject]@{ RawEventCap = '20' }; Pattern = 'JSON number' }
+            @{ Name = 'a raw cap of null'; Override = [pscustomobject]@{ RawEventCap = $null }; Pattern = 'to null' }
+            @{ Name = 'a fractional page cap'; Override = [pscustomobject]@{ MemberRangeMaxPages = 2.5 }; Pattern = 'whole number' }
+            @{ Name = 'zero pages'; Override = [pscustomobject]@{ MemberRangeMaxPages = 0 }; Pattern = 'from 1 to 1000' }
+            @{ Name = 'the page size (refused: Learn sets it)'; Override = [pscustomobject]@{ MemberRangePageSize = 1500 }; Pattern = "unknown key 'MemberRangePageSize'" }
+            @{ Name = 'the policy candidates (refused)'; Override = [pscustomobject]@{ W32TimePolicyValues = @() }; Pattern = "unknown key 'W32TimePolicyValues'" }
+            @{ Name = 'the trust ranges (refused)'; Override = [pscustomobject]@{ TrustAttributeRanges = @() }; Pattern = "unknown key 'TrustAttributeRanges'" }
+        ) {
+            { Merge-AdfaSpecConfig -BaseConfig $script:LzCfg -Override $Override -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage ("*{0}*" -f $Pattern)
+        }
+    }
+
+    Context 'W32Time: the effective source of each value, policy or local (pure)' {
+        It 'reads every value as local when the policy area holds none of them (normal data: a measured absence)' {
+            $r = Get-AdfaW32TimeConfigRow -ComputerName $script:LzDc1 -Scope $script:LzDom1 -Read (New-LzTimeRead -Values (@(New-LzLocal) + @(New-LzPolicy))) -Config $script:LzCfg
+            $r.Status | Should -Be 'Info'
+            foreach ($c in @('TypeSource', 'NtpServerSource', 'AnnounceFlagsSource')) { [string]$r.$c | Should -Match '^Local' -Because $c }
+            foreach ($c in @('PolicyType', 'PolicyNtpServer', 'PolicyAnnounceFlags')) { [string]$r.$c | Should -Be '(not set)' -Because $c }
+            $r.Type | Should -Be 'NT5DS'
+            $r.Detail | Should -Match 'Group Policy'
+            $r.Detail | Should -Not -Match '(?i)w32tm'
+        }
+        It 'states policy as the source of a value the policy area holds, with the subkey that holds it' {
+            $values = @(New-LzLocal) + @(New-LzPolicy -Set @{ 'Policy.Type.NtpClient' = 'NTP'; 'Policy.NtpServer.NtpClient' = 'time.contoso.com,0x9'; 'Policy.AnnounceFlags.Config' = 5 })
+            $r = Get-AdfaW32TimeConfigRow -ComputerName $script:LzDc1 -Scope $script:LzDom1 -Read (New-LzTimeRead -Values $values) -Config $script:LzCfg
+            $r.Status | Should -Be 'Info'
+            [string]$r.TypeSource | Should -Be 'Policy (SOFTWARE\Policies\Microsoft\W32Time\TimeProviders\NtpClient)'
+            [string]$r.PolicyType | Should -Be 'NTP'
+            [string]$r.NtpServerSource | Should -Match '^Policy'
+            [string]$r.PolicyNtpServer | Should -Be 'time.contoso.com,0x9'
+            [string]$r.AnnounceFlagsSource | Should -Be 'Policy (SOFTWARE\Policies\Microsoft\W32Time\Config)'
+            [string]$r.PolicyAnnounceFlags | Should -Be '5'
+            # The local values are still shown as read.
+            $r.Type | Should -Be 'NT5DS'
+        }
+        It 'takes a value not set under an existing policy key (StdRegProv 1) as a measured absence, so local' {
+            $values = @(New-LzLocal) + @(New-LzPolicy -Code @{ 'Policy.Type.NtpClient' = 1; 'Policy.Type.Parameters' = 1 })
+            $s = Resolve-AdfaW32TimeEffectiveSource -Id 'Type' -Values $values -Config $script:LzCfg
+            $s.Measured | Should -BeTrue
+            $s.Source | Should -Be 'Local'
+        }
+        It 'accepts the same value at both candidate subkeys, and is Not Assessed when they disagree (mixed result)' {
+            $same = Resolve-AdfaW32TimeEffectiveSource -Id 'NtpServer' -Values (@(New-LzLocal) + @(New-LzPolicy -Set @{ 'Policy.NtpServer.NtpClient' = 'a.contoso.com'; 'Policy.NtpServer.Parameters' = 'a.contoso.com' })) -Config $script:LzCfg
+            $same.Measured | Should -BeTrue
+            $same.Source | Should -Be 'Policy'
+            $values = @(New-LzLocal) + @(New-LzPolicy -Set @{ 'Policy.NtpServer.NtpClient' = 'a.contoso.com'; 'Policy.NtpServer.Parameters' = 'b.contoso.com' })
+            $r = Get-AdfaW32TimeConfigRow -ComputerName $script:LzDc1 -Scope $script:LzDom1 -Read (New-LzTimeRead -Values $values) -Config $script:LzCfg
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'different values'
+            $r.Detail | Should -Match 'a\.contoso\.com'
+            $r.Detail | Should -Match 'b\.contoso\.com'
+        }
+        It 'is Not Assessed, never Info, with its own cause when a policy read is: <Name>' -ForEach @(
+            @{ Name = 'refused (access denied)'; Code = @{ 'Policy.Type.NtpClient' = 5 }; Pattern = 'access denied' }
+            @{ Name = 'of another type'; Code = @{ 'Policy.AnnounceFlags.Config' = 2147749893 }; Pattern = 'type' }
+            @{ Name = 'failed otherwise'; Code = @{ 'Policy.NtpServer.Parameters' = 'The RPC server is unavailable.' }; Pattern = 'read failed' }
+            @{ Name = 'answered with an unknown code'; Code = @{ 'Policy.Type.Parameters' = 87 }; Pattern = 'read failed' }
+        ) {
+            $r = Get-AdfaW32TimeConfigRow -ComputerName $script:LzDc1 -Scope $script:LzDom1 -Read (New-LzTimeRead -Values (@(New-LzLocal) + @(New-LzPolicy -Code $Code))) -Config $script:LzCfg
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match $Pattern
+            $r.Detail | Should -Match 'policy'
+        }
+        It 'is Not Assessed when a policy candidate got no answer at all (empty data for the policy area)' {
+            $r = Get-AdfaW32TimeConfigRow -ComputerName $script:LzDc1 -Scope $script:LzDom1 -Read (New-LzTimeRead -Values @(New-LzLocal)) -Config $script:LzCfg
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'not read'
+            $s = Resolve-AdfaW32TimeEffectiveSource -Id 'AnnounceFlags' -Values @(New-LzLocal) -Config $script:LzCfg
+            $s.Measured | Should -BeFalse
+            $s.Source | Should -Be ''
+        }
+        It 'says unreachable and access denied apart, and reads nothing for either' {
+            $u = Get-AdfaW32TimeConfigRow -ComputerName $script:LzDc1 -Read $null -Unreachable 'Unreachable: neither WinRM (5985) nor RPC (135) answered.' -Config $script:LzCfg
+            $u.Status | Should -Be 'Not Assessed'
+            $u.Detail | Should -Match '^Unreachable'
+            $u.Detail | Should -Not -Match 'Access denied'
+            $d = Get-AdfaW32TimeConfigRow -ComputerName $script:LzDc1 -Read (New-LzTimeRead -Ok $false -Denied $true -ErrorText 'Access is denied.') -Config $script:LzCfg
+            $d.Status | Should -Be 'Not Assessed'
+            $d.Detail | Should -Match '^Access denied'
+            $d.Detail | Should -Not -Match 'Unreachable'
+        }
+    }
+
+    Context 'W32Time: the policy candidates go through the one CIM session of each DC (wiring)' {
+        It 'asks every DC for the 3 local values and the 5 policy candidates in one read, and states each DC''s own source (two DCs)' {
+            Mock Test-AdfaDcPort { $true }
+            Mock Get-AdfaDcReachCause { '' }
+            $script:LzAsked = @()
+            Mock Invoke-AdfaDcRemoteRead {
+                $script:LzAsked += [pscustomobject]@{ Dc = $ComputerName; Count = @($ReadArguments['Values']).Count; Ids = (@($ReadArguments['Values'] | ForEach-Object { [string]$_.Id }) -join ',') }
+                if ($ComputerName -eq 'dc1.contoso.com') { return (New-LzTimeRead -Values (@(New-LzLocal) + @(New-LzPolicy -Set @{ 'Policy.Type.NtpClient' = 'NTP' }))) }
+                New-LzTimeRead -Values (@(New-LzLocal) + @(New-LzPolicy))
+            }
+            $rows = @(Get-AdfaW32TimeInventory -DomainControllers @((New-LzTarget $script:LzDc1 $script:LzDom1), (New-LzTarget $script:LzDc2 $script:LzDom1)) -ScopedDomains @($script:LzDom1) -Config $script:LzCfg)
+            $script:LzAsked.Count | Should -Be 2
+            @($script:LzAsked | Where-Object { $_.Count -ne 8 }).Count | Should -Be 0
+            @($script:LzAsked)[0].Ids | Should -Match 'Policy\.Type\.NtpClient'
+            [string](Get-LzRow $rows ('W32Time configuration: {0}' -f $script:LzDc1))[0].TypeSource | Should -Match '^Policy'
+            [string](Get-LzRow $rows ('W32Time configuration: {0}' -f $script:LzDc2))[0].TypeSource | Should -Match '^Local'
+            Should -Invoke Invoke-AdfaDcRemoteRead -Times 1 -Exactly -ParameterFilter { $ComputerName -eq 'dc2.contoso.com' -and $ReadCommand -eq 'Get-AdfaDcW32TimeRaw' }
+        }
+        It 'opens no new CIM session and calls no other method for the policy area (the W32Time seam stays the one place)' {
+            $fn = @(Get-LzFunction -Name 'Get-AdfaW32TimeInventory')
+            $fn.Count | Should -Be 1
+            $calls = @(Get-LzCall -Ast $fn[0] -Name 'Invoke-AdfaDcRemoteRead')
+            $calls.Count | Should -Be 1
+            [string](Get-LzParameter -Call $calls[0] -Name 'ReadCommand').Value | Should -Be 'Get-AdfaDcW32TimeRaw'
+            $fn[0].Extent.Text | Should -Match "Config\['W32TimePolicyValues'\]"
+            @(Get-LzCall -Ast $fn[0] -Name 'New-CimSession').Count | Should -Be 0
+            @(Get-LzCall -Ast $fn[0] -Name 'Invoke-CimMethod').Count | Should -Be 0
+        }
+    }
+
+    Context 'Raw event occurrences per event group, capped by RawEventCap (tool default, not a Microsoft value)' {
+        It 'keeps the newest occurrences first, at most the cap, with time, record ID and level only' {
+            $events = @(for ($i = 1; $i -le 25; $i++) { New-LzEvent -MinutesAgo $i -RecordId (1000 - $i) })
+            $sel = Select-AdfaEventOccurrence -Events $events -Cap 20
+            $sel.Total | Should -Be 25
+            $sel.Kept | Should -Be 20
+            @($sel.Shown).Count | Should -Be 20
+            @($sel.Shown)[0] | Should -Match 'record 999'
+            @($sel.Shown)[19] | Should -Match 'record 980'
+            @($sel.Shown)[0] | Should -Match 'level 2'
+        }
+        It 'keeps exactly the cap at the boundary and all of fewer (threshold: <Count> events, cap <Cap>)' -ForEach @(
+            @{ Count = 20; Cap = 20; Kept = 20 }
+            @{ Count = 21; Cap = 20; Kept = 20 }
+            @{ Count = 19; Cap = 20; Kept = 19 }
+            @{ Count = 5; Cap = 0; Kept = 0 }
+            @{ Count = 0; Cap = 20; Kept = 0 }
+        ) {
+            $events = @(for ($i = 1; $i -le $Count; $i++) { New-LzEvent -MinutesAgo $i -RecordId $i })
+            $sel = Select-AdfaEventOccurrence -Events $events -Cap $Cap
+            $sel.Kept | Should -Be $Kept
+            @($sel.Shown).Count | Should -Be $Kept
+        }
+        It 'never keeps a message: an event that carries one is reduced to time, record ID and level' {
+            $e = New-LzEvent -RecordId 7
+            $e | Add-Member -NotePropertyName Message -NotePropertyValue 'contoso\alice could not log on'
+            $sel = Select-AdfaEventOccurrence -Events @($e) -Cap 5
+            (@($sel.Shown) -join ' ') | Should -Not -Match 'alice'
+            (@($sel.Shown) -join ' ') | Should -Match 'record 7'
+        }
+        It 'puts the occurrences, the shown count and the cap with its source in each event group row' {
+            $events = @(for ($i = 1; $i -le 25; $i++) { New-LzEvent -Id 1311 -MinutesAgo $i -RecordId (500 + $i) }) + @(New-LzEvent -Id 2042 -Level 3 -RecordId 9)
+            $rows = @(Get-AdfaEventInventoryRows -ComputerName $script:LzDc1 -Scope $script:LzDom1 -LogName 'Directory Service' -Raw (New-LzEventRaw -Events $events) -Coverage (New-LzCoverage) -Config $script:LzCfg)
+            $g = (Get-LzRow $rows ('Event group: Directory Service 1311 on {0}' -f $script:LzDc1))[0]
+            $g.Status | Should -Be 'Info'
+            @(([string]$g.RecentOccurrences) -split '; ').Count | Should -Be 20
+            [string]$g.OccurrencesShown | Should -Be '20 of 25'
+            [string]$g.RawEventCap | Should -Be '20 (Inventory.RawEventCap, a tool default; not a Microsoft value)'
+            $g.Detail | Should -Match 'RecentOccurrences'
+            $g.Detail | Should -Match 'never the message'
+            $one = (Get-LzRow $rows ('Event group: Directory Service 2042 on {0}' -f $script:LzDc1))[0]
+            [string]$one.OccurrencesShown | Should -Be '1 of 1'
+            [string]$one.RecentOccurrences | Should -Match 'record 9'
+        }
+        It 'says "of at least" over a partial read, and follows a cap the file set' {
+            $m = Merge-AdfaSpecConfig -BaseConfig $script:LzCfg -Override ([pscustomobject]@{ RawEventCap = 3 }) -OverrideSource 'C:\Scripts\inv.json'
+            $events = @(for ($i = 1; $i -le 6; $i++) { New-LzEvent -Id 1311 -MinutesAgo $i -RecordId $i })
+            $rows = @(Get-AdfaEventInventoryRows -ComputerName $script:LzDc1 -LogName 'System' -Raw (New-LzEventRaw -Events $events -Truncated $true) -Coverage (New-LzCoverage) -Config $m)
+            $g = (Get-LzRow $rows ('Event group: System 1311 on {0}' -f $script:LzDc1))[0]
+            [string]$g.OccurrencesShown | Should -Be '3 of at least 6'
+            [string]$g.RawEventCap | Should -Be '3 (Inventory.RawEventCap, set in the -ConfigOverridePath file; not a Microsoft value)'
+            @(([string]$g.RecentOccurrences) -split '; ').Count | Should -Be 3
+            [string]$g.RawEventCap | Should -Not -Match 'inv\.json' -Because 'a path in a row would reach the recommendation map'
+        }
+        It 'with RawEventCap 0 keeps no occurrence and says so' {
+            $m = Merge-AdfaSpecConfig -BaseConfig $script:LzCfg -Override ([pscustomobject]@{ RawEventCap = 0 }) -OverrideSource 'x.json'
+            $rows = @(Get-AdfaEventInventoryRows -ComputerName $script:LzDc1 -LogName 'System' -Raw (New-LzEventRaw -Events @(New-LzEvent)) -Coverage (New-LzCoverage) -Config $m)
+            $g = (Get-LzRow $rows ('Event group: System 1311 on {0}' -f $script:LzDc1))[0]
+            [string]$g.RecentOccurrences | Should -Be ''
+            [string]$g.OccurrencesShown | Should -Be '0 of 1'
+        }
+        It 'keeps no occurrence for a DC it could not reach or read (unreachable, access denied)' {
+            $u = @(Get-AdfaEventInventoryRows -ComputerName $script:LzDc1 -LogName 'System' -Raw $null -Coverage $null -Unreachable 'Unreachable: RPC (135) did not answer.' -Config $script:LzCfg)
+            $u.Count | Should -Be 1
+            $u[0].Status | Should -Be 'Not Assessed'
+            $denied = [pscustomobject]@{ Ok = $false; NoEvents = $false; LogAbsent = $false; Events = @(); Truncated = $false; Error = 'Attempted to perform an unauthorized operation.'; ErrorId = ''; ErrorCode = 'AccessDenied' }
+            $d = @(Get-AdfaEventInventoryRows -ComputerName $script:LzDc1 -LogName 'System' -Raw $denied -Coverage $null -Config $script:LzCfg)
+            $d.Count | Should -Be 1
+            $d[0].Detail | Should -Match '^Access denied'
+        }
+        It 'the seam keeps the record ID of each event and no message (stub in the shape of an EventLogRecord)' {
+            function Get-WinEvent { param([string]$ComputerName, [hashtable]$FilterHashtable, [string]$LogName, [long]$MaxEvents, $Credential, $ErrorAction)
+                [pscustomobject]@{ Id = 1311; Level = 2; ProviderName = 'p'; TimeCreated = $script:LzNow; RecordId = [long]4242; Message = 'contoso\alice' } }
+            $raw = Get-AdfaEventInventoryRaw -ComputerName $script:LzDc1 -LogName 'System' -StartTime $script:LzNow.AddDays(-1) -Levels @(1, 2, 3) -MaxEvents 10 -Config $script:LzCfg
+            $raw.Ok | Should -BeTrue
+            [long]@($raw.Events)[0].RecordId | Should -Be 4242
+            $null -eq @($raw.Events)[0].PSObject.Properties['Message'] | Should -BeTrue
+        }
+        It 'is wired: the group rows take their occurrences from Select-AdfaEventOccurrence with RawEventCap' {
+            $fn = @(Get-LzFunction -Name 'Get-AdfaEventInventoryRows')
+            $calls = @(Get-LzCall -Ast $fn[0] -Name 'Select-AdfaEventOccurrence')
+            $calls.Count | Should -Be 1
+            (Get-LzParameter -Call $calls[0] -Name 'Cap').Extent.Text | Should -Match 'RawEventCap'
+        }
+    }
+
+    Context 'Ranged member counts above MemberCountCeiling (member;range=low-high, Learn: 1000 per request)' {
+        It 'adds the pages up to an exact count when the last page ends with *, including a server that returns fewer than asked (normal data)' {
+            $m = Measure-AdfaRangedMemberCount -Pages @((New-LzPage -Low 0 -High '999' -Count 1000), (New-LzPage -Low 1000 -High '*' -Count 234)) -MaxPages 100
+            $m.State | Should -Be 'Exact'
+            $m.Count | Should -Be 1234
+            $fewer = Measure-AdfaRangedMemberCount -Pages @((New-LzPage -Low 0 -High '499' -Count 500), (New-LzPage -Low 500 -High '*' -Count 10)) -MaxPages 100
+            $fewer.State | Should -Be 'Exact'
+            $fewer.Count | Should -Be 510
+        }
+        It 'never gives a partial number: <Name> is Not Assessed with its cause' -ForEach @(
+            @{ Name = 'a failed page'; Pages = @(@{ Low = 0; High = '999'; Count = 1000 }, @{ Ok = $false; Err = 'The server is not operational' }); Pattern = 'not operational' }
+            @{ Name = 'a page with no ranged attribute'; Pages = @(@{ Low = 0; High = '999'; Count = 1000 }, @{ Low = 0; High = ''; Count = 0; Names = 0 }); Pattern = 'no member;range' }
+            @{ Name = 'a page with two ranged attributes'; Pages = @(@{ Low = 0; High = '*'; Count = 3; Names = 2 }); Pattern = 'more than one' }
+            @{ Name = 'a page that does not start where the last one ended'; Pages = @(@{ Low = 0; High = '999'; Count = 1000 }, @{ Low = 1001; High = '*'; Count = 5 }); Pattern = 'started at 1001' }
+            @{ Name = 'a page whose values do not match its range'; Pages = @(@{ Low = 0; High = '999'; Count = 998 }, @{ Low = 1000; High = '*'; Count = 5 }); Pattern = '998 value' }
+            @{ Name = 'no page with * (the read stopped early)'; Pages = @(@{ Low = 0; High = '999'; Count = 1000 }); Pattern = 'no last page' }
+            @{ Name = 'no page at all'; Pages = @(); Pattern = 'no page' }
+        ) {
+            $pages = @(foreach ($p in $Pages) {
+                    if ($p.ContainsKey('Ok')) { New-LzPage -Ok $false -ErrorText $p.Err }
+                    else { $mt = 1; if ($p.ContainsKey('Names')) { $mt = $p.Names }; New-LzPage -Low $p.Low -High $p.High -Count $p.Count -Names $mt }
+                })
+            $m = Measure-AdfaRangedMemberCount -Pages $pages -MaxPages 100
+            $m.State | Should -Not -Be 'Exact'
+            $null -eq $m.Count | Should -BeTrue
+            $m.Why | Should -Match $Pattern
+        }
+        It 'stops at MemberRangeMaxPages and states the cap (threshold: exactly MaxPages pages without *)' {
+            $two = @((New-LzPage -Low 0 -High '999' -Count 1000), (New-LzPage -Low 1000 -High '1999' -Count 1000))
+            $m = Measure-AdfaRangedMemberCount -Pages $two -MaxPages 2
+            $m.State | Should -Be 'Capped'
+            $null -eq $m.Count | Should -BeTrue
+            $m.Why | Should -Match 'MemberRangeMaxPages \(2'
+            (Measure-AdfaRangedMemberCount -Pages $two -MaxPages 3).State | Should -Be 'Failed'
+        }
+        It 'asks for low to low+999 pages, one after the other, never *, and stops at the * page (bounded loop)' {
+            $script:LzRanges = @()
+            Mock Get-AdfaInventoryDirectoryRaw {
+                $script:LzRanges += ('{0}-{1}' -f $RangeLow, $RangeHigh)
+                if ($RangeLow -ge 2000) { return (New-LzRangedRaw -Low $RangeLow -High '*' -Count 7) }
+                New-LzRangedRaw -Low $RangeLow -High ([string]$RangeHigh) -Count 1000
+            }
+            $r = Get-AdfaGroupRangedMemberCount -Server $script:LzDom1 -Identity $script:LzBigDn -Config $script:LzCfg
+            $r.State | Should -Be 'Exact'
+            $r.Count | Should -Be 2007
+            ($script:LzRanges -join ',') | Should -Be '0-999,1000-1999,2000-2999'
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 3 -Exactly -ParameterFilter { $RangedAttribute -eq 'member' -and $Identity -eq 'CN=All-Staff,OU=Groups,DC=contoso,DC=com' -and $Server -eq 'contoso.com' }
+        }
+        It 'reads no more than MemberRangeMaxPages pages of a group that never ends, and is Capped' {
+            $m = Merge-AdfaSpecConfig -BaseConfig $script:LzCfg -Override ([pscustomobject]@{ MemberRangeMaxPages = 3 }) -OverrideSource 'x.json'
+            Mock Get-AdfaInventoryDirectoryRaw { New-LzRangedRaw -Low $RangeLow -High ([string]$RangeHigh) -Count 1000 }
+            $r = Get-AdfaGroupRangedMemberCount -Server $script:LzDom1 -Identity $script:LzBigDn -Config $m
+            $r.State | Should -Be 'Capped'
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 3 -Exactly
+        }
+        It 'stops at the first failed page and is Not Assessed, access denied told apart from unreachable' {
+            Mock Get-AdfaInventoryDirectoryRaw {
+                if ($RangeLow -eq 0) { return (New-LzRangedRaw -Low 0 -High '999' -Count 1000) }
+                New-LzRead -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException'
+            }
+            $r = Get-AdfaGroupRangedMemberCount -Server $script:LzDom1 -Identity $script:LzBigDn -Config $script:LzCfg
+            $r.State | Should -Be 'Failed'
+            $r.Why | Should -Match 'access denied'
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 2 -Exactly
+            Mock Get-AdfaInventoryDirectoryRaw { New-LzRead -Ok $false -ErrorText 'Unable to contact the server. This may be because this server does not exist' -ErrorType 'Microsoft.ActiveDirectory.Management.ADServerDownException' }
+            $u = Get-AdfaGroupRangedMemberCount -Server $script:LzDom1 -Identity $script:LzBigDn -Config $script:LzCfg
+            $u.State | Should -Be 'Failed'
+            $u.Why | Should -Not -Match 'access denied'
+        }
+        It 'the seam sends member;range=low-high, keeps only the count of the returned range and reads the renamed "-*" attribute (stub in the shape of Get-ADObject)' {
+            $script:LzSent = @()
+            function Get-ADObject { param([string]$Server, [string]$Identity, [string]$LDAPFilter, [string]$SearchBase, [string]$SearchScope, [string[]]$Properties, [int]$ResultSetSize, $ErrorAction)
+                $script:LzSent += (@($Properties) -join ',')
+                $o = [ordered]@{ DistinguishedName = $Identity; Name = 'All-Staff' }
+                $o['member;range=1000-*'] = @('CN=a', 'CN=b', 'CN=c')
+                [pscustomobject]$o }
+            $raw = Get-AdfaInventoryDirectoryRaw -Server $script:LzDom1 -Identity $script:LzBigDn -RangedAttribute 'member' -RangeLow 1000 -RangeHigh 1999
+            $raw.Ok | Should -BeTrue
+            $script:LzSent[0] | Should -Be 'member;range=1000-1999'
+            $rec = @($raw.Records)[0]
+            [int]$rec.RangedMatches | Should -Be 1
+            [int64]$rec.RangedLow | Should -Be 1000
+            [string]$rec.RangedHigh | Should -Be '*'
+            [int]$rec.RangedCount | Should -Be 3
+            @($rec.PSObject.Properties | Where-Object { $_.Name -like 'member*' }).Count | Should -Be 0 -Because 'the member values are never kept'
+        }
+        It 'the seam marks a member answered by range on an unranged read (MS-ADTS: the plain attribute then holds no values), and such a group is never called empty' {
+            function Get-ADObject { param([string]$Server, [string]$Identity, [string]$LDAPFilter, [string]$SearchBase, [string]$SearchScope, [string[]]$Properties, [int]$ResultSetSize, $ErrorAction)
+                $o = [ordered]@{ DistinguishedName = 'CN=All-Staff,OU=Groups,DC=contoso,DC=com'; Name = 'All-Staff'; sAMAccountName = 'All-Staff'; groupType = -2147483646; member = @() }
+                $o['member;range=0-1499'] = @(1..1500 | ForEach-Object { 'CN=u{0}' -f $_ })
+                [pscustomobject]$o }
+            $raw = Get-AdfaInventoryDirectoryRaw -Server $script:LzDom1 -LDAPFilter '(objectClass=group)' -Properties @('sAMAccountName', 'groupType') -CountProperties @('member')
+            $rec = @($raw.Records)[0]
+            [int]$rec.memberCount | Should -Be 0
+            [bool]$rec.memberRangeReturned | Should -BeTrue
+            $p = ConvertTo-AdfaPrimaryGroupCount -Raw (New-LzPrimary -PerRid @{ 513 = 1; 516 = 1 }) -Config $script:LzCfg -CapSource 'x'
+            $p.Ok | Should -BeTrue -Because 'a complete primary-group read, so only the range answer can keep the group off the empty list'
+            $rows = @(Get-AdfaGroupInventoryRows -DomainName $script:LzDom1 -Raw $raw -Config $script:LzCfg -PrimaryCounts $p -RangedCounts @{})
+            [string](Get-LzRow $rows ('Empty groups: {0}' -f $script:LzDom1))[0].Count | Should -Not -Be '1'
+            [string](Get-LzRow $rows ('Group member counts: {0}' -f $script:LzDom1))[0].NotCountedExactly | Should -Be '1'
+        }
+        It 'the seam refuses a ranged read without a numeric high bound or by search' {
+            (Get-AdfaInventoryDirectoryRaw -Server $script:LzDom1 -LDAPFilter '(objectClass=group)' -RangedAttribute 'member' -RangeLow 0 -RangeHigh 999).Ok | Should -BeFalse
+            (Get-AdfaInventoryDirectoryRaw -Server $script:LzDom1 -Identity $script:LzBigDn -RangedAttribute 'member' -RangeLow 5 -RangeHigh 4).Ok | Should -BeFalse
+            (Get-AdfaInventoryDirectoryRaw -Server $script:LzDom1 -Identity $script:LzBigDn -RangedAttribute 'mem*' -RangeLow 0 -RangeHigh 9).Error | Should -Match 'wildcard'
+        }
+    }
+
+    Context 'Primary-group members counted into group membership (primaryGroupID = the group''s RID)' {
+        It 'counts the objects per primaryGroupID from one complete read (normal data)' {
+            $p = ConvertTo-AdfaPrimaryGroupCount -Raw (New-LzPrimary -PerRid @{ 513 = 3; 515 = 1; 516 = 2 }) -Config $script:LzCfg -CapSource 'Inventory.MaxObjects, a tool default'
+            $p.Ok | Should -BeTrue
+            [int]$p.Counts['513'] | Should -Be 3
+            [int]$p.Counts['515'] | Should -Be 1
+            [int]$p.Counts['516'] | Should -Be 2
+            $p.Objects | Should -Be 6
+        }
+        It 'declares the RIDs every domain holds as the population of the read: 513 Domain Users and 516 Domain Controllers (Learn, read 2026-11-19)' {
+            (@($script:LzCfg['PrimaryGroupExpectedRids'] | ForEach-Object { [int]$_ }) -join ',') | Should -Be '513,516'
+        }
+        # Found by an independent review before commit: an account that cannot read primaryGroupID gets no object back
+        # from (primaryGroupID=*) and no error, so an empty read was a "complete" one and Domain Users was listed empty.
+        It 'is not a count when the read returned <Name> (declared population: RIDs 513 and 516 must both appear)' -ForEach @(
+            @{ Name = 'no object at all'; PerRid = @{}; Missing = '513.*516' }
+            @{ Name = 'no object whose primaryGroupID is 516'; PerRid = @{ 513 = 4; 515 = 2 }; Missing = '516' }
+            @{ Name = 'no object whose primaryGroupID is 513'; PerRid = @{ 516 = 1 }; Missing = '513' }
+        ) {
+            $p = ConvertTo-AdfaPrimaryGroupCount -Raw (New-LzPrimary -PerRid $PerRid) -Config $script:LzCfg -CapSource 'x'
+            $p.Ok | Should -BeFalse
+            $p.Why | Should -Match $Missing
+            $p.Why | Should -Match 'not counted'
+            @($p.Counts.Keys).Count | Should -Be 0 -Because 'a read that did not see its declared population gives no count'
+        }
+        It 'is not a count when the configuration declares no RID the read must find' {
+            $cfg = @{} + $script:LzCfg
+            $cfg['PrimaryGroupExpectedRids'] = @()
+            $p = ConvertTo-AdfaPrimaryGroupCount -Raw (New-LzPrimary -PerRid @{ 513 = 1; 516 = 1 }) -Config $cfg -CapSource 'x'
+            $p.Ok | Should -BeFalse
+            $p.Why | Should -Match 'PrimaryGroupExpectedRids'
+        }
+        It 'never lists Domain Users or a builtin group as empty from a primary-group read that returned nothing (empty data)' {
+            $groups = New-LzRead -Records @(
+                (New-LzGroup -Name 'Domain Users' -Rid 513 -MemberCount 0)
+                (New-LzGroup -Name 'Admins' -Sid 'S-1-5-32-544' -MemberCount 0))
+            $p = ConvertTo-AdfaPrimaryGroupCount -Raw (New-LzPrimary -PerRid @{}) -Config $script:LzCfg -CapSource 'x'
+            $rows = @(Get-AdfaGroupInventoryRows -DomainName $script:LzDom1 -Raw $groups -Config $script:LzCfg -PrimaryCounts $p -RangedCounts @{})
+            $e = (Get-LzRow $rows ('Empty groups: {0}' -f $script:LzDom1))[0]
+            $e.Status | Should -Be 'Not Assessed'
+            [string]$e.Count | Should -Be ''
+            [string]$e.Groups | Should -Be ''
+            $e.Detail | Should -Match '516'
+            $c = (Get-LzRow $rows ('Group member counts: {0}' -f $script:LzDom1))[0]
+            [string]$c.PrimaryGroupMembers | Should -Be ''
+            $x = @(ConvertTo-AdfaGroupExportRow -DomainName $script:LzDom1 -Raw $groups -Config $script:LzCfg -PrimaryCounts $p -RangedCounts @{})
+            [string](@($x | Where-Object { $_.Name -eq 'Domain Users' })[0].PrimaryGroupMembers) | Should -Match '^Not Assessed'
+            [string](@($x | Where-Object { $_.Name -eq 'Domain Users' })[0].TotalMembers) | Should -Be ''
+        }
+        It 'is not a count when the read <Name>' -ForEach @(
+            @{ Name = 'was refused'; Raw = 'Denied'; Pattern = 'access denied' }
+            @{ Name = 'reached its cap'; Raw = 'Capped'; Pattern = 'cap' }
+            @{ Name = 'returned a primaryGroupID that is not a number'; Raw = 'Bad'; Pattern = 'not a whole number' }
+            @{ Name = 'was not made'; Raw = 'None'; Pattern = 'not read' }
+        ) {
+            $raw = switch ($Raw) {
+                'Denied' { New-LzPrimary -PerRid @{} -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException' }
+                'Capped' { New-LzPrimary -PerRid @{ 513 = 2 } -Capped $true }
+                'Bad' { New-LzRead -Records @([pscustomobject]@{ DistinguishedName = 'CN=x'; Name = 'x'; primaryGroupID = 'abc' }) }
+                'None' { $null }
+            }
+            $p = ConvertTo-AdfaPrimaryGroupCount -Raw $raw -Config $script:LzCfg -CapSource 'Inventory.MaxObjects, a tool default'
+            $p.Ok | Should -BeFalse
+            $p.Why | Should -Match $Pattern
+        }
+        It 'adds primary-group members to the direct count, so Domain Users is not "empty", and a builtin group can be' {
+            $groups = New-LzRead -Records @(
+                (New-LzGroup -Name 'Domain Users' -Rid 513 -MemberCount 0)
+                (New-LzGroup -Name 'Administrators' -Sid 'S-1-5-32-544' -MemberCount 0)
+                (New-LzGroup -Name 'Sales' -Rid 1105 -MemberCount 4))
+            $p = ConvertTo-AdfaPrimaryGroupCount -Raw (New-LzPrimary -PerRid @{ 513 = 3; 516 = 1 }) -Config $script:LzCfg -CapSource 'x'
+            $rows = @(Get-AdfaGroupInventoryRows -DomainName $script:LzDom1 -Raw $groups -Config $script:LzCfg -PrimaryCounts $p -RangedCounts @{})
+            $e = (Get-LzRow $rows ('Empty groups: {0}' -f $script:LzDom1))[0]
+            $e.Status | Should -Be 'Info'
+            [string]$e.Count | Should -Be '1'
+            $e.Groups | Should -Be 'Administrators'
+            $e.Detail | Should -Match 'no direct member and no primary-group member'
+            $c = (Get-LzRow $rows ('Group member counts: {0}' -f $script:LzDom1))[0]
+            [string]$c.PrimaryGroupMembers | Should -Be '3'
+            $x = @(ConvertTo-AdfaGroupExportRow -DomainName $script:LzDom1 -Raw $groups -Config $script:LzCfg -PrimaryCounts $p -RangedCounts @{})
+            $du = @($x | Where-Object { $_.Name -eq 'Domain Users' })[0]
+            [string]$du.DirectMembers | Should -Be '0'
+            [string]$du.PrimaryGroupMembers | Should -Be '3'
+            [string]$du.TotalMembers | Should -Be '3'
+            [string](@($x | Where-Object { $_.Name -eq 'Sales' })[0].TotalMembers) | Should -Be '4'
+            [string](@($x | Where-Object { $_.Name -eq 'Administrators' })[0].PrimaryGroupMembers) | Should -Match '^0'
+        }
+        It 'makes Empty groups Not Assessed, never Info, when the primary-group read failed (mixed result)' {
+            $groups = New-LzRead -Records @((New-LzGroup -Name 'Domain Users' -Rid 513 -MemberCount 0), (New-LzGroup -Name 'Sales' -Rid 1105 -MemberCount 4))
+            $p = ConvertTo-AdfaPrimaryGroupCount -Raw (New-LzPrimary -PerRid @{} -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException') -Config $script:LzCfg -CapSource 'x'
+            $rows = @(Get-AdfaGroupInventoryRows -DomainName $script:LzDom1 -Raw $groups -Config $script:LzCfg -PrimaryCounts $p -RangedCounts @{})
+            $e = (Get-LzRow $rows ('Empty groups: {0}' -f $script:LzDom1))[0]
+            $e.Status | Should -Be 'Not Assessed'
+            $e.Detail | Should -Match 'access denied'
+            [string]$e.Count | Should -Be ''
+            $x = @(ConvertTo-AdfaGroupExportRow -DomainName $script:LzDom1 -Raw $groups -Config $script:LzCfg -PrimaryCounts $p -RangedCounts @{})
+            [string](@($x | Where-Object { $_.Name -eq 'Sales' })[0].TotalMembers) | Should -Not -Be '4'
+            [string](@($x | Where-Object { $_.Name -eq 'Sales' })[0].PrimaryGroupMembers) | Should -Match 'Not Assessed'
+        }
+        It 'does not call a group with an unreadable objectSid empty' {
+            $groups = New-LzRead -Records @((New-LzGroup -Name 'NoSid' -MemberCount 0))
+            $p = ConvertTo-AdfaPrimaryGroupCount -Raw (New-LzPrimary -PerRid @{ 513 = 1; 516 = 1 }) -Config $script:LzCfg -CapSource 'x'
+            $p.Ok | Should -BeTrue -Because 'the read itself is complete; only the group''s RID is unknown'
+            $e = (Get-LzRow @(Get-AdfaGroupInventoryRows -DomainName $script:LzDom1 -Raw $groups -Config $script:LzCfg -PrimaryCounts $p -RangedCounts @{}) ('Empty groups: {0}' -f $script:LzDom1))[0]
+            $e.Status | Should -Be 'Not Assessed'
+            $e.Detail | Should -Match 'objectSid'
+        }
+        It 'uses the ranged count where it is exact and keeps "1500 or more" where it is not (mixed result)' {
+            $groups = New-LzRead -Records @(
+                (New-LzGroup -Name 'All-Staff' -Rid 1200 -MemberCount 1500 -Dn $script:LzBigDn)
+                (New-LzGroup -Name 'All-Contractors' -Rid 1201 -MemberCount 1500 -Dn 'CN=All-Contractors,DC=contoso,DC=com'))
+            $p = ConvertTo-AdfaPrimaryGroupCount -Raw (New-LzPrimary -PerRid @{ 1200 = 2; 513 = 1; 516 = 1 }) -Config $script:LzCfg -CapSource 'x'
+            $ranged = @{}
+            $ranged[$script:LzBigDn] = Measure-AdfaRangedMemberCount -Pages @((New-LzPage -Low 0 -High '999' -Count 1000), (New-LzPage -Low 1000 -High '*' -Count 700)) -MaxPages 100
+            $ranged['CN=All-Contractors,DC=contoso,DC=com'] = Measure-AdfaRangedMemberCount -Pages @((New-LzPage -Ok $false -ErrorText 'The server is not operational')) -MaxPages 100
+            $x = @(ConvertTo-AdfaGroupExportRow -DomainName $script:LzDom1 -Raw $groups -Config $script:LzCfg -PrimaryCounts $p -RangedCounts $ranged)
+            $big = @($x | Where-Object { $_.Name -eq 'All-Staff' })[0]
+            [string]$big.DirectMembers | Should -Be '1700'
+            [string]$big.MemberCountMethod | Should -Be 'Ranged retrieval'
+            [string]$big.TotalMembers | Should -Be '1702'
+            $other = @($x | Where-Object { $_.Name -eq 'All-Contractors' })[0]
+            [string]$other.DirectMembers | Should -Match '^1500 or more \(not counted exactly'
+            [string]$other.MemberCountMethod | Should -Be 'Not counted'
+            [string]$other.TotalMembers | Should -Be ''
+            $c = (Get-LzRow @(Get-AdfaGroupInventoryRows -DomainName $script:LzDom1 -Raw $groups -Config $script:LzCfg -PrimaryCounts $p -RangedCounts $ranged) ('Group member counts: {0}' -f $script:LzDom1))[0]
+            [string]$c.CountedByRange | Should -Be '1'
+            [string]$c.NotCountedExactly | Should -Be '1'
+        }
+        It 'reads each scoped domain''s primary groups once and the large groups by range, and skips both where the group read failed (two domains, wiring)' {
+            Mock Get-AdfaInventoryDirectoryRaw {
+                if ($Server -eq 'north.contoso.com') { return (New-LzRead -Ok $false -ErrorText 'Access is denied' -ErrorType 'System.UnauthorizedAccessException') }
+                if ($RangedAttribute -eq 'member') { return (New-LzRangedRaw -Low $RangeLow -High '*' -Count 1600) }
+                if ($LDAPFilter -eq '(primaryGroupID=*)') { return (New-LzPrimary -PerRid @{ 513 = 5; 516 = 1 }) }
+                if ($LDAPFilter -eq '(objectClass=group)') { return (New-LzRead -Records @((New-LzGroup -Name 'Domain Users' -Rid 513 -MemberCount 0), (New-LzGroup -Name 'All-Staff' -Rid 1200 -MemberCount 1500 -Dn $script:LzBigDn))) }
+                New-LzRead -Records @()
+            }
+            $out = Get-AdfaIdentityInventoryDepth -Domains @($script:LzDom1, $script:LzDom2) -Config $script:LzCfg
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 1 -Exactly -ParameterFilter { $Server -eq 'contoso.com' -and $LDAPFilter -eq '(primaryGroupID=*)' -and (@($Properties) -join ',') -eq 'primaryGroupID' }
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 1 -Exactly -ParameterFilter { $Server -eq 'contoso.com' -and $RangedAttribute -eq 'member' -and $Identity -eq 'CN=All-Staff,OU=Groups,DC=contoso,DC=com' }
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 0 -Exactly -ParameterFilter { $Server -eq 'north.contoso.com' -and ($LDAPFilter -eq '(primaryGroupID=*)' -or $RangedAttribute -eq 'member') }
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 1 -Exactly -ParameterFilter { $Server -eq 'contoso.com' -and $LDAPFilter -eq '(objectClass=group)' -and @($Properties) -contains 'objectSid' }
+            $e1 = (Get-LzRow @($out.Groups) ('Empty groups: {0}' -f $script:LzDom1))[0]
+            $e1.Status | Should -Be 'Info'
+            [string]$e1.Count | Should -Be '0'
+            (Get-LzRow @($out.Groups) ('Empty groups: {0}' -f $script:LzDom2))[0].Status | Should -Be 'Not Assessed'
+            $x = @($out.GroupExport[$script:LzDom1])
+            [string](@($x | Where-Object { $_.Name -eq 'All-Staff' })[0].DirectMembers) | Should -Be '1600'
+            [string](@($x | Where-Object { $_.Name -eq 'Domain Users' })[0].TotalMembers) | Should -Be '5'
+        }
+        # Found by an independent review before commit: no test sent a group below the ceiling, whose unranged read came
+        # back as member;range= (memberRangeReturned), through Get-AdfaIdentityInventoryDepth.
+        It 'reads by range a group whose member came back by range on the unranged read, though its plain count is below the ceiling (two groups, wiring)' {
+            $script:LzRangedDn = 'CN=Range-Answered,OU=Groups,DC=contoso,DC=com'
+            $script:LzSmallDn = 'CN=Sales,OU=Groups,DC=contoso,DC=com'
+            Mock Get-AdfaInventoryDirectoryRaw {
+                if ($RangedAttribute -eq 'member') { return (New-LzRangedRaw -Low $RangeLow -High '*' -Count 1700) }
+                if ($LDAPFilter -eq '(primaryGroupID=*)') { return (New-LzPrimary -PerRid @{ 513 = 2; 516 = 1 }) }
+                if ($LDAPFilter -eq '(objectClass=group)') {
+                    $answered = New-LzGroup -Name 'Range-Answered' -Rid 1300 -MemberCount 0 -Dn $script:LzRangedDn
+                    $answered | Add-Member -NotePropertyName 'memberRangeReturned' -NotePropertyValue $true
+                    $small = New-LzGroup -Name 'Sales' -Rid 1105 -MemberCount 4 -Dn $script:LzSmallDn
+                    $small | Add-Member -NotePropertyName 'memberRangeReturned' -NotePropertyValue $false
+                    return (New-LzRead -Records @($answered, $small))
+                }
+                New-LzRead -Records @()
+            }
+            $out = Get-AdfaIdentityInventoryDepth -Domains @($script:LzDom1) -Config $script:LzCfg
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 1 -Exactly -ParameterFilter { $RangedAttribute -eq 'member' -and $Identity -eq 'CN=Range-Answered,OU=Groups,DC=contoso,DC=com' }
+            Should -Invoke Get-AdfaInventoryDirectoryRaw -Times 0 -Exactly -ParameterFilter { $RangedAttribute -eq 'member' -and $Identity -eq 'CN=Sales,OU=Groups,DC=contoso,DC=com' }
+            $x = @($out.GroupExport[$script:LzDom1])
+            $x.Count | Should -Be 2 -Because 'declared population: the two groups of the read'
+            $answeredRow = @($x | Where-Object { $_.Name -eq 'Range-Answered' })[0]
+            [string]$answeredRow.DirectMembers | Should -Be '1700'
+            [string]$answeredRow.MemberCountMethod | Should -Be 'Ranged retrieval'
+            [string](@($x | Where-Object { $_.Name -eq 'Sales' })[0].MemberCountMethod) | Should -Be 'Direct read'
+            [string](Get-LzRow @($out.Groups) ('Group member counts: {0}' -f $script:LzDom1))[0].CountedByRange | Should -Be '1'
+        }
+        It 'is wired: the identity depth passes the primary counts and the ranged counts to both the rows and the CSV' {
+            $fn = @(Get-LzFunction -Name 'Get-AdfaIdentityInventoryDepth')
+            @(Get-LzCall -Ast $fn[0] -Name 'ConvertTo-AdfaPrimaryGroupCount').Count | Should -Be 1
+            @(Get-LzCall -Ast $fn[0] -Name 'Get-AdfaGroupRangedMemberCount').Count | Should -Be 1
+            foreach ($name in @('Get-AdfaGroupInventoryRows', 'ConvertTo-AdfaGroupExportRow')) {
+                $c = @(Get-LzCall -Ast $fn[0] -Name $name)
+                $c.Count | Should -Be 1
+                (Get-LzParameter -Call $c[0] -Name 'PrimaryCounts') | Should -Not -BeNullOrEmpty -Because $name
+                (Get-LzParameter -Call $c[0] -Name 'RangedCounts') | Should -Not -BeNullOrEmpty -Because $name
+            }
+        }
+    }
+
+    Context 'gPOptions meaning (MS-GPOL 2.2.2)' {
+        It 'reads <Value> as <Expected>' -ForEach @(
+            @{ Value = 0; Expected = '^0 inheritance not blocked' }
+            @{ Value = 1; Expected = '^1 block inheritance' }
+            @{ Value = '1'; Expected = '^1 block inheritance' }
+            @{ Value = 2; Expected = '^unknown 2' }
+            @{ Value = 'abc'; Expected = '^unknown abc' }
+            @{ Value = -1; Expected = '^unknown -1' }
+        ) {
+            Get-AdfaGpOptionsMeaning -Value $Value -Labels $script:LzCfg['GpOptionsLabels'] | Should -Match $Expected
+        }
+        It 'says "not returned" for a value not returned, never a measured 0' {
+            $t = Get-AdfaGpOptionsMeaning -Value $null -Labels $script:LzCfg['GpOptionsLabels']
+            $t | Should -Match '^not returned'
+            $t | Should -Not -Match '^0'
+        }
+        It 'puts the meaning in each SOM row' {
+            $gpo = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+            $gpc = New-LzRead -Records @((New-LzObject @{ Name = $gpo; displayName = 'Default Domain Policy'; flags = 0; versionNumber = 1 }))
+            $som = New-LzRead -Records @(
+                (New-LzObject @{ DistinguishedName = 'DC=contoso,DC=com'; objectClass = @('top', 'domainDNS'); gPLink = ('[LDAP://cn={0},cn=policies,cn=system,DC=contoso,DC=com;0]' -f $gpo); gPOptions = 0 })
+                (New-LzObject @{ DistinguishedName = 'OU=Branch,DC=contoso,DC=com'; objectClass = @('top', 'organizationalUnit'); gPLink = ('[LDAP://cn={0},cn=policies,cn=system,DC=contoso,DC=com;0]' -f $gpo); gPOptions = 1 }))
+            $rows = @(Get-AdfaGpoDirectoryRows -DomainName $script:LzDom1 -Gpc $gpc -Som $som -Site (New-LzRead) -Wmi (New-LzRead) -ForestDomains @($script:LzDom1) -Config $script:LzCfg -GpoConfig $script:Config.Gpo)
+            $soms = Get-LzRow $rows ('GPO links on a SOM: {0}' -f $script:LzDom1)
+            $soms.Count | Should -Be 2
+            [string](@($soms | Where-Object { $_.Som -eq 'OU=Branch,DC=contoso,DC=com' })[0].GpOptionsMeaning) | Should -Match '^1 block inheritance'
+            [string](@($soms | Where-Object { $_.Som -eq 'DC=contoso,DC=com' })[0].GpOptionsMeaning) | Should -Match '^0 inheritance not blocked'
+            @($soms | Where-Object { [string]$_.Detail -match 'not published' }).Count | Should -Be 0
+            @($soms | Where-Object { $_.Status -ne 'Info' }).Count | Should -Be 0
+        }
+    }
+
+    Context 'Whether the runner computer is a DC (Win32_ComputerSystem.DomainRole, Win32_OperatingSystem.ProductType)' {
+        It 'reads <Name>' -ForEach @(
+            @{ Name = 'a DC both instruments agree on'; Role = 5; Product = 2; IsDc = 'Yes'; Pattern = 'ProductType 2' }
+            @{ Name = 'a BDC-role DC'; Role = 4; Product = 2; IsDc = 'Yes'; Pattern = 'Backup Domain Controller' }
+            @{ Name = 'a DC with ProductType not measured'; Role = 4; Product = 'none'; IsDc = 'Yes'; Pattern = 'decides alone' }
+            @{ Name = 'a member server both agree on'; Role = 3; Product = 3; IsDc = 'No'; Pattern = 'Member Server' }
+            @{ Name = 'a member workstation both agree on'; Role = 1; Product = 1; IsDc = 'No'; Pattern = 'Member Workstation' }
+            @{ Name = 'a non-DC role with ProductType not measured (a negative needs two instruments)'; Role = 3; Product = 'none'; IsDc = 'Unknown'; Pattern = 'second instrument' }
+            @{ Name = 'a DC role that ProductType contradicts'; Role = 5; Product = 3; IsDc = 'Unknown'; Pattern = 'DomainRole 5.*ProductType 3' }
+            @{ Name = 'a non-DC role that ProductType contradicts'; Role = 2; Product = 2; IsDc = 'Unknown'; Pattern = 'DomainRole 2.*ProductType 2' }
+            @{ Name = 'a DomainRole not returned'; Role = $null; Product = 2; IsDc = 'Unknown'; Pattern = 'DomainRole was not returned' }
+            @{ Name = 'a DomainRole outside 0 to 5'; Role = 9; Product = 2; IsDc = 'Unknown'; Pattern = 'no published meaning' }
+        ) {
+            $raw = if ($Product -eq 'none') { New-LzRunnerRaw -DomainRole $Role -OsOk $false -OsError 'Invalid class' } else { New-LzRunnerRaw -DomainRole $Role -ProductType $Product }
+            $r = Resolve-AdfaRunnerRole -Raw $raw -Config $script:LzCfg
+            $r.IsDc | Should -Be $IsDc
+            $r.Why | Should -Match $Pattern
+        }
+        It 'is Unknown, never No, when the computer could not be read (access denied and a failure told apart)' {
+            $d = Resolve-AdfaRunnerRole -Raw (New-LzRunnerRaw -CsOk $false -CsError 'Access denied' -OsOk $false -OsError 'Access denied') -Config $script:LzCfg
+            $d.IsDc | Should -Be 'Unknown'
+            $d.Why | Should -Match 'access denied'
+            $f = Resolve-AdfaRunnerRole -Raw (New-LzRunnerRaw -CsOk $false -CsError 'The term Get-CimInstance is not recognized' -OsOk $false) -Config $script:LzCfg
+            $f.IsDc | Should -Be 'Unknown'
+            $f.Why | Should -Match 'read failed'
+            $f.Why | Should -Not -Match 'access denied'
+            (Resolve-AdfaRunnerRole -Raw $null -Config $script:LzCfg).IsDc | Should -Be 'Unknown'
+        }
+        It 'folds an error message that spans lines into one line, so the log line stays whole (found by CI, v1.43.0)' {
+            $twoLines = "The term 'Get-CimInstance' is not recognized as a name of a cmdlet.`nCheck the spelling of the name, or if a path was included, verify that the path is correct and try again."
+            $m = Resolve-AdfaRunnerRole -Raw (New-LzRunnerRaw -CsOk $false -CsError $twoLines -OsOk $false) -Config $script:LzCfg
+            $m.IsDc | Should -Be 'Unknown'
+            $m.Why | Should -Not -Match '[\r\n]'
+            $m.Why | Should -Match 'cmdlet\. Check the spelling'
+            $a = Resolve-AdfaRunnerRole -Raw (New-LzRunnerRaw -CsOk $false -CsError "Access denied`r`nsecond line" -OsOk $false) -Config $script:LzCfg
+            $a.Why | Should -Not -Match '[\r\n]'
+            $a.Why | Should -Match 'access denied'
+        }
+        It 'the local reader reads the two classes by name, properties only, and a property not returned is $null, never 0 (stub in the CIM shape)' {
+            $script:LzCim = @()
+            function Get-CimInstance { param([string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $CimSession, $ErrorAction)
+                $script:LzCim += [pscustomobject]@{ Class = $ClassName; Property = (@($Property) -join ','); Session = $PSBoundParameters.ContainsKey('CimSession') }
+                if ($ClassName -eq 'Win32_ComputerSystem') { return [pscustomobject]@{ Name = 'ADMIN01'; Domain = 'contoso.com' } }
+                [pscustomobject]@{ ProductType = [uint32]1 } }
+            $raw = Get-AdfaRunnerRoleRaw -OperationTimeoutSec 30
+            $raw.ComputerSystemOk | Should -BeTrue
+            $null -eq $raw.DomainRole | Should -BeTrue
+            [int]$raw.ProductType | Should -Be 1
+            (@($script:LzCim | ForEach-Object { $_.Class }) -join ',') | Should -Be 'Win32_ComputerSystem,Win32_OperatingSystem'
+            @($script:LzCim | Where-Object { $_.Session }).Count | Should -Be 0
+            @($script:LzCim)[0].Property | Should -Match 'DomainRole'
+            (Resolve-AdfaRunnerRole -Raw $raw -Config $script:LzCfg).IsDc | Should -Be 'Unknown'
+        }
+        It 'the local reader never throws: a refused read is kept as an error' {
+            function Get-CimInstance { param([string]$ClassName, [string[]]$Property, [uint32]$OperationTimeoutSec, $ErrorAction) throw [System.UnauthorizedAccessException]::new('Access denied') }
+            $raw = Get-AdfaRunnerRoleRaw
+            $raw.ComputerSystemOk | Should -BeFalse
+            $raw.OperatingSystemOk | Should -BeFalse
+            $raw.ComputerSystemError | Should -Match 'Access denied'
+        }
+        It 'states the role in the runner row, in the JSON run block and says "not read" when it was not given' {
+            $rootDse = [pscustomobject]@{ Ok = $true; DnsHostName = $script:LzDc1; Error = ''; ErrorType = '' }
+            $role = Resolve-AdfaRunnerRole -Raw (New-LzRunnerRaw -DomainRole 3 -ProductType 3) -Config $script:LzCfg
+            $row = Get-AdfaRunnerRow -ForestName $script:LzDom1 -RootDse $rootDse -ComputerName $script:LzRunner -RunnerRole $role
+            $row.Status | Should -Be 'Info'
+            [string]$row.RunnerIsDc | Should -Be 'No'
+            [string]$row.RunnerRole | Should -Match 'Member Server'
+            $none = Get-AdfaRunnerRow -ForestName $script:LzDom1 -RootDse $rootDse -ComputerName $script:LzRunner
+            [string]$none.RunnerIsDc | Should -Be 'not read'
+            $meta = [pscustomobject]@{ Forest = $script:LzDom1; Generated = 'g'; RunBy = 'r'; Version = '1.43.0'; DomainsScoped = @($script:LzDom1); DcCount = 1; Badges = ''; RunnerIsDc = 'Yes'; RunnerRole = 'Primary Domain Controller' }
+            $doc = New-AdfaReportDocument -Meta $meta -Findings @() -Coverage @() -Sections ([ordered]@{}) -Summary ([pscustomobject]@{ Pass = 0; Warning = 0; Fail = 0; NotAssessed = 0 })
+            [string]$doc.run.runnerIsDc | Should -Be 'Yes'
+            [string]$doc.run.runnerRole | Should -Be 'Primary Domain Controller'
+            $old = [pscustomobject]@{ Forest = $script:LzDom1; Generated = 'g'; RunBy = 'r'; Version = '1.43.0'; DomainsScoped = @($script:LzDom1); DcCount = 1; Badges = '' }
+            $doc2 = New-AdfaReportDocument -Meta $old -Findings @() -Coverage @() -Sections ([ordered]@{}) -Summary ([pscustomobject]@{ Pass = 0; Warning = 0; Fail = 0; NotAssessed = 0 })
+            [string]$doc2.run.runnerIsDc | Should -Be 'not read'
+        }
+        It 'is wired: Invoke-Main reads the runner role once, whatever -Sections, and puts it in the log, the meta, the topology row and the return object' {
+            $raws = @(Get-LzCall -Ast $script:LzMain -Name 'Get-AdfaRunnerRoleRaw')
+            $raws.Count | Should -Be 1
+            $p = $raws[0].Parent
+            $guarded = $false
+            while ($null -ne $p -and $p -ne $script:LzMain) {
+                if ($p -is [System.Management.Automation.Language.IfStatementAst] -and $p.Clauses[0].Item1.Extent.Text -match 'Test-SectionSelected') { $guarded = $true }
+                $p = $p.Parent
+            }
+            $guarded | Should -BeFalse -Because 'the runner role is run metadata, read in every run'
+            @(Get-LzCall -Ast $script:LzMain -Name 'Resolve-AdfaRunnerRole').Count | Should -Be 1
+            $topo = @(Get-LzCall -Ast $script:LzMain -Name 'Get-AdfaTopologyInventory')
+            $topo.Count | Should -Be 1
+            (Get-LzParameter -Call $topo[0] -Name 'RunnerRole').Extent.Text | Should -Be '$runnerRole'
+            $keys = @($script:LzMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true) | ForEach-Object { $_.KeyValuePairs } | Where-Object { [string]$_.Item1.Extent.Text -eq 'RunnerIsDc' })
+            # Declared population: the meta object and the return object.
+            $keys.Count | Should -Be 2
+            $logs = @(Get-LzCall -Ast $script:LzMain -Name 'Write-Log' | Where-Object { $_.Extent.Text -match 'Runner computer' })
+            $logs.Count | Should -Be 1
+            $fn = @(Get-LzFunction -Name 'Get-AdfaTopologyInventory')
+            $rr = @(Get-LzCall -Ast $fn[0] -Name 'Get-AdfaRunnerRow')
+            (Get-LzParameter -Call $rr[0] -Name 'RunnerRole').Extent.Text | Should -Be '$RunnerRole'
+        }
+        It 'the reader calls no CIM method and opens no CIM session' {
+            $fn = @(Get-LzFunction -Name 'Get-AdfaRunnerRoleRaw')
+            $fn.Count | Should -Be 1
+            @(Get-LzCall -Ast $fn[0] -Name 'Invoke-CimMethod').Count | Should -Be 0
+            @(Get-LzCall -Ast $fn[0] -Name 'New-CimSession').Count | Should -Be 0
+            $gets = @(Get-LzCall -Ast $fn[0] -Name 'Get-CimInstance')
+            $gets.Count | Should -Be 2
+            foreach ($g in $gets) {
+                (Get-LzParameter -Call $g -Name 'ClassName') | Should -BeOfType ([System.Management.Automation.Language.StringConstantExpressionAst])
+                (Get-LzParameter -Call $g -Name 'Property') | Should -Not -BeNullOrEmpty
+                (Get-LzParameter -Call $g -Name 'CimSession') | Should -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'Trust bits and type by name (MS-ADTS 6.1.6.7.9 and 6.1.6.7.15)' {
+        It 'names reserved and obsolete bits by their range, and still names 0x800 by the table (<Value>)' -ForEach @(
+            @{ Value = 0x4008; Flags = 'FOREST_TRANSITIVE'; Reserved = 'RESERVED 0x4000' }
+            @{ Value = 0x2000; Flags = ''; Reserved = 'RESERVED 0x2000' }
+            @{ Value = 0x200000; Flags = ''; Reserved = 'RESERVED 0x200000' }
+            @{ Value = 0x400000; Flags = ''; Reserved = 'OBSOLETE 0x400000' }
+            @{ Value = 0x800000; Flags = ''; Reserved = 'OBSOLETE 0x800000' }
+            @{ Value = 0x1000000; Flags = ''; Reserved = 'RESERVED 0x1000000' }
+            @{ Value = -2147483648; Flags = ''; Reserved = 'RESERVED 0x80000000' }
+            @{ Value = 0x1800; Flags = 'CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION,DISABLE_AUTH_TARGET_VALIDATION'; Reserved = '' }
+        ) {
+            $d = Get-AdfaTrustAttributeDecode -Value $Value -Config $script:LzCfg
+            $d.Measured | Should -BeTrue
+            (@($d.Flags) -join ',') | Should -Be $Flags
+            (@($d.Reserved) -join ',') | Should -Be $Reserved
+            @($d.Unknown).Count | Should -Be 0
+        }
+        It 'leaves no bit unknown with the table as shipped (declared population: all 32 bits set)' {
+            $d = Get-AdfaTrustAttributeDecode -Value 4294967295 -Config $script:LzCfg
+            @($d.Flags).Count | Should -Be 13
+            @($d.Reserved).Count | Should -Be 19
+            @($d.Unknown).Count | Should -Be 0
+        }
+        It 'still names a bit unknown when no range covers it (a table without ranges)' {
+            $cfg = @{} + $script:LzCfg
+            $cfg['TrustAttributeRanges'] = @()
+            $d = Get-AdfaTrustAttributeDecode -Value 0x4000 -Config $cfg
+            (@($d.Unknown) -join ',') | Should -Be 'unknown 0x4000'
+            @($d.Reserved).Count | Should -Be 0
+        }
+        It 'shows reserved bits in the trust row and names the AAD trust type with its source' {
+            $raw = New-LzRead -Records @((New-LzObject @{ cn = 'fabrikam.com'; trustPartner = 'fabrikam.com'; flatName = 'FABRIKAM'; trustAttributes = 0x400008; trustDirection = 3; trustType = 5 }))
+            $rows = @(Get-AdfaTrustInventoryRows -DomainName $script:LzDom1 -Raw $raw -Config $script:LzCfg)
+            $t = (Get-LzRow $rows ('Trust: {0} -> fabrikam.com' -f $script:LzDom1))[0]
+            $t.Status | Should -Be 'Info'
+            [string]$t.TrustAttributeFlags | Should -Be 'FOREST_TRANSITIVE, OBSOLETE 0x400000'
+            [string]$t.TrustType | Should -Be '5 AAD'
+            $t.Detail | Should -Match 'TRUST_TYPE_AAD'
+            $t.Detail | Should -Match 'Azure Active Directory'
+            [string]$t.TgtDelegation | Should -Not -Match 'OBSOLETE'
+        }
+        # Found by an independent review before commit: the AAD sentence was added only after the trustAttributes decode.
+        It 'names TRUST_TYPE_AAD for a trust of type 5 whose trustAttributes was not returned, and the row stays Not Assessed with the same advice' {
+            $raw = New-LzRead -Records @((New-LzObject @{ cn = 'fabrikam.com'; trustPartner = 'fabrikam.com'; flatName = 'FABRIKAM'; trustAttributes = $null; trustDirection = 3; trustType = 5 }))
+            $rows = @(Get-AdfaTrustInventoryRows -DomainName $script:LzDom1 -Raw $raw -Config $script:LzCfg)
+            $t = (Get-LzRow $rows ('Trust: {0} -> fabrikam.com' -f $script:LzDom1))[0]
+            $t.Status | Should -Be 'Not Assessed'
+            [string]$t.TrustType | Should -Be '5 AAD'
+            $t.Detail | Should -Match 'trustAttributes was not returned'
+            $t.Detail | Should -Match 'TRUST_TYPE_AAD'
+            $t.Detail | Should -Match 'Azure Active Directory'
+            $before = Get-AdfaRecommendation -Section 'Trust Inventory' -Item $t.Item -Detail "trustAttributes was not returned, so the trust's flags (transitivity, SID filtering, TGT delegation) are not known."
+            Get-AdfaRecommendation -Section 'Trust Inventory' -Item $t.Item -Detail $t.Detail | Should -Be $before -Because 'the AAD sentence must not attract other advice'
+            $other = New-LzRead -Records @((New-LzObject @{ cn = 'fabrikam.com'; trustPartner = 'fabrikam.com'; flatName = 'FABRIKAM'; trustAttributes = $null; trustDirection = 3; trustType = 2 }))
+            (Get-LzRow @(Get-AdfaTrustInventoryRows -DomainName $script:LzDom1 -Raw $other -Config $script:LzCfg) ('Trust: {0} -> fabrikam.com' -f $script:LzDom1))[0].Detail | Should -Not -Match 'TRUST_TYPE_AAD'
+        }
+    }
+
+    Context 'Read-only guard and help of the C15c functions' {
+        It 'every new function has help for each parameter (declared population: 9 functions)' {
+            $names = @('Resolve-AdfaW32TimeEffectiveSource', 'Select-AdfaEventOccurrence', 'Measure-AdfaRangedMemberCount', 'Get-AdfaGroupRangedMemberCount',
+                'ConvertTo-AdfaPrimaryGroupCount', 'Get-AdfaGroupMemberFigure', 'Get-AdfaGpOptionsMeaning', 'Get-AdfaRunnerRoleRaw', 'Resolve-AdfaRunnerRole')
+            $fns = @($script:LzAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $names -contains $n.Name }, $true))
+            $fns.Count | Should -Be 9
+            foreach ($fn in $fns) {
+                $h = $fn.GetHelpContent()
+                $h | Should -Not -BeNullOrEmpty -Because $fn.Name
+                foreach ($p in @($fn.Body.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })) {
+                    $h.Parameters.ContainsKey($p.ToUpperInvariant()) | Should -BeTrue -Because ('{0} -{1}' -f $fn.Name, $p)
+                }
+            }
+        }
+        It 'no new function writes: no Set-/New-/Remove- command of another module, no CIM method, no registry or event log write' {
+            $names = @('Resolve-AdfaW32TimeEffectiveSource', 'Select-AdfaEventOccurrence', 'Measure-AdfaRangedMemberCount', 'Get-AdfaGroupRangedMemberCount',
+                'ConvertTo-AdfaPrimaryGroupCount', 'Get-AdfaGroupMemberFigure', 'Get-AdfaGpOptionsMeaning', 'Get-AdfaRunnerRoleRaw', 'Resolve-AdfaRunnerRole')
+            $hits = @()
+            foreach ($fn in @($script:LzAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $names -contains $n.Name }, $true))) {
+                foreach ($c in @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+                    $cn = [string]$c.GetCommandName()
+                    if ($cn -match '(?i)^(Set|New|Remove|Clear|Write|Limit)-' -and $cn -notmatch '(?i)^New-(Adfa\w*|Object)$') { $hits += ('{0}: {1}' -f $fn.Name, $c.Extent.Text) }
+                    if ($cn -match '(?i)^(Invoke-CimMethod|Invoke-WmiMethod|Set-CimInstance|Set-ItemProperty|New-ItemProperty)$') { $hits += ('{0}: {1}' -f $fn.Name, $c.Extent.Text) }
+                }
+            }
+            $hits | Should -BeNullOrEmpty
         }
     }
 }

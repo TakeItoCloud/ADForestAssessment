@@ -3187,7 +3187,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.42.0' ([string]$script:Config.Version) 'C14: version 1.42.0 in the script (bumped by PORT-PLAN C11f, C2i, C15d and C16d)'
+Assert-Equal '1.43.0' ([string]$script:Config.Version) 'C14: version 1.43.0 in the script (bumped by PORT-PLAN C15c)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3280,7 +3280,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.42.0' ([string]$script:Config.Version) 'C15: version 1.42.0 in the script (bumped by PORT-PLAN C11f, C2i, C15d and C16d)'
+Assert-Equal '1.43.0' ([string]$script:Config.Version) 'C15: version 1.43.0 in the script (bumped by PORT-PLAN C15c)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3504,7 +3504,7 @@ $c16Src2 = & {
     Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
 }
 Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
-Assert-Equal '1.42.0' ([string]$script:Config.Version) 'C16: version 1.42.0 in the script (bumped by PORT-PLAN C11f, C2i, C15d and C16d)'
+Assert-Equal '1.43.0' ([string]$script:Config.Version) 'C16: version 1.43.0 in the script (bumped by PORT-PLAN C15c)'
 
 # ---- PORT-PLAN C1a: the update build revision (pure) -----------------------------------------
 $c1aKey = [string]$script:Config.DcSystem['UbrKey']
@@ -3776,7 +3776,51 @@ Assert-Equal '' (ConvertTo-AdfaDsaSiteName -ServerDn 'CN=NTDS Settings\0ACNF:123
 $lfTargets = @([pscustomobject]@{ HostName = 'dc1.contoso.com'; Scope = 'contoso.com'; ComputerObjectDN = 'CN=DC1,DC=contoso,DC=com' }, [pscustomobject]@{ HostName = 'dc3.north.contoso.com'; Scope = 'north.contoso.com' })
 Assert-Equal 'dc1.contoso.com' ((@((Select-AdfaDomainDcTarget -Domain 'contoso.com' -Targets $lfTargets -ScopedDomains @('contoso.com', 'north.contoso.com')).Targets) | ForEach-Object { $_.HostName }) -join ',') 'C2i(3): one domain''s targets only'
 Assert-True ([bool](Select-AdfaDomainDcTarget -Domain 'south.contoso.com' -Targets $lfTargets -InventoryFailures @([pscustomobject]@{ Domain = 'south.contoso.com'; Error = 'STUB' }) -ScopedDomains @('south.contoso.com')).Gap.Failed) 'C2i(3): a domain whose DCs could not be listed has its gap, never another domain''s DCs'
-Assert-Equal 'Primary' (@($script:Config.Dns['GradedZoneTypes']) -join ',') 'C16d(c): the zone transfer setting is graded on primary zones only (Learn documents SecureSecondaries on Set-DnsServerPrimaryZone alone)'Write-Host ""
+Assert-Equal 'Primary' (@($script:Config.Dns['GradedZoneTypes']) -join ',') 'C16d(c): the zone transfer setting is graded on primary zones only (Learn documents SecureSecondaries on Set-DnsServerPrimaryZone alone)'
+# PORT-PLAN C15c (v1.43.0): the pure logic of the leftovers batch - the W32Time effective source, the raw event
+# occurrences, the ranged member count, the primary-group count, the gPOptions meaning, the runner role and the
+# trust bit names. Fictional names only.
+$lzInv = $script:Config.Inventory
+$lzReg = { param([string]$Id, $Rv = 0, $Value = $null) [pscustomobject]@{ Id = $Id; Key = 'k'; ValueName = $Id; Answered = $true; ReturnValue = $Rv; Value = $Value; Method = 'GetStringValue'; Error = ''; ErrorCode = '' } }
+$lzAbsent = @(@($lzInv['W32TimePolicyValues']) | ForEach-Object { & $lzReg ([string]$_.Id) 2 })
+Assert-Equal 'Local' ([string](Resolve-AdfaW32TimeEffectiveSource -Id 'Type' -Values $lzAbsent -Config $lzInv).Source) 'C15c: a policy area holding no value leaves the local value in force'
+$lzSet = @(@($lzInv['W32TimePolicyValues']) | ForEach-Object { if ($_.Id -eq 'Policy.Type.NtpClient') { & $lzReg ([string]$_.Id) 0 'NTP' } else { & $lzReg ([string]$_.Id) 2 } })
+Assert-Equal 'Policy' ([string](Resolve-AdfaW32TimeEffectiveSource -Id 'Type' -Values $lzSet -Config $lzInv).Source) 'C15c: a policy value is the source in force'
+$lzDenied = @(@($lzInv['W32TimePolicyValues']) | ForEach-Object { if ($_.Id -eq 'Policy.Type.Parameters') { & $lzReg ([string]$_.Id) 5 } else { & $lzReg ([string]$_.Id) 2 } })
+Assert-True (-not (Resolve-AdfaW32TimeEffectiveSource -Id 'Type' -Values $lzDenied -Config $lzInv).Measured) 'C15c: a refused policy read leaves the source not measured, never local'
+$lzEvents = @(1..25 | ForEach-Object { [pscustomobject]@{ Id = 7; Level = 2; ProviderName = 'p'; TimeCreated = [datetime]'2026-11-19 10:00:00'; RecordId = [long]$_ } })
+$lzSel = Select-AdfaEventOccurrence -Events $lzEvents -Cap 20
+Assert-Equal 20 ([int]$lzSel.Kept) 'C15c: at most RawEventCap raw occurrences are kept'
+Assert-True (@($lzSel.Shown)[0] -match 'record 25') 'C15c: the newest occurrence comes first'
+Assert-Equal 0 ([int](Select-AdfaEventOccurrence -Events $lzEvents -Cap 0).Kept) 'C15c: a cap of 0 keeps none'
+$lzPage = { param($Low, [string]$High, [int]$Count, [bool]$Ok = $true) [pscustomobject]@{ Ok = $Ok; Error = 'The server is not operational'; ErrorType = ''; RangedMatches = 1; RangedLow = $Low; RangedHigh = $High; RangedCount = $Count } }
+Assert-Equal 1234 ([int64](Measure-AdfaRangedMemberCount -Pages @((& $lzPage 0 '999' 1000), (& $lzPage 1000 '*' 234)) -MaxPages 100).Count) 'C15c: the pages add up to the exact count when the last ends with *'
+$lzFailed = Measure-AdfaRangedMemberCount -Pages @((& $lzPage 0 '999' 1000), (& $lzPage 1000 '*' 0 $false)) -MaxPages 100
+Assert-True ($lzFailed.State -eq 'Failed' -and $null -eq $lzFailed.Count) 'C15c: a failed page gives no count, never a partial number'
+Assert-Equal 'Capped' ([string](Measure-AdfaRangedMemberCount -Pages @((& $lzPage 0 '999' 1000)) -MaxPages 1).State) 'C15c: the read stops at MemberRangeMaxPages and says so'
+$lzPrimaryRaw = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Capped = $false; Count = 3; Records = @([pscustomobject]@{ primaryGroupID = 513 }, [pscustomobject]@{ primaryGroupID = 513 }, [pscustomobject]@{ primaryGroupID = 516 }) }
+Assert-Equal 2 ([int](ConvertTo-AdfaPrimaryGroupCount -Raw $lzPrimaryRaw -Config $lzInv -CapSource 'x').Counts['513']) 'C15c: members are counted per primaryGroupID'
+# C15c review (found by an independent review before commit): a read that holds neither RID every domain holds is not a count.
+$lzPrimaryEmpty = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Capped = $false; Count = 0; Records = @() }
+$lzPrimaryEmptyCount = ConvertTo-AdfaPrimaryGroupCount -Raw $lzPrimaryEmpty -Config $lzInv -CapSource 'x'
+Assert-True (-not $lzPrimaryEmptyCount.Ok -and $lzPrimaryEmptyCount.Why -match '513 or 516') 'C15c review: an empty primary-group read is not a count (declared population: RIDs 513 and 516)'
+$lzPrimaryNo516 = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Capped = $false; Count = 1; Records = @([pscustomobject]@{ primaryGroupID = 513 }) }
+Assert-True (-not (ConvertTo-AdfaPrimaryGroupCount -Raw $lzPrimaryNo516 -Config $lzInv -CapSource 'x').Ok) 'C15c review: a primary-group read with no domain controller account (RID 516) is not a count'
+$lzAadRow = @(Get-AdfaTrustInventoryRows -DomainName 'contoso.com' -Raw (& $c15Read @([pscustomobject]@{ trustPartner = 'fabrikam.com'; trustAttributes = $null; trustDirection = 3; trustType = 5 })) -Config $lzInv | Where-Object { $_.Item -eq 'Trust: contoso.com -> fabrikam.com' })[0]
+Assert-True ($lzAadRow.Status -eq 'Not Assessed' -and $lzAadRow.Detail -match 'TRUST_TYPE_AAD') 'C15c review: a type 5 trust whose trustAttributes was not returned still names TRUST_TYPE_AAD'
+$lzPrimaryCapped = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Capped = $true; Count = 2; Records = @() }
+Assert-True (-not (ConvertTo-AdfaPrimaryGroupCount -Raw $lzPrimaryCapped -Config $lzInv -CapSource 'x').Ok) 'C15c: a capped primary-group read is not a count'
+Assert-True ((Get-AdfaGpOptionsMeaning -Value 1 -Labels $lzInv['GpOptionsLabels']) -match '^1 block inheritance') 'C15c: gPOptions 1 blocks inheritance (MS-GPOL 2.2.2)'
+Assert-True ((Get-AdfaGpOptionsMeaning -Value 2 -Labels $lzInv['GpOptionsLabels']) -match '^unknown 2') 'C15c: any other gPOptions value is unknown'
+Assert-True ((Get-AdfaGpOptionsMeaning -Value $null -Labels $lzInv['GpOptionsLabels']) -match '^not returned') 'C15c: a gPOptions not returned is never a measured 0'
+$lzRunner = { param($Role, $Product) [pscustomobject]@{ ComputerSystemOk = $true; DomainRole = $Role; ComputerName = 'ADMIN01'; ComputerSystemError = ''; OperatingSystemOk = ($null -ne $Product); ProductType = $Product; OperatingSystemError = 'not read' } }
+Assert-Equal 'Yes' ([string](Resolve-AdfaRunnerRole -Raw (& $lzRunner 5 2) -Config $lzInv).IsDc) 'C15c: DomainRole 5 with ProductType 2 is a DC'
+Assert-Equal 'No' ([string](Resolve-AdfaRunnerRole -Raw (& $lzRunner 3 3) -Config $lzInv).IsDc) 'C15c: a member server both instruments agree on is not a DC'
+Assert-Equal 'Unknown' ([string](Resolve-AdfaRunnerRole -Raw (& $lzRunner 3 $null) -Config $lzInv).IsDc) 'C15c: a negative is never stated from one instrument'
+Assert-Equal 'Unknown' ([string](Resolve-AdfaRunnerRole -Raw (& $lzRunner 4 3) -Config $lzInv).IsDc) 'C15c: two instruments that disagree give Unknown'
+Assert-Equal 'OBSOLETE 0x400000' ((@((Get-AdfaTrustAttributeDecode -Value 0x400000 -Config $lzInv).Reserved)) -join ',') 'C15c: an obsolete trust bit is named by its MS-ADTS range'
+Assert-Equal 0 (@((Get-AdfaTrustAttributeDecode -Value 4294967295 -Config $lzInv).Unknown).Count) 'C15c: no trustAttributes bit is unknown with the ranges of MS-ADTS 6.1.6.7.9'
+Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }
