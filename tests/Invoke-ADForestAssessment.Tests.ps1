@@ -3612,11 +3612,12 @@ Describe 'DC disk space, and the generic config override (C2)' {
             $closes = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Remove-CimSession' })
             # Declared population: the DcSystem seam, the DcDisk seam, the DcHardening seam (C3), the DC
             # network seam (C13), the W32Time seam (C15) and the SYSVOL registry seam (C14c, v1.41.0),
-            # the six places a CIM session is opened. Each is named, so a seventh fails on its name.
-            $declared = @('Get-AdfaDcDiskRaw', 'Get-AdfaDcHardeningRaw', 'Get-AdfaDcNetworkRaw', 'Get-AdfaDcSystemRaw', 'Get-AdfaDcW32TimeRaw', 'Get-AdfaSysvolRegistryRaw')
+            # and since v1.45.0 the DNS server read with -Credential (Invoke-AdfaDnsServerRead, PORT-PLAN C16b(4-7)):
+            # the seven places a CIM session is opened. Each is named, so an eighth fails on its name.
+            $declared = @('Get-AdfaDcDiskRaw', 'Get-AdfaDcHardeningRaw', 'Get-AdfaDcNetworkRaw', 'Get-AdfaDcSystemRaw', 'Get-AdfaDcW32TimeRaw', 'Get-AdfaSysvolRegistryRaw', 'Invoke-AdfaDnsServerRead')
             $opens = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'New-CimSession' })
             foreach ($set in @($closes, $opens)) {
-                $set.Count | Should -Be 6
+                $set.Count | Should -Be 7
                 $owners = @(foreach ($call in $set) {
                         $f = $call.Parent
                         while ($null -ne $f -and $f -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $f = $f.Parent }
@@ -5339,7 +5340,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6; Laps since v1.21.0, PORT-PLAN C4;
             # DcCertificates since v1.22.0, PORT-PLAN C5).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects'
             $entry = $script:ConfigOverrideSections['DcHardening']
             [string]$entry['ConfigKey'] | Should -Be 'DcHardening'
             [string]$entry['Section'] | Should -Be 'DcHardening'
@@ -7368,7 +7369,10 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         # C15 seam with -Properties @('primaryGroupID'), a non-secret attribute).
         # 40 since v1.44.0: PORT-PLAN C16b(1-3) added the one seam call of Get-AdfaAccountsPolicyRaw (-Properties $props, the
         # declared lists of AccountsPolicy.Reads, refused before sending when one holds a wildcard or a secret name).
-        $script:C4PropertiesArgumentCount = 40
+        # 39 since v1.45.0: PORT-PLAN C16b(4-7) removed the two literal lists of the old Get-AdfaPkiHealth (dNSHostName, cn; the
+        # template flags) and added the one seam call of Get-AdfaDeclaredReadRaw (-Properties $props, the declared lists of the Pki,
+        # ExchangeAdVersions and LingeringObjects tables, refused before sending when one holds a wildcard or a secret name).
+        $script:C4PropertiesArgumentCount = 39
         # 7 since v1.22.0: PORT-PLAN C5 added $computerArgs.Properties = @('userCertificate') in
         # Get-AdfaDcCertificateDirectoryRaw.
         # 12 since v1.23.0: PORT-PLAN C6 added five splatted property lists, two in Get-AdfaRidManagerRaw and
@@ -7557,7 +7561,7 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects'
             $entry = $script:ConfigOverrideSections['Laps']
             [string]$entry['ConfigKey'] | Should -Be 'Laps'
             [string]$entry['Section'] | Should -Be 'Laps'
@@ -7609,9 +7613,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.44.0 (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -9185,7 +9189,7 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; DcCertificates since v1.22.0, PORT-PLAN C5; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects'
             $entry = $script:ConfigOverrideSections['DcCertificates']
             [string]$entry['ConfigKey'] | Should -Be 'DcCertificates'
             [string]$entry['Section'] | Should -Be 'DcCertificates'
@@ -9267,9 +9271,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.44.0 (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -10186,7 +10190,7 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
         }
         It 'is registered for -ConfigOverridePath with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7; RidPool since v1.23.0, PORT-PLAN C6).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects'
             $entry = $script:ConfigOverrideSections['RidPool']
             [string]$entry['ConfigKey'] | Should -Be 'RidPool'
             [string]$entry['Section'] | Should -Be 'RidPool'
@@ -10257,9 +10261,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.44.0 (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -11141,7 +11145,7 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
         }
         It 'is registered for -ConfigOverridePath under SidHistory, used by SecurityPosture, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8; SidHistory since v1.24.0, PORT-PLAN C7).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects'
             $entry = $script:ConfigOverrideSections['SidHistory']
             [string]$entry['ConfigKey'] | Should -Be 'SidHistory'
             [string]$entry['Section'] | Should -Be 'SecurityPosture'
@@ -11196,9 +11200,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.44.0 (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -12079,7 +12083,7 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
         }
         It 'is registered for -ConfigOverridePath under Gpo, used by the Gpo section, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9; Gpo since v1.25.0, PORT-PLAN C8).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects'
             $entry = $script:ConfigOverrideSections['Gpo']
             [string]$entry['ConfigKey'] | Should -Be 'Gpo'
             [string]$entry['Section'] | Should -Be 'Gpo'
@@ -12190,9 +12194,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.44.0 (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -13357,7 +13361,7 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
         }
         It 'is registered for -ConfigOverridePath under Acl, used by the Acl section, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10; Acl since v1.26.0, PORT-PLAN C9).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects'
             $entry = $script:ConfigOverrideSections['Acl']
             [string]$entry['ConfigKey'] | Should -Be 'Acl'
             [string]$entry['Section'] | Should -Be 'Acl'
@@ -13430,9 +13434,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.44.0 (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -14572,7 +14576,7 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
         }
         It 'is registered for -ConfigOverridePath under Privileged, used by PrivilegedAccounts and also by PrivilegedHygiene and Kerberos, with its own validator' {
             # Declared population: the ten sections the file can carry (DcDiag since v1.28.0, PORT-PLAN C11; Privileged since v1.27.0, PORT-PLAN C10).
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects'
             $entry = $script:ConfigOverrideSections['Privileged']
             [string]$entry['ConfigKey'] | Should -Be 'Privileged'
             [string]$entry['Section'] | Should -Be 'PrivilegedAccounts'
@@ -14580,9 +14584,14 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             [string]$entry['Merge'] | Should -Be 'Merge-AdfaPrivilegedConfig'
             Get-Command -Name 'Merge-AdfaPrivilegedConfig' -CommandType Function -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
             # The "validated but not used" log reads AlsoUsedBy as well, so a run selecting only Kerberos does not call the table unused.
-            $logIf = @($script:C10Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$usedBy' }, $true))
+            # Since the independent review of C16b(4-7) the rule lives in the pure Get-AdfaConfigOverrideUnusedReason, which Invoke-Main calls.
+            $reasonFn = @(([System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)).FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AdfaConfigOverrideUnusedReason' }, $true))
+            $reasonFn.Count | Should -Be 1
+            $logIf = @($reasonFn[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$usedBy' }, $true))
             $logIf.Count | Should -Be 1
             $logIf[0].Right.Extent.Text | Should -Match "AlsoUsedBy"
+            (Get-AdfaConfigOverrideUnusedReason -Entry $entry -Sections @('Kerberos')) | Should -Be ''
+            @($script:C10Main[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq 'Get-AdfaConfigOverrideUnusedReason' }, $true)).Count | Should -Be 1
         }
         It 'retires the old collectors: no Get-ADGroupMember, no DC exclusion by name, no dead PrivilegedGroupRids' {
             foreach ($f in $script:C10SectionFunctions) {
@@ -14648,9 +14657,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.44.0 (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -16524,9 +16533,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.44.0 (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17200,9 +17209,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.44.0 (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17353,9 +17362,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.44.0 in the script and the manifest (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -18684,9 +18693,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.44.0 in the script and the manifest (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -18697,7 +18706,7 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
                 [string]$script:ConfigOverrideSections[$k]['Merge'] | Should -Be 'Merge-AdfaSpecConfig'
                 [string]$script:ConfigOverrideSections[$k]['ConfigKey'] | Should -Be $k
             }
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects'
         }
         It 'merges a valid override for each section and cites the file only for what it supplied: <Section>' -ForEach @(
             @{ Section = 'Reach'; Override = @{ ProbeTimeoutMs = 5000; UnreachableStatus = 'Warning' }; Key = 'ProbeTimeoutMs'; Value = 5000 }
@@ -19839,15 +19848,15 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.44.0 in the script and the manifest (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
     Context 'Config override: the Inventory section (Merge-AdfaSpecConfig)' {
         It 'registers Inventory last, with the generic validator, used by every section it feeds' {
-            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy'
+            (@($script:ConfigOverrideSections.Keys) -join ',') | Should -Be 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects'
             [string]$script:ConfigOverrideSections['Inventory']['Merge'] | Should -Be 'Merge-AdfaSpecConfig'
             [string]$script:ConfigOverrideSections['Inventory']['Section'] | Should -Be 'Identity'
             # Topology since v1.33.0 (PORT-PLAN C4b): MaxObjects also caps the site link and connection reads.
@@ -21011,7 +21020,9 @@ Describe 'Declared property lists: no read of every attribute, no secret attribu
         # 39 since v1.43.0: PORT-PLAN C15c added the primary-group read (-Properties @('primaryGroupID')) of
         # Get-AdfaIdentityInventoryDepth.
         # 40 since v1.44.0: PORT-PLAN C16b(1-3) added the one seam call of Get-AdfaAccountsPolicyRaw (-Properties $props).
-        $script:C4bArgumentCount = 40
+        # 39 since v1.45.0: PORT-PLAN C16b(4-7) removed the two literal lists of the old Get-AdfaPkiHealth and added the one seam
+        # call of Get-AdfaDeclaredReadRaw (-Properties $props).
+        $script:C4bArgumentCount = 39
         $script:C4bAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
         $script:C4bMain = @($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))
         function Get-C4bFunction { param([string]$Name) @($script:C4bAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
@@ -21244,7 +21255,9 @@ Describe 'Declared property lists: no read of every attribute, no secret attribu
             # Get-ADComputer, Get-ADUser and Get-ADRootDSE, 4 Get-ADForest, 11 others once each).
             # 88 since v1.42.0: PORT-PLAN C11f added the Get-ADReplicationSite of Get-AdfaIntersiteSitePopulation (no -Properties).
             # 89 since v1.44.0: PORT-PLAN C16b(1-3) added the Get-ADOptionalFeature of Get-AdfaRecycleBinRaw (no -Properties).
-            $adCalls.Count | Should -Be 89
+            # 86 since v1.45.0: PORT-PLAN C16b(4-7) removed the Get-ADRootDSE and the two Get-ADObject of the old Get-AdfaPkiHealth (its
+            # reads now go through Get-AdfaDeclaredReadRaw and the C15 seam).
+            $adCalls.Count | Should -Be 86
             $short = @()
             foreach ($c in $adCalls) {
                 foreach ($e in @($c.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] })) {
@@ -24176,9 +24189,9 @@ Describe 'Promise triage: the README and help promises the code did not keep (C1
     }
 
     Context 'Version' {
-        It 'is 1.44.0 in the script and the manifest (bumped by PORT-PLAN C16b(1-3))' {
-            $script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'is 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
+            $script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 }
@@ -25610,9 +25623,9 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
     }
 
     Context 'Version' {
-        It 'is 1.44.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'is 1.45.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 }
@@ -26266,8 +26279,15 @@ exit $LASTEXITCODE
             # Get-AdfaPasswordNotRequiredVerdict 5, ConvertFrom-AdfaLockoutInterval 2, Get-AdfaLockoutAssessment 4, Get-AdfaLockoutVerdict 4,
             # Get-AdfaPsoVerdict 4, Get-AdfaFsmoSpreadVerdict 6, Get-AdfaInfrastructureMasterVerdict 7, Get-AdfaAccountsPolicy 8) and 65 parameters (1869);
             # the independent review fix of v1.44.0 added -NegativeRequired on ConvertFrom-AdfaLockoutInterval (1870).
-            $script:H21Help.Count | Should -Be 493 -Because 'declared population: the 493 functions of the script'
-            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1870 -Because 'declared population: the 1870 parameters of those functions'
+            # v1.45.0 (PORT-PLAN C16b(4-7)) added fourteen functions (507: Get-AdfaDeclaredReadRaw 6, Get-AdfaEsc1Shape 2,
+            # Get-AdfaTemplatePublication 2, Get-AdfaTemplateEnrolmentVerdict 3, Get-AdfaExchangeAdVersionRow 4, Merge-AdfaExchangeAdVersionsConfig 3,
+            # Resolve-AdfaExchangeAdVersion 3, Get-AdfaExchangeAdVersionVerdict 2, Get-AdfaExchangeAdVersion 5, Invoke-AdfaLingeringAdvisory 4,
+            # Get-AdfaLingeringPartitionRaw 4, Get-AdfaLingeringScanPlan 4, Get-AdfaLingeringPartitionScan 10, Invoke-AdfaDnsServerRead 7) and 70
+            # parameters (1940: those 59, -RootDomain, -Config, -AclConfig and -CapSource on Get-AdfaPkiHealth, -CimSession on the three
+            # DnsServer seams, -Credential on Get-AdfaDnsZoneDelegation, Resolve-AdfaDnsServerZone, Get-AdfaDnsServerRecord and Export-AdfaDnsRecord).
+            # The independent review fix of v1.45.0 added Get-AdfaConfigOverrideUnusedReason (508) with -Entry, -Sections and -SwitchState (1943).
+            $script:H21Help.Count | Should -Be 508 -Because 'declared population: the 508 functions of the script'
+            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1943 -Because 'declared population: the 1943 parameters of those functions'
             @($script:H21Help | Where-Object { -not $_.HasHelp } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { -not $_.HasSynopsis } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { @($_.Missing).Count -gt 0 } | ForEach-Object { '{0}: {1}' -f $_.Name, (@($_.Missing) -join ',') }) | Should -BeNullOrEmpty
@@ -26355,9 +26375,9 @@ exit $LASTEXITCODE
     }
 
     Context 'Version' {
-        It 'is 1.44.0 in the script and the manifest (PORT-PLAN H21; bumped by C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'is 1.45.0 in the script and the manifest (PORT-PLAN H21; bumped by C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 }
@@ -26686,7 +26706,9 @@ Describe 'Replication connection options and destination, the cap source of ever
             # 15 since v1.43.0: PORT-PLAN C15c added the call of ConvertTo-AdfaPrimaryGroupCount.
             # 24 since v1.44.0: PORT-PLAN C16b(1-3) added nine calls (the encryption type, PASSWD_NOTREQD, lockout and PSO verdicts, the FSMO spread,
             # the infrastructure master's two reads and the collector's CN=Partitions and computer-proof reads), each with -CapSource.
-            $calls.Count | Should -Be 24
+            # 32 since v1.45.0: PORT-PLAN C16b(4-7) added eight calls (Get-AdfaPkiHealth two, Get-AdfaExchangeAdVersion four,
+            # Get-AdfaLingeringPartitionRaw two), each with -CapSource.
+            $calls.Count | Should -Be 32
             foreach ($c in $calls) { (Get-LhParameter -Call $c -Name 'CapSource') | Should -Not -BeNullOrEmpty -Because ("line {0}" -f $c.Extent.StartLineNumber) }
         }
         It 'gives none of the C15 and Stale row functions a default that says "a tool default", and no string says "(MaxObjects, a tool default)"' {
@@ -27061,9 +27083,9 @@ Describe 'Replication connection options and destination, the cap source of ever
     }
 
     Context 'Version' {
-        It 'is 1.44.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'is 1.45.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 }
@@ -27996,9 +28018,9 @@ Describe 'Second SYSVOL instrument, the per-DC engine in the dcdiag grid, netlog
     }
 
     Context 'Version' {
-        It 'is 1.44.0 in the script and the manifest (PORT-PLAN C14c and C11e; bumped by C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'is 1.45.0 in the script and the manifest (PORT-PLAN C14c and C11e; bumped by C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 }
@@ -28816,9 +28838,9 @@ Describe 'Intersite for every site, the dcdiag circuit breaker, reachability for
     }
 
     Context 'Version' {
-        It 'is 1.44.0 in the script and the manifest (PORT-PLAN C11f, C2i, C15d and C16d; bumped by C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'is 1.45.0 in the script and the manifest (PORT-PLAN C11f, C2i, C15d and C16d; bumped by C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 }
@@ -28949,9 +28971,9 @@ Describe 'Inventory leftovers: W32Time policy source, raw event occurrences, ran
             [int]$script:LzCfg['RunnerRole']['DcProductType'] | Should -Be 2
             (@($script:LzCfg['RunnerRole']['DomainRoleLabels'].Keys | Sort-Object) -join ',') | Should -Be '0,1,2,3,4,5'
         }
-        It 'carries version 1.44.0 in the script and the manifest (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -29831,9 +29853,9 @@ Describe 'Accounts and policy: Kerberos encryption types, PASSWD_NOTREQD, FSMO s
                 @(Get-AdfaRefusedPropertyName -PropertyNames $names -SecretNames @(Get-AdfaSecretAttributeName)).Count | Should -Be 0 -Because $k
             }
         }
-        It 'carries version 1.44.0 in the script and the manifest (bumped by PORT-PLAN C16b(1-3))' {
-            [string]$script:Config.Version | Should -Be '1.44.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.44.0'
+        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
         }
     }
 
@@ -30378,6 +30400,896 @@ Describe 'Accounts and policy: Kerberos encryption types, PASSWD_NOTREQD, FSMO s
             $text | Should -Match 'PASSWD_NOTREQD are evaluated by the AccountsPolicy section'
             $fn = @(Get-ApFunction -Name 'Get-AdfaRedundancy')[0]
             ($fn.GetHelpContent().Synopsis -replace '\s+', ' ') | Should -Match 'FSMO concentration is not evaluated here; see the AccountsPolicy section'
+        }
+    }
+}
+Describe 'Leftovers: ESC1 over published templates and the enrolment ACL, Exchange AD versions, lingering partitions, DNS reads with -Credential (C16b(4-7), 1.45.0)' {
+    # PORT-PLAN C16b(4-7) (v1.45.0). No new -Sections value: Pki, ExchangeSchema, the -IncludeLingeringObjectScan switch and
+    # the DNS sections carry the work. Every name is fictional (contoso, fabrikam) and every computer name is held in a
+    # variable (PSAvoidUsingComputerNameHardcoded). Vendor facts read on Learn 2026-11-19 (URLs in the config tables).
+    BeforeAll {
+        $script:LxPki = $script:Config.Pki
+        $script:LxAcl = $script:Config.Acl
+        $script:LxExa = $script:Config.ExchangeAdVersions
+        $script:LxLo = $script:Config.LingeringObjects
+        $script:LxDom1 = 'contoso.com'
+        $script:LxDom2 = 'north.contoso.com'
+        $script:LxDn1 = 'DC=contoso,DC=com'
+        $script:LxDn2 = 'DC=north,DC=contoso,DC=com'
+        $script:LxCfgNc = 'CN=Configuration,DC=contoso,DC=com'
+        $script:LxDc1 = 'dc1.contoso.com'
+        $script:LxDc2 = 'dc2.contoso.com'
+        $script:LxDc3 = 'dc3.north.contoso.com'
+        $script:LxDc4 = 'dc4.contoso.com'
+        $script:LxEnroll = '0e10c968-78fb-11d2-90d4-00c04f79dc55'
+        $script:LxAutoEnroll = 'a05b8cc2-17bc-4802-a710-e7c15ab866a2'
+        $script:LxCap = 'Pki.MaxObjects, a tool default'
+        $script:LxAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:LxMain = @($script:LxAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))[0]
+        function Get-LxFunction { param([string]$Name) @($script:LxAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
+        function Get-LxCall { param($Ast, [string]$Name) @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq $Name }.GetNewClosure(), $true)) }
+        function Get-LxParameter { param($Call, [string]$Name)
+            $els = @($Call.CommandElements)
+            for ($i = 1; $i -lt $els.Count; $i++) {
+                if ($els[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and $els[$i].ParameterName -eq $Name) {
+                    if ($null -ne $els[$i].Argument) { return $els[$i].Argument }
+                    if (($i + 1) -lt $els.Count) { return $els[$i + 1] }
+                }
+            }
+            return $null }
+        # The comma keeps a one-row answer an array, so .Count works under StrictMode on Windows PowerShell 5.1.
+        function Get-LxRow { param($Rows, [string]$Item) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -eq $Item }) }
+        function Get-LxLike { param($Rows, [string]$Pattern) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like $Pattern }) }
+        # A read in the shape the C15 seam returns.
+        function New-LxRead { param($Records = @(), [bool]$Ok = $true, [string]$ErrorText = '', [string]$ErrorType = '', [bool]$Capped = $false, [bool]$NotFound = $false)
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = $ErrorType; NotFound = $NotFound; Records = @($Records); Count = @($Records).Count; Capped = $Capped; Filter = '(x)'; Identity = '' } }
+        function New-LxDenied { New-LxRead -Ok $false -ErrorText 'Access is denied.' -ErrorType 'System.UnauthorizedAccessException' }
+        function New-LxDown { New-LxRead -Ok $false -ErrorText 'Unable to contact the server. This may be because this server does not exist.' -ErrorType 'Microsoft.ActiveDirectory.Management.ADServerDownException' }
+        function New-LxMissing { New-LxRead -Ok $false -ErrorText 'Directory object not found' -ErrorType 'Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException' -NotFound $true }
+        # A template record as the seam keeps it: every listed attribute present, $null when the directory returned none.
+        function New-LxTemplate { param([string]$Cn, $NameFlag = 1, $EnrollFlag = 0, $Ra = 0, $Eku = @('1.3.6.1.5.5.7.3.2'), $AppPolicy = $null, [string]$Display = '')
+            $o = [ordered]@{ DistinguishedName = ("CN={0},CN=Certificate Templates,CN=Public Key Services,CN=Services,{1}" -f $Cn, $script:LxCfgNc); Name = $Cn; cn = $Cn }
+            $o['displayName'] = $(if ($Display -ne '') { $Display } else { $Cn })
+            $o['msPKI-Certificate-Name-Flag'] = $NameFlag; $o['msPKI-Enrollment-Flag'] = $EnrollFlag; $o['msPKI-RA-Signature'] = $Ra
+            $o['pKIExtendedKeyUsage'] = $Eku; $o['msPKI-Certificate-Application-Policy'] = $AppPolicy
+            [pscustomobject]$o }
+        function New-LxCa { param([string]$Cn, [string]$HostName, $Templates = @())
+            [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Enrollment Services,CN=Public Key Services,CN=Services,{1}" -f $Cn, $script:LxCfgNc); Name = $Cn; cn = $Cn; dNSHostName = $HostName; certificateTemplates = $Templates } }
+        # An ACE record in the shape ConvertTo-AdfaAclDescriptor returns.
+        function New-LxAce { param([int]$Index = 0, [string]$Sid, [int64]$Mask, [string]$ObjectType = '', [switch]$Deny, [switch]$InheritOnly, [string]$Kind = '')
+            $k = $Kind; if ($k -eq '') { $k = $(if ($ObjectType -ne '') { 'Object' } else { 'Common' }) }
+            [pscustomobject]@{ Index = $Index; Sid = $Sid; Allow = (-not $Deny); Deny = [bool]$Deny; Kind = $k; Mask = $Mask; InheritOnly = [bool]$InheritOnly; Inherited = $false; ObjectType = $ObjectType; InheritedObjectType = '' } }
+        function New-LxDescriptor { param($Aces = @(), [string]$Class = 'Read')
+            $list = @($Aces)
+            for ($i = 0; $i -lt $list.Count; $i++) { $list[$i].Index = $i }
+            [pscustomobject]@{ Ok = ($Class -eq 'Read'); Class = $Class; Error = ''; OwnerSid = 'S-1-5-32-544'; Aces = $list; AceCount = $list.Count } }
+        function New-LxAclRaw { param($Descriptor, [string]$Class = '', [string]$ErrorText = '')
+            $c = $Class; if ($c -eq '') { $c = [string]$Descriptor.Class }
+            [pscustomobject]@{ Ok = ($c -eq 'Read'); Class = $c; Error = $ErrorText; ErrorType = ''; Dn = ''; Server = ''; Descriptor = $Descriptor } }
+        $script:LxDomainAdmins = 'S-1-5-21-1000-2000-3000-512'
+        $script:LxDomainUsers = 'S-1-5-21-1000-2000-3000-513'
+        $script:LxFabrikamComputers = 'S-1-5-21-4000-5000-6000-515'
+    }
+
+    Context 'Config tables (Learn and MS-CRTD, read 2026-11-19) and version' {
+        It 'holds the MS-CRTD flags, the five authentication EKUs, the two MS-CRTD 2.5.2 GUIDs and the low-privilege SIDs (declared populations)' {
+            $script:LxPki['ReadDate'] | Should -Be '2026-11-19'
+            foreach ($u in @('ms-crtd/1192823c-d839-4bc3-9b6b-fa8c53507ae1', 'ms-crtd/ec71fd43-61c2-407b-83c9-b52272dec8a1', 'ms-crtd/160d0057-bfa9-46c5-a839-72e7588f0420', 'ms-crtd/211ab1e3-bad6-416d-9d56-8480b42617a4', 'defender-for-identity/security-posture-assessments/certificates')) {
+                [string]$script:LxPki['SourceUrl'] | Should -Match ([regex]::Escape($u)) -Because $u
+            }
+            @([int64]$script:LxPki['EnrolleeSuppliesSubject'], [int64]$script:LxPki['EnrolleeSuppliesSubjectAltName'], [int64]$script:LxPki['PendAllRequests']) | Should -Be @(1, 65536, 2)
+            (@($script:LxPki['AuthEkuOids']) -join ',') | Should -Be '1.3.6.1.5.5.7.3.2,1.3.6.1.4.1.311.20.2.2,1.3.6.1.5.2.3.4,2.5.29.37.0,1.3.6.1.4.1.311.10.12.1'
+            (@($script:LxPki['EnrolRights'] | ForEach-Object { '{0}={1}' -f $_['Name'], $_['Guid'] }) -join ',') | Should -Be ('Enroll={0},AutoEnroll={1}' -f $script:LxEnroll, $script:LxAutoEnroll)
+            (@($script:LxPki['LowPrivilegeSids']) -join ',') | Should -Be 'S-1-1-0,S-1-5-11'
+            [string]$script:LxPki['CommunityNote'] | Should -Be 'ESC1 is a community name (not a Microsoft term) for this configuration'
+            $text = [System.IO.File]::ReadAllText($script:Target)
+            $text | Should -Match 'TOOL DEFAULTS, not Microsoft values: MaxObjects 100000 per read, NameListCap 20, LowPrivilegeStatus'
+            # The old top-level keys moved into the table.
+            $script:Config.ContainsKey('AuthEkuOids') | Should -BeFalse
+        }
+        It 'holds every row of the Learn table, 45 (declared population: SE 1, Exchange 2019 18, Exchange 2016 26), with the URL and the read date' {
+            [string]$script:LxExa['SourceUrl'] | Should -Be 'https://learn.microsoft.com/exchange/plan-and-deploy/prepare-ad-and-domains'
+            $script:LxExa['ReadDate'] | Should -Be '2026-11-19'
+            $rows = @($script:LxExa['Rows'])
+            $rows.Count | Should -Be 45
+            @($rows | Where-Object { [string]$_['Build'] -like 'Exchange SE *' }).Count | Should -Be 1
+            @($rows | Where-Object { [string]$_['Build'] -like 'Exchange 2019 *' }).Count | Should -Be 18
+            @($rows | Where-Object { [string]$_['Build'] -like 'Exchange 2016 *' }).Count | Should -Be 26
+            $se = @($rows | Where-Object { [string]$_['Build'] -eq 'Exchange SE RTM' })[0]
+            @([int]$se['RangeUpper'], [int]$se['DomainVersion'], [int]$se['OrgVersion']) | Should -Be @(17003, 13243, 16763)
+            $cu11 = @($rows | Where-Object { [string]$_['Build'] -eq 'Exchange 2019 CU11' })[0]
+            @([int]$cu11['RangeUpper'], [int]$cu11['DomainVersion'], [int]$cu11['OrgVersion']) | Should -Be @(17003, 13242, 16759)
+            $p16 = @($rows | Where-Object { [string]$_['Build'] -eq 'Exchange 2016 Preview' })[0]
+            @([int]$p16['RangeUpper'], [int]$p16['DomainVersion'], [int]$p16['OrgVersion']) | Should -Be @(15317, 13236, 16041)
+            [string]$script:LxExa['DomainBehindStatus'] | Should -Be 'Warning'
+        }
+        It 'labels MaxScans a tool default and holds the systemFlags bits from Learn' {
+            [int]$script:LxLo['MaxScans'] | Should -Be 200
+            [string]$script:LxLo['ThresholdSource'] | Should -Be 'tool defaults, not Microsoft values'
+            @([int]$script:LxLo['CrNtdsNc'], [int]$script:LxLo['CrNtdsDomain']) | Should -Be @(1, 2)
+            [string]$script:LxLo['SourceUrl'] | Should -Match 'active-directory-replication-event-id-1388-1988'
+        }
+        It 'declares every new read with plain attribute names and no secret (declared population: the six reads)' {
+            $all = @()
+            foreach ($t in @($script:LxPki, $script:LxExa, $script:LxLo)) { foreach ($k in @($t['Reads'].Keys)) { $all += [pscustomobject]@{ Key = $k; Names = @($t['Reads'][$k]['Properties']) } } }
+            (@($all | ForEach-Object { $_.Key }) -join ',') | Should -Be 'EnrollmentServices,Templates,SchemaMarker,ExchangeContainer,Organization,DomainObjects,Partitions,Dsa'
+            foreach ($r in $all) { @(Get-AdfaRefusedPropertyName -PropertyNames $r.Names -SecretNames @(Get-AdfaSecretAttributeName)).Count | Should -Be 0 -Because $r.Key }
+        }
+        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
+            [string]$script:Config.Version | Should -Be '1.45.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        }
+    }
+
+    Context 'Config override: ExchangeAdVersions (its own validator) and LingeringObjects (Merge-AdfaSpecConfig)' {
+        It 'registers both, and merges a valid override naming the file' {
+            [string]$script:ConfigOverrideSections['ExchangeAdVersions']['Merge'] | Should -Be 'Merge-AdfaExchangeAdVersionsConfig'
+            [string]$script:ConfigOverrideSections['ExchangeAdVersions']['Section'] | Should -Be 'ExchangeSchema'
+            [string]$script:ConfigOverrideSections['LingeringObjects']['Merge'] | Should -Be 'Merge-AdfaSpecConfig'
+            [string]$script:ConfigOverrideSections['LingeringObjects']['Switch'] | Should -Be 'IncludeLingeringObjectScan'
+            $o = '{ "AdditionalRows": [ { "Build": "Exchange SE CU1", "RangeUpper": 17003, "DomainVersion": 13243, "OrgVersion": 16764 } ], "DomainBehindStatus": "Fail" }' | ConvertFrom-Json
+            $m = Merge-AdfaExchangeAdVersionsConfig -BaseConfig $script:LxExa -Override $o -OverrideSource 'C:\cfg\exa.json'
+            @($m['Rows']).Count | Should -Be 46
+            [string]@($m['Rows'])[45]['Build'] | Should -Be 'Exchange SE CU1'
+            [string]$m['DomainBehindStatus'] | Should -Be 'Fail'
+            [string]$m['ThresholdSource'] | Should -Match 'exa\.json'
+            @($script:LxExa['Rows']).Count | Should -Be 45 -Because 'the built-in table is not changed by a merge'
+            $r = Resolve-AdfaConfigOverride -Override ('{ "LingeringObjects": { "MaxScans": 10 } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
+            [int]$r['LingeringObjects']['MaxScans'] | Should -Be 10
+        }
+        It 'refuses a malformed ExchangeAdVersions override: <Name>' -ForEach @(
+            @{ Name = 'an array'; Json = '[ 1, 2 ]'; Pattern = 'single object' }
+            @{ Name = 'an empty object'; Json = '{}'; Pattern = 'empty object' }
+            @{ Name = 'an unknown key'; Json = '{ "Rows": [] }'; Pattern = "unknown key 'Rows'" }
+            @{ Name = 'a null'; Json = '{ "AdditionalRows": null }'; Pattern = 'null' }
+            @{ Name = 'an empty list'; Json = '{ "AdditionalRows": [] }'; Pattern = 'empty list' }
+            @{ Name = 'a row that is not an object'; Json = '{ "AdditionalRows": [ 5 ] }'; Pattern = 'row 1' }
+            @{ Name = 'a row without OrgVersion'; Json = '{ "AdditionalRows": [ { "Build": "x", "RangeUpper": 1, "DomainVersion": 1 } ] }'; Pattern = 'OrgVersion' }
+            @{ Name = 'a row with an unknown key'; Json = '{ "AdditionalRows": [ { "Build": "x", "RangeUpper": 1, "DomainVersion": 1, "OrgVersion": 1, "Year": 2026 } ] }'; Pattern = "unknown key 'Year'" }
+            @{ Name = 'a version written as text'; Json = '{ "AdditionalRows": [ { "Build": "x", "RangeUpper": "17003", "DomainVersion": 1, "OrgVersion": 1 } ] }'; Pattern = 'whole number' }
+            @{ Name = 'a fractional version'; Json = '{ "AdditionalRows": [ { "Build": "x", "RangeUpper": 1.5, "DomainVersion": 1, "OrgVersion": 1 } ] }'; Pattern = 'whole number' }
+            @{ Name = 'an empty build'; Json = '{ "AdditionalRows": [ { "Build": " ", "RangeUpper": 1, "DomainVersion": 1, "OrgVersion": 1 } ] }'; Pattern = 'Build' }
+            @{ Name = 'a status of Pass'; Json = '{ "DomainBehindStatus": "Pass" }'; Pattern = 'one of Info, Warning, Fail' }
+            @{ Name = 'a status that is not a string'; Json = '{ "DomainBehindStatus": 3 }'; Pattern = 'string' }
+        ) {
+            { Merge-AdfaExchangeAdVersionsConfig -BaseConfig $script:LxExa -Override ($Json | ConvertFrom-Json) -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage ("*{0}*" -f $Pattern)
+        }
+        It 'refuses a malformed LingeringObjects override: <Name>' -ForEach @(
+            @{ Name = 'a cap of 0'; Override = [pscustomobject]@{ MaxScans = 0 }; Pattern = 'from 1 to 100000' }
+            @{ Name = 'a cap written as text'; Override = [pscustomobject]@{ MaxScans = '5' }; Pattern = 'JSON number' }
+            @{ Name = 'the flags (refused)'; Override = [pscustomobject]@{ CrNtdsNc = 4 }; Pattern = "unknown key 'CrNtdsNc'" }
+            @{ Name = 'a null'; Override = [pscustomobject]@{ MaxScans = $null }; Pattern = 'to null' }
+        ) {
+            { Merge-AdfaSpecConfig -BaseConfig $script:LxLo -Override $Override -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage ("*{0}*" -f $Pattern)
+        }
+        It 'counts the LingeringObjects table as used only with -IncludeLingeringObjectScan, whatever -Sections says (pure, Get-AdfaConfigOverrideUnusedReason)' {
+            $lo = $script:ConfigOverrideSections['LingeringObjects']
+            (Get-AdfaConfigOverrideUnusedReason -Entry $lo -Sections @('Replication') -SwitchState @{ IncludeLingeringObjectScan = $true }) | Should -Be ''
+            (Get-AdfaConfigOverrideUnusedReason -Entry $lo -Sections @('Dns') -SwitchState @{ IncludeLingeringObjectScan = $true }) | Should -Be ''
+            # Independent review: Replication selected (here and by All) without the switch reads no LingeringObjects table.
+            foreach ($sel in @(@('Replication'), @('All'))) {
+                (Get-AdfaConfigOverrideUnusedReason -Entry $lo -Sections $sel -SwitchState @{ IncludeLingeringObjectScan = $false }) | Should -Match '^-IncludeLingeringObjectScan was not given' -Because ($sel -join ',')
+                (Get-AdfaConfigOverrideUnusedReason -Entry $lo -Sections $sel) | Should -Match '^-IncludeLingeringObjectScan was not given' -Because ($sel -join ',')
+            }
+            # A table with no Switch is unchanged: used when Section or AlsoUsedBy is selected (declared population: Privileged and its three sections).
+            $pr = $script:ConfigOverrideSections['Privileged']
+            foreach ($s in @('PrivilegedAccounts', 'PrivilegedHygiene', 'Kerberos', 'All')) { (Get-AdfaConfigOverrideUnusedReason -Entry $pr -Sections @($s)) | Should -Be '' -Because $s }
+            (Get-AdfaConfigOverrideUnusedReason -Entry $pr -Sections @('Dns')) | Should -Be '-Sections does not include PrivilegedAccounts or PrivilegedHygiene or Kerberos'
+        }
+        It 'wires the reason into the one "validated but is not used" log line of Invoke-Main, with the run''s -Sections and the switch (AST)' {
+            $calls = @(Get-LxCall $script:LxMain 'Get-AdfaConfigOverrideUnusedReason')
+            $calls.Count | Should -Be 1
+            (Get-LxParameter -Call $calls[0] -Name 'Sections').Extent.Text | Should -Be '$Sections'
+            (Get-LxParameter -Call $calls[0] -Name 'SwitchState').Extent.Text | Should -Be '@{ IncludeLingeringObjectScan = [bool]$IncludeLingeringObjectScan }'
+            @($script:LxMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -eq 'usedBySwitch' }, $true)).Count | Should -Be 0
+        }
+    }
+
+    Context 'ESC1 shape (pure, MS-CRTD 2.28, 2.26, 2.18, 2.12, 2.25)' {
+        It 'reads <Name> as <State>' -ForEach @(
+            @{ Name = 'supply-in-request, client auth, no approval, no signature'; T = @{ }; State = 'Shaped' }
+            @{ Name = 'manager approval (PEND_ALL_REQUESTS)'; T = @{ EnrollFlag = 2 }; State = 'NotShaped' }
+            @{ Name = 'one authorised signature'; T = @{ Ra = 1 }; State = 'NotShaped' }
+            @{ Name = 'no ENROLLEE_SUPPLIES_SUBJECT'; T = @{ NameFlag = 0 }; State = 'NotShaped' }
+            @{ Name = 'the SAN flag only (named, not graded)'; T = @{ NameFlag = 65536 }; State = 'NotShaped' }
+            @{ Name = 'a server-auth EKU only'; T = @{ Eku = @('1.3.6.1.5.5.7.3.1') }; State = 'NotShaped' }
+            @{ Name = 'client auth in the application policy only'; T = @{ Eku = $null; AppPolicy = @('1.3.6.1.5.5.7.3.2') }; State = 'Shaped' }
+            @{ Name = 'no EKU at all (any purpose)'; T = @{ Eku = $null }; State = 'Shaped' }
+            @{ Name = 'msPKI-RA-Signature not returned'; T = @{ Ra = $null }; State = 'Unknown' }
+            @{ Name = 'msPKI-Certificate-Name-Flag not returned'; T = @{ NameFlag = $null }; State = 'Unknown' }
+            @{ Name = 'a flag not returned, but approval required'; T = @{ NameFlag = $null; EnrollFlag = 2 }; State = 'NotShaped' }
+            @{ Name = 'the any-application-policy EKU'; T = @{ Eku = @('1.3.6.1.4.1.311.10.12.1') }; State = 'Shaped' }
+            @{ Name = 'a negative 32-bit flag word with bit 1 set'; T = @{ NameFlag = -2147483647 }; State = 'Shaped' }
+        ) {
+            $a = @{ Cn = 'T1' } + $T
+            $s = Get-AdfaEsc1Shape -Template (New-LxTemplate @a) -Config $script:LxPki
+            [string]$s.State | Should -Be $State
+        }
+        It 'names what was not returned and says the SAN flag apart' {
+            $s = Get-AdfaEsc1Shape -Template (New-LxTemplate -Cn 'T2' -Ra $null -EnrollFlag $null) -Config $script:LxPki
+            (@($s.Missing) -join ',') | Should -Be 'msPKI-Enrollment-Flag,msPKI-RA-Signature'
+            $san = Get-AdfaEsc1Shape -Template (New-LxTemplate -Cn 'T3' -NameFlag 65537) -Config $script:LxPki
+            $san.SubjectAltName | Should -BeTrue
+            [string]$san.Text | Should -Match 'ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME'
+        }
+        It 'keeps Test-AdfaEsc1Template as the same rule (Vulnerable only for Shaped)' {
+            (Test-AdfaEsc1Template -Template (New-LxTemplate -Cn 'T4')).Vulnerable | Should -BeTrue
+            (Test-AdfaEsc1Template -Template (New-LxTemplate -Cn 'T5' -Ra $null)).Vulnerable | Should -BeFalse
+        }
+    }
+
+    Context 'Published templates (pure)' {
+        It 'matches a CA value to a cn, then to a displayName, and lists a value that matches neither' {
+            $t = @((New-LxTemplate -Cn 'WebServerEsc'), (New-LxTemplate -Cn 'UserV2' -Display 'User V2'), (New-LxTemplate -Cn 'NotPublished'))
+            $cas = @((New-LxCa -Cn 'CA-One' -HostName $script:LxDc1 -Templates @('webserveresc', 'Ghost')), (New-LxCa -Cn 'CA-Two' -HostName $script:LxDc2 -Templates @('User V2', 'WebServerEsc')))
+            $p = Get-AdfaTemplatePublication -Cas $cas -Templates $t
+            $web = @($p.Templates | Where-Object { $_.Name -eq 'WebServerEsc' })[0]
+            $web.Published | Should -BeTrue
+            (@($web.PublishedBy) -join ',') | Should -Be 'CA-One,CA-Two'
+            @($p.Templates | Where-Object { $_.Name -eq 'UserV2' })[0].Published | Should -BeTrue
+            @($p.Templates | Where-Object { $_.Name -eq 'NotPublished' })[0].Published | Should -BeFalse
+            (@($p.Unmatched) -join ',') | Should -Be 'Ghost (CA-One)'
+        }
+        It 'publishes nothing for a CA with no certificateTemplates value' {
+            $p = Get-AdfaTemplatePublication -Cas @((New-LxCa -Cn 'CA-One' -HostName $script:LxDc1 -Templates $null)) -Templates @((New-LxTemplate -Cn 'A'))
+            @($p.Templates | Where-Object { $_.Published }).Count | Should -Be 0
+            @($p.Unmatched).Count | Should -Be 0
+        }
+    }
+
+    Context 'Template enrolment ACL (pure, MS-CRTD 2.5.1/2.5.2)' {
+        It 'grades <Name> as <State>' -ForEach @(
+            @{ Name = 'Authenticated Users with Enroll'; Aces = @(@{ Sid = 'S-1-5-11'; Mask = 256; ObjectType = '0e10c968-78fb-11d2-90d4-00c04f79dc55' }); State = 'LowPrivilege' }
+            @{ Name = 'Everyone with AutoEnroll'; Aces = @(@{ Sid = 'S-1-1-0'; Mask = 256; ObjectType = 'a05b8cc2-17bc-4802-a710-e7c15ab866a2' }); State = 'LowPrivilege' }
+            @{ Name = 'Domain Users with all extended rights'; Aces = @(@{ Sid = 'S-1-5-21-1000-2000-3000-513'; Mask = 256 }); State = 'LowPrivilege' }
+            @{ Name = 'a trusted domain''s Domain Computers with WriteDacl'; Aces = @(@{ Sid = 'S-1-5-21-4000-5000-6000-515'; Mask = 262144 }); State = 'LowPrivilege' }
+            @{ Name = 'Authenticated Users with GENERIC_ALL'; Aces = @(@{ Sid = 'S-1-5-11'; Mask = 268435456 }); State = 'LowPrivilege' }
+            @{ Name = 'Authenticated Users read only (the default descriptor)'; Aces = @(@{ Sid = 'S-1-5-11'; Mask = 131220 }, @{ Sid = 'S-1-5-21-1000-2000-3000-512'; Mask = 983551 }); State = 'OtherOnly' }
+            @{ Name = 'Domain Admins with Enroll only'; Aces = @(@{ Sid = 'S-1-5-21-1000-2000-3000-512'; Mask = 256; ObjectType = '0e10c968-78fb-11d2-90d4-00c04f79dc55' }); State = 'OtherOnly' }
+            @{ Name = 'an extended right of another GUID'; Aces = @(@{ Sid = 'S-1-5-11'; Mask = 256; ObjectType = '00299570-246d-11d0-a768-00aa006e0529' }); State = 'NoGrant' }
+            @{ Name = 'an inherit-only Enroll for Everyone'; Aces = @(@{ Sid = 'S-1-1-0'; Mask = 256; ObjectType = '0e10c968-78fb-11d2-90d4-00c04f79dc55'; InheritOnly = $true }); State = 'NoGrant' }
+            @{ Name = 'Enroll for Everyone cancelled by an earlier deny'; Aces = @(@{ Sid = 'S-1-1-0'; Mask = 256; ObjectType = '0e10c968-78fb-11d2-90d4-00c04f79dc55'; Deny = $true }, @{ Sid = 'S-1-1-0'; Mask = 256; ObjectType = '0e10c968-78fb-11d2-90d4-00c04f79dc55' }); State = 'NoGrant' }
+            @{ Name = 'an ACE this tool cannot read and no low-privilege grant'; Aces = @(@{ Sid = ''; Mask = 0; Kind = 'Other' }, @{ Sid = 'S-1-5-21-1000-2000-3000-512'; Mask = 256 }); State = 'Unknown' }
+            @{ Name = 'an ACE this tool cannot read beside a low-privilege grant'; Aces = @(@{ Sid = ''; Mask = 0; Kind = 'Other' }, @{ Sid = 'S-1-5-11'; Mask = 256 }); State = 'LowPrivilege' }
+            # Independent review: an object ACE scoped to the template's own class (pKICertificateTemplate) or to Top is the object itself (MS-DTYP 2.5.3.2, the C9 rule).
+            @{ Name = 'Everyone with full control scoped to the pKICertificateTemplate class (the object itself)'; Aces = @(@{ Sid = 'S-1-1-0'; Mask = 983551; ObjectType = 'e5209ca2-3bba-11d2-90cc-00c04fd91ab1' }); State = 'LowPrivilege' }
+            @{ Name = 'Authenticated Users with WriteDacl scoped to the Top class (the object itself)'; Aces = @(@{ Sid = 'S-1-5-11'; Mask = 262144; ObjectType = 'BF967AB7-0DE6-11D0-A285-00AA003049E2' }); State = 'LowPrivilege' }
+            @{ Name = 'Domain Admins with full control scoped to the pKICertificateTemplate class'; Aces = @(@{ Sid = 'S-1-5-21-1000-2000-3000-512'; Mask = 983551; ObjectType = 'e5209ca2-3bba-11d2-90cc-00c04fd91ab1' }); State = 'OtherOnly' }
+        ) {
+            $list = @(foreach ($a in $Aces) { $x = @{} + $a; if ($x.ContainsKey('Deny') -and -not $x['Deny']) { $x.Remove('Deny') }; if ($x.ContainsKey('InheritOnly') -and -not $x['InheritOnly']) { $x.Remove('InheritOnly') }; New-LxAce @x })
+            $v = Get-AdfaTemplateEnrolmentVerdict -Descriptor (New-LxDescriptor -Aces $list) -Config $script:LxPki -AclConfig $script:LxAcl
+            [string]$v.State | Should -Be $State
+        }
+        It 'reads a NULL DACL as Everyone holding every right, and a descriptor not returned as Unknown with its class' {
+            (Get-AdfaTemplateEnrolmentVerdict -Descriptor (New-LxDescriptor -Class 'NullDacl') -Config $script:LxPki -AclConfig $script:LxAcl).State | Should -Be 'LowPrivilege'
+            foreach ($c in @('DaclAbsent', 'NotReturned', 'Unparseable')) {
+                $v = Get-AdfaTemplateEnrolmentVerdict -Descriptor (New-LxDescriptor -Class $c) -Config $script:LxPki -AclConfig $script:LxAcl
+                [string]$v.State | Should -Be 'Unknown' -Because $c
+                [string]$v.Cause | Should -Match $c
+            }
+            (Get-AdfaTemplateEnrolmentVerdict -Descriptor $null -Config $script:LxPki -AclConfig $script:LxAcl).State | Should -Be 'Unknown'
+        }
+        It 'holds the template''s class chain from Learn (pKICertificateTemplate Schema-Id-Guid, subclass of Top; declared population: 2 GUIDs) and names a class-scoped grant as GenericAll' {
+            (@($script:LxPki['TemplateClassGuids']) -join ',') | Should -Be 'e5209ca2-3bba-11d2-90cc-00c04fd91ab1,bf967ab7-0de6-11d0-a285-00aa003049e2'
+            $v = Get-AdfaTemplateEnrolmentVerdict -Descriptor (New-LxDescriptor -Aces @((New-LxAce -Sid 'S-1-1-0' -Mask 983551 -ObjectType 'e5209ca2-3bba-11d2-90cc-00c04fd91ab1'))) -Config $script:LxPki -AclConfig $script:LxAcl
+            (@($v.LowPrivilege) -join ' | ') | Should -Be 'S-1-1-0: GenericAll'
+        }
+        It 'names each principal by SID with the rights it holds' {
+            $v = Get-AdfaTemplateEnrolmentVerdict -Descriptor (New-LxDescriptor -Aces @((New-LxAce -Sid 'S-1-5-11' -Mask 256 -ObjectType $script:LxEnroll), (New-LxAce -Sid $script:LxDomainAdmins -Mask 983551))) -Config $script:LxPki -AclConfig $script:LxAcl
+            (@($v.LowPrivilege) -join ' | ') | Should -Be 'S-1-5-11: Enroll'
+            (@($v.Other) -join ' | ') | Should -Be ('{0}: GenericAll' -f $script:LxDomainAdmins)
+        }
+        It 'reads a real descriptor built from SDDL through the C9 converter (Authenticated Users with Enroll)' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $raw = New-Object System.Security.AccessControl.RawSecurityDescriptor -ArgumentList ('O:BAD:(A;;RPLCLORC;;;AU)(OA;;CR;{0};;AU)' -f $script:LxEnroll)
+            $bytes = New-Object byte[] ($raw.BinaryLength)
+            $raw.GetBinaryForm($bytes, 0)
+            $d = ConvertTo-AdfaAclDescriptor -Value $bytes
+            (Get-AdfaTemplateEnrolmentVerdict -Descriptor $d -Config $script:LxPki -AclConfig $script:LxAcl).State | Should -Be 'LowPrivilege'
+        }
+    }
+
+    Context 'PKI collector (stubbed reads of two CAs and three templates)' {
+        BeforeEach {
+            $script:LxSent = New-Object System.Collections.ArrayList
+            $script:LxAclSent = New-Object System.Collections.ArrayList
+            $script:LxMode = @{}
+            Mock Get-AdfaInventoryDomainDn { [pscustomobject]@{ Ok = $true; Dn = $script:LxDn1; Error = ''; ErrorType = '' } }
+            Mock Get-AdfaDeclaredReadRaw {
+                [void]$script:LxSent.Add(("{0}|{1}|{2}" -f $Server, $Read, $SearchBase))
+                if ($script:LxMode['cas'] -eq 'down') { return (New-LxDown) }
+                if ($script:LxMode['cas'] -eq 'denied') { return (New-LxDenied) }
+                if ($Read -eq 'EnrollmentServices') {
+                    if ($script:LxMode['cas'] -eq 'none') { return (New-LxRead -Records @()) }
+                    if ($script:LxMode['cas'] -eq 'ghost') { return (New-LxRead -Records @((New-LxCa -Cn 'CA-One' -HostName $script:LxDc1 -Templates @('UserV1', 'Ghost')))) }
+                    return (New-LxRead -Records @((New-LxCa -Cn 'CA-One' -HostName $script:LxDc1 -Templates @('WebServerEsc', 'UserV1')), (New-LxCa -Cn 'CA-Two' -HostName $script:LxDc2 -Templates @('WebServerEsc', 'SmartEsc'))))
+                }
+                if ($Read -eq 'Templates') {
+                    if ($script:LxMode['tpl'] -eq 'denied') { return (New-LxDenied) }
+                    return (New-LxRead -Records @((New-LxTemplate -Cn 'WebServerEsc'), (New-LxTemplate -Cn 'SmartEsc' -Eku @('1.3.6.1.4.1.311.20.2.2')), (New-LxTemplate -Cn 'UserV1' -NameFlag 0), (New-LxTemplate -Cn 'UnpublishedEsc')))
+                }
+                throw ("stub: unexpected read {0}" -f $Read)
+            }
+            Mock Get-AdfaAclObjectRaw {
+                [void]$script:LxAclSent.Add(("{0}|{1}|{2}" -f $Dn, $Server, (@($Config['Properties']) -join ',')))
+                if ($Dn -like 'CN=WebServerEsc,*') { return (New-LxAclRaw -Descriptor (New-LxDescriptor -Aces @((New-LxAce -Sid 'S-1-5-11' -Mask 256 -ObjectType $script:LxEnroll), (New-LxAce -Sid $script:LxDomainAdmins -Mask 983551)))) }
+                if ($script:LxMode['smartacl'] -eq 'denied') { return (New-LxAclRaw -Descriptor $null -Class 'AccessDenied' -ErrorText 'Access is denied.') }
+                return (New-LxAclRaw -Descriptor (New-LxDescriptor -Aces @((New-LxAce -Sid $script:LxDomainAdmins -Mask 256 -ObjectType $script:LxEnroll))))
+            }
+        }
+        It 'grades a published ESC1-shaped template a low-privilege group can enrol in as Fail, never grades the unpublished one, and reads the ACL of published shaped templates only' {
+            $rows = @(Get-AdfaPkiHealth -RootDomain $script:LxDom1 -Config $script:LxPki -AclConfig $script:LxAcl -CapSource $script:LxCap)
+            (Get-LxRow $rows 'Certificate Authorities')[0].Status | Should -Be 'Info'
+            $pub = (Get-LxRow $rows 'Certificate templates published')[0]
+            $pub.Status | Should -Be 'Info'
+            [string]$pub.Detail | Should -Match '3 of 4'
+            [string]$pub.Detail | Should -Match 'UnpublishedEsc'
+            [string]$pub.Detail | Should -Match 'not graded'
+            $web = (Get-LxRow $rows 'ESC1 template: WebServerEsc')[0]
+            $web.Status | Should -Be 'Fail'
+            [string]$web.Detail | Should -Match 'S-1-5-11: Enroll'
+            [string]$web.Detail | Should -Match 'ESC1 is a community name \(not a Microsoft term\)'
+            [string]$web.Detail | Should -Match 'CA-One, CA-Two'
+            (Get-LxRow $rows 'ESC1 template: SmartEsc')[0].Status | Should -Be 'Warning'
+            (Get-LxLike $rows 'ESC1 template: UnpublishedEsc').Count | Should -Be 0
+            (Get-LxLike $rows 'ESC1 template: UserV1').Count | Should -Be 0
+            (Get-LxRow $rows 'ESC1-susceptible templates')[0].Status | Should -Be 'Fail'
+            # Declared population of ACL reads: the two published shaped templates, nTSecurityDescriptor alone, from the forest root.
+            (@($script:LxAclSent | Sort-Object) -join ' ; ') | Should -Be ('CN=SmartEsc,CN=Certificate Templates,CN=Public Key Services,CN=Services,{0}|{1}|nTSecurityDescriptor ; CN=WebServerEsc,CN=Certificate Templates,CN=Public Key Services,CN=Services,{0}|{1}|nTSecurityDescriptor' -f $script:LxCfgNc, $script:LxDom1)
+            @($script:LxSent | Where-Object { $_ -notlike ('{0}|*' -f $script:LxDom1) }).Count | Should -Be 0
+            ($script:LxSent -join ' ; ') | Should -Match ([regex]::Escape(('EnrollmentServices|CN=Enrollment Services,CN=Public Key Services,CN=Services,{0}' -f $script:LxCfgNc)))
+        }
+        It 'no enterprise CA is a measured absence (Info), with no template row' {
+            $script:LxMode['cas'] = 'none'
+            $rows = @(Get-AdfaPkiHealth -RootDomain $script:LxDom1 -Config $script:LxPki -AclConfig $script:LxAcl -CapSource $script:LxCap)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'Certificate Authorities'
+            $rows[0].Status | Should -Be 'Info'
+            [string]$rows[0].Detail | Should -Match 'No enterprise CA'
+        }
+        It 'an unreachable and a refused read are one Not Assessed row each, told apart, never Pass' {
+            foreach ($m in @('down', 'denied')) {
+                $script:LxMode['cas'] = $m
+                $rows = @(Get-AdfaPkiHealth -RootDomain $script:LxDom1 -Config $script:LxPki -AclConfig $script:LxAcl -CapSource $script:LxCap)
+                $rows.Count | Should -Be 1 -Because $m
+                $rows[0].Item | Should -Be 'AD CS assessment'
+                $rows[0].Status | Should -Be 'Not Assessed'
+                if ($m -eq 'down') { [string]$rows[0].Detail | Should -Match '\(unreachable\)'; [string]$rows[0].Detail | Should -Not -Match 'access denied' }
+                else { [string]$rows[0].Detail | Should -Match '\(access denied\)' }
+            }
+            $script:LxMode['cas'] = ''
+            $script:LxMode['tpl'] = 'denied'
+            $rows = @(Get-AdfaPkiHealth -RootDomain $script:LxDom1 -Config $script:LxPki -AclConfig $script:LxAcl -CapSource $script:LxCap)
+            (Get-LxRow $rows 'AD CS assessment')[0].Status | Should -Be 'Not Assessed'
+            @($rows | Where-Object { $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'mixed: a refused template ACL is Not Assessed for that template, while the Fail of another stands' {
+            $script:LxMode['smartacl'] = 'denied'
+            $rows = @(Get-AdfaPkiHealth -RootDomain $script:LxDom1 -Config $script:LxPki -AclConfig $script:LxAcl -CapSource $script:LxCap)
+            $smart = (Get-LxRow $rows 'ESC1 template: SmartEsc')[0]
+            $smart.Status | Should -Be 'Not Assessed'
+            [string]$smart.Detail | Should -Match 'access denied'
+            (Get-LxRow $rows 'ESC1 template: WebServerEsc')[0].Status | Should -Be 'Fail'
+            (Get-LxRow $rows 'ESC1-susceptible templates')[0].Status | Should -Be 'Fail'
+        }
+        It 'a CA value that names no template keeps the summary from passing' {
+            $script:LxMode['cas'] = 'ghost'
+            $rows = @(Get-AdfaPkiHealth -RootDomain $script:LxDom1 -Config $script:LxPki -AclConfig $script:LxAcl -CapSource $script:LxCap)
+            $sum = (Get-LxRow $rows 'ESC1-susceptible templates')[0]
+            $sum.Status | Should -Be 'Not Assessed'
+            [string]$sum.Detail | Should -Match 'Ghost'
+            [string](Get-LxRow $rows 'Certificate templates published')[0].Detail | Should -Match 'Ghost \(CA-One\)'
+        }
+        It 'passes only when every published template was read and none has the shape' {
+            Mock Get-AdfaDeclaredReadRaw {
+                if ($Read -eq 'EnrollmentServices') { return (New-LxRead -Records @((New-LxCa -Cn 'CA-One' -HostName $script:LxDc1 -Templates @('UserV1')))) }
+                return (New-LxRead -Records @((New-LxTemplate -Cn 'UserV1' -NameFlag 0), (New-LxTemplate -Cn 'UnpublishedEsc')))
+            }
+            $rows = @(Get-AdfaPkiHealth -RootDomain $script:LxDom1 -Config $script:LxPki -AclConfig $script:LxAcl -CapSource $script:LxCap)
+            (Get-LxRow $rows 'ESC1-susceptible templates')[0].Status | Should -Be 'Pass'
+            Mock Get-AdfaDeclaredReadRaw {
+                if ($Read -eq 'EnrollmentServices') { return (New-LxRead -Records @((New-LxCa -Cn 'CA-One' -HostName $script:LxDc1 -Templates @('UserV1')))) }
+                return (New-LxRead -Records @((New-LxTemplate -Cn 'UserV1' -Ra $null)))
+            }
+            $rows = @(Get-AdfaPkiHealth -RootDomain $script:LxDom1 -Config $script:LxPki -AclConfig $script:LxAcl -CapSource $script:LxCap)
+            (Get-LxRow $rows 'ESC1 template: UserV1')[0].Status | Should -Be 'Not Assessed'
+            (Get-LxRow $rows 'ESC1-susceptible templates')[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'a forest root that could not be named or read is one Not Assessed row' {
+            (@(Get-AdfaPkiHealth -RootDomain '' -Config $script:LxPki -AclConfig $script:LxAcl -CapSource $script:LxCap))[0].Status | Should -Be 'Not Assessed'
+            Mock Get-AdfaInventoryDomainDn { [pscustomobject]@{ Ok = $false; Dn = ''; Error = 'Access is denied.'; ErrorType = 'System.UnauthorizedAccessException' } }
+            $rows = @(Get-AdfaPkiHealth -RootDomain $script:LxDom1 -Config $script:LxPki -AclConfig $script:LxAcl -CapSource $script:LxCap)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'The declared read seam (Get-AdfaDeclaredReadRaw)' {
+        It 'sends the declared list to -Server, and refuses an unknown read, a wildcard or a secret name before sending' {
+            $script:LxCalls = @()
+            function script:Get-ADObject { param([string]$Server, [string]$Identity, [string]$LDAPFilter, [string]$SearchBase, $SearchScope, [string[]]$Properties, $ResultSetSize, $Credential, $ErrorAction)
+                $script:LxCalls += ("{0}|{1}|{2}" -f $Server, $SearchBase, (@($Properties) -join ','))
+                @([pscustomobject]@{ DistinguishedName = 'CN=x'; Name = 'x'; cn = 'x'; dNSHostName = 'h'; certificateTemplates = @('a') }) }
+            try {
+                $r = Get-AdfaDeclaredReadRaw -Server $script:LxDom1 -Read 'EnrollmentServices' -SearchBase 'CN=b' -Config $script:LxPki
+                $r.Ok | Should -BeTrue
+                $script:LxCalls | Should -Be @(('{0}|CN=b|cn,dNSHostName,certificateTemplates' -f $script:LxDom1))
+                (Get-AdfaDeclaredReadRaw -Server $script:LxDom1 -Read 'Nope' -SearchBase 'CN=b' -Config $script:LxPki).Ok | Should -BeFalse
+                $bad = @{} + $script:LxPki
+                $bad['Reads'] = [ordered]@{ EnrollmentServices = @{ Filter = '(x)'; Scope = 'OneLevel'; Properties = @('*') } }
+                (Get-AdfaDeclaredReadRaw -Server $script:LxDom1 -Read 'EnrollmentServices' -SearchBase 'CN=b' -Config $bad).Error | Should -Match 'refused'
+                $bad['Reads'] = [ordered]@{ EnrollmentServices = @{ Filter = '(x)'; Scope = 'OneLevel'; Properties = @('unicodePwd') } }
+                (Get-AdfaDeclaredReadRaw -Server $script:LxDom1 -Read 'EnrollmentServices' -SearchBase 'CN=b' -Config $bad).Error | Should -Match 'refused'
+                $script:LxCalls.Count | Should -Be 1
+            }
+            finally { Remove-Item -Path 'Function:\script:Get-ADObject' -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'Exchange AD versions (pure)' {
+        It 'maps a triple to every build that has it, and a value not in the table to none' {
+            $m = Resolve-AdfaExchangeAdVersion -RangeUpper 17003 -OrgVersion 16763 -Rows $script:LxExa['Rows']
+            (@($m.Builds) -join ' or ') | Should -Be 'Exchange SE RTM or Exchange 2019 CU15'
+            [int64]$m.ExpectedDomain | Should -Be 13243
+            $m.Mapped | Should -BeTrue
+            $n = Resolve-AdfaExchangeAdVersion -RangeUpper 17003 -OrgVersion 99999 -Rows $script:LxExa['Rows']
+            $n.Mapped | Should -BeFalse
+            $null -eq $n.ExpectedDomain | Should -BeTrue
+            $c = Resolve-AdfaExchangeAdVersion -RangeUpper 17003 -OrgVersion 16759 -Rows $script:LxExa['Rows']
+            [int64]$c.ExpectedDomain | Should -Be 13242 -Because 'CU11 and CU11 with KB5014260 share the pair; the lower Default value is the bar'
+        }
+        BeforeAll {
+            function New-LxFacts { param($Schema = 17003, [string]$SchemaState = 'Read', [string]$OrgState = 'Read', $Org = 16763, $Domains = @())
+                [pscustomobject]@{
+                    Schema = [pscustomobject]@{ State = $SchemaState; Value = $Schema; Cause = 'Reading the schema marker failed (access denied): Access is denied.' }
+                    Organization = [pscustomobject]@{ State = $OrgState; Name = 'Contoso Org'; Version = $Org; ProductId = '15.2.1544.4'; Cause = 'Reading the Exchange organisation failed (unreachable): Unable to contact the server.' }
+                    Domains = @($Domains) } }
+            function New-LxDomainFact { param([string]$Domain, [string]$State = 'Read', $Version = 13243)
+                [pscustomobject]@{ Domain = $Domain; State = $State; Version = $Version; Cause = 'Reading the Microsoft Exchange System Objects container failed (access denied): Access is denied.' } }
+        }
+        It 'gives Info with every mapped build when the organisation, the schema and every domain agree' {
+            $rows = @(Get-AdfaExchangeAdVersionVerdict -Facts (New-LxFacts -Domains @((New-LxDomainFact $script:LxDom1), (New-LxDomainFact $script:LxDom2))) -Config $script:LxExa)
+            $org = (Get-LxRow $rows 'Exchange organisation: Contoso Org')[0]
+            $org.Status | Should -Be 'Info'
+            [string]$org.Detail | Should -Match 'Exchange SE RTM or Exchange 2019 CU15'
+            [string]$org.Detail | Should -Match '15\.2\.1544\.4'
+            [string]$org.Detail | Should -Match 'msExchProductID .*not graded'
+            foreach ($d in @($script:LxDom1, $script:LxDom2)) { (Get-LxRow $rows ('Exchange domain preparation: {0}' -f $d))[0].Status | Should -Be 'Info' }
+        }
+        It 'warns for a domain below the Default objectVersion of the organisation''s builds, and only that domain (the threshold is the bar itself)' {
+            $rows = @(Get-AdfaExchangeAdVersionVerdict -Facts (New-LxFacts -Domains @((New-LxDomainFact $script:LxDom1 -Version 13243), (New-LxDomainFact $script:LxDom2 -Version 13242))) -Config $script:LxExa)
+            (Get-LxRow $rows ('Exchange domain preparation: {0}' -f $script:LxDom1))[0].Status | Should -Be 'Info'
+            $w = (Get-LxRow $rows ('Exchange domain preparation: {0}' -f $script:LxDom2))[0]
+            $w.Status | Should -Be 'Warning'
+            [string]$w.Detail | Should -Match '13242'
+            [string]$w.Detail | Should -Match '13243'
+            $f = @{} + $script:LxExa; $f['DomainBehindStatus'] = 'Fail'
+            (Get-LxRow @(Get-AdfaExchangeAdVersionVerdict -Facts (New-LxFacts -Domains @((New-LxDomainFact $script:LxDom2 -Version 13242))) -Config $f) ('Exchange domain preparation: {0}' -f $script:LxDom2))[0].Status | Should -Be 'Fail'
+        }
+        It 'a domain with no Microsoft Exchange System Objects container is Info (it may be intended); a refused domain read is Not Assessed' {
+            $rows = @(Get-AdfaExchangeAdVersionVerdict -Facts (New-LxFacts -Domains @((New-LxDomainFact $script:LxDom1 -State 'Absent'), (New-LxDomainFact $script:LxDom2 -State 'Failed'))) -Config $script:LxExa)
+            $a = (Get-LxRow $rows ('Exchange domain preparation: {0}' -f $script:LxDom1))[0]
+            $a.Status | Should -Be 'Info'
+            [string]$a.Detail | Should -Match 'not prepared'
+            $n = (Get-LxRow $rows ('Exchange domain preparation: {0}' -f $script:LxDom2))[0]
+            $n.Status | Should -Be 'Not Assessed'
+            [string]$n.Detail | Should -Match 'access denied'
+        }
+        It 'no Exchange organisation is a measured absence (Info, Not applicable) with no domain row; an unreadable one is Not Assessed' {
+            $rows = @(Get-AdfaExchangeAdVersionVerdict -Facts (New-LxFacts -OrgState 'Absent' -Domains @((New-LxDomainFact $script:LxDom1))) -Config $script:LxExa)
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Info'
+            [string]$rows[0].Detail | Should -Match '^Not applicable:'
+            $rows = @(Get-AdfaExchangeAdVersionVerdict -Facts (New-LxFacts -OrgState 'Failed' -Domains @((New-LxDomainFact $script:LxDom1))) -Config $script:LxExa)
+            (Get-LxRow $rows 'Exchange organisation')[0].Status | Should -Be 'Not Assessed'
+            [string](Get-LxRow $rows 'Exchange organisation')[0].Detail | Should -Match 'unreachable'
+            @($rows | Where-Object { $_.Status -eq 'Info' -or $_.Status -eq 'Pass' }).Count | Should -Be 0
+            (@(Get-AdfaExchangeAdVersionVerdict -Facts (New-LxFacts -OrgState 'Multiple') -Config $script:LxExa))[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'a value not in the table is reported raw, never guessed, and no domain is compared' {
+            $rows = @(Get-AdfaExchangeAdVersionVerdict -Facts (New-LxFacts -Org 16999 -Domains @((New-LxDomainFact $script:LxDom1 -Version 13000))) -Config $script:LxExa)
+            $org = (Get-LxRow $rows 'Exchange organisation: Contoso Org')[0]
+            $org.Status | Should -Be 'Info'
+            [string]$org.Detail | Should -Match 'not in the table'
+            [string]$org.Detail | Should -Match '16999'
+            $d = (Get-LxRow $rows ('Exchange domain preparation: {0}' -f $script:LxDom1))[0]
+            $d.Status | Should -Be 'Info'
+            [string]$d.Detail | Should -Match '13000'
+        }
+        It 'a schema marker that could not be read leaves the organisation Not Assessed and every domain Not Assessed' {
+            $rows = @(Get-AdfaExchangeAdVersionVerdict -Facts (New-LxFacts -SchemaState 'Failed' -Domains @((New-LxDomainFact $script:LxDom1))) -Config $script:LxExa)
+            (Get-LxRow $rows 'Exchange organisation: Contoso Org')[0].Status | Should -Be 'Not Assessed'
+            (Get-LxRow $rows ('Exchange domain preparation: {0}' -f $script:LxDom1))[0].Status | Should -Be 'Not Assessed'
+        }
+    }
+
+    Context 'Exchange AD versions collector (stubbed seam, two domains)' {
+        It 'reads the schema marker and the organisation from the forest root and each domain''s container from that domain' {
+            $script:LxSent = New-Object System.Collections.ArrayList
+            Mock Get-AdfaInventoryDomainDn { param($DomainName) [pscustomobject]@{ Ok = $true; Dn = ('DC=' + ($DomainName -replace '\.', ',DC=')); Error = ''; ErrorType = '' } }
+            Mock Get-AdfaDeclaredReadRaw {
+                [void]$script:LxSent.Add(("{0}|{1}|{2}{3}" -f $Server, $Read, $Identity, $SearchBase))
+                switch ($Read) {
+                    'SchemaMarker' { return (New-LxRead -Records @([pscustomobject]@{ DistinguishedName = $Identity; Name = 'ms-Exch-Schema-Version-Pt'; rangeUpper = 17003 })) }
+                    'ExchangeContainer' { return (New-LxRead -Records @([pscustomobject]@{ DistinguishedName = $Identity; Name = 'Microsoft Exchange'; cn = 'Microsoft Exchange' })) }
+                    'Organization' { return (New-LxRead -Records @([pscustomobject]@{ DistinguishedName = 'CN=Contoso Org'; Name = 'Contoso Org'; cn = 'Contoso Org'; objectVersion = 16763; msExchProductID = '15.2.1544.4' })) }
+                    'DomainObjects' {
+                        if ($Server -eq $script:LxDom2) { return (New-LxMissing) }
+                        return (New-LxRead -Records @([pscustomobject]@{ DistinguishedName = $Identity; Name = 'Microsoft Exchange System Objects'; objectVersion = 13243 })) }
+                }
+            }
+            $rows = @(Get-AdfaExchangeAdVersion -RootDomain $script:LxDom1 -Domains @($script:LxDom1, $script:LxDom2) -Config $script:LxExa -CapSource 'ExchangeAdVersions.MaxObjects, a tool default')
+            (Get-LxRow $rows 'Exchange organisation: Contoso Org')[0].Status | Should -Be 'Info'
+            (Get-LxRow $rows ('Exchange domain preparation: {0}' -f $script:LxDom1))[0].Status | Should -Be 'Info'
+            [string](Get-LxRow $rows ('Exchange domain preparation: {0}' -f $script:LxDom2))[0].Detail | Should -Match 'not prepared'
+            @($rows | ForEach-Object { $_.Area } | Sort-Object -Unique) | Should -Be @('ExchangeVersions')
+            ($script:LxSent -join ' ; ') | Should -Match ([regex]::Escape(('{0}|SchemaMarker|CN=ms-Exch-Schema-Version-Pt,CN=Schema,CN=Configuration,DC=contoso,DC=com' -f $script:LxDom1)))
+            ($script:LxSent -join ' ; ') | Should -Match ([regex]::Escape(('{0}|Organization|CN=Microsoft Exchange,CN=Services,CN=Configuration,DC=contoso,DC=com' -f $script:LxDom1)))
+            ($script:LxSent -join ' ; ') | Should -Match ([regex]::Escape(('{0}|DomainObjects|CN=Microsoft Exchange System Objects,{1}' -f $script:LxDom2, $script:LxDn2)))
+        }
+        It 'an absent CN=Microsoft Exchange is no organisation (Info), and a refused one is Not Assessed' {
+            Mock Get-AdfaInventoryDomainDn { [pscustomobject]@{ Ok = $true; Dn = $script:LxDn1; Error = ''; ErrorType = '' } }
+            Mock Get-AdfaDeclaredReadRaw { if ($Read -eq 'SchemaMarker') { return (New-LxMissing) }; if ($Read -eq 'ExchangeContainer') { return (New-LxMissing) }; throw 'stub: no other read may be made' }
+            $rows = @(Get-AdfaExchangeAdVersion -RootDomain $script:LxDom1 -Domains @($script:LxDom1) -Config $script:LxExa -CapSource 'x')
+            $rows.Count | Should -Be 1
+            [string]$rows[0].Detail | Should -Match '^Not applicable:'
+            Mock Get-AdfaDeclaredReadRaw { if ($Read -eq 'SchemaMarker') { return (New-LxRead -Records @([pscustomobject]@{ DistinguishedName = 'x'; Name = 'x'; rangeUpper = 17003 })) }; return (New-LxDenied) }
+            $rows = @(Get-AdfaExchangeAdVersion -RootDomain $script:LxDom1 -Domains @($script:LxDom1) -Config $script:LxExa -CapSource 'x')
+            (Get-LxRow $rows 'Exchange organisation')[0].Status | Should -Be 'Not Assessed'
+            [string](Get-LxRow $rows 'Exchange organisation')[0].Detail | Should -Match 'access denied'
+        }
+    }
+
+    Context 'Lingering-object scan of the other partitions' {
+        BeforeAll {
+            $script:LxConfigNc = 'CN=Configuration,DC=contoso,DC=com'
+            $script:LxSchemaNc = 'CN=Schema,CN=Configuration,DC=contoso,DC=com'
+            $script:LxDdz = 'DC=DomainDnsZones,DC=contoso,DC=com'
+            $script:LxFdz = 'DC=ForestDnsZones,DC=contoso,DC=com'
+            $script:LxNdz = 'DC=DomainDnsZones,DC=north,DC=contoso,DC=com'
+            function New-LxDsa { param([string]$HostName, [string]$Guid, $Master = @(), $Partial = @()) [pscustomobject]@{ Host = $HostName; Guid = $Guid; MasterNcs = @($Master); PartialNcs = @($Partial) } }
+            $script:LxDsas = @(
+                (New-LxDsa $script:LxDc1 '11111111-1111-4111-8111-111111111111' @($script:LxConfigNc, $script:LxSchemaNc, $script:LxDn1, $script:LxDdz, $script:LxFdz) @($script:LxDn2)),
+                (New-LxDsa $script:LxDc2 '22222222-2222-4222-8222-222222222222' @($script:LxConfigNc, $script:LxSchemaNc, $script:LxDn1, $script:LxDdz, $script:LxFdz) @()),
+                (New-LxDsa $script:LxDc3 '33333333-3333-4333-8333-333333333333' @($script:LxConfigNc, $script:LxSchemaNc, $script:LxDn2, $script:LxNdz, $script:LxFdz) @($script:LxDn1)))
+            $script:LxParts = @(
+                [pscustomobject]@{ Nc = $script:LxConfigNc; Kind = 'Configuration' }, [pscustomobject]@{ Nc = $script:LxDn1; Kind = 'Domain' }, [pscustomobject]@{ Nc = $script:LxDn2; Kind = 'Domain' },
+                [pscustomobject]@{ Nc = $script:LxDdz; Kind = 'Application' }, [pscustomobject]@{ Nc = $script:LxFdz; Kind = 'Application' }, [pscustomobject]@{ Nc = $script:LxNdz; Kind = 'Application' })
+            function New-LxTarget { param([string]$HostName, [string]$Domain) [pscustomobject]@{ HostName = $HostName; Domain = $Domain } }
+        }
+        It 'plans the configuration NC, each application partition a DC holds and each partial replica, each against another writable holder (declared population: 3 DCs, 10 scans)' {
+            $plan = Get-AdfaLingeringScanPlan -Targets @((New-LxTarget $script:LxDc1 $script:LxDom1), (New-LxTarget $script:LxDc2 $script:LxDom1), (New-LxTarget $script:LxDc3 $script:LxDom2)) -Partitions $script:LxParts -Dsas $script:LxDsas -MaxScans 200
+            $keys = @($plan.Scans | ForEach-Object { '{0}|{1}|{2}' -f $_.Dc, $_.Kind, $_.Nc })
+            $keys.Count | Should -Be 10
+            # dc1: configuration, DomainDnsZones, ForestDnsZones, the partial north NC; dc2: configuration and the two; dc3: configuration, ForestDnsZones, the partial contoso NC (north DomainDnsZones has no other holder: skipped).
+            @($plan.Scans | Where-Object { $_.Dc -eq $script:LxDc1 }).Count | Should -Be 4
+            @($plan.Scans | Where-Object { $_.Dc -eq $script:LxDc2 }).Count | Should -Be 3
+            @($plan.Scans | Where-Object { $_.Dc -eq $script:LxDc3 }).Count | Should -Be 3
+            foreach ($s in @($plan.Scans)) { $s.ReferenceHost | Should -Not -Be $s.Dc -Because ('{0} {1}' -f $s.Dc, $s.Nc) }
+            $gc = @($plan.Scans | Where-Object { $_.Dc -eq $script:LxDc1 -and $_.Kind -eq 'GcPartial' })[0]
+            $gc.Nc | Should -Be $script:LxDn2
+            $gc.ReferenceHost | Should -Be $script:LxDc3
+            $gc.ReferenceGuid | Should -Be '33333333-3333-4333-8333-333333333333'
+            @($plan.Scans | Where-Object { $_.Nc -eq $script:LxSchemaNc -or $_.Kind -eq 'Domain' }).Count | Should -Be 0 -Because 'the schema NC supports no deletes and the domain NC has its own scan'
+            $skip = @($plan.Skipped | Where-Object { $_.Dc -eq $script:LxDc3 -and $_.Nc -eq $script:LxNdz })
+            $skip.Count | Should -Be 1
+            [string]$skip[0].Cause | Should -Match 'no other domain controller holds a writable copy'
+            @($plan.CappedOut).Count | Should -Be 0
+        }
+        It 'caps the scans at MaxScans and keeps the rest as named, not run (the cap is exact)' {
+            $plan = Get-AdfaLingeringScanPlan -Targets @((New-LxTarget $script:LxDc1 $script:LxDom1), (New-LxTarget $script:LxDc2 $script:LxDom1), (New-LxTarget $script:LxDc3 $script:LxDom2)) -Partitions $script:LxParts -Dsas $script:LxDsas -MaxScans 5
+            @($plan.Scans).Count | Should -Be 5
+            @($plan.CappedOut).Count | Should -Be 5
+            $plan = Get-AdfaLingeringScanPlan -Targets @((New-LxTarget $script:LxDc1 $script:LxDom1), (New-LxTarget $script:LxDc2 $script:LxDom1), (New-LxTarget $script:LxDc3 $script:LxDom2)) -Partitions $script:LxParts -Dsas $script:LxDsas -MaxScans 10
+            @($plan.CappedOut).Count | Should -Be 0
+            $plan = Get-AdfaLingeringScanPlan -Targets @((New-LxTarget $script:LxDc1 $script:LxDom1), (New-LxTarget $script:LxDc2 $script:LxDom1), (New-LxTarget $script:LxDc3 $script:LxDom2)) -Partitions $script:LxParts -Dsas $script:LxDsas -MaxScans 9
+            @($plan.CappedOut).Count | Should -Be 1
+        }
+        It 'a DC with no NTDS Settings object of its host name is skipped with that cause' {
+            $plan = Get-AdfaLingeringScanPlan -Targets @((New-LxTarget $script:LxDc4 $script:LxDom1)) -Partitions $script:LxParts -Dsas $script:LxDsas -MaxScans 200
+            @($plan.Scans).Count | Should -Be 0
+            [string]@($plan.Skipped)[0].Cause | Should -Match 'NTDS Settings'
+        }
+        It 'plans an RODC''s read-only application partitions from msDS-hasFullReplicaNCs, and a DC that returned neither list is one skipped row (declared population: rodc1 and dc5)' {
+            # Independent review: an RODC lists its read-only DomainDnsZones and ForestDnsZones in msDS-hasFullReplicaNCs, not msDS-hasMasterNCs.
+            $rodc = 'rodc1.contoso.com'
+            $dc5 = 'dc5.contoso.com'
+            $dsas = @($script:LxDsas) + @(
+                [pscustomobject]@{ Host = $rodc; Guid = '55555555-5555-4555-8555-555555555555'; MasterNcs = @(); FullNcs = @($script:LxConfigNc, $script:LxSchemaNc, $script:LxDn1, $script:LxDdz, $script:LxFdz); PartialNcs = @() },
+                [pscustomobject]@{ Host = $dc5; Guid = '66666666-6666-4666-8666-666666666666'; MasterNcs = @(); FullNcs = @(); PartialNcs = @() })
+            $plan = Get-AdfaLingeringScanPlan -Targets @((New-LxTarget $rodc $script:LxDom1), (New-LxTarget $dc5 $script:LxDom1)) -Partitions $script:LxParts -Dsas $dsas -MaxScans 200
+            $rodcScans = @($plan.Scans | Where-Object { $_.Dc -eq $rodc } | ForEach-Object { '{0}|{1}' -f $_.Kind, $_.Nc } | Sort-Object)
+            ($rodcScans -join ' ; ') | Should -Be (@(('Application|{0}' -f $script:LxDdz), ('Application|{0}' -f $script:LxFdz), ('Configuration|{0}' -f $script:LxConfigNc)) -join ' ; ')
+            foreach ($s in @($plan.Scans | Where-Object { $_.Dc -eq $rodc })) { @($script:LxDc1, $script:LxDc2, $script:LxDc3) | Should -Contain $s.ReferenceHost -Because 'the reference holds a writable copy' }
+            $skip = @($plan.Skipped | Where-Object { $_.Dc -eq $dc5 })
+            $skip.Count | Should -Be 1
+            [string]$skip[0].Kind | Should -Be 'Application'
+            [string]$skip[0].Cause | Should -Match 'msDS-hasFullReplicaNCs'
+            @($plan.Scans | Where-Object { $_.Dc -eq $dc5 -and $_.Kind -eq 'Application' }).Count | Should -Be 0
+            @($plan.Skipped | Where-Object { $_.Dc -eq $rodc }).Count | Should -Be 0
+        }
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            $script:LxRepadmin = New-Object System.Collections.ArrayList
+            $script:LxProbes = New-Object System.Collections.ArrayList
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { [void]$script:LxProbes.Add(('{0}:{1}' -f $ComputerName, $Port)); return ($ComputerName -ne $script:LxDc2) }
+            Mock Get-AdfaLingeringPartitionRaw { [pscustomobject]@{ Ok = $true; Cause = ''; Partitions = $script:LxParts; Dsas = $script:LxDsas } }
+            Mock Invoke-ExternalCommand {
+                [void]$script:LxRepadmin.Add($Arguments)
+                if ($Arguments -match 'ForestDnsZones' -and $Arguments -match '^/removelingeringobjects dc1') { return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = 'Found 4 lingering objects.'; OutFile = $null } }
+                if ($Arguments -match 'DC=north' -and $Arguments -match '^/removelingeringobjects dc1') { return [pscustomobject]@{ Success = $false; ExitCode = 5; Attempt = 1; Error = 'Access is denied.'; StdOut = 'DsReplicaVerifyObjectsW() failed with status 5 (0x5): Access is denied.'; OutFile = $null } }
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = 'Found 0 lingering objects.'; OutFile = $null } }
+            $script:LxTargets = @(
+                [pscustomobject]@{ HostName = $script:LxDc1; Scope = $script:LxDom1 }, [pscustomobject]@{ HostName = $script:LxDc2; Scope = $script:LxDom1 },
+                [pscustomobject]@{ HostName = $script:LxDc3; Scope = $script:LxDom2 })
+        }
+        AfterEach { Clear-AdfaDcPortCache }
+        It 'scans every DC of every scoped domain in advisory mode only, and grades each partition apart: Fail, Pass, unreachable and access denied (declared population: 10 planned scans)' {
+            $rows = @(Get-AdfaLingeringPartitionScan -RootDomain $script:LxDom1 -Domains @($script:LxDom1, $script:LxDom2) -DomainControllers $script:LxTargets -ScopedDomains @($script:LxDom1, $script:LxDom2) -Config $script:LxLo -CapSource 'LingeringObjects.MaxScans, a tool default' -RpcPortTimeoutMs 100)
+            @($rows | Where-Object { $_.Item -like 'Advisory scan (*' }).Count | Should -Be 11 -Because '10 planned scans and the one skipped partition'
+            $fail = (Get-LxRow $rows ('Advisory scan (application partition {0}): {1}' -f $script:LxFdz, $script:LxDc1))[0]
+            $fail.Status | Should -Be 'Fail'
+            [string]$fail.Detail | Should -Match '4 lingering object\(s\)'
+            (Get-LxRow $rows ('Advisory scan (configuration): {0}' -f $script:LxDc1))[0].Status | Should -Be 'Pass'
+            (Get-LxRow $rows ('Advisory scan (configuration): {0}' -f $script:LxDc3))[0].Status | Should -Be 'Pass'
+            $denied = (Get-LxRow $rows ('Advisory scan (GC partial replica {0}): {1}' -f $script:LxDn2, $script:LxDc1))[0]
+            $denied.Status | Should -Be 'Not Assessed'
+            [string]$denied.Detail | Should -Match 'Access is denied'
+            $dead = Get-LxLike $rows ('Advisory scan (*): {0}' -f $script:LxDc2)
+            $dead.Count | Should -Be 3 -Because 'dc2 holds the configuration NC and two application partitions'
+            foreach ($r in $dead) { $r.Status | Should -Be 'Not Assessed'; [string]$r.Detail | Should -Match 'RPC/135' }
+            (Get-LxRow $rows ('Advisory scan (application partition {0}): {1}' -f $script:LxNdz, $script:LxDc3))[0].Status | Should -Be 'Not Assessed'
+            @($script:LxRepadmin | Where-Object { $_ -notmatch '/advisory_mode$' }).Count | Should -Be 0
+            @($script:LxRepadmin | Where-Object { $_ -match ('^/removelingeringobjects {0} ' -f [regex]::Escape($script:LxDc2)) }).Count | Should -Be 0
+            $script:LxRepadmin.Count | Should -Be 7 -Because 'dc1 four, dc3 three, dc2 unreachable'
+            @($rows | ForEach-Object { $_.Area } | Sort-Object -Unique) | Should -Be @('LingeringObjects')
+        }
+        It 'a partition list that could not be read is one Not Assessed row and no scan' {
+            Mock Get-AdfaLingeringPartitionRaw { [pscustomobject]@{ Ok = $false; Cause = 'Reading the crossRef objects failed (access denied): Access is denied.'; Partitions = @(); Dsas = @() } }
+            $rows = @(Get-AdfaLingeringPartitionScan -RootDomain $script:LxDom1 -Domains @($script:LxDom1) -DomainControllers $script:LxTargets -ScopedDomains @($script:LxDom1) -Config $script:LxLo -CapSource 'x' -RpcPortTimeoutMs 100)
+            $rows.Count | Should -Be 1
+            $rows[0].Item | Should -Be 'Advisory scan (other partitions)'
+            $rows[0].Status | Should -Be 'Not Assessed'
+            [string]$rows[0].Detail | Should -Match 'access denied'
+            $script:LxRepadmin.Count | Should -Be 0
+        }
+        It 'reports the scans the cap stopped as one Not Assessed row naming the cap' {
+            $c = Merge-AdfaSpecConfig -BaseConfig $script:LxLo -Override @{ MaxScans = 2 } -OverrideSource 'C:\cfg\lo.json'
+            $rows = @(Get-AdfaLingeringPartitionScan -RootDomain $script:LxDom1 -Domains @($script:LxDom1, $script:LxDom2) -DomainControllers $script:LxTargets -ScopedDomains @($script:LxDom1, $script:LxDom2) -Config $c -CapSource 'LingeringObjects.MaxScans, set in the -ConfigOverridePath file' -RpcPortTimeoutMs 100)
+            $cap = (Get-LxRow $rows 'Advisory scan (other partitions): cap reached')[0]
+            $cap.Status | Should -Be 'Not Assessed'
+            [string]$cap.Detail | Should -Match '8 partition scan'
+            [string]$cap.Detail | Should -Match 'set in the -ConfigOverridePath file'
+            $script:LxRepadmin.Count | Should -Be 2
+        }
+        It 'no repadmin on the host is one Not Assessed row' {
+            Mock Test-CommandAvailable { $false }
+            $rows = @(Get-AdfaLingeringPartitionScan -RootDomain $script:LxDom1 -Domains @($script:LxDom1) -DomainControllers $script:LxTargets -ScopedDomains @($script:LxDom1) -Config $script:LxLo -CapSource 'x')
+            $rows.Count | Should -Be 1
+            $rows[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'keeps the one repadmin call of the script in Invoke-AdfaLingeringAdvisory, with the same literal form, and both scans go through it' {
+            $all = @(Get-LxCall $script:LxAst 'Invoke-ExternalCommand' | Where-Object { $_.Extent.Text -match 'removelingeringobjects' })
+            $all.Count | Should -Be 1
+            $owner = $all[0].Parent; while ($owner -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $owner = $owner.Parent }
+            $owner.Name | Should -Be 'Invoke-AdfaLingeringAdvisory'
+            (Get-LxParameter -Call $all[0] -Name 'Arguments').Extent.Text | Should -Match ([regex]::Escape("('/removelingeringobjects {0} {1} `"{2}`" /advisory_mode' -f"))
+            foreach ($n in @('Get-AdfaLingeringObjectScan', 'Get-AdfaLingeringPartitionScan')) { @(Get-LxCall (Get-LxFunction $n)[0] 'Invoke-AdfaLingeringAdvisory').Count | Should -Be 1 -Because $n }
+        }
+        It 'is wired in Invoke-Main behind -IncludeLingeringObjectScan only, into the same report section' {
+            $calls = @(Get-LxCall $script:LxMain 'Get-AdfaLingeringPartitionScan')
+            $calls.Count | Should -Be 1
+            $guard = $calls[0].Parent
+            while ($null -ne $guard -and -not ($guard -is [System.Management.Automation.Language.IfStatementAst])) { $guard = $guard.Parent }
+            $guard.Clauses[0].Item1.Extent.Text | Should -Be '$IncludeLingeringObjectScan'
+            (Get-LxParameter -Call $calls[0] -Name 'DomainControllers').Extent.Text | Should -Be '$perDcTargets'
+            (Get-LxParameter -Call $calls[0] -Name 'Config').Extent.Text | Should -Be '$loConfig'
+            $guard.Extent.Text | Should -Match ([regex]::Escape("`$sectionData['Lingering Object Scan (advisory)']"))
+        }
+    }
+
+    Context 'Lingering partitions read (Get-AdfaLingeringPartitionRaw, msDS-hasFullReplicaNCs)' {
+        BeforeAll {
+            $script:LxConfigNc = 'CN=Configuration,DC=contoso,DC=com'
+            $script:LxDdz = 'DC=DomainDnsZones,DC=contoso,DC=com'
+            function New-LxTarget { param([string]$HostName, [string]$Domain) [pscustomobject]@{ HostName = $HostName; Domain = $Domain } }
+        }
+        It 'declares msDS-hasFullReplicaNCs on the NTDS Settings read and carries it into FullNcs (Get-AdfaLingeringPartitionRaw, two DCs)' {
+            @($script:LxLo['Reads']['Dsa']['Properties']) | Should -Contain 'msDS-hasFullReplicaNCs'
+            $rodc = 'rodc1.contoso.com'
+            Mock Get-AdfaInventoryDomainDn { [pscustomobject]@{ Ok = $true; Dn = $script:LxDn1; Error = ''; ErrorType = '' } }
+            Mock Get-AdfaDsaInventory {
+                @([pscustomobject]@{ ServerDn = ('CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,{0}' -f $script:LxConfigNc); DnsHostName = $script:LxDc1; DsaGuid = '11111111-1111-4111-8111-111111111111' },
+                    [pscustomobject]@{ ServerDn = ('CN=RODC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,{0}' -f $script:LxConfigNc); DnsHostName = $rodc; DsaGuid = '55555555-5555-4555-8555-555555555555' }) }
+            Mock Get-AdfaDeclaredReadRaw {
+                if ($Read -eq 'Partitions') { return (New-LxRead -Records @([pscustomobject]@{ DistinguishedName = 'x'; nCName = $script:LxConfigNc; systemFlags = 1 }, [pscustomobject]@{ DistinguishedName = 'y'; nCName = $script:LxDdz; systemFlags = 5 })) }
+                if ($Read -eq 'Dsa') {
+                    return (New-LxRead -Records @(
+                            [pscustomobject]@{ DistinguishedName = ('CN=NTDS Settings,CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,{0}' -f $script:LxConfigNc); 'msDS-hasMasterNCs' = @($script:LxConfigNc, $script:LxDdz); 'msDS-hasFullReplicaNCs' = $null; hasPartialReplicaNCs = $null },
+                            [pscustomobject]@{ DistinguishedName = ('CN=NTDS Settings,CN=RODC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,{0}' -f $script:LxConfigNc); 'msDS-hasMasterNCs' = $null; 'msDS-hasFullReplicaNCs' = @($script:LxConfigNc, $script:LxDdz); hasPartialReplicaNCs = $null })) }
+                throw 'stub: no other read may be made' }
+            $raw = Get-AdfaLingeringPartitionRaw -RootDomain $script:LxDom1 -Config $script:LxLo -CapSource 'x'
+            $raw.Ok | Should -BeTrue
+            $r = @($raw.Dsas | Where-Object { $_.Host -eq $rodc })
+            $r.Count | Should -Be 1
+            (@($r[0].FullNcs) -join ',') | Should -Be ('{0},{1}' -f $script:LxConfigNc, $script:LxDdz)
+            @($r[0].MasterNcs).Count | Should -Be 0
+            $plan = Get-AdfaLingeringScanPlan -Targets @((New-LxTarget $rodc $script:LxDom1)) -Partitions @($raw.Partitions) -Dsas @($raw.Dsas) -MaxScans 200
+            @($plan.Scans | Where-Object { $_.Kind -eq 'Application' -and $_.Nc -eq $script:LxDdz -and $_.ReferenceHost -eq $script:LxDc1 }).Count | Should -Be 1
+        }
+    }
+
+    Context 'DNS server reads with -Credential (one CIM session per read, Invoke-AdfaDnsServerRead)' {
+        BeforeEach {
+            $script:LxCim = New-Object System.Collections.ArrayList
+            $script:LxDnsBound = New-Object System.Collections.ArrayList
+            $script:LxCimMode = ''
+            Clear-AdfaDcPortCache
+            function script:New-CimSessionOption { param($Protocol) [void]$script:LxCim.Add(('option {0}' -f $Protocol)); [pscustomobject]@{ Protocol = $Protocol } }
+            function script:New-CimSession { param($ComputerName, $Credential, $OperationTimeoutSec, $SessionOption, $ErrorAction)
+                [void]$script:LxCim.Add(('open {0} {1} {2}' -f $ComputerName, [string]($null -ne $Credential), $OperationTimeoutSec))
+                if ($script:LxCimMode -eq 'denied') { throw [System.UnauthorizedAccessException]::new('Access is denied.') }
+                if ($script:LxCimMode -eq 'down') { throw [System.InvalidOperationException]::new(('WinRM cannot complete the operation. Verify that the specified computer name is valid, that the computer is accessible over the network.{0}Check the firewall.' -f [Environment]::NewLine)) }
+                [pscustomobject]@{ ComputerName = $ComputerName; Kind = 'session' } }
+            # The switches arrive in $args as "-WhatIf:" and its value, as in the C2 Describe (Get-C2Switch); the value is recorded.
+            function script:Remove-CimSession { param($CimSession)
+                $sw = @{ WhatIf = 'absent'; Confirm = 'absent' }
+                for ($i = 0; $i -lt (@($args).Count - 1); $i++) { foreach ($n in @('WhatIf', 'Confirm')) { if ([string]$args[$i] -eq ('-{0}:' -f $n)) { $sw[$n] = [string]$args[$i + 1] } } }
+                [void]$script:LxCim.Add(('close {0} whatif={1} confirm={2}' -f $CimSession.ComputerName, $sw['WhatIf'], $sw['Confirm'])) }
+            function script:Get-DnsServerZone { param($Name, $ComputerName, $CimSession, $ErrorAction)
+                [void]$script:LxDnsBound.Add(('zone computer={0} session={1}' -f [string]$ComputerName, [string]($null -ne $CimSession)))
+                @([pscustomobject]@{ ZoneName = 'contoso.com'; ZoneType = 'Primary'; IsAutoCreated = $false; IsDsIntegrated = $true; IsReverseLookupZone = $false; DynamicUpdate = 'Secure'; ReplicationScope = 'Domain'; SecureSecondaries = 'NoTransfer' }) }
+            function script:Get-DnsServerScavenging { param($ComputerName, $CimSession, $ErrorAction) [void]$script:LxDnsBound.Add(('scavenging session={0}' -f [string]($null -ne $CimSession))); [pscustomobject]@{ ScavengingInterval = [timespan]::FromDays(7); ScavengingState = $true } }
+            function script:Get-DnsServerZoneAging { param($Name, $ComputerName, $CimSession, $ErrorAction) [void]$script:LxDnsBound.Add(('aging session={0}' -f [string]($null -ne $CimSession))); [pscustomobject]@{ AgingEnabled = $true; NoRefreshInterval = [timespan]::FromDays(7); RefreshInterval = [timespan]::FromDays(7); ScavengeServers = @() } }
+            function script:Get-DnsServerForwarder { param($ComputerName, $CimSession, $ErrorAction) [void]$script:LxDnsBound.Add(('forwarder session={0}' -f [string]($null -ne $CimSession))); [pscustomobject]@{ IPAddress = @('192.0.2.53') } }
+            function script:Get-DnsServerResourceRecord { param($ZoneName, $Name, $RRType, $ComputerName, $CimSession, $ErrorAction)
+                [void]$script:LxDnsBound.Add(('records computer={0} session={1}' -f [string]$ComputerName, [string]($null -ne $CimSession)))
+                @([pscustomobject]@{ HostName = '@'; RecordType = 'NS'; TimeToLive = '01:00:00'; Timestamp = $null; RecordData = [pscustomobject]@{ NameServer = 'dc1.contoso.com.' } }) }
+            $script:LxCred = New-Object System.Management.Automation.PSCredential -ArgumentList 'CONTOSO\reader', (New-Object System.Security.SecureString)
+        }
+        AfterEach {
+            foreach ($n in @('New-CimSessionOption', 'New-CimSession', 'Remove-CimSession', 'Get-DnsServerZone', 'Get-DnsServerScavenging', 'Get-DnsServerZoneAging', 'Get-DnsServerForwarder', 'Get-DnsServerResourceRecord')) { Remove-Item -Path ("Function:\script:{0}" -f $n) -ErrorAction SilentlyContinue }
+            Clear-AdfaDcPortCache
+        }
+        It 'without -Credential reads with -ComputerName only and opens no session (unchanged)' {
+            $r = Invoke-AdfaDnsServerRead -ComputerName $script:LxDc1 -Read 'Server'
+            $r.Ok | Should -BeTrue
+            $script:LxCim.Count | Should -Be 0
+            $script:LxDnsBound[0] | Should -Be ('zone computer={0} session=False' -f $script:LxDc1)
+        }
+        It 'with -Credential opens one bounded session per read, passes -CimSession and never -ComputerName, and closes it with -WhatIf and -Confirm off' {
+            Mock Test-TcpPort { $true }
+            $r = Invoke-AdfaDnsServerRead -ComputerName $script:LxDc1 -Read 'Server' -Credential $script:LxCred -OperationTimeoutSec 45
+            $r.Ok | Should -BeTrue
+            (@($script:LxCim) -join ' ; ') | Should -Be ('open {0} True 45 ; close {0} whatif=False confirm=False' -f $script:LxDc1)
+            # Declared population: the four reads of the server seam (zones, scavenging, aging of the one primary zone, forwarders).
+            (@($script:LxDnsBound) -join ' ; ') | Should -Be 'zone computer= session=True ; scavenging session=True ; aging session=True ; forwarder session=True'
+            $script:LxCim.Clear(); $script:LxDnsBound.Clear()
+            $rec = Invoke-AdfaDnsServerRead -ComputerName $script:LxDc2 -Read 'Records' -ReadArguments @{ ZoneName = 'contoso.com'; RRType = 'Ns' } -Credential $script:LxCred
+            $rec.Outcome | Should -Be 'Resolved'
+            $script:LxDnsBound[0] | Should -Be 'records computer= session=True'
+            @($script:LxCim | Where-Object { $_ -like 'close*' }).Count | Should -Be 1
+        }
+        It 'uses DCOM when WinRM does not answer, and one zone list per server for the run' {
+            Mock Test-TcpPort { $false }
+            $z = Invoke-AdfaDnsServerRead -ComputerName $script:LxDc3 -Read 'Zones' -Credential $script:LxCred
+            $z.Ok | Should -BeTrue
+            $script:LxCim[0] | Should -Be 'option Dcom'
+            $again = Invoke-AdfaDnsServerRead -ComputerName $script:LxDc3 -Read 'Zones' -Credential $script:LxCred
+            @($script:LxCim | Where-Object { $_ -like 'open*' }).Count | Should -Be 1
+            (@($again.Names) -join ',') | Should -Be 'contoso.com'
+        }
+        It 'a session that cannot be opened is a failed read of the seam''s shape, classed SessionRefused (the supplied credential, not the account running the assessment), and nothing is closed' {
+            Mock Test-TcpPort { $true }
+            $script:LxCimMode = 'denied'
+            foreach ($kind in @('Server', 'Zones', 'Records')) {
+                Clear-AdfaDcPortCache
+                $ra = @{}; if ($kind -eq 'Records') { $ra = @{ ZoneName = 'contoso.com' } }
+                $r = Invoke-AdfaDnsServerRead -ComputerName $script:LxDc1 -Read $kind -ReadArguments $ra -Credential $script:LxCred
+                $r.Ok | Should -BeFalse -Because $kind
+                [string]$r.Error | Should -Match 'Access is denied' -Because $kind
+                $class = Get-AdfaDnsReadErrorClass -Message $r.Error -ErrorCode $r.ErrorCode -Config $script:Config.Dns
+                $class | Should -Be 'SessionRefused' -Because $kind
+                $cause = Get-AdfaDnsReadCause -Class $class -Message $r.Error
+                $cause | Should -Match '^Access denied: the credential supplied with -Credential was refused' -Because $kind
+                $cause | Should -Not -Match 'account running the assessment' -Because $kind
+            }
+            @($script:LxCim | Where-Object { $_ -like 'close*' }).Count | Should -Be 0
+            $script:LxDnsBound.Count | Should -Be 0
+        }
+        It 'a session that could not connect is SessionNotOpened, one line, and its cause never says the DNS server answered' {
+            Mock Test-TcpPort { $false }
+            $script:LxCimMode = 'down'
+            $r = Invoke-AdfaDnsServerRead -ComputerName $script:LxDc2 -Read 'Server' -Credential $script:LxCred
+            $r.Ok | Should -BeFalse
+            [string]$r.Error | Should -Not -Match '[\r\n]'
+            $class = Get-AdfaDnsReadErrorClass -Message $r.Error -ErrorCode $r.ErrorCode -Config $script:Config.Dns
+            $class | Should -Be 'SessionNotOpened'
+            $cause = Get-AdfaDnsReadCause -Class $class -Message $r.Error
+            $cause | Should -Match '^Not connected: no CIM session to the DNS server could be opened with the supplied credential'
+            $cause | Should -Not -Match 'answered'
+        }
+        It 'leads a refusal the DNS server answered without naming the account running the assessment, and keeps the other classes (pure)' {
+            $c = Get-AdfaDnsReadCause -Class 'AccessDenied' -Message 'Access is denied.'
+            $c | Should -Match '^Access denied: the DNS server refused the account used for the read'
+            $c | Should -Match '-Credential account when one was supplied'
+            (Get-AdfaDnsReadErrorClass -Message 'Access is denied.' -ErrorCode 'AccessDenied' -Config $script:Config.Dns) | Should -Be 'AccessDenied' -Because 'a refusal from a server that was asked is not a session failure'
+            (Get-AdfaDnsReadErrorClass -Message 'The operation has timed out.' -ErrorCode '' -Config $script:Config.Dns) | Should -Be 'Timeout'
+        }
+        It 'DNS health with -Credential: two DCs, each read through its own session; without it, none' {
+            Mock Test-ModuleAvailable { $true }
+            Mock Import-Module { }
+            Mock Test-TcpPort { $true }
+            $targets = @([pscustomobject]@{ HostName = $script:LxDc1; Scope = $script:LxDom1 }, [pscustomobject]@{ HostName = $script:LxDc2; Scope = $script:LxDom1 })
+            $rows = @(Get-AdfaDnsHealth -DomainControllers $targets -Credential $script:LxCred -ScopedDomains @($script:LxDom1) -PortTimeoutMs 100)
+            @($rows | Where-Object { $_.Item -like 'DNS server: *' -and $_.Status -eq 'Info' }).Count | Should -Be 2
+            @($script:LxCim | Where-Object { $_ -like 'open*' }).Count | Should -Be 2
+            @($script:LxDnsBound | Where-Object { $_ -match 'session=False' }).Count | Should -Be 0
+            $script:LxCim.Clear(); $script:LxDnsBound.Clear(); Clear-AdfaDcPortCache
+            $rows = @(Get-AdfaDnsHealth -DomainControllers $targets -ScopedDomains @($script:LxDom1) -PortTimeoutMs 100)
+            $script:LxCim.Count | Should -Be 0
+            @($script:LxDnsBound | Where-Object { $_ -match 'session=True' }).Count | Should -Be 0
+        }
+        It 'every DnsServer seam call goes through Invoke-AdfaDnsServerRead, and each DNS function hands -Credential on (declared population: the seven call sites)' {
+            $seams = @('Get-AdfaDnsServerRaw', 'Get-AdfaDnsRecordSetRaw', 'Get-AdfaDnsServerZoneNames')
+            foreach ($s in $seams) {
+                foreach ($c in @(Get-LxCall $script:LxAst $s)) {
+                    $owner = $c.Parent; while ($null -ne $owner -and $owner -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $owner = $owner.Parent }
+                    $owner.Name | Should -Be 'Invoke-AdfaDnsServerRead' -Because ('{0} on line {1}' -f $s, $c.Extent.StartLineNumber)
+                }
+            }
+            $reads = @(Get-LxCall $script:LxAst 'Invoke-AdfaDnsServerRead')
+            $reads.Count | Should -Be 7
+            foreach ($c in $reads) { (Get-LxParameter -Call $c -Name 'Credential').Extent.Text | Should -Be '$Credential' -Because ('line {0}' -f $c.Extent.StartLineNumber) }
+            foreach ($n in @('Get-AdfaDnsZoneDelegation', 'Resolve-AdfaDnsServerZone', 'Get-AdfaDnsServerRecord')) {
+                foreach ($c in @(Get-LxCall $script:LxAst $n)) { (Get-LxParameter -Call $c -Name 'Credential').Extent.Text | Should -Be '$Credential' -Because ('{0} on line {1}' -f $n, $c.Extent.StartLineNumber) }
+            }
+            $export = @(Get-LxCall $script:LxMain 'Export-AdfaDnsRecord')
+            $export.Count | Should -Be 1
+            (Get-LxParameter -Call $export[0] -Name 'Credential').Extent.Text | Should -Be '$Credential'
+            # The seam opens and closes its own session (the C2 guard names it with the other six).
+            $fn = (Get-LxFunction 'Invoke-AdfaDnsServerRead')[0]
+            @(Get-LxCall $fn 'New-CimSession').Count | Should -Be 1
+            @(Get-LxCall $fn 'Remove-CimSession').Count | Should -Be 1
+        }
+    }
+
+    Context 'Wiring, help, README and advice' {
+        It 'wires Pki with the forest root and the Pki table, and ExchangeSchema with the new report section after the marker' {
+            $pki = @(Get-LxCall $script:LxMain 'Get-AdfaPkiHealth')
+            $pki.Count | Should -Be 1
+            (Get-LxParameter -Call $pki[0] -Name 'RootDomain').Extent.Text | Should -Be '$rootDomain'
+            (Get-LxParameter -Call $pki[0] -Name 'Config').Extent.Text | Should -Be '$script:Config.Pki'
+            $exa = @(Get-LxCall $script:LxMain 'Get-AdfaExchangeAdVersion')
+            $exa.Count | Should -Be 1
+            (Get-LxParameter -Call $exa[0] -Name 'Domains').Extent.Text | Should -Be '$targetDomains'
+            (Get-LxParameter -Call $exa[0] -Name 'Config').Extent.Text | Should -Be '$exaConfig'
+            $guard = $exa[0].Parent
+            while ($null -ne $guard -and -not ($guard -is [System.Management.Automation.Language.IfStatementAst])) { $guard = $guard.Parent }
+            $guard.Clauses[0].Item1.Extent.Text | Should -Be "Test-SectionSelected 'ExchangeSchema' `$Sections"
+            $guard.Extent.Text | Should -Match ([regex]::Escape("`$sectionData['Exchange AD Versions']"))
+            $guard.Extent.Text | Should -Match ([regex]::Escape("`$sectionData['Exchange Schema Markers']"))
+        }
+        It 'says what each section now covers in the help and the README' {
+            $help = $script:LxAst.GetHelpContent()
+            ([string]$help.Parameters['CREDENTIAL'] -replace '\s+', ' ') | Should -Match 'CIM session'
+            ([string]$help.Parameters['INCLUDELINGERINGOBJECTSCAN'] -replace '\s+', ' ') | Should -Match 'application partitions'
+            $readme = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'README.md'))
+            $readme | Should -Match 'published'
+            $readme | Should -Match 'objectVersion'
+            $readme | Should -Not -Match 'certificateTemplates. attribute is not read'
+        }
+        It 'gives a Fail or Warning row its advice and no unscoped entry captures it' {
+            $cases = @(
+                @{ Section = 'PKI / AD CS'; Item = 'ESC1 template: WebServerEsc'; Detail = 'S-1-5-11: Enroll; delegation backup stale'; Expect = 'Harden the template' }
+                @{ Section = 'Exchange AD Versions'; Item = ('Exchange domain preparation: {0}' -f $script:LxDom2); Detail = 'objectVersion 13242 below 13243 replication global catalog stale delegation'; Expect = '/PrepareDomain' }
+                @{ Section = 'Exchange AD Versions'; Item = 'Exchange organisation'; Detail = 'replication'; Expect = '' }
+                @{ Section = 'Lingering Object Scan (advisory)'; Item = ('Advisory scan (GC partial replica {0}): {1}' -f $script:LxDn2, $script:LxDc1); Detail = '4 lingering object(s) found on the global catalog partial replica, relative to dc3 (replication)'; Expect = 'removelingeringobjects' }
+            )
+            foreach ($c in $cases) {
+                $rec = Get-AdfaRecommendation -Section $c.Section -Item $c.Item -Detail $c.Detail
+                if ($c.Expect -eq '') { $rec | Should -Be '' -Because $c.Item } else { $rec | Should -Match ([regex]::Escape($c.Expect)) -Because $c.Item }
+            }
         }
     }
 }
