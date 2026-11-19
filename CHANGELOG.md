@@ -13,7 +13,7 @@ The tool's own changelog from before the extraction is kept at
 ### Changed - 2026-11-19 (function-specific parameter help, tool v1.46.0)
 
 **PORT-PLAN H21b** (approved upfront by the operator). Help text only; **no code change**. The parser's
-non-comment tokens of `Invoke-ADForestAssessment.ps1` are identical to v1.45.0, so no finding, status, Item, Detail
+non-comment tokens of `Invoke-ADForestAssessment.ps1` are identical to v1.45.0 apart from the version string, so no finding, status, Item, Detail
 or report shape changed.
 
 - The 628 `.PARAMETER` entries that said only "The <name> input of <function>" (in 290 functions) now say what that
