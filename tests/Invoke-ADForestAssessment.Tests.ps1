@@ -5364,7 +5364,7 @@ Describe 'DC hardening: LDAP signing and channel binding, SMB signing, LAN Manag
             $readParam.Count | Should -Be 1
             $allowed = @($readParam[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
             $allowed.Count | Should -Be 1
-            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw,Get-AdfaDcNetworkRaw,Get-AdfaDcW32TimeRaw'
+            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw,Get-AdfaDcNetworkRaw,Get-AdfaDcW32TimeRaw,Get-AdfaSysvolRegistryRaw'
             { Invoke-AdfaDcRemoteRead -ComputerName $script:C3Dc1 -Protocols @('Wsman') -ReadCommand 'Remove-Item' } | Should -Throw
             # And DcDisk goes through the same loop: the helper was generalised, not copied.
             $disk = @(Get-C3Function -Name 'Get-AdfaDcDiskSpace')
@@ -7593,9 +7593,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 
@@ -9250,9 +9250,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 
@@ -10240,9 +10240,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 
@@ -11179,9 +11179,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 
@@ -12173,9 +12173,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 
@@ -13413,9 +13413,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 
@@ -14631,9 +14631,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 
@@ -16506,9 +16506,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17181,9 +17181,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.40.0 (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17334,9 +17334,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.40.0 in the script and the manifest (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries version 1.41.0 in the script and the manifest (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 
@@ -18419,7 +18419,7 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             $loop = @(Get-C13Function 'Invoke-AdfaDcRemoteRead')
             $readParam = @($loop[0].Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'ReadCommand' })
             $allowed = @($readParam[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
-            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw,Get-AdfaDcNetworkRaw,Get-AdfaDcW32TimeRaw'
+            (@($allowed[0].PositionalArguments | ForEach-Object { [string]$_.Value } | Sort-Object) -join ',') | Should -Be 'Get-AdfaDcDiskRaw,Get-AdfaDcHardeningRaw,Get-AdfaDcNetworkRaw,Get-AdfaDcW32TimeRaw,Get-AdfaSysvolRegistryRaw'
             $state = @(Get-C13Function 'Get-AdfaDcNetworkState')
             @($state[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-AdfaDcRemoteRead' }, $true)).Count | Should -Be 1
             @($state[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-TcpPort' }, $true)).Count | Should -Be 0
@@ -18665,9 +18665,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.40.0 in the script and the manifest (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries version 1.41.0 in the script and the manifest (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 
@@ -18967,14 +18967,17 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($p.Entries | ForEach-Object { "{0} {1}" -f $_.Name, $_.Address }) -join ',') | Should -Be 'WS01 198.51.100.77,WS02 198.51.100.78'
         }
         It 'grades a read log: entries Warning, none Info and never Pass' {
-            $raw = [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = ("x NO_CLIENT_SITE: WS01 {0}" -f $script:C14Client); Error = ''; Path = '\\dc1.contoso.com\ADMIN$\debug\netlogon.log'; Partial = $false; BytesRead = 40 }
-            $w = Get-AdfaNoClientSiteVerdict -HostName $script:C14Dc1 -Scope 'contoso.com' -Raw $raw -PortOpen $true -Config $script:Config.SiteCoverage
+            # Since v1.41.0 (PORT-PLAN C14c) the log carries its last write time (the age window) and
+            # netlogon.bak is read beside it; here there is no rollover file.
+            $raw = [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = ("x NO_CLIENT_SITE: WS01 {0}" -f $script:C14Client); Error = ''; Path = '\\dc1.contoso.com\ADMIN$\debug\netlogon.log'; Partial = $false; BytesRead = 40; LastWriteTimeUtc = $script:C14Now.AddHours(-1) }
+            $bak = [pscustomobject]@{ Ok = $false; Class = 'NotFound'; Text = ''; Error = 'Could not find file'; Path = '\\dc1.contoso.com\ADMIN$\debug\netlogon.bak'; Partial = $false; BytesRead = 0; LastWriteTimeUtc = $null }
+            $w = Get-AdfaNoClientSiteVerdict -HostName $script:C14Dc1 -Scope 'contoso.com' -Raw $raw -BakRaw $bak -Now $script:C14Now -PortOpen $true -Config $script:Config.SiteCoverage
             $w.Item | Should -Be ("Clients without a site: {0}" -f $script:C14Dc1)
             $w.Status | Should -Be 'Warning'
             $w.Detail | Should -Not -Match ([regex]::Escape($script:C14Client))
             [string]$w.Clients | Should -Match ([regex]::Escape($script:C14Client))
             $raw.Text = 'nothing to see'
-            $i = Get-AdfaNoClientSiteVerdict -HostName $script:C14Dc1 -Scope 'contoso.com' -Raw $raw -PortOpen $true -Config $script:Config.SiteCoverage
+            $i = Get-AdfaNoClientSiteVerdict -HostName $script:C14Dc1 -Scope 'contoso.com' -Raw $raw -BakRaw $bak -Now $script:C14Now -PortOpen $true -Config $script:Config.SiteCoverage
             $i.Status | Should -Be 'Info'
             $i.Detail | Should -Match 'not a clean result|not proof'
         }
@@ -19009,16 +19012,20 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
         }
         It 'gives every DC its row, and probes SMB through the shared cache' {
             Mock Test-TcpPort { $ComputerName -ne $script:C14Dc3 }
+            # Since v1.41.0 (PORT-PLAN C14c) netlogon.bak is read beside a log that could be read (here: not
+            # there), and every read carries its last write time.
             Mock Get-AdfaNetlogonLogRaw {
-                if ($Path -like ("*{0}*" -f $script:C14Dc2)) { return [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Text = ''; Error = 'Access is denied.'; Path = $Path; Partial = $false; BytesRead = 0 } }
-                return [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = ("x NO_CLIENT_SITE: WS01 {0}" -f $script:C14Client); Error = ''; Path = $Path; Partial = $false; BytesRead = 50 }
+                if ($Path -like '*.bak') { return [pscustomobject]@{ Ok = $false; Class = 'NotFound'; Text = ''; Error = 'Could not find file'; Path = $Path; Partial = $false; BytesRead = 0; LastWriteTimeUtc = $null } }
+                if ($Path -like ("*{0}*" -f $script:C14Dc2)) { return [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Text = ''; Error = 'Access is denied.'; Path = $Path; Partial = $false; BytesRead = 0; LastWriteTimeUtc = $null } }
+                return [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = ("x NO_CLIENT_SITE: WS01 {0}" -f $script:C14Client); Error = ''; Path = $Path; Partial = $false; BytesRead = 50; LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-1) }
             }
             $targets = @((New-C14Target $script:C14Dc1 'contoso.com'), (New-C14Target $script:C14Dc2 'contoso.com'), (New-C14Target $script:C14Dc3 'north.contoso.com'))
             $rows = @(Get-AdfaClientSiteRows -DomainControllers $targets -Config $script:Config.SiteCoverage -PortTimeoutMs 100 -ScopedDomains @('contoso.com', 'north.contoso.com'))
             (Get-C14Row $rows ("Clients without a site: {0}" -f $script:C14Dc1))[0].Status | Should -Be 'Warning'
             (Get-C14Row $rows ("Clients without a site: {0}" -f $script:C14Dc2))[0].Detail | Should -Match 'access denied'
             (Get-C14Row $rows ("Clients without a site: {0}" -f $script:C14Dc3))[0].Detail | Should -Match 'SMB \(445\)'
-            Should -Invoke Get-AdfaNetlogonLogRaw -Times 2 -Exactly
+            # Declared population: netlogon.log of dc1 and dc2, netlogon.bak of dc1 only (dc2's log was refused).
+            Should -Invoke Get-AdfaNetlogonLogRaw -Times 3 -Exactly
             Should -Invoke Get-AdfaNetlogonLogRaw -Times 1 -Exactly -ParameterFilter { $Path -eq ('\\{0}\ADMIN$\debug\netlogon.log' -f $script:C14Dc1) }
         }
     }
@@ -19241,7 +19248,8 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             $c = Get-AdfaStalePopulationRaw -DomainName 'north.contoso.com' -Kind 'Computer' -MaxObjects 10
             $c.Count | Should -Be 1
             $script:C14PopCalls[1].AskedProperties | Should -BeFalse
-            $script:C14PopCalls[1].LDAPFilter | Should -Match ([regex]::Escape('(!(objectClass=msDS-ManagedServiceAccount))(!(userAccountControl:1.2.840.113556.1.4.803:=2)))'))
+            # Since v1.41.0 (PORT-PLAN C14c) the delegated managed service account class is excluded too.
+            $script:C14PopCalls[1].LDAPFilter | Should -Match ([regex]::Escape('(!(objectClass=msDS-ManagedServiceAccount))(!(objectClass=msDS-DelegatedManagedServiceAccount))(!(userAccountControl:1.2.840.113556.1.4.803:=2)))'))
             $script:C14PopCalls[1].LDAPFilter | Should -Not -Match 'lastLogonTimestamp'
             (Get-AdfaStalePopulationRaw -DomainName 'north.contoso.com' -Kind 'User' -MaxObjects 3).Capped | Should -BeFalse
             (Get-AdfaStalePopulationRaw -DomainName 'north.contoso.com' -Kind 'User' -MaxObjects 2).Capped | Should -BeTrue
@@ -19803,9 +19811,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.40.0 in the script and the manifest (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'carries version 1.41.0 in the script and the manifest (bumped by PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 
@@ -24129,9 +24137,9 @@ Describe 'Promise triage: the README and help promises the code did not keep (C1
     }
 
     Context 'Version' {
-        It 'is 1.40.0 in the script and the manifest (bumped by PORT-PLAN C4b3, C4b4 and C11h)' {
-            $script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'is 1.41.0 in the script and the manifest (bumped by PORT-PLAN C14c and C11e)' {
+            $script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 }
@@ -24942,8 +24950,9 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
             foreach ($k in @($script:H20Pop.Keys)) { $kind = ($k -split ':', 2)[0]; if (-not $byKind.ContainsKey($kind)) { $byKind[$kind] = 0 }; $byKind[$kind]++ }
             $byKind['Command'] | Should -Be 66 -Because 'declared population: the 66 commands of the script'
             $byKind['Tool'] | Should -Be 46 -Because 'declared population: the 46 console tool forms of the script'
-            $byKind['Method'] | Should -Be 82 -Because 'declared population: the 58 typed instance methods and the 24 generic names of the script'
-            @($script:H20Pop.Keys | Where-Object { $_ -like 'Method:`[*' }).Count | Should -Be 58 -Because 'declared population: the 58 instance methods on a receiver of known type'
+            # 83 since v1.41.0: PORT-PLAN C14c added Method:[System.DateTime].AddSeconds (the future lastLogonTimestamp threshold).
+            $byKind['Method'] | Should -Be 83 -Because 'declared population: the 59 typed instance methods and the 24 generic names of the script'
+            @($script:H20Pop.Keys | Where-Object { $_ -like 'Method:`[*' }).Count | Should -Be 59 -Because 'declared population: the 59 instance methods on a receiver of known type'
             $byKind['Untyped'] | Should -Be 16 -Because 'declared population: the 16 call sites whose receiver is not statically typed (4 of them Add)'
             @($script:H20Pop.Keys | Where-Object { $_ -like 'Untyped:*.Add' }).Count | Should -Be 4 -Because 'declared population: the 4 untyped Add calls (Get-AdfaDnsHealth, Find-AdfaDuplicateSpn, Get-AdfaSidHistoryHolderText, Get-AdfaDcReachabilityRows)'
             $byKind['Property'] | Should -Be 7 -Because 'declared population: the 6 ProcessStartInfo properties and Process.StartInfo set in Invoke-ExternalCommand'
@@ -25440,17 +25449,18 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
         It 'is named, with every other section that calls a CIM method, in the help and the README (AST)' {
             # Review fix: the help and the README said only DcDisk and DcHardening call a CIM method.
             # Declared population: the functions that call a StdRegProv seam, and the section each serves.
-            $sectionOf = @{ 'Get-AdfaDcDiskRaw' = 'DcDisk'; 'Get-AdfaDcHardeningRaw' = 'DcHardening'; 'Get-AdfaDcW32TimeRaw' = 'TimeHierarchy'; 'Get-AdfaDcSystemRaw' = 'DcSystem' }
+            # PORT-PLAN C14c (v1.41.0) added Get-AdfaSysvolRegistryRaw, the second SYSVOL engine instrument.
+            $sectionOf = @{ 'Get-AdfaDcDiskRaw' = 'DcDisk'; 'Get-AdfaDcHardeningRaw' = 'DcHardening'; 'Get-AdfaDcW32TimeRaw' = 'TimeHierarchy'; 'Get-AdfaDcSystemRaw' = 'DcSystem'; 'Get-AdfaSysvolRegistryRaw' = 'Sysvol' }
             $callers = @($script:H20Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and @('Get-AdfaStdRegDwordValue', 'Get-AdfaStdRegStringValue') -contains [string]$n.GetCommandName() }, $true) | ForEach-Object { (Get-H20Function -Node $_).Name } | Sort-Object -Unique)
             $callers | Should -Be @($sectionOf.Keys | Sort-Object)
             $help = $script:H20Ast.GetHelpContent()
             $helpText = ($help.Description + ' ' + (@($help.Parameters.Values) -join ' ')) -replace '\s+', ' '
             $helpText | Should -Not -Match 'they are the only ones in the script'
-            $helpText | Should -Match 'Four sections make CIM METHOD calls; no other section does'
+            $helpText | Should -Match 'Five sections make CIM METHOD calls, and DcDiagnostics shares one of them \(since v1\.41\.0\); no other section does'
             $readme = [System.IO.File]::ReadAllText($script:H20ReadmePath) -replace '\s+', ' '
             $readme | Should -Not -Match 'Only this section and `DcHardening` make any'
             $readme | Should -Not -Match 'Two of those remote reads are CIM method calls'
-            $readme | Should -Match 'Four sections make one: this section, `DcHardening`, `TimeHierarchy`'
+            $readme | Should -Match 'Five sections make one: this section, `DcHardening`, `TimeHierarchy`'
             foreach ($s in @($sectionOf.Values)) {
                 $helpText | Should -Match ('\b{0}\b[^.]*\b(GetDWORDValue|GetStringValue)' -f $s) -Because ('the help names {0} with the method it calls' -f $s)
                 $readme | Should -Match ('`{0}` reads[^.]*`(GetDWORDValue|GetStringValue)' -f $s) -Because ('the README names {0} with the method it calls' -f $s)
@@ -25560,9 +25570,9 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
     }
 
     Context 'Version' {
-        It 'is 1.40.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C4b3, C4b4, C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'is 1.41.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 }
@@ -26199,10 +26209,11 @@ exit $LASTEXITCODE
 
     Context 'Comment-based help of the script and of every function' {
         It 'every function''s help documents each of its parameters with a .PARAMETER entry, and names none it lacks' {
-            # Declared population, measured from the parsed script on v1.38.0: 449 functions, 1670 parameters (the independent review fix added New-AdfaRunFolder, 3, and Get-AdfaScriptExitCode, 1); v1.40.0 (PORT-PLAN C4b3, C4b4) added ConvertFrom-AdfaConnectionOptions, Get-AdfaConnectionDestination and Resolve-AdfaCapSource (452 functions) and 26 parameters (1696: those three functions 7, -OptionsConfig 1, -CapSource on 18 functions).
+            # Declared population, measured from the parsed script on v1.38.0: 449 functions, 1670 parameters (the independent review fix added New-AdfaRunFolder, 3, and Get-AdfaScriptExitCode, 1); v1.40.0 (PORT-PLAN C4b3, C4b4) added ConvertFrom-AdfaConnectionOptions, Get-AdfaConnectionDestination and Resolve-AdfaCapSource (452 functions) and 26 parameters (1696: those three functions 7, -OptionsConfig 1, -CapSource on 18 functions); v1.41.0 (PORT-PLAN C14c, C11e) added nine functions (461: Get-AdfaSysvolRegistryRaw 5, Resolve-AdfaSysvolRegistryEngine 3, Get-AdfaSysvolRegistryRead 5, Resolve-AdfaSysvolEngineCombined 2, Get-AdfaSysvolEngineByDc 6, Resolve-AdfaDcdiagApplicability 4, Get-AdfaOverrideKeySource 3, Get-AdfaFutureLogonCount 3, Get-AdfaFutureLogonVerdict 7) and 44 parameters (1740: those 38, -Registry, -SysvolEngines, -BakRaw, -Now on two functions, -Future).
             $script:H21Help.Count | Should -Be @($script:H21Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)).Count
-            $script:H21Help.Count | Should -Be 452 -Because 'declared population: the 452 functions of the script'
-            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1696 -Because 'declared population: the 1696 parameters of those functions'
+            # The independent review fix of v1.41.0 added ConvertTo-AdfaFileWriteTimeUtc (1 parameter; 462 functions) and -Dfsr, -Frs on Resolve-AdfaSysvolEngineCombined (1743 parameters).
+            $script:H21Help.Count | Should -Be 462 -Because 'declared population: the 462 functions of the script'
+            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1743 -Because 'declared population: the 1743 parameters of those functions'
             @($script:H21Help | Where-Object { -not $_.HasHelp } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { -not $_.HasSynopsis } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { @($_.Missing).Count -gt 0 } | ForEach-Object { '{0}: {1}' -f $_.Name, (@($_.Missing) -join ',') }) | Should -BeNullOrEmpty
@@ -26290,9 +26301,9 @@ exit $LASTEXITCODE
     }
 
     Context 'Version' {
-        It 'is 1.40.0 in the script and the manifest (PORT-PLAN H21; bumped by C4b3, C4b4 and C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'is 1.41.0 in the script and the manifest (PORT-PLAN H21; bumped by C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 }
@@ -26810,15 +26821,16 @@ Describe 'Replication connection options and destination, the cap source of ever
                 $mine[0].Detail | Should -Match 'C4b4-SENTINEL' -Because $d
             }
         }
-        It 'Get-AdfaStaleObject: the five capped verdicts of each domain' {
+        It 'Get-AdfaStaleObject: the seven capped verdicts of each domain' {
             function Get-ADUser { param([Parameter(ValueFromRemainingArguments)]$Rest) @() }
             Mock Get-AdfaLogonSyncIntervalRaw { [pscustomobject]@{ Ok = $true; Present = $false; Value = $null; Error = '' } }
             Mock Get-AdfaStalePopulationRaw { [pscustomobject]@{ Ok = $true; Count = 5; Capped = $false; Error = ''; ErrorType = ''; Filter = '(x)' } }
             Mock Get-AdfaStaleRaw { [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Records = @(); Capped = $true; Filter = '(x)'; Properties = @() } }
             foreach ($d in $script:LhTwo) {
                 $rows = @(Get-AdfaStaleObject -DomainName $d -StaleDays 90 -Now $script:LhNow -CapSource 'Stale.MaxObjects, C4b4-SENTINEL')
-                # Declared population: inactive users and computers, old passwords, stale disabled users and computers.
-                @($rows | Where-Object { [string]$_.Detail -match 'reached its cap' }).Count | Should -Be 5 -Because $d
+                # Declared population: inactive users and computers, old passwords, stale disabled users and computers,
+                # and since v1.41.0 (PORT-PLAN C14c) the future logon timestamps of users and of computers.
+                @($rows | Where-Object { [string]$_.Detail -match 'reached its cap' }).Count | Should -Be 7 -Because $d
                 @($rows | Where-Object { [string]$_.Detail -match 'reached its cap' -and [string]$_.Detail -notmatch 'C4b4-SENTINEL' }).Count | Should -Be 0 -Because $d
             }
         }
@@ -26992,9 +27004,944 @@ Describe 'Replication connection options and destination, the cap source of ever
     }
 
     Context 'Version' {
-        It 'is 1.40.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h)' {
-            [string]$script:Config.Version | Should -Be '1.40.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.40.0'
+        It 'is 1.41.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        }
+    }
+}
+
+Describe 'Second SYSVOL instrument, the per-DC engine in the dcdiag grid, netlogon.bak with an age window, dMSA excluded, future logon timestamps (C14c, C11e)' {
+    # PORT-PLAN C14c+C11e (v1.41.0). No new -Sections value: the rows stay in Sysvol ('SYSVOL / DFSR'),
+    # DcDiagnostics ('DC Diagnostics'), Topology ('Site Health') and StaleObjects ('Stale Objects'). Every
+    # name and address is fictional (contoso, fabrikam, 198.51.100.0/24) and held in a variable
+    # (PSAvoidUsingComputerNameHardcoded). Vendor facts read on Learn 2026-11-19 (URLs in the config table).
+    BeforeAll {
+        $script:CcAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:CcMain = @($script:CcAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))[0]
+        function Get-CcFunction { param([string]$Name) @($script:CcAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
+        function Get-CcCall { param($Ast, [string]$Name) @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq $Name }.GetNewClosure(), $true)) }
+        function Get-CcParameter { param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-CcBranch { param([string]$Condition)
+            @($script:CcMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq $Condition }.GetNewClosure(), $true)) }
+        # The comma keeps a one-row answer an array, so .Count works under StrictMode on Windows PowerShell 5.1.
+        function Get-CcRow { param($Rows, [string]$Item) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -eq $Item }) }
+        $script:CcDom1 = 'contoso.com'
+        $script:CcDom2 = 'north.contoso.com'
+        $script:CcDc1 = 'dc1.contoso.com'
+        $script:CcDc2 = 'dc2.contoso.com'
+        $script:CcDc3 = 'dc3.north.contoso.com'
+        $script:CcClient1 = '198.51.100.77'
+        $script:CcClient2 = '198.51.100.78'
+        $script:CcNow = [datetime]::SpecifyKind([datetime]'2026-11-19 12:00:00', [System.DateTimeKind]::Utc)
+        $script:CcSys = $script:Config.SysvolEngine
+        $script:CcSite = $script:Config.SiteCoverage
+        $script:CcStale = $script:Config.Stale
+        $script:CcMigKey = 'SYSTEM\CurrentControlSet\Services\DFSR\Parameters\SysVols\Migrating SysVols'
+        $script:CcMigKeyNoSpace = 'SYSTEM\CurrentControlSet\Services\DFSR\Parameters\SysVols\MigratingSysVols'
+        $script:CcNetlogonKey = 'SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+        # One answer of the registry seam, in the shape Get-AdfaSysvolRegistryRaw returns per value. A number
+        # is a value read (ReturnValue 0); 'absent' is StdRegProv 1 (value not set under a key that exists),
+        # 'nokey' 2, 'denied' 5, 'type' 0x80041005 (wbemErrTypeMismatch), 'threw' a call that raised, and any
+        # other text a string value read.
+        function New-CcAnswer { param([string]$Id, $Spec)
+            $rv = 0; $value = $Spec; $answered = $true; $err = ''
+            if ($Spec -is [string]) {
+                switch ($Spec) {
+                    'absent' { $rv = 1; $value = $null }
+                    'nokey' { $rv = 2; $value = $null }
+                    'denied' { $rv = 5; $value = $null }
+                    'type' { $rv = 2147749893; $value = $null }
+                    'threw' { $rv = $null; $value = $null; $answered = $false; $err = 'The WinRM client cannot process the request.' }
+                }
+            }
+            [pscustomobject]@{ Id = $Id; Key = ''; ValueName = ''; Kind = ''; Answered = $answered; ReturnValue = $rv; Value = $value; Method = 'GetDWORDValue'; Error = $err; ErrorCode = '' }
+        }
+        # A transport result in the shape Invoke-AdfaDcRemoteRead returns (Raw, Denied, Attempts).
+        function New-CcRead { param($LocalState = 'absent', $Alt = 'absent', $NoSpace = 'nokey', $Path = 'C:\Windows\SYSVOL_DFSR\sysvol', [bool]$Ok = $true, [bool]$Denied = $false, [string]$ErrorText = '')
+            $values = @((New-CcAnswer -Id 'LocalState' -Spec $LocalState), (New-CcAnswer -Id 'LocalStateAlt' -Spec $Alt), (New-CcAnswer -Id 'LocalStateNoSpace' -Spec $NoSpace), (New-CcAnswer -Id 'SysVolPath' -Spec $Path))
+            if (-not $Ok) { $values = @() }
+            [pscustomobject]@{ Raw = [pscustomobject]@{ Ok = $Ok; Protocol = 'Wsman'; Error = $ErrorText; ErrorCode = ''; Values = @($values) }; Denied = $Denied; Attempts = @() }
+        }
+        function Resolve-Cc { param($Read, [string]$Unreachable = '') Resolve-AdfaSysvolRegistryEngine -Read $Read -Unreachable $Unreachable -Config $script:CcSys }
+        function New-CcEngineDc { param([string]$HostName, [string]$Dfsr = 'Present', [string]$Frs = 'Absent', $IsReadOnly = $false)
+            [pscustomobject]@{ HostName = $HostName; IsReadOnly = $IsReadOnly; ComputerDn = ("CN={0},OU=Domain Controllers,DC=contoso,DC=com" -f $HostName.Split('.')[0]); Dfsr = $Dfsr; DfsrError = 'refused (access denied): STUB'; Frs = $Frs; FrsError = 'refused (access denied): STUB'; DfsrEnabled = $null; DfsrOptions = $null } }
+        function New-CcEngineRaw { param($Dcs = @(), [bool]$Ok = $true, [string]$ErrorText = '')
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = ''; DomainDn = 'DC=contoso,DC=com'; GlobalState = 'Present'; GlobalFlags = 48; GlobalError = ''; Dcs = @($Dcs) } }
+        # dcdiag output in the shape of Learn's sample, one test per invocation.
+        function New-CcDcdiagOutput { param([string]$Dc, [string]$Test, [string]$Verdict = 'passed')
+            $b = New-Object System.Collections.Generic.List[string]
+            foreach ($l in @('Directory Server Diagnosis', '', 'Performing initial setup:', ("   Home Server = {0}" -f $Dc), '   * Identified AD Forest.', '   Done gathering initial info.', '', 'Doing initial required tests', '',
+                    ("   Testing server: Default-First-Site-Name\{0}" -f $Dc), '      Starting test: Connectivity')) { $b.Add($l) }
+            $conn = 'passed'
+            if ($Test -eq 'Connectivity') { $conn = $Verdict }
+            $b.Add(("         ......................... {0} {1} test Connectivity" -f $Dc, $conn))
+            if ($Test -ne 'Connectivity') {
+                foreach ($l in @('', 'Doing primary tests', '', ("   Testing server: Default-First-Site-Name\{0}" -f $Dc), ("      Starting test: {0}" -f $Test))) { $b.Add($l) }
+                $b.Add(("         ......................... {0} {1} test {2}" -f $Dc, $Verdict, $Test))
+            }
+            return ($b -join "`r`n")
+        }
+        # The grid collector with the dcdiag, port and command seams stubbed. FrsEvent and DFSREvent FAIL on
+        # every DC that runs them, every other test passes, so a cell that is not applicable is told apart
+        # from one that ran.
+        function Invoke-CcGrid { param([object[]]$Targets, $Engines = $null)
+            Clear-AdfaDcPortCache
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { $true }
+            $script:CcDcdiagCalls = New-Object System.Collections.ArrayList
+            Mock Invoke-ExternalCommand {
+                $t = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
+                $s = ([regex]::Match([string]$Arguments, '/s:(\S+)')).Groups[1].Value
+                [void]$script:CcDcdiagCalls.Add(("{0}|{1}" -f $s, $t))
+                $v = 'passed'
+                if ($t -eq 'FrsEvent' -or $t -eq 'DFSREvent') { $v = 'failed' }
+                $short = $s.Split('.')[0].ToUpperInvariant()
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = (New-CcDcdiagOutput -Dc $short -Test $t -Verdict $v); OutFile = $null }
+            }
+            $call = @{ DomainControllers = $Targets; TimeoutSeconds = 5; Retries = 1; RetryDelaySeconds = 0; ScopedDomains = @($script:CcDom1, $script:CcDom2); ForestRoot = $script:CcDom1 }
+            if ($null -ne $Engines) { $call.SysvolEngines = $Engines }
+            $rows = @(Get-AdfaDcDiagnostic @call)
+            return , @($rows | Where-Object { $null -ne $_.PSObject.Properties['DomainController'] })
+        }
+        function New-CcTarget { param([string]$HostName, [string]$Scope) [pscustomobject]@{ HostName = $HostName; Scope = $Scope; Site = 'HQ'; IsReadOnly = $false } }
+        # One netlogon file read, in the shape Get-AdfaNetlogonLogRaw returns.
+        function New-CcLog { param([string]$Text = '', [bool]$Ok = $true, [string]$Class = 'Read', $LastWrite = $null, [string]$Path = '\\dc1.contoso.com\ADMIN$\debug\netlogon.log')
+            [pscustomobject]@{ Ok = $Ok; Class = $Class; Text = $Text; Error = 'STUB'; ErrorType = ''; HResult = 0; Path = $Path; Partial = $false; BytesRead = $Text.Length; FileLength = [int64]$Text.Length; LastWriteTimeUtc = $LastWrite } }
+        function Get-CcLine { param([string]$Name, [string]$Address) ("11/19 10:00:01 [MISC] [1234] CONTOSO: NO_CLIENT_SITE: {0} {1}" -f $Name, $Address) }
+        function New-CcAccount { param([string]$Name, $LastLogonUtc = $null, $WhenCreatedUtc = $null)
+            [pscustomobject]@{ Name = $Name; HasLastLogon = ($null -ne $LastLogonUtc); LastLogonUtc = $LastLogonUtc; WhenCreatedUtc = $WhenCreatedUtc; PwdLastSetRaw = $null; UserAccountControl = 512 } }
+        function New-CcStaleRaw { param($Records = @(), [bool]$Ok = $true, [string]$ErrorText = '', [bool]$Capped = $false)
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = ''; Records = @($Records); Capped = $Capped; Filter = '(x)'; Properties = @('sAMAccountName') } }
+        function New-CcPopulation { param([bool]$Ok = $true, [int]$Count = 50)
+            [pscustomobject]@{ Ok = $Ok; Count = $Count; Capped = $false; Error = ''; ErrorType = ''; Filter = '(x)' } }
+        $script:CcInterval = [pscustomobject]@{ Ok = $true; Present = $false; Value = $null; Error = '' }
+    }
+
+    Context 'Config tables: the second instrument, the age window and the future tolerance (Learn, read 2026-11-19)' {
+        It 'lists the registry values to read, the three Learn spellings of Local State and the Netlogon SysVol path (declared population: four)' {
+            $values = @($script:CcSys['RegistryValues'])
+            $values.Count | Should -Be 4
+            (@($values | ForEach-Object { [string]$_['Id'] }) -join ',') | Should -Be 'LocalState,LocalStateAlt,LocalStateNoSpace,SysVolPath'
+            $byId = @{}
+            foreach ($v in $values) { $byId[[string]$v['Id']] = $v }
+            ("{0}|{1}|{2}" -f $byId['LocalState']['Key'], $byId['LocalState']['ValueName'], $byId['LocalState']['Kind']) | Should -Be ("{0}|Local State|Dword" -f $script:CcMigKey)
+            ("{0}|{1}|{2}" -f $byId['LocalStateAlt']['Key'], $byId['LocalStateAlt']['ValueName'], $byId['LocalStateAlt']['Kind']) | Should -Be ("{0}|LocalState|Dword" -f $script:CcMigKey)
+            ("{0}|{1}|{2}" -f $byId['LocalStateNoSpace']['Key'], $byId['LocalStateNoSpace']['ValueName'], $byId['LocalStateNoSpace']['Kind']) | Should -Be ("{0}|Local State|Dword" -f $script:CcMigKeyNoSpace)
+            ("{0}|{1}|{2}" -f $byId['SysVolPath']['Key'], $byId['SysVolPath']['ValueName'], $byId['SysVolPath']['Kind']) | Should -Be ("{0}|SysVol|String" -f $script:CcNetlogonKey)
+            [string]$script:CcSys['RegistryReadDate'] | Should -Be '2026-11-19'
+            foreach ($u in @('dd639712', 'dd639789', 'dd641052', 'backing-up-and-restoring-an-frs-replicated-sysvol-folder', 'sysvol-dfsr-migration-fails-after-in-place-upgrade')) { [string]$script:CcSys['RegistrySourceUrl'] | Should -Match ([regex]::Escape($u)) }
+        }
+        It 'maps the ten local states Learn publishes (dd641052) to an engine, and nothing else (declared population: 0..9)' {
+            $map = $script:CcSys['LocalStateEngine']
+            (@($map.Keys | ForEach-Object { [int]$_ } | Sort-Object) -join ',') | Should -Be '0,1,2,3,4,5,6,7,8,9'
+            [string]$map['0'] | Should -Be 'FRS'
+            [string]$map['3'] | Should -Be 'DFSR'
+            foreach ($k in @('1', '2', '4', '5', '6', '7', '8', '9')) { [string]$map[$k] | Should -Be 'Transitional' -Because $k }
+            $names = $script:CcSys['LocalStateNames']
+            (@($names.Keys | ForEach-Object { [int]$_ } | Sort-Object) -join ',') | Should -Be '0,1,2,3,4,5,6,7,8,9'
+            [string]$names['3'] | Should -Be 'Eliminated'
+            [string]$names['5'] | Should -Be 'Waiting for initial synchronization'
+        }
+        It 'keeps the dcdiag applicability rule as the catalogue''s own, not a Microsoft rule (declared population: two tests)' {
+            $rule = $script:CcSys['DcdiagNotApplicable']
+            (@($rule.Keys | Sort-Object) -join ',') | Should -Be 'DFSREvent,FrsEvent'
+            [string]$rule['DFSREvent'] | Should -Be 'FRS'
+            [string]$rule['FrsEvent'] | Should -Be 'DFSR'
+            [string]$script:CcSys['DcdiagRuleSource'] | Should -Match 'SYSVOL-002'
+            [string]$script:CcSys['DcdiagRuleSource'] | Should -Match 'not a Microsoft rule'
+        }
+        It 'refuses the registry values, the state maps and the dcdiag rule from a file: <Key>' -ForEach @(
+            @{ Key = 'RegistryValues' }, @{ Key = 'LocalStateEngine' }, @{ Key = 'LocalStateNames' }, @{ Key = 'DcdiagNotApplicable' }, @{ Key = 'WsmanPort' }
+        ) {
+            $o = @{}; $o[$Key] = 'x'
+            { Merge-AdfaSpecConfig -BaseConfig $script:CcSys -Override $o -OverrideSource 'C:\cfg\cc.json' } | Should -Throw ("*unknown key '{0}'*" -f $Key)
+        }
+        It 'has a netlogon.bak path and a 30-day age window labelled a tool default, overridable from 1 to 365 days' {
+            [string]$script:CcSite['NetlogonBakPath'] | Should -Be '\\{0}\ADMIN$\debug\netlogon.bak'
+            [int]$script:CcSite['NoClientSiteMaxAgeDays'] | Should -Be 30
+            [string]$script:CcSite['AgeWindowSource'] | Should -Match 'tool default, not a Microsoft value'
+            $m = Merge-AdfaSpecConfig -BaseConfig $script:CcSite -Override @{ NoClientSiteMaxAgeDays = 7 } -OverrideSource 'C:\cfg\cc.json'
+            [int]$m['NoClientSiteMaxAgeDays'] | Should -Be 7
+            [string]$m['ThresholdSource'] | Should -Match 'NoClientSiteMaxAgeDays'
+        }
+        It 'refuses a malformed age window: <Case>' -ForEach @(
+            @{ Case = 'zero'; Value = 0 }, @{ Case = 'past the maximum'; Value = 366 }, @{ Case = 'a string'; Value = '30' }, @{ Case = 'a fraction'; Value = 2.5 }, @{ Case = 'null'; Value = $null }, @{ Case = 'a list'; Value = @(30, 31) }
+        ) {
+            $o = @{ NoClientSiteMaxAgeDays = $Value }
+            { Merge-AdfaSpecConfig -BaseConfig $script:CcSite -Override $o -OverrideSource 'C:\cfg\cc.json' } | Should -Throw
+        }
+        It 'refuses the bak path from a file' {
+            { Merge-AdfaSpecConfig -BaseConfig $script:CcSite -Override @{ NetlogonBakPath = 'C:\x' } -OverrideSource 'C:\cfg\cc.json' } | Should -Throw "*unknown key 'NetlogonBakPath'*"
+        }
+        It 'has a 300-second future tolerance labelled a tool default, overridable from 0 to 86400 seconds' {
+            [int]$script:CcStale['FutureToleranceSeconds'] | Should -Be 300
+            [string]$script:CcStale['FutureToleranceSource'] | Should -Match 'tool default, not a Microsoft value'
+            [string]$script:CcStale['FutureSourceUrl'] | Should -Match 'accounts-lastlogontimestamp-future-time'
+            [int](Merge-AdfaSpecConfig -BaseConfig $script:CcStale -Override @{ FutureToleranceSeconds = 0 } -OverrideSource 'C:\cfg\cc.json')['FutureToleranceSeconds'] | Should -Be 0
+            foreach ($bad in @(-1, 86401, '300', 1.5)) {
+                { Merge-AdfaSpecConfig -BaseConfig $script:CcStale -Override @{ FutureToleranceSeconds = $bad } -OverrideSource 'C:\cfg\cc.json' } | Should -Throw -Because ([string]$bad)
+            }
+        }
+    }
+
+    Context 'C14c(1): the registry instrument, pure' {
+        It 'reads Local State <Value> as <Engine>' -ForEach @(
+            @{ Value = 3; Engine = 'DFSR' }, @{ Value = 0; Engine = 'FRS' }, @{ Value = 1; Engine = 'Transitional' }, @{ Value = 2; Engine = 'Transitional' },
+            @{ Value = 4; Engine = 'Transitional' }, @{ Value = 7; Engine = 'Transitional' }, @{ Value = 9; Engine = 'Transitional' }
+        ) {
+            $r = Resolve-Cc (New-CcRead -LocalState $Value)
+            $r.Engine | Should -Be $Engine
+            $r.LocalState | Should -Be $Value
+            $r.Spelling | Should -Be 'Local State'
+            $r.StateName | Should -Be ([string]$script:CcSys['LocalStateNames'][[string]$Value])
+        }
+        It 'takes the value under the other Learn spellings when the first is absent' {
+            $alt = Resolve-Cc (New-CcRead -LocalState 'absent' -Alt 3)
+            $alt.Engine | Should -Be 'DFSR'
+            $alt.Spelling | Should -Be 'LocalState'
+            $nospace = Resolve-Cc (New-CcRead -LocalState 'nokey' -Alt 'nokey' -NoSpace 0)
+            $nospace.Engine | Should -Be 'FRS'
+            $nospace.Detail | Should -Match 'MigratingSysVols'
+        }
+        It 'reads a number Learn does not map as Unknown, quoting it' {
+            $r = Resolve-Cc (New-CcRead -LocalState 42)
+            $r.Engine | Should -Be 'Unknown'
+            $r.Detail | Should -Match '\b42\b'
+        }
+        It 'reads two spellings that hold different values as Unknown' {
+            $r = Resolve-Cc (New-CcRead -LocalState 3 -Alt 0)
+            $r.Engine | Should -Be 'Unknown'
+            $r.Detail | Should -Match 'differ'
+        }
+        It 'reports every spelling absent per Learn''s own rule, quoted, and never grades it FRS' {
+            $r = Resolve-Cc (New-CcRead -LocalState 'absent' -Alt 'absent' -NoSpace 'nokey' -Path 'C:\Windows\SYSVOL\sysvol')
+            $r.Engine | Should -Be 'Absent'
+            $r.Engine | Should -Not -Be 'FRS'
+            $r.Detail | Should -Match 'If the subkey does not exist, or if it has a different value, FRS is being used'
+            $r.Detail | Should -Match 'promoted directly into the Windows Server 2008 functional level'
+            $r.Detail | Should -Match 'not graded'
+        }
+        It 'tells a refused value, a refused session, a failed read and an unreachable DC apart: <Case>' -ForEach @(
+            @{ Case = 'value refused'; Read = 'denied'; Class = 'AccessDenied'; Text = 'access denied'; Not = 'unreachable' }
+            @{ Case = 'session refused'; Read = 'session'; Class = 'AccessDenied'; Text = 'access denied'; Not = 'unreachable' }
+            @{ Case = 'read failed'; Read = 'failed'; Class = 'ReadFailed'; Text = 'read failed'; Not = 'access denied' }
+            @{ Case = 'call raised'; Read = 'threw'; Class = 'ReadFailed'; Text = 'cannot process the request'; Not = 'access denied' }
+            @{ Case = 'unreachable'; Read = 'unreachable'; Class = 'Unreachable'; Text = 'unreachable'; Not = 'access denied' }
+        ) {
+            $u = ''
+            switch ($Read) {
+                'denied' { $x = New-CcRead -LocalState 'denied' -Alt 'denied' -NoSpace 'denied' }
+                'session' { $x = New-CcRead -Ok $false -Denied $true -ErrorText 'Access is denied.' }
+                'failed' { $x = New-CcRead -Ok $false -ErrorText 'The RPC server is unavailable.' }
+                'threw' { $x = New-CcRead -LocalState 'threw' -Alt 'threw' -NoSpace 'threw' }
+                'unreachable' { $x = $null; $u = 'Unreachable: neither WinRM (5985) nor RPC (135) answered within 1200 ms, so the registry was not read.' }
+            }
+            $r = Resolve-Cc -Read $x -Unreachable $u
+            $r.Engine | Should -Be 'Unread'
+            $r.Class | Should -Be $Class
+            $r.Detail | Should -Match ("(?i){0}" -f $Text)
+            $r.Detail | Should -Not -Match ("(?i){0}" -f $Not)
+        }
+        It 'reads a value of another type as Unknown, not absent' {
+            $r = Resolve-Cc (New-CcRead -LocalState 'type' -Alt 'absent' -NoSpace 'nokey')
+            $r.Engine | Should -Be 'Unknown'
+            $r.Detail | Should -Match 'type'
+        }
+        It 'reads the Netlogon SysVol path as corroboration only: SYSVOL_DFSR means redirected, any other path proves nothing' {
+            $d = Resolve-Cc (New-CcRead -LocalState 3 -Path 'C:\Windows\SYSVOL_DFSR\sysvol')
+            $d.PathRedirected | Should -BeTrue
+            $d.SysVolPath | Should -Be 'C:\Windows\SYSVOL_DFSR\sysvol'
+            $o = Resolve-Cc (New-CcRead -LocalState 'absent' -Alt 'absent' -NoSpace 'nokey' -Path 'C:\Windows\SYSVOL\sysvol')
+            $o.PathRedirected | Should -BeFalse
+            $o.Engine | Should -Be 'Absent'
+            $p = Resolve-Cc (New-CcRead -LocalState 'absent' -Alt 'absent' -NoSpace 'nokey' -Path 'C:\Windows\SYSVOL_DFSR\sysvol')
+            $p.Engine | Should -Be 'Absent' -Because 'a redirected path is Redirected or later; Learn does not let it name one engine'
+            $n = Resolve-Cc (New-CcRead -LocalState 3 -Path 'absent')
+            $n.PathRedirected | Should -BeNullOrEmpty
+            $n.SysVolPath | Should -Be '(not set)'
+        }
+    }
+
+    Context 'C14c(1): two instruments combined, and the engine verdict' {
+        It 'combines directory <Dir> (DFSR subscription <Dfsr>, NTFRS subscriber <Frs>) and registry <Reg> to <Engine> (<Source>)' -ForEach @(
+            @{ Dir = 'DFSR'; Dfsr = 'Present'; Frs = 'Absent'; Reg = 'DFSR'; Engine = 'DFSR'; Source = 'directory and registry' }
+            @{ Dir = 'FRS'; Dfsr = 'Absent'; Frs = 'Present'; Reg = 'FRS'; Engine = 'FRS'; Source = 'directory and registry' }
+            @{ Dir = 'DFSR'; Dfsr = 'Present'; Frs = 'Absent'; Reg = 'Absent'; Engine = 'DFSR'; Source = 'directory' }
+            @{ Dir = 'FRS'; Dfsr = 'Absent'; Frs = 'Present'; Reg = 'Unread'; Engine = 'FRS'; Source = 'directory' }
+            @{ Dir = 'Unknown'; Dfsr = 'Unread'; Frs = 'Unread'; Reg = 'DFSR'; Engine = 'DFSR'; Source = 'registry' }
+            @{ Dir = 'Unknown'; Dfsr = 'Unread'; Frs = 'Unread'; Reg = 'Transitional'; Engine = 'Transitional'; Source = 'registry' }
+            @{ Dir = 'DFSR'; Dfsr = 'Present'; Frs = 'Absent'; Reg = 'FRS'; Engine = 'Unknown'; Source = 'disagree' }
+            @{ Dir = 'Transitional'; Dfsr = 'Present'; Frs = 'Present'; Reg = 'DFSR'; Engine = 'Unknown'; Source = 'disagree' }
+            @{ Dir = 'Unknown'; Dfsr = 'Unread'; Frs = 'Unread'; Reg = 'Absent'; Engine = 'Unknown'; Source = 'none' }
+            @{ Dir = 'Unknown'; Dfsr = 'Unread'; Frs = 'Unread'; Reg = 'Unread'; Engine = 'Unknown'; Source = 'none' }
+            @{ Dir = 'Unknown'; Dfsr = 'Unread'; Frs = 'Unread'; Reg = 'Unknown'; Engine = 'Unknown'; Source = 'none' }
+            # Independent review of v1.41.0 before commit: the registry grades only what the directory could
+            # not read, never against an object that was read and contradicts it.
+            @{ Dir = 'Unknown'; Dfsr = 'Unread'; Frs = 'Present'; Reg = 'DFSR'; Engine = 'Unknown'; Source = 'disagree' }
+            @{ Dir = 'Unknown'; Dfsr = 'Absent'; Frs = 'Absent'; Reg = 'DFSR'; Engine = 'Unknown'; Source = 'disagree' }
+            @{ Dir = 'Unknown'; Dfsr = 'Absent'; Frs = 'Absent'; Reg = 'FRS'; Engine = 'Unknown'; Source = 'disagree' }
+            @{ Dir = 'Unknown'; Dfsr = 'Absent'; Frs = 'Absent'; Reg = 'Absent'; Engine = 'Unknown'; Source = 'none' }
+            @{ Dir = 'Unknown'; Dfsr = 'Present'; Frs = 'Unread'; Reg = 'FRS'; Engine = 'Unknown'; Source = 'disagree' }
+            @{ Dir = 'Unknown'; Dfsr = 'Unread'; Frs = 'Absent'; Reg = 'Transitional'; Engine = 'Unknown'; Source = 'disagree' }
+            @{ Dir = 'Unknown'; Dfsr = 'Present'; Frs = 'Unread'; Reg = 'DFSR'; Engine = 'DFSR'; Source = 'registry' }
+            @{ Dir = 'Unknown'; Dfsr = 'Unread'; Frs = 'Absent'; Reg = 'DFSR'; Engine = 'DFSR'; Source = 'registry' }
+            @{ Dir = 'Unknown'; Dfsr = 'Unread'; Frs = 'Present'; Reg = 'FRS'; Engine = 'FRS'; Source = 'registry' }
+            @{ Dir = 'Unknown'; Dfsr = 'Present'; Frs = 'Unread'; Reg = 'Transitional'; Engine = 'Transitional'; Source = 'registry' }
+        ) {
+            $c = Resolve-AdfaSysvolEngineCombined -DirectoryEngine $Dir -RegistryEngine $Reg -Dfsr $Dfsr -Frs $Frs
+            $c.Engine | Should -Be $Engine
+            $c.Source | Should -Be $Source
+        }
+        It 'never passes a domain on the registry against directory objects that were read: Unread and Present, Absent and Absent (two DCs, review finding)' {
+            foreach ($case in @(@{ Dfsr = 'Unread'; Frs = 'Present' }, @{ Dfsr = 'Absent'; Frs = 'Absent' })) {
+                $raw = New-CcEngineRaw -Dcs @((New-CcEngineDc -HostName $script:CcDc1 -Dfsr $case.Dfsr -Frs $case.Frs), (New-CcEngineDc -HostName $script:CcDc2))
+                $reg = @{}
+                $reg[$script:CcDc1] = Resolve-Cc (New-CcRead -LocalState 3)
+                $reg[$script:CcDc2] = Resolve-Cc (New-CcRead -LocalState 3)
+                $rows = @(Get-AdfaSysvolEngineVerdict -DomainName $script:CcDom1 -Raw $raw -Config $script:CcSys -Registry $reg)
+                $because = ("DFSR subscription {0}, NTFRS subscriber {1}" -f $case.Dfsr, $case.Frs)
+                $one = (Get-CcRow $rows ("SYSVOL engine: {0}" -f $script:CcDc1))[0]
+                $one.Status | Should -Be 'Not Assessed' -Because $because
+                [string]$one.Engine | Should -Be 'Unknown' -Because $because
+                [string]$one.Source | Should -Be 'disagree' -Because $because
+                $one.Detail | Should -Match 'disagree' -Because $because
+                $one.Detail | Should -Not -Match 'Graded from the registry' -Because $because
+                $dom = (Get-CcRow $rows ("SYSVOL replication engine: {0}" -f $script:CcDom1))[0]
+                $dom.Status | Should -Be 'Not Assessed' -Because $because
+                $dom.Detail | Should -Not -Match 'graded from the registry' -Because $because
+            }
+        }
+        It 'grades from the registry a DC whose one object was read and agrees, and says what was read (two DCs)' {
+            $raw = New-CcEngineRaw -Dcs @((New-CcEngineDc -HostName $script:CcDc1 -Dfsr 'Present' -Frs 'Unread'), (New-CcEngineDc -HostName $script:CcDc2))
+            $reg = @{}
+            $reg[$script:CcDc1] = Resolve-Cc (New-CcRead -LocalState 3)
+            $reg[$script:CcDc2] = Resolve-Cc (New-CcRead -LocalState 3)
+            $rows = @(Get-AdfaSysvolEngineVerdict -DomainName $script:CcDom1 -Raw $raw -Config $script:CcSys -Registry $reg)
+            $one = (Get-CcRow $rows ("SYSVOL engine: {0}" -f $script:CcDc1))[0]
+            $one.Status | Should -Be 'Info'
+            [string]$one.Source | Should -Be 'registry'
+            $one.Detail | Should -Match 'does not contradict the registry'
+            $one.Detail | Should -Not -Match 'registry only'
+            (Get-CcRow $rows ("SYSVOL replication engine: {0}" -f $script:CcDom1))[0].Status | Should -Be 'Pass'
+        }
+        It 'grades a DC whose directory objects could not be read from the registry, and keeps the other DCs (mixed, two DCs)' {
+            $raw = New-CcEngineRaw -Dcs @((New-CcEngineDc -HostName $script:CcDc1 -Dfsr 'Unread' -Frs 'Unread'), (New-CcEngineDc -HostName $script:CcDc2))
+            $reg = @{}
+            $reg[$script:CcDc1] = Resolve-Cc (New-CcRead -LocalState 3)
+            $reg[$script:CcDc2] = Resolve-Cc (New-CcRead -LocalState 3)
+            $rows = @(Get-AdfaSysvolEngineVerdict -DomainName $script:CcDom1 -Raw $raw -Config $script:CcSys -Registry $reg)
+            $one = (Get-CcRow $rows ("SYSVOL engine: {0}" -f $script:CcDc1))[0]
+            $one.Status | Should -Be 'Info'
+            [string]$one.Engine | Should -Be 'DFSR'
+            [string]$one.Source | Should -Be 'registry'
+            [string]$one.LocalState | Should -Be '3'
+            $one.Detail | Should -Match 'registry only'
+            $two = (Get-CcRow $rows ("SYSVOL engine: {0}" -f $script:CcDc2))[0]
+            [string]$two.Source | Should -Be 'directory and registry'
+            $dom = (Get-CcRow $rows ("SYSVOL replication engine: {0}" -f $script:CcDom1))[0]
+            $dom.Status | Should -Be 'Pass'
+            $dom.Detail | Should -Match '1 of them graded from the registry'
+        }
+        It 'is Not Assessed when the two instruments disagree, and the domain cannot pass' {
+            $raw = New-CcEngineRaw -Dcs @((New-CcEngineDc -HostName $script:CcDc1), (New-CcEngineDc -HostName $script:CcDc2))
+            $reg = @{}
+            $reg[$script:CcDc1] = Resolve-Cc (New-CcRead -LocalState 0)
+            $reg[$script:CcDc2] = Resolve-Cc (New-CcRead -LocalState 3)
+            $rows = @(Get-AdfaSysvolEngineVerdict -DomainName $script:CcDom1 -Raw $raw -Config $script:CcSys -Registry $reg)
+            $one = (Get-CcRow $rows ("SYSVOL engine: {0}" -f $script:CcDc1))[0]
+            $one.Status | Should -Be 'Not Assessed'
+            $one.Detail | Should -Match 'disagree'
+            (Get-CcRow $rows ("SYSVOL replication engine: {0}" -f $script:CcDom1))[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'keeps a directory FRS when the registry value is absent, and the domain is still a Warning' {
+            $raw = New-CcEngineRaw -Dcs @((New-CcEngineDc -HostName $script:CcDc1 -Dfsr 'Absent' -Frs 'Present'), (New-CcEngineDc -HostName $script:CcDc2))
+            $reg = @{}
+            $reg[$script:CcDc1] = Resolve-Cc (New-CcRead)
+            $reg[$script:CcDc2] = Resolve-Cc (New-CcRead -LocalState 3)
+            $rows = @(Get-AdfaSysvolEngineVerdict -DomainName $script:CcDom1 -Raw $raw -Config $script:CcSys -Registry $reg)
+            [string](Get-CcRow $rows ("SYSVOL engine: {0}" -f $script:CcDc1))[0].Engine | Should -Be 'FRS'
+            (Get-CcRow $rows ("SYSVOL engine: {0}" -f $script:CcDc1))[0].Detail | Should -Match 'not graded'
+            (Get-CcRow $rows ("SYSVOL replication engine: {0}" -f $script:CcDom1))[0].Status | Should -Be 'Warning'
+        }
+        It 'is Not Assessed when neither instrument could be read, naming both causes (access denied, never unreachable)' {
+            $raw = New-CcEngineRaw -Dcs @((New-CcEngineDc -HostName $script:CcDc1 -Dfsr 'Unread' -Frs 'Unread'), (New-CcEngineDc -HostName $script:CcDc2 -Dfsr 'Unread' -Frs 'Unread'))
+            $reg = @{}
+            $reg[$script:CcDc1] = Resolve-Cc (New-CcRead -Ok $false -Denied $true -ErrorText 'Access is denied.')
+            $reg[$script:CcDc2] = Resolve-Cc -Read $null -Unreachable 'Unreachable: neither WinRM (5985) nor RPC (135) answered within 1200 ms, so the registry was not read.'
+            $rows = @(Get-AdfaSysvolEngineVerdict -DomainName $script:CcDom1 -Raw $raw -Config $script:CcSys -Registry $reg)
+            $one = (Get-CcRow $rows ("SYSVOL engine: {0}" -f $script:CcDc1))[0]
+            $one.Status | Should -Be 'Not Assessed'
+            $one.Detail | Should -Match '(?i)access denied'
+            $one.Detail | Should -Not -Match '(?i)unreachable'
+            $two = (Get-CcRow $rows ("SYSVOL engine: {0}" -f $script:CcDc2))[0]
+            $two.Status | Should -Be 'Not Assessed'
+            $two.Detail | Should -Match '(?i)unreachable'
+            (Get-CcRow $rows ("SYSVOL replication engine: {0}" -f $script:CcDom1))[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'says when the registry was not read for a DC, and changes nothing without the registry' {
+            $raw = New-CcEngineRaw -Dcs @((New-CcEngineDc -HostName $script:CcDc1), (New-CcEngineDc -HostName $script:CcDc2))
+            $reg = @{}
+            $reg[$script:CcDc1] = Resolve-Cc (New-CcRead -LocalState 3)
+            $rows = @(Get-AdfaSysvolEngineVerdict -DomainName $script:CcDom1 -Raw $raw -Config $script:CcSys -Registry $reg)
+            (Get-CcRow $rows ("SYSVOL engine: {0}" -f $script:CcDc2))[0].Detail | Should -Match 'registry was not read'
+            $plain = @(Get-AdfaSysvolEngineVerdict -DomainName $script:CcDom1 -Raw $raw -Config $script:CcSys)
+            (Get-CcRow $plain ("SYSVOL replication engine: {0}" -f $script:CcDom1))[0].Status | Should -Be 'Pass'
+            (Get-CcRow $plain ("SYSVOL engine: {0}" -f $script:CcDc1))[0].Detail | Should -Not -Match 'registry'
+        }
+    }
+
+    Context 'C14c(1): the registry seam and its transport' {
+        It 'reads every configured value once, with GetDWORDValue or GetStringValue, falls back to the expanded string on a type mismatch, and closes the session' {
+            $script:CcClosed = 0
+            function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction) [pscustomobject]@{ ComputerName = $ComputerName } }
+            function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) $script:CcClosed++ }
+            Mock Get-AdfaStdRegDwordValue { [pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 3; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' } }
+            Mock Get-AdfaStdRegStringValue { [pscustomobject]@{ Answered = $true; ReturnValue = 2147749893; Value = ''; Method = 'GetStringValue'; Error = ''; ErrorCode = '' } }
+            Mock Get-AdfaStdRegStringValue { [pscustomobject]@{ Answered = $true; ReturnValue = 0; Value = 'C:\Windows\SYSVOL_DFSR\sysvol'; Method = 'GetExpandedStringValue'; Error = ''; ErrorCode = '' } } -ParameterFilter { $Expanded }
+            $raw = Get-AdfaSysvolRegistryRaw -ComputerName $script:CcDc1 -Protocol 'Wsman' -Values $script:CcSys['RegistryValues']
+            $raw.Ok | Should -BeTrue
+            @($raw.Values).Count | Should -Be 4
+            Should -Invoke Get-AdfaStdRegDwordValue -Times 3 -Exactly
+            Should -Invoke Get-AdfaStdRegDwordValue -Times 1 -Exactly -ParameterFilter { $Key -eq $script:CcMigKey -and $ValueName -eq 'Local State' }
+            Should -Invoke Get-AdfaStdRegDwordValue -Times 1 -Exactly -ParameterFilter { $Key -eq $script:CcMigKey -and $ValueName -eq 'LocalState' }
+            Should -Invoke Get-AdfaStdRegDwordValue -Times 1 -Exactly -ParameterFilter { $Key -eq $script:CcMigKeyNoSpace -and $ValueName -eq 'Local State' }
+            Should -Invoke Get-AdfaStdRegStringValue -Times 2 -Exactly -ParameterFilter { $Key -eq $script:CcNetlogonKey -and $ValueName -eq 'SysVol' }
+            $path = @($raw.Values | Where-Object { $_.Id -eq 'SysVolPath' })[0]
+            [string]$path.Value | Should -Be 'C:\Windows\SYSVOL_DFSR\sysvol'
+            [string]$path.Method | Should -Be 'GetExpandedStringValue'
+            $script:CcClosed | Should -Be 1
+        }
+        It 'is not Ok when no value got an answer, so the transport loop can try the other protocol' {
+            function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction) [pscustomobject]@{ ComputerName = $ComputerName } }
+            function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) }
+            Mock Get-AdfaStdRegDwordValue { [pscustomobject]@{ Answered = $false; ReturnValue = $null; Value = $null; Method = 'GetDWORDValue'; Error = 'The WinRM client cannot process the request.'; ErrorCode = '' } }
+            Mock Get-AdfaStdRegStringValue { [pscustomobject]@{ Answered = $false; ReturnValue = $null; Value = ''; Method = 'GetStringValue'; Error = 'The WinRM client cannot process the request.'; ErrorCode = '' } }
+            $raw = Get-AdfaSysvolRegistryRaw -ComputerName $script:CcDc1 -Protocol 'Wsman' -Values $script:CcSys['RegistryValues']
+            $raw.Ok | Should -BeFalse
+            $raw.Error | Should -Match 'cannot process'
+        }
+        It 'probes through the shared gate, reads WinRM then DCOM, and never reads a DC no transport answers (per DC, three DCs)' {
+            Mock Get-AdfaDcReachCause { param($HostName) if ($HostName -eq 'dc3.north.contoso.com') { return 'Unreachable, classified once for this run by the reachability probe: STUB' } return '' }
+            Mock Get-AdfaDcProbeGate { param($ComputerName, $Ports, $TimeoutMs)
+                $open = @{ 5985 = ($ComputerName -eq 'dc1.contoso.com'); 135 = ($ComputerName -eq 'dc1.contoso.com') }
+                [pscustomobject]@{ Cause = ''; Open = $open } }
+            Mock Invoke-AdfaDcRemoteRead { New-CcRead -LocalState 3 }
+            $one = Get-AdfaSysvolRegistryRead -ComputerName $script:CcDc1 -Config $script:CcSys -PortTimeoutMs 100
+            $one.Engine | Should -Be 'DFSR'
+            Should -Invoke Invoke-AdfaDcRemoteRead -Times 1 -Exactly -ParameterFilter { $ComputerName -eq 'dc1.contoso.com' -and $ReadCommand -eq 'Get-AdfaSysvolRegistryRaw' -and (@($Protocols) -join ',') -eq 'Wsman,Dcom' }
+            $two = Get-AdfaSysvolRegistryRead -ComputerName $script:CcDc2 -Config $script:CcSys -PortTimeoutMs 100
+            $two.Engine | Should -Be 'Unread'
+            $two.Class | Should -Be 'Unreachable'
+            $two.Detail | Should -Match 'neither WinRM \(5985\) nor RPC \(135\)'
+            $three = Get-AdfaSysvolRegistryRead -ComputerName $script:CcDc3 -Config $script:CcSys -PortTimeoutMs 100
+            $three.Class | Should -Be 'Unreachable'
+            $three.Detail | Should -Match 'classified once'
+            Should -Invoke Invoke-AdfaDcRemoteRead -Times 0 -Exactly -ParameterFilter { $ComputerName -ne 'dc1.contoso.com' }
+            Should -Invoke Get-AdfaDcProbeGate -Times 0 -Exactly -ParameterFilter { $ComputerName -eq 'dc3.north.contoso.com' }
+        }
+        It 'does not retry a refused session over DCOM and reports access denied' {
+            $script:CcProtocols = @()
+            Mock Get-AdfaDcReachCause { '' }
+            Mock Get-AdfaDcProbeGate { [pscustomobject]@{ Cause = ''; Open = @{ 5985 = $true; 135 = $true } } }
+            Mock Get-AdfaSysvolRegistryRaw { param($ComputerName, $Protocol) $script:CcProtocols += $Protocol; [pscustomobject]@{ Ok = $false; Protocol = $Protocol; Error = 'Access is denied.'; ErrorCode = '5'; Values = @() } }
+            $r = Get-AdfaSysvolRegistryRead -ComputerName $script:CcDc1 -Config $script:CcSys -PortTimeoutMs 100
+            (@($script:CcProtocols) -join ',') | Should -Be 'Wsman'
+            $r.Class | Should -Be 'AccessDenied'
+            $r.Detail | Should -Match '(?i)access denied'
+        }
+        It 'collects both instruments for every DC of every scoped domain, once each, and skips a domain whose DCs could not be listed (per DC, two domains)' {
+            Mock Get-AdfaSysvolEngineRaw { param($DomainName)
+                if ($DomainName -eq 'contoso.com') { return (New-CcEngineRaw -Dcs @((New-CcEngineDc -HostName 'dc1.contoso.com'), (New-CcEngineDc -HostName 'dc2.contoso.com' -Dfsr 'Absent' -Frs 'Present'))) }
+                if ($DomainName -eq 'north.contoso.com') { return (New-CcEngineRaw -Dcs @((New-CcEngineDc -HostName 'DC3.north.contoso.com' -Dfsr 'Unread' -Frs 'Unread'))) }
+                return (New-CcEngineRaw -Ok $false -ErrorText 'Unable to contact the server.') }
+            Mock Get-AdfaSysvolRegistryRead { param($ComputerName)
+                if ($ComputerName -eq 'dc2.contoso.com') { return (Resolve-Cc (New-CcRead -LocalState 0)) }
+                return (Resolve-Cc (New-CcRead -LocalState 3)) }
+            $state = Get-AdfaSysvolEngineByDc -Domains @($script:CcDom1, $script:CcDom2, 'fabrikam.com') -Config $script:CcSys -PortTimeoutMs 100
+            # Declared population: the three DCs the two readable domains returned.
+            (@($state.Engines.Keys | Sort-Object) -join ',') | Should -Be 'dc1.contoso.com,dc2.contoso.com,dc3.north.contoso.com'
+            [string]$state.Engines['dc1.contoso.com'].Engine | Should -Be 'DFSR'
+            [string]$state.Engines['dc2.contoso.com'].Engine | Should -Be 'FRS'
+            [string]$state.Engines['dc3.north.contoso.com'].Engine | Should -Be 'DFSR'
+            [string]$state.Engines['dc3.north.contoso.com'].Source | Should -Be 'registry'
+            Should -Invoke Get-AdfaSysvolRegistryRead -Times 3 -Exactly
+            foreach ($h in @('dc1.contoso.com', 'dc2.contoso.com', 'DC3.north.contoso.com')) { Should -Invoke Get-AdfaSysvolRegistryRead -Times 1 -Exactly -ParameterFilter { $ComputerName -eq $h } }
+            Should -Invoke Get-AdfaSysvolEngineRaw -Times 1 -Exactly -ParameterFilter { $DomainName -eq 'fabrikam.com' }
+            (@($state.Domains.Keys | Sort-Object) -join ',') | Should -Be 'contoso.com,fabrikam.com,north.contoso.com'
+            [bool]$state.Domains['fabrikam.com'].Ok | Should -BeFalse
+            $state.Registry.ContainsKey('dc3.north.contoso.com') | Should -BeTrue
+        }
+        It 'hands the grid Unknown, never the registry engine, for a DC whose read objects contradict the registry, so FrsEvent stays graded (two DCs, review finding)' {
+            Mock Get-AdfaSysvolEngineRaw { param($DomainName)
+                return (New-CcEngineRaw -Dcs @((New-CcEngineDc -HostName 'dc1.contoso.com' -Dfsr 'Unread' -Frs 'Present'), (New-CcEngineDc -HostName 'dc2.contoso.com' -Dfsr 'Absent' -Frs 'Absent'))) }
+            Mock Get-AdfaSysvolRegistryRead { return (Resolve-Cc (New-CcRead -LocalState 3)) }
+            $state = Get-AdfaSysvolEngineByDc -Domains @($script:CcDom1) -Config $script:CcSys -PortTimeoutMs 100
+            # Declared population: the two DCs the one domain returned.
+            (@($state.Engines.Keys | Sort-Object) -join ',') | Should -Be 'dc1.contoso.com,dc2.contoso.com'
+            foreach ($h in @('dc1.contoso.com', 'dc2.contoso.com')) {
+                [string]$state.Engines[$h].Engine | Should -Be 'Unknown' -Because $h
+                [string]$state.Engines[$h].Source | Should -Be 'disagree' -Because $h
+            }
+            $grid = Invoke-CcGrid -Targets @((New-CcTarget $script:CcDc1 $script:CcDom1), (New-CcTarget $script:CcDc2 $script:CcDom1)) -Engines $state.Engines
+            @($grid).Count | Should -Be 2
+            foreach ($row in $grid) {
+                [string]$row.DCDIAG_FrsEvent | Should -Be 'Fail' -Because $row.DomainController
+                [string]$row.DCDIAG_DFSREvent | Should -Be 'Fail' -Because $row.DomainController
+            }
+        }
+    }
+
+    Context 'C11e: the engine handed to the dcdiag grid' {
+        It 'decides <Test> on engine <Engine> as applicable <Applicable>' -ForEach @(
+            @{ Test = 'FrsEvent'; Engine = 'DFSR'; Applicable = $false }
+            @{ Test = 'DFSREvent'; Engine = 'FRS'; Applicable = $false }
+            @{ Test = 'FrsEvent'; Engine = 'FRS'; Applicable = $true }
+            @{ Test = 'DFSREvent'; Engine = 'DFSR'; Applicable = $true }
+            @{ Test = 'FrsEvent'; Engine = 'Transitional'; Applicable = $true }
+            @{ Test = 'DFSREvent'; Engine = 'Transitional'; Applicable = $true }
+            @{ Test = 'FrsEvent'; Engine = 'Unknown'; Applicable = $true }
+            @{ Test = 'DFSREvent'; Engine = ''; Applicable = $true }
+            @{ Test = 'Services'; Engine = 'DFSR'; Applicable = $true }
+            @{ Test = 'SysVolCheck'; Engine = 'FRS'; Applicable = $true }
+        ) {
+            $a = Resolve-AdfaDcdiagApplicability -TestName $Test -Engine $Engine -Source 'registry'
+            $a.Applicable | Should -Be $Applicable
+            if (-not $Applicable) {
+                $a.Reason | Should -Match ("^{0} not applicable" -f $Test)
+                $a.Reason | Should -Match 'not a Microsoft rule'
+                $a.Reason | Should -Match $Engine
+            }
+        }
+        It 'does not run FrsEvent on a DFSR DC nor DFSREvent on an FRS DC, keeps both where the engine is unknown, and keeps the rows graded (three DCs)' {
+            $targets = @((New-CcTarget $script:CcDc1 $script:CcDom1), (New-CcTarget $script:CcDc2 $script:CcDom1), (New-CcTarget $script:CcDc3 $script:CcDom2))
+            $engines = @{}
+            $engines['dc1.contoso.com'] = [pscustomobject]@{ Engine = 'DFSR'; Source = 'directory and registry' }
+            $engines['dc2.contoso.com'] = [pscustomobject]@{ Engine = 'FRS'; Source = 'directory' }
+            $grid = Invoke-CcGrid -Targets $targets -Engines $engines
+            # Declared population: one grid row per target DC.
+            @($grid).Count | Should -Be 3
+            $one = @($grid | Where-Object { $_.DomainController -eq $script:CcDc1 })[0]
+            [string]$one.DCDIAG_FrsEvent | Should -Be 'Not Applicable'
+            [string]$one.DCDIAG_DFSREvent | Should -Be 'Fail'
+            [string]$one.NotRun | Should -Match 'FrsEvent not applicable'
+            [string]$one.Failures | Should -Not -Match 'not applicable'
+            $two = @($grid | Where-Object { $_.DomainController -eq $script:CcDc2 })[0]
+            [string]$two.DCDIAG_DFSREvent | Should -Be 'Not Applicable'
+            [string]$two.DCDIAG_FrsEvent | Should -Be 'Fail'
+            $three = @($grid | Where-Object { $_.DomainController -eq $script:CcDc3 })[0]
+            [string]$three.DCDIAG_FrsEvent | Should -Be 'Fail'
+            [string]$three.DCDIAG_DFSREvent | Should -Be 'Fail'
+            [string]$three.NotRun | Should -Not -Match 'not applicable'
+            @($script:CcDcdiagCalls | Where-Object { $_ -eq 'dc1.contoso.com|FrsEvent' }).Count | Should -Be 0
+            @($script:CcDcdiagCalls | Where-Object { $_ -eq 'dc1.contoso.com|DFSREvent' }).Count | Should -Be 1
+            @($script:CcDcdiagCalls | Where-Object { $_ -eq 'dc2.contoso.com|DFSREvent' }).Count | Should -Be 0
+            @($script:CcDcdiagCalls | Where-Object { $_ -eq 'dc2.contoso.com|FrsEvent' }).Count | Should -Be 1
+            @($script:CcDcdiagCalls | Where-Object { $_ -match '^dc3\.north\.contoso\.com\|(FrsEvent|DFSREvent)$' }).Count | Should -Be 2
+        }
+        It 'leaves a row with only a not applicable cell besides passes at Pass, and gives it no advice' {
+            $engines = @{}
+            $engines['dc1.contoso.com'] = [pscustomobject]@{ Engine = 'DFSR'; Source = 'registry' }
+            $engines['dc2.contoso.com'] = [pscustomobject]@{ Engine = 'DFSR'; Source = 'registry' }
+            Mock Resolve-AdfaDcdiagApplicability { param($TestName, $Engine, $Source)
+                if ($TestName -eq 'FrsEvent' -or $TestName -eq 'DFSREvent') { return [pscustomobject]@{ Applicable = $false; Reason = ("{0} not applicable: STUB SYSVOL DFSR replication" -f $TestName) } }
+                return [pscustomobject]@{ Applicable = $true; Reason = '' } }
+            $grid = Invoke-CcGrid -Targets @((New-CcTarget $script:CcDc1 $script:CcDom1), (New-CcTarget $script:CcDc2 $script:CcDom1)) -Engines $engines
+            foreach ($row in $grid) {
+                [string]$row.Status | Should -Be 'Pass' -Because $row.DomainController
+                $f = ConvertTo-AdfaConsolidatedFinding -Section 'DC Diagnostics' -Row $row -StatusColumn 'Status'
+                $f.Recommendation | Should -Be '' -Because $row.DomainController
+                $f.Detail | Should -Match 'not applicable'
+            }
+        }
+        It 'grades both tests from their own output on every DC when no engine is handed over (today''s grading)' {
+            $grid = Invoke-CcGrid -Targets @((New-CcTarget $script:CcDc1 $script:CcDom1), (New-CcTarget $script:CcDc2 $script:CcDom1))
+            foreach ($row in $grid) {
+                [string]$row.DCDIAG_FrsEvent | Should -Be 'Fail' -Because $row.DomainController
+                [string]$row.DCDIAG_DFSREvent | Should -Be 'Fail' -Because $row.DomainController
+            }
+        }
+    }
+
+    Context 'C14c(3): netlogon.bak and the age window' {
+        It 'records the last write time of the file it read (UTC), and none for a file it could not open' {
+            $path = Join-Path $TestDrive 'netlogon.bak'
+            [System.IO.File]::WriteAllText($path, (Get-CcLine -Name 'WS01' -Address $script:CcClient1))
+            $stamp = [datetime]::SpecifyKind([datetime]'2026-10-01 08:00:00', [System.DateTimeKind]::Utc)
+            [System.IO.File]::SetLastWriteTimeUtc($path, $stamp)
+            $raw = Get-AdfaNetlogonLogRaw -Path $path -MaxBytes 1000
+            $raw.Ok | Should -BeTrue
+            $raw.LastWriteTimeUtc | Should -Be $stamp
+            $raw.LastWriteTimeUtc.Kind | Should -Be ([System.DateTimeKind]::Utc)
+            $missing = Get-AdfaNetlogonLogRaw -Path (Join-Path $TestDrive 'absent.bak') -MaxBytes 1000
+            $missing.Class | Should -Be 'NotFound'
+            $missing.LastWriteTimeUtc | Should -BeNullOrEmpty
+        }
+        It 'reads a last write time in or before 1601 (GetLastWriteTimeUtc''s value for a missing file) as not known, never as a time (review finding): <Case>' -ForEach @(
+            @{ Case = '1601-01-01, the documented value'; Written = '1601-01-01 00:00:00'; Known = $false }
+            @{ Case = 'late 1601'; Written = '1601-12-31 23:59:59'; Known = $false }
+            @{ Case = 'early 1602'; Written = '1602-01-01 00:00:00'; Known = $true }
+            @{ Case = 'a real time'; Written = '2026-11-18 07:30:00'; Known = $true }
+        ) {
+            $w = [datetime]::SpecifyKind([datetime]::ParseExact($Written, 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture), [System.DateTimeKind]::Unspecified)
+            $t = ConvertTo-AdfaFileWriteTimeUtc -Written $w
+            if ($Known) {
+                $t.Time | Should -Be $w
+                $t.Time.Kind | Should -Be ([System.DateTimeKind]::Utc)
+                $t.Error | Should -Be ''
+            }
+            else {
+                $t.Time | Should -BeNullOrEmpty
+                $t.Error | Should -Match '1601'
+            }
+        }
+        It 'takes LastWriteTimeUtc and LastWriteError of the log read from that guard (AST)' {
+            $fn = (Get-CcFunction 'Get-AdfaNetlogonLogRaw')[0]
+            @(Get-CcCall $fn 'ConvertTo-AdfaFileWriteTimeUtc').Count | Should -Be 1
+            $assigned = @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -in @('$out.LastWriteTimeUtc', '$out.LastWriteError') -and $n.Right.Extent.Text -match '^(\[string\])?\$time\.(Time|Error)$' }, $true))
+            @($assigned | ForEach-Object { $_.Left.Extent.Text } | Sort-Object) -join ',' | Should -Be '$out.LastWriteError,$out.LastWriteTimeUtc'
+            @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Member.Extent.Text -eq 'Year' }, $true)).Count | Should -Be 0 -Because 'the 1601 guard lives in ConvertTo-AdfaFileWriteTimeUtc only'
+        }
+        It 'leaves LastWriteTimeUtc empty for a real file whose last write time is set to 1601 (Windows file system)' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
+            $path = Join-Path $TestDrive 'old1601.log'
+            [System.IO.File]::WriteAllText($path, (Get-CcLine -Name 'WS01' -Address $script:CcClient1))
+            [System.IO.File]::SetLastWriteTimeUtc($path, [datetime]::SpecifyKind([datetime]'1601-06-01 00:00:00', [System.DateTimeKind]::Utc))
+            $raw = Get-AdfaNetlogonLogRaw -Path $path -MaxBytes 1000
+            $raw.Ok | Should -BeTrue
+            $raw.LastWriteTimeUtc | Should -BeNullOrEmpty
+            $raw.LastWriteError | Should -Match '1601'
+            $bak = New-CcLog -Ok $false -Class 'NotFound'
+            (Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $raw -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite).Status | Should -Be 'Not Assessed'
+        }
+        It 'is Not Assessed when a marker line could not be parsed in a file whose last write time is not known: <Case> (review finding)' -ForEach @(
+            @{ Case = 'netlogon.log of unknown age'; LogText = 'a NO_CLIENT_SITE: '; LogTime = 'none'; BakText = ''; BakTime = 'notfound'; File = 'netlogon\.log' }
+            @{ Case = 'netlogon.bak of unknown age beside a clean current log'; LogText = 'nothing to see'; LogTime = 'recent'; BakText = 'x NO_CLIENT_SITE: WS09'; BakTime = 'none'; File = 'netlogon\.bak' }
+        ) {
+            $logWrite = $null
+            if ($LogTime -eq 'recent') { $logWrite = $script:CcNow.AddHours(-1) }
+            $log = New-CcLog -Text $LogText -LastWrite $logWrite
+            if ($BakTime -eq 'notfound') { $bak = New-CcLog -Ok $false -Class 'NotFound' }
+            else { $bak = New-CcLog -Text $BakText -LastWrite $null -Path '\\dc1.contoso.com\ADMIN$\debug\netlogon.bak' }
+            $r = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'could not be read'
+            $r.Detail | Should -Match ("{0} \(" -f $File)
+            $r.Detail | Should -Not -Match 'last written in the last'
+        }
+        It 'gives a Warning naming a client found only in netlogon.bak advice that does not say netlogon.bak is unread (review finding)' {
+            $log = New-CcLog -Text 'nothing to see' -LastWrite $script:CcNow.AddHours(-1)
+            $bak = New-CcLog -Text (Get-CcLine -Name 'WS02' -Address $script:CcClient2) -LastWrite $script:CcNow.AddDays(-2) -Path '\\dc1.contoso.com\ADMIN$\debug\netlogon.bak'
+            $row = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite
+            $row.Status | Should -Be 'Warning'
+            $f = ConvertTo-AdfaConsolidatedFinding -Section 'Site Health' -Row $row -StatusColumn 'Status'
+            $f.Recommendation | Should -Match 'Create subnet object'
+            $f.Recommendation | Should -Match 'netlogon\.bak'
+            $f.Recommendation | Should -Not -Match '(?i)does not read|not read by|is not read'
+        }
+        It 'does not claim the window was applied to a file of unknown age that names no client: Info, and says so' {
+            $log = New-CcLog -Text 'nothing to see' -LastWrite $null
+            $r = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw (New-CcLog -Ok $false -Class 'NotFound') -PortOpen $true -Now $script:CcNow -Config $script:CcSite
+            $r.Status | Should -Be 'Info'
+            $r.Detail | Should -Match 'age window was not applied to it'
+            $known = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw (New-CcLog -Text 'nothing to see' -LastWrite $script:CcNow.AddHours(-1)) -BakRaw (New-CcLog -Ok $false -Class 'NotFound') -PortOpen $true -Now $script:CcNow -Config $script:CcSite
+            $known.Detail | Should -Not -Match 'age window was not applied'
+        }
+        It 'names the override file as the source of a key it set, even when its path holds '' for '' or '';'', and the built-in label otherwise (review finding)' {
+            $path = 'C:\Config for engagements; site\cc.json'
+            $cfg = Merge-AdfaSpecConfig -BaseConfig $script:CcSite -Override @{ NoClientSiteMaxAgeDays = 7 } -OverrideSource $path
+            $set = Get-AdfaOverrideKeySource -Config $cfg -Key 'NoClientSiteMaxAgeDays' -BuiltIn 'tool default, not a Microsoft value'
+            $set | Should -Match ('^set by {0} \(loaded \d{{4}}-\d{{2}}-\d{{2}}\)$' -f [regex]::Escape($path))
+            Get-AdfaOverrideKeySource -Config $cfg -Key 'NameListCap' -BuiltIn 'BUILTIN' | Should -Be 'BUILTIN'
+            Get-AdfaOverrideKeySource -Config $script:CcSite -Key 'NoClientSiteMaxAgeDays' -BuiltIn 'BUILTIN' | Should -Be 'BUILTIN'
+            $unrecorded = Merge-AdfaSpecConfig -BaseConfig $script:CcSite -Override @{ NoClientSiteMaxAgeDays = 7 }
+            Get-AdfaOverrideKeySource -Config $unrecorded -Key 'NoClientSiteMaxAgeDays' -BuiltIn 'BUILTIN' | Should -Be 'set by an override whose source was not recorded'
+            $log = New-CcLog -Text (Get-CcLine -Name 'WS01' -Address $script:CcClient1) -LastWrite $script:CcNow.AddDays(-1)
+            $r = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw (New-CcLog -Ok $false -Class 'NotFound') -PortOpen $true -Now $script:CcNow -Config $cfg
+            $r.Detail | Should -Match ('Age window: 7 days \(set by {0}' -f [regex]::Escape($path))
+        }
+        It 'grades clients in a file last written inside the window as current and says there is no rollover file' {
+            $log = New-CcLog -Text (Get-CcLine -Name 'WS01' -Address $script:CcClient1) -LastWrite $script:CcNow.AddDays(-1)
+            $bak = New-CcLog -Ok $false -Class 'NotFound' -Path '\\dc1.contoso.com\ADMIN$\debug\netlogon.bak'
+            $r = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite
+            $r.Status | Should -Be 'Warning'
+            [string]$r.ClientCount | Should -Be '1'
+            [string]$r.OldClientCount | Should -Be '0'
+            $r.Detail | Should -Match 'no rollover file'
+            $r.Detail | Should -Match 'tool default, not a Microsoft value'
+            $r.Detail | Should -Not -Match ([regex]::Escape($script:CcClient1))
+        }
+        It 'reports clients only in a file older than the window as old, not current: Info' {
+            $log = New-CcLog -Text (Get-CcLine -Name 'WS01' -Address $script:CcClient1) -LastWrite $script:CcNow.AddDays(-40)
+            $bak = New-CcLog -Ok $false -Class 'NotFound'
+            $r = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite
+            $r.Status | Should -Be 'Info'
+            [string]$r.ClientCount | Should -Be '0'
+            [string]$r.OldClientCount | Should -Be '1'
+            $r.Detail | Should -Match 'older than'
+        }
+        It 'counts a file last written exactly at the window edge as current and one second older as old' {
+            $bak = New-CcLog -Ok $false -Class 'NotFound'
+            $edge = New-CcLog -Text (Get-CcLine -Name 'WS01' -Address $script:CcClient1) -LastWrite $script:CcNow.AddDays(-30)
+            (Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $edge -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite).Status | Should -Be 'Warning'
+            $past = New-CcLog -Text (Get-CcLine -Name 'WS01' -Address $script:CcClient1) -LastWrite $script:CcNow.AddDays(-30).AddSeconds(-1)
+            (Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $past -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite).Status | Should -Be 'Info'
+        }
+        It 'grades clients named only in a recent netlogon.bak, and lists a client named in both files once' {
+            $log = New-CcLog -Text 'nothing to see' -LastWrite $script:CcNow.AddHours(-1)
+            $bak = New-CcLog -Text ((Get-CcLine -Name 'WS02' -Address $script:CcClient2), (Get-CcLine -Name 'WS02' -Address $script:CcClient2) -join "`r`n") -LastWrite $script:CcNow.AddDays(-2) -Path '\\dc1.contoso.com\ADMIN$\debug\netlogon.bak'
+            $r = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite
+            $r.Status | Should -Be 'Warning'
+            [string]$r.ClientCount | Should -Be '1'
+            [string]$r.BakPath | Should -Be '\\dc1.contoso.com\ADMIN$\debug\netlogon.bak'
+            $both = New-CcLog -Text (Get-CcLine -Name 'WS02' -Address $script:CcClient2) -LastWrite $script:CcNow.AddHours(-1)
+            [string](Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $both -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite).ClientCount | Should -Be '1'
+        }
+        It 'uses the window the override file set' {
+            $cfg = Merge-AdfaSpecConfig -BaseConfig $script:CcSite -Override @{ NoClientSiteMaxAgeDays = 7 } -OverrideSource 'C:\cfg\cc.json'
+            $log = New-CcLog -Text (Get-CcLine -Name 'WS01' -Address $script:CcClient1) -LastWrite $script:CcNow.AddDays(-10)
+            $bak = New-CcLog -Ok $false -Class 'NotFound'
+            (Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $cfg).Status | Should -Be 'Info'
+            (Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite).Status | Should -Be 'Warning'
+        }
+        It 'is Not Assessed when nothing current was found and netlogon.bak could not be read: <Case>' -ForEach @(
+            @{ Case = 'access denied'; Class = 'AccessDenied'; Text = 'access denied'; Not = 'unreachable' }
+            @{ Case = 'timed out'; Class = 'TimedOut'; Text = 'timed out'; Not = 'access denied' }
+            @{ Case = 'share unreachable'; Class = 'Unreachable'; Text = 'unreachable'; Not = 'access denied' }
+            @{ Case = 'not read at all'; Class = ''; Text = 'netlogon\.bak was not read'; Not = 'access denied' }
+        ) {
+            $log = New-CcLog -Text 'nothing to see' -LastWrite $script:CcNow.AddHours(-1)
+            $bak = $null
+            if ($Class -ne '') { $bak = New-CcLog -Ok $false -Class $Class }
+            $r = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw $bak -PortOpen $true -Now $script:CcNow -Config $script:CcSite
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match '(?i)netlogon\.bak'
+            $r.Detail | Should -Match ("(?i){0}" -f $Text)
+            $r.Detail | Should -Not -Match ("(?i){0}" -f $Not)
+        }
+        It 'keeps a current client a Warning when netlogon.bak could not be read, and says so' {
+            $log = New-CcLog -Text (Get-CcLine -Name 'WS01' -Address $script:CcClient1) -LastWrite $script:CcNow.AddHours(-1)
+            $r = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw (New-CcLog -Ok $false -Class 'AccessDenied') -PortOpen $true -Now $script:CcNow -Config $script:CcSite
+            $r.Status | Should -Be 'Warning'
+            $r.Detail | Should -Match '(?i)netlogon\.bak[^.]*access denied'
+        }
+        It 'is Not Assessed when a file naming clients has no last write time, so its age is not known' {
+            $log = New-CcLog -Text (Get-CcLine -Name 'WS01' -Address $script:CcClient1) -LastWrite $null
+            $r = Get-AdfaNoClientSiteVerdict -HostName $script:CcDc1 -Scope $script:CcDom1 -Raw $log -BakRaw (New-CcLog -Ok $false -Class 'NotFound') -PortOpen $true -Now $script:CcNow -Config $script:CcSite
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match 'last write time'
+        }
+        It 'reads netlogon.bak beside the log of every DC it could read, and never where the log was refused (per DC, three DCs)' {
+            Clear-AdfaDcPortCache
+            Mock Test-TcpPort { $ComputerName -ne 'dc3.north.contoso.com' }
+            Mock Get-AdfaNetlogonLogRaw {
+                if ($Path -like '*dc2.contoso.com*') { return (New-CcLog -Ok $false -Class 'AccessDenied' -Path $Path) }
+                return (New-CcLog -Text (Get-CcLine -Name 'WS01' -Address $script:CcClient1) -LastWrite ([datetime]::UtcNow.AddHours(-1)) -Path $Path)
+            }
+            $targets = @((New-CcTarget $script:CcDc1 $script:CcDom1), (New-CcTarget $script:CcDc2 $script:CcDom1), (New-CcTarget $script:CcDc3 $script:CcDom2))
+            $rows = @(Get-AdfaClientSiteRows -DomainControllers $targets -Config $script:CcSite -PortTimeoutMs 100 -ScopedDomains @($script:CcDom1, $script:CcDom2))
+            (Get-CcRow $rows ("Clients without a site: {0}" -f $script:CcDc1))[0].Status | Should -Be 'Warning'
+            (Get-CcRow $rows ("Clients without a site: {0}" -f $script:CcDc2))[0].Status | Should -Be 'Not Assessed'
+            (Get-CcRow $rows ("Clients without a site: {0}" -f $script:CcDc3))[0].Status | Should -Be 'Not Assessed'
+            Should -Invoke Get-AdfaNetlogonLogRaw -Times 3 -Exactly
+            Should -Invoke Get-AdfaNetlogonLogRaw -Times 1 -Exactly -ParameterFilter { $Path -eq '\\dc1.contoso.com\ADMIN$\debug\netlogon.bak' }
+            Should -Invoke Get-AdfaNetlogonLogRaw -Times 0 -Exactly -ParameterFilter { $Path -eq '\\dc2.contoso.com\ADMIN$\debug\netlogon.bak' }
+        }
+    }
+
+    Context 'C14c(4): delegated managed service accounts excluded from the stale computer read' {
+        It 'excludes the three managed service account classes from every computer kind (declared population: six kinds)' {
+            $cut = $script:CcNow.AddDays(-90)
+            foreach ($k in @('Computer', 'EnabledComputer', 'DisabledComputer', 'AllDisabledComputer', 'FutureComputer')) {
+                $f = Get-AdfaStaleLdapFilter -Kind $k -CutoffUtc $cut
+                foreach ($c in @('msDS-GroupManagedServiceAccount', 'msDS-ManagedServiceAccount', 'msDS-DelegatedManagedServiceAccount')) { $f | Should -Match ([regex]::Escape(("(!(objectClass={0}))" -f $c))) -Because $k }
+            }
+            foreach ($k in @('User', 'EnabledUser', 'DisabledUser', 'AllDisabledUser', 'Password', 'FutureUser')) {
+                (Get-AdfaStaleLdapFilter -Kind $k -CutoffUtc $cut) | Should -Not -Match 'DelegatedManagedServiceAccount' -Because $k
+            }
+        }
+        It 'states the exclusion in the inactive computers row' {
+            $r = Get-AdfaStaleCountVerdict -DomainName $script:CcDom1 -Kind 'Computer' -Raw (New-CcStaleRaw) -Interval $script:CcInterval -StaleDays 90 -Now $script:CcNow -Population (New-CcPopulation) -Config $script:CcStale
+            $r.Evidence | Should -Match 'msDS-DelegatedManagedServiceAccount'
+        }
+    }
+
+    Context 'C14c(5): a lastLogonTimestamp in the future is unreliable, never recent' {
+        It 'reads enabled accounts whose lastLogonTimestamp is at or past the tolerance, from the same class terms' {
+            $at = $script:CcNow.AddSeconds(300)
+            $ft = $at.ToFileTimeUtc()
+            $u = Get-AdfaStaleLdapFilter -Kind 'FutureUser' -CutoffUtc $at
+            $u | Should -Match ([regex]::Escape(("(lastLogonTimestamp>={0})" -f $ft)))
+            $u | Should -Match ([regex]::Escape('(!(userAccountControl:1.2.840.113556.1.4.803:=2))'))
+            $u | Should -Match ([regex]::Escape('(objectCategory=person)(objectClass=user)'))
+            $c = Get-AdfaStaleLdapFilter -Kind 'FutureComputer' -CutoffUtc $at
+            $c | Should -Match ([regex]::Escape(("(lastLogonTimestamp>={0})" -f $ft)))
+            $c | Should -Match ([regex]::Escape('(objectCategory=computer)'))
+        }
+        It 'counts a value at the tolerance and not one second before it, nor an account with none' {
+            $records = @((New-CcAccount -Name 'at' -LastLogonUtc $script:CcNow.AddSeconds(300)), (New-CcAccount -Name 'before' -LastLogonUtc $script:CcNow.AddSeconds(299)), (New-CcAccount -Name 'never' -WhenCreatedUtc $script:CcNow.AddDays(-400)))
+            $n = Get-AdfaFutureLogonCount -Raw (New-CcStaleRaw -Records $records) -Now $script:CcNow -ToleranceSeconds 300
+            $n.Ok | Should -BeTrue
+            $n.Count | Should -Be 1
+            (@($n.Names) -join ',') | Should -Be 'at'
+        }
+        It 'lists accounts with a future value as Info, unreliable, citing Learn, names in their column only' {
+            $records = @((New-CcAccount -Name 'svc-a' -LastLogonUtc $script:CcNow.AddDays(30)), (New-CcAccount -Name 'svc-b' -LastLogonUtc $script:CcNow.AddDays(3)))
+            $r = Get-AdfaFutureLogonVerdict -DomainName $script:CcDom1 -Kind 'User' -Raw (New-CcStaleRaw -Records $records) -Now $script:CcNow -Population (New-CcPopulation) -Config $script:CcStale
+            $r.Item | Should -Be 'Future logon timestamps: users'
+            $r.Scope | Should -Be $script:CcDom1
+            $r.Status | Should -Be 'Info'
+            [string]$r.Count | Should -Be '2'
+            [string]$r.Accounts | Should -Match 'svc-a'
+            $r.Detail | Should -Not -Match 'svc-a'
+            $r.Detail | Should -Match 'neither counted stale nor read as recent'
+            $r.Evidence | Should -Match 'accounts-lastlogontimestamp-future-time'
+            $r.Detail | Should -Match 'tool default, not a Microsoft value'
+        }
+        It 'is Info 0 only after a complete read against a counted population, and never Pass: <Case>' -ForEach @(
+            @{ Case = 'complete read'; RawCase = 'ok'; PopCase = 'ok'; Status = 'Info'; Text = '^0 enabled computer' }
+            @{ Case = 'population empty'; RawCase = 'ok'; PopCase = 'empty'; Status = 'Not Assessed'; Text = 'declared population is empty' }
+            @{ Case = 'access denied'; RawCase = 'denied'; PopCase = 'ok'; Status = 'Not Assessed'; Text = 'access denied' }
+            @{ Case = 'capped'; RawCase = 'capped'; PopCase = 'ok'; Status = 'Not Assessed'; Text = 'cap' }
+            @{ Case = 'not read'; RawCase = 'none'; PopCase = 'ok'; Status = 'Not Assessed'; Text = 'not read' }
+        ) {
+            $futureRead = $null
+            switch ($RawCase) {
+                'ok' { $futureRead = New-CcStaleRaw }
+                'denied' { $futureRead = New-CcStaleRaw -Ok $false -ErrorText 'Access is denied' }
+                'capped' { $futureRead = New-CcStaleRaw -Capped $true }
+            }
+            $counted = New-CcPopulation
+            if ($PopCase -eq 'empty') { $counted = New-CcPopulation -Count 0 }
+            $r = Get-AdfaFutureLogonVerdict -DomainName $script:CcDom2 -Kind 'Computer' -Raw $futureRead -Now $script:CcNow -Population $counted -Config $script:CcStale
+            $r.Item | Should -Be 'Future logon timestamps: computers'
+            $r.Status | Should -Be $Status
+            $r.Status | Should -Not -Be 'Pass'
+            $r.Detail | Should -Match ("(?i){0}" -f $Text)
+        }
+        It 'keeps the inactive row from passing while an account carries a future value, or the future read failed' {
+            $stale0 = New-CcStaleRaw
+            $future = New-CcStaleRaw -Records @((New-CcAccount -Name 'svc-a' -LastLogonUtc $script:CcNow.AddDays(30)))
+            $na = Get-AdfaStaleCountVerdict -DomainName $script:CcDom1 -Kind 'User' -Raw $stale0 -Interval $script:CcInterval -StaleDays 90 -Now $script:CcNow -Population (New-CcPopulation) -Config $script:CcStale -Future $future
+            $na.Status | Should -Be 'Not Assessed'
+            [string]$na.FutureLogon | Should -Be '1'
+            $na.Detail | Should -Match 'future'
+            $failed = Get-AdfaStaleCountVerdict -DomainName $script:CcDom1 -Kind 'User' -Raw $stale0 -Interval $script:CcInterval -StaleDays 90 -Now $script:CcNow -Population (New-CcPopulation) -Config $script:CcStale -Future (New-CcStaleRaw -Ok $false -ErrorText 'Access is denied')
+            $failed.Status | Should -Be 'Not Assessed'
+            $pass = Get-AdfaStaleCountVerdict -DomainName $script:CcDom1 -Kind 'User' -Raw $stale0 -Interval $script:CcInterval -StaleDays 90 -Now $script:CcNow -Population (New-CcPopulation) -Config $script:CcStale -Future (New-CcStaleRaw)
+            $pass.Status | Should -Be 'Pass'
+            [string]$pass.FutureLogon | Should -Be '0'
+            $warn = Get-AdfaStaleCountVerdict -DomainName $script:CcDom1 -Kind 'User' -Raw (New-CcStaleRaw -Records @((New-CcAccount -Name 'old1' -LastLogonUtc $script:CcNow.AddDays(-200)))) -Interval $script:CcInterval -StaleDays 90 -Now $script:CcNow -Population (New-CcPopulation) -Config $script:CcStale -Future $future
+            $warn.Status | Should -Be 'Warning'
+            $warn.Detail | Should -Match '1 enabled user account\(s\) carry a lastLogonTimestamp in the future'
+            $f = ConvertTo-AdfaConsolidatedFinding -Section 'Stale Objects' -Row $warn -StatusColumn 'Status'
+            $f.Recommendation | Should -Be (Get-AdfaRecommendation -Section 'Stale Objects' -Item 'Inactive enabled users' -Detail 'x')
+        }
+        It 'reads both future kinds once per domain with the tolerance past the run time, and writes their rows (two domains)' {
+            $script:CcFutureCuts = @()
+            function Get-ADUser { param([Parameter(ValueFromRemainingArguments)]$Rest) @() }
+            Mock Get-AdfaLogonSyncIntervalRaw { $script:CcInterval }
+            Mock Get-AdfaStalePopulationRaw { New-CcPopulation }
+            Mock Get-AdfaStaleRaw { param($DomainName, $Kind, $CutoffUtc) if ($Kind -like 'Future*') { $script:CcFutureCuts += $CutoffUtc }; New-CcStaleRaw }
+            foreach ($d in @($script:CcDom1, $script:CcDom2)) {
+                $rows = @(Get-AdfaStaleObject -DomainName $d -StaleDays 90 -Now $script:CcNow -Config $script:CcStale)
+                (Get-CcRow $rows 'Future logon timestamps: users')[0].Scope | Should -Be $d
+                (Get-CcRow $rows 'Future logon timestamps: computers')[0].Scope | Should -Be $d
+                Should -Invoke Get-AdfaStaleRaw -Times 1 -Exactly -ParameterFilter { $Kind -eq 'FutureUser' -and $DomainName -eq $d }
+                Should -Invoke Get-AdfaStaleRaw -Times 1 -Exactly -ParameterFilter { $Kind -eq 'FutureComputer' -and $DomainName -eq $d }
+            }
+            @($script:CcFutureCuts).Count | Should -Be 4
+            foreach ($c in $script:CcFutureCuts) { $c | Should -Be $script:CcNow.AddSeconds(300) }
+        }
+    }
+
+    Context 'Wiring (parsed script)' {
+        It 'collects the engine once, before the DcDiagnostics branch, when DcDiagnostics or Sysvol is selected, for every scoped domain' {
+            $calls = @(Get-CcCall $script:CcMain 'Get-AdfaSysvolEngineByDc')
+            $calls.Count | Should -Be 1
+            (Get-CcParameter $calls[0] 'Domains').Extent.Text | Should -Be '$targetDomains'
+            $gate = $calls[0].Parent
+            while ($null -ne $gate -and $gate -isnot [System.Management.Automation.Language.IfStatementAst]) { $gate = $gate.Parent }
+            $gate | Should -Not -BeNullOrEmpty
+            $gate.Clauses[0].Item1.Extent.Text | Should -Be '-not $forestError -and $sysvolEngineWanted'
+            $wanted = @($script:CcMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$sysvolEngineWanted' }, $true))
+            $wanted.Count | Should -Be 1
+            $wanted[0].Right.Extent.Text | Should -Match "Test-SectionSelected 'DcDiagnostics' \`$Sections"
+            $wanted[0].Right.Extent.Text | Should -Match "Test-SectionSelected 'Sysvol' \`$Sections"
+            $wanted[0].Right.Extent.Text | Should -Match '-or'
+            $wanted[0].Extent.StartOffset | Should -BeLessThan $gate.Extent.StartOffset
+            $dd = @(Get-CcBranch "Test-SectionSelected 'DcDiagnostics' `$Sections")
+            $dd.Count | Should -Be 1
+            $calls[0].Extent.StartOffset | Should -BeLessThan $dd[0].Extent.StartOffset
+        }
+        It 'hands the engines to the grid and the registry to the engine verdict' {
+            $dd = @(Get-CcBranch "Test-SectionSelected 'DcDiagnostics' `$Sections")
+            $grid = @(Get-CcCall $dd[0] 'Get-AdfaDcDiagnostic')
+            $grid.Count | Should -Be 1
+            (Get-CcParameter $grid[0] 'SysvolEngines') | Should -Not -BeNullOrEmpty
+            (Get-CcParameter $grid[0] 'SysvolEngines').Extent.Text | Should -Match 'Engines'
+            $sys = @(Get-CcBranch "Test-SectionSelected 'Sysvol' `$Sections")
+            $verdict = @(Get-CcCall $sys[0] 'Get-AdfaSysvolEngineVerdict')
+            $verdict.Count | Should -Be 1
+            (Get-CcParameter $verdict[0] 'Registry').Extent.Text | Should -Match 'Registry'
+        }
+        It 'reads the registry of every DC of every domain through the shared transport, with the new seam in its fixed list' {
+            $by = (Get-CcFunction 'Get-AdfaSysvolEngineByDc')[0]
+            $reads = @(Get-CcCall $by 'Get-AdfaSysvolRegistryRead')
+            $reads.Count | Should -Be 1
+            $loops = 0
+            $p = $reads[0].Parent
+            while ($null -ne $p -and $p -ne $by) { if ($p -is [System.Management.Automation.Language.ForEachStatementAst]) { $loops++ }; $p = $p.Parent }
+            $loops | Should -Be 2 -Because 'one loop over the domains and one over the DCs of each'
+            $read = (Get-CcFunction 'Get-AdfaSysvolRegistryRead')[0]
+            $transport = @(Get-CcCall $read 'Invoke-AdfaDcRemoteRead')
+            $transport.Count | Should -Be 1
+            (Get-CcParameter $transport[0] 'ReadCommand').Extent.Text | Should -Be "'Get-AdfaSysvolRegistryRaw'"
+            @(Get-CcCall $read 'Get-AdfaDcProbeGate').Count | Should -Be 1
+            @(Get-CcCall $read 'Test-TcpPort').Count | Should -Be 0
+            $remote = (Get-CcFunction 'Invoke-AdfaDcRemoteRead')[0]
+            $param = @($remote.Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'ReadCommand' })[0]
+            $set = @($param.Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })[0]
+            (@($set.PositionalArguments | ForEach-Object { [string]$_.Value }) -contains 'Get-AdfaSysvolRegistryRaw') | Should -BeTrue
+        }
+        It 'reads netlogon.bak from its own config path in the client site rows' {
+            $rowsFn = (Get-CcFunction 'Get-AdfaClientSiteRows')[0]
+            @(Get-CcCall $rowsFn 'Get-AdfaNetlogonLogRaw').Count | Should -Be 2
+            $idx = @($rowsFn.FindAll({ param($n) $n -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Index.Extent.Text -eq "'NetlogonBakPath'" }, $true))
+            $idx.Count | Should -Be 1
+            $verdict = @(Get-CcCall $rowsFn 'Get-AdfaNoClientSiteVerdict')
+            (Get-CcParameter $verdict[0] 'BakRaw') | Should -Not -BeNullOrEmpty
+        }
+        It 'reads both future kinds and hands them to the count verdicts' {
+            $so = (Get-CcFunction 'Get-AdfaStaleObject')[0]
+            $kinds = @(Get-CcCall $so 'Get-AdfaStaleRaw' | ForEach-Object { (Get-CcParameter $_ 'Kind').Extent.Text })
+            @($kinds | Where-Object { $_ -eq "'FutureUser'" }).Count | Should -Be 1
+            @($kinds | Where-Object { $_ -eq "'FutureComputer'" }).Count | Should -Be 1
+            $counts = @(Get-CcCall $so 'Get-AdfaStaleCountVerdict')
+            $counts.Count | Should -Be 2
+            foreach ($c in $counts) { (Get-CcParameter $c 'Future') | Should -Not -BeNullOrEmpty }
+            @(Get-CcCall $so 'Get-AdfaFutureLogonVerdict').Count | Should -Be 2
+        }
+        It 'audits the new file member in the side-effect inventory' {
+            $audit = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'docs/SIDE-EFFECT-AUDIT.md'))
+            $audit | Should -Match ([regex]::Escape('| `DotNet:[System.IO.File]::GetLastWriteTimeUtc` |'))
+            $audit | Should -Match 'Get-AdfaSysvolRegistryRaw'
+        }
+    }
+
+    Context 'Version' {
+        It 'is 1.41.0 in the script and the manifest (PORT-PLAN C14c and C11e)' {
+            [string]$script:Config.Version | Should -Be '1.41.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
         }
     }
 }

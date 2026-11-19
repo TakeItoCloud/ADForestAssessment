@@ -359,6 +359,15 @@ function Get-ADComputer {
         if (@($Properties) -contains '*' -or @($Properties).Count -eq 0) { throw 'STUB: the disabled read asked for every property' }
         return [pscustomobject]@{ SamAccountName = 'WS-RETIRED$'; lastLogonTimestamp = [int64]$now.AddDays(-300).ToFileTimeUtc(); whenCreated = $now.AddDays(-900); userAccountControl = 4098 }
     }
+    # C14c: the future lastLogonTimestamp read of the computers, told apart by '>='. Listed properties only,
+    # sent to the domain; no computer carries a future value.
+    if ($LDAPFilter -match 'lastLogonTimestamp>=') {
+        if (@($Properties) -contains '*' -or @($Properties).Count -eq 0) { throw 'STUB: the future read asked for every property' }
+        if ($LDAPFilter -notmatch 'msDS-DelegatedManagedServiceAccount') { throw 'STUB: the future computer read does not exclude delegated managed service accounts' }
+        $script:SmokeFutureCalls += ("computer {0}" -f $Server)
+        if ($script:SmokeStaleFail) { throw [System.UnauthorizedAccessException]'STUB: future read refused' }
+        return @()
+    }
     # C14 (STALE-001, review): the declared population, the enabled computers, told apart by the stale
     # filter without its time term. The default property set (no -Properties); three computers.
     if ($LDAPFilter -match '^\(&\(objectCategory=computer\)' -and $LDAPFilter -notmatch '<=') {
@@ -521,6 +530,10 @@ function Invoke-CimMethod {
         'SYSTEM\CurrentControlSet\Services\W32Time\Config|AnnounceFlags'                    = [uint32]10
         # C1a: the update build revision of the stub DC (build 17763), as GetDWORDValue returns it.
         'SOFTWARE\Microsoft\Windows NT\CurrentVersion|UBR'                                  = [uint32]6532
+        # C14c: the DFSR migration Local State of a DC whose SYSVOL migration is Eliminated (3), under the
+        # first Learn spelling only; 'LocalState' under the same key then answers 1 (key exists, value not
+        # set) and 'Local State' under 'MigratingSysVols' answers 2 (no such key), as measured.
+        'SYSTEM\CurrentControlSet\Services\DFSR\Parameters\SysVols\Migrating SysVols|Local State' = [uint32]3
     }
     # Keys that exist although the stub holds no value under them.
     $stubEmptyKeys = @('SYSTEM\CurrentControlSet\Services\LanManWorkstation\Parameters')
@@ -608,6 +621,16 @@ function Get-ADUser { param([Parameter(ValueFromRemainingArguments)]$a)
         $disabledAsked = @(@($stubUserNamed['Properties']) | ForEach-Object { [string]$_ })
         if ($disabledAsked -contains '*' -or $disabledAsked.Count -eq 0) { throw 'STUB: the disabled read asked for every property' }
         return [pscustomobject]@{ SamAccountName = 'left.user'; lastLogonTimestamp = [int64]$now.AddDays(-400).ToFileTimeUtc(); whenCreated = $now.AddDays(-900); userAccountControl = 514 }
+    }
+    # C14c: the future lastLogonTimestamp read of the users, told apart by '>='. Listed properties only, sent
+    # to the domain; one user carries a value 30 days in the future (a DC whose clock ran ahead).
+    if ([string]$stubUserNamed['LDAPFilter'] -match 'lastLogonTimestamp>=') {
+        $futureAsked = @(@($stubUserNamed['Properties']) | ForEach-Object { [string]$_ })
+        if ($futureAsked -contains '*' -or $futureAsked.Count -eq 0) { throw 'STUB: the future read asked for every property' }
+        if ([string]::IsNullOrWhiteSpace([string]$stubUserNamed['Server'])) { throw 'STUB: the future read must name its domain' }
+        $script:SmokeFutureCalls += ("user {0}" -f [string]$stubUserNamed['Server'])
+        if ($script:SmokeStaleFail) { throw [System.UnauthorizedAccessException]'STUB: future read refused' }
+        return @([pscustomobject]@{ SamAccountName = 'clock.skewed'; lastLogonTimestamp = [int64]$now.AddDays(30).ToFileTimeUtc(); whenCreated = $now.AddDays(-900); userAccountControl = 512 })
     }
     # C14 (STALE-001/002, review): the declared population, the enabled users, told apart by the stale
     # filter without its time term. The default property set (no -Properties); five users.
@@ -1210,13 +1233,20 @@ function Test-AdfaTcpAddress { param([string]$Address, [int]$Port, [int]$Timeout
 # C14 (SITE-001): the netlogon.log file seam, in the shape Get-AdfaNetlogonLogRaw returns: the end of a
 # log holding one NO_CLIENT_SITE line, for a fictional client in 198.51.100.0/24, and one unrelated line.
 # $script:SmokeNetlogonDenied makes it refuse the read as access denied. Every path asked is recorded.
+# C14c: each read carries the file's last write time (UTC), as Get-AdfaNetlogonLogRaw now returns it. The
+# log was last written an hour ago; netlogon.bak, its rollover file, 60 days ago (older than the 30-day age
+# window), and it names another fictional client, WS78, which must be reported as old, never current.
 $script:SmokeNetlogonDenied = $false
 $script:SmokeNetlogonCalls = @()
 function Get-AdfaNetlogonLogRaw { param([string]$Path, [int]$MaxBytes)
     $script:SmokeNetlogonCalls += $Path
-    if ($script:SmokeNetlogonDenied) { return [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Text = ''; Error = 'Access to the path is denied.'; ErrorType = 'System.UnauthorizedAccessException'; HResult = -2147024891; Path = $Path; Partial = $false; BytesRead = 0; FileLength = [int64]0 } }
+    if ($script:SmokeNetlogonDenied) { return [pscustomobject]@{ Ok = $false; Class = 'AccessDenied'; Text = ''; Error = 'Access to the path is denied.'; ErrorType = 'System.UnauthorizedAccessException'; HResult = -2147024891; Path = $Path; Partial = $false; BytesRead = 0; FileLength = [int64]0; LastWriteTimeUtc = $null; LastWriteError = '' } }
+    if ($Path -like '*\netlogon.bak') {
+        $bakText = "09/20 08:00:01 [MISC] [1234] CONTOSO: NO_CLIENT_SITE: WS78 198.51.100.78`r`n"
+        return [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = $bakText; Error = ''; ErrorType = ''; HResult = 0; Path = $Path; Partial = $false; BytesRead = $bakText.Length; FileLength = [int64]$bakText.Length; LastWriteTimeUtc = [datetime]::UtcNow.AddDays(-60); LastWriteError = '' }
+    }
     $text = "11/17 09:00:01 [SESSION] [1234] CONTOSO: NlSessionSetup: Try Session setup`r`n11/17 09:05:02 [MISC] [1234] CONTOSO: NO_CLIENT_SITE: WS77 198.51.100.77`r`n"
-    [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = $text; Error = ''; ErrorType = ''; HResult = 0; Path = $Path; Partial = $true; BytesRead = $text.Length; FileLength = [int64]20000000 } }
+    [pscustomobject]@{ Ok = $true; Class = 'Read'; Text = $text; Error = ''; ErrorType = ''; HResult = 0; Path = $Path; Partial = $true; BytesRead = $text.Length; FileLength = [int64]20000000; LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-1); LastWriteError = '' } }
 # C14 (SYSVOL-004): the module's "identity not found" exception, by type name, for the NTFRS subscriber
 # that a DFSR-only DC does not have.
 if ($null -eq ('SmokeStub.ADIdentityNotFoundException' -as [type])) {
@@ -1275,6 +1305,8 @@ $script:SmokeStaleFail = $false
 $script:SmokeStaleCalls = @()
 # C14 review: the declared-population reads, kept apart from the stale reads.
 $script:SmokePopulationCalls = @()
+# C14c: the future lastLogonTimestamp reads, kept apart from both.
+$script:SmokeFutureCalls = @()
 # C14 (TIME-001): w32tm answered only in the time pass ($script:SmokeW32tm), in the shape the /rdtsc CSV
 # documents: dc1 0.5 s and dc2 400.5 s from the host running the assessment.
 $script:SmokeW32tm = $false
@@ -1391,6 +1423,9 @@ if (Test-Path $dcCsv) {
     Check (@($dcCsvGrid).Count -eq 1 -and $dcCsvGrid[0].Scope -eq 'contoso.com' -and $dcCsvGrid[0].DCDIAG_Connectivity -eq 'Pass' -and $dcCsvGrid[0].DCDIAG_NCSecDesc -eq 'Pass' -and $dcCsvGrid[0].DCDIAG_SystemLog -eq 'Not Assessed') 'C11: the DC Diagnostics CSV has one grid row for the stub DC, with its domain, the new per-DC tests, and SystemLog held back'
     Check (@($dcCsvRows[0].PSObject.Properties.Name | Where-Object { $_ -like 'DCDIAG_*' }).Count -eq 21) 'C11: the grid has one column per per-DC test (declared population: 21)'
     Check (@($dcCsvGrid).Count -eq 1 -and $dcCsvGrid[0].DCDIAG_FsmoCheck -eq 'Pass' -and $dcCsvGrid[0].Status -eq 'Pass') 'C11 review: FsmoCheck, answered in the enterprise block, reads Pass for the DC asked, and the grid row stays Pass'
+    # C11e: the stub DC's SYSVOL engine is DFSR (directory objects and registry Local State 3), so FrsEvent is
+    # not applicable there; DFSREvent still runs, and the row's status is unchanged.
+    Check (@($dcCsvGrid).Count -eq 1 -and $dcCsvGrid[0].DCDIAG_FrsEvent -eq 'Not Applicable' -and $dcCsvGrid[0].DCDIAG_DFSREvent -eq 'Pass' -and $dcCsvGrid[0].NotRun -match 'FrsEvent not applicable' -and $dcCsvGrid[0].Failures -notmatch 'not applicable') 'C11e: FrsEvent is Not Applicable on the DFSR stub DC, DFSREvent runs, and the reason is in NotRun, not Failures'
 }
 else { Check $false 'DC Diagnostics CSV exists' }
 
@@ -1451,7 +1486,8 @@ foreach ($sec in @('_msdcs Zone Delegation', 'Time Hierarchy')) {
 $ddRows = @($smokeFindings | Where-Object { $_.Section -eq 'DC Diagnostics' })
 $ddCalls = @($script:SmokeDcdiagCalls)
 $ddPerDc = @($ddCalls | Where-Object { $_.Arguments -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation|Intersite)\b' })
-Check (@($ddPerDc).Count -eq 19 -and $ddPerDc[0].Arguments -eq '/test:Connectivity /s:dc1.contoso.com') ("DC Diagnostics: the stub DC is asked 19 per-DC tests, Connectivity first ({0})" -f @($ddPerDc).Count)
+# C11e: 18 since v1.41.0 - FrsEvent is not run on the stub DC, whose SYSVOL engine is DFSR.
+Check (@($ddPerDc).Count -eq 18 -and $ddPerDc[0].Arguments -eq '/test:Connectivity /s:dc1.contoso.com' -and @($ddPerDc | Where-Object { $_.Arguments -match '^/test:FrsEvent ' }).Count -eq 0 -and @($ddPerDc | Where-Object { $_.Arguments -match '^/test:DFSREvent ' }).Count -eq 1) ("DC Diagnostics: the stub DC is asked 18 per-DC tests, Connectivity first, FrsEvent not applicable to its DFSR engine ({0})" -f @($ddPerDc).Count)
 Check (@($ddCalls | Where-Object { $_.Arguments -match '^/test:Topology /s:dc1\.contoso\.com$' }).Count -eq 1) 'DC Diagnostics: Topology runs once for the one scoped domain'
 Check (@($ddCalls | Where-Object { $_.Arguments -match '^/test:(CheckSDRefDom|CrossRefValidation) /s:dc1\.contoso\.com$' }).Count -eq 2) 'DC Diagnostics: CheckSDRefDom and CrossRefValidation run once each, for the forest'
 Check (@($ddCalls | Where-Object { $_.Arguments -match '(?i)/test:(DNS|SystemLog|Intersite|LocatorCheck|CutoffServers)\b|(\s|^)/(fix|c|e)(\s|$)' }).Count -eq 0) 'DC Diagnostics: a default run starts no test that changes state, no LocatorCheck and no /fix, /c or /e'
@@ -1788,9 +1824,13 @@ Check (@($smokeFindings | Where-Object { $_.Section -eq 'Port Reachability' -and
 $c14Site = @($smokeFindings | Where-Object { $_.Section -eq 'Site Health' })
 Check (@($c14Site | Where-Object { $_.Item -eq 'Subnets without a site: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C14 SITE: the stub subnet carries a site, so Subnets without a site passes'
 Check (@($c14Site | Where-Object { $_.Item -eq 'Clients without a site: dc1.contoso.com' -and $_.Status -eq 'Warning' -and $_.Scope -eq 'contoso.com' -and $_.Detail -notmatch '198\.51\.100' }).Count -eq 1) 'C14 SITE: the NO_CLIENT_SITE line of the stub log is a Warning, with the address kept out of the text'
-Check (@($script:SmokeNetlogonCalls) -join ',') -eq '\\dc1.contoso.com\ADMIN$\debug\netlogon.log' ("C14 SITE: netlogon.log is read once, over ADMIN$ of the DC ({0})" -f (@($script:SmokeNetlogonCalls) -join ','))
+Check ((@($script:SmokeNetlogonCalls) -join ',') -eq '\\dc1.contoso.com\ADMIN$\debug\netlogon.log,\\dc1.contoso.com\ADMIN$\debug\netlogon.bak') ("C14 SITE, C14c: netlogon.log and then netlogon.bak are read once each, over ADMIN$ of the DC ({0})" -f (@($script:SmokeNetlogonCalls) -join ','))
+Check (@($c14Site | Where-Object { $_.Item -eq 'Clients without a site: dc1.contoso.com' -and $_.Detail -match '^1 distinct client' -and $_.Detail -match 'older than the age window' -and $_.Detail -match 'tool default, not a Microsoft value' -and $_.Detail -notmatch '198\.51\.100\.78' }).Count -eq 1) 'C14c SITE: the client in netlogon.bak, last written 60 days ago, is reported as old, not current, under the 30-day tool default'
 $c14SiteCsv = Join-Path $result.CsvPath 'Site Health.csv'
-if (Test-Path $c14SiteCsv) { Check (@(Import-Csv $c14SiteCsv | Where-Object { $_.Item -eq 'Clients without a site: dc1.contoso.com' -and $_.Clients -eq 'WS77 198.51.100.77' }).Count -eq 1) 'C14 SITE: the client name and address are in the Clients column' }
+if (Test-Path $c14SiteCsv) {
+    Check (@(Import-Csv $c14SiteCsv | Where-Object { $_.Item -eq 'Clients without a site: dc1.contoso.com' -and $_.Clients -eq 'WS77 198.51.100.77' }).Count -eq 1) 'C14 SITE: the client name and address are in the Clients column'
+    Check (@(Import-Csv $c14SiteCsv | Where-Object { $_.Item -eq 'Clients without a site: dc1.contoso.com' -and $_.ClientCount -eq '1' -and $_.OldClientCount -eq '1' -and $_.BakPath -eq '\\dc1.contoso.com\ADMIN$\debug\netlogon.bak' }).Count -eq 1) 'C14c SITE: one current client, one old client, and the netlogon.bak path in their columns'
+}
 else { Check $false 'C14 SITE: Site Health CSV exists' }
 $c14Stale = @($smokeFindings | Where-Object { $_.Section -eq 'Stale Objects' })
 Check (@($c14Stale | Where-Object { $_.Item -eq 'Inactive enabled users' -and $_.Status -eq 'Warning' -and $_.Detail -match '^2 enabled user' -and $_.Detail -match '1 of them never logged on' -and $_.Detail -match 'msDS-LogonTimeSyncInterval is not set' }).Count -eq 1) 'C14 STALE: two stale users, one never logged on, with the logon-sync caveat'
@@ -1812,6 +1852,12 @@ else { Check $false 'C14 STALE review: Stale Objects CSV exists' }
 $c14Sysvol = @($smokeFindings | Where-Object { $_.Section -eq 'SYSVOL / DFSR' })
 Check (@($c14Sysvol | Where-Object { $_.Item -eq 'SYSVOL replication engine: contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match 'Eliminated' }).Count -eq 1) 'C14 SYSVOL: the stub domain replicates SYSVOL with DFSR, corroborated by msDFSR-Flags 48'
 Check (@($c14Sysvol | Where-Object { $_.Item -eq 'SYSVOL engine: dc1.contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'C14 SYSVOL: the stub DC has its engine row'
+Check (@($c14Sysvol | Where-Object { $_.Item -eq 'SYSVOL engine: dc1.contoso.com' -and $_.Detail -match 'The registry agrees' -and $_.Detail -match 'Local State' -and $_.Detail -match 'Eliminated' }).Count -eq 1) 'C14c SYSVOL: the second instrument, the registry Local State (3, Eliminated), agrees with the directory objects'
+$c14cFuture = @($c14Stale | Where-Object { $_.Item -like 'Future logon timestamps: *' })
+Check (@($c14cFuture).Count -eq 2 -and @($c14cFuture | Where-Object { $_.Status -ne 'Info' -or $_.Scope -ne 'contoso.com' }).Count -eq 0) ("C14c STALE: one future-timestamp row for users and one for computers, Info and scoped to the domain ({0} rows)" -f @($c14cFuture).Count)
+Check (@($c14cFuture | Where-Object { $_.Item -eq 'Future logon timestamps: users' -and $_.Detail -match '^1 enabled user' -and $_.Detail -notmatch 'clock\.skewed' }).Count -eq 1) 'C14c STALE: the user with a lastLogonTimestamp 30 days ahead is counted, its name kept out of the text'
+Check (@($c14Stale | Where-Object { $_.Item -eq 'Inactive enabled users' -and $_.Detail -match 'carry a lastLogonTimestamp in the future' }).Count -eq 1) 'C14c STALE: the inactive users row says the future account is neither stale nor recent'
+Check ((@($script:SmokeFutureCalls) -join ',') -eq 'user contoso.com,computer contoso.com') ("C14c STALE: the future reads of users and computers, once each, from the domain ({0})" -f (@($script:SmokeFutureCalls) -join ', '))
 
 # C15: the inventory families, each in its own report section of an existing -Sections value, every row
 # Info or Not Assessed (the catalogue grades none), scoped to the domain, read from it.
@@ -2014,6 +2060,8 @@ $script:SmokeAclCalls = @()
 $script:SmokePrivCalls = @()
 # C11: one CrossRefValidation partition fails in this pass, to show it stays a partition's result.
 $script:SmokeDcdiagCalls = @()
+# C14c: the future lastLogonTimestamp reads of this pass alone.
+$script:SmokeFutureCalls = @()
 $script:SmokeDcdiagMode = 'PartitionFail'
 # C4b: the export and trust reads of each of the three domains, recorded for this pass alone.
 $script:SmokeExportCalls = @()
@@ -2060,7 +2108,7 @@ foreach ($d in $multiDomains) {
 $dd2Calls = @($script:SmokeDcdiagCalls)
 Check (@($dd2Calls | Where-Object { $_.Arguments -match '^/test:Topology ' }).Count -eq 3) 'Multi-domain: DC Diagnostics runs Topology once per scoped domain (declared population: three)'
 Check (@($dd2Calls | Where-Object { $_.Arguments -match '^/test:(CheckSDRefDom|CrossRefValidation) ' }).Count -eq 2) 'Multi-domain: DC Diagnostics runs the two forest tests once each, not once per domain'
-Check (@($dd2Calls | Where-Object { $_.Arguments -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation|Intersite)\b' }).Count -eq 57) 'Multi-domain: DC Diagnostics asks 19 per-DC tests of each domain''s DC (declared population: three DCs)'
+Check (@($dd2Calls | Where-Object { $_.Arguments -notmatch '/test:(Topology|CheckSDRefDom|CrossRefValidation|Intersite)\b' }).Count -eq 54 -and @($dd2Calls | Where-Object { $_.Arguments -match '^/test:FrsEvent ' }).Count -eq 0) 'Multi-domain: DC Diagnostics asks 18 per-DC tests of each domain''s DC, FrsEvent not applicable to its DFSR engine (declared population: three DCs)'
 Check (@($dd2 | Where-Object { $_.Item -eq 'dcdiag CrossRefValidation: Configuration' -and $_.Status -eq 'Fail' -and $_.Recommendation -match 'nETBIOSName' }).Count -eq 1) 'Multi-domain: the failed Configuration partition fails its own row, with the CrossRefValidation advice'
 Check (@($dd2 | Where-Object { $_.Item -eq 'dcdiag CrossRefValidation: forest contoso.com' -and $_.Status -eq 'Fail' }).Count -eq 1) 'Multi-domain: the forest roll-up fails on that one partition'
 # PORT-PLAN C11h: no DC Diagnostics row of the three domains carries an unscoped advice text.
@@ -2237,7 +2285,7 @@ Check (@($findings2 | Where-Object { $_.Section -eq 'Exchange SE Compatibility' 
 # The multi-domain checks further down read what the stubs recorded in the run above; these two runs
 # keep it as it was.
 $c16Recorded = @{}
-foreach ($name in @('SmokeC4bCalls', 'SmokeExportCalls', 'SmokeGptIniCalls', 'SmokeAclCalls', 'SmokePrivCalls', 'SmokeSmbCalls', 'SmokeDcdiagCalls', 'SmokeGpoListCalls', 'SmokeInventoryCalls', 'SmokeEventCalls', 'SmokeTcpCalls', 'SmokeReachCalls', 'SmokeNetlogonCalls', 'SmokeStaleCalls', 'SmokePopulationCalls', 'SmokeDisabledCalls', 'SmokeUsnCalls', 'SmokeDnsCalls')) {
+foreach ($name in @('SmokeC4bCalls', 'SmokeExportCalls', 'SmokeGptIniCalls', 'SmokeAclCalls', 'SmokePrivCalls', 'SmokeSmbCalls', 'SmokeDcdiagCalls', 'SmokeGpoListCalls', 'SmokeInventoryCalls', 'SmokeEventCalls', 'SmokeTcpCalls', 'SmokeReachCalls', 'SmokeNetlogonCalls', 'SmokeStaleCalls', 'SmokePopulationCalls', 'SmokeFutureCalls', 'SmokeDisabledCalls', 'SmokeUsnCalls', 'SmokeDnsCalls')) {
     $c16Var = Get-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
     if ($null -ne $c16Var) { $c16Recorded[$name] = @($c16Var.Value) }
 }
@@ -2543,6 +2591,9 @@ foreach ($d in $multiDomains) {
     Check (@($script:SmokeStaleCalls | Where-Object { $_ -eq ("user {0}" -f $d) }).Count -ge 2) ("Multi-domain C14: the stale user reads of '{0}' went to that domain" -f $d)
     Check (@($script:SmokePopulationCalls | Where-Object { $_ -eq ("user {0}" -f $d) }).Count -ge 1 -and @($script:SmokePopulationCalls | Where-Object { $_ -eq ("computer {0}" -f $d) }).Count -ge 1) ("Multi-domain C14 review: the enabled user and computer populations of '{0}' were counted from that domain" -f $d)
     Check (@($c14Stale2 | Where-Object { $_.Scope -eq $d -and $_.Detail -match 'The read saw 5 enabled user account' }).Count -eq 1) ("Multi-domain C14 review: the inactive users row of '{0}' states its own population" -f $d)
+    Check (@($findings2 | Where-Object { $_.Section -eq 'Stale Objects' -and $_.Item -like 'Future logon timestamps: *' -and $_.Scope -eq $d -and $_.Status -eq 'Info' }).Count -eq 2) ("Multi-domain C14c: '{0}' has its own two future-timestamp rows" -f $d)
+    Check (@($script:SmokeFutureCalls | Where-Object { $_ -eq ("user {0}" -f $d) -or $_ -eq ("computer {0}" -f $d) }).Count -eq 2) ("Multi-domain C14c: the two future reads of '{0}' went to that domain" -f $d)
+    Check (@($findings2 | Where-Object { $_.Section -eq 'SYSVOL / DFSR' -and $_.Item -eq 'SYSVOL engine: dc1.contoso.com' -and $_.Scope -eq $d -and $_.Detail -match 'The registry agrees' }).Count -eq 1) ("Multi-domain C14c: the DC of '{0}' has its engine row with the registry instrument" -f $d)
 }
 Check (@($c14Reach2).Count -eq 3 -and @($c14Sys2).Count -eq 3) ("Multi-domain C14: three reachability rows and three domain SYSVOL rows ({0}, {1})" -f @($c14Reach2).Count, @($c14Sys2).Count)
 
@@ -3061,6 +3112,7 @@ $script:SmokeInventoryFail = $true
 $script:SmokeEventsFail = $true
 $script:SmokeEventCalls = @()
 $script:SmokePopulationCalls = @()
+$script:SmokeFutureCalls = @()
 # C4b: the export, trust, site link and connection reads are refused (access denied).
 $script:SmokeC4bFail = $true
 $script:SmokeExportCalls = @()
@@ -3261,6 +3313,11 @@ Check (@($site3).Count -eq 2 -and @($site3 | Where-Object { $_.Status -ne 'Not A
 $stale3 = @($findings3 | Where-Object { $_.Section -eq 'Stale Objects' -and $_.Item -match '^(Inactive enabled (users|computers)|Enabled users with an old password)$' })
 Check (@($stale3).Count -eq 3 -and @($stale3 | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match '\(access denied\)' -and $_.Detail -match 'not zero' }).Count -eq 3) ("Failure mode C14: the three stale rows are Not Assessed, say access denied and never zero ({0} rows)" -f @($stale3).Count)
 Check (@($script:SmokePopulationCalls).Count -eq 2 -and @($stale3 | Where-Object { $_.Status -eq 'Pass' -or $_.Detail -match 'The read saw' }).Count -eq 0) ("Failure mode C14 review: the two population counts were refused, no stale row passes and none states a population ({0} counts)" -f @($script:SmokePopulationCalls).Count)
+# C14c: the two future-timestamp reads were refused too: Not Assessed, access denied, never Info 0 or Pass.
+$future3 = @($findings3 | Where-Object { $_.Section -eq 'Stale Objects' -and $_.Item -like 'Future logon timestamps: *' })
+Check (@($future3).Count -eq 2 -and @($future3 | Where-Object { $_.Status -eq 'Not Assessed' -and $_.Detail -match '\(access denied\)' }).Count -eq 2 -and @($script:SmokeFutureCalls).Count -eq 2) ("Failure mode C14c: the two future-timestamp rows are Not Assessed, access denied ({0} rows, {1} reads)" -f @($future3).Count, @($script:SmokeFutureCalls).Count)
+# C14c: no DC was enumerated, so no SYSVOL engine row of a DC is graded and no grid cell is Not Applicable.
+Check (@($findings3 | Where-Object { $_.Section -eq 'SYSVOL / DFSR' -and $_.Item -like 'SYSVOL engine: *' -and $_.Status -ne 'Not Assessed' }).Count -eq 0) 'Failure mode C14c: no per-DC SYSVOL engine row is graded when nothing could be read'
 $sys3 = @($findings3 | Where-Object { $_.Section -eq 'SYSVOL / DFSR' -and $_.Item -like 'SYSVOL replication engine*' })
 Check (@($sys3).Count -eq 1 -and $sys3[0].Status -eq 'Not Assessed' -and $sys3[0].Detail -match 'ADWS unreachable') ("Failure mode C14: the SYSVOL engine of the domain is Not Assessed with the cause ({0} rows)" -f @($sys3).Count)
 # C15: no DC enumerated and every inventory read refused. Each family says so, per domain where it reads
