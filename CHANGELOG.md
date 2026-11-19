@@ -126,6 +126,12 @@ is C17.
   test of a DC graded from the registry now expects "1 of them graded from the registry" (was "1 of
   them from the registry alone"), because the domain row's old text claimed the directory objects
   "could not be read", which is false for a DC with one object read.
+- **Found by CI on the pull request, and fixed in it.** The C2 read-only guard counted five
+  `New-CimSession` and five `Remove-CimSession` calls; the new SYSVOL registry seam is the sixth, and
+  closes its session with `-WhatIf:$false -Confirm:$false` like the others. The targeted test set had
+  not included the C2 Describe. The guard now names the six functions that open and close a session
+  instead of counting them, so a seventh fails on its name; shown red against a scratch copy with a
+  seventh seam added.
 - **Vendor sources, all read 2026-11-19**:
   dd639712 (SYSVOL migration, Migrating SysVols key, Redirected step)
   https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd639712(v=ws.10);

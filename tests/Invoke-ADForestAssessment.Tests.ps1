@@ -3611,9 +3611,19 @@ Describe 'DC disk space, and the generic config override (C2)' {
         It 'forces -WhatIf and -Confirm off where a CIM session is closed, so a preference cannot leave sessions open' {
             $closes = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'Remove-CimSession' })
             # Declared population: the DcSystem seam, the DcDisk seam, the DcHardening seam (C3), the DC
-            # network seam (C13) and the W32Time seam (C15), the five places a CIM session is opened.
-            $closes.Count | Should -Be 5
-            @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'New-CimSession' }).Count | Should -Be 5
+            # network seam (C13), the W32Time seam (C15) and the SYSVOL registry seam (C14c, v1.41.0),
+            # the six places a CIM session is opened. Each is named, so a seventh fails on its name.
+            $declared = @('Get-AdfaDcDiskRaw', 'Get-AdfaDcHardeningRaw', 'Get-AdfaDcNetworkRaw', 'Get-AdfaDcSystemRaw', 'Get-AdfaDcW32TimeRaw', 'Get-AdfaSysvolRegistryRaw')
+            $opens = @($script:C2Commands | Where-Object { $_.GetCommandName() -eq 'New-CimSession' })
+            foreach ($set in @($closes, $opens)) {
+                $set.Count | Should -Be 6
+                $owners = @(foreach ($call in $set) {
+                        $f = $call.Parent
+                        while ($null -ne $f -and $f -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $f = $f.Parent }
+                        if ($null -eq $f) { '<script scope>' } else { $f.Name }
+                    })
+                (@($owners | Sort-Object) -join ',') | Should -Be ($declared -join ',')
+            }
             foreach ($call in $closes) {
                 foreach ($switch in @('WhatIf', 'Confirm')) {
                     $w = @($call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $switch })
