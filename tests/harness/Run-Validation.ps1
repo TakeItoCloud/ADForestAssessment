@@ -3007,11 +3007,11 @@ Assert-Throws { Merge-AdfaDcDiagConfig -BaseConfig $dd -Override @{ PerDcTests =
 Assert-Throws { Merge-AdfaDcDiagConfig -BaseConfig $dd -Override @{ TestTimeoutSeconds = 601 } } 'whole number from 5 to 600' 'DcDiag override: the time-out is bounded'
 Assert-Throws { Merge-AdfaDcDiagConfig -BaseConfig $dd -Override @{ Retries = '2' } } 'JSON number' 'DcDiag override: a quoted number is refused'
 Assert-Equal 'DNS,Intersite,SystemLog' ((@($script:Config.DcdiagActiveTests) | ForEach-Object { [string]$_.Test }) -join ',') 'C11: SystemLog is held back with DNS and Intersite (Learn: "reading and writing entries")'
-# The advice: the scoped families get their own; the grid rows keep the unscoped entries.
+# The advice: the scoped families get their own; since C11h the grid rows get one entry per failing test.
 $ddHostile = 'replication sysvol dfsr backup global catalog delegation C:\Backup\stale.json'
 $ddRecs = @(foreach ($item in @('dcdiag Topology: contoso.com', 'dcdiag CheckSDRefDom: Schema', 'dcdiag CrossRefValidation: forest contoso.com', 'dcdiag Intersite: HQ', 'dcdiag coverage: contoso.com')) { Get-AdfaRecommendation -Section 'DC Diagnostics' -Item $item -Detail $ddHostile })
 Assert-True ($ddRecs[0] -match 'topology generation' -and $ddRecs[1] -match 'msDS-SDReferenceDomain' -and $ddRecs[2] -match 'nETBIOSName' -and $ddRecs[3] -match 'Intersite Topology Generator' -and $ddRecs[4] -eq '' -and @($ddRecs | Where-Object { $_ -match 'dfsrmig|wbadmin|repadmin /replsummary' }).Count -eq 0) 'C11 advice: each scoped family gets its own advice, whatever the Detail says (declared population: five items)'
-Assert-True ((Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail 'SysVolCheck: x') -match 'dfsrmig') 'C11 advice: a grid row keeps the unscoped advice it had'
+Assert-True ((Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail 'SysVolCheck: x') -match "^dcdiag's SysVolCheck test failed") 'C11h advice: a grid row gets its failing test''s own section-scoped advice (was the unscoped dfsrmig advice before v1.40.0)'
 # Found by the independent review of the C11 diff, before commit.
 $ddLong = 'maplewaffle-ws22.corp.contoso.com'
 Assert-True (-not (Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE' -HostName $ddLong) -and -not (Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE-WS' -HostName $ddLong) -and (Test-AdfaDcdiagSubject -Subject 'MAPLEWAFFLE-WS2' -HostName $ddLong)) 'C11 subject: an 11- or 14-character prefix of a long label is not its NetBIOS form; the 15-character form is'
@@ -3025,9 +3025,11 @@ $ddNlOut = "   Testing server: Default-First-Site-Name\DC1`r`n      Starting tes
 $ddNl = Resolve-AdfaDcdiagVerdict -Parsed (ConvertFrom-AdfaDcdiagOutput -StdOut $ddNlOut -Config $dd) -TestName 'Netlogons' -HostName 'dc1.contoso.com' -StdOut $ddNlOut
 Assert-True ($ddNl.Status -eq 'Fail' -and $ddNl.Detail -match 'KB 3073945' -and $ddNl.Detail -notmatch '(?i)replication') 'C11 verdict: the Access is denied note on a failed verdict is there, and does not say replication'
 $ddAdvice = [string]@($script:RecommendationMap | Where-Object { -not $_.ContainsKey('Section') -and [string]$_.Match -eq '(?i)dcdiag|advertising|netlogons|sysvolcheck|fsmocheck|kccevent' })[0].Text
-Assert-Equal $ddAdvice (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $ddNl.Detail) 'C11 advice: a failed NetLogons with Access is denied gets the dcdiag advice, not the replication advice'
+$ddNlRec = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $ddNl.Detail
+Assert-True ($ddNlRec -match "^dcdiag's NetLogons test failed" -and $ddNlRec -ne $ddAdvice) 'C11h advice: a failed NetLogons with Access is denied gets the NetLogons advice, not the replication or the generic dcdiag advice'
 $ddKcc = Resolve-AdfaDcdiagVerdict -Parsed (ConvertFrom-AdfaDcdiagOutput -StdOut "Diagnostic du serveur d'annuaire`r`nDC1 a reussi le test KccEvent" -Config $dd) -TestName 'KccEvent' -HostName 'dc1.contoso.com' -StdOut "Diagnostic du serveur d'annuaire`r`nDC1 a reussi le test KccEvent"
-Assert-Equal $ddAdvice (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $ddKcc.Detail) 'C11 advice: an unrecognised cell gets the dcdiag advice, not the event-log coverage advice'
+$ddKccRec = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $ddKcc.Detail
+Assert-True ($ddKccRec -match 'gave no verdict this tool could read' -and $ddKccRec -notmatch 'cleared or wrapped') 'C11h advice: an unrecognised cell gets the Not Assessed grid advice, not the event-log coverage advice'
 $ddBanner = Resolve-AdfaDcdiagVerdict -Parsed (ConvertFrom-AdfaDcdiagOutput -StdOut "Directory Server Diagnosis`r`nPerforming initial setup:" -Config $dd) -TestName 'Advertising' -HostName 'dc1.contoso.com' -StdOut "Directory Server Diagnosis`r`nPerforming initial setup:"
 Assert-True ($ddBanner.Status -eq 'Not Assessed' -and $ddBanner.Detail -match 'neither' -and $ddBanner.Detail -notmatch 'localised') 'C11 verdict: English banner-only output is "no verdict line", not "possibly localised"'
 $ddBare = ConvertFrom-AdfaDcdiagOutput -StdOut "   Testing server: Default-First-Site-Name\DC2`r`n      Starting test: Advertising`r`n         ......................... passed test Advertising" -Config $dd
@@ -3185,7 +3187,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.39.0' ([string]$script:Config.Version) 'C14: version 1.39.0 in the script (bumped by PORT-PLAN H20c and H20d)'
+Assert-Equal '1.40.0' ([string]$script:Config.Version) 'C14: version 1.40.0 in the script (bumped by PORT-PLAN C4b3, C4b4 and C11h)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3278,7 +3280,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.39.0' ([string]$script:Config.Version) 'C15: version 1.39.0 in the script (bumped by PORT-PLAN H20c and H20d)'
+Assert-Equal '1.40.0' ([string]$script:Config.Version) 'C15: version 1.40.0 in the script (bumped by PORT-PLAN C4b3, C4b4 and C11h)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3502,7 +3504,7 @@ $c16Src2 = & {
     Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
 }
 Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
-Assert-Equal '1.39.0' ([string]$script:Config.Version) 'C16: version 1.39.0 in the script (bumped by PORT-PLAN H20c and H20d)'
+Assert-Equal '1.40.0' ([string]$script:Config.Version) 'C16: version 1.40.0 in the script (bumped by PORT-PLAN C4b3, C4b4 and C11h)'
 
 # ---- PORT-PLAN C1a: the update build revision (pure) -----------------------------------------
 $c1aKey = [string]$script:Config.DcSystem['UbrKey']
@@ -3586,6 +3588,98 @@ Assert-Equal 0 ([int](Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ Exi
 Assert-Equal 1 ([int](Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = 1 }))) 'H21 review fix: the process exit code is the summary ExitCode 1'
 Assert-Equal 2 ([int](Get-AdfaScriptExitCode -RunOutput @())) 'H21 review fix: no summary is exit code 2'
 Assert-Equal 2 ([int](Get-AdfaScriptExitCode -RunOutput @([pscustomobject]@{ ExitCode = 7 }))) 'H21 review fix: an ExitCode outside 0/1/2 is exit code 2'
+
+# --- PORT-PLAN C4b3: the options bits and the destination of a connection object (MS-ADTS, read 2026-11-19) ---
+$lhConn = $script:Config['ConnectionOptions']
+Assert-Equal 7 @($lhConn['Bits']).Count 'C4b3: the ConnectionOptions table holds the seven MS-ADTS bits (declared population)'
+Assert-Equal 'NTDSCONN_OPT_IS_GENERATED' ([string]@($lhConn['Bits'] | Where-Object { [int]$_['Value'] -eq 1 })[0]['Name']) 'C4b3: bit 0x1 is NTDSCONN_OPT_IS_GENERATED (MS-ADTS 6.1.1.2.2.1.2.1.2)'
+Assert-Equal 'Yes' ([string](ConvertFrom-AdfaConnectionOptions -Value 1 -Config $lhConn).Generated) 'C4b3: options 1 is a generated connection (IG set)'
+Assert-Equal 'No' ([string](ConvertFrom-AdfaConnectionOptions -Value 0 -Config $lhConn).Generated) 'C4b3: options 0, read, is a connection with IG clear'
+foreach ($lhBad in @($null, '', 'abc', 1.5, $true, [int64]4294967296)) {
+    $lhD = ConvertFrom-AdfaConnectionOptions -Value $lhBad -Config $lhConn
+    Assert-True ($lhD.Generated -eq 'Not read' -and -not $lhD.Read -and [string]$lhD.Cause -ne '') ("C4b3: options '{0}' is Not read with a cause, never No" -f [string]$lhBad)
+}
+Assert-Equal '0x80' ((@((ConvertFrom-AdfaConnectionOptions -Value 0x81 -Config $lhConn).Unknown)) -join ',') 'C4b3: a bit outside the MS-ADTS table is kept raw'
+Assert-True ((ConvertFrom-AdfaConnectionOptions -Value ([int32]-2147483647) -Config $lhConn).Generated -eq 'Yes') 'C4b3: a negative options value is read as unsigned 32 bits'
+$lhMin = ConvertFrom-AdfaConnectionOptions -Value ([int32]::MinValue) -Config $lhConn
+Assert-True ($lhMin.Read -and $lhMin.Generated -eq 'No' -and ((@($lhMin.Unknown)) -join ',') -eq '0x80000000') 'C4b3: [int32]::MinValue, the lower edge, decodes as 0x80000000 with IG clear'
+$lhMax = ConvertFrom-AdfaConnectionOptions -Value ([int64]4294967295) -Config $lhConn
+Assert-True ($lhMax.Read -and $lhMax.Generated -eq 'Yes' -and @($lhMax.Unknown).Count -eq 25) 'C4b3: 0xFFFFFFFF, the upper edge, decodes: seven named bits and 25 raw (declared population: 32 bits)'
+Assert-True ((ConvertFrom-AdfaConnectionOptions -Value ([int64]-2147483649) -Config $lhConn).Generated -eq 'Not read') 'C4b3: one below [int32]::MinValue is Not read'
+Assert-True ([string](ConvertFrom-AdfaConnectionOptions -Value $null -Config $lhConn).Cause -notmatch 'KCC') 'C4b3: a Not read cause names the bit, not the KCC (MS-ADTS defines IG differently on an RODC NTFRS connection)'
+$lhCnf = Get-AdfaConnectionDestination -DistinguishedName 'CN=x,CN=NTDS Settings\0ACNF:0f0e0d0c-0000-0000-0000-000000000001,CN=DC01,CN=Servers,CN=S1,CN=Sites,CN=Configuration,DC=contoso,DC=local' -Config $lhConn
+Assert-True (-not $lhCnf.Ok -and [string]$lhCnf.Cause -match 'parent RDN of this connection is not CN=NTDS Settings' -and [string]$lhCnf.Cause -notmatch 'is not an nTDSDSA') 'C4b3: a CNF-mangled NTDS Settings parent is not derived, and the cause names the RDN, not a class never read'
+$lhNoBit = @{} + $lhConn; $lhNoBit.Remove('GeneratedBit')
+Assert-Equal 'Not read' ([string](ConvertFrom-AdfaConnectionOptions -Value 1 -Config $lhNoBit).Generated) 'C4b3: no GeneratedBit in the table is Not read, never No'
+$lhDsa = 'CN=NTDS Settings,CN=DC1,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com'
+$lhDest = Get-AdfaConnectionDestination -DistinguishedName ('CN=c1,{0}' -f $lhDsa) -Config $lhConn
+Assert-True ($lhDest.Ok -and $lhDest.DsaDn -eq $lhDsa) 'C4b3: the destination is the parent of the connection DN, an NTDS Settings object in CN=Servers'
+Assert-True ((Get-AdfaConnectionDestination -DistinguishedName ('CN=c\,1,{0}' -f $lhDsa) -Config $lhConn).DsaDn -eq $lhDsa) 'C4b3: an escaped comma does not split the DN'
+foreach ($lhDn in @('', 'CN=lonely', 'CN=c1,CN=DC1,CN=Domain System Volume (SYSVOL share),CN=File Replication Service,CN=System,DC=contoso,DC=com', 'CN=c1,CN=NTDS Settings,CN=DC1,CN=Elsewhere,DC=contoso,DC=com')) {
+    $lhX = Get-AdfaConnectionDestination -DistinguishedName $lhDn -Config $lhConn
+    Assert-True (-not $lhX.Ok -and $lhX.DsaDn -eq '' -and [string]$lhX.Cause -match 'not derived') ("C4b3: '{0}' gives no destination, with the cause" -f $lhDn)
+}
+$lhRows = @(ConvertTo-AdfaTopologyListRow -Kind Connection -Raw ([pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Refused = $false; Count = 2; Capped = $false
+            Records = @([pscustomobject]@{ name = 'c1'; distinguishedName = ('CN=c1,{0}' -f $lhDsa); fromServer = 'CN=NTDS Settings,CN=DC2,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com'; enabledConnection = $true; options = 1 },
+                [pscustomobject]@{ name = 'c2'; distinguishedName = ('CN=c2,{0}' -f $lhDsa); fromServer = 'CN=NTDS Settings,CN=DC3,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com'; enabledConnection = $true }) }))
+Assert-True ($lhRows.Count -eq 2 -and $lhRows[0].ToServer -eq $lhDsa -and $lhRows[0].AutoGenerated -eq 'Yes' -and $lhRows[0].OptionFlags -eq 'NTDSCONN_OPT_IS_GENERATED') 'C4b3: a connection row carries ToServer, AutoGenerated and OptionFlags'
+Assert-True ($lhRows[1].AutoGenerated -eq 'Not read' -and $lhRows[1].Detail -match '^AutoGenerated: options was not returned') 'C4b3: a connection with no options value is Not read with its cause, never No'
+
+# --- PORT-PLAN C4b4: a cap the file set is never called a tool default ---
+$lhInvFile = Merge-AdfaSpecConfig -BaseConfig $script:Config.Inventory -Override @{ MaxObjects = 2 } -OverrideSource 'C:\cfg\c4b4.json'
+$lhStaleFile = Merge-AdfaSpecConfig -BaseConfig $script:Config.Stale -Override @{ MaxObjects = 2 } -OverrideSource 'C:\cfg\c4b4.json'
+$lhCapped = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Records = @([pscustomobject]@{ Name = 'g1'; sAMAccountName = 'g1'; groupType = 2; memberCount = 0 }); Count = 1; Capped = $true }
+$lhNow = [datetime]::new(2026, 11, 19, 9, 0, 0, [System.DateTimeKind]::Utc)
+$lhTexts = [ordered]@{
+    'level'          = (Get-AdfaLevelRow -Kind Domain -Scope 'contoso.com' -Raw $lhCapped -Config $lhInvFile).Detail
+    'FSMO'           = (Get-AdfaFsmoRow -Role 'RID master' -Scope 'contoso.com' -Raw $lhCapped -Config $lhInvFile).Detail
+    'UPN suffix'     = (Get-AdfaUpnSuffixRow -ForestName 'contoso.com' -Raw $lhCapped -Config $lhInvFile).Detail
+    'DNS suffix'     = (Get-AdfaAllowedDnsSuffixRow -DomainName 'contoso.com' -Raw $lhCapped -Config $lhInvFile).Detail
+    'trusts'         = @(Get-AdfaTrustInventoryRows -DomainName 'contoso.com' -Raw $lhCapped -Config $lhInvFile)[0].Detail
+    'object counts'  = @(Get-AdfaObjectCountRows -DomainName 'contoso.com' -Reads @{ Users = $lhCapped } -Config $lhInvFile)[0].Detail
+    'groups'         = @(Get-AdfaGroupInventoryRows -DomainName 'contoso.com' -Raw $lhCapped -Config $lhInvFile)[0].Detail
+    'group export'   = @(ConvertTo-AdfaGroupExportRow -DomainName 'contoso.com' -Raw $lhCapped -Config $lhInvFile)[0].ListComplete
+    'GPO'            = @(Get-AdfaGpoDirectoryRows -DomainName 'contoso.com' -Gpc $lhCapped -Som $lhCapped -Site $lhCapped -Wmi $lhCapped -Config $lhInvFile -GpoConfig $script:Config.Gpo)[0].Detail
+    'stale users'    = (Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind User -Raw $lhCapped -Interval $null -StaleDays 90 -Now $lhNow -Config $lhStaleFile).Detail
+    'password age'   = (Get-AdfaPasswordAgeVerdict -DomainName 'contoso.com' -Raw $lhCapped -Now $lhNow -Config $lhStaleFile).Detail
+    'stale disabled' = (Get-AdfaStaleDisabledVerdict -DomainName 'contoso.com' -Kind Computer -Raw $lhCapped -Interval $null -StaleDays 90 -Now $lhNow -Config $lhStaleFile).Detail
+}
+Assert-Equal 12 $lhTexts.Count 'C4b4: twelve row families checked (declared population)'
+foreach ($lhK in @($lhTexts.Keys)) {
+    Assert-True ([string]$lhTexts[$lhK] -match 'MaxObjects, set in the -ConfigOverridePath file' -and [string]$lhTexts[$lhK] -notmatch 'a tool default') ("C4b4: the {0} row names a file-set cap as the file's, not a tool default" -f $lhK)
+}
+Assert-True ((Get-AdfaLevelRow -Kind Domain -Scope 'contoso.com' -Raw $lhCapped -Config $script:Config.Inventory).Detail -match '\(Inventory\.MaxObjects, a tool default\)') 'C4b4: the built-in cap is still called a tool default'
+Assert-Throws { Get-AdfaInventoryReadCause -Raw $lhCapped -What 'x' -CapSource '' } 'empty' 'C4b4: Get-AdfaInventoryReadCause refuses an empty cap source'
+# Review fix: the GPO reads after the groupPolicyContainer read, each capped alone after a complete Gpc read
+# (declared population: the SOM, site, WMI and other-domain reads).
+$lhGpc = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Count = 1; Capped = $false
+    Records = @([pscustomobject]@{ Name = '{31B2F340-016D-11D2-945F-00C04FB984F9}'; DistinguishedName = 'CN={31B2F340-016D-11D2-945F-00C04FB984F9},CN=Policies,CN=System,DC=contoso,DC=com'; displayName = 'Default Domain Policy'; flags = 0; versionNumber = 1; gPCWQLFilter = '' }) }
+$lhDone = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Count = 0; Capped = $false; Records = @() }
+$lhGpoCases = [ordered]@{ Som = 'the gPLink of the domain head and its OUs'; Site = 'the gPLink of the sites'; Wmi = 'the WMI filters (msWMI-Som)'; Other = "the gPLink of another forest domain's head and OUs" }
+Assert-Equal 4 $lhGpoCases.Count 'C4b4: four GPO reads past the Gpc early return (declared population)'
+foreach ($lhG in @($lhGpoCases.Keys)) {
+    $lhR = @{ Som = $lhDone; Site = $lhDone; Wmi = $lhDone; Other = $lhDone }
+    $lhR[$lhG] = $lhCapped
+    $lhSum = @(@(Get-AdfaGpoDirectoryRows -DomainName 'contoso.com' -Gpc $lhGpc -Som $lhR.Som -Site $lhR.Site -Wmi $lhR.Wmi -ForestDomains @('contoso.com', 'north.contoso.com') -OtherSom @([pscustomobject]@{ Domain = 'north.contoso.com'; Raw = $lhR.Other }) -Config $lhInvFile -GpoConfig $script:Config.Gpo) | Where-Object { [string]$_.Item -eq 'GPO directory inventory: contoso.com' })
+    $lhSumText = ''
+    if ($lhSum.Count -eq 1) { $lhSumText = [string]$lhSum[0].Detail }
+    Assert-True ($lhSum.Count -eq 1 -and $lhSumText.Contains($lhGpoCases[$lhG]) -and $lhSumText -match 'Inventory\.MaxObjects, set in the -ConfigOverridePath file' -and $lhSumText -notmatch 'a tool default') ("C4b4: the GPO {0} read, capped by the file, names the file's cap, not a tool default" -f $lhG)
+}
+
+# --- PORT-PLAN C11h: one advice entry per failing grid test; quoted dcdiag lines choose nothing ---
+$lhUnscoped = @($script:RecommendationMap | Where-Object { -not $_.ContainsKey('Section') } | ForEach-Object { [string]$_.Text })
+$lhPerDc = @($script:Config.DcDiag.PerDcTests | ForEach-Object { [string]$_.Test })
+Assert-Equal 21 $lhPerDc.Count 'C11h: 21 per-DC grid tests (declared population)'
+foreach ($lhT in $lhPerDc) {
+    $lhRec = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail ("{0}: replication access was denied; time skew; TRUSTED_FOR_DELEGATION; SYSVOL; backup" -f $lhT)
+    Assert-True ($lhRec -match ("^dcdiag's {0} test failed" -f $lhT) -and $lhUnscoped -notcontains $lhRec) ("C11h: a failed {0} cell gets its own advice, whatever dcdiag quoted" -f $lhT)
+}
+Assert-Equal '' (Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail 'Unexpected: replication backup') 'C11h: any other grid text gets no advice, never an unscoped entry'
+Assert-True ((Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail 'DC not reachable (RPC/135) - no dcdiag tests run.') -match 'did not answer on RPC/135') 'C11h: a DC not reachable gets the reachability advice'
+# Review fix: a DC classified Unreachable by the reachability probe was never probed on 135.
+$lhGated = ("DC not reachable - no dcdiag tests run. {0}" -f (Get-AdfaDcGateText -Cause 'Unreachable, classified once for this run by the reachability probe: the name does not resolve' -NotRead 'it was not probed again'))
+$lhGatedRec = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $lhGated
+Assert-True ($lhGatedRec -match 'classified this domain controller Unreachable' -and $lhGatedRec -notmatch 'did not answer on RPC/135' -and $lhUnscoped -notcontains $lhGatedRec) 'C11h: a DC classified Unreachable (never probed on 135) gets advice that states no RPC/135 result'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
