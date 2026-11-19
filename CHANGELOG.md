@@ -10,6 +10,25 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-19 (function-specific parameter help, tool v1.46.0)
+
+**PORT-PLAN H21b** (approved upfront by the operator). Help text only; **no code change**. The parser's
+non-comment tokens of `Invoke-ADForestAssessment.ps1` are identical to v1.45.0, so no finding, status, Item, Detail
+or report shape changed.
+
+- The 628 `.PARAMETER` entries that said only "The <name> input of <function>" (in 290 functions) now say what that
+  function does with the parameter: what the value means, how it is used, and what happens when it is absent, empty
+  or `$null` where the code handles that. The trailing facts sentence (type, mandatory, default, allowed values)
+  written by H21 is kept word for word.
+- How it was done: ten writer agents, each followed by an independent accuracy check of the same entries (73
+  corrections), returned text only. One local apply refused any entry whose current text, `.PARAMETER` line or facts
+  sentence did not match; none was refused. One entry with a different wording (Select-AdfaDomainDcTarget
+  `-Targets`) was written by hand.
+- The 948 shared-vocabulary entries are accurate descriptions shared by functions that use a parameter the same way,
+  and are kept (decision recorded in the H21b row).
+- Version 1.46.0 in the script and the manifest; the version tests and Run-Validation assertions are renamed to
+  1.46.0. No test was added or removed.
+
 ### Added - 2026-11-19 (ESC1 over published templates with the enrolment ACL, Exchange AD versions, the lingering-object scan of the other partitions, DNS server reads with -Credential, tool v1.45.0)
 
 **PORT-PLAN C16b(4-7)** (the last four of the seven C16b coverage additions; every choice approved upfront by the

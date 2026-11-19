@@ -1024,7 +1024,7 @@
 
 .NOTES
     Owner: Carlos Annes (TakeItToCloud)
-    Version: 1.45.0
+    Version: 1.46.0
     Created: 2026-07-22
     Last updated: 2026-11-19
     Requires: Windows PowerShell 5.1 or PowerShell 7+ (5.1 because the script runs on a stock domain controller); RSAT ActiveDirectory module (no minimum version set); DnsServer, GroupPolicy and DFSR modules optional; domain read access; administrative rights on the domain controllers for trust verification, dcdiag and the remote CIM sections; Enterprise Admins for the opt-in dcdiag DNS test (Microsoft's statement).
@@ -1142,7 +1142,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.45.0'
+    Version                 = '1.46.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -4508,7 +4508,8 @@ function New-Folder {
         folder intact. So this is never the claim of a run folder: New-AdfaRunFolder claims one by
         creating its log file with FileMode CreateNew (PORT-PLAN H21).
     .PARAMETER Path
-        The path input of New-Folder. Type [string], mandatory.
+        The folder to create on the host running the assessment. When it already exists nothing is
+        changed, and the same path is returned either way. Type [string], mandatory.
     .OUTPUTS
         [string] The path.
     #>
@@ -4630,7 +4631,9 @@ function Save-Csv {
     .PARAMETER InputObject
         The rows to write or flatten. Untyped, mandatory, may be null or empty.
     .PARAMETER Path
-        The path input of Save-Csv. Type [string], mandatory.
+        The CSV file the normalised rows are written to, overwritten when it exists (Export-Csv
+        -Force, UTF-8, no type line). Nothing is written, and the file is not created, when
+        -InputObject is $null or holds no rows. Type [string], mandatory.
     #>
     [CmdletBinding()]
     param(
@@ -4651,7 +4654,8 @@ function Test-CommandAvailable {
         True when a command (cmdlet, function or external tool) can be found on the host running the
         assessment.
     .PARAMETER Name
-        The name input of Test-CommandAvailable. Type [string], mandatory.
+        The command to look for with Get-Command, for example nltest.exe or a cmdlet name. A name
+        that is not found returns $false; nothing is run. Type [string], mandatory.
     .OUTPUTS
         [bool]
     #>
@@ -4667,7 +4671,8 @@ function Test-ModuleAvailable {
         True when a module is installed on the host running the assessment (Get-Module
         -ListAvailable).
     .PARAMETER Name
-        The name input of Test-ModuleAvailable. Type [string], mandatory.
+        The module to look for with Get-Module -ListAvailable, for example ActiveDirectory. A module
+        that is not installed returns $false; the module is not imported. Type [string], mandatory.
     .OUTPUTS
         [bool]
     #>
@@ -4683,7 +4688,9 @@ function New-SafeFileName {
         Turns a section or host name into a file name: characters that are not valid in a file name,
         and dots, become underscores.
     .PARAMETER Name
-        The name input of New-SafeFileName. Type [string], mandatory.
+        The section or host name to turn into a file name, for example DC01.contoso.com. Every
+        character not valid in a file name, and every dot, is replaced with an underscore, and the
+        result is returned. Type [string], mandatory.
     .OUTPUTS
         [string]
     #>
@@ -4754,11 +4761,17 @@ function Invoke-ExternalCommand {
     .OUTPUTS
         [pscustomobject] Success, ExitCode, Attempt, Error, StdOut, OutFile
     .PARAMETER FilePath
-        The file path input of Invoke-ExternalCommand. Type [string], mandatory.
+        The console tool to start, for example nltest.exe or dcdiag.exe, run with no shell and no
+        window and with stdout and stderr captured. A tool that cannot be started is retried, and
+        after the last attempt is returned as a failure with the error. Type [string], mandatory.
     .PARAMETER Arguments
-        The arguments input of Invoke-ExternalCommand. Type [string], mandatory.
+        The whole argument string passed to the tool as written, for example /sc_query:contoso.com.
+        It is also written into -OutFile beside a failure, so the file shows what was run. Type
+        [string], mandatory.
     .PARAMETER OutFile
-        The out file input of Invoke-ExternalCommand. Type [string].
+        A file to save the tool's combined stdout and stderr in, or a FAILED line with the error and
+        the arguments when the run failed; its parent folder is created when missing. When absent or
+        empty nothing is written to disk and the output is only returned. Type [string].
     .PARAMETER TimeoutSeconds
         Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
         run). Type [int], default 90.
@@ -4912,20 +4925,31 @@ function Resolve-AdfaTrustHealth {
     .OUTPUTS
         [pscustomobject] Health, Reasons (string[])
     .PARAMETER Direction
-        The direction input of Resolve-AdfaTrustHealth. Type [string], mandatory, one of Inbound,
-        Outbound, Bidirectional.
+        The trust direction, which decides which results count: Outbound uses only -OutboundResult,
+        Inbound only -InboundResult, and Bidirectional both. A result for a direction the trust does
+        not have is ignored. Type [string], mandatory, one of Inbound, Outbound, Bidirectional.
     .PARAMETER OutboundResult
-        The outbound result input of Resolve-AdfaTrustHealth. Type [string], mandatory, one of
+        The result of the outbound secure channel check, used only when the trust has an outbound
+        direction. Failed makes the trust Broken; Not Assessed is never treated as Verified and adds
+        a reason saying the direction could not be verified. Type [string], mandatory, one of
         Verified, Failed, Not Assessed.
     .PARAMETER InboundResult
-        The inbound result input of Resolve-AdfaTrustHealth. Type [string], mandatory, one of
-        Verified, Failed, Not Assessed.
+        The result of the inbound secure channel check, read on a partner DC, used only when the
+        trust has an inbound direction. Failed makes the trust Broken; Not Assessed is never treated
+        as Verified and adds a reason saying the direction could not be verified. Type [string],
+        mandatory, one of Verified, Failed, Not Assessed.
     .PARAMETER TargetReachable
-        The target reachable input of Resolve-AdfaTrustHealth. Type [bool], mandatory.
+        Whether the trust partner answered the reachability probe. $false makes the trust Broken
+        with the reason that the partner is not reachable, unless -VerificationSkipped is set, which
+        is checked first. Type [bool], mandatory.
     .PARAMETER VerificationSkipped
-        The verification skipped input of Resolve-AdfaTrustHealth. Type [bool], default $false.
+        Set when trust verification was skipped for the run. The verdict is then Not Assessed with
+        the reason 'Trust verification skipped.', whatever the other inputs say. Type [bool],
+        default $false.
     .PARAMETER SecurityWarnings
-        The security warnings input of Resolve-AdfaTrustHealth. Type [string[]], default @().
+        Security weaknesses found on the trust, from Get-AdfaTrustSecurityWarning; empty or $null
+        entries are dropped. When at least one direction is Verified and nothing Failed, any warning
+        makes the trust Degraded and is listed among the reasons. Type [string[]], default @().
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -5110,7 +5134,8 @@ function Get-AdfaOutputExcerpt {
     .PARAMETER Output
         The text the external tool printed. Type [string], may be null or empty.
     .PARAMETER Lines
-        The lines input of Get-AdfaOutputExcerpt. Type [int], default 3.
+        How many non-blank lines from the start of the output are kept, joined with ' | '. Output
+        that is empty or all blank returns 'no output'. Type [int], default 3.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -5142,9 +5167,13 @@ function Test-AdfaSecureChannel {
     .OUTPUTS
         [pscustomobject] Result, Tool, Detail
     .PARAMETER SourceDomain
-        The source domain input of Test-AdfaSecureChannel. Type [string], mandatory.
+        The domain that holds the trust being checked, for example contoso.com. It names the domain
+        of -SourceDc in the Detail text, and is the domain netdom trust /Verify runs on when the
+        live test falls back to netdom. Type [string], mandatory.
     .PARAMETER TargetDomain
-        The target domain input of Test-AdfaSecureChannel. Type [string], mandatory.
+        The trusted domain whose secure channel is reported on, for example fabrikam.com: nltest is
+        run with /sc_query:<domain>, or /sc_verify:<domain> with -LiveVerify, and netdom with
+        /Domain:<domain>. Type [string], mandatory.
     .PARAMETER LiveVerify
         Run the live nltest /sc_verify, which is not read-only (-IncludeSecureChannelVerify),
         instead of the read-only /sc_query. Switch.
@@ -5253,11 +5282,18 @@ function Test-AdfaRemoteSecureChannel {
     .OUTPUTS
         [pscustomobject] Result, Tool, Detail
     .PARAMETER PartnerDomain
-        The partner domain input of Test-AdfaRemoteSecureChannel. Type [string], mandatory.
+        The trust partner domain, for example fabrikam.com, whose DC runs nltest over WinRM. When
+        -PartnerDc is empty this domain name is used as the remote host, and it is named in the
+        manual command given when the check is Not Assessed. Type [string], mandatory.
     .PARAMETER VerifyDomain
-        The verify domain input of Test-AdfaRemoteSecureChannel. Type [string], mandatory.
+        The domain whose secure channel the partner DC reports on, normally the domain being
+        assessed, for example contoso.com; it is passed to nltest as /sc_query:<domain>, or
+        /sc_verify:<domain> with -LiveVerify. Type [string], mandatory.
     .PARAMETER PartnerDc
-        The partner dc input of Test-AdfaRemoteSecureChannel. Type [string].
+        The partner domain controller to run nltest on over WinRM (port 5985), for example
+        DC01.fabrikam.com. When absent or empty -PartnerDomain is used as the host; a host
+        classified Unreachable in this run, a closed port 5985 or a failed WinRM call gives Not
+        Assessed with the cause, never Verified. Type [string].
     .PARAMETER Credential
         The credential for the remote reads. When it is absent the account running the assessment is
         used. Type [pscredential].
@@ -5336,7 +5372,11 @@ function Get-AdfaTrustSecurityWarning {
     .OUTPUTS
         [string[]]
     .PARAMETER Trust
-        The trust input of Get-AdfaTrustSecurityWarning. Type [pscustomobject], mandatory.
+        One trust object as returned by Get-ADTrust. TrustType is always read and decides which
+        checks apply; SIDFilteringQuarantined and SelectiveAuthentication (External trusts only),
+        SIDFilteringForestAware (Forest trusts only), TGTDelegation and UsesRC4Encryption are read
+        only when present, each weakness found adds one warning, and a property that is absent adds
+        no warning. Type [pscustomobject], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -5432,7 +5472,9 @@ function Get-AdfaTrustHealth {
         -Server and -Credential; empty to use the current domain and account. Type [hashtable],
         default @{}.
     .PARAMETER SkipVerification
-        The skip verification input of Get-AdfaTrustHealth. Switch.
+        Skips the partner probe and both secure channel checks (-SkipTrustVerification of the run).
+        The trusts are still enumerated and their security warnings read, but every trust's health
+        is Not Assessed. Switch.
     .PARAMETER LiveVerify
         Passed to both directions. See Get-AdfaNltestScArgument for what it changes. Switch.
     .PARAMETER TimeoutSeconds
@@ -5469,8 +5511,10 @@ function Get-AdfaTrustHealth {
         the assessment, whose own channel is not this domain's trust channel. Type [string], default
         '', may be null or empty.
     .PARAMETER SourceDcError
-        The source dc error input of Get-AdfaTrustHealth. Type [string], default '', may be null or
-        empty.
+        Why no DC of this domain was found for the outbound check, from Resolve-AdfaTrustSourceDc.
+        It is used only when -SourceDc is empty, as the cause in the outbound Not Assessed detail;
+        when it is also empty the cause reads that no domain controller was named to the trust
+        check. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -5827,12 +5871,18 @@ function Get-AdfaReplicationHealth {
         (HostName, Scope) or plain host names (PORT-PLAN C2e). Untyped, default @(), may be null or
         empty.
     .PARAMETER RepParams
-        The rep params input of Get-AdfaReplicationHealth. Type [hashtable], default @{}.
+        Parameters splatted onto Get-ADReplicationPartnerMetadata, Get-ADReplicationFailure and
+        Get-ADReplicationQueueOperation for every DC; the run passes -Credential here when one was
+        given. Empty uses the account running the assessment. Type [hashtable], default @{}.
     .PARAMETER RpcPortTimeoutMs
         Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
         default 1200.
     .PARAMETER StaleMinutes
-        The stale minutes input of Get-AdfaReplicationHealth. Type [int], default 180.
+        How many minutes since the DC's latest LastReplicationSuccess are still a Pass; a DC with no
+        partner error or failure whose last success is older is a Warning. It is applied only when
+        both the partner metadata and the failure reads succeeded, at least one partner was returned
+        and a last success time was read; otherwise, unless a partner error or failure was measured
+        (a Fail), the row is Not Assessed. Type [int], default 180.
     .PARAMETER InventoryFailures
         Domains whose DC enumeration threw (Domain, Error), and the domains of the run. Untyped,
         default @(), may be null or empty.
@@ -5976,8 +6026,9 @@ function Get-AdfaTopologyObjectRaw {
     .OUTPUTS
         [pscustomobject] Ok, Error, ErrorType, NotFound, Refused, Records, Count, Capped, Kind.
     .PARAMETER Kind
-        The kind input of Get-AdfaTopologyObjectRaw. Type [string], mandatory, one of SiteLink,
-        Connection.
+        Which topology objects to read: SiteLink reads them with Get-ADReplicationSiteLink,
+        Connection with Get-ADReplicationConnection. The value is also returned in the result's Kind
+        field. Type [string], mandatory, one of SiteLink, Connection.
     .PARAMETER PropertyNames
         The declared list of directory attributes to read (never every attribute). Type [string[]],
         default @(), may be null or empty.
@@ -6168,8 +6219,10 @@ function ConvertTo-AdfaTopologyListRow {
     .OUTPUTS
         [pscustomobject[]]
     .PARAMETER Kind
-        The kind input of ConvertTo-AdfaTopologyListRow. Type [string], mandatory, one of SiteLink,
-        Connection.
+        Which read -Raw holds and so which rows are built: SiteLink gives Name, Cost,
+        ReplicationFrequencyInMinutes, InterSiteTransportProtocol and SitesIncluded; Connection
+        gives the connection columns with the decoded options and destination. It also names the
+        objects in a Not Assessed row. Type [string], mandatory, one of SiteLink, Connection.
     .PARAMETER Raw
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
@@ -6321,12 +6374,17 @@ function Get-AdfaSiteHealthFinding {
     .OUTPUTS
         [pscustomobject[]]
     .PARAMETER Topology
-        The topology input of Get-AdfaSiteHealthFinding. Type [pscustomobject], mandatory.
+        The forest topology read by Get-AdfaReplicationTopology; its Sites and Subnets lists are
+        used. Each site is checked for a subnet whose Site names it exactly and, when the inventory
+        covers the forest, for a domain controller in it. Type [pscustomobject], mandatory.
     .PARAMETER DomainControllers
         See the note on Get-AdfaReplicationHealth: an empty inventory must degrade, not abort. Type
         [pscustomobject[]], mandatory, may be null or empty.
     .PARAMETER InventoryCollected
-        The inventory collected input of Get-AdfaSiteHealthFinding. Type [bool], default $true.
+        Whether the DC inventory covers every domain of the forest, as decided by
+        Get-AdfaSiteInventoryGap. When $false no site is reported as having no domain controllers,
+        one 'Empty sites' row is Not Assessed naming -InventoryGap, and no Pass row is given. Type
+        [bool], default $true.
     .PARAMETER InventoryGap
         Why the inventory does not cover the forest, in the row's words (Get-AdfaSiteInventoryGap).
         Type [string], default '', may be null or empty.
@@ -6382,13 +6440,20 @@ function Get-AdfaSiteInventoryGap {
     .OUTPUTS
         [string]
     .PARAMETER Collected
-        The collected input of Get-AdfaSiteInventoryGap. Type [bool].
+        Whether the DomainControllers section was collected in this run. When $false the gap
+        returned is 'DomainControllers is not among -Sections' and nothing else is checked. Type
+        [bool].
     .PARAMETER DcCount
-        The dc count input of Get-AdfaSiteInventoryGap. Type [int].
+        How many DCs the inventory holds. Zero or less returns the gap 'the DomainControllers read
+        gave no DC', so an empty inventory never counts as covering the forest. Type [int].
     .PARAMETER ScopeCoversForest
-        The scope covers forest input of Get-AdfaSiteInventoryGap. Type [bool].
+        Whether the run scoped every domain of the forest. When $false the gap returned says the run
+        did not scope every domain (use -AllDomains), because a site may hold only DCs of an
+        unscoped domain. Type [bool].
     .PARAMETER Failures
-        The failures input of Get-AdfaSiteInventoryGap. Untyped, default @(), may be null or empty.
+        The domains whose DC inventory read failed, as objects with a Domain property; $null entries
+        and blank domain names are ignored. Each domain left is named in the gap returned, as a DC
+        inventory that could not be read. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -6473,7 +6538,10 @@ function Get-AdfaDcdiagTestOutcome {
     .PARAMETER TestName
         The name of the dcdiag test, for example Advertising. Type [string], mandatory.
     .PARAMETER Success
-        The success input of Get-AdfaDcdiagTestOutcome. Type [bool], default $true.
+        Whether the dcdiag invocation completed, from the run result. It is consulted only when the
+        output holds neither a passed nor a failed verdict for the test: $false then returns
+        ToolFailed and $true returns Unparsed, so a non-zero exit code never hides a verdict that
+        was printed. Type [bool], default $true.
     .PARAMETER StdOut
         The standard output the external tool printed. Type [string], default '', may be null or
         empty.
@@ -6523,8 +6591,10 @@ function Get-AdfaDcdiagUnassessedCause {
     .PARAMETER TestName
         The name of the dcdiag test, for example Advertising. Type [string], mandatory.
     .PARAMETER Outcome
-        The outcome input of Get-AdfaDcdiagUnassessedCause. Type [string], mandatory, one of
-        Unparsed, ToolFailed.
+        Why the cell was not assessed, which picks the wording: ToolFailed says dcdiag did not
+        complete, with the exit code, the error text and an output excerpt; Unparsed says dcdiag ran
+        but printed no verdict line that could be read, or produced no output at all. Type [string],
+        mandatory, one of Unparsed, ToolFailed.
     .PARAMETER StdOut
         The standard output the external tool printed. Type [string], default '', may be null or
         empty.
@@ -6532,10 +6602,12 @@ function Get-AdfaDcdiagUnassessedCause {
         The error text of the failed read or command; empty when there was none. Type [string],
         default '', may be null or empty.
     .PARAMETER ExitCode
-        The exit code input of Get-AdfaDcdiagUnassessedCause. Untyped, default $null, may be null or
-        empty.
+        The exit code of the dcdiag invocation, quoted in the cause text. When $null the cause shows
+        '(none)' in its place. Untyped, default $null, may be null or empty.
     .PARAMETER ExcerptChars
-        The excerpt chars input of Get-AdfaDcdiagUnassessedCause. Type [int], default 200.
+        The most characters of dcdiag output quoted in the cause, passed to
+        Get-AdfaDcdiagOutputExcerpt; a longer excerpt is cut and ends with '...'. Type [int],
+        default 200.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -6579,7 +6651,8 @@ function Get-AdfaDcdiagOutputExcerpt {
         The standard output the external tool printed. Type [string], default '', may be null or
         empty.
     .PARAMETER ExcerptChars
-        The excerpt chars input of Get-AdfaDcdiagOutputExcerpt. Type [int], default 200.
+        The most characters the excerpt may hold; a longer excerpt is cut to this length and '...'
+        is added. Type [int], default 200.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -6621,8 +6694,10 @@ function Test-AdfaDcdiagSubject {
     .OUTPUTS
         [bool]
     .PARAMETER Subject
-        The subject input of Test-AdfaDcdiagSubject. Type [string], default '', may be null or
-        empty.
+        The name dcdiag printed before 'passed test' or 'failed test', for example DC01; leading
+        dots and surrounding spaces are ignored. It matches when it equals -HostName, its first
+        label, or the first 15 characters of a longer first label, ignoring case; an empty subject
+        matches nothing. Type [string], default '', may be null or empty.
     .PARAMETER HostName
         The host name of the domain controller or server the row is about. Type [string], default
         '', may be null or empty.
@@ -6786,25 +6861,41 @@ function Resolve-AdfaDcdiagVerdict {
     .OUTPUTS
         [pscustomobject] Status, Detail ('' for a plain Pass), Parts (counted), Ignored.
     .PARAMETER Parsed
-        The parsed input of Resolve-AdfaDcdiagVerdict. Untyped, mandatory.
+        The parsed dcdiag output from ConvertFrom-AdfaDcdiagOutput: its Parts (each verdict with its
+        block and subject), Empty, Recognised and the access denied, unreachable and event log
+        evidence lines. Only the Parts that count for -Mode are graded; the rest decide the cause
+        when no verdict counts. Untyped, mandatory.
     .PARAMETER TestName
         The name of the dcdiag test, for example Advertising. Type [string], mandatory.
     .PARAMETER Mode
-        The mode input of Resolve-AdfaDcdiagVerdict. Type [string], default 'Dc', one of Dc, Scope.
+        Which verdicts count. Dc grades one grid cell: only this DC's own verdicts, plus partition
+        or enterprise verdicts when -PartitionParts or -EnterpriseParts is set. Scope grades a
+        once-per-domain, forest or site test: every verdict for the test counts, wherever it is
+        printed. Type [string], default 'Dc', one of Dc, Scope.
     .PARAMETER HostName
         The host name of the domain controller or server the row is about. Type [string], default
         '', may be null or empty.
     .PARAMETER PartitionParts
-        The partition parts input of Resolve-AdfaDcdiagVerdict. Type [bool], default $false.
+        In Dc mode, counts the verdicts printed in partition blocks for this test; when $false they
+        are listed as not counted. Ignored in Scope mode, where every verdict counts. Type [bool],
+        default $false.
     .PARAMETER EnterpriseParts
-        The enterprise parts input of Resolve-AdfaDcdiagVerdict. Type [bool], default $false.
+        In Dc mode, counts the verdicts printed in the enterprise block for this test, which dcdiag
+        ran from this DC; when $false they are listed as not counted. Ignored in Scope mode, where
+        every verdict counts. Type [bool], default $false.
     .PARAMETER EventLog
-        The event log input of Resolve-AdfaDcdiagVerdict. Type [bool], default $false.
+        Marks the test as one that reads an event log. When set, a failed verdict whose output also
+        says the log could not be queried is Not Assessed, because the log was not read, instead of
+        Fail. Type [bool], default $false.
     .PARAMETER Success
-        The success input of Resolve-AdfaDcdiagVerdict. Type [bool], default $true.
+        Whether the dcdiag invocation completed. It matters only when no counted verdict was found
+        and no access denied, unreachable, Connectivity or other-subject cause applies: $false then
+        gives a Not Assessed cause saying dcdiag did not complete. A $false never turns a printed
+        verdict into Not Assessed. Type [bool], default $true.
     .PARAMETER ExitCode
-        The exit code input of Resolve-AdfaDcdiagVerdict. Untyped, default $null, may be null or
-        empty.
+        The exit code of the dcdiag invocation, passed on to Get-AdfaDcdiagUnassessedCause and
+        quoted in a Not Assessed cause. When $null the cause shows '(none)'. Untyped, default $null,
+        may be null or empty.
     .PARAMETER ErrorText
         The error text of the failed read or command; empty when there was none. Type [string],
         default '', may be null or empty.
@@ -7003,7 +7094,9 @@ function New-AdfaDcDiagRow {
         The value of the Evidence column: what the verdict rests on. Type [string], default '', may
         be null or empty.
     .PARAMETER Target
-        The target input of New-AdfaDcDiagRow. Type [string], default '', may be null or empty.
+        The host name of the domain controller the dcdiag test was run against, written to the
+        Target column as given, for example DC01.contoso.com. Empty when no DC was chosen. Type
+        [string], default '', may be null or empty.
     .PARAMETER NotRun
         A note naming what was deliberately not run and why. It goes in the NotRun column, never in
         the text the recommendation is chosen from. Type [string], default '', may be null or empty.
@@ -7171,27 +7264,38 @@ function Resolve-AdfaDcdiagDnsCategory {
     .OUTPUTS
         [pscustomobject] Status, Detail, Cell, Evidence.
     .PARAMETER Summary
-        The summary input of Resolve-AdfaDcdiagDnsCategory. Untyped, may be null or empty.
+        The DNS summary table parsed from this DC's dcdiag DNS output by
+        ConvertFrom-AdfaDcdiagDnsSummary: HeaderFound, HeaderLine, Columns and Rows. When $null or
+        HeaderFound is false the test group is Not Assessed, naming -RunCause when given, otherwise
+        the overall Pass or Fail verdict, otherwise saying that no cause was recorded. Untyped, may
+        be null or empty.
     .PARAMETER HostName
         The host name of the domain controller or server the row is about. Type [string], default
         '', may be null or empty.
     .PARAMETER Token
-        The token input of Resolve-AdfaDcdiagDnsCategory. Type [string], mandatory.
+        The column of the summary table to grade, for example Basc or Forw; it must match exactly
+        one Categories entry of the DnsSummary config table, otherwise the result is Not Assessed. A
+        header without this column is also Not Assessed. Type [string], mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER NotRunCause
-        The not run cause input of Resolve-AdfaDcdiagDnsCategory. Type [string], default '', may be
-        null or empty.
+        Why the DNS test was not run on this DC, for example unreachable on RPC/135 or dcdiag.exe
+        absent. When it is not empty it is checked before the summary table is looked at, and the
+        test group is Not Assessed with this cause. Type [string], default '', may be null or empty.
     .PARAMETER RunCause
-        The run cause input of Resolve-AdfaDcdiagDnsCategory. Type [string], default '', may be null
-        or empty.
+        Why the DNS test that did run printed no verdict, for example access denied or no output. It
+        is the cause given when no summary table was found, and is added to the detail when the
+        table has no row for this DC. Type [string], default '', may be null or empty.
     .PARAMETER OverallStatus
-        The overall status input of Resolve-AdfaDcdiagDnsCategory. Type [string], default '', may be
-        null or empty.
-    .PARAMETER OverallEvidence
-        The overall evidence input of Resolve-AdfaDcdiagDnsCategory. Type [string], default '', may
+        The overall verdict of dcdiag's DNS test on this DC, the grid's DCDIAG_DNS cell. Used only
+        when no summary table was found and -RunCause is empty: a Pass or Fail is named in the Not
+        Assessed detail, and it never grades the test group itself. Type [string], default '', may
         be null or empty.
+    .PARAMETER OverallEvidence
+        The verdict line behind -OverallStatus, quoted in the Not Assessed detail when no summary
+        table was found and the overall verdict is Pass or Fail. Type [string], default '', may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7328,7 +7432,8 @@ function Resolve-AdfaDcdiagDnsRollup {
         One object per DC of the domain: HostName, Status. Untyped, default @(), may be null or
         empty.
     .PARAMETER Token
-        The token input of Resolve-AdfaDcdiagDnsRollup. Type [string], mandatory.
+        The DNS summary column being rolled up, for example Basc. It is named in the Detail; the
+        statuses themselves come from -Cells. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7380,7 +7485,9 @@ function Select-AdfaDcdiagTarget {
     .OUTPUTS
         [pscustomobject] the chosen state, or $null.
     .PARAMETER States
-        The states input of Select-AdfaDcdiagTarget. Untyped, default @(), may be null or empty.
+        The per-DC states of the dcdiag section to choose from, each with Usable, Connectivity and
+        IsReadOnly; $null entries and states not Usable are skipped. A read-only DC is never chosen,
+        and $null is returned when none qualifies. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -7447,7 +7554,9 @@ function Get-AdfaDcdiagScopedDetail {
     .PARAMETER DomainController
         The host name of the domain controller. Type [string], mandatory.
     .PARAMETER Verdict
-        The verdict input of Get-AdfaDcdiagScopedDetail. Untyped, mandatory.
+        The result of Resolve-AdfaDcdiagVerdict in Scope mode for this test: its Status picks the
+        wording, its Parts give the blocks or subjects named, and its Detail is added for a Fail or
+        Not Assessed verdict. Untyped, mandatory.
     .PARAMETER IsReadOnly
         True when the domain controller is a read-only domain controller. Untyped, default $null,
         may be null or empty.
@@ -8384,7 +8493,10 @@ function Get-AdfaForwarderAddress {
     .OUTPUTS
         [string[]] Zero or more forwarder addresses.
     .PARAMETER Forwarder
-        The forwarder input of Get-AdfaForwarderAddress. Untyped, may be null or empty.
+        The result of Get-DnsServerForwarder for one DNS server. The IPAddress values of each object
+        are returned as trimmed, unique strings; a $null input, an object without IPAddress or empty
+        addresses give an empty list, meaning no forwarder is configured, not a failed read.
+        Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -8451,29 +8563,48 @@ function New-AdfaDnsRow {
         The server (domain controller or DNS server) the read is directed at. Type [string], default
         '', may be null or empty.
     .PARAMETER Zone
-        The zone input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+        The DNS zone the row is about, for example contoso.com, written to the Zone column as text.
+        Empty when the row is not about one zone or the value was not measured. Type [string],
+        default '', may be null or empty.
     .PARAMETER HostName
         The host name of the domain controller or server the row is about. Type [string], default
         '', may be null or empty.
     .PARAMETER RecordName
-        The record name input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+        The DNS record name the row is about, for example DC01.contoso.com or the DC locator SRV
+        names, written to the RecordName column. Empty when the row is not about a record or the
+        value was not measured. Type [string], default '', may be null or empty.
     .PARAMETER RecordType
-        The record type input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
-    .PARAMETER RecordData
-        The record data input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
-    .PARAMETER ZoneType
-        The zone type input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
-    .PARAMETER ReplicationScope
-        The replication scope input of New-AdfaDnsRow. Type [string], default '', may be null or
+        The DNS record type of the row, for example A, SRV or CNAME, written to the RecordType
+        column. Empty when the row is not about a record. Type [string], default '', may be null or
         empty.
+    .PARAMETER RecordData
+        The data the record points to, such as the target host of a stale SRV record or CNAME,
+        written to the RecordData column and never to Detail. Empty when not measured or not
+        relevant. Type [string], default '', may be null or empty.
+    .PARAMETER ZoneType
+        The zone type as the DNS server reports it, written to the ZoneType column of a zone
+        configuration row. Empty when the row is not about a zone or the value was not read. Type
+        [string], default '', may be null or empty.
+    .PARAMETER ReplicationScope
+        The replication scope of the zone as read, written to the ReplicationScope column of zone
+        configuration, dynamic update and scavenging rows. Empty when not read or not relevant. Type
+        [string], default '', may be null or empty.
     .PARAMETER DsIntegrated
-        The ds integrated input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+        Whether the zone is Active Directory integrated, as the text of the server's IsDsIntegrated
+        value, written to the DsIntegrated column. Empty means not read or not relevant, never No.
+        Type [string], default '', may be null or empty.
     .PARAMETER DynamicUpdate
-        The dynamic update input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+        The zone's dynamic update setting as the DNS server reports it, written to the DynamicUpdate
+        column of a zone configuration row. Empty means not read or not relevant. Type [string],
+        default '', may be null or empty.
     .PARAMETER Aging
-        The aging input of New-AdfaDnsRow. Type [string], default '', may be null or empty.
+        The zone's aging settings as one text (AgingEnabled, NoRefresh, Refresh, ScavengeServers),
+        or 'not read:' with the error when that read failed, written to the Aging column. Empty when
+        no aging entry was read for the zone. Type [string], default '', may be null or empty.
     .PARAMETER ConfiguredIPv4
-        The configured i pv4 input of New-AdfaDnsRow. Type [string], default '', may be null or
+        The IPv4 addresses configured on the DC's network adapters, joined with ', ', written to the
+        ConfiguredIPv4 column of the DC A record and DNS client rows. Empty when the adapters were
+        not read; the reason is then in the row's Detail. Type [string], default '', may be null or
         empty.
     .PARAMETER DnsServers
         The DNS servers of the domain controller or row. Type [string], default '', may be null or
@@ -8519,7 +8650,10 @@ function ConvertTo-AdfaDnsBool {
         Pure: $true or $false from a boolean or its text, $null for anything else - an absent or
         unreadable value is never read as $false.
     .PARAMETER Value
-        The value input of ConvertTo-AdfaDnsBool. Untyped, may be null or empty.
+        The raw property value to read as a boolean: a [bool] is returned as it is, and text equal
+        to true or false (any case, surrounding spaces ignored) becomes $true or $false. $null, or
+        any other value or text, returns $null so an absent or unreadable value is never read as
+        $false. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -8543,7 +8677,10 @@ function Test-AdfaDnsServerScavenges {
         culture. A bare number is NOT read: its unit is not published for the cmdlet's output (the
         WMI class counts hours), so guessing one could turn "off" into "on".
     .PARAMETER Interval
-        The interval input of Test-AdfaDnsServerScavenges. Untyped, may be null or empty.
+        The DNS server's ScavengingInterval as read, either a [timespan] or text parsed as a time
+        span in the invariant culture. A span above zero returns $true and a zero span returns
+        $false; $null, a bare number or text that does not parse returns $null, because the unit of
+        a bare number is not published and is never guessed. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Interval)
@@ -8581,7 +8718,11 @@ function Get-AdfaDnsReadErrorClass {
     .PARAMETER Message
         The message text. Type [string], may be null or empty.
     .PARAMETER ErrorCode
-        The error code input of Get-AdfaDnsReadErrorClass. Type [string], may be null or empty.
+        The native error code of the failed DNS read, as text. It is passed with the message to
+        Get-AdfaRemoteReadErrorClass to detect a refusal, and a trimmed code that appears in the
+        config's NoProviderErrorCodes classes the failure as NoProvider; an empty or $null code
+        skips the code checks and leaves the class to the message text. Type [string], may be null
+        or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -8617,7 +8758,10 @@ function Get-AdfaDnsReadCause {
         -Credential has leads of its own (SessionRefused, SessionNotOpened) that say the server was not
         asked (PORT-PLAN C16b(4-7), independent review).
     .PARAMETER Class
-        The class input of Get-AdfaDnsReadCause. Type [string], mandatory.
+        The failure class of the DNS read, as returned by Get-AdfaDnsReadErrorClass (SessionRefused,
+        SessionNotOpened, AccessDenied, NoProvider, Timeout or NotFound), which selects the fixed
+        lead sentence of the Not Assessed cause. Any other value gets the generic lead saying the
+        server answered with an error this tool does not interpret. Type [string], mandatory.
     .PARAMETER Message
         The message text. Type [string], may be null or empty.
     #>
@@ -8739,7 +8883,9 @@ function ConvertTo-AdfaDnsRecordDataText {
         Pure: the RecordData of one resource record as "Name=Value; ..." text, for display and the
         export. The property names inside RecordData are not published; every one present is shown.
     .PARAMETER Data
-        The data input of ConvertTo-AdfaDnsRecordDataText. Untyped, may be null or empty.
+        The RecordData of one DNS resource record, written out as Name=Value pairs joined with '; ',
+        with each value's trailing dot removed and CIM bookkeeping properties skipped. A string is
+        returned unchanged and $null returns an empty string. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -8766,9 +8912,13 @@ function Get-AdfaDnsRecordTarget {
         (IPv4Address) or the CNAME alias (HostNameAlias); '' for any other type. Names are
         provisional: they are the parameter names of Add-DnsServerResourceRecord.
     .PARAMETER Data
-        The data input of Get-AdfaDnsRecordTarget. Untyped, may be null or empty.
+        The RecordData of one DNS resource record, from which the property named by -RecordType is
+        read (DomainName, IPv4Address or HostNameAlias). $null, or a record that does not carry that
+        property, returns an empty string. Untyped, may be null or empty.
     .PARAMETER RecordType
-        The record type input of Get-AdfaDnsRecordTarget. Type [string], may be null or empty.
+        The record type, matched without regard to case: SRV reads DomainName, A reads IPv4Address
+        and CNAME reads HostNameAlias from -Data. Any other type, an empty string or $null returns
+        an empty string. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -8804,10 +8954,13 @@ function Get-AdfaDnsRecordSetRaw {
     .PARAMETER ZoneName
         The DNS zone name. Type [string], mandatory.
     .PARAMETER Name
-        The name input of Get-AdfaDnsRecordSetRaw. Type [string], default '', may be null or empty.
+        The record name, relative to -ZoneName, passed as -Name to Get-DnsServerResourceRecord to
+        read only that node. When empty, no -Name is passed and every record of the zone is read.
+        Type [string], default '', may be null or empty.
     .PARAMETER RRType
-        The rr type input of Get-AdfaDnsRecordSetRaw. Type [string], default '', may be null or
-        empty.
+        The resource record type passed as -RRType to Get-DnsServerResourceRecord, for example Srv,
+        A, CName or Ns. When empty, no -RRType is passed and records of every type are read. Type
+        [string], default '', may be null or empty.
     .PARAMETER Cap
         The most items read or listed. Reaching it is said in the text. Type [int], default 0, from
         0 to 1000000.
@@ -8931,10 +9084,15 @@ function Resolve-AdfaDnsZoneForName {
         name ends with on a label boundary - and the name relative to it ('@' for the apex).
         $null when no zone holds it.
     .PARAMETER Name
-        The name input of Resolve-AdfaDnsZoneForName. Type [string], mandatory.
+        The DNS name to place in a zone, for example _ldap._tcp.contoso.com; it is trimmed, its
+        trailing dot removed and lower-cased before matching. The result gives the longest zone it
+        ends with on a label boundary and the name relative to that zone ('@' for the apex). Type
+        [string], mandatory.
     .PARAMETER ZoneNames
-        The zone names input of Resolve-AdfaDnsZoneForName. Type [string[]], default @(), may be
-        null or empty.
+        The names of the zones the DNS server holds, compared to -Name without regard to case or a
+        trailing dot; blank entries are skipped. When it is empty or no zone matches, $null is
+        returned, meaning no zone holds the name. Type [string[]], default @(), may be null or
+        empty.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Name, [AllowEmptyCollection()][string[]]$ZoneNames = @())
@@ -8957,10 +9115,15 @@ function Get-AdfaDnsDelegationPoint {
         apex, relative to the zone), at or above a relative name - '' when the name is not below
         any. Such a name is held by the delegated zone, not by the zone that was read.
     .PARAMETER Relative
-        The relative input of Get-AdfaDnsDelegationPoint. Type [string], mandatory.
+        The name to test, relative to the zone that was read ('@' or empty for the apex, which is
+        never below a delegation). It is compared without regard to case or a trailing dot against
+        each delegation point, and the first delegation it equals or ends with is returned. Type
+        [string], mandatory.
     .PARAMETER Delegations
-        The delegations input of Get-AdfaDnsDelegationPoint. Type [string[]], default @(), may be
-        null or empty.
+        The delegation points of the zone: owner names of NS records below its apex, relative to the
+        zone, as Get-AdfaDnsZoneDelegation returns them. Blank entries and '@' are skipped; when it
+        is empty or none matches, an empty string is returned, meaning the name is not below a
+        delegation. Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -9039,7 +9202,11 @@ function Resolve-AdfaDnsServerZone {
     .PARAMETER ComputerName
         The host name of the computer to read or probe. Type [string], mandatory.
     .PARAMETER Name
-        The name input of Resolve-AdfaDnsServerZone. Type [string], mandatory.
+        The fully qualified DNS name whose zone on the server is wanted, for example
+        _ldap._tcp.contoso.com. The server's zone list is read, the longest zone that holds the name
+        is chosen, and the result is refused with a cause when no zone holds it, the zone type does
+        not hold records, or the name sits below a delegation in that zone. Type [string],
+        mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -9095,14 +9262,21 @@ function Get-AdfaDnsServerRecord {
     .PARAMETER ComputerName
         The host name of the computer to read or probe. Type [string], mandatory.
     .PARAMETER Name
-        The name input of Get-AdfaDnsServerRecord. Type [string], mandatory.
+        The fully qualified DNS name of the record to look up in the server's own zone, for example
+        a DC locator SRV name or a DC host name. It is placed in a zone through
+        Resolve-AdfaDnsServerZone and read relative to that zone; when no readable zone holds it,
+        the outcome is Unread with the cause, never Absent. Type [string], mandatory.
     .PARAMETER Type
-        The type input of Get-AdfaDnsServerRecord. Type [string], mandatory, one of SRV, A, CNAME.
+        The record type to read, mapped to the -RRType value Srv, A or CName for the server read;
+        the targets returned are the SRV target hosts, A addresses or CNAME aliases. Type [string],
+        mandatory, one of SRV, A, CNAME.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER ModuleAvailable
-        The module available input of Get-AdfaDnsServerRecord. Type [bool], default $true.
+        Whether the DnsServer PowerShell module is installed on the host running the assessment, as
+        the caller tested it once. When $false, no read is attempted and the outcome is Unread with
+        a cause naming the missing module. Type [bool], default $true.
     .PARAMETER PortTimeoutMs
         Milliseconds to wait for each TCP port probe before the port is treated as not answering.
         Type [int], default 1200.
@@ -9156,9 +9330,13 @@ function Get-AdfaDnsResolverRecord {
     .OUTPUTS
         [pscustomobject] Outcome (Present|Absent|Unread), Targets, Cause.
     .PARAMETER Name
-        The name input of Get-AdfaDnsResolverRecord. Type [string], mandatory.
+        The fully qualified DNS name to query from -Server through Resolve-AdfaDnsRecord. A resolved
+        answer is Present with its targets, an authoritative no-such-record answer is Absent, and no
+        query tool or no answer is Unread with a cause. Type [string], mandatory.
     .PARAMETER Type
-        The type input of Get-AdfaDnsResolverRecord. Type [string], mandatory, one of SRV, A, CNAME.
+        The record type to query, passed unchanged to Resolve-AdfaDnsRecord; the targets returned
+        are the SRV target hosts, A addresses or CNAME aliases with trailing dots removed. Type
+        [string], mandatory, one of SRV, A, CNAME.
     .PARAMETER Server
         The server (domain controller or DNS server) the read is directed at. Type [string],
         mandatory.
@@ -9186,11 +9364,15 @@ function Get-AdfaDnsEvidenceState {
         absence. A server read and a query that disagree (one present, one absent) are Present: a
         record seen by either exists somewhere the DC locator can reach.
     .PARAMETER ServerOutcome
-        The server outcome input of Get-AdfaDnsEvidenceState. Type [string], mandatory, one of
-        Present, Absent, Unread.
+        What the first instrument, the read of the server's own zone, found for this record. Present
+        from either instrument makes the state Present; Absent counts toward AbsentBoth only when
+        -ResolverOutcome is also Absent, and toward AbsentOne when the other instrument is Unread.
+        Type [string], mandatory, one of Present, Absent, Unread.
     .PARAMETER ResolverOutcome
-        The resolver outcome input of Get-AdfaDnsEvidenceState. Type [string], mandatory, one of
-        Present, Absent, Unread.
+        What the second instrument, a query to the same DNS server, found for this record. It is
+        combined with -ServerOutcome: Present from either is Present, Absent from both is
+        AbsentBoth, Absent from one with the other Unread is AbsentOne, and Unread from both is
+        Unread. Type [string], mandatory, one of Present, Absent, Unread.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -9241,8 +9423,11 @@ function Get-AdfaDnsDynamicUpdateVerdict {
     .OUTPUTS
         [pscustomobject] Status, Detail, Evidence.
     .PARAMETER Observations
-        The observations input of Get-AdfaDnsDynamicUpdateVerdict. Untyped, default @(), may be null
-        or empty.
+        One record per DNS server that hosts the zone, with Server, Read, Cause, IsDsIntegrated and
+        DynamicUpdate; $null entries are dropped. A server not read, or one whose values are missing
+        or not recognised, makes the verdict Not Assessed unless another read server shows nonsecure
+        updates, and an empty list returns Not Assessed because no server reported the zone.
+        Untyped, default @(), may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -9309,16 +9494,25 @@ function Get-AdfaDnsScavengingVerdict {
     .OUTPUTS
         [pscustomobject] Status, Detail, Evidence.
     .PARAMETER Observations
-        The observations input of Get-AdfaDnsScavengingVerdict. Untyped, default @(), may be null or
-        empty.
+        One record per DNS server that hosts the zone, with Server, Read, Cause, ServerScavenging
+        and AgingEnabled; $null entries are dropped. A server not read, or a value not returned as a
+        boolean, is listed as unmeasured and leads to Not Assessed unless a measured aging-off
+        finding applies, and an empty list returns Not Assessed because no server reported the zone.
+        Untyped, default @(), may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER HostSetComplete
-        The host set complete input of Get-AdfaDnsScavengingVerdict. Type [bool], default $true.
+        Whether the observations cover every DNS server that hosts the zone. Only when it is $true
+        can the verdict grade the zone ScavengingOffStatus for having no scavenging server; when
+        $false, every server was measured and no read server scavenges, the verdict is Not Assessed
+        with -HostSetCause instead, unless a read server reports aging off, which is still graded
+        AgingOffStatus. Type [bool], default $true.
     .PARAMETER HostSetCause
-        The host set cause input of Get-AdfaDnsScavengingVerdict. Type [string], default '', may be
-        null or empty.
+        Why the observations may not be the zone's whole hosting set, quoted in the Not Assessed
+        detail when -HostSetComplete is $false and no read server scavenges. When empty, the detail
+        says the zone is replicated to DNS servers this run did not read. Type [string], default '',
+        may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -9392,7 +9586,11 @@ function Get-AdfaDcLocatorVerdict {
         True when the domain controller is a read-only domain controller. Untyped, may be null or
         empty.
     .PARAMETER Checks
-        The checks input of Get-AdfaDcLocatorVerdict. Untyped, default @(), may be null or empty.
+        One record per graded DC locator record per DNS server, with Record, Server, State (from
+        Get-AdfaDnsEvidenceState) and Cause; $null entries are dropped. Any AbsentBoth check is
+        Fail, any AbsentOne check is OneInstrumentStatus, any other non-Present state is Not
+        Assessed, and an empty list is Not Assessed because no DNS server was asked. Untyped,
+        default @(), may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -9442,13 +9640,21 @@ function Get-AdfaDcARecordVerdict {
     .OUTPUTS
         [pscustomobject] Status, Detail, Evidence.
     .PARAMETER ConfiguredIPv4
-        The configured i pv4 input of Get-AdfaDcARecordVerdict. Type [string[]], may be null or
-        empty.
+        The IPv4 addresses configured on the DC's adapters, which every A record address for the DC
+        is compared against. $null means the adapters were not read and the verdict is Not Assessed
+        with -ConfiguredCause; a list with no non-blank address is also Not Assessed, never a pass.
+        Type [string[]], may be null or empty.
     .PARAMETER ConfiguredCause
-        The configured cause input of Get-AdfaDcARecordVerdict. Type [string], default '', may be
-        null or empty.
+        Why the DC's adapters were not read, appended to the Not Assessed detail when
+        -ConfiguredIPv4 is $null. When empty, the detail says the adapters of this DC were not read.
+        Type [string], default '', may be null or empty.
     .PARAMETER Answers
-        The answers input of Get-AdfaDcARecordVerdict. Untyped, default @(), may be null or empty.
+        One record per DNS server asked, with Server, State (from Get-AdfaDnsEvidenceState) and the
+        Addresses its A records returned; $null entries are dropped. An address not configured on
+        the DC or AbsentBoth is graded ARecordStatus; AbsentOne is Not Assessed when the config's
+        OneInstrumentStatus is Not Assessed and ARecordStatus otherwise; an unread server or a
+        record with no readable address is Not Assessed, and an empty list is Not Assessed because
+        no DNS server was asked. Untyped, default @(), may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -9526,20 +9732,29 @@ function Get-AdfaStaleDnsRecordVerdict {
     .OUTPUTS
         [pscustomobject] Stale (Name, Type, Target, Servers), Status, Detail.
     .PARAMETER Candidates
-        The candidates input of Get-AdfaStaleDnsRecordVerdict. Untyped, default @(), may be null or
-        empty.
+        The DC locator records read, each with Name, Type (SRV or CNAME), Target and Server; $null
+        entries and other types are skipped. An SRV is stale when its target is no known DC host, a
+        CNAME when its GUID label is no known DSA GUID, and stale records are merged by name and
+        target with the servers that returned them. Untyped, default @(), may be null or empty.
     .PARAMETER KnownDcHosts
-        The known dc hosts input of Get-AdfaStaleDnsRecordVerdict. Type [string[]], default @(), may
-        be null or empty.
+        The host names of every domain controller known to this run, read-only DCs included,
+        compared to SRV targets without regard to case or a trailing dot. When it holds no non-blank
+        name, nothing is judged and the verdict is Not Assessed, so live DCs' records are never
+        listed as stale. Type [string[]], default @(), may be null or empty.
     .PARAMETER KnownDsaGuids
-        The known dsa guids input of Get-AdfaStaleDnsRecordVerdict. Type [string[]], default @(),
-        may be null or empty.
+        The DSA GUIDs of the NTDS Settings objects known to this run, braces and case ignored, which
+        the GUID label of each <guid>._msdcs CNAME is compared against. When it is empty and there
+        is a CNAME to judge, it is treated as an unread DSA list: no CNAME is judged and the verdict
+        cannot be Pass. Type [string[]], default @(), may be null or empty.
     .PARAMETER DsaError
-        The dsa error input of Get-AdfaStaleDnsRecordVerdict. Type [string], default '', may be null
-        or empty.
+        Why the DSA GUIDs could not be read. When it is set, no CNAME is judged and, if no stale
+        record is found, the verdict is Not Assessed with this text quoted in the detail. Type
+        [string], default '', may be null or empty.
     .PARAMETER Unread
-        The unread input of Get-AdfaStaleDnsRecordVerdict. Type [string[]], default @(), may be null
-        or empty.
+        A description of each record read that did not answer, for example a record name and server.
+        When any non-blank entry is present and no stale record is found, the verdict is Not
+        Assessed with the count of unanswered reads instead of Pass. Type [string[]], default @(),
+        may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -9628,18 +9843,25 @@ function Get-AdfaDcDnsClientVerdict {
     .PARAMETER DnsServers
         The DNS servers of the domain controller or row. Type [string[]], may be null or empty.
     .PARAMETER Cause
-        The cause input of Get-AdfaDcDnsClientVerdict. Type [string], default '', may be null or
-        empty.
+        Why the DC's DNS server list was not measured, used as the Not Assessed detail when
+        -DnsServers is $null. When empty, the detail says the adapters of this DC were not read.
+        Type [string], default '', may be null or empty.
     .PARAMETER SelfAddresses
-        The self addresses input of Get-AdfaDcDnsClientVerdict. Type [string[]], default @(), may be
-        null or empty.
+        The DC's own addresses, which together with the config's LoopbackAddresses decide whether
+        the list names the DC itself first. Addresses in it are never counted as another DC or as an
+        address of no known DC. Type [string[]], default @(), may be null or empty.
     .PARAMETER KnownDcAddresses
-        The known dc addresses input of Get-AdfaDcDnsClientVerdict. Type [string[]], default @(),
-        may be null or empty.
+        The addresses of the domain controllers known to this run. An entry of the DNS server list
+        in it counts as another DC; an entry in neither this list nor the DC's own addresses is
+        noted as an address of no known DC. Type [string[]], default @(), may be null or empty.
     .PARAMETER DcCount
-        The dc count input of Get-AdfaDcDnsClientVerdict. Type [int], default 0.
+        How many domain controllers this run knows. Above 1, a single DNS server is graded
+        SingleServerStatus and a list with no other known DC is noted; at exactly 1 a single server
+        is Info only when -DcCountIsForest is $true, otherwise Not Assessed. Type [int], default 0.
     .PARAMETER DcCountIsForest
-        The dc count is forest input of Get-AdfaDcDnsClientVerdict. Type [bool], default $false.
+        Whether -DcCount covers every domain controller of the forest, because every domain was
+        read. Only when it is $true and the count is 1 is a single DNS server graded Info; otherwise
+        that case is Not Assessed. Type [bool], default $false.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -10203,7 +10425,10 @@ function Get-AdfaDnsLocatorFinding {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Dcs
-        The dcs input of Get-AdfaDnsLocatorFinding. Untyped, default @(), may be null or empty.
+        The domain controllers of the domain, as inventory rows that carry HostName and IsReadOnly;
+        $null entries and rows without a host name are skipped. Each DC gets one DC locator records
+        row and one DC A record row, and the host names also form the known DC list the stale record
+        check is judged against. Untyped, default @(), may be null or empty.
     .PARAMETER DnsServers
         The DNS servers of the domain controller or row. Type [string[]], default @(), may be null
         or empty.
@@ -10211,11 +10436,16 @@ function Get-AdfaDnsLocatorFinding {
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER DsaInventory
-        The dsa inventory input of Get-AdfaDnsLocatorFinding. Untyped, default @(), may be null or
-        empty.
+        The NTDS Settings inventory of the forest, rows carrying DnsHostName and DsaGuid; $null
+        entries are skipped. The host names are added to the known DC hosts for the stale SRV check,
+        and in the forest root domain the GUIDs are what each <guid>._msdcs CNAME is judged against;
+        an empty list there is treated as a DSA read that saw nothing, so no CNAME is judged.
+        Untyped, default @(), may be null or empty.
     .PARAMETER DsaError
-        The dsa error input of Get-AdfaDnsLocatorFinding. Type [string], default '', may be null or
-        empty.
+        Why the NTDS Settings inventory could not be read. In the forest root domain, a non-empty
+        value means the _msdcs CNAMEs are not read or judged and the stale records population row
+        cannot be Pass; outside the forest root it is not used. Type [string], default '', may be
+        null or empty.
     .PARAMETER ForestRoot
         The DNS name of the forest root domain. Type [string], default '', may be null or empty.
     .PARAMETER Credential
@@ -10492,7 +10722,9 @@ function Export-AdfaDnsRecord {
         of $script:Config, after any override file was merged onto it. Type [hashtable], default
         $script:Config.Dns.
     .PARAMETER CsvPath
-        The csv path input of Export-AdfaDnsRecord. Type [string], mandatory.
+        The folder of the run's CSV output, where one DnsRecords_<server>_<zone>.csv file is written
+        per zone and DNS server, with both names made safe for a file name. Type [string],
+        mandatory.
     .PARAMETER PortTimeoutMs
         Milliseconds to wait for each TCP port probe before the port is treated as not answering.
         Type [int], default 1200.
@@ -10859,45 +11091,67 @@ function New-AdfaGpoVersionRow {
         The value of the Evidence column: what the verdict rests on. Type [string], default '', may
         be null or empty.
     .PARAMETER GPOName
-        The gpo name input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
-        empty.
+        The display name of the GPO the row is about, written to the GPOName column as given. Empty
+        for rows that are not about one GPO, such as a folder listing or domain summary row. Type
+        [string], default '', may be null or empty.
     .PARAMETER GpoGuid
-        The gpo guid input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
+        The GUID of the GPO or SYSVOL folder the row is about, written to the GpoGuid column as
+        given. Empty for rows that are not about one GPO. Type [string], default '', may be null or
         empty.
     .PARAMETER ReadFrom
-        The read from input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
-        empty.
+        The domain controller both versions were read from, the PDC emulator in this section,
+        written to the ReadFrom column as given. Type [string], default '', may be null or empty.
     .PARAMETER DsVersion
-        The ds version input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or empty.
-    .PARAMETER SysvolVersion
-        The sysvol version input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or
-        empty.
-    .PARAMETER Flags
-        The flags input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or empty.
-    .PARAMETER FlagsLabel
-        The flags label input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
-        empty.
-    .PARAMETER GptIniPath
-        The gpt ini path input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
-        empty.
-    .PARAMETER FileSysPath
-        The file sys path input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
-        empty.
-    .PARAMETER Encoding
-        The encoding input of New-AdfaGpoVersionRow. Type [string], default '', may be null or
-        empty.
-    .PARAMETER Population
-        The population input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or empty.
-    .PARAMETER Compared
-        The compared input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or empty.
-    .PARAMETER Mismatched
-        The mismatched input of New-AdfaGpoVersionRow. Untyped, default $null, may be null or empty.
-    .PARAMETER NotAssessedCount
-        The not assessed count input of New-AdfaGpoVersionRow. Untyped, default $null, may be null
+        The GPO version read from the directory (versionNumber) as a whole number, written to the
+        DsVersion column and split into the DsUser and DsComputer columns. $null means it was not
+        measured, and all three columns are left empty, never 0. Untyped, default $null, may be null
         or empty.
+    .PARAMETER SysvolVersion
+        The GPO version read from the Version key of GPT.INI in SYSVOL as a whole number, written to
+        the SysvolVersion column and split into the SysvolUser and SysvolComputer columns. $null
+        means it was not measured, and all three columns are left empty, never 0. Untyped, default
+        $null, may be null or empty.
+    .PARAMETER Flags
+        The GPO's flags value as a whole number, written to the Flags column in invariant-culture
+        text. $null means it was not measured and the column is left empty, never 0. Untyped,
+        default $null, may be null or empty.
+    .PARAMETER FlagsLabel
+        The label for the flags value, taken by the caller from the config's FlagLabels or 'other
+        bits set (not interpreted)', written to the FlagsLabel column as given. Type [string],
+        default '', may be null or empty.
+    .PARAMETER GptIniPath
+        The path of the GPT.INI this tool read or would read on the PDC's SYSVOL share, written to
+        the GptIniPath column as given. Empty when no path was built for the GPO. Type [string],
+        default '', may be null or empty.
+    .PARAMETER FileSysPath
+        The gPCFileSysPath value of the GPO's container in the directory, written to the FileSysPath
+        column as given so a value that does not match the expected SYSVOL path can be seen. Type
+        [string], default '', may be null or empty.
+    .PARAMETER Encoding
+        The text encoding detected when GPT.INI was parsed, as ConvertFrom-AdfaGptIniVersion reports
+        it, written to the Encoding column as given. Empty when the file was not read. Type
+        [string], default '', may be null or empty.
+    .PARAMETER Population
+        On the domain summary row, the number of GPO containers found, written to the Population
+        column. $null on other rows, or when not measured, leaves the column empty, never 0.
+        Untyped, default $null, may be null or empty.
+    .PARAMETER Compared
+        On the domain summary row, the number of GPOs whose directory and SYSVOL versions were both
+        read and compared, written to the Compared column. $null leaves the column empty, never 0.
+        Untyped, default $null, may be null or empty.
+    .PARAMETER Mismatched
+        On the domain summary row, the number of compared GPOs whose version verdict was not Pass,
+        written to the Mismatched column. $null leaves the column empty, never 0. Untyped, default
+        $null, may be null or empty.
+    .PARAMETER NotAssessedCount
+        On the domain summary row, the number of GPOs that could not be compared, written to the
+        NotAssessedCount column. $null leaves the column empty, never 0. Untyped, default $null, may
+        be null or empty.
     .PARAMETER FoldersWithoutContainer
-        The folders without container input of New-AdfaGpoVersionRow. Untyped, default $null, may be
-        null or empty.
+        On the domain summary row, the number of SYSVOL folders named by a GPO GUID with no
+        container visible to this account, written to the FoldersWithoutContainer column. The caller
+        passes $null when the Policies folder was not listed, which leaves the column empty, never
+        0. Untyped, default $null, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -10971,7 +11225,11 @@ function ConvertTo-AdfaGpoVersionNumber {
     .OUTPUTS
         [pscustomobject] Ok, Version ([int64] or $null), Cause, Masked.
     .PARAMETER Value
-        The value input of ConvertTo-AdfaGpoVersionNumber. Untyped, may be null or empty.
+        A GPO version as read, either the directory's versionNumber or the Version text of GPT.INI:
+        an integer type or a string of digits, or a one-item collection holding one. $null or an
+        empty collection is NotReturned, more than one item is MultiValued, anything else that is
+        not a whole number is NotANumber, and a value outside -2147483648 to 4294967295 is
+        OutOfRange; a negative value is taken as its 32-bit pattern. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11015,7 +11273,9 @@ function Split-AdfaGpoVersion {
     .OUTPUTS
         [pscustomobject] User, Computer.
     .PARAMETER Version
-        The version input of Split-AdfaGpoVersion. Type [int64], mandatory.
+        The GPO version as a whole number. It is masked to its low 32 bits, and the upper 16 bits
+        are returned as the user half and the lower 16 bits as the computer half. Type [int64],
+        mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11044,7 +11304,10 @@ function ConvertFrom-AdfaGptIniVersion {
     .OUTPUTS
         [pscustomobject] Ok, Version ([int64] or $null), Cause, CauseText, Encoding.
     .PARAMETER Bytes
-        The bytes input of ConvertFrom-AdfaGptIniVersion. Type [byte[]], may be null or empty.
+        The raw bytes of one GPT.INI file. The encoding is chosen from a byte-order mark, a zero
+        second byte (UTF-16LE inferred) or otherwise read as ANSI, and the Version key of the
+        [General] section is parsed from the text; $null or no bytes returns the cause Empty. Type
+        [byte[]], may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -11107,7 +11370,10 @@ function Get-AdfaGpoFailureLead {
     .OUTPUTS
         [string]
     .PARAMETER Class
-        The class input of Get-AdfaGpoFailureLead. Type [string], may be null or empty.
+        The read failure class, as Get-AdfaGpoFileReadErrorClass or the SYSVOL reads return it:
+        Unreachable, AccessDenied, TimedOut, NotFound or TooLarge each map to their own opening
+        words. Any other value, or an empty string, returns 'Read failed'. Type [string], may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -11141,9 +11407,16 @@ function Get-AdfaGpoFileReadErrorClass {
     .OUTPUTS
         [string]
     .PARAMETER TypeName
-        The type name input of Get-AdfaGpoFileReadErrorClass. Type [string], may be null or empty.
+        The full type name of the exception the file or folder read threw, checked first: a
+        FileNotFound, DirectoryNotFound, ItemNotFound or DriveNotFound exception is NotFound,
+        UnauthorizedAccessException is AccessDenied and TimeoutException is TimedOut. When empty or
+        none matches, the class is taken from -HResult and then the message. Type [string], may be
+        null or empty.
     .PARAMETER HResult
-        The h result input of Get-AdfaGpoFileReadErrorClass. Type [int], default 0.
+        The HResult of the exception. Only a value whose upper 16 bits are 0x8007 is read, and its
+        low 16 bits are taken as the Win32 code: 2 or 3 is NotFound, 5 or 65 AccessDenied, and 51,
+        53, 64, 1231 or 1232 Unreachable; any other value, including 0, leaves the class to the
+        message text. Type [int], default 0.
     .PARAMETER Message
         The message text. Type [string], may be null or empty.
     #>
@@ -11212,15 +11485,22 @@ function Get-AdfaGpoSysvolPath {
     .OUTPUTS
         [pscustomobject] Ok, PoliciesPath, FolderPath, IniPath, Cause.
     .PARAMETER Pdc
-        The pdc input of Get-AdfaGpoSysvolPath. Type [string], default '', may be null or empty.
+        The host name of the domain's PDC emulator, whose own SYSVOL share is the only place GPT.INI
+        is read from. A value that is not a plain DNS name, including an empty one, is refused and
+        no path is built. Type [string], default '', may be null or empty.
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], default '', may be null
         or empty.
     .PARAMETER Guid
-        The guid input of Get-AdfaGpoSysvolPath. Type [string], default '', may be null or empty.
-    .PARAMETER FileSysPath
-        The file sys path input of Get-AdfaGpoSysvolPath. Type [string], default '', may be null or
+        The GPO's GUID in braces, the container's name, used as the folder name under Policies. A
+        value that does not match the config's GuidPattern, including an empty one, is refused with
+        a cause and no folder or GPT.INI path is built. Type [string], default '', may be null or
         empty.
+    .PARAMETER FileSysPath
+        The gPCFileSysPath value of the GPO's container, compared without regard to case or a
+        trailing backslash with the expected \\<domain>\sysvol\<domain>\policies\<GUID>; its host is
+        never contacted. When it is empty or does not match, the GPO is not compared (Ok $false, no
+        GPT.INI path) and the cause says so. Type [string], default '', may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -11273,7 +11553,10 @@ function ConvertTo-AdfaGpoContainerRecord {
     .OUTPUTS
         [pscustomobject] Guid, DisplayName, Version (as returned), FileSysPath, Flags (as returned), Dn.
     .PARAMETER Object
-        The object input of ConvertTo-AdfaGpoContainerRecord. Untyped, mandatory.
+        One groupPolicyContainer object as returned by the directory read. Its Name (or cn when Name
+        is blank), displayName, versionNumber, gPCFileSysPath, flags and DistinguishedName are read
+        through PSObject.Properties, so an attribute it does not carry becomes $null rather than an
+        error. Untyped, mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11393,7 +11676,10 @@ function Get-AdfaSysvolPolicyFolderRaw {
         [pscustomobject] Ok, Class (Read or a class of Get-AdfaGpoFileReadErrorClass), Names, Error,
         ErrorType, HResult, Path.
     .PARAMETER Path
-        The path input of Get-AdfaSysvolPolicyFolderRaw. Type [string], mandatory.
+        The UNC path of a SYSVOL Policies folder, for example \\DC01\SYSVOL\contoso.com\Policies,
+        whose subfolder names are listed in one read-only directory listing. A path that cannot be
+        listed returns Ok false with the failure class, never an empty list taken as measured. Type
+        [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11428,9 +11714,14 @@ function Get-AdfaGptIniRaw {
         [pscustomobject] Ok, Class (Read, TooLarge or a class of Get-AdfaGpoFileReadErrorClass),
         Bytes, Error, ErrorType, HResult, Path.
     .PARAMETER Path
-        The path input of Get-AdfaGptIniRaw. Type [string], mandatory.
+        The full UNC path of one GPT.INI file to open for reading only, with sharing that never
+        blocks another reader, writer or delete. A path that cannot be opened returns Ok false with
+        the failure class and no bytes. Type [string], mandatory.
     .PARAMETER MaxBytes
-        The max bytes input of Get-AdfaGptIniRaw. Type [int], default 65536, from 1 to 16777216.
+        The largest file size, in bytes, that is taken; at most this many bytes plus one are read,
+        and a file larger than this is reported as TooLarge with no bytes returned. The SYSVOL
+        caller passes the GptIniMaxBytes value of the configuration table. Type [int], default
+        65536, from 1 to 16777216.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -11496,11 +11787,17 @@ function Get-AdfaGpoSysvolRaw {
         Reads (hashtable: GUID -> read), ReachCause ('' unless the PDC was classified Unreachable in
         this run, PORT-PLAN C14c: then port 445 was not probed and this is the class).
     .PARAMETER Pdc
-        The pdc input of Get-AdfaGpoSysvolRaw. Type [string], mandatory.
+        The host name of the domain's PDC emulator, the one domain controller whose SMB port is
+        probed and whose SYSVOL Policies folder is listed and read. When this PDC was classified
+        Unreachable earlier in the run it is not probed, and its class is kept in ReachCause so
+        nothing is reported absent. Type [string], mandatory.
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Targets
-        The targets input of Get-AdfaGpoSysvolRaw. Untyped, default @(), may be null or empty.
+        The GPOs whose GPT.INI is read, each an object with Guid and IniPath; null entries are
+        skipped, and a target whose folder is missing from a successful listing is not read. When
+        null or empty, only the SMB probe and the Policies folder listing are made and no GPT.INI is
+        read. Untyped, default @(), may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -11546,11 +11843,16 @@ function Get-AdfaGpoVersionVerdict {
     .OUTPUTS
         [pscustomobject] Status, Half (None, User, Computer, Both), Detail.
     .PARAMETER DsVersion
-        The ds version input of Get-AdfaGpoVersionVerdict. Type [int64], mandatory.
+        The GPO's version as read from the directory (versionNumber of its groupPolicyContainer),
+        compared whole against the SYSVOL version and split into user and computer halves only to
+        explain a difference. Type [int64], mandatory.
     .PARAMETER SysvolVersion
-        The sysvol version input of Get-AdfaGpoVersionVerdict. Type [int64], mandatory.
+        The GPO's version as read from its GPT.INI in SYSVOL; when it equals DsVersion the verdict
+        is Pass, otherwise it is the configured MismatchStatus naming which half differs. Type
+        [int64], mandatory.
     .PARAMETER ReadFrom
-        The read from input of Get-AdfaGpoVersionVerdict. Type [string], default '', may be null or
+        The name of the domain controller both versions were read from, used only in the Detail text
+        of a mismatch; it does not affect the verdict. Type [string], default '', may be null or
         empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
@@ -11595,16 +11897,24 @@ function Get-AdfaGpoDomainVerdict {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER ReadFrom
-        The read from input of Get-AdfaGpoDomainVerdict. Type [string], default '', may be null or
-        empty.
+        The name of the domain controller the GPOs and their GPT.INI files were read from, used only
+        in the Detail text of the summary verdict. Type [string], default '', may be null or empty.
     .PARAMETER Population
-        The population input of Get-AdfaGpoDomainVerdict. Untyped, may be null or empty.
+        The number of groupPolicyContainer objects read for the domain, the declared population the
+        other counts must add up to. A null value, or one that does not equal Compared plus
+        NotAssessed, makes the verdict Not Assessed as a tool defect, and a population of 0 is Not
+        Assessed, never a clean result. Untyped, may be null or empty.
     .PARAMETER Compared
-        The compared input of Get-AdfaGpoDomainVerdict. Type [int], default 0.
+        The number of GPOs whose directory and SYSVOL versions were both read and compared; Pass
+        requires every GPO of the population to be counted here with none mismatched. Type [int],
+        default 0.
     .PARAMETER Mismatched
-        The mismatched input of Get-AdfaGpoDomainVerdict. Type [int], default 0.
+        The number of compared GPOs whose two versions differ; any value above 0 grades the domain
+        with the configured MismatchStatus, and a value above Compared is reported as a tool defect.
+        Type [int], default 0.
     .PARAMETER NotAssessed
-        The not assessed input of Get-AdfaGpoDomainVerdict. Type [int], default 0.
+        The number of GPOs that could not be compared; with no mismatch, any value above 0 makes the
+        domain Not Assessed. Type [int], default 0.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -11666,7 +11976,10 @@ function Get-AdfaGpoDomainFinding {
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, mandatory.
     .PARAMETER Sysvol
-        The sysvol input of Get-AdfaGpoDomainFinding. Untyped, may be null or empty.
+        The SYSVOL read of the domain as returned by Get-AdfaGpoSysvolRaw: the SMB probe result, the
+        Policies folder listing and the GPT.INI reads keyed by GUID. When null it is treated as SMB
+        not answering, so every GPO whose path is known is reported Not Assessed and no orphaned
+        folder is looked for. Untyped, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -12303,7 +12616,9 @@ function ConvertTo-AdfaFlatObject {
     .PARAMETER InputObject
         The rows to write or flatten. Untyped, mandatory.
     .PARAMETER Property
-        The property input of ConvertTo-AdfaFlatObject. Type [string[]], mandatory.
+        The column names to copy from the object, in output order; a property the object does not
+        carry, or whose value is null, becomes an empty string, and a multi-valued property is
+        joined with ';'. Type [string[]], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12353,8 +12668,9 @@ function Get-AdfaSecretAttributeName {
     .OUTPUTS
         [string[]]
     .PARAMETER LapsConfig
-        The laps config input of Get-AdfaSecretAttributeName. Type [hashtable], default
-        $script:Config.Laps.
+        The LAPS configuration table whose NeverRead list supplies the LAPS attribute names that are
+        combined with DirectoryRead.SecretNames; blank names are dropped and each name is returned
+        once. Type [hashtable], default $script:Config.Laps.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], default
@@ -12442,9 +12758,14 @@ function Get-AdfaCapSource {
         The built-in configuration table the override is checked against and merged onto. Type
         [hashtable], mandatory.
     .PARAMETER Key
-        The key input of Get-AdfaCapSource. Type [string], mandatory.
+        The name of the configuration key whose origin is described, for example MaxObjects. When no
+        override file supplied the table, the phrase calls it a tool default; otherwise the key is
+        looked up in the keys the override file supplied and the keys left at the built-in source,
+        and when it appears in neither the phrase says its source was not recorded rather than
+        calling it a default. Type [string], mandatory.
     .PARAMETER Label
-        The label input of Get-AdfaCapSource. Type [string], mandatory.
+        The name of the configuration table the key belongs to, for example Inventory or Stale, used
+        as the prefix of the returned phrase (Label.Key). Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -12526,7 +12847,9 @@ function Get-AdfaIdentityExportRaw {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Kind
-        The kind input of Get-AdfaIdentityExportRaw. Type [string], mandatory, one of User,
+        Which export to read: User takes the UserExportFilter and UserExportProperties of the
+        DirectoryRead table, Computer takes ComputerExportFilter and ComputerExportProperties. The
+        value is also carried on the result as Kind. Type [string], mandatory, one of User,
         Computer.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
@@ -12590,8 +12913,9 @@ function ConvertTo-AdfaIdentityExport {
     .OUTPUTS
         [pscustomobject] Rows, Cause.
     .PARAMETER Kind
-        The kind input of ConvertTo-AdfaIdentityExport. Type [string], mandatory, one of User,
-        Computer.
+        Which export the read holds, User or Computer; it chooses the noun (users or computers) in
+        the cause text written when the objects cannot be counted. Type [string], mandatory, one of
+        User, Computer.
     .PARAMETER Raw
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
@@ -12602,7 +12926,9 @@ function ConvertTo-AdfaIdentityExport {
         The most objects to read. A read that reaches it says that the list may be cut off. Type
         [int], default 100000, from 1 to 1000000.
     .PARAMETER AccountDisableBit
-        The account disable bit input of ConvertTo-AdfaIdentityExport. Type [int], default 2.
+        The userAccountControl bit tested to fill the Enabled column: True when the bit is clear,
+        False when it is set, and empty when userAccountControl was not returned or is not a number.
+        Type [int], default 2.
     .PARAMETER CapSource
         Where MaxObjects came from, in the row's words (Get-AdfaCapSource). Type [string], default
         'Inventory.MaxObjects, a tool default'.
@@ -12669,9 +12995,15 @@ function Get-AdfaIdentitySummary {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Users
-        The users input of Get-AdfaIdentitySummary. Untyped, may be null or empty.
+        The rows of the domain's user export, each carrying an Enabled value; they are counted into
+        Total, Enabled (True) and Disabled (False), and a row whose Enabled is neither is counted in
+        neither and named in Detail. Ignored when UsersError is set, and null entries are skipped.
+        Untyped, may be null or empty.
     .PARAMETER Computers
-        The computers input of Get-AdfaIdentitySummary. Untyped, may be null or empty.
+        The rows of the domain's computer export, each carrying an Enabled value; they are counted
+        into Total, Enabled (True) and Disabled (False), and a row whose Enabled is neither is
+        counted in neither and named in Detail. Ignored when ComputersError is set, and null entries
+        are skipped. Untyped, may be null or empty.
     .PARAMETER StaleDays
         Days of inactivity after which an object counts as stale (-StaleDays of the run). Type
         [int], default 90.
@@ -12680,8 +13012,9 @@ function Get-AdfaIdentitySummary {
         objects with status Info; it is now Not Assessed with its cause, never 0. Type [string],
         default '', may be null or empty.
     .PARAMETER ComputersError
-        The computers error input of Get-AdfaIdentitySummary. Type [string], default '', may be null
-        or empty.
+        Why the computer export could not be used. When set, the Computers row is Not Assessed with
+        this cause and empty counts, never 0; when empty, the computers are counted. Type [string],
+        default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -12741,7 +13074,10 @@ function Test-AdfaEsc1Template {
     .OUTPUTS
         [pscustomobject] Vulnerable (bool), Reason
     .PARAMETER Template
-        The template input of Test-AdfaEsc1Template. Type [pscustomobject], mandatory.
+        One certificate template record as read from the directory, with its msPKI flag, RA
+        signature and EKU attributes as properties; it is judged by Get-AdfaEsc1Shape with the Pki
+        table. Vulnerable is true only when the shape is Shaped, so a template missing one of those
+        attributes is not reported Vulnerable here. Type [pscustomobject], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -12979,38 +13315,66 @@ function New-AdfaAclRow {
         The value of the Evidence column: what the verdict rests on. Type [string], default '', may
         be null or empty.
     .PARAMETER CatalogueId
-        The catalogue id input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+        The catalogue identifier of the check the row belongs to, taken from the Rows entry of the
+        ACL configuration table, written to the CatalogueId column as given. Type [string], default
+        '', may be null or empty.
     .PARAMETER Severity
-        The severity input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+        The severity of the check the row belongs to, taken from the Rows entry of the ACL
+        configuration table, written to the Severity column as given. Type [string], default '', may
+        be null or empty.
     .PARAMETER ObjectKind
-        The object kind input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+        The kind of object whose security descriptor the row is about (DomainRoot, AdminSDHolder or
+        Gpo as the callers pass it), written to the ObjectKind column. Type [string], default '',
+        may be null or empty.
     .PARAMETER ObjectDn
-        The object dn input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+        The distinguished name of the object that was read, or the search base for a GPO summary
+        row, written to the ObjectDn column; empty when no object was read. Type [string], default
+        '', may be null or empty.
     .PARAMETER ReadFrom
-        The read from input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+        The server the security descriptor was read from, written to the ReadFrom column; empty when
+        nothing was read. Type [string], default '', may be null or empty.
     .PARAMETER OwnerSid
-        The owner sid input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+        The owner SID of the security descriptor that was read, written to the OwnerSid column;
+        empty when no owner was read. Type [string], default '', may be null or empty.
     .PARAMETER AceCount
-        The ace count input of New-AdfaAclRow. Untyped, default $null, may be null or empty.
+        The number of ACEs read from the DACL, written to the AceCount column as invariant integer
+        text; null, meaning not measured, is written as an empty string, never 0. Untyped, default
+        $null, may be null or empty.
     .PARAMETER FlaggedSids
-        The flagged sids input of New-AdfaAclRow. Type [string], default '', may be null or empty.
+        The SIDs found holding a graded right outside the allowlist, joined with '; ', written to
+        the FlaggedSids column. Type [string], default '', may be null or empty.
     .PARAMETER RightsHeld
-        The rights held input of New-AdfaAclRow. Type [string], default '', may be null or empty.
-    .PARAMETER Principals
-        The principals input of New-AdfaAclRow. Type [string], default '', may be null or empty.
-    .PARAMETER Undecided
-        The undecided input of New-AdfaAclRow. Type [string], default '', may be null or empty.
-    .PARAMETER AllowlistNote
-        The allowlist note input of New-AdfaAclRow. Type [string], default '', may be null or empty.
-    .PARAMETER Population
-        The population input of New-AdfaAclRow. Untyped, default $null, may be null or empty.
-    .PARAMETER ReadCount
-        The read count input of New-AdfaAclRow. Untyped, default $null, may be null or empty.
-    .PARAMETER FlaggedCount
-        The flagged count input of New-AdfaAclRow. Untyped, default $null, may be null or empty.
-    .PARAMETER NotAssessedCount
-        The not assessed count input of New-AdfaAclRow. Untyped, default $null, may be null or
+        For each flagged SID, the graded rights it holds in the form 'SID: right, right', joined
+        with '; ', written to the RightsHeld column. Type [string], default '', may be null or
         empty.
+    .PARAMETER Principals
+        The flagged and undecided SIDs each with its display name ('SID = name', or 'SID =
+        unresolved'), written to the Principals column, which no verdict reads. Type [string],
+        default '', may be null or empty.
+    .PARAMETER Undecided
+        The SIDs holding a graded right that could not be judged against the allowlist because a
+        domain SID it depends on was not read, joined with '; ', written to the Undecided column.
+        Type [string], default '', may be null or empty.
+    .PARAMETER AllowlistNote
+        The note on the allowlist the row was graded against, taken from AllowlistNote of the ACL
+        configuration table, written to the AllowlistNote column. Type [string], default '', may be
+        null or empty.
+    .PARAMETER Population
+        For a GPO summary row, the number of groupPolicyContainer objects the search returned,
+        written to the Population column as invariant integer text; null, meaning not measured, is
+        written as an empty string, never 0. Untyped, default $null, may be null or empty.
+    .PARAMETER ReadCount
+        For a GPO summary row, the number of GPO rows that were graded rather than Not Assessed,
+        written to the ReadCount column as invariant integer text; null is written as an empty
+        string, never 0. Untyped, default $null, may be null or empty.
+    .PARAMETER FlaggedCount
+        For a GPO summary row, the number of GPO rows graded with the flagged status, written to the
+        FlaggedCount column as invariant integer text; null is written as an empty string, never 0.
+        Untyped, default $null, may be null or empty.
+    .PARAMETER NotAssessedCount
+        For a GPO summary row, the number of GPO rows that are Not Assessed, written to the
+        NotAssessedCount column as invariant integer text; null is written as an empty string, never
+        0. Untyped, default $null, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -13097,7 +13461,10 @@ function ConvertTo-AdfaAclDescriptor {
         Aces (Index, Sid, Allow, Deny, Kind Common|Object|Other, Mask, InheritOnly, Inherited,
         ObjectType, InheritedObjectType), AceCount.
     .PARAMETER Value
-        The value input of ConvertTo-AdfaAclDescriptor. Untyped, may be null or empty.
+        The security descriptor as the directory read handed it over: a byte array or an
+        ActiveDirectorySecurity object, parsed in memory into its owner SID and DACL entries. A null
+        value is classed NotReturned, and any other type is classed Unparseable with its type named.
+        Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -13177,7 +13544,9 @@ function Get-AdfaAclNormalMask {
     .OUTPUTS
         [int64]
     .PARAMETER Mask
-        The mask input of Get-AdfaAclNormalMask. Type [int64].
+        The access mask of one ACE, as an unsigned 32-bit number held in an int64; when its
+        GENERIC_ALL or GENERIC_WRITE bit is set, the specific rights those bits stand for, from the
+        Masks entry of the configuration table, are added before it is returned. Type [int64].
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -13217,9 +13586,12 @@ function Get-AdfaAclAceRight {
     .OUTPUTS
         [pscustomobject] GenericAll, Atoms (in the order of Config.RightNames), Scope (None | Class | Node).
     .PARAMETER Ace
-        The ace input of Get-AdfaAclAceRight. Untyped, mandatory.
+        One ACE record from ConvertTo-AdfaAclDescriptor; its Mask and ObjectType decide which graded
+        rights it grants. Untyped, mandatory.
     .PARAMETER ObjectKind
-        The object kind input of Get-AdfaAclAceRight. Type [string], mandatory.
+        The kind of object the ACE sits on, used as the key into ClassGuids of the configuration
+        table: an object type equal to one of those class GUIDs is graded as unscoped, any other
+        object type scopes the ACE to one node. Type [string], mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -13278,9 +13650,12 @@ function Test-AdfaAclDenyCover {
     .OUTPUTS
         [bool]
     .PARAMETER Aces
-        The aces input of Test-AdfaAclDenyCover. Untyped, default @(), may be null or empty.
+        The ACE records of one DACL in their order, as ConvertTo-AdfaAclDescriptor returned them;
+        only entries before Index are searched for a covering deny. When null or empty no deny can
+        be found and the result is false. Untyped, default @(), may be null or empty.
     .PARAMETER Index
-        The index input of Test-AdfaAclDenyCover. Type [int].
+        The position in Aces of the allow ACE being checked; an index outside the list returns
+        false, so the grant stays flagged. Type [int].
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -13321,7 +13696,8 @@ function Get-AdfaAclAllowedSet {
     .OUTPUTS
         [hashtable] SID -> @{ Rights = string[]; Reasons = string[] (override reasons) }
     .PARAMETER ObjectKind
-        The object kind input of Get-AdfaAclAllowedSet. Type [string], mandatory.
+        The kind of object the allowlist is built for; only Allowlist and AdditionalAllowed entries
+        whose Objects list names this kind are included. Type [string], mandatory.
     .PARAMETER DomainSid
         The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
         [string], default '', may be null or empty.
@@ -13384,11 +13760,17 @@ function Get-AdfaAclAnalysis {
         [pscustomobject] Flagged (Sid, Rights, GenericAll), Undecided (SID text), Unrecognised,
         Considered, Cancelled, DenyNotes, OverrideUsed, AceCount.
     .PARAMETER Descriptor
-        The descriptor input of Get-AdfaAclAnalysis. Untyped, mandatory.
+        The parsed security descriptor of the object, as returned by ConvertTo-AdfaAclDescriptor;
+        its Aces are walked in DACL order and its OwnerSid is graded as holding WriteDacl when the
+        row says so. Untyped, mandatory.
     .PARAMETER ObjectKind
-        The object kind input of Get-AdfaAclAnalysis. Type [string], mandatory.
+        The kind of object the descriptor belongs to; it selects the allowlist entries that apply
+        and the class GUIDs used to decide whether an object ACE is scoped. Type [string],
+        mandatory.
     .PARAMETER RowKey
-        The row key input of Get-AdfaAclAnalysis. Type [string], mandatory.
+        The key of the row being graded in the Rows table of the configuration (for example DCSync,
+        DomainRootControl, AdminSDHolder or Gpo); it gives the rights the analysis considers and
+        whether the owner is graded. Type [string], mandatory.
     .PARAMETER DomainSid
         The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
         [string], default '', may be null or empty.
@@ -13498,7 +13880,10 @@ function Get-AdfaAclReadLead {
     .OUTPUTS
         [string]
     .PARAMETER Read
-        The read input of Get-AdfaAclReadLead. Untyped, may be null or empty.
+        The descriptor read that did not succeed, whose Class and Error choose the opening words of
+        the Not Assessed row (Refused, NotReturned, DaclAbsent, Unparseable, or a failure class
+        worded from the exception). When null, the text says the read returned nothing and calls it
+        a tool defect. Untyped, may be null or empty.
     .PARAMETER What
         A short description of what was being read, used in the message. Type [string], mandatory.
     #>
@@ -13545,24 +13930,33 @@ function Get-AdfaAclObjectVerdict {
     .PARAMETER Item
         The value of the Item column. Type [string], mandatory.
     .PARAMETER ObjectKind
-        The object kind input of Get-AdfaAclObjectVerdict. Type [string], mandatory.
+        The kind of object the row is about (DomainRoot, AdminSDHolder or Gpo as the callers pass
+        it); it selects the allowlist and class GUIDs used in the analysis, and for Gpo the NotRun
+        note also says the SYSVOL folder permissions were not read. Type [string], mandatory.
     .PARAMETER RowKey
-        The row key input of Get-AdfaAclObjectVerdict. Type [string], mandatory.
+        The key of the row in the Rows table of the configuration (DCSync, DomainRootControl,
+        AdminSDHolder or Gpo); it supplies the catalogue identifier, severity and graded rights, and
+        chooses the wording of the rights in Detail. Type [string], mandatory.
     .PARAMETER What
         A short description of what was being read, used in the message. Type [string], mandatory.
     .PARAMETER Read
-        The read input of Get-AdfaAclObjectVerdict. Untyped, may be null or empty.
+        The read of the object's security descriptor, carrying Ok, Class, Dn, Server and the parsed
+        Descriptor. A NULL DACL is graded with Everyone flagged; when null, not Ok, or without a
+        descriptor, the row is Not Assessed with the cause from Get-AdfaAclReadLead. Untyped, may be
+        null or empty.
     .PARAMETER DomainSid
         The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
         [string], default '', may be null or empty.
     .PARAMETER DomainSidError
-        The domain sid error input of Get-AdfaAclObjectVerdict. Type [string], default '', may be
-        null or empty.
+        Why the domain's SID was not read; when DomainSid is empty and some SIDs could not be
+        decided, this cause is named in Detail as the reason. Type [string], default '', may be null
+        or empty.
     .PARAMETER RootDomainSid
         The SID of the forest root domain. Type [string], default '', may be null or empty.
     .PARAMETER RootDomainSidError
-        The root domain sid error input of Get-AdfaAclObjectVerdict. Type [string], default '', may
-        be null or empty.
+        Why the forest root domain's SID was not read; when RootDomainSid is empty and some SIDs
+        could not be decided, this cause is named in Detail as the reason. Type [string], default
+        '', may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -13903,15 +14297,27 @@ function Get-AdfaAclDomainFinding {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER DomainRaw
-        The domain raw input of Get-AdfaAclDomainFinding. Untyped, may be null or empty.
+        The read of the domain's distinguished name and SID (Get-AdfaAclDomainRaw), whose DomainSid
+        and DomainSidError are passed to every verdict. When null or not Ok, the three object rows
+        and the GPO summary row are all Not Assessed with the cause. Untyped, may be null or empty.
     .PARAMETER RootRaw
-        The root raw input of Get-AdfaAclDomainFinding. Untyped, may be null or empty.
+        The forest root domain's SID read, an object with Sid and Error, used to build allowlist
+        SIDs scoped to the forest root. When null, the root SID is treated as not read, so SIDs that
+        depend on it are reported Undecided rather than judged. Untyped, may be null or empty.
     .PARAMETER HeadRead
-        The head read input of Get-AdfaAclDomainFinding. Untyped, may be null or empty.
+        The security descriptor read of the domain head object, graded for both the DCSync rights
+        row and the Domain root control rights row. When null, both rows are Not Assessed. Untyped,
+        may be null or empty.
     .PARAMETER AdminRead
-        The admin read input of Get-AdfaAclDomainFinding. Untyped, may be null or empty.
+        The security descriptor read of the domain's CN=AdminSDHolder object, graded for the
+        AdminSDHolder rights row. When null, that row is Not Assessed. Untyped, may be null or
+        empty.
     .PARAMETER GpoRaw
-        The gpo raw input of Get-AdfaAclDomainFinding. Untyped, may be null or empty.
+        The search of the domain's groupPolicyContainer objects, carrying Ok, SearchBase and Items
+        (each with Guid and its descriptor Read), from which one GPO row per item and the GPO rights
+        summary are built. When null or not Ok, no GPO row is written and the summary is Not
+        Assessed; an empty result is also Not Assessed, never 'no GPO'. Untyped, may be null or
+        empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -14303,57 +14709,78 @@ function New-AdfaPrivilegedRow {
         The value of the Evidence column: what the verdict rests on. Type [string], default '', may
         be null or empty.
     .PARAMETER CatalogueId
-        The catalogue id input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
-        empty.
+        The catalogue identifier of the check the row belongs to, written to the CatalogueId column
+        as given. Type [string], default '', may be null or empty.
     .PARAMETER Severity
-        The severity input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
-        empty.
+        The severity of the check the row belongs to, written to the Severity column as given. Type
+        [string], default '', may be null or empty.
     .PARAMETER DomainSid
         The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
         [string], default '', may be null or empty.
     .PARAMETER GroupSid
-        The group sid input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
-        empty.
+        The SID of the privileged group the row is about, written to the GroupSid column; empty for
+        rows that are not about one group. Type [string], default '', may be null or empty.
     .PARAMETER Count
-        The count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or empty.
+        The main count of the row, such as the members of a group, the accounts found with a
+        setting, or the groups declared for a population row, written to the Count column as
+        invariant integer text; null, meaning not measured, is written as an empty string, never 0.
+        Untyped, default $null, may be null or empty.
     .PARAMETER UserCount
-        The user count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or empty.
+        The number of user objects the row counts, such as the user members of a group or the
+        population of accounts a hygiene or Kerberos row examined, written to the UserCount column
+        as invariant integer text; null is written as an empty string, never 0. Untyped, default
+        $null, may be null or empty.
     .PARAMETER ComputerCount
-        The computer count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or
-        empty.
+        The number of computer objects the row counts, written to the ComputerCount column as
+        invariant integer text; null is written as an empty string, never 0. Untyped, default $null,
+        may be null or empty.
     .PARAMETER GroupCount
-        The group count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or
-        empty.
+        The number of nested groups expanded to reach the members the row counts, written to the
+        GroupCount column as invariant integer text; null is written as an empty string, never 0.
+        Untyped, default $null, may be null or empty.
     .PARAMETER ForeignCount
-        The foreign count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or
-        empty.
+        The number of foreign security principals among the members the row counts, written to the
+        ForeignCount column as invariant integer text; null is written as an empty string, never 0.
+        Untyped, default $null, may be null or empty.
     .PARAMETER UnresolvedCount
-        The unresolved count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or
-        empty.
+        The number of items the row could not resolve or decide, such as member references not
+        resolved, objects returned without userAccountControl, descriptors not parsed, or declared
+        groups not expanded, written to the UnresolvedCount column as invariant integer text; null
+        is written as an empty string, never 0. Untyped, default $null, may be null or empty.
     .PARAMETER ExcludedCount
-        The excluded count input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or
-        empty.
+        The number of objects left out of the count on purpose, such as an exempted forest root
+        Administrator, domain controller accounts, or accounts that are disabled or mitigated,
+        written to the ExcludedCount column as invariant integer text; null is written as an empty
+        string, never 0. Untyped, default $null, may be null or empty.
     .PARAMETER Listed
-        The listed input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or empty.
+        How many names were written to the Principals column, at most the NameListCap of the
+        configuration, written to the Listed column as invariant integer text; null is written as an
+        empty string, never 0. Untyped, default $null, may be null or empty.
     .PARAMETER NotListed
-        The not listed input of New-AdfaPrivilegedRow. Untyped, default $null, may be null or empty.
+        How many counted objects were left out of the Principals column because the name list
+        reached its cap, written to the NotListed column as invariant integer text; null is written
+        as an empty string, never 0. Untyped, default $null, may be null or empty.
     .PARAMETER Principals
-        The principals input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
-        empty.
+        The names of the listed objects, joined with '; ', written to the Principals column and
+        never to Detail. Type [string], default '', may be null or empty.
     .PARAMETER PrincipalSids
-        The principal sids input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
-        empty.
+        The SIDs of the listed objects in the same order as Principals, joined with '; ', with '(no
+        SID read)' where none was read, written to the PrincipalSids column. Type [string], default
+        '', may be null or empty.
     .PARAMETER ForeignSids
-        The foreign sids input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
-        empty.
+        The SIDs of the foreign security principals among the members, written to the ForeignSids
+        column. Type [string], default '', may be null or empty.
     .PARAMETER Unresolved
-        The unresolved input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
-        empty.
+        The member references or objects that could not be resolved, as text, written to the
+        Unresolved column. Type [string], default '', may be null or empty.
     .PARAMETER Targets
-        The targets input of New-AdfaPrivilegedRow. Type [string], default '', may be null or empty.
+        For each listed account, its delegation targets or its service principal names in the form
+        'name: value, value', joined with '; ', written to the Targets column. Type [string],
+        default '', may be null or empty.
     .PARAMETER AllowedSids
-        The allowed sids input of New-AdfaPrivilegedRow. Type [string], default '', may be null or
-        empty.
+        For resource-based constrained delegation, each listed account with the SIDs its descriptor
+        allows and denies, or why the descriptor was not parsed, joined with ' | ', written to the
+        AllowedSids column. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -14456,7 +14883,10 @@ function ConvertTo-AdfaPrivInteger {
     .OUTPUTS
         [int64] or $null
     .PARAMETER Value
-        The value input of ConvertTo-AdfaPrivInteger. Untyped, may be null or empty.
+        An integer attribute value as the directory returned it, such as userAccountControl,
+        adminCount or primaryGroupID; a collection is accepted only when it holds exactly one
+        non-null value. Returns that value as an int64, or $null when it is null, not a whole
+        number, or a collection of any other size. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -14490,7 +14920,9 @@ function ConvertTo-AdfaPrivRecord {
         [pscustomobject] Dn, Sam, Name, Class, Kind, Sid, DomainPart, Rid, IsAccountDomainSid, Uac,
         Enabled, AdminCount, Spns, PrimaryGroupId, Members, DelegateTo, HasRbcd, Rbcd.
     .PARAMETER Object
-        The object input of ConvertTo-AdfaPrivRecord. Untyped, mandatory.
+        One directory object as the search returned it; its attributes are read through
+        PSObject.Properties, so an attribute the object does not carry is $null rather than an
+        error, and the object becomes the small record the C10 verdicts read. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -14560,7 +14992,9 @@ function Get-AdfaPrivReadClass {
     .PARAMETER Message
         The message text. Type [string], may be null or empty.
     .PARAMETER TypeName
-        The type name input of Get-AdfaPrivReadClass. Type [string], may be null or empty.
+        The full type name of the exception the directory read threw; a name matching
+        ADIdentityNotFoundException gives NotFound, and any other value, empty included, is classed
+        with Message by Get-AdfaDirectoryReadErrorClass. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -14603,7 +15037,9 @@ function Get-AdfaPrivSearchRaw {
         -Server and -Credential; empty to use the current domain and account. Type [hashtable],
         default @{}.
     .PARAMETER ResultSetSize
-        The result set size input of Get-AdfaPrivSearchRaw. Type [int], default 0.
+        The most objects the search may return; when above 0 it is passed to Get-ADObject as
+        -ResultSetSize, and at 0 or below no result limit is set. Only the primary-group searches
+        pass it, to stay inside MaxExpandedObjects. Type [int], default 0.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -14839,7 +15275,11 @@ function Get-AdfaPrivHeuristicsState {
     .OUTPUTS
         [pscustomobject] Known, MaskZero, Character, Text.
     .PARAMETER Forest
-        The forest input of Get-AdfaPrivHeuristicsState. Untyped, may be null or empty.
+        The forest configuration read from Get-AdfaPrivForestRaw, whose HeuristicsOk,
+        HeuristicsPresent and HeuristicsValue give the dSHeuristics value. When null or when
+        dSHeuristics was not read, the state is not Known and Text names the cause; an attribute
+        that was read as absent, or a value too short to hold the character, is taken as the
+        documented default character 0. Untyped, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -14877,7 +15317,12 @@ function Get-AdfaPrivDcPopulationState {
     .OUTPUTS
         [pscustomobject] Known, Why, Set (lower-case DN -> $true).
     .PARAMETER Forest
-        The forest input of Get-AdfaPrivDcPopulationState. Untyped, may be null or empty.
+        The forest-wide configuration read (from Get-AdfaPrivForestRaw), whose DcOk, DcDns, DsaCount
+        and NoReference properties describe the nTDSDSA objects and DC server objects found under
+        CN=Sites. When it is $null, DcOk is false, the counts are missing, no nTDSDSA object came
+        back, a server object lacks serverReference or the matched DNs do not equal the nTDSDSA
+        count, the population is returned as not Known with Why naming the gap and an empty set.
+        Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -14946,7 +15391,10 @@ function Get-AdfaPrivDomainDcList {
     .OUTPUTS
         [string[]]
     .PARAMETER DcState
-        The dc state input of Get-AdfaPrivDomainDcList. Untyped, may be null or empty.
+        The DC population state returned by Get-AdfaPrivDcPopulationState, whose Set holds the
+        lower-case computer-account DNs of the registered domain controllers. When it is $null or
+        not Known, or DomainDn is empty, an empty list is returned rather than a guessed set.
+        Untyped, may be null or empty.
     .PARAMETER DomainDn
         The distinguished name of the domain, for example DC=contoso,DC=com. Type [string], default
         '', may be null or empty.
@@ -14974,9 +15422,16 @@ function Get-AdfaPrivDcMembershipGap {
         The distinguished name of the domain, for example DC=contoso,DC=com. Type [string], default
         '', may be null or empty.
     .PARAMETER Groups
-        The groups input of Get-AdfaPrivDcMembershipGap. Untyped, may be null or empty.
+        The group entries read for this domain, keyed by group key, each holding Spec, Locate and
+        Closure; the DomainControllers and ReadOnlyDomainControllers entries supply the principals
+        the registered DCs are looked for in. A missing group or closure contributes no members, so
+        every registered DC that was not found makes the function return a gap text instead of ''.
+        Untyped, may be null or empty.
     .PARAMETER Forest
-        The forest input of Get-AdfaPrivDcMembershipGap. Untyped, may be null or empty.
+        The forest-wide configuration read, passed to Get-AdfaPrivDcPopulationState to learn which
+        domain controllers are registered. When it is $null or that population is not Known, a gap
+        text is returned saying the membership reads could not be checked, never ''. Untyped, may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -15015,7 +15470,9 @@ function Get-AdfaPrivGroupSpec {
         The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
         [string], default '', may be null or empty.
     .PARAMETER IsRoot
-        The is root input of Get-AdfaPrivGroupSpec. Type [bool], default $false.
+        Whether the domain is the forest root domain. Groups with Scope ForestRoot in the Privileged
+        table are included only when it is $true and are skipped otherwise. Type [bool], default
+        $false.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -15064,10 +15521,14 @@ function Resolve-AdfaPrivDnDomain {
         The distinguished name of the directory object. Type [string], default '', may be null or
         empty.
     .PARAMETER DomainMap
-        The domain map input of Resolve-AdfaPrivDnDomain. Type [hashtable], mandatory.
+        Every forest domain read for this run, keyed by DNS name, each entry carrying Ok, DomainDn
+        and, when the read failed, Error and ErrorType. The DN is matched against the longest
+        DomainDn suffix; a domain with no DomainDn read is treated as unread, which can make the
+        result Ambiguous or carry that domain's own read-failure class. Type [hashtable], mandatory.
     .PARAMETER Scoped
-        The scoped input of Resolve-AdfaPrivDnDomain. Type [string[]], default @(), may be null or
-        empty.
+        The DNS names of the domains this run assesses, compared case-insensitively. A DN whose
+        owning domain is not in this list is returned as OutOfScope, so an empty or $null list
+        routes nothing. Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15147,9 +15608,13 @@ function New-AdfaPrivContext {
     .OUTPUTS
         [hashtable]
     .PARAMETER DomainMap
-        The domain map input of New-AdfaPrivContext. Type [hashtable], mandatory.
+        Every forest domain read for this run, keyed by DNS name with its DomainDn and read outcome,
+        stored in the context so each member DN can be routed to the domain that holds it. Type
+        [hashtable], mandatory.
     .PARAMETER Scoped
-        The scoped input of New-AdfaPrivContext. Type [string[]], default @(), may be null or empty.
+        The DNS names of the domains this run assesses, stored in the context; member reads routed
+        to a domain outside this list are not made and are recorded as out of scope. Type
+        [string[]], default @(), may be null or empty.
     .PARAMETER AdParams
         Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
         -Server and -Credential; empty to use the current domain and account. Type [hashtable],
@@ -15158,7 +15623,8 @@ function New-AdfaPrivContext {
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER Offline
-        The offline input of New-AdfaPrivContext. Switch.
+        For tests only: when set, the context answers any object DN that is not already cached as
+        NotFound and any primary-group search as empty, instead of reading the directory. Switch.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -15183,7 +15649,10 @@ function Read-AdfaPrivObject {
     .OUTPUTS
         [pscustomobject] Ok, Class, Error, ErrorType, Record.
     .PARAMETER Context
-        The context input of Read-AdfaPrivObject. Type [hashtable], mandatory.
+        The run's reading context from New-AdfaPrivContext. Its Objects cache is consulted first and
+        updated with each answer, DomainMap and Scoped route the DN to its domain, Used and Limit
+        enforce the MaxExpandedObjects budget, and Offline answers uncached DNs as NotFound. Type
+        [hashtable], mandatory.
     .PARAMETER Dn
         The distinguished name of the directory object. Type [string], mandatory.
     #>
@@ -15228,9 +15697,15 @@ function Read-AdfaPrivPrimary {
     .OUTPUTS
         [pscustomobject] Ok, Class, Error, ErrorType, Records.
     .PARAMETER Context
-        The context input of Read-AdfaPrivPrimary. Type [hashtable], mandatory.
+        The run's reading context from New-AdfaPrivContext. Its Primary cache holds one answer per
+        domain and RID, DomainMap and Scoped route the search to the group's domain, Used and Limit
+        enforce the MaxExpandedObjects budget, and each record found is also added to the Objects
+        cache. Type [hashtable], mandatory.
     .PARAMETER Group
-        The group input of Read-AdfaPrivPrimary. Untyped, mandatory.
+        The group record whose primary-group members are searched for with (primaryGroupID=<Rid>),
+        using its Dn, Rid and IsAccountDomainSid. A group whose SID is not an account-domain SID, or
+        that has no Rid, is returned as Read with no records and no search is made. Untyped,
+        mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15299,7 +15774,9 @@ function Find-AdfaPrivGroup {
         [pscustomobject] Ok, Class (Read | NotFound | Duplicate | NoSid | Refused | Unreachable |
         AccessDenied | TimedOut | Error), Error, ErrorType, Filter, Record.
     .PARAMETER Context
-        The context input of Find-AdfaPrivGroup. Type [hashtable], mandatory.
+        The run's reading context from New-AdfaPrivContext. Its Config supplies the property list to
+        request and its AdParams are passed to the search; the located group's record is added to
+        the Objects cache so later member reads reuse it. Type [hashtable], mandatory.
     .PARAMETER Server
         The server (domain controller or DNS server) the read is directed at. Type [string],
         mandatory.
@@ -15337,7 +15814,10 @@ function Get-AdfaPrivUnresolvedText {
     .OUTPUTS
         [string]
     .PARAMETER Read
-        The read input of Get-AdfaPrivUnresolvedText. Untyped, may be null or empty.
+        The outcome of a failed read, with Class and Error, such as an object read, a primary-group
+        search or a group lookup. Its Class selects the wording and, for every class except NotFound
+        and Limit, its Error is quoted; when it is $null the text is 'not read (no answer)'.
+        Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -15375,9 +15855,14 @@ function Resolve-AdfaPrivGroupClosure {
     .OUTPUTS
         [pscustomobject] Group, Complete, Principals (Record, Via), Groups, Foreign, Unresolved (Ref, Reason).
     .PARAMETER Group
-        The group input of Resolve-AdfaPrivGroupClosure. Untyped, mandatory.
+        The record of the privileged group to expand, whose Dn marks the root of the walk and whose
+        Members and Rid start the member and primary-group reads. Members reached directly from it
+        are labelled direct, and those reached through other groups nested. Untyped, mandatory.
     .PARAMETER Context
-        The context input of Resolve-AdfaPrivGroupClosure. Type [hashtable], mandatory.
+        The run's reading context from New-AdfaPrivContext, through which every member DN and
+        primary-group search is read, so each object is read once per run and counted against the
+        read budget. A read it cannot complete is recorded in Unresolved with its reason and the
+        closure is not Complete. Type [hashtable], mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -15548,8 +16033,13 @@ function Get-AdfaPrivilegedState {
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER Parts
-        The parts input of Get-AdfaPrivilegedState. Type [string[]], default @('Groups', 'Hygiene',
-        'Delegation'), one of Groups, Hygiene, Delegation.
+        Which directory reads to make: Groups locates the privileged groups of each scoped domain
+        and expands their membership, Hygiene runs the adminCount search per domain, and Delegation
+        runs the delegation search and the two Kerberos roast reads. With any part, the forest-wide
+        DC population and dSHeuristics are read once; the group, adminCount and delegation reads are
+        made only for a domain whose own read succeeded, and a part left out leaves Groups empty or
+        AdminCount, Delegation and Roast $null in each domain entry. Type [string[]], default
+        @('Groups', 'Hygiene', 'Delegation'), one of Groups, Hygiene, Delegation.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15625,8 +16115,10 @@ function Get-AdfaPrivNameList {
     .OUTPUTS
         [pscustomobject] Listed, NotListed, Names, Sids, Records.
     .PARAMETER Records
-        The records input of Get-AdfaPrivNameList. Type [object[]], default @(), may be null or
-        empty.
+        The records to list, each with Name, Dn and Sid. $null entries are dropped, the rest are
+        sorted by name then DN in case-insensitive ordinal order and the first NameListCap are
+        returned with their names and SIDs; a record with no SID shows '(no SID read)'. Type
+        [object[]], default @(), may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -15668,11 +16160,15 @@ function Get-AdfaPrivLocateLead {
     .OUTPUTS
         [string]
     .PARAMETER Locate
-        The locate input of Get-AdfaPrivLocateLead. Untyped, may be null or empty.
+        The outcome of the failed group lookup or search, with Class, Error and ErrorType; Class
+        selects the wording and Error is quoted. When it is $null the text says the group was not
+        looked up and that this is a defect in the tool. Untyped, may be null or empty.
     .PARAMETER What
         A short description of what was being read, used in the message. Type [string], mandatory.
     .PARAMETER Search
-        The search input of Get-AdfaPrivLocateLead. Switch.
+        Set when Locate comes from a search (the adminCount, delegation or roast reads) rather than
+        a group lookup by SID. It changes only the NotFound wording, which then says the directory
+        reported an object the search needed as missing, not that no group has the SID. Switch.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -15703,13 +16199,18 @@ function Get-AdfaPrivMemberSummary {
         [pscustomobject] Count, Users, Computers, Others, Foreign, Groups, Unresolved, Counted, Excluded,
         Names (Get-AdfaPrivNameList), ForeignSids, UnresolvedText.
     .PARAMETER Closure
-        The closure input of Get-AdfaPrivMemberSummary. Untyped, mandatory.
+        The transitive membership from Resolve-AdfaPrivGroupClosure. Its Principals are counted by
+        kind, its Foreign principals are counted and listed by SID, its nested Groups are counted
+        apart and not as members, and its Unresolved references are counted and described. Untyped,
+        mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER ExcludeSid
-        The exclude sid input of Get-AdfaPrivMemberSummary. Type [string], default '', may be null
-        or empty.
+        A SID to leave out of the count, used for the forest root's built-in Administrator when
+        EnterpriseAdminsExemptRootAdministrator is on; principals with that SID are returned in
+        Excluded instead. When empty, no principal is excluded. Type [string], default '', may be
+        null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15758,10 +16259,14 @@ function Get-AdfaPrivEmptyGroupVerdict {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Key
-        The key input of Get-AdfaPrivEmptyGroupVerdict. Type [string], mandatory, one of
+        Which group the row grades. It selects the label, the catalogue entry, the Microsoft
+        guidance quoted in Detail and the <Key>Status grade from config; with EnterpriseAdmins the
+        forest root's Administrator may be exempted from the count. Type [string], mandatory, one of
         SchemaAdmins, EnterpriseAdmins.
     .PARAMETER Entry
-        The entry input of Get-AdfaPrivEmptyGroupVerdict. Untyped, may be null or empty.
+        The group entry read for the forest root, with Spec, Locate and Closure. When it is $null
+        the row is Not Assessed as a tool defect; when the group was not located or not expanded the
+        row is Not Assessed with the lookup's cause. Untyped, may be null or empty.
     .PARAMETER DomainSid
         The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
         [string], default '', may be null or empty.
@@ -15769,8 +16274,10 @@ function Get-AdfaPrivEmptyGroupVerdict {
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER PopulationGap
-        The population gap input of Get-AdfaPrivEmptyGroupVerdict. Type [string], default '', may be
-        null or empty.
+        The reason, from Get-AdfaPrivDcMembershipGap, that the root domain's membership reads failed
+        their check against the registered domain controllers. When it is not empty and no member
+        was counted, the row is Not Assessed instead of Pass; when empty, an empty group can pass.
+        Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15850,9 +16357,13 @@ function Get-AdfaPrivGroupCountVerdict {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Spec
-        The spec input of Get-AdfaPrivGroupCountVerdict. Untyped, mandatory.
+        The group's entry from Get-AdfaPrivGroupSpec, supplying the Name and Sid shown in the row
+        and the Always flag. A group that was not found and has Always $false is reported as Info
+        not present; otherwise a group not found is Not Assessed. Untyped, mandatory.
     .PARAMETER Entry
-        The entry input of Get-AdfaPrivGroupCountVerdict. Untyped, may be null or empty.
+        The group entry read for this domain, with Locate and Closure. When it is $null the row is
+        Not Assessed as a tool defect; when the lookup failed or the closure has unresolved
+        references the row is Not Assessed and no count is given. Untyped, may be null or empty.
     .PARAMETER DomainSid
         The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
         [string], default '', may be null or empty.
@@ -15902,16 +16413,23 @@ function Get-AdfaPrivGroupPopulationVerdict {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Specs
-        The specs input of Get-AdfaPrivGroupPopulationVerdict. Type [object[]], default @(), may be
-        null or empty.
+        The groups of the Privileged table declared for this domain, from Get-AdfaPrivGroupSpec;
+        each must be located and expanded completely, or be optional (Always $false) and not found.
+        When the list is empty the row is Not Assessed as a tool defect. Type [object[]], default
+        @(), may be null or empty.
     .PARAMETER Groups
-        The groups input of Get-AdfaPrivGroupPopulationVerdict. Untyped, may be null or empty.
+        The group entries read for this domain, keyed by group key, each with Locate and Closure. A
+        declared group with no entry here, or whose entry was not located or not expanded
+        completely, is listed as not done and makes the row Not Assessed. Untyped, may be null or
+        empty.
     .PARAMETER DomainSid
         The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
         [string], default '', may be null or empty.
     .PARAMETER PopulationGap
-        The population gap input of Get-AdfaPrivGroupPopulationVerdict. Type [string], default '',
-        may be null or empty.
+        The reason, from Get-AdfaPrivDcMembershipGap, that the domain's membership reads failed
+        their check against its registered domain controllers. When it is not empty the row is Not
+        Assessed even if every declared group was accounted for; when empty, the row can pass. Type
+        [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -15961,7 +16479,10 @@ function Get-AdfaPrivilegedAccount {
     .OUTPUTS
         [pscustomobject[]] rows.
     .PARAMETER State
-        The state input of Get-AdfaPrivilegedAccount. Untyped, mandatory.
+        The run's privileged-read state from Get-AdfaPrivilegedState, with Scoped, RootDomain,
+        RootScoped, Forest and the per-domain entries in Domains. With no scoped domain one Not
+        Assessed row is returned; the Schema Admins and Enterprise Admins rows are Not Assessed when
+        the root domain is unknown or not scoped. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -16058,7 +16579,11 @@ function Get-AdfaPrivProtectedSet {
         computers, by DN), ProtectedUsers (Known, Dns, Why, DelegationEnforced - $true, $false or $null
         from the domain functional level - and ModeText), DomainSid.
     .PARAMETER State
-        The state input of Get-AdfaPrivProtectedSet. Untyped, mandatory.
+        The run's privileged-read state from Get-AdfaPrivilegedState, from which the domain's own
+        protected groups, the forest root's protected groups, Protected Users and the domain
+        functional level are taken. When the forest root was not scoped or a protected group was not
+        read completely, the set is returned with Complete $false and the gap named in Missing.
+        Untyped, mandatory.
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Config
@@ -16183,11 +16708,19 @@ function Get-AdfaPrivOrphanVerdict {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER AdminCount
-        The admin count input of Get-AdfaPrivOrphanVerdict. Untyped, may be null or empty.
+        The result of the domain's (adminCount=1) search, with Ok, Class, Error, Filter and Records.
+        When it is $null the row is Not Assessed as a tool defect, and when the search failed the
+        row is Not Assessed with the cause. Untyped, may be null or empty.
     .PARAMETER Protected
-        The protected input of Get-AdfaPrivOrphanVerdict. Untyped, mandatory.
+        The protected set of the domain from Get-AdfaPrivProtectedSet; its BySid and ByDn decide
+        which adminCount=1 objects are reached by a protected group and its DomainSid identifies the
+        protected accounts. When it is not Complete the row is Not Assessed and the candidates are
+        listed only. Untyped, mandatory.
     .PARAMETER Heuristics
-        The heuristics input of Get-AdfaPrivOrphanVerdict. Untyped, mandatory.
+        The dSHeuristics state from Get-AdfaPrivHeuristicsState, whose Known and MaskZero say
+        whether the AdminSDHolder exclusion mask was read as 0 and whose Text is quoted in the
+        evidence. An object protected only through an operator group is counted as protected only
+        when the mask is known to be 0; otherwise it is undecided. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -16275,14 +16808,22 @@ function Get-AdfaPrivAccountPopulation {
     .OUTPUTS
         [pscustomobject] Records, Complete, Gaps.
     .PARAMETER Protected
-        The protected input of Get-AdfaPrivAccountPopulation. Untyped, mandatory.
+        The protected set of the domain from Get-AdfaPrivProtectedSet. Its Members supply the user
+        accounts reached from protected groups, its Missing entries become gaps, and its DomainSid
+        limits the population to accounts of this domain; with no DomainSid the population is not
+        Complete. Untyped, mandatory.
     .PARAMETER AdminCount
-        The admin count input of Get-AdfaPrivAccountPopulation. Untyped, may be null or empty.
+        The result of the domain's (adminCount=1) search, used to add the domain's built-in
+        Administrator and, with IncludeAdminCount, every user it returned. When it is $null or did
+        not succeed, a gap is recorded and the population is not Complete. Untyped, may be null or
+        empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER IncludeAdminCount
-        The include admin count input of Get-AdfaPrivAccountPopulation. Switch.
+        When set, every user account of this domain returned by the adminCount search is added to
+        the population; when not set, only the domain's built-in Administrator is taken from that
+        search. Switch.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -16328,7 +16869,10 @@ function Get-AdfaPrivSpnVerdict {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Population
-        The population input of Get-AdfaPrivSpnVerdict. Untyped, mandatory.
+        The privileged user accounts of the domain from Get-AdfaPrivAccountPopulation, with Records,
+        Complete and Gaps. Enabled records with an SPN are findings; when no record was read, or the
+        population is not Complete or an account's enabled state was not returned, the row is Not
+        Assessed rather than Pass. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -16392,9 +16936,16 @@ function Get-AdfaPrivDelegableVerdict {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Population
-        The population input of Get-AdfaPrivDelegableVerdict. Untyped, mandatory.
+        The privileged user accounts of the domain from Get-AdfaPrivAccountPopulation, with Records,
+        Complete and Gaps. Enabled records without the NOT_DELEGATED flag and not covered by
+        Protected Users are findings; an empty population, an incomplete one or an account whose
+        state was not returned leaves the row Not Assessed rather than Pass. Untyped, mandatory.
     .PARAMETER ProtectedUsers
-        The protected users input of Get-AdfaPrivDelegableVerdict. Untyped, mandatory.
+        The Protected Users state from Get-AdfaPrivProtectedSet, with Known, Dns, Why,
+        DelegationEnforced and ModeText. When Known is false, every enabled account without the
+        NOT_DELEGATED flag is undecided, never a finding and never a pass; a member listed in Dns
+        counts as protected only when DelegationEnforced is $true, is undecided when it is $null and
+        is a finding when it is $false. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -16466,7 +17017,10 @@ function Get-AdfaPrivProtectedUsersVerdict {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Entry
-        The entry input of Get-AdfaPrivProtectedUsersVerdict. Untyped, may be null or empty.
+        The Protected Users entry read for this domain, with Spec, Locate and Closure. When it is
+        $null the row is Not Assessed as a tool defect, a group not found is Info not present, and a
+        failed lookup or unresolved member reference makes the row Not Assessed with no count.
+        Untyped, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -16511,7 +17065,10 @@ function Get-AdfaPrivilegedHygiene {
     .OUTPUTS
         [pscustomobject[]] rows.
     .PARAMETER State
-        The state input of Get-AdfaPrivilegedHygiene. Untyped, mandatory.
+        The run's privileged-read state from Get-AdfaPrivilegedState, with Scoped, Forest and the
+        per-domain entries in Domains. With no scoped domain one Not Assessed row is returned, and a
+        domain whose reads failed gets its four rows Not Assessed with the cause. Untyped,
+        mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -16567,7 +17124,10 @@ function Get-AdfaKerberosRoastVerdict {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Roast
-        The roast input of Get-AdfaKerberosRoastVerdict. Untyped, may be null or empty.
+        The Kerberoast and AS-REP reads of the domain from Get-AdfaKerberosRoastRaw, with an Ok,
+        Class and error per read and the accounts found. When it is $null both rows are Not Assessed
+        as a tool defect, and a read that failed makes its row Not Assessed with the cause. Untyped,
+        may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -16631,9 +17191,14 @@ function Get-AdfaPrivDelegationVerdict {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Delegation
-        The delegation input of Get-AdfaPrivDelegationVerdict. Untyped, may be null or empty.
+        The result of the domain's delegation search, with Ok, Class, Error and Records. When it is
+        $null all four rows are Not Assessed as a tool defect, and when the search failed they are
+        Not Assessed with the cause. Untyped, may be null or empty.
     .PARAMETER Forest
-        The forest input of Get-AdfaPrivDelegationVerdict. Untyped, may be null or empty.
+        The forest-wide configuration read, passed to Get-AdfaPrivDcPopulationState to learn which
+        computer accounts are registered domain controllers so they can be excluded by DN. When that
+        population is not Known, the unconstrained and protocol transition rows are Not Assessed and
+        no other row can pass. Untyped, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -16810,7 +17375,10 @@ function Get-AdfaKerberosExposure {
     .OUTPUTS
         [pscustomobject[]] rows.
     .PARAMETER State
-        The state input of Get-AdfaKerberosExposure. Untyped, mandatory.
+        The run's privileged-read state from Get-AdfaPrivilegedState, with Scoped, Forest and the
+        per-domain Roast, Delegation and Raw reads in Domains. With no scoped domain one Not
+        Assessed row is returned, and a domain that was not handled or whose handling failed gets
+        its six rows Not Assessed with the cause. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -17017,9 +17585,12 @@ function Get-AdfaConfigValue {
         Pure: reads one named value from a config row that is a hashtable (built-in table) or
         an object (a row loaded from JSON). $null when the name is absent.
     .PARAMETER Entry
-        The entry input of Get-AdfaConfigValue. Untyped, may be null or empty.
+        The config row to read from: a hashtable from a built-in table, whose keys are looked up, or
+        an object loaded from JSON, whose properties are looked up. When it is $null the result is
+        $null. Untyped, may be null or empty.
     .PARAMETER Name
-        The name input of Get-AdfaConfigValue. Type [string], mandatory.
+        The key or property name to read from the row. When the row has no such key or property the
+        result is $null, not an empty string or zero. Type [string], mandatory.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Entry, [Parameter(Mandatory)][string]$Name)
@@ -17039,7 +17610,9 @@ function ConvertTo-AdfaConfigDate {
         Pure: a yyyy-MM-dd config value as a date, or $null. No other format is accepted, so a
         date cannot be read differently on a host with a different culture.
     .PARAMETER Value
-        The value input of ConvertTo-AdfaConfigDate. Untyped, may be null or empty.
+        The config value to read as a date, which must be exactly yyyy-MM-dd after trimming and is
+        parsed with the invariant culture. $null, an empty value or any other format returns $null,
+        so no date is ever guessed. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -17099,8 +17672,10 @@ function Resolve-AdfaOsLifecycleEntry {
         The operatingSystemVersion attribute of the domain controller's computer object. Type
         [string], may be null or empty.
     .PARAMETER Entries
-        The entries input of Resolve-AdfaOsLifecycleEntry. Untyped, default @(), may be null or
-        empty.
+        The OS lifecycle table rows to match against, each read for Pattern (a regular expression
+        tested against the operatingSystem name), Build (compared with the build number in the
+        version value) and Label. With no rows nothing can match, so no entry is returned and the
+        reason names what was not matched. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     param(
@@ -17176,12 +17751,18 @@ function Get-AdfaOsLifecycleVerdict {
         The operatingSystemVersion attribute of the domain controller's computer object. Type
         [string], may be null or empty.
     .PARAMETER EnrichmentError
-        The enrichment error input of Get-AdfaOsLifecycleVerdict. Type [string], may be null or
-        empty.
+        The error recorded when the DC's computer object was read, quoted as the cause when the
+        operating system is empty or Not Assessed. When it is empty the Not Assessed detail says no
+        cause was recorded. Type [string], may be null or empty.
     .PARAMETER Today
-        The today input of Get-AdfaOsLifecycleVerdict. Type [datetime], mandatory.
+        The date the extended support and ESU end dates are compared with; only its date part is
+        used. A date on or before the extended support end is Pass, a later one is Fail. Type
+        [datetime], mandatory.
     .PARAMETER Entries
-        The entries input of Get-AdfaOsLifecycleVerdict. Untyped, default @(), may be null or empty.
+        The OS lifecycle table rows passed to Resolve-AdfaOsLifecycleEntry to identify the release,
+        then read for Label, ExtendedEnd and EsuEnd. An OS that matches no row, or a row whose
+        ExtendedEnd is missing or not yyyy-MM-dd, is Not Assessed, never Pass. Untyped, default @(),
+        may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -17250,7 +17831,9 @@ function Get-AdfaDcOsLifecycle {
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER Today
-        The today input of Get-AdfaDcOsLifecycle. Type [datetime], mandatory.
+        The date each DC's operating system is judged on, passed unchanged to
+        Get-AdfaOsLifecycleVerdict for comparison with the release's extended support and ESU end
+        dates. Type [datetime], mandatory.
     .PARAMETER InventoryFailures
         Domains whose DC inventory call threw: objects with Domain and Error. Their DCs are in no
         list, so without a row here the section would look complete while a whole domain went
@@ -17312,10 +17895,17 @@ function ConvertTo-AdfaHotfixDate {
     .OUTPUTS
         [datetime] or $null
     .PARAMETER Value
-        The value input of ConvertTo-AdfaHotfixDate. Untyped, may be null or empty.
+        One InstalledOn value from the DC's update list: a DateTime is returned as is, a 16-digit
+        hexadecimal FILETIME (with or without 0x) is converted, a year-first date is parsed from its
+        digits, and a year-last date is parsed only when its day/month order is certain from the
+        value or from the order given. $null, an empty value, an unrecognised shape, a FILETIME of
+        zero or less, an ambiguous year-last date with no order or an impossible date returns $null.
+        Untyped, may be null or empty.
     .PARAMETER Order
-        The order input of ConvertTo-AdfaHotfixDate. Type [string], default 'Unknown', one of
-        Unknown, MonthFirst, DayFirst.
+        The day/month order to apply to a year-last date whose two leading numbers are both 12 or
+        below and differ, normally from Get-AdfaHotfixDateOrder. With Unknown such a date is
+        returned as $null rather than read in an order that may be wrong. Type [string], default
+        'Unknown', one of Unknown, MonthFirst, DayFirst.
     #>
     [CmdletBinding()]
     param(
@@ -17367,7 +17957,11 @@ function Get-AdfaHotfixDateOrder {
     .OUTPUTS
         [string] Unknown | MonthFirst | DayFirst
     .PARAMETER Values
-        The values input of Get-AdfaHotfixDateOrder. Type [object[]], default @(), may be null or
+        The InstalledOn values of one DC's update list. Only year-last strings (one or two digits,
+        one or two digits, four-digit year) are counted: a value whose first number is above 12 and
+        second is 12 or below proves day-first, and one whose second number is above 12 and first is
+        12 or below proves month-first; DateTime, $null and other shapes are skipped. With no proof,
+        or proof both ways, the result is Unknown. Type [object[]], default @(), may be null or
         empty.
     #>
     [CmdletBinding()]
@@ -17396,8 +17990,10 @@ function Get-AdfaHotfixSummary {
     .OUTPUTS
         [pscustomobject] Total, Parsed, Unparsed, Latest ($null when none), Order, UnparsedSamples.
     .PARAMETER InstalledOn
-        The installed on input of Get-AdfaHotfixSummary. Type [object[]], default @(), may be null
-        or empty.
+        The InstalledOn values of one DC's update list. Their day/month order is decided from the
+        set, each is converted to a date, and the latest readable one is returned with counts of
+        parsed and unparsed values and up to three unparsed samples. With no values Latest is $null
+        and the totals are 0. Type [object[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -17639,12 +18235,17 @@ function Resolve-AdfaBuildRevision {
     .OUTPUTS
         [pscustomobject] Kind, Number ([int64] or $null), FullBuild, Text.
     .PARAMETER BuildNumber
-        The build number input of Resolve-AdfaBuildRevision. Type [string], default '', may be null
-        or empty.
+        The OS build number read from the DC, joined with the revision as build.revision to form the
+        full build. When it is empty the revision is still reported but FullBuild stays empty,
+        because a revision alone is not a build. Type [string], default '', may be null or empty.
     .PARAMETER UbrRead
-        The ubr read input of Resolve-AdfaBuildRevision. Untyped, may be null or empty.
+        The raw registry read of the update build revision value, resolved through
+        Resolve-AdfaHardeningRead into a number or a named cause. When it is $null the read is
+        reported as not attempted, Kind is NotAttempted and no revision is shown, never 0. Untyped,
+        may be null or empty.
     .PARAMETER Key
-        The key input of Resolve-AdfaBuildRevision. Type [string], mandatory.
+        The registry key under HKLM that holds the revision value, used only to name where the value
+        was read from in the text. Type [string], mandatory.
     .PARAMETER ValueName
         The registry value name. Type [string], mandatory.
     #>
@@ -17999,7 +18600,10 @@ function Import-AdfaDcSystemConfig {
         The built-in configuration table the override is checked against and merged onto. Type
         [hashtable], mandatory.
     .PARAMETER Path
-        The path input of Import-AdfaDcSystemConfig. Type [string], mandatory.
+        The path of the JSON override file to merge over the built-in DC system table. A missing
+        file, an empty file, invalid JSON, or a JSON null or empty array throws and stops the run
+        rather than falling back to the built-in values; merge errors are rethrown with the file
+        named. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -18037,7 +18641,9 @@ function ConvertTo-AdfaByteCount {
     .OUTPUTS
         [double] or $null
     .PARAMETER Value
-        The value input of ConvertTo-AdfaByteCount. Untyped, may be null or empty.
+        A byte count as returned by CIM, such as Capacity or FreeSpace, in any numeric or string
+        shape, parsed with the invariant culture. $null, a Boolean, an empty string, text that is
+        not a number, NaN or infinity returns $null. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -18071,9 +18677,12 @@ function ConvertTo-AdfaFixedText {
     .OUTPUTS
         [string]
     .PARAMETER Value
-        The value input of ConvertTo-AdfaFixedText. Type [double], mandatory.
+        The number to print, expected to be zero or more. It is truncated, not rounded, to the
+        requested decimals and written with the invariant culture, so a value just below a threshold
+        never prints as the threshold. Type [double], mandatory.
     .PARAMETER Decimals
-        The decimals input of ConvertTo-AdfaFixedText. Type [int], default 2, from 0 to 6.
+        How many decimal places to keep; the digits after them are cut off, not rounded. Type [int],
+        default 2, from 0 to 6.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -18118,17 +18727,29 @@ function Get-AdfaDiskSpaceVerdict {
         [pscustomobject] Status, PercentFree, FreeGB, CapacityGB ($null when Not Assessed),
         Trigger (None | Percent | Floor | Both - what produced the reported status), Detail.
     .PARAMETER CapacityBytes
-        The capacity bytes input of Get-AdfaDiskSpaceVerdict. Untyped, may be null or empty.
+        The volume's size in bytes as the DC returned it, converted with ConvertTo-AdfaByteCount.
+        When it is $null, not a number, zero or negative the verdict is Not Assessed with the
+        returned values quoted, never Pass and never 0 %. Untyped, may be null or empty.
     .PARAMETER FreeBytes
-        The free bytes input of Get-AdfaDiskSpaceVerdict. Untyped, may be null or empty.
+        The volume's free space in bytes as the DC returned it, converted with
+        ConvertTo-AdfaByteCount. When it is $null, not a number, negative or larger than the
+        capacity the verdict is Not Assessed with the returned values quoted. Untyped, may be null
+        or empty.
     .PARAMETER WarnBelowPercent
-        The warn below percent input of Get-AdfaDiskSpaceVerdict. Type [double], mandatory.
+        The free-space percentage strictly below which the volume is Warning, when the Fail tests
+        are not met. A value of 0 is never crossed, which turns the test off. Type [double],
+        mandatory.
     .PARAMETER FailBelowPercent
-        The fail below percent input of Get-AdfaDiskSpaceVerdict. Type [double], mandatory.
+        The free-space percentage strictly below which the volume is Fail; it is tested before the
+        Warning thresholds. A value of 0 is never crossed, which turns the test off. Type [double],
+        mandatory.
     .PARAMETER WarnBelowFreeGB
-        The warn below free gb input of Get-AdfaDiskSpaceVerdict. Type [double], default 0.
+        The absolute free-space floor in GB (1024^3 bytes) strictly below which the volume is
+        Warning, when the Fail tests are not met. The default 0 is never crossed, so the floor is
+        off. Type [double], default 0.
     .PARAMETER FailBelowFreeGB
-        The fail below free gb input of Get-AdfaDiskSpaceVerdict. Type [double], default 0.
+        The absolute free-space floor in GB (1024^3 bytes) strictly below which the volume is Fail.
+        The default 0 is never crossed, so the floor is off. Type [double], default 0.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -18232,9 +18853,16 @@ function Resolve-AdfaVolumeForPath {
     .OUTPUTS
         [pscustomobject] Resolved, Volume ($null when not resolved), Reason ('' when resolved).
     .PARAMETER Path
-        The path input of Resolve-AdfaVolumeForPath. Type [string], may be null or empty.
+        The file or folder path read from the DC's registry, such as the NTDS database, log or
+        SYSVOL path, to map to the volume whose mount path is its longest prefix. When it is empty
+        or blank nothing is resolved and the reason says the path is empty. Type [string], may be
+        null or empty.
     .PARAMETER Volumes
-        The volumes input of Resolve-AdfaVolumeForPath. Untyped, default @(), may be null or empty.
+        The volumes the DC returned, each read for Name and DriveType; only local disks (DriveType
+        3) whose Name is a mount path, not a volume GUID path, are candidates. With no candidate
+        nothing is resolved and the reason says no such volume was returned; when no candidate is a
+        prefix of the path, nothing is resolved and the reason lists the candidate mount paths.
+        Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -18331,13 +18959,17 @@ function Get-AdfaStdRegReturnClass {
     .OUTPUTS
         [pscustomobject] Class, Code ([int64] or $null), Threw.
     .PARAMETER ReturnValue
-        The return value input of Get-AdfaStdRegReturnClass. Untyped, may be null or empty.
+        The ReturnValue the StdRegProv call returned, mapped to a class: 0 Success, 1 ValueNotSet, 2
+        KeyAbsent, 5 or 2147749891 AccessDenied, 2147749893 TypeMismatch, any other number
+        ReadFailed. When it is $null or not a number the class is NoReturnCode. It is ignored when
+        an error text is given. Untyped, may be null or empty.
     .PARAMETER ErrorText
         The error text of the failed read or command; empty when there was none. Type [string],
         default '', may be null or empty.
     .PARAMETER ErrorCode
-        The error code input of Get-AdfaStdRegReturnClass. Type [string], default '', may be null or
-        empty.
+        The CIM error code name carried by the call's exception, used only when an error text is
+        given: it is passed with the text to Get-AdfaRemoteReadErrorClass to tell AccessDenied from
+        ReadFailed. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -18418,7 +19050,10 @@ function Resolve-AdfaDcDiskPathRead {
     .OUTPUTS
         [pscustomobject] Usable, Path ('' when not usable), Cause ('' when usable).
     .PARAMETER Entry
-        The entry input of Resolve-AdfaDcDiskPathRead. Untyped, may be null or empty.
+        One registry path read from Get-AdfaDcDiskRaw, read for Error, ErrorCode, ReturnValue,
+        ExpandedReturnValue and Value, and classified into a usable path or a named cause (access
+        denied, not found, read failed or unusable). When it is $null the read is reported as failed
+        with no result returned. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -18679,9 +19314,12 @@ function Get-AdfaCimRawValue {
         CimInstanceProperties, is read first and the member is the fallback for an object that
         has no such store.
     .PARAMETER Instance
-        The instance input of Get-AdfaCimRawValue. Untyped, may be null or empty.
+        The CIM instance to read from. Its unadapted CimInstanceProperties store is read first, and
+        the ordinary member is the fallback. When it is $null the result is $null. Untyped, may be
+        null or empty.
     .PARAMETER Name
-        The name input of Get-AdfaCimRawValue. Type [string], mandatory.
+        The name of the CIM property to read. When neither the CimInstanceProperties store nor a
+        member carries it, the result is $null. Type [string], mandatory.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Instance, [Parameter(Mandatory)][string]$Name)
@@ -18755,11 +19393,14 @@ function Get-AdfaStdRegStringValue {
     .PARAMETER CimSession
         The open CIM session to call through. Untyped, mandatory.
     .PARAMETER Key
-        The key input of Get-AdfaStdRegStringValue. Type [string], mandatory.
+        The registry subkey path under HKEY_LOCAL_MACHINE to read from, passed to StdRegProv as
+        sSubKeyName. Type [string], mandatory.
     .PARAMETER ValueName
         The registry value name. Type [string], mandatory.
     .PARAMETER Expanded
-        The expanded input of Get-AdfaStdRegStringValue. Switch.
+        When set, the value is read with GetExpandedStringValue instead of GetStringValue, and
+        Method in the result says so. The caller uses it as a second attempt where the first read
+        gave nothing usable. Switch.
     .PARAMETER OperationTimeoutSec
         Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     #>
@@ -18860,7 +19501,10 @@ function Get-AdfaDcDiskRaw {
     .PARAMETER OperationTimeoutSec
         Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     .PARAMETER Paths
-        The paths input of Get-AdfaDcDiskRaw. Untyped, mandatory, may be null or empty.
+        The registry values to read, normally $Config['Paths'] from the DcDisk table, each read for
+        Role, Key and ValueName; $null rows are skipped. Each produces one entry in the result's
+        Paths. With no rows no registry value is read and only the volume query can answer. Untyped,
+        mandatory, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19052,7 +19696,10 @@ function Get-AdfaDcPopulationGap {
         domain although its enumeration failed), WithoutDomain (how many targets carry no
         domain at all - they came from the unscoped fallback enumeration).
     .PARAMETER Targets
-        The targets input of Get-AdfaDcPopulationGap. Untyped, default @(), may be null or empty.
+        The per-DC targets the section will report, as inventory rows with Scope or plain host
+        names. A domain carried as Scope by at least one target is accounted for unless its
+        enumeration failed, in which case it is still returned with Seen set; targets with no domain
+        are counted and returned as WithoutDomain. Untyped, default @(), may be null or empty.
     .PARAMETER InventoryFailures
         The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
         not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
@@ -19117,9 +19764,14 @@ function Get-AdfaDcPopulationGapText {
     .OUTPUTS
         [string]
     .PARAMETER Gap
-        The gap input of Get-AdfaDcPopulationGapText. Untyped, mandatory.
+        One entry from Get-AdfaDcPopulationGap, read for Failed, Error, Seen and WithoutDomain.
+        Failed puts the enumeration error in the cause; Seen or a WithoutDomain count above 0
+        replaces the plain coverage sentence with one saying whether the listed DCs cover this
+        domain is not known. Untyped, mandatory.
     .PARAMETER NothingRead
-        The nothing read input of Get-AdfaDcPopulationGapText. Type [string], mandatory.
+        The section's own sentence saying what was not read for this domain, used as the coverage
+        part of the text only when the gap is neither Seen nor followed by DCs without a domain.
+        Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -19147,7 +19799,9 @@ function ConvertTo-AdfaDcTarget {
     .OUTPUTS
         [pscustomobject] HostName ('' when the target has none), Scope ('' when it has none).
     .PARAMETER Target
-        The target input of ConvertTo-AdfaDcTarget. Untyped, may be null or empty.
+        One per-DC target: a plain string is taken as the host name with no domain, and an object is
+        read for HostName and Scope. When it is $null, or a property is missing, the corresponding
+        field is returned as an empty string. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19175,7 +19829,9 @@ function Get-AdfaDcHostSet {
     .OUTPUTS
         [string[]]
     .PARAMETER Targets
-        The targets input of Get-AdfaDcHostSet. Untyped, default @(), may be null or empty.
+        The per-DC targets, as inventory rows or plain host names, whose host names are returned in
+        order, each once, compared without case and without a trailing dot. $null targets and
+        targets with no host name are left out. Untyped, default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -19212,7 +19868,10 @@ function Get-AdfaDomainDcHostName {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Targets
-        The targets input of Get-AdfaDomainDcHostName. Untyped, default @(), may be null or empty.
+        The per-DC targets of the run, passed to Select-AdfaDomainDcTarget to pick those whose Scope
+        is the given domain. Unscoped targets are taken for the domain only when no target carries a
+        domain and it is the only scoped domain; when none is picked, the domain's gap is returned
+        for a Not Assessed row. Untyped, default @(), may be null or empty.
     .PARAMETER InventoryFailures
         The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
         not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
@@ -19253,8 +19912,11 @@ function Select-AdfaDomainDcTarget {
     .PARAMETER Domain
         The DNS name of the domain, for example contoso.com. Type [string], mandatory.
     .PARAMETER Targets
-        The targets input of Select-AdfaDomainDcTarget: inventory rows, (Scope, HostName) rows or
-        plain host names. Untyped, default @(), may be null or empty.
+        The per-DC targets of the run, as inventory rows, (Scope, HostName) rows or plain host names;
+        $null entries are dropped. Only those whose Scope is -Domain are returned, except that
+        targets carrying no domain at all are taken when -Domain is the only scoped domain. When
+        none is returned, the domain's gap is worked out from these targets and -InventoryFailures.
+        Untyped, default @(), may be null or empty.
     .PARAMETER InventoryFailures
         The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
         not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
@@ -19306,14 +19968,19 @@ function Invoke-AdfaDcRemoteRead {
     .PARAMETER ComputerName
         The host name of the computer to read or probe. Type [string], mandatory.
     .PARAMETER Protocols
-        The protocols input of Invoke-AdfaDcRemoteRead. Type [string[]], mandatory, may be null or
-        empty.
+        The transports to try, in order, whose ports answered the caller's probe; each is passed to
+        the read command as -Protocol. The loop stops at the first read that is Ok, or at a failure
+        classed as access denied, which is not retried on the next transport. With an empty list no
+        read is made and Raw is $null. Type [string[]], mandatory, may be null or empty.
     .PARAMETER ReadCommand
-        The read command input of Invoke-AdfaDcRemoteRead. Type [string], mandatory, one of
-        Get-AdfaDcDiskRaw, Get-AdfaDcHardeningRaw, Get-AdfaDcNetworkRaw, Get-AdfaDcW32TimeRaw,
-        Get-AdfaSysvolRegistryRaw.
+        The name of the section's raw read function to call for each transport, with -ComputerName,
+        -Protocol and the read arguments; only the listed read functions are accepted. Type
+        [string], mandatory, one of Get-AdfaDcDiskRaw, Get-AdfaDcHardeningRaw, Get-AdfaDcNetworkRaw,
+        Get-AdfaDcW32TimeRaw, Get-AdfaSysvolRegistryRaw.
     .PARAMETER ReadArguments
-        The read arguments input of Invoke-AdfaDcRemoteRead. Type [hashtable], default @{}.
+        Extra named arguments splatted onto every call of the read command, such as
+        OperationTimeoutSec and Paths; ComputerName and Protocol are set by this loop and override
+        any given here. Type [hashtable], default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19664,7 +20331,9 @@ function ConvertTo-AdfaNullableBoolean {
         Pure: a CIM boolean as $true or $false, or $null when it is neither. A property that was
         not returned is not False.
     .PARAMETER Value
-        The value input of ConvertTo-AdfaNullableBoolean. Untyped, may be null or empty.
+        A boolean as CIM returned it: a [bool] is returned as is, and the text true or false (any
+        case, trimmed) becomes $true or $false. $null or any other value returns $null, so a
+        property that was not returned is never read as False. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -19700,7 +20369,10 @@ function Resolve-AdfaHardeningRead {
     .OUTPUTS
         [pscustomobject] Kind, Number ([int64] or $null), Cause ('' for Value and NotSet).
     .PARAMETER Entry
-        The entry input of Resolve-AdfaHardeningRead. Untyped, may be null or empty.
+        One GetDWORDValue read result, read for Error, ErrorCode, ReturnValue and Value and
+        classified as Value, NotSet, KeyAbsent, AccessDenied, TypeMismatch or ReadFailed with a
+        cause. When it is $null the read is ReadFailed with no result returned; Number stays $null
+        unless a number was actually read. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -19785,7 +20457,10 @@ function Resolve-AdfaHardeningDefault {
         [pscustomobject] Known, Value ([int64] or $null), Meets ($true, $false or $null),
         Label, Source, Reason ('' when Known).
     .PARAMETER Setting
-        The setting input of Resolve-AdfaHardeningDefault. Untyped, mandatory.
+        The hardening setting's config row, whose Defaults rows (MinBuild, MaxBuild, Known, Value,
+        Meets, Label, Source, Reason) are searched for the one whose build range holds the DC's
+        build. When no row covers the build, no default is known and the reason lists the ranges the
+        rows do cover. Untyped, mandatory.
     .PARAMETER Build
         The operating system build number of the domain controller, as read; empty or $null when it
         was not read. Untyped, may be null or empty.
@@ -19891,9 +20566,20 @@ function Get-AdfaHardeningVerdict {
     .OUTPUTS
         [pscustomobject] Status, Detail.
     .PARAMETER Setting
-        The setting input of Get-AdfaHardeningVerdict. Untyped, mandatory.
+        The hardening setting's config row, read for ValueName, ExpectedMinimum, OtherStatus,
+        Meanings, AppliesFromBuild and AppliesFromLabel, and its Defaults through
+        Resolve-AdfaHardeningDefault. Below AppliesFromBuild the row is Info, not applicable, and
+        with no build read it is Not Assessed; otherwise a number with no entry in Meanings is Not
+        Assessed, and a number at or above ExpectedMinimum is Pass and below it OtherStatus, unless
+        the rules for related settings or the second instrument change the grade. Untyped,
+        mandatory.
     .PARAMETER State
-        The state input of Get-AdfaHardeningVerdict. Untyped, mandatory.
+        The resolved read of the setting's value from Resolve-AdfaHardeningRead, read for Kind,
+        Number and Cause. A Kind other than Value or NotSet is Not Assessed with its Cause, except
+        below a policy's AppliesFromBuild, where the row is Info and still quotes the Cause; NotSet
+        is graded on the documented default for the DC's build, or on the second instrument where
+        the setting relies on one, and is Not Assessed where neither gives an answer. Untyped,
+        mandatory.
     .PARAMETER Build
         The operating system build number of the domain controller, as read; empty or $null when it
         was not read. Untyped, may be null or empty.
@@ -20319,7 +21005,13 @@ function Get-AdfaSmb1Verdict {
     .OUTPUTS
         [pscustomobject] Status, Detail.
     .PARAMETER Read
-        The read input of Get-AdfaSmb1Verdict. Untyped, mandatory.
+        The resolved SMB server configuration read of one DC, as Resolve-AdfaSmbServerRead returns
+        it. Its Kind selects the row: CmdletMissing, NoInstance, AccessDenied or ClassMissing are
+        Not Assessed with the cause, and any other kind is a Not Assessed read failure. Its
+        Instrument and Cause are quoted in the Detail, and its CauseSource decides whether the cause
+        is attributed to the DC or to this tool. Only Kind 'Read' is graded: EnableSmb1 true is
+        Fail, false is Pass, and a value that is not true or false is Not Assessed, never a pass.
+        Untyped, mandatory.
     .PARAMETER Protocol
         The CIM session protocol (WinRM or DCOM). Type [string], default '', may be null or empty.
     #>
@@ -20587,7 +21279,9 @@ function Get-AdfaStdRegDwordValue {
     .PARAMETER CimSession
         The open CIM session to call through. Untyped, mandatory.
     .PARAMETER Key
-        The key input of Get-AdfaStdRegDwordValue. Type [string], mandatory.
+        The registry subkey path under HKEY_LOCAL_MACHINE, passed unchanged as sSubKeyName to the
+        StdRegProv GetDWORDValue call (hDefKey is always HKEY_LOCAL_MACHINE). The caller takes it
+        from the Key of one setting in the DC hardening config table. Type [string], mandatory.
     .PARAMETER ValueName
         The registry value name. Type [string], mandatory.
     .PARAMETER OperationTimeoutSec
@@ -20703,7 +21397,11 @@ function Get-AdfaDcHardeningRaw {
     .PARAMETER OperationTimeoutSec
         Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     .PARAMETER Settings
-        The settings input of Get-AdfaDcHardeningRaw. Untyped, mandatory, may be null or empty.
+        The settings rows of the DC hardening config table, each naming an Id, a Key and a
+        ValueName; one GetDWORDValue call is made per non-null row, and the answers are returned in
+        Values in the same order with each row's own error. A null row is skipped, and with $null or
+        an empty list no registry value is read and Values is empty, while the OS build, Print
+        Spooler and SMB server reads still run. Untyped, mandatory, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -20989,7 +21687,11 @@ function ConvertTo-AdfaOverrideTable {
         as an ordered name-to-value table. $null when it is neither, so the caller can refuse
         an array, a string or a number, whose own properties must not be read as keys.
     .PARAMETER Value
-        The value input of ConvertTo-AdfaOverrideTable. Untyped, may be null or empty.
+        The override object to turn into an ordered name-to-value table: a hashtable built in
+        memory, or a PSCustomObject parsed from JSON, whose keys or property names become the
+        table's keys. $null, or any other kind of value such as an array, a string or a number,
+        returns $null so the caller can refuse it instead of reading its own properties as keys.
+        Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -21244,7 +21946,11 @@ function ConvertTo-AdfaFileTimeUtc {
     .OUTPUTS
         [datetime] in UTC, or $null
     .PARAMETER Value
-        The value input of ConvertTo-AdfaFileTimeUtc. Untyped, may be null or empty.
+        The directory time value to convert: a FILETIME count of 100-nanosecond intervals since 1601
+        as an integer or as text (parsed with the invariant culture), or a date, which is returned
+        in UTC. $null, text that is not an integer, a negative count, or a count outside what .NET
+        can hold as a date (the directory's 'never' included) returns $null; zero is returned as the
+        start of 1601, not as an absent value. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -21286,7 +21992,11 @@ function Get-AdfaDirectoryReadErrorClass {
     .PARAMETER Message
         The message text. Type [string], may be null or empty.
     .PARAMETER TypeName
-        The type name input of Get-AdfaDirectoryReadErrorClass. Type [string], may be null or empty.
+        The full .NET type name of the exception the directory read threw, checked before the
+        message because the message is in the host's UI language: known access-denied, timeout and
+        server-down type names give AccessDenied, TimedOut or Unreachable. TimedOut is decided from
+        this value only; when it is empty or matches none of them, the class is decided from the
+        message text, and anything unrecognised is Error. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -21313,7 +22023,11 @@ function Get-AdfaLapsReadFailureLead {
     .PARAMETER Message
         The message text. Type [string], may be null or empty.
     .PARAMETER TypeName
-        The type name input of Get-AdfaLapsReadFailureLead. Type [string], may be null or empty.
+        The full .NET type name of the exception the directory read threw; it is passed with the
+        message to Get-AdfaDirectoryReadErrorClass to choose the Unreachable, Access denied, Timed
+        out or Read failed wording, and is appended to the quoted error as '(exception type: ...)'.
+        When it is empty the class is decided from the message alone and no type is shown. Type
+        [string], may be null or empty.
     .PARAMETER What
         A short description of what was being read, used in the message. Type [string], mandatory.
     #>
@@ -21360,8 +22074,11 @@ function Get-AdfaLapsRefusedProperty {
         The declared list of directory attributes to read (never every attribute). Type [string[]],
         default @(), may be null or empty.
     .PARAMETER NeverRead
-        The never read input of Get-AdfaLapsRefusedProperty. Type [string[]], default @(), may be
-        null or empty.
+        The attribute names that must never be requested (the LAPS password and encrypted password
+        attributes from the config table), compared with each property name without regard to case
+        after blanks are dropped and values trimmed. When it is $null or empty there is nothing to
+        check against, so every property name is refused. Type [string[]], default @(), may be null
+        or empty.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -21405,8 +22122,11 @@ function Get-AdfaLapsSchemaRaw {
         -Server and -Credential; empty to use the current domain and account. Type [hashtable],
         default @{}.
     .PARAMETER AttributeNames
-        The attribute names input of Get-AdfaLapsSchemaRaw. Type [string[]], default @(), may be
-        null or empty.
+        The lDAPDisplayName values of the attribute definitions to look for in the schema partition,
+        combined into one OR filter; the caller passes the control attribute and the LAPS attributes
+        from the config table. An empty list, or one holding a value that is not an attribute name
+        (letters, digits and hyphens starting with a letter), is refused before any query and
+        returns Ok = $false with the error. Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21534,7 +22254,11 @@ function Get-AdfaLapsSchemaFinding {
     .OUTPUTS
         [pscustomobject] One finding row.
     .PARAMETER SchemaState
-        The schema state input of Get-AdfaLapsSchemaFinding. Untyped, mandatory.
+        The interpreted schema read from Get-AdfaLapsSchemaState; its State selects the one forest
+        row: NotRead or ControlMissing is Not Assessed and never reported as absent, Complete is
+        Pass, Partial is Warning, and LegacyOnly or Absent is Info. Its present and missing
+        attribute lists, legacy attributes, version attribute and schema naming context are quoted
+        in the Detail. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -21603,7 +22327,10 @@ function Get-AdfaLapsPropertyList {
     .OUTPUTS
         [string[]]
     .PARAMETER SchemaState
-        The schema state input of Get-AdfaLapsPropertyList. Untyped, mandatory.
+        The interpreted schema read from Get-AdfaLapsSchemaState; its HasWindowsExpiry and
+        HasLegacyExpiry flags decide which of the two expiry attribute names are added to the fixed
+        computer property list, so an attribute the schema lacks is never asked for. The object only
+        needs those two flags. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -21637,13 +22364,21 @@ function ConvertTo-AdfaLapsComputerRecord {
         [pscustomobject] Name, OperatingSystem, OperatingSystemVersion, UserAccountControl,
         LastLogonTimestamp, ObjectClasses, WindowsExpiry, LegacyExpiry.
     .PARAMETER Computer
-        The computer input of ConvertTo-AdfaLapsComputerRecord. Untyped, mandatory.
+        One computer object returned by the directory query; only the named attributes are copied
+        through its properties, so an attribute it does not carry becomes $null instead of an error.
+        The record's Name is the first non-blank of dNSHostName, Name and DistinguishedName, or
+        '(unnamed)', and a userAccountControl that does not parse as an integer is left $null.
+        Untyped, mandatory.
     .PARAMETER WindowsExpiryName
-        The windows expiry name input of ConvertTo-AdfaLapsComputerRecord. Type [string], default
-        '', may be null or empty.
+        The attribute name of the Windows LAPS expiry time to copy, raw, into the record's
+        WindowsExpiry; the caller sets it only when the schema defines that attribute. When it is
+        empty nothing is copied and WindowsExpiry is $null. Type [string], default '', may be null
+        or empty.
     .PARAMETER LegacyExpiryName
-        The legacy expiry name input of ConvertTo-AdfaLapsComputerRecord. Type [string], default '',
-        may be null or empty.
+        The attribute name of the legacy Microsoft LAPS expiry time to copy, raw, into the record's
+        LegacyExpiry; the caller sets it only when the schema defines that attribute. When it is
+        empty nothing is copied and LegacyExpiry is $null. Type [string], default '', may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21721,14 +22456,20 @@ function Get-AdfaLapsDirectoryRaw {
         The declared list of directory attributes to read (never every attribute). Type [string[]],
         default @(), may be null or empty.
     .PARAMETER NeverRead
-        The never read input of Get-AdfaLapsDirectoryRaw. Type [string[]], default @(), may be null
-        or empty.
+        The attribute names that must never be requested, from the config table, against which the
+        property list is checked by Get-AdfaLapsRefusedProperty before any call. If any property is
+        refused, or this list is $null or empty (which refuses every name), Refused is $true and
+        nothing is asked of the directory. Type [string[]], default @(), may be null or empty.
     .PARAMETER WindowsExpiryName
-        The windows expiry name input of Get-AdfaLapsDirectoryRaw. Type [string], default '', may be
-        null or empty.
+        The attribute name of the Windows LAPS expiry time, passed to
+        ConvertTo-AdfaLapsComputerRecord so each record carries its raw value; the caller sets it
+        only when the schema defines that attribute. When it is empty no record carries a Windows
+        expiry value. Type [string], default '', may be null or empty.
     .PARAMETER LegacyExpiryName
-        The legacy expiry name input of Get-AdfaLapsDirectoryRaw. Type [string], default '', may be
-        null or empty.
+        The attribute name of the legacy Microsoft LAPS expiry time, passed to
+        ConvertTo-AdfaLapsComputerRecord so each record carries its raw value; the caller sets it
+        only when the schema defines that attribute. When it is empty no record carries a legacy
+        expiry value. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21852,12 +22593,18 @@ function Get-AdfaLapsComputerClass {
     .OUTPUTS
         [string]
     .PARAMETER Computer
-        The computer input of Get-AdfaLapsComputerClass. Untyped, mandatory.
+        One computer record from ConvertTo-AdfaLapsComputerRecord, classified from its
+        ObjectClasses, UserAccountControl, OperatingSystem, OperatingSystemVersion and
+        LastLogonTimestamp, in that order. A UserAccountControl of $null gives
+        AccountControlNotRead, so neither disabled nor domain controller is assumed. Untyped,
+        mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER StaleCutoffUtc
-        The stale cutoff utc input of Get-AdfaLapsComputerClass. Type [datetime], mandatory.
+        The point in time, converted to UTC, before which a lastLogonTimestamp makes the computer
+        Stale and keeps it out of the population; the caller sets it to now minus -StaleDays. It is
+        only compared once every earlier class has been ruled out. Type [datetime], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -21913,20 +22660,33 @@ function Get-AdfaLapsCoverageVerdict {
     .OUTPUTS
         [pscustomobject] Status, State, Percent.
     .PARAMETER TotalReturned
-        The total returned input of Get-AdfaLapsCoverageVerdict. Type [int], mandatory.
+        The number of computer objects the domain query returned. Zero or less is an incomplete read
+        and gives Not Assessed (NoObjects), never an empty domain. Type [int], mandatory.
     .PARAMETER InPopulation
-        The in population input of Get-AdfaLapsCoverageVerdict. Type [int], mandatory.
+        The number of computer objects classified InPopulation, the denominator of the share without
+        a visible expiry time. Zero or less gives Info (EmptyPopulation), or Not Assessed when some
+        objects could not be classified. Type [int], mandatory.
     .PARAMETER NoneVisible
-        The none visible input of Get-AdfaLapsCoverageVerdict. Type [int], mandatory.
+        The number of in-population computers on which neither LAPS expiry time was visible, the
+        numerator of the share compared with the Warning and Fail thresholds. It is replaced by
+        InPopulation when the schema has no expiry attribute. Type [int], mandatory.
     .PARAMETER ProofOfRead
-        The proof of read input of Get-AdfaLapsCoverageVerdict. Type [bool], mandatory.
+        True when at least one computer object of the domain returned a LAPS expiry value, showing
+        the attribute is readable by this account. When it is false and the schema has an expiry
+        attribute, the row is Not Assessed (NoProofOfRead), never Warning or Pass. Type [bool],
+        mandatory.
     .PARAMETER SchemaHasExpiry
-        The schema has expiry input of Get-AdfaLapsCoverageVerdict. Type [bool], mandatory.
+        True when the schema defines the Windows or the legacy LAPS expiry attribute. When it is
+        false every in-population computer counts as without one, a measured absence judged by the
+        thresholds, and the state is SchemaAbsent. Type [bool], mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER Unclassified
-        The unclassified input of Get-AdfaLapsCoverageVerdict. Type [int], default 0.
+        The number of computer objects that could not be placed in or out of the population
+        (userAccountControl not returned, or a Windows build that could not be read). When it is
+        above zero a result that would be Pass or Info becomes Not Assessed (Unclassified); a
+        Warning or Fail stands. Type [int], default 0.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -21987,20 +22747,33 @@ function Get-AdfaLapsDsrmVerdict {
         The operating system build number of the domain controller, as read; empty or $null when it
         was not read. Untyped, may be null or empty.
     .PARAMETER DomainLevel
-        The domain level input of Get-AdfaLapsDsrmVerdict. Type [string], may be null or empty.
+        The raw msDS-Behavior-Version of the domain head, parsed as an integer with the invariant
+        culture; it is checked after a DC build below MinDsrmDcBuild has already given Info
+        (NotApplicableBuild). Empty, $null or not a number then gives Not Assessed (LevelNotRead), a
+        number not in KnownDomainLevels gives Not Assessed (LevelUnknown), and one below
+        MinDomainLevel gives Info, not applicable. Type [string], may be null or empty.
     .PARAMETER ExpiryPresent
-        The expiry present input of Get-AdfaLapsDsrmVerdict. Type [bool], mandatory.
+        True when the DC's own computer object returned a non-blank Windows LAPS expiry value. When
+        it is true the verdict rests on ExpiryUtc; when it is false it rests on ProofOfRead and
+        whether the DC is read-only. Type [bool], mandatory.
     .PARAMETER ExpiryUtc
-        The expiry utc input of Get-AdfaLapsDsrmVerdict. Untyped, may be null or empty.
+        The DC's Windows LAPS expiry time as a UTC date, read only when ExpiryPresent is true; a
+        time more than ExpiredGraceDays before now is Warning (Expired), otherwise Pass (Current).
+        $null while ExpiryPresent is true means the value was not a time and gives Not Assessed
+        (ExpiryNotATime). Untyped, may be null or empty.
     .PARAMETER Now
         The current time, passed in so the verdict can be tested with a fixed clock. Type
         [datetime], mandatory.
     .PARAMETER ProofOfRead
-        The proof of read input of Get-AdfaLapsDsrmVerdict. Type [bool], mandatory.
+        True when any computer object of the domain returned a Windows LAPS expiry value. It is used
+        only when the DC shows none: false gives Not Assessed (NoProofOfRead), because not set
+        cannot be told from not readable. Type [bool], mandatory.
     .PARAMETER SchemaRead
-        The schema read input of Get-AdfaLapsDsrmVerdict. Type [bool], mandatory.
+        True when the forest schema was read with its control attribute present. False gives Not
+        Assessed (SchemaNotRead) for an otherwise eligible DC. Type [bool], mandatory.
     .PARAMETER HasWindowsExpiry
-        The has windows expiry input of Get-AdfaLapsDsrmVerdict. Type [bool], mandatory.
+        True when the schema defines the Windows LAPS expiry attribute. False, with the schema read,
+        gives Warning (SchemaAbsent), a measured absence. Type [bool], mandatory.
     .PARAMETER IsReadOnly
         True when the domain controller is a read-only domain controller. Type [bool], mandatory.
     .PARAMETER Config
@@ -22051,20 +22824,33 @@ function Get-AdfaLapsDsrmDetail {
     .SYNOPSIS
         Pure: the Detail of one DSRM password backup row, for the state the verdict returned.
     .PARAMETER State
-        The state input of Get-AdfaLapsDsrmDetail. Type [string], mandatory.
+        The State returned by Get-AdfaLapsDsrmVerdict, which selects the Detail sentence
+        (NotApplicableBuild, NotApplicableLevel, LevelNotRead, LevelUnknown, BuildNotRead,
+        SchemaNotRead, SchemaAbsent, Current, Expired, ExpiryNotATime, NoProofOfRead,
+        RodcNotPublished). Any other value gets the NoneVisible wording. Type [string], mandatory.
     .PARAMETER Build
         The operating system build number of the domain controller, as read; empty or $null when it
         was not read. Untyped, may be null or empty.
     .PARAMETER BuildRaw
-        The build raw input of Get-AdfaLapsDsrmDetail. Type [string], may be null or empty.
+        The operatingSystemVersion text of the DC's computer object, as read, quoted in the
+        BuildNotRead sentence to show why no build number was found. Empty or $null is quoted as an
+        empty value. Type [string], may be null or empty.
     .PARAMETER DomainLevel
-        The domain level input of Get-AdfaLapsDsrmDetail. Type [string], may be null or empty.
+        The raw msDS-Behavior-Version of the domain head, quoted in the NotApplicableLevel,
+        LevelUnknown, SchemaAbsent and no-expiry-visible sentences. In the LevelNotRead sentence a
+        non-empty value with no DomainLevelError is reported as not a number. Type [string], may be
+        null or empty.
     .PARAMETER DomainLevelError
-        The domain level error input of Get-AdfaLapsDsrmDetail. Type [string], may be null or empty.
+        The error text recorded when the domain functional level could not be read, quoted as the
+        cause in the LevelNotRead sentence. When it is empty, the cause is given as a non-numeric
+        DomainLevel or as 'no value was returned'. Type [string], may be null or empty.
     .PARAMETER ExpiryUtc
-        The expiry utc input of Get-AdfaLapsDsrmDetail. Untyped, may be null or empty.
+        The DC's Windows LAPS expiry time as a date, shown as yyyy-MM-dd HH:mm UTC in the Current
+        and Expired sentences. When it is $null no time is shown. Untyped, may be null or empty.
     .PARAMETER ExpiryRaw
-        The expiry raw input of Get-AdfaLapsDsrmDetail. Type [string], may be null or empty.
+        The raw Windows LAPS expiry value of the DC's computer object, quoted in the ExpiryNotATime
+        sentence to show the value that was not a time. Empty or $null is quoted as an empty value.
+        Type [string], may be null or empty.
     .PARAMETER IsReadOnly
         True when the domain controller is a read-only domain controller. Type [bool], mandatory.
     .PARAMETER Config
@@ -22189,7 +22975,10 @@ function Get-AdfaLapsDomainFinding {
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
     .PARAMETER SchemaState
-        The schema state input of Get-AdfaLapsDomainFinding. Untyped, mandatory.
+        The interpreted schema read from Get-AdfaLapsSchemaState. When its Read is false nothing is
+        graded and both the coverage row and the DSRM row of the domain are Not Assessed; otherwise
+        its HasWindowsExpiry and HasLegacyExpiry flags feed the coverage verdict and the DSRM
+        verdict of each domain controller. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -22651,19 +23440,27 @@ function New-AdfaDcCertificateRow {
         The value of the Evidence column: what the verdict rests on. Type [string], default '', may
         be null or empty.
     .PARAMETER Certificate
-        The certificate input of New-AdfaDcCertificateRow. Untyped, default $null, may be null or
-        empty.
+        The certificate record from ConvertTo-AdfaCertificateRecord whose Subject, Issuer, San and
+        Thumbprint fill the CertSubject, CertIssuer, CertSan and Thumbprint columns, and whose
+        NotBeforeUtc and NotAfterUtc fill their columns as yyyy-MM-dd HH:mm:ss when they are dates.
+        None of it is written to Detail. When it is $null those columns are empty. Untyped, default
+        $null, may be null or empty.
     .PARAMETER DaysLeft
-        The days left input of New-AdfaDcCertificateRow. Untyped, default $null, may be null or
-        empty.
+        The whole days left until the certificate expires, from the expiry verdict, written to the
+        DaysLeft column as an integer in the invariant culture. When it is $null the column is
+        empty. Untyped, default $null, may be null or empty.
     .PARAMETER Ekus
-        The ekus input of New-AdfaDcCertificateRow. Type [string], default '', may be null or empty.
-    .PARAMETER SslPolicyErrors
-        The ssl policy errors input of New-AdfaDcCertificateRow. Type [string], default '', may be
-        null or empty.
-    .PARAMETER ChainStatus
-        The chain status input of New-AdfaDcCertificateRow. Type [string], default '', may be null
+        The certificate's EKUs as text, from Get-AdfaCertificateEkuText, written to the Ekus column
+        and never to Detail. Empty leaves the column empty. Type [string], default '', may be null
         or empty.
+    .PARAMETER SslPolicyErrors
+        The SslPolicyErrors text the platform of the host running the assessment reported in the
+        handshake validation callback, written to its own column and never to Detail or graded.
+        Empty leaves the column empty. Type [string], default '', may be null or empty.
+    .PARAMETER ChainStatus
+        The status lines of the chain the platform built during the handshake, joined by the caller
+        with ' | ', written to the ChainStatus column and never to Detail or graded. Empty leaves
+        the column empty. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -22747,7 +23544,11 @@ function ConvertTo-AdfaCertificateRecord {
         [pscustomobject] Read, ReadError, Subject, Issuer, Thumbprint, SerialNumber, NotBeforeUtc,
         NotAfterUtc, Ekus, HasEkuExtension, San.
     .PARAMETER Certificate
-        The certificate input of ConvertTo-AdfaCertificateRecord. Untyped, may be null or empty.
+        The certificate to read: an X509Certificate2 or X509Certificate handed over by a TLS
+        handshake, or the DER bytes of one from userCertificate, which are opened only when their
+        content type is a single certificate so no PFX key is ever imported. $null returns Read =
+        $false with ReadError 'no certificate was handed over', and any other type or content is
+        returned as Read = $false with the reason, never thrown. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -22832,16 +23633,25 @@ function Get-AdfaCertificateExpiryVerdict {
     .OUTPUTS
         [pscustomobject] Status, State, DaysLeft ([int] or $null), Reason.
     .PARAMETER NotBeforeUtc
-        The not before utc input of Get-AdfaCertificateExpiryVerdict. Untyped, may be null or empty.
+        The date the certificate becomes valid, converted to UTC before comparison; a run time
+        before it is Warning (NotYetValid, this tool's rule). A value that is not a date gives Not
+        Assessed (Unreadable), and a NotAfterUtc earlier than it gives Not Assessed (Inconsistent).
+        Untyped, may be null or empty.
     .PARAMETER NotAfterUtc
-        The not after utc input of Get-AdfaCertificateExpiryVerdict. Untyped, may be null or empty.
+        The date the certificate stops being valid, converted to UTC; DaysLeft is the whole days
+        from now to it, rounded down, and a run time at or after it is Fail (Expired). A value that
+        is not a date gives Not Assessed (Unreadable). Untyped, may be null or empty.
     .PARAMETER NowUtc
         The current UTC time, passed in so the verdict can be tested with a fixed clock. Type
         [datetime], mandatory.
     .PARAMETER WarnWithinDays
-        The warn within days input of Get-AdfaCertificateExpiryVerdict. Type [int], default 30.
+        The Warning window in whole days: a valid certificate with this many days left or fewer is
+        Warning (ExpiringSoon). Zero or less turns the window off; the caller passes WarnWithinDays
+        from the config table. Type [int], default 30.
     .PARAMETER FailWithinDays
-        The fail within days input of Get-AdfaCertificateExpiryVerdict. Type [int], default 0.
+        The Fail window in whole days: a valid certificate with this many days left or fewer is Fail
+        (FailWindow), checked before the Warning window. Zero or less, the default, turns the window
+        off; the caller passes FailWithinDays from the config table. Type [int], default 0.
     .PARAMETER ThresholdSource
         Where the threshold came from (a Microsoft value, a tool default or the override file),
         cited in the text. Type [string], default '', may be null or empty.
@@ -22900,13 +23710,18 @@ function Get-AdfaCertificateEkuText {
         Pure: the EKUs of a certificate as text, each object identifier with the name the config
         table gives it. "no EKU extension" is said as such, never as a missing purpose.
     .PARAMETER Ekus
-        The ekus input of Get-AdfaCertificateEkuText. Type [string[]], default @(), may be null or
-        empty.
+        The EKU object identifiers listed in the certificate's EKU extension; blank entries are
+        skipped and each other one is shown with its name from EkuNames where there is one. When the
+        extension is present but this list has no usable entry, the text says the extension lists no
+        purpose. Type [string[]], default @(), may be null or empty.
     .PARAMETER HasEkuExtension
-        The has eku extension input of Get-AdfaCertificateEkuText. Type [bool], default $false.
+        True when the certificate carries an EKU extension. When it is false the text says the
+        certificate has no EKU extension, whatever Ekus holds, and is never worded as a missing
+        purpose. Type [bool], default $false.
     .PARAMETER EkuNames
-        The eku names input of Get-AdfaCertificateEkuText. Untyped, default @{}, may be null or
-        empty.
+        The map of EKU object identifiers to friendly names from the config table, used to show each
+        identifier as 'name (oid)'. When it is $null or has no entry for an identifier, that
+        identifier is shown alone. Untyped, default @{}, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -22939,7 +23754,10 @@ function Get-AdfaSocketErrorClass {
     .OUTPUTS
         [string] ConnectRefused | ConnectTimedOut | Unresolved | ConnectFailed
     .PARAMETER SocketError
-        The socket error input of Get-AdfaSocketErrorClass. Type [string], may be null or empty.
+        The name of the .NET SocketError value the failed TCP connection reported. ConnectionRefused
+        gives ConnectRefused, TimedOut gives ConnectTimedOut, and HostNotFound, TryAgain or NoData
+        give Unresolved; any other name, or none, gives ConnectFailed. Type [string], may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -22964,8 +23782,9 @@ function Get-AdfaTlsHandshakeErrorClass {
         the handshake - an AuthenticationException, a reset, a closed connection - is
         HandshakeFailed, and the caller quotes it.
     .PARAMETER SocketErrors
-        The socket errors input of Get-AdfaTlsHandshakeErrorClass. Type [string[]], default @(), may
-        be null or empty.
+        The SocketError names found along the exception chain of the TLS handshake that threw. Any
+        entry equal to TimedOut gives HandshakeTimedOut; otherwise, an empty list included, the
+        class is HandshakeFailed. Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -23024,21 +23843,34 @@ function Get-AdfaTlsProbeClass {
     .OUTPUTS
         [string]
     .PARAMETER Connected
-        The connected input of Get-AdfaTlsProbeClass. Type [bool], default $false.
+        True when the TCP connection was made within the connect bound. When it is false the class
+        comes from the connection attempt alone and nothing about the handshake is considered. Type
+        [bool], default $false.
     .PARAMETER ConnectThrew
-        The connect threw input of Get-AdfaTlsProbeClass. Type [bool], default $false.
+        True when the connection attempt raised an error. With no connection it makes the class that
+        of ConnectSocketError; with no connection and no error the class is ConnectTimedOut. Type
+        [bool], default $false.
     .PARAMETER ConnectSocketError
-        The connect socket error input of Get-AdfaTlsProbeClass. Type [string], default '', may be
-        null or empty.
+        The SocketError name from the failed connection attempt, classified by
+        Get-AdfaSocketErrorClass when there was no connection and the attempt threw. Empty gives
+        ConnectFailed in that case. Type [string], default '', may be null or empty.
     .PARAMETER CertificateSeen
-        The certificate seen input of Get-AdfaTlsProbeClass. Type [bool], default $false.
+        True when a certificate reached the validation callback. Once connected this gives
+        Presented, even if the handshake then threw or the deadline closed the connection. Type
+        [bool], default $false.
     .PARAMETER HandshakeThrew
-        The handshake threw input of Get-AdfaTlsProbeClass. Type [bool], default $false.
+        True when the TLS handshake raised an error. With no certificate seen it gives
+        HandshakeTimedOut when the deadline expired, otherwise the class from HandshakeSocketErrors;
+        false with no certificate seen gives NoCertificate. Type [bool], default $false.
     .PARAMETER HandshakeSocketErrors
-        The handshake socket errors input of Get-AdfaTlsProbeClass. Type [string[]], default @(),
-        may be null or empty.
+        The SocketError names found along the handshake's exception chain, passed to
+        Get-AdfaTlsHandshakeErrorClass. They are used only when the handshake threw, no certificate
+        was seen and the deadline did not expire. Type [string[]], default @(), may be null or
+        empty.
     .PARAMETER DeadlineExpired
-        The deadline expired input of Get-AdfaTlsProbeClass. Type [bool], default $false.
+        True when the handshake deadline ran out and closed the connection. When the handshake threw
+        and no certificate was seen, it gives HandshakeTimedOut whatever the socket errors say. Type
+        [bool], default $false.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -23117,9 +23949,14 @@ function Get-AdfaDcTlsCertificateRaw {
     .PARAMETER Port
         The TCP port. Type [int], mandatory.
     .PARAMETER ConnectTimeoutMs
-        The connect timeout ms input of Get-AdfaDcTlsCertificateRaw. Type [int], default 5000.
+        Milliseconds to wait for the TCP connection to the port before giving up; when the wait runs
+        out the class is ConnectTimedOut and the error names this bound. The caller passes
+        ConnectTimeoutMs from the config table. Type [int], default 5000.
     .PARAMETER HandshakeTimeoutMs
-        The handshake timeout ms input of Get-AdfaDcTlsCertificateRaw. Type [int], default 5000.
+        Milliseconds the whole TLS handshake may take: a deadline armed before the handshake shuts
+        down and closes the connection when it runs out, and the socket's receive and send timeouts
+        are set to the same value as an inner bound on one read. The caller passes
+        HandshakeTimeoutMs from the config table. Type [int], default 5000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -23279,7 +24116,10 @@ function ConvertTo-AdfaLdapFilterValue {
         listed escape sequence": * \2a, ( \28, ) \29, \ \5c, NUL \00, / \2f.
         https://learn.microsoft.com/windows/win32/adsi/search-filter-syntax (read 2026-11-16).
     .PARAMETER Value
-        The value input of ConvertTo-AdfaLdapFilterValue. Type [string], may be null or empty.
+        The literal text to place in an LDAP search filter, such as a DC's DNS host name; backslash,
+        asterisk, parentheses, NUL and forward slash are replaced by their escape sequences and
+        every other character is kept. $null returns an empty string. Type [string], may be null or
+        empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -23392,9 +24232,14 @@ function Get-AdfaDcLdapsFinding {
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default '', may be null or empty.
     .PARAMETER HandshakeRun
-        The handshake run input of Get-AdfaDcLdapsFinding. Type [bool], default $false.
+        True when the run was given -IncludeLdapsHandshake, so a handshake was allowed. When it is
+        false the row is Not Assessed as not run, no connection is made, and the certificate is
+        reported as not known. Type [bool], default $false.
     .PARAMETER PortAnswered
-        The port answered input of Get-AdfaDcLdapsFinding. Type [bool], default $false.
+        True when the shared port probe accepted a TCP connection on the LDAPS port. When it is
+        false, and no reachability cause was given, the row is Not Assessed as unreachable with no
+        handshake attempted, and this is not read as the DC having no certificate. Type [bool],
+        default $false.
     .PARAMETER Raw
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, default $null, may be null or empty.
@@ -23531,8 +24376,11 @@ function Get-AdfaDcDirectoryCertificateFinding {
         The current UTC time, passed in so the verdict can be tested with a fixed clock. Type
         [datetime], mandatory.
     .PARAMETER PresentedThumbprint
-        The presented thumbprint input of Get-AdfaDcDirectoryCertificateFinding. Type [string],
-        default '', may be null or empty.
+        The thumbprint of the certificate the DC presented on LDAPS in this run, compared in upper
+        case with each published value's thumbprint so each row says whether it is that certificate.
+        The caller passes it only when the handshake returned a readable certificate; when it is
+        empty the rows say nothing about the presented certificate. Type [string], default '', may
+        be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -23649,7 +24497,10 @@ function Get-AdfaDcCertificates {
         The current time, passed in so the verdict can be tested with a fixed clock. Type
         [datetime], mandatory.
     .PARAMETER IncludeHandshake
-        The include handshake input of Get-AdfaDcCertificates. Type [bool], default $false.
+        When true, each domain controller is probed on the LDAPS port from Config.LdapsPort and,
+        where that port answers, a TLS handshake reads the certificate the DC presents. When false,
+        no connection is made to that port and each DC's LDAPS certificate row is Not Assessed as
+        not run; the directory userCertificate read runs either way. Type [bool], default $false.
     .PARAMETER InventoryFailures
         Domains whose DC enumeration threw: objects with Domain and Error. Untyped, default @(), may
         be null or empty.
@@ -23886,35 +24737,66 @@ function New-AdfaRidPoolRow {
         The value of the Evidence column: what the verdict rests on. Type [string], default '', may
         be null or empty.
     .PARAMETER RidMaster
-        The rid master input of New-AdfaRidPoolRow. Type [string], default '', may be null or empty.
+        The RID master of the domain as Get-ADDomain reported it, written to the RidMaster column as
+        given. Only the domain rows carry it, so it is empty on every per-DC row, and also when the
+        domain object was not read or returned no RIDMaster value. Type [string], default '', may be
+        null or empty.
     .PARAMETER Ceiling
-        The ceiling input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+        The size of the global RID space, the upper half of rIDAvailablePool as read, written to the
+        Ceiling column as an invariant-culture whole number. $null leaves the column empty, never 0.
+        Untyped, default $null, may be null or empty.
     .PARAMETER CeilingSource
-        The ceiling source input of New-AdfaRidPoolRow. Type [string], default '', may be null or
+        The label of the Config.KnownCeilings entry the read ceiling matched, written to the
+        CeilingSource column as given. Empty when the ceiling was not read, matched no known size,
+        or was below the issued count (Inconsistent). Type [string], default '', may be null or
         empty.
     .PARAMETER Issued
-        The issued input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+        The number of RIDs issued in the domain, the lower half of rIDAvailablePool, written to the
+        Issued column as an invariant-culture whole number. $null leaves the column empty, never 0.
+        Untyped, default $null, may be null or empty.
     .PARAMETER PercentUsed
-        The percent used input of New-AdfaRidPoolRow. Type [string], default '', may be null or
-        empty.
+        The share of the global RID space issued, as the text the space verdict produced (truncated
+        to four decimals), written to the PercentUsed column as given. Empty when no percentage was
+        computed. Type [string], default '', may be null or empty.
     .PARAMETER PoolStart
-        The pool start input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+        The first RID of a domain controller's current pool, the lower half of
+        rIDPreviousAllocationPool on its RID Set, written to the PoolStart column as an
+        invariant-culture whole number. $null leaves the column empty, never 0. Untyped, default
+        $null, may be null or empty.
     .PARAMETER PoolEnd
-        The pool end input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+        The last RID of a domain controller's current pool, the upper half of
+        rIDPreviousAllocationPool on its RID Set, written to the PoolEnd column as an
+        invariant-culture whole number. $null leaves the column empty, never 0. Untyped, default
+        $null, may be null or empty.
     .PARAMETER NextRid
-        The next rid input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+        The value read from rIDNextRID on a domain controller's RID Set, written to the NextRid
+        column as an invariant-culture whole number. $null leaves the column empty, never 0.
+        Untyped, default $null, may be null or empty.
     .PARAMETER RemainingInPool
-        The remaining in pool input of New-AdfaRidPoolRow. Untyped, default $null, may be null or
-        empty.
+        The RIDs left in a domain controller's current pool, which the caller derives as pool end -
+        next RID + 1, written to the RemainingInPool column as an invariant-culture whole number.
+        $null leaves the column empty, never 0. Untyped, default $null, may be null or empty.
     .PARAMETER NextPoolStart
-        The next pool start input of New-AdfaRidPoolRow. Untyped, default $null, may be null or
-        empty.
+        The first RID of the prefetched next pool, the lower half of rIDAllocationPool on the RID
+        Set, written to the NextPoolStart column as an invariant-culture whole number. $null, used
+        when that attribute was not returned or not readable, leaves the column empty. Untyped,
+        default $null, may be null or empty.
     .PARAMETER NextPoolEnd
-        The next pool end input of New-AdfaRidPoolRow. Untyped, default $null, may be null or empty.
+        The last RID of the prefetched next pool, the upper half of rIDAllocationPool on the RID
+        Set, written to the NextPoolEnd column as an invariant-culture whole number. $null, used
+        when that attribute was not returned or not readable, leaves the column empty. Untyped,
+        default $null, may be null or empty.
     .PARAMETER ObjectDn
-        The object dn input of New-AdfaRidPoolRow. Type [string], default '', may be null or empty.
+        The distinguished name of the object the row is about - CN=RID Manager$ of the domain, or a
+        domain controller's RID Set or computer object - written to the ObjectDn column as given.
+        When rIDSetReferences holds several values, they are all given, joined with '; ', and none
+        of them was read. Empty when it is not known. Type [string], default '', may be null or
+        empty.
     .PARAMETER RawValue
-        The raw value input of New-AdfaRidPoolRow. Type [string], default '', may be null or empty.
+        The attribute value as read, before decoding (for example rIDAvailablePool,
+        msDS-RIDPoolAllocationEnabled or rIDPreviousAllocationPool as text), written to the RawValue
+        column so the decoded columns can be checked against it. Empty when no value was returned.
+        Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -23985,7 +24867,10 @@ function ConvertFrom-AdfaLargeInteger {
     .OUTPUTS
         [pscustomobject] Read, Low, High, Raw (the value as text), Error.
     .PARAMETER Value
-        The value input of ConvertFrom-AdfaLargeInteger. Untyped, may be null or empty.
+        The 64-bit directory value to split into its unsigned Low and High 32-bit halves: any
+        integer type up to 64 bits, a UInt64 taken by its bits, or whole-number text in the
+        invariant culture. $null, a fraction, a date, a list or hexadecimal text gives Read = $false
+        with the reason in Error, never an exception. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -24109,8 +24994,12 @@ function Get-AdfaRidAllocationVerdict {
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
     .PARAMETER InSchema
-        The in schema input of Get-AdfaRidAllocationVerdict. Type [string], default 'Unknown', one
-        of Yes, No, Unknown.
+        Whether the forest schema defines msDS-RIDPoolAllocationEnabled, as Get-AdfaRidSchemaState
+        reported it. It decides how a missing value is reported: when the attribute read failed, No
+        gives Not Assessed NotInSchema and Yes or Unknown give ReadFailed; when the read succeeded
+        but the attribute was not returned, Yes gives Not Assessed NotSet, No gives NotInSchema and
+        Unknown gives NotSetUnconfirmed. A returned TRUE or FALSE is graded whatever this says. Type
+        [string], default 'Unknown', one of Yes, No, Unknown.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -24190,9 +25079,14 @@ function Get-AdfaRidSpaceVerdict {
         [pscustomobject] Status, State, PercentUsed ('' when not computed), Ceiling, CeilingLabel,
         Reason.
     .PARAMETER Low
-        The low input of Get-AdfaRidSpaceVerdict. Type [int64].
+        The lower half of rIDAvailablePool: the number of RIDs issued in the domain, compared with
+        High to compute the share of the space used. A value above High is Not Assessed as
+        Inconsistent. Type [int64].
     .PARAMETER High
-        The high input of Get-AdfaRidSpaceVerdict. Type [int64].
+        The upper half of rIDAvailablePool: the size of the global RID space as read, never assumed.
+        It is graded only when it equals a size in Config.KnownCeilings; 0 or less is Not Assessed
+        as NoCeiling, and any other value is Not Assessed as UnknownCeiling with no percentage. Type
+        [int64].
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -24381,7 +25275,11 @@ function Get-AdfaRidDomainFinding {
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
     .PARAMETER Schema
-        The schema input of Get-AdfaRidDomainFinding. Untyped, may be null or empty.
+        The forest schema state from Get-AdfaRidSchemaState (InSchema and Detail), used to grade
+        msDS-RIDPoolAllocationEnabled when it was not returned or not read. Its Detail is added to
+        the allocation row's Detail when that row is ReadFailed, NotSetUnconfirmed or NotInSchema.
+        $null is treated as InSchema Unknown with the note that the forest schema was not read.
+        Untyped, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -24468,12 +25366,17 @@ function ConvertTo-AdfaRidSetRecord {
         [pscustomobject] Dn, FromSearch, PreviousAllocationPool, AllocationPool, NextRid, UsedPool,
         Returned (the attribute names that came back with a value), or $null for no object.
     .PARAMETER Object
-        The object input of ConvertTo-AdfaRidSetRecord. Untyped, may be null or empty.
+        The RID Set object returned by Get-ADObject. Its DistinguishedName and the four attributes
+        named in Config.RidSetAttributes are copied into the record; an attribute that is absent or
+        $null stays $null, and a one-element list is unwrapped. $null returns $null. Untyped, may be
+        null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER FromSearch
-        The from search input of ConvertTo-AdfaRidSetRecord. Type [bool], default $false.
+        Whether the RID Set was found by the one-level search under the computer object rather than
+        through rIDSetReferences. It is copied into the record's FromSearch field, and the per-DC
+        row then says so in its Detail. Type [bool], default $false.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -25179,44 +26082,63 @@ function New-AdfaSidHistoryRow {
         The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
         [string], default '', may be null or empty.
     .PARAMETER PrincipalCount
-        The principal count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
-        empty.
+        The number of security principals the row counts (all those with sIDHistory, or those
+        holding the flagged values), written to the PrincipalCount column as an invariant-culture
+        whole number. $null leaves the column empty as not measured, never 0. Untyped, default
+        $null, may be null or empty.
     .PARAMETER ValueCount
-        The value count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
-        empty.
+        The number of historic SID values the row covers, written to the ValueCount column as an
+        invariant-culture whole number. $null leaves the column empty as not measured, never 0.
+        Untyped, default $null, may be null or empty.
     .PARAMETER UserCount
-        The user count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or empty.
+        The number of principals with sIDHistory whose class is in Config.UserClasses, written to
+        the UserCount column. $null leaves the column empty as not measured, never 0. Untyped,
+        default $null, may be null or empty.
     .PARAMETER ComputerCount
-        The computer count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
-        empty.
+        The number of principals with sIDHistory whose class is in Config.ComputerClasses, written
+        to the ComputerCount column. $null leaves the column empty as not measured, never 0.
+        Untyped, default $null, may be null or empty.
     .PARAMETER GroupCount
-        The group count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
-        empty.
+        The number of principals with sIDHistory whose class is in Config.GroupClasses, written to
+        the GroupCount column. $null leaves the column empty as not measured, never 0. Untyped,
+        default $null, may be null or empty.
     .PARAMETER OtherCount
-        The other count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
-        empty.
+        The number of principals with sIDHistory whose class is in none of the user, computer or
+        group class lists, written to the OtherCount column. $null leaves the column empty as not
+        measured, never 0. Untyped, default $null, may be null or empty.
     .PARAMETER EnabledCount
-        The enabled count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
-        empty.
+        The number of user and computer principals with sIDHistory whose userAccountControl does not
+        carry the disable flag, written to the EnabledCount column. $null leaves the column empty as
+        not measured, never 0. Untyped, default $null, may be null or empty.
     .PARAMETER DisabledCount
-        The disabled count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
-        empty.
+        The number of user and computer principals with sIDHistory whose userAccountControl carries
+        the disable flag, written to the DisabledCount column. $null leaves the column empty as not
+        measured, never 0. Untyped, default $null, may be null or empty.
     .PARAMETER UnparsedCount
-        The unparsed count input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or
-        empty.
+        The number of historic SID values that could not be parsed as a SID, written to the
+        UnparsedCount column. $null leaves the column empty as not measured, never 0. Untyped,
+        default $null, may be null or empty.
     .PARAMETER Listed
-        The listed input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or empty.
+        How many principals are named in the Principals column, at most Config.NameListCap, written
+        to the Listed column. $null leaves the column empty as not measured, never 0. Untyped,
+        default $null, may be null or empty.
     .PARAMETER NotListed
-        The not listed input of New-AdfaSidHistoryRow. Untyped, default $null, may be null or empty.
+        How many principals were left out of the Principals column because of Config.NameListCap,
+        written to the NotListed column. $null leaves the column empty as not measured, never 0.
+        Untyped, default $null, may be null or empty.
     .PARAMETER Principals
-        The principals input of New-AdfaSidHistoryRow. Type [string], default '', may be null or
-        empty.
+        The names of the principals the row is about, joined with '; ' and capped at
+        Config.NameListCap, written to the Principals column and never to Detail. Empty when none
+        are listed. Type [string], default '', may be null or empty.
     .PARAMETER HistoricSids
-        The historic sids input of New-AdfaSidHistoryRow. Type [string], default '', may be null or
-        empty.
+        The flagged historic SIDs per principal, as name=SID,SID entries joined with '; ' (a
+        privileged SID followed by its privileged name in brackets), written to the HistoricSids
+        column and never to Detail. Empty when the row lists none. Type [string], default '', may be
+        null or empty.
     .PARAMETER SourceDomains
-        The source domains input of New-AdfaSidHistoryRow. Type [string], default '', may be null or
-        empty.
+        The distinct domain parts of the historic SIDs with their source label and count, as 'domain
+        part (label) xN' entries joined with '; ', written to the SourceDomains column. Empty when
+        no source is listed. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -25271,13 +26193,16 @@ function Get-AdfaSidHistoryCapText {
     .SYNOPSIS
         Pure: the sentence that says how many names a row lists and how many it leaves out.
     .PARAMETER Listed
-        The listed input of Get-AdfaSidHistoryCapText. Type [int].
+        How many names the row lists in the named column, quoted first in the returned sentence.
+        Type [int].
     .PARAMETER NotListed
-        The not listed input of Get-AdfaSidHistoryCapText. Type [int].
+        How many names were left out of that column because of the cap, quoted in the returned
+        sentence. Type [int].
     .PARAMETER Cap
         The most items read or listed. Reaching it is said in the text. Type [int].
     .PARAMETER Column
-        The column input of Get-AdfaSidHistoryCapText. Type [string], mandatory.
+        The name of the row column the names are listed in, for example Principals, quoted in the
+        returned sentence. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -25325,11 +26250,19 @@ function ConvertFrom-AdfaSidValue {
         [pscustomobject] Ok, Text, Authority, SubAuthorities, DomainPart, Rid, IsAccountDomain,
         Parser (Text | Platform | Fallback), Error.
     .PARAMETER Value
-        The value input of ConvertFrom-AdfaSidValue. Untyped, may be null or empty.
+        The SID to read: a byte array in the binary SID layout, a string in S-1-... text form, or an
+        object whose Value property holds that text, as SecurityIdentifier does. $null, or any other
+        value, gives Ok = $false with the reason in Error, never an exception. Untyped, may be null
+        or empty.
     .PARAMETER NoPlatform
-        The no platform input of ConvertFrom-AdfaSidValue. Switch.
+        When set, a byte-array value is read by the byte-layout parser alone and the .NET
+        SecurityIdentifier cross-check is skipped, so Parser is Fallback. Text values are not
+        affected. Switch.
     .PARAMETER PlatformReader
-        The platform reader input of ConvertFrom-AdfaSidValue. Type [scriptblock], default $null.
+        For tests only: a scriptblock that is given the SID bytes and returns the SID text or
+        throws, used in place of the .NET SecurityIdentifier reading in the cross-check. $null uses
+        SecurityIdentifier, and every caller in this script leaves it out. Type [scriptblock],
+        default $null.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -25431,7 +26364,10 @@ function Get-AdfaSidValueList {
     .OUTPUTS
         [object] one per value.
     .PARAMETER Value
-        The value input of Get-AdfaSidValueList. Untyped, may be null or empty.
+        The value of a multi-valued SID attribute such as sIDHistory. A single byte array or string
+        is written as one value, any other collection that is not a dictionary gives each of its
+        non-null elements, anything else is written as one value, and $null gives nothing. Untyped,
+        may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -25479,7 +26415,10 @@ function ConvertTo-AdfaSidHistoryRecord {
     .OUTPUTS
         [pscustomobject] Dn, Sam, Name, Class, Enabled, ObjectSid, History.
     .PARAMETER Object
-        The object input of ConvertTo-AdfaSidHistoryRecord. Untyped, mandatory.
+        A directory object returned by the sIDHistory query. Its distinguishedName, sAMAccountName,
+        Name, objectClass, userAccountControl, objectSid and sIDHistory are read through
+        PSObject.Properties, so an attribute it does not carry becomes $null (or no history value)
+        rather than an error. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -25728,17 +26667,23 @@ function Get-AdfaSidHistoryClassification {
         [pscustomobject] OwnSid ('' when not known), Values (Record, Parsed, SameDomain, Privileged,
         PrivilegedName, SourceKey, Source), Unparsed, NoValue.
     .PARAMETER Records
-        The records input of Get-AdfaSidHistoryClassification. Untyped, default @(), may be null or
-        empty.
+        The principal records from ConvertTo-AdfaSidHistoryRecord; every value in each record's
+        History is parsed and classified. $null entries are skipped, and a record with no history
+        value is counted in NoValue as not measured rather than treated as clean. Untyped, default
+        @(), may be null or empty.
     .PARAMETER DomainSid
         The SID of the domain (S-1-5-21-...), used to build and match domain-relative SIDs. Type
         [string], default '', may be null or empty.
     .PARAMETER ForestMap
-        The forest map input of Get-AdfaSidHistoryClassification. Untyped, default $null, may be
-        null or empty.
+        The forest's domain SIDs from Get-AdfaSidHistoryForestMap; its Map (domain SID text to
+        domain name) labels a historic SID as '<name>, this forest'. $null, or no Map dictionary,
+        leaves no forest domain known, so such SIDs fall through to the trust partner, well-known or
+        unresolved labels. Untyped, default $null, may be null or empty.
     .PARAMETER Trusts
-        The trusts input of Get-AdfaSidHistoryClassification. Untyped, default @(), may be null or
-        empty.
+        The trusted domain objects of this domain, each with Sid and Partner or FlatName; a historic
+        SID whose domain part matches one is labelled '<partner>, trust partner'. Entries whose Sid
+        cannot be parsed are skipped, and an empty list leaves no trust partner known. Untyped,
+        default @(), may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -25822,12 +26767,15 @@ function Get-AdfaSidHistoryHolderText {
     .OUTPUTS
         [pscustomobject] Count, Listed, NotListed, Principals, HistoricSids.
     .PARAMETER Values
-        The values input of Get-AdfaSidHistoryHolderText. Untyped, default @(), may be null or
-        empty.
+        The classified historic SID values to report (each with Record and Parsed), grouped by the
+        principal that holds them; principals and their SIDs are listed in first-seen order up to
+        the cap. $null entries are skipped, and an empty list gives a Count of 0 and empty texts.
+        Untyped, default @(), may be null or empty.
     .PARAMETER Cap
         The most items read or listed. Reaching it is said in the text. Type [int], default 0.
     .PARAMETER WithPrivilegedName
-        The with privileged name input of Get-AdfaSidHistoryHolderText. Switch.
+        When set, each SID in the HistoricSids text is followed by its privileged name in brackets
+        where the classification assigned one. Switch.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -25876,7 +26824,9 @@ function Get-AdfaSidHistoryCountVerdict {
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, mandatory.
     .PARAMETER Classified
-        The classified input of Get-AdfaSidHistoryCountVerdict. Untyped, mandatory.
+        The output of Get-AdfaSidHistoryClassification for this domain: its Values give the historic
+        SID count, Unparsed the values not parsed, NoValue the principals with no value read (noted
+        in Detail as not measured), and OwnSid the DomainSid column. Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -25951,7 +26901,10 @@ function Get-AdfaSidHistorySameDomainVerdict {
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, mandatory.
     .PARAMETER Classified
-        The classified input of Get-AdfaSidHistorySameDomainVerdict. Untyped, mandatory.
+        The output of Get-AdfaSidHistoryClassification for this domain. A value with SameDomain set
+        makes the row Fail; an empty OwnSid, or no value read, makes it Not Assessed; and Unparsed
+        or NoValue above 0 with no same-domain value makes it Not Assessed rather than Pass.
+        Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -26028,7 +26981,10 @@ function Get-AdfaSidHistoryPrivilegedVerdict {
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, mandatory.
     .PARAMETER Classified
-        The classified input of Get-AdfaSidHistoryPrivilegedVerdict. Untyped, mandatory.
+        The output of Get-AdfaSidHistoryClassification for this domain. A value with a Privileged
+        label makes the row Fail and is named in Detail; no value read makes it Not Assessed; and
+        Unparsed or NoValue above 0 with no privileged value makes it Not Assessed rather than Pass.
+        Untyped, mandatory.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -26099,10 +27055,13 @@ function Get-AdfaSidHistorySourceVerdict {
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, mandatory.
     .PARAMETER Classified
-        The classified input of Get-AdfaSidHistorySourceVerdict. Untyped, mandatory.
+        The output of Get-AdfaSidHistoryClassification for this domain: its parsed Values are
+        grouped by SourceKey and counted by Source label, Unparsed is quoted, and NoValue is noted.
+        Principals returned with no value read make the row Not Assessed. Untyped, mandatory.
     .PARAMETER ForestMap
-        The forest map input of Get-AdfaSidHistorySourceVerdict. Untyped, default $null, may be null
-        or empty.
+        The forest map from Get-AdfaSidHistoryForestMap; only its Failures are read here, and each
+        forest domain whose SID could not be read is named in Detail as a reason a SID may show as
+        unresolved. $null adds no such note. Untyped, default $null, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -26186,8 +27145,10 @@ function Get-AdfaSidHistoryDomainFinding {
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
     .PARAMETER ForestMap
-        The forest map input of Get-AdfaSidHistoryDomainFinding. Untyped, default $null, may be null
-        or empty.
+        The forest map from Get-AdfaSidHistoryForestMap, passed to the classification to label
+        historic SIDs from forest domains and to the sources row to report forest domains whose SID
+        could not be read. $null leaves no forest domain known, so SIDs from them show as
+        unresolved. Untyped, default $null, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -26466,8 +27427,11 @@ function Resolve-AdfaConfigOverride {
         The built-in configuration table the override is checked against and merged onto. Type
         [hashtable], mandatory.
     .PARAMETER Sections
-        The sections input of Resolve-AdfaConfigOverride. Type [System.Collections.IDictionary],
-        mandatory.
+        The registry of overridable sections ($script:ConfigOverrideSections): section name to an
+        entry naming its ConfigKey in BaseConfig and its Merge validator. A section the override
+        names that is not a key here is refused with the known names listed, and an entry whose
+        table or validator does not exist throws as a defect in the tool. Type
+        [System.Collections.IDictionary], mandatory.
     .PARAMETER OverrideSource
         The path of the file the override came from, cited in a finding for every value the file
         supplied. Type [string], default ''.
@@ -26668,13 +27632,17 @@ function Import-AdfaConfigOverride {
     .OUTPUTS
         [hashtable] section name -> merged config table.
     .PARAMETER Path
-        The path input of Import-AdfaConfigOverride. Type [string], mandatory.
+        The path of the -ConfigOverridePath JSON file. A missing or empty file, text that is not
+        valid JSON, a top level that is not an object, or a key written twice in one object throws,
+        and the path is cited in every refusal and as the source of each value the file supplies.
+        Type [string], mandatory.
     .PARAMETER BaseConfig
         The built-in configuration table the override is checked against and merged onto. Type
         [hashtable], mandatory.
     .PARAMETER Sections
-        The sections input of Import-AdfaConfigOverride. Type [System.Collections.IDictionary],
-        mandatory.
+        The registry of overridable sections, passed unchanged to Resolve-AdfaConfigOverride, which
+        refuses any section name in the file that is not a key of it. Type
+        [System.Collections.IDictionary], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -26752,8 +27720,10 @@ function ConvertFrom-AdfaRepadminDelta {
     .OUTPUTS
         [System.Nullable[int]] Minutes, or $null.
     .PARAMETER Delta
-        The delta input of ConvertFrom-AdfaRepadminDelta. Type [string], default '', may be null or
-        empty.
+        A repadmin largest-delta token such as 04h:02m:16s or 3d.04h:02m:16s, converted to whole
+        minutes (seconds add nothing; '>N days' counts N days). Empty text, a token starting with
+        '(' such as (unknown), or one with no day, hour, minute or second part returns $null, never
+        0. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([System.Nullable[int]])]
@@ -26842,26 +27812,35 @@ function Get-AdfaReplsummaryVerdict {
     .OUTPUTS
         [pscustomobject] Status, Detail
     .PARAMETER Direction
-        The direction input of Get-AdfaReplsummaryVerdict. Type [string], mandatory.
+        Which /replsummary table the row came from, Source or Destination. Destination words the
+        Detail as a replication destination; any other value words it as a replication source. Type
+        [string], mandatory.
     .PARAMETER Dsa
-        The dsa input of Get-AdfaReplsummaryVerdict. Type [string], mandatory.
+        The name of the domain controller the /replsummary row is about, quoted at the start of the
+        Detail. Type [string], mandatory.
     .PARAMETER Delta
-        The delta input of Get-AdfaReplsummaryVerdict. Type [string], default '', may be null or
-        empty.
+        The largest-delta token as repadmin printed it, quoted in the Detail when no failure was
+        reported. It is text only; the grade is taken from DeltaMinutes. Type [string], default '',
+        may be null or empty.
     .PARAMETER DeltaMinutes
-        The delta minutes input of Get-AdfaReplsummaryVerdict. Type [Nullable[int]], may be null or
-        empty.
+        The largest delta in minutes, as ConvertFrom-AdfaRepadminDelta returned it, compared with
+        WarnHours and FailHours when no failure was reported. $null means the delta could not be
+        read, and the row is Not Assessed, never a pass. Type [Nullable[int]], may be null or empty.
     .PARAMETER Fails
-        The fails input of Get-AdfaReplsummaryVerdict. Type [int], default 0.
+        The failed replication attempts reported for the DSA. Any value above 0 makes the row Fail,
+        worded as failing every attempt when it is at or above a Total above 0. Type [int], default
+        0.
     .PARAMETER Total
-        The total input of Get-AdfaReplsummaryVerdict. Type [int], default 0.
+        The replication attempts reported for the DSA, quoted with Fails in the Detail; Fails at or
+        above a Total above 0 is worded as every attempt failing. Type [int], default 0.
     .PARAMETER ErrorText
         The error text of the failed read or command; empty when there was none. Type [string],
         default ''.
     .PARAMETER WarnHours
         The Warning threshold, in hours. Type [int], default 24.
     .PARAMETER FailHours
-        The fail hours input of Get-AdfaReplsummaryVerdict. Type [int], default 168.
+        The Fail threshold, in hours: with no failures reported, a largest delta of at least this
+        many hours makes the row Fail. Type [int], default 168.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -26981,21 +27960,27 @@ function Get-AdfaReplicationLagVerdict {
     .OUTPUTS
         [pscustomobject] Status, Detail
     .PARAMETER Destination
-        The destination input of Get-AdfaReplicationLagVerdict. Type [string], mandatory.
+        The destination domain controller of the replication link, shown before the arrow in the
+        link name '<destination> <- <source>' in the Detail. Type [string], mandatory.
     .PARAMETER Source
-        The source input of Get-AdfaReplicationLagVerdict. Type [string], mandatory.
+        The source domain controller of the replication link, shown after the arrow in the link name
+        '<destination> <- <source>' in the Detail. Type [string], mandatory.
     .PARAMETER NamingContext
-        The naming context input of Get-AdfaReplicationLagVerdict. Type [string], default ''.
+        The naming context the link replicates, appended to the link name as 'on <naming context>'
+        in the Detail; empty leaves it out. Type [string], default ''.
     .PARAMETER LastSuccess
-        The last success input of Get-AdfaReplicationLagVerdict. Type [string], default '', may be
-        null or empty.
+        The last successful replication time of the link as text, parsed in the invariant culture
+        (then by a plain cast), whose age against Now is graded against WarnHours and FailHours.
+        Empty or unreadable text is Not Assessed, and a time in the future is Not Assessed as clock
+        skew; neither is treated as recent. Type [string], default '', may be null or empty.
     .PARAMETER Now
         The current time, passed in so the verdict can be tested with a fixed clock. Type
         [Nullable[datetime]], may be null or empty.
     .PARAMETER WarnHours
         The Warning threshold, in hours. Type [int], default 24.
     .PARAMETER FailHours
-        The fail hours input of Get-AdfaReplicationLagVerdict. Type [int], default 168.
+        The Fail threshold, in hours: a last success at least this many hours before Now makes the
+        link Fail. Type [int], default 168.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -27189,7 +28174,9 @@ function Get-AdfaBackupStatus {
     .PARAMETER RetryDelaySeconds
         Seconds to wait between two attempts (-RetryDelaySeconds of the run). Type [int], default 2.
     .PARAMETER MaxAgeDays
-        The max age days input of Get-AdfaBackupStatus. Type [int], default 30.
+        The age in days the latest partition backup that repadmin /showbackup reports may reach: an
+        older backup makes the row Warning, otherwise it is Pass. A backup time that could not be
+        parsed is Not Assessed. Type [int], default 30.
     .PARAMETER RpcPortTimeoutMs
         Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
         default 1200.
@@ -27634,7 +28621,11 @@ function Test-AdfaOsSupported {
         The operatingSystem attribute of the domain controller's computer object. Type [string], may
         be null or empty.
     .PARAMETER SupportedOs
-        The supported os input of Test-AdfaOsSupported. Untyped, default @(), may be null or empty.
+        The supported domain controller OS table (SupportedDomainControllerOs of the Exchange SE
+        config): hashtables or objects, each with a regex Pattern and a Label. The Label of the
+        first entry whose Pattern matches OperatingSystem is returned; entries with no Pattern are
+        skipped, and an empty table returns '', which the caller reports as unsupported. Untyped,
+        default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -27743,7 +28734,11 @@ function Import-AdfaExchangeSeConfig {
         The built-in configuration table the override is checked against and merged onto. Type
         [hashtable], mandatory.
     .PARAMETER Path
-        The path input of Import-AdfaExchangeSeConfig. Type [string], mandatory.
+        The path of the Exchange SE prerequisite override JSON file (-ExchangeSeConfigPath), merged
+        over the built-in table by Merge-AdfaExchangeSeConfig and recorded as the merged table's
+        SourceUrl. A missing, empty or invalid JSON file throws rather than falling back to the
+        built-in table, but a file holding only JSON null merges nothing and leaves the built-in
+        table and its SourceUrl in place. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -27783,8 +28778,10 @@ function Get-AdfaEnrichmentFailureAdvice {
     .OUTPUTS
         [string] A leading-space-prefixed sentence, or '' when there is nothing to say.
     .PARAMETER Causes
-        The causes input of Get-AdfaEnrichmentFailureAdvice. Type [string[]], default @(), may be
-        null or empty.
+        The error texts recorded when DC computer objects could not be read (EnrichmentError of the
+        inventory rows). A referral error adds referral advice, an access or authentication error
+        adds credentials advice, and up to three distinct texts are quoted; when every entry is
+        empty or blank, '' is returned. Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -27814,7 +28811,10 @@ function Get-AdfaForestLevelTable {
     .OUTPUTS
         [pscustomobject[]] Level (int), Mode, Label.
     .PARAMETER SeConfig
-        The se config input of Get-AdfaForestLevelTable. Type [hashtable], mandatory.
+        The Exchange SE config table, built-in or merged with an override, whose
+        ForestFunctionalLevels entries (hashtables or objects with Level, Mode and Label) are
+        returned as uniform objects. A $null entry, or one whose Level is not a whole number, is
+        dropped. Type [hashtable], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -27849,13 +28849,20 @@ function Get-AdfaForestLevelClass {
     .OUTPUTS
         [string] One of: Unreadable | Unrecognised | Supported | Below | Above
     .PARAMETER RawLevel
-        The raw level input of Get-AdfaForestLevelClass. Type [string], may be null or empty.
-    .PARAMETER KnownLevels
-        The known levels input of Get-AdfaForestLevelClass. Type [int[]], default @(), may be null
-        or empty.
-    .PARAMETER SupportedLevels
-        The supported levels input of Get-AdfaForestLevelClass. Type [int[]], default @(), may be
+        The msDS-Behavior-Version value exactly as the directory returned it, as a string. Null,
+        empty or whitespace classifies as Unreadable; a value that does not parse as an integer, or
+        parses to a number not in -KnownLevels, classifies as Unrecognised. Type [string], may be
         null or empty.
+    .PARAMETER KnownLevels
+        The forest functional level numbers this build recognises, taken from the
+        ForestFunctionalLevels config table. A parsed -RawLevel that is not in this list classifies
+        as Unrecognised, so an empty list makes every value Unrecognised. Type [int[]], default @(),
+        may be null or empty.
+    .PARAMETER SupportedLevels
+        The level numbers the release supports, resolved from the config's supported forest modes. A
+        known level in this list is Supported; one above every entry is Above; any other known
+        level, including one in a gap between supported levels, is Below. Type [int[]], default @(),
+        may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -27894,7 +28901,10 @@ function Get-AdfaForestBehaviorVersion {
     .OUTPUTS
         [pscustomobject] Level (raw string, '' when not read), Error ('' when read).
     .PARAMETER Forest
-        The forest input of Get-AdfaForestBehaviorVersion. Untyped, may be null or empty.
+        The forest object returned by Get-ADForest; only its PartitionsContainer property is used,
+        as the DN of the object whose msDS-Behavior-Version is read. When the object is $null or
+        carries no PartitionsContainer, nothing is read and the result has an empty Level with an
+        Error naming that cause, never level 0. Untyped, may be null or empty.
     .PARAMETER AdParams
         Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
         -Server and -Credential; empty to use the current domain and account. Type [hashtable],
@@ -27962,13 +28972,20 @@ function Get-AdfaExchangeSeCompatibility {
         Why -ForestLevel is empty, in the directory's own words where it gave any. Type [string],
         may be null or empty.
     .PARAMETER DomainSummaries
-        The domain summaries input of Get-AdfaExchangeSeCompatibility. Untyped, default @(), may be
-        null or empty.
+        Per-domain summary objects carrying DomainName and DomainMode. Each one with a non-empty
+        DomainMode becomes an Info row recording the domain functional level for completeness; it is
+        never graded, and entries that are $null or have no DomainMode are skipped. Untyped, default
+        @(), may be null or empty.
     .PARAMETER DomainControllers
         The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
         Scope where known). Untyped, default @(), may be null or empty.
     .PARAMETER SeConfig
-        The se config input of Get-AdfaExchangeSeCompatibility. Type [hashtable], mandatory.
+        The Exchange SE supportability table from config: Release, SourceUrl, ReadDate,
+        SupportedForestModes, SupportedDomainControllerOs, ForestFunctionalLevels and
+        ReadOnlySupported. Every verdict is judged against these values, and SourceUrl and ReadDate
+        are quoted as provenance in the rows that cite the table; when the supported modes resolve
+        to no level, the forest level row is Not Assessed asking for the config to be corrected.
+        Type [hashtable], mandatory.
     .PARAMETER ForestComplete
         PORT-PLAN C16 (GAP-P20): whether -DomainControllers is every DC of the forest - every domain
         of the forest scoped and its inventory read (Invoke-Main). The DC gate passes only then;
@@ -29367,9 +30384,12 @@ function Get-AdfaDnsQueryOutcome {
     .OUTPUTS
         [string] NoTool | Resolved | NoRecord | NoAnswer
     .PARAMETER Available
-        The available input of Get-AdfaDnsQueryOutcome. Type [bool], default $true.
+        Whether a DNS query tool (Resolve-DnsName or nslookup) was available to run the query. When
+        $false the outcome is NoTool regardless of the other values. Type [bool], default $true.
     .PARAMETER TargetCount
-        The target count input of Get-AdfaDnsQueryOutcome. Type [int], default 0.
+        How many targets the query returned. Any value above zero gives Resolved; at zero,
+        -ErrorText decides between NoRecord (an authoritative does-not-exist message) and NoAnswer.
+        Type [int], default 0.
     .PARAMETER ErrorText
         The error text of the failed read or command; empty when there was none. Type [string],
         default ''.
@@ -29414,10 +30434,14 @@ function Resolve-AdfaDnsRecord {
         [pscustomobject] Available (bool), Targets (string[]), Error (string),
         Outcome (NoTool|Resolved|NoRecord|NoAnswer)
     .PARAMETER Name
-        The name input of Resolve-AdfaDnsRecord. Type [string], mandatory.
+        The DNS name to query, for example _ldap._tcp.dc._msdcs.contoso.com. It is passed to
+        Resolve-DnsName, or to nslookup when the DnsClient module is absent. Type [string],
+        mandatory.
     .PARAMETER Type
-        The type input of Resolve-AdfaDnsRecord. Type [string], mandatory, one of SRV, CNAME, NS, A,
-        SOA.
+        The record type to query, which also decides what Targets holds: the SRV target host, the
+        CNAME alias target, each NS name server, the A record address used as glue, or for SOA the
+        zone apex that answered. An SOA query with no Resolve-DnsName returns NoTool rather than
+        parsing nslookup output. Type [string], mandatory, one of SRV, CNAME, NS, A, SOA.
     .PARAMETER Server
         The server (domain controller or DNS server) the read is directed at. Type [string].
     #>
@@ -29513,10 +30537,14 @@ function Compare-AdfaDnsServerView {
     .OUTPUTS
         [pscustomobject] PerServer, AgreeingServers, DivergentServers, ServersQueried
     .PARAMETER AdHosts
-        The ad hosts input of Compare-AdfaDnsServerView. Type [string[]], default @(), may be null
-        or empty.
+        The domain controller host names Active Directory contains, compared against each DNS
+        server's targets. A DNS target not in this list is reported stale and a host here missing
+        from a server's targets is reported missing for that server. Type [string[]], default @(),
+        may be null or empty.
     .PARAMETER ServerTargets
-        The server targets input of Compare-AdfaDnsServerView. Type [hashtable], default @{}.
+        A table of DNS server name to the target host names that server returned for the record.
+        Each server is compared separately against -AdHosts and marked agreeing or divergent; an
+        empty table gives no per-server rows and ServersQueried 0. Type [hashtable], default @{}.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -29551,11 +30579,13 @@ function Compare-AdfaDnsAdvertisement {
     .OUTPUTS
         [pscustomobject] StaleInDns (string[]), MissingFromDns (string[]), Matched (string[])
     .PARAMETER AdHosts
-        The ad hosts input of Compare-AdfaDnsAdvertisement. Type [string[]], default @(), may be
-        null or empty.
+        The domain controller host names Active Directory contains. Names are lower-cased and the
+        trailing dot removed; each one is Matched when DNS advertises it and MissingFromDns when it
+        does not, and empty entries are ignored. Type [string[]], default @(), may be null or empty.
     .PARAMETER DnsTargets
-        The dns targets input of Compare-AdfaDnsAdvertisement. Type [string[]], default @(), may be
-        null or empty.
+        The host names DNS advertises for the record, normalised the same way as -AdHosts. A target
+        that is not in -AdHosts is reported in StaleInDns, and empty entries are ignored. Type
+        [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -29589,12 +30619,14 @@ function Resolve-AdfaDcPasswordVerdict {
     .OUTPUTS
         [string] Pass | Warning | Fail | Not Assessed
     .PARAMETER AgeDays
-        The age days input of Resolve-AdfaDcPasswordVerdict. Type [nullable[double]], may be null or
-        empty.
+        The age in days of the DC machine-account password, from pwdLastSet. A $null value, meaning
+        the password date was not set or not readable, returns Not Assessed rather than a pass. Type
+        [nullable[double]], may be null or empty.
     .PARAMETER WarnDays
         The Warning threshold, in days. Type [int], default 45.
     .PARAMETER FailDays
-        The fail days input of Resolve-AdfaDcPasswordVerdict. Type [int], default 90.
+        The Fail threshold, in days: an -AgeDays at or above this value returns Fail, checked before
+        the Warning threshold. Type [int], default 90.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -29621,10 +30653,12 @@ function Get-AdfaDnsRecordView {
         [pscustomobject] ToolAvailable (bool), Views (hashtable server->targets),
         Unanswered (string[]), Error (string)
     .PARAMETER Name
-        The name input of Get-AdfaDnsRecordView. Type [string], mandatory.
+        The DNS name to query on the local resolver and on every server in -DnsServers. Type
+        [string], mandatory.
     .PARAMETER Type
-        The type input of Get-AdfaDnsRecordView. Type [string], mandatory, one of SRV, CNAME, NS, A,
-        SOA.
+        The record type queried on every server, passed unchanged to Resolve-AdfaDnsRecord. When the
+        local query reports no tool available, no server is queried and ToolAvailable is $false with
+        the cause. Type [string], mandatory, one of SRV, CNAME, NS, A, SOA.
     .PARAMETER DnsServers
         The DNS servers of the domain controller or row. Type [string[]], default @(), may be null
         or empty.
@@ -29687,11 +30721,16 @@ function Get-AdfaDnsAdConsistency {
     .PARAMETER ForestRoot
         The DNS name of the forest root domain. Type [string], default '', may be null or empty.
     .PARAMETER DsaInventory
-        The dsa inventory input of Get-AdfaDnsAdConsistency. Untyped, default @(), may be null or
-        empty.
+        The NTDS Settings (DSA) rows of the forest, carrying DnsHostName and DsaGuid, passed on to
+        the per-DC locator checks. Their host names extend the set of known DCs for the
+        records-that-name-no-DC check, and in the forest root their GUIDs are what each
+        <guid>._msdcs CNAME is judged against; an empty list there is treated as a read that saw
+        nothing, not as no DSA. Untyped, default @(), may be null or empty.
     .PARAMETER DsaError
-        The dsa error input of Get-AdfaDnsAdConsistency. Type [string], default '', may be null or
-        empty.
+        Why the DSA inventory could not be read, passed on to the per-DC locator checks. In the
+        forest root, when it is set the <guid>._msdcs CNAMEs are not read or judged, and unless a
+        stale SRV record is found the stale-record row is Not Assessed naming this cause; outside
+        the forest root it is not used. Type [string], default '', may be null or empty.
     .PARAMETER Credential
         The credential for the remote reads. When it is absent the account running the assessment is
         used. Type [pscredential].
@@ -30007,7 +31046,9 @@ function Get-AdfaDnsNameNormalised {
     .OUTPUTS
         [string]
     .PARAMETER Name
-        The name input of Get-AdfaDnsNameNormalised. Type [string], may be null or empty.
+        The DNS name to normalise: it is trimmed, its trailing root dot removed and the result
+        lower-cased so two spellings compare equal. $null returns an empty string. Type [string],
+        may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -30038,10 +31079,13 @@ function Get-AdfaMsdcsZoneVerdict {
     .PARAMETER ZoneName
         The DNS zone name. Type [string], mandatory.
     .PARAMETER ParentZone
-        The parent zone input of Get-AdfaMsdcsZoneVerdict. Type [string], mandatory.
+        The parent zone, normally the forest root domain name such as contoso.com. When an SOA apex
+        matches it rather than -ZoneName, the verdict is NotDelegated: _msdcs is only a subdomain of
+        the parent there. Type [string], mandatory.
     .PARAMETER SoaApex
-        The soa apex input of Get-AdfaMsdcsZoneVerdict. Type [string[]], default @(), may be null or
-        empty.
+        The zone apex names that answered the SOA query for the zone on one DNS server, compared
+        after normalisation. An empty list returns NoAnswer; an apex that is neither -ZoneName nor
+        -ParentZone returns OtherApex. Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -30102,11 +31146,14 @@ function Get-AdfaMsdcsDelegationVerdict {
         Supplied by the collector so this verdict needs no directory or resolver. Untyped, default
         @(), may be null or empty.
     .PARAMETER AdDcHosts
-        The ad dc hosts input of Get-AdfaMsdcsDelegationVerdict. Type [string[]], default @(), may
-        be null or empty.
+        The domain controller host names known to Active Directory, against which every NS target is
+        checked. An NS host not in the list is a Warning, or Not Assessed when -IncompleteDomains
+        names domains whose DCs are missing; an empty list makes the NS host cross-check Not
+        Assessed. Type [string[]], default @(), may be null or empty.
     .PARAMETER Unanswered
-        The unanswered input of Get-AdfaMsdcsDelegationVerdict. Type [string[]], default @(), may be
-        null or empty.
+        The DNS servers that did not answer the SOA query. They are named in the detail text as
+        unverified, not clean, and when no server answered at all the single row is Not Assessed.
+        Type [string[]], default @(), may be null or empty.
     .PARAMETER IncompleteDomains
         PORT-PLAN C2e: scoped domains whose DCs are missing from -AdDcHosts (their enumeration threw
         or returned no DC). With any named, an NS host missing from -AdDcHosts may be one of their
@@ -30266,8 +31313,9 @@ function Get-AdfaMsdcsDelegation {
         The DNS servers of the domain controller or row. Type [string[]], default @(), may be null
         or empty.
     .PARAMETER AdDcHosts
-        The ad dc hosts input of Get-AdfaMsdcsDelegation. Type [string[]], default @(), may be null
-        or empty.
+        The domain controller host names known to Active Directory, passed to the verdict so each NS
+        record for the _msdcs zone can be checked against a real DC. An empty list makes that
+        cross-check Not Assessed. Type [string[]], default @(), may be null or empty.
     .PARAMETER IncompleteDomains
         PORT-PLAN C2e: scoped domains whose DCs are missing from -AdDcHosts (their enumeration threw
         or returned no DC). Passed to the verdict, which then does not call an NS host "not a known
@@ -30401,19 +31449,29 @@ function Get-AdfaTimeSourceVerdict {
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default ''.
     .PARAMETER IsPdcEmulator
-        The is pdc emulator input of Get-AdfaTimeSourceVerdict. Type [bool], default $false.
+        Whether this DC holds the PDC emulator role of its domain. It only changes the role named in
+        the row's item text; the grading rules apply to -IsForestRootPdc. Type [bool], default
+        $false.
     .PARAMETER IsForestRootPdc
-        The is forest root pdc input of Get-AdfaTimeSourceVerdict. Type [bool], default $false.
+        Whether this DC is the forest root PDC emulator, which switches on the role-specific rules:
+        a source that is one of this forest's DCs is a Warning, a non-DC source is a Pass, and with
+        no DC inventory the verdict is Not Assessed. Type [bool], default $false.
     .PARAMETER Queried
-        The queried input of Get-AdfaTimeSourceVerdict. Type [bool], default $true.
+        Whether the w32tm query of this DC succeeded. When $false the row is Not Assessed with
+        -ErrorText as the cause, or a reachability cause when none is given. Type [bool], default
+        $true.
     .PARAMETER Source
-        The source input of Get-AdfaTimeSourceVerdict. Type [string], default ''.
+        The time source line w32tm reported for the DC. It is matched against the configured
+        hypervisor and local-clock patterns, and otherwise its host part is compared with
+        -DomainControllerHosts; an empty value is Not Assessed, never a pass. Type [string], default
+        ''.
     .PARAMETER ErrorText
         The error text of the failed read or command; empty when there was none. Type [string],
         default ''.
     .PARAMETER DomainControllerHosts
-        The domain controller hosts input of Get-AdfaTimeSourceVerdict. Type [string[]], default
-        @(), may be null or empty.
+        The host names of this forest's domain controllers, used to decide whether -Source is one of
+        them. An empty list leaves that question unanswered, so the forest root PDC verdict is Not
+        Assessed. Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -30509,9 +31567,14 @@ function Get-AdfaRootPdcClientTypeVerdict {
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default ''.
     .PARAMETER ClientType
-        The client type input of Get-AdfaRootPdcClientTypeVerdict. Type [string], default ''.
+        The W32Time client Type parsed from w32tm /query /configuration on the forest root PDC
+        emulator. The configured domain-hierarchy type and NoSync are Warnings, a configured
+        external type is a Pass only with an -NtpServer value, and an empty or unrecognised value is
+        Not Assessed. Type [string], default ''.
     .PARAMETER NtpServer
-        The ntp server input of Get-AdfaRootPdcClientTypeVerdict. Type [string], default ''.
+        The NtpServer peer list parsed from the same output, quoted in the detail text. With an
+        external client type and no peer list read, the row is Not Assessed rather than a pass. Type
+        [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -30654,13 +31717,18 @@ function Get-AdfaClockOffsetVerdict {
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default ''.
     .PARAMETER ReferenceHost
-        The reference host input of Get-AdfaClockOffsetVerdict. Type [string], default '(this
-        host)'.
+        The host the offset was measured from, named in the detail so the row states it reports
+        divergence from that host rather than proof the forest's time is correct. Type [string],
+        default '(this host)'.
     .PARAMETER Queried
-        The queried input of Get-AdfaClockOffsetVerdict. Type [bool], default $true.
+        Whether an NTP sample was attempted against this DC. When $false the row is Not Assessed
+        with -ErrorText as the cause, because an unmeasured offset is not a small one. Type [bool],
+        default $true.
     .PARAMETER Offsets
-        The offsets input of Get-AdfaClockOffsetVerdict. Type [object[]], default @(), may be null
-        or empty.
+        The NTP offset samples in seconds from w32tm /stripchart. Only numeric values are used and
+        the worst absolute sample is graded against -WarnSeconds and -FailSeconds; with no numeric
+        sample the row is Not Assessed, never read as zero. Type [object[]], default @(), may be
+        null or empty.
     .PARAMETER ErrorText
         The error text of the failed read or command; empty when there was none. Type [string],
         default ''.
@@ -30740,7 +31808,10 @@ function Get-AdfaTimeHierarchyHealth {
         Hashtable of DC host name -> domain DNS name, for the PDC emulator of each domain. Type
         [hashtable], default @{}.
     .PARAMETER ForestRootPdc
-        The forest root pdc input of Get-AdfaTimeHierarchyHealth. Type [string], default ''.
+        The host name of the forest root PDC emulator. The DC matching it gets the root-PDC time
+        source and client type rules, and its stripchart sample is the reference for each DC's
+        offset-against-the-forest-root-PDC row; when empty, a Not Assessed row says the
+        role-specific rule was not applied. Type [string], default ''.
     .PARAMETER RpcPortTimeoutMs
         Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
         default 1200.
@@ -30748,7 +31819,8 @@ function Get-AdfaTimeHierarchyHealth {
         Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
         run). Type [int], default 60.
     .PARAMETER SkewSamples
-        The skew samples input of Get-AdfaTimeHierarchyHealth. Type [int], default 3.
+        How many NTP samples w32tm /stripchart takes from each DC, and from the forest root PDC when
+        it is read on its own, for the clock offset rows. Type [int], default 3.
     .PARAMETER WarnSeconds
         The Warning threshold, in seconds. Type [double], default 60.
     .PARAMETER FailSeconds
@@ -31143,7 +32215,9 @@ function Get-AdfaDcSecureChannel {
     .PARAMETER WarnDays
         The Warning threshold, in days. Type [int], default 45.
     .PARAMETER FailDays
-        The fail days input of Get-AdfaDcSecureChannel. Type [int], default 90.
+        The Fail threshold, in days, for the DC machine-account password age read from
+        PasswordLastSet; passed to Resolve-AdfaDcPasswordVerdict, where an age at or above it is
+        Fail. Type [int], default 90.
     .PARAMETER LiveVerify
         Run nltest /sc_verify on each DC instead of /sc_query. /sc_verify resets a channel that is
         not working, on every DC it reaches; off unless asked for. Switch.
@@ -31329,16 +32403,20 @@ function Get-AdfaEventLogCoverage {
     .OUTPUTS
         [string] Covered | Truncated | Empty | Unknown
     .PARAMETER Inspected
-        The inspected input of Get-AdfaEventLogCoverage. Type [bool], default $true.
+        Whether the event log could be inspected at all. When $false the coverage is Unknown
+        regardless of the other values. Type [bool], default $true.
     .PARAMETER RecordCount
-        The record count input of Get-AdfaEventLogCoverage. Type [Nullable[int]], may be null or
-        empty.
+        The number of records the log holds. Zero or less gives Empty, meaning nothing can be
+        concluded; $null does not decide the verdict on its own. Type [Nullable[int]], may be null
+        or empty.
     .PARAMETER OldestRecord
-        The oldest record input of Get-AdfaEventLogCoverage. Type [Nullable[datetime]], may be null
-        or empty.
+        The timestamp of the oldest record the log still retains. Unless the record count already
+        gave Empty, at or before -WindowStart gives Covered, after it gives Truncated, and $null
+        gives Unknown. Type [Nullable[datetime]], may be null or empty.
     .PARAMETER WindowStart
-        The window start input of Get-AdfaEventLogCoverage. Type [Nullable[datetime]], may be null
-        or empty.
+        The start of the window the event scan asks about, compared with -OldestRecord. Unless the
+        record count already gave Empty, $null gives Unknown because the comparison cannot be made.
+        Type [Nullable[datetime]], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -31366,16 +32444,19 @@ function Get-AdfaEventCoverageDetail {
     .OUTPUTS
         [string] Empty for 'Covered' - there is nothing to caveat.
     .PARAMETER Coverage
-        The coverage input of Get-AdfaEventCoverageDetail. Type [string], mandatory, one of Covered,
-        Truncated, Empty, Unknown.
+        The coverage verdict to explain. Covered returns an empty string; Empty, Truncated and
+        Unknown each return the sentence that states what limits the claim for that log. Type
+        [string], mandatory, one of Covered, Truncated, Empty, Unknown.
     .PARAMETER OldestRecord
-        The oldest record input of Get-AdfaEventCoverageDetail. Type [Nullable[datetime]], may be
-        null or empty.
+        The oldest record the log retains, quoted as the date the log goes back to in the Truncated
+        sentence; when $null that date is left blank. Type [Nullable[datetime]], may be null or
+        empty.
     .PARAMETER LookbackDays
         How many days back the event scan looks (-EventLookbackDays of the run). Type [int], default
         14.
     .PARAMETER Reason
-        The reason input of Get-AdfaEventCoverageDetail. Type [string], default ''.
+        Why the log could not be inspected, appended as the cause to the Unknown sentence; ignored
+        for other verdicts and omitted when empty. Type [string], default ''.
     .PARAMETER LogName
         Named by the caller so one guard serves both the Directory Service and the DFS Replication
         logs rather than the wording being duplicated per log. Type [string], default 'Directory
@@ -31423,12 +32504,15 @@ function Get-AdfaEventLogCoverageForLog {
     .PARAMETER ComputerName
         The host name of the computer to read or probe. Type [string], mandatory.
     .PARAMETER LogName
-        The log name input of Get-AdfaEventLogCoverageForLog. Type [string], mandatory.
+        The name of the event log to measure on the computer, for example Directory Service or DFS
+        Replication. It is read with Get-WinEvent -ListLog for the record count and with -Oldest
+        -MaxEvents 1 for the oldest record. Type [string], mandatory.
     .PARAMETER Credential
         The credential for the remote reads. When it is absent the account running the assessment is
         used. Type [pscredential].
     .PARAMETER WindowStart
-        The window start input of Get-AdfaEventLogCoverageForLog. Type [datetime], mandatory.
+        The start of the event scan window, compared with the oldest record read to decide whether
+        the log is Covered or Truncated. Type [datetime], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -31504,13 +32588,14 @@ function Get-AdfaSysvolShareOutcome {
     .OUTPUTS
         [string] Shared | MissingSysvol | MissingNetlogon | MissingBoth | Unknown
     .PARAMETER SmbReachable
-        The smb reachable input of Get-AdfaSysvolShareOutcome. Type [bool], default $true.
+        Whether SMB (445) on the DC was reachable. When $false the outcome is Unknown, never a
+        missing share. Type [bool], default $true.
     .PARAMETER SysvolPresent
-        The sysvol present input of Get-AdfaSysvolShareOutcome. Type [Nullable[bool]], may be null
-        or empty.
+        Whether the SYSVOL share was found on the DC; $null means the check could not be made and
+        gives Unknown. Type [Nullable[bool]], may be null or empty.
     .PARAMETER NetlogonPresent
-        The netlogon present input of Get-AdfaSysvolShareOutcome. Type [Nullable[bool]], may be null
-        or empty.
+        Whether the NETLOGON share was found on the DC; $null means the check could not be made and
+        gives Unknown. Type [Nullable[bool]], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -31648,8 +32733,11 @@ function Get-AdfaDfsrSubscriptionVerdict {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Subscriptions
-        The subscriptions input of Get-AdfaDfsrSubscriptionVerdict. Untyped, default @(), may be
-        null or empty.
+        One object per DC of the domain with a DFSR SYSVOL subscription: DcName, Enabled
+        (msDFSR-Enabled, $null when not read), Options (msDFSR-options) and Error. Enabled $false is
+        a Fail, $null is Not Assessed with its Error, and Options 1 on more than one DC is a
+        conflict; with no entries the row is Not Assessed. Untyped, default @(), may be null or
+        empty.
     .PARAMETER NotDfsrCount
         PORT-PLAN C16 (GAP-P1): DCs of the domain read to have no DFSR SYSVOL subscription (an FRS
         DC); they are not in -Subscriptions, and are named in the row when nothing else is. Type
@@ -31817,14 +32905,19 @@ function Get-AdfaDfsrBacklogCount {
     .OUTPUTS
         [pscustomobject] Count, Exact, Source
     .PARAMETER VerboseMessage
-        The verbose message input of Get-AdfaDfsrBacklogCount. Type [string], default '', may be
-        null or empty.
+        The verbose text captured from Get-DfsrBacklog. When it contains the backlog-of-files
+        wording with a Count, that number is returned as exact; otherwise the object count is used.
+        Type [string], default '', may be null or empty.
     .PARAMETER ObjectCount
-        The object count input of Get-AdfaDfsrBacklogCount. Type [int], default 0.
+        The number of backlog records Get-DfsrBacklog returned, used when the verbose count does not
+        parse. It is exact below -DisplayCap and reported as a floor at or above it. Type [int],
+        default 0.
     .PARAMETER DisplayCap
-        The display cap input of Get-AdfaDfsrBacklogCount. Type [int], default 100.
+        The most records Get-DfsrBacklog returns, from config. An -ObjectCount at or above it
+        returns this value with Exact $false. Type [int], default 100.
     .PARAMETER Succeeded
-        The succeeded input of Get-AdfaDfsrBacklogCount. Type [bool], default $true.
+        Whether the Get-DfsrBacklog call succeeded. When $false the count is -1 with Exact $false
+        and Source None, meaning nothing was determined. Type [bool], default $true.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -31867,17 +32960,23 @@ function Get-AdfaSysvolBacklogVerdict {
     .PARAMETER SourceDc
         The domain controller the read or test runs from. Type [string], mandatory.
     .PARAMETER DestinationDc
-        The destination dc input of Get-AdfaSysvolBacklogVerdict. Type [string], mandatory.
+        The domain controller the SYSVOL changes are pending for, named in the row as the DC a
+        policy edit is not reaching. Type [string], mandatory.
     .PARAMETER Count
-        The count input of Get-AdfaSysvolBacklogVerdict. Type [int], default -1.
+        The measured backlog in files. A negative value means it could not be measured and gives Not
+        Assessed; 0 is a Pass, and other values are graded against -WarnAt and -FailAt. Type [int],
+        default -1.
     .PARAMETER Exact
-        The exact input of Get-AdfaSysvolBacklogVerdict. Type [bool], default $true.
+        Whether -Count is a true total. When $false the count is shown as 'at least' and the detail
+        says it is a floor at the display cap. Type [bool], default $true.
     .PARAMETER WarnAt
-        The warn at input of Get-AdfaSysvolBacklogVerdict. Type [int], default 1.
+        The backlog below which a non-zero count is still a Pass, from config. Type [int], default
+        1.
     .PARAMETER FailAt
-        The fail at input of Get-AdfaSysvolBacklogVerdict. Type [int], default 100.
+        The backlog at or above which the verdict is Fail, from config. Type [int], default 100.
     .PARAMETER Reason
-        The reason input of Get-AdfaSysvolBacklogVerdict. Type [string], default ''.
+        Why the backlog could not be measured, quoted in the Not Assessed detail when -Count is
+        negative; a generic cause is used when it is empty. Type [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -31937,7 +33036,9 @@ function Get-AdfaSysvolBacklog {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER ReferenceDc
-        The reference dc input of Get-AdfaSysvolBacklog. Type [string], mandatory.
+        The DC every other DC's backlog is measured against in both directions, normally the
+        domain's PDC emulator. It is excluded from the peer list; when no other DC remains the
+        result is Not Assessed. Type [string], mandatory.
     .PARAMETER DomainControllers
         The domain controllers to assess: host names, or DC inventory rows that carry HostName (and
         Scope where known). Type [string[]], default @(), may be null or empty.
@@ -32165,7 +33266,8 @@ function Get-AdfaEventCapText {
         Pure: '' unless an event scan returned as many events as its cap; then the sentence every
         event row of that scan carries, saying its count is a minimum. PORT-PLAN C16 (GAP-P25).
     .PARAMETER Count
-        The count input of Get-AdfaEventCapText. Type [int].
+        The number of events the scan returned. When it reaches -Cap the sentence saying the count
+        is a minimum is returned; otherwise an empty string. Type [int].
     .PARAMETER Cap
         The most items read or listed. Reaching it is said in the text. Type [int].
     #>
@@ -32364,12 +33466,14 @@ function Get-AdfaUsnRollbackVerdict {
     .OUTPUTS
         [string] Rollback | OtherValue | NoEvidence | Unknown
     .PARAMETER Readable
-        The readable input of Get-AdfaUsnRollbackVerdict. Type [bool], default $true.
+        Whether the NTDS Parameters registry key could be read on the DC. When $false the verdict is
+        Unknown. Type [bool], default $true.
     .PARAMETER Present
-        The present input of Get-AdfaUsnRollbackVerdict. Type [Nullable[bool]], may be null or
-        empty.
+        Whether the Dsa Not Writable value exists. $false gives NoEvidence, $true passes the
+        decision to -Value, and $null gives Unknown. Type [Nullable[bool]], may be null or empty.
     .PARAMETER Value
-        The value input of Get-AdfaUsnRollbackVerdict. Untyped, may be null or empty.
+        The Dsa Not Writable data when present. A value of 4 gives Rollback; any other value,
+        including $null, gives OtherValue, never clean. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -32394,12 +33498,18 @@ function Get-AdfaUsnRollbackDetail {
     .OUTPUTS
         [string]
     .PARAMETER Verdict
-        The verdict input of Get-AdfaUsnRollbackDetail. Type [string], mandatory, one of Rollback,
-        OtherValue, NoEvidence, Unknown.
+        The USN-rollback verdict from Get-AdfaUsnRollbackVerdict that selects which sentence is
+        returned: Rollback for a "Dsa Not Writable" value of 4, OtherValue for any other value
+        present, NoEvidence when the value is absent, and Unknown when the NTDS Parameters key could
+        not be read. Type [string], mandatory, one of Rollback, OtherValue, NoEvidence, Unknown.
     .PARAMETER Value
-        The value input of Get-AdfaUsnRollbackDetail. Untyped, may be null or empty.
+        The "Dsa Not Writable" value read from the registry, quoted as found in the OtherValue
+        sentence and not interpreted; the other verdicts ignore it, and callers pass $null when
+        nothing was read. Untyped, may be null or empty.
     .PARAMETER Reason
-        The reason input of Get-AdfaUsnRollbackDetail. Type [string], default ''.
+        Why the registry key could not be read, appended as "Cause: ..." to the Unknown sentence
+        only; when empty or whitespace no cause is added, and the other verdicts ignore it. Type
+        [string], default ''.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -32601,8 +33711,11 @@ function Get-AdfaInvocationIdVerdict {
     .OUTPUTS
         [pscustomobject[]] Finding rows.
     .PARAMETER DsaInventory
-        The dsa inventory input of Get-AdfaInvocationIdVerdict. Untyped, default @(), may be null or
-        empty.
+        The DSA objects of the forest, each read for DnsHostName (or ServerDn when that is empty)
+        and InvocationId; null entries are dropped. When no DSA remains the result is a single Not
+        Assessed row, a DSA with no invocationId is excluded from the clone check and reported Not
+        Assessed, and two or more DSAs sharing an invocationId are reported Fail. Untyped, default
+        @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -32694,8 +33807,9 @@ function New-AdfaC14Row {
         The value of the Evidence column: what the verdict rests on. Type [string], default '', may
         be null or empty.
     .PARAMETER Columns
-        The columns input of New-AdfaC14Row. Type [System.Collections.IDictionary], default $null,
-        may be null or empty.
+        Extra display columns, name to value, added to the row in order after Evidence and before
+        NotRun, so names, addresses and lists stay out of Detail; $null adds no extra column. Type
+        [System.Collections.IDictionary], default $null, may be null or empty.
     .PARAMETER NotRun
         A note naming what was deliberately not run and why. It goes in the NotRun column, never in
         the text the recommendation is chosen from. Type [string], default '', may be null or empty.
@@ -32823,7 +33937,9 @@ function Get-AdfaC14NameList {
     .SYNOPSIS
         Pure: up to -Cap names joined with '; ', and how many were left out. For display columns only.
     .PARAMETER Names
-        The names input of Get-AdfaC14NameList. Type [string[]], default @(), may be null or empty.
+        The names to list in a display column; null, empty and whitespace entries are dropped, and
+        when none remain the result is an empty string. Up to -Cap of them are joined with '; ',
+        followed by how many more were left out. Type [string[]], default @(), may be null or empty.
     .PARAMETER Cap
         The most items read or listed. Reaching it is said in the text. Type [int], default 20.
     #>
@@ -32845,7 +33961,9 @@ function Get-AdfaReadClassPhrase {
         Pure: the words a row uses for a read-failure class, so that unreachable, access denied and
         timed out are never worded alike.
     .PARAMETER Class
-        The class input of Get-AdfaReadClassPhrase. Type [string], may be null or empty.
+        The read-failure class to word: AccessDenied, Unreachable, TimedOut or NotFound each map to
+        their own phrase, and any other value, empty or $null maps to 'failed'. Type [string], may
+        be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -32918,7 +34036,9 @@ function Test-AdfaTcpAddress {
     .OUTPUTS
         [pscustomobject] Outcome (Open | Failed), SocketError, TimedOut, Error.
     .PARAMETER Address
-        The address input of Test-AdfaTcpAddress. Type [string], mandatory.
+        The IP address to connect to, for example 192.0.2.10; a host name is refused without any
+        connection, with an Error saying it is not an IP address and Outcome Failed, so that a name
+        that does not resolve is never confused with a silent port. Type [string], mandatory.
     .PARAMETER Port
         The TCP port. Type [int], mandatory, from 1 to 65535.
     .PARAMETER TimeoutMs
@@ -32971,7 +34091,10 @@ function Get-AdfaProbeClass {
         From the outcome first, then the wait that ran out, then the SocketError name against the
         lists in the Reach table. Anything not recognised is Failed and is quoted, not interpreted.
     .PARAMETER Probe
-        The probe input of Get-AdfaProbeClass. Untyped, may be null or empty.
+        One TCP probe result in the shape Test-AdfaTcpAddress returns (Outcome, TimedOut,
+        SocketError), classed as Open, TimedOut, Refused, NetworkUnreachable or Failed from the
+        socket error lists of the Reach table; $null means the port was not probed and returns
+        NotProbed. Untyped, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], default
@@ -33013,14 +34136,25 @@ function Resolve-AdfaDcReachClass {
     .OUTPUTS
         [pscustomobject] Class, Cause.
     .PARAMETER Resolve
-        The resolve input of Resolve-AdfaDcReachClass. Untyped, may be null or empty.
+        The name resolution result of the DC in the shape Resolve-AdfaHostAddress returns (Ok,
+        TimedOut, SocketError, Addresses), read first: a failed or timed-out resolution, or one with
+        no address, decides the class before any probe is looked at. $null returns Not Assessed with
+        cause NotProbed. Untyped, may be null or empty.
     .PARAMETER LdapProbes
-        The ldap probes input of Resolve-AdfaDcReachClass. Untyped, default @(), may be null or
-        empty.
+        The LDAP (389) probe results, one per resolved address tried, in the shape
+        Test-AdfaTcpAddress returns; any Open probe makes the DC reachable on LDAP, and otherwise
+        the probe classes decide the Unreachable cause. When it is empty or holds only nulls the
+        result is Not Assessed with cause NotProbed. Untyped, default @(), may be null or empty.
     .PARAMETER WinRm
-        The win rm input of Resolve-AdfaDcReachClass. Untyped, default $null, may be null or empty.
+        The WinRM (5985) probe result at the address where LDAP answered, in the shape
+        Test-AdfaTcpAddress returns, read only when LDAP answered: Open makes the DC Reachable
+        whatever -Rpc holds. $null means it was not probed and gives Not Assessed with cause
+        NotProbed. Untyped, default $null, may be null or empty.
     .PARAMETER Rpc
-        The rpc input of Resolve-AdfaDcReachClass. Untyped, default $null, may be null or empty.
+        The RPC endpoint mapper (135) probe result at the address where LDAP answered, read only
+        when LDAP answered and WinRM did not: Open gives WinRmUnavailable, otherwise NotManageable.
+        $null means it was not probed and gives Not Assessed with cause NotProbed. Untyped, default
+        $null, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], default
@@ -33154,12 +34288,16 @@ function Get-AdfaC14UnreachableText {
         Pure: the words for one Unreachable cause. Never mentions access: a refused read is not a
         reachability class.
     .PARAMETER Cause
-        The cause input of Get-AdfaC14UnreachableText. Type [string], may be null or empty.
+        The Unreachable cause from the reachability record (Unresolved, ResolveTimedOut, NoAddress,
+        Refused, TimedOut or NetworkUnreachable), each worded by its own sentence; any other value,
+        empty or $null is worded as an LDAP (389) connection that failed on every address. Type
+        [string], may be null or empty.
     .PARAMETER TimeoutMs
         Milliseconds to wait before the attempt is treated as not answering. Type [int], default
         3000.
     .PARAMETER SocketError
-        The socket error input of Get-AdfaC14UnreachableText. Type [string], default '', may be null
+        The SocketError name the failed name resolution returned, quoted in brackets in the
+        Unresolved sentence only; the other causes ignore it. Type [string], default '', may be null
         or empty.
     #>
     [CmdletBinding()]
@@ -33219,7 +34357,11 @@ function Get-AdfaDcProbeGate {
     .PARAMETER ComputerName
         The host name of the computer to read or probe. Type [string], may be null or empty.
     .PARAMETER Ports
-        The ports input of Get-AdfaDcProbeGate. Type [int[]], default @(), may be null or empty.
+        The TCP ports the calling section needs on this DC; each appears in the returned Open table,
+        set to $false without a connection when the host name is empty or the DC was classified
+        Unreachable, and otherwise probed once per run through Test-AdfaDcPort or taken from the
+        shared port cache. An empty list probes nothing. Type [int[]], default @(), may be null or
+        empty.
     .PARAMETER TimeoutMs
         Milliseconds to wait before the attempt is treated as not answering. Type [int], default
         1200.
@@ -33248,9 +34390,12 @@ function Get-AdfaDcGateText {
     .OUTPUTS
         [string]
     .PARAMETER Cause
-        The cause input of Get-AdfaDcGateText. Type [string], mandatory.
+        The Unreachable cause of the DC as Get-AdfaDcProbeGate returned it, placed first in the
+        Detail with surrounding spaces and a trailing full stop removed. Type [string], mandatory.
     .PARAMETER NotRead
-        The not read input of Get-AdfaDcGateText. Type [string], mandatory.
+        What the calling section did not read because of that cause, for example 'the remote
+        registry was not opened', placed after ", so" with surrounding spaces and a trailing full
+        stop removed. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -33275,7 +34420,10 @@ function Get-AdfaDcPopulationRow {
     .OUTPUTS
         [pscustomobject[]]
     .PARAMETER Targets
-        The targets input of Get-AdfaDcPopulationRow. Untyped, default @(), may be null or empty.
+        The DC rows of the section (rows carrying Scope, or plain host names), passed to
+        Get-AdfaDcPopulationGap to find which scoped domains they account for; a scoped domain no
+        target carries as Scope gets a Not Assessed population row. Untyped, default @(), may be
+        null or empty.
     .PARAMETER InventoryFailures
         The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
         not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
@@ -33286,12 +34434,17 @@ function Get-AdfaDcPopulationRow {
     .PARAMETER Area
         The value of the Area column. Type [string], mandatory.
     .PARAMETER Label
-        The label input of Get-AdfaDcPopulationRow. Type [string], mandatory.
+        The name of the check, used to build each row's item as "<Label> (population): <domain>",
+        for example 'USN rollback marker'. Type [string], mandatory.
     .PARAMETER NothingRead
-        The nothing read input of Get-AdfaDcPopulationRow. Type [string], mandatory.
+        The sentence saying what was not read for an uncovered domain, for example 'The marker was
+        read on none of its DCs.', passed to Get-AdfaDcPopulationGapText to word the Detail of each
+        population row. Type [string], mandatory.
     .PARAMETER Shape
-        The shape input of Get-AdfaDcPopulationRow. Type [string], default 'Finding', one of
-        Finding, DomainController.
+        The shape of each returned row: Finding builds it with New-Finding, and DomainController
+        builds it in the replication-health shape, whose item column is DomainController and whose
+        measurement columns are $null. Type [string], default 'Finding', one of Finding,
+        DomainController.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -33340,7 +34493,10 @@ function Get-AdfaDcReachVerdict {
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default '', may be null or empty.
     .PARAMETER Record
-        The record input of Get-AdfaDcReachVerdict. Untyped, may be null or empty.
+        The reachability record of this DC in the shape Get-AdfaDcReachability returns (Class,
+        Cause, Addresses, PortText, TimeoutMs, SocketError, Error), whose Class decides the status
+        and whose addresses and ports fill the display columns. $null means no reachability result
+        exists, and the row is Not Assessed. Untyped, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], default
@@ -33488,10 +34644,14 @@ function Get-AdfaSubnetSiteVerdict {
     .OUTPUTS
         [pscustomobject]
     .PARAMETER Subnets
-        The subnets input of Get-AdfaSubnetSiteVerdict. Untyped, default @(), may be null or empty.
+        The subnet objects read from the forest, each read for Site and Name; a subnet whose Site is
+        empty or $null is counted as having no site and named in the Subnets column. Null entries
+        are dropped, and when none remain the row is Not Assessed, because an empty answer cannot be
+        told from a read that saw nothing. Untyped, default @(), may be null or empty.
     .PARAMETER ReadError
-        The read error input of Get-AdfaSubnetSiteVerdict. Type [string], default '', may be null or
-        empty.
+        The error text when the subnet objects could not be read; when it is not empty the row is
+        Not Assessed with this text as the cause and -Subnets is not looked at, and empty means the
+        read succeeded. Type [string], default '', may be null or empty.
     .PARAMETER ForestName
         The DNS name of the forest. Type [string], default '', may be null or empty.
     .PARAMETER Config
@@ -33593,10 +34753,13 @@ function Get-AdfaNetlogonLogRaw {
         [pscustomobject] Ok, Class, Text, Error, ErrorType, HResult, Path, Partial, BytesRead,
         FileLength, LastWriteTimeUtc, LastWriteError.
     .PARAMETER Path
-        The path input of Get-AdfaNetlogonLogRaw. Type [string], mandatory.
+        The full path of the log file to read, for example the netlogon.log or netlogon.bak of a DC
+        over its ADMIN$ share (\\DC01\ADMIN$\debug\netlogon.log); it is opened read-only with read,
+        write and delete sharing, and is returned in the Path field. Type [string], mandatory.
     .PARAMETER MaxBytes
-        The max bytes input of Get-AdfaNetlogonLogRaw. Type [int], default 4194304, from 256 to
-        20000000.
+        The most bytes read from the end of the file; a longer file is read from that many bytes
+        before its end, Partial is set and the partial first line is dropped, so the read stays
+        bounded. Type [int], default 4194304, from 256 to 20000000.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -33665,8 +34828,9 @@ function ConvertFrom-AdfaNetlogonNoClientSite {
     .PARAMETER Text
         The text to parse. Type [string], default '', may be null or empty.
     .PARAMETER Marker
-        The marker input of ConvertFrom-AdfaNetlogonNoClientSite. Type [string], default
-        'NO_CLIENT_SITE:'.
+        The text that marks a client mapped to no site; only lines containing it (an ordinal,
+        case-sensitive match) are counted, and the first two words after it are read as the client
+        name and its IP address. Type [string], default 'NO_CLIENT_SITE:'.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -33729,7 +34893,9 @@ function Get-AdfaNoClientSiteVerdict {
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
     .PARAMETER PortOpen
-        The port open input of Get-AdfaNoClientSiteVerdict. Type [bool], default $true.
+        Whether SMB (the SmbPort of the configuration) answered on this DC; $false makes the row Not
+        Assessed with the cause that SMB did not answer, so netlogon.log was not read. It is checked
+        after the host name and the reachability cause. Type [bool], default $true.
     .PARAMETER ReachCause
         The reachability cause of the domain controller from the per-run probe; empty when it
         answered. Type [string], default '', may be null or empty.
@@ -34013,7 +35179,9 @@ function Get-AdfaStripchartSample {
     .PARAMETER ComputerName
         The host name of the computer to read or probe. Type [string], mandatory.
     .PARAMETER Samples
-        The samples input of Get-AdfaStripchartSample. Type [int], default 3, from 1 to 100.
+        How many samples w32tm /stripchart takes before it stops, passed as /samples:<n>; each
+        sample whose offset parses as a number adds one offset to the result, and one round trip
+        when its round trip parses too. Type [int], default 3, from 1 to 100.
     .PARAMETER TimeoutSeconds
         Seconds an external tool may run before it is stopped (-ExternalToolTimeoutSeconds of the
         run). Type [int], default 60.
@@ -34047,7 +35215,9 @@ function Get-AdfaC14Median {
     .SYNOPSIS
         Pure: the median of a list of numbers, or $null for none.
     .PARAMETER Values
-        The values input of Get-AdfaC14Median. Type [double[]], default @(), may be null or empty.
+        The numbers to take the median of, sorted first; with an even count the result is the mean
+        of the two middle values, and when the list is empty or $null the result is $null, never
+        zero. Type [double[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()][AllowEmptyCollection()][double[]]$Values = @())
@@ -34080,16 +35250,25 @@ function Get-AdfaPdcClockOffsetVerdict {
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default '', may be null or empty.
     .PARAMETER ReferencePdc
-        The reference pdc input of Get-AdfaPdcClockOffsetVerdict. Type [string], default '', may be
-        null or empty.
+        The host name of the forest root PDC emulator the DC's clock is measured against, shown in
+        the Reference column; when empty or $null there is no reference clock and the row is Not
+        Assessed. Type [string], default '', may be null or empty.
     .PARAMETER IsReference
-        The is reference input of Get-AdfaPdcClockOffsetVerdict. Type [bool], default $false.
+        Whether this DC is itself the forest root PDC emulator; $true returns an Info row saying it
+        is the reference, without measuring an offset. It is checked after the reachability cause
+        and the reference name. Type [bool], default $false.
     .PARAMETER Sample
-        The sample input of Get-AdfaPdcClockOffsetVerdict. Untyped, default $null, may be null or
-        empty.
+        The w32tm /stripchart reading of this DC in the shape Get-AdfaStripchartSample returns
+        (Queried, Offsets, Delays, Error); its offsets are compared with the median reference offset
+        and the largest difference is graded. $null, an unqueried sample or one with no numeric
+        offset makes the row Not Assessed, naming the sample's Error when it has one. Untyped,
+        default $null, may be null or empty.
     .PARAMETER ReferenceSample
-        The reference sample input of Get-AdfaPdcClockOffsetVerdict. Untyped, default $null, may be
-        null or empty.
+        The w32tm /stripchart reading of the forest root PDC emulator in the same shape as -Sample;
+        the median of its offsets is the reference every DC sample is subtracted from, and its
+        median round trip enters the error bound. $null, an unqueried sample or one with no numeric
+        offset makes the row Not Assessed, because the reference could not be measured. Untyped,
+        default $null, may be null or empty.
     .PARAMETER ReachCause
         The reachability cause of the domain controller from the per-run probe; empty when it
         answered. Type [string], default '', may be null or empty.
@@ -34210,11 +35389,19 @@ function Get-AdfaStaleLdapFilter {
     .OUTPUTS
         [string]
     .PARAMETER Kind
-        The kind input of Get-AdfaStaleLdapFilter. Type [string], mandatory, one of User, Computer,
-        Password, EnabledUser, EnabledComputer, DisabledUser, DisabledComputer, AllDisabledUser,
-        AllDisabledComputer, FutureUser, FutureComputer.
+        Which stale read the filter is for: User and Computer select enabled accounts inactive since
+        the cutoff, Password enabled users whose pwdLastSet is at or before it, EnabledUser and
+        EnabledComputer their declared population without the time term, DisabledUser and
+        DisabledComputer the same inactive filters for disabled accounts, AllDisabledUser and
+        AllDisabledComputer their population, and FutureUser and FutureComputer enabled accounts
+        whose lastLogonTimestamp is at or after the cutoff. Every computer kind excludes the group,
+        standalone and delegated managed service account classes. Type [string], mandatory, one of
+        User, Computer, Password, EnabledUser, EnabledComputer, DisabledUser, DisabledComputer,
+        AllDisabledUser, AllDisabledComputer, FutureUser, FutureComputer.
     .PARAMETER CutoffUtc
-        The cutoff utc input of Get-AdfaStaleLdapFilter. Type [datetime], mandatory.
+        The cutoff time of the filter, converted to UTC when it is local and written both as a
+        FILETIME (for lastLogonTimestamp and pwdLastSet) and as a generalized time (for
+        whenCreated); the population kinds do not use it. Type [datetime], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -34269,10 +35456,15 @@ function Get-AdfaStaleRaw {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Kind
-        The kind input of Get-AdfaStaleRaw. Type [string], mandatory, one of User, Computer,
-        Password, DisabledUser, DisabledComputer, FutureUser, FutureComputer.
+        Which stale read to run: it selects the LDAP filter from Get-AdfaStaleLdapFilter, the cmdlet
+        (Get-ADComputer for the Computer kinds, Get-ADUser otherwise) and the properties read
+        (pwdLastSet in place of lastLogonTimestamp and whenCreated for Password). Type [string],
+        mandatory, one of User, Computer, Password, DisabledUser, DisabledComputer, FutureUser,
+        FutureComputer.
     .PARAMETER CutoffUtc
-        The cutoff utc input of Get-AdfaStaleRaw. Type [datetime], mandatory.
+        The cutoff time passed to Get-AdfaStaleLdapFilter: accounts inactive or with a password set
+        at or before it for the stale kinds, or with a lastLogonTimestamp at or after it for the
+        Future kinds. Type [datetime], mandatory.
     .PARAMETER MaxObjects
         The most objects to read. A read that reaches it says that the list may be cut off. Type
         [int], default 100000, from 1 to 1000000.
@@ -34358,8 +35550,11 @@ function Get-AdfaStalePopulationRaw {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Kind
-        The kind input of Get-AdfaStalePopulationRaw. Type [string], mandatory, one of User,
-        Computer, DisabledUser, DisabledComputer.
+        Which declared population to count: User and Computer count the enabled accounts (filter
+        EnabledUser or EnabledComputer), and DisabledUser and DisabledComputer count all disabled
+        accounts (filter AllDisabledUser or AllDisabledComputer); the Computer kinds use
+        Get-ADComputer and the others Get-ADUser. Type [string], mandatory, one of User, Computer,
+        DisabledUser, DisabledComputer.
     .PARAMETER MaxObjects
         The most objects to read. A read that reaches it says that the list may be cut off. Type
         [int], default 100000, from 1 to 1000000.
@@ -34411,9 +35606,13 @@ function Get-AdfaC14PopulationText {
     .OUTPUTS
         [pscustomobject] Ok, Text, Why.
     .PARAMETER Population
-        The population input of Get-AdfaC14PopulationText. Untyped, may be null or empty.
+        The population count in the shape Get-AdfaStalePopulationRaw returns (Ok, Count, Capped,
+        Error, ErrorType). $null, a failed read or a count of zero returns Ok false with the reason
+        a read that found nothing cannot pass; a capped count is worded as more than -MaxObjects.
+        Untyped, may be null or empty.
     .PARAMETER Noun
-        The noun input of Get-AdfaC14PopulationText. Type [string], mandatory.
+        The account kind named in the text, for example 'user' or 'computer', as in "The read saw 12
+        enabled user account(s) in this domain." Type [string], mandatory.
     .PARAMETER MaxObjects
         The most objects to read. A read that reaches it says that the list may be cut off. Type
         [int], default 100000.
@@ -34491,7 +35690,10 @@ function Get-AdfaC14SyncInterval {
     .OUTPUTS
         [pscustomobject] Days, Disabled, Text.
     .PARAMETER Interval
-        The interval input of Get-AdfaC14SyncInterval. Untyped, may be null or empty.
+        The msDS-LogonTimeSyncInterval read in the shape Get-AdfaLogonSyncIntervalRaw returns (Ok,
+        Present, Value, Error). $null, a failed read, an unset value or a value that is not a number
+        all give the SyncIntervalDefaultDays of the configuration with text saying the default was
+        assumed or applies; a value of 0 sets Disabled. Untyped, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], default
@@ -34538,13 +35740,18 @@ function Get-AdfaStaleCountVerdict {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Kind
-        The kind input of Get-AdfaStaleCountVerdict. Type [string], mandatory, one of User,
-        Computer.
+        Which accounts the row is about: User gives the row 'Inactive enabled users' and Computer
+        the row 'Inactive enabled computers', and the noun used in every sentence follows it. Type
+        [string], mandatory, one of User, Computer.
     .PARAMETER Raw
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
     .PARAMETER Interval
-        The interval input of Get-AdfaStaleCountVerdict. Untyped, may be null or empty.
+        The msDS-LogonTimeSyncInterval read of this domain, interpreted by Get-AdfaC14SyncInterval:
+        its days fill the SyncIntervalDays column and the caveat, an interval of 0 makes the row Not
+        Assessed because updates are disabled, and a StaleDays not longer than the interval also
+        makes it Not Assessed. $null or a failed read uses the configured default number of days.
+        Untyped, may be null or empty.
     .PARAMETER StaleDays
         Days of inactivity after which an object counts as stale (-StaleDays of the run). Type
         [int], mandatory.
@@ -34552,8 +35759,11 @@ function Get-AdfaStaleCountVerdict {
         The current time, passed in so the verdict can be tested with a fixed clock. Type
         [datetime], mandatory.
     .PARAMETER Population
-        The population input of Get-AdfaStaleCountVerdict. Untyped, default $null, may be null or
-        empty.
+        The declared population: the count of enabled accounts of the same kind, in the shape
+        Get-AdfaStalePopulationRaw returns, shown in the Population column. A row that found no
+        stale account passes only when this count was read and is at least one; $null, a failed
+        count or a count of zero makes such a row Not Assessed. Untyped, default $null, may be null
+        or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], default
@@ -34775,8 +35985,9 @@ function Get-AdfaFutureLogonVerdict {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Kind
-        The kind input of Get-AdfaFutureLogonVerdict. Type [string], mandatory, one of User,
-        Computer.
+        Which accounts the row is about: User gives the row 'Future logon timestamps: users' and
+        Computer the row 'Future logon timestamps: computers', and the noun used in every sentence
+        follows it. Type [string], mandatory, one of User, Computer.
     .PARAMETER Raw
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
@@ -34872,7 +36083,10 @@ function Get-AdfaPasswordAgeVerdict {
         The current time, passed in so the verdict can be tested with a fixed clock. Type
         [datetime], mandatory.
     .PARAMETER Population
-        The population input of Get-AdfaPasswordAgeVerdict. Untyped, default $null, may be null or
+        The declared population: the count of enabled users, in the shape Get-AdfaStalePopulationRaw
+        returns, shown in the Population column. A row that found no user with an old password is
+        reported only against a population that was read and is at least one; $null, a failed count
+        or a count of zero makes such a row Not Assessed. Untyped, default $null, may be null or
         empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
@@ -35128,11 +36342,14 @@ function Resolve-AdfaSysvolEngineDc {
         Pure: the SYSVOL engine of one DC from its two objects - DFSR, FRS, Transitional (both: a
         migration has started and not finished) or Unknown (neither, or either not read).
     .PARAMETER Dfsr
-        The dfsr input of Resolve-AdfaSysvolEngineDc. Type [string], default 'Unread', may be null
-        or empty.
+        The read state of this DC's DFSR SYSVOL subscription object: Present, Absent or Unread.
+        Present with an Absent FRS object gives DFSR, Absent with a Present FRS object gives FRS,
+        both Present gives Transitional, and Unread or any other value gives Unknown. Type [string],
+        default 'Unread', may be null or empty.
     .PARAMETER Frs
-        The frs input of Resolve-AdfaSysvolEngineDc. Type [string], default 'Unread', may be null or
-        empty.
+        The read state of this DC's FRS subscriber object: Present, Absent or Unread. Present with
+        an Absent DFSR object gives FRS, both Present gives Transitional, and Unread, both Absent or
+        any other value gives Unknown. Type [string], default 'Unread', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -36945,8 +38162,11 @@ function Get-AdfaInventoryDirectoryRaw {
         The declared list of directory attributes to read (never every attribute). Type [string[]],
         default @(), may be null or empty.
     .PARAMETER CountProperties
-        The count properties input of Get-AdfaInventoryDirectoryRaw. Type [string[]], default @(),
-        may be null or empty.
+        Multi-valued attributes that are requested but whose values are never kept: each record gets
+        a <name>Count holding the number of values returned (0 when the attribute was not returned),
+        and <name>RangeReturned is set when the answer came back as a ranged attribute, so the plain
+        count is not a real count. Blank names are ignored, and a name holding a wildcard refuses
+        the whole read before anything is sent. Type [string[]], default @(), may be null or empty.
     .PARAMETER MaxObjects
         The most objects to read. A read that reaches it says that the list may be cut off. Type
         [int], default 100000, from 1 to 1000000.
@@ -37189,8 +38409,10 @@ function New-AdfaInventoryFailedRead {
         The error text of the failed read or command; empty when there was none. Type [string],
         default '', may be null or empty.
     .PARAMETER ErrorType
-        The error type input of New-AdfaInventoryFailedRead. Type [string], default '', may be null
-        or empty.
+        The full .NET type name of the exception behind the failure, copied into the ErrorType field
+        of the failed read so later code can classify the cause (for example access denied or
+        unreachable) the same way as a read that was sent. Empty when the failure had no exception,
+        such as a read refused by the tool itself. Type [string], default '', may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -37214,7 +38436,10 @@ function Get-AdfaLevelRow {
     .OUTPUTS
         [pscustomobject]
     .PARAMETER Kind
-        The kind input of Get-AdfaLevelRow. Type [string], mandatory, one of Forest, Domain.
+        Which functional level the row reports: Forest names the row "Forest functional level" and
+        gives msDS-Behavior-Version on CN=Partitions,CN=Configuration as the source, Domain names it
+        "Domain functional level" with the domain head as the source. Type [string], mandatory, one
+        of Forest, Domain.
     .PARAMETER Scope
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default '', may be null or empty.
@@ -37277,7 +38502,10 @@ function Get-AdfaFsmoHolderName {
     .OUTPUTS
         [pscustomobject] Valid, Server, Reason.
     .PARAMETER Value
-        The value input of Get-AdfaFsmoHolderName. Type [string], may be null or empty.
+        The fSMORoleOwner value as read: the distinguished name of the holder's NTDS Settings
+        object, from which the server name (the next RDN) is taken. An empty value, a value
+        containing DEL: (a deleted object) or a value that is not an NTDS Settings DN returns Valid
+        $false with the reason, never a server name. Type [string], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -37302,7 +38530,9 @@ function Get-AdfaFsmoRow {
     .OUTPUTS
         [pscustomobject]
     .PARAMETER Role
-        The role input of Get-AdfaFsmoRow. Type [string], mandatory.
+        The name of the FSMO role the row reports, for example Schema master, Domain naming master,
+        PDC emulator, RID master or Infrastructure master. It is used in the Item text ("FSMO role
+        holder: <Role> <scope>") and copied into the Role column. Type [string], mandatory.
     .PARAMETER Scope
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default '', may be null or empty.
@@ -37358,9 +38588,14 @@ function Get-AdfaSuffixListRow {
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default '', may be null or empty.
     .PARAMETER Attribute
-        The attribute input of Get-AdfaSuffixListRow. Type [string], mandatory.
+        The name of the multi-valued directory attribute to list from the first record of the read,
+        for example uPNSuffixes or msDS-AllowedDNSSuffixes. Its non-blank values are counted and
+        listed in the Suffixes column; when it is absent from a read that succeeded the row is Info
+        with 0 and says the attribute is not set. Type [string], mandatory.
     .PARAMETER Noun
-        The noun input of Get-AdfaSuffixListRow. Type [string], mandatory.
+        The plural noun the Detail text uses for the values, for example "additional UPN suffixes"
+        or "allowed DNS suffixes"; a Not Assessed row says these are not known - not zero. Type
+        [string], mandatory.
     .PARAMETER What
         A short description of what was being read, used in the message. Type [string], mandatory.
     .PARAMETER Evidence
@@ -37660,7 +38895,10 @@ function Get-AdfaRunnerRow {
     .PARAMETER ForestName
         The DNS name of the forest. Type [string], default '', may be null or empty.
     .PARAMETER RootDse
-        The root dse input of Get-AdfaRunnerRow. Untyped, may be null or empty.
+        The rootDSE read of this run (Ok, Error, ErrorType, DnsHostName); its dnsHostName fills the
+        RunnerDc column as the DC that answered. When it is $null, not Ok, or carries no
+        dnsHostName, the row is Not Assessed and says the answering DC is not known, with the
+        classified read error where there is one. Untyped, may be null or empty.
     .PARAMETER ComputerName
         The host name of the computer to read or probe. Type [string], default '', may be null or
         empty.
@@ -37821,7 +39059,11 @@ function Get-AdfaTrustAttributeDecode {
         [pscustomobject] Measured, Value, Flags (string[]), Reserved (string[]), Unknown (string[]),
         Reason.
     .PARAMETER Value
-        The value input of Get-AdfaTrustAttributeDecode. Untyped, may be null or empty.
+        The trustAttributes value of one trustedDomain object as read; a negative 32-bit number is
+        taken as unsigned before its bits are named from the TrustAttributeFlags and
+        TrustAttributeRanges tables. A value that is $null, blank, not a whole number or outside 32
+        bits returns Measured $false with the reason - never "no flags". Untyped, may be null or
+        empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -37875,9 +39117,14 @@ function Get-AdfaInventoryCodeLabel {
         Pure: "<raw> <name>" for an enumerated value, "<raw> (no published name)" for one the table
         does not name, '' for none.
     .PARAMETER Value
-        The value input of Get-AdfaInventoryCodeLabel. Untyped, may be null or empty.
+        The enumerated value to label, such as a trustDirection or trustType number; it is trimmed
+        and looked up as a string key in -Labels. A $null or blank value returns ''. Untyped, may be
+        null or empty.
     .PARAMETER Labels
-        The labels input of Get-AdfaInventoryCodeLabel. Type [hashtable], may be null or empty.
+        The table mapping each value, as a string key, to its published name (for example
+        TrustDirectionLabels or TrustTypeLabels of the Inventory table). A value the table does not
+        hold, or any value when the table is $null, is returned as "<raw> (no published name)". Type
+        [hashtable], may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -38037,7 +39284,10 @@ function ConvertTo-AdfaInventoryInteger {
         Pure: a whole number from a directory or registry value - an integral number as it is, a
         string only when it is a whole number - or $null. A fraction, a boolean or text is $null.
     .PARAMETER Value
-        The value input of ConvertTo-AdfaInventoryInteger. Untyped, may be null or empty.
+        The directory or registry value to convert: an integral number is returned as [int64], a
+        string only when it parses as a whole number (invariant culture). $null, a fraction, a
+        boolean, other text or a uint64 above the int64 range returns $null, never 0. Untyped, may
+        be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -38059,7 +39309,9 @@ function ConvertTo-AdfaInventoryUInt32 {
         Pure: a 32-bit flag attribute as an unsigned number (a negative value read as signed is
         taken as unsigned), or $null when it is not a whole number.
     .PARAMETER Value
-        The value input of ConvertTo-AdfaInventoryUInt32. Untyped, may be null or empty.
+        A 32-bit flag attribute value, such as userAccountControl or groupType, converted first as a
+        whole number; a negative value read as signed is taken as unsigned. A value that is not a
+        whole number or falls outside 32 bits returns $null, never 0. Untyped, may be null or empty.
     #>
     [CmdletBinding()]
     param([AllowNull()]$Value)
@@ -38086,8 +39338,11 @@ function Get-AdfaObjectCountRows {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Reads
-        The reads input of Get-AdfaObjectCountRows. Type [System.Collections.IDictionary], default
-        @{}, may be null or empty.
+        The capped directory reads of one domain keyed by read name (Users, Computers, Groups,
+        Contacts, OUs, gMSA, sMSA), each the result of the directory read seam. A key that is
+        missing, or a read that failed or reached its cap, makes every count from that read Not
+        Assessed - not zero; $null is treated as an empty table, so every count is Not Assessed.
+        Type [System.Collections.IDictionary], default @{}, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -38168,7 +39423,10 @@ function Get-AdfaGroupScopeType {
         Pure: the scope (Global, DomainLocal, Universal, Other) and type (Security, Distribution) a
         groupType value holds; both '' when it could not be read.
     .PARAMETER Value
-        The value input of Get-AdfaGroupScopeType. Untyped, may be null or empty.
+        The groupType value of one group, read as an unsigned 32-bit number; its scope comes from
+        the GroupScopeBits table (Other when none matches) and its type from GroupSecurityBit
+        (Security when set, otherwise Distribution). A value that is not a whole number returns Read
+        $false with Scope and Type both ''. Untyped, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -38759,13 +40017,18 @@ function Get-AdfaStaleDisabledVerdict {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Kind
-        The kind input of Get-AdfaStaleDisabledVerdict. Type [string], mandatory, one of User,
-        Computer.
+        Which disabled accounts the row reports: User gives the "Stale disabled users" row and
+        Computer the "Stale disabled computers" row, and the noun used in every Detail text. Type
+        [string], mandatory, one of User, Computer.
     .PARAMETER Raw
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
     .PARAMETER Interval
-        The interval input of Get-AdfaStaleDisabledVerdict. Untyped, may be null or empty.
+        The read of the domain's msDS-LogonTimeSyncInterval, resolved by Get-AdfaC14SyncInterval
+        into the sync interval in days. When it is $null, failed or not set, the configured default
+        interval is assumed and the caveat says so; a value of 0 means updates are disabled and the
+        row is Not Assessed, and a StaleDays not longer than the interval is also Not Assessed.
+        Untyped, may be null or empty.
     .PARAMETER StaleDays
         Days of inactivity after which an object counts as stale (-StaleDays of the run). Type
         [int], mandatory.
@@ -38773,8 +40036,11 @@ function Get-AdfaStaleDisabledVerdict {
         The current time, passed in so the verdict can be tested with a fixed clock. Type
         [datetime], mandatory.
     .PARAMETER Population
-        The population input of Get-AdfaStaleDisabledVerdict. Untyped, default $null, may be null or
-        empty.
+        The read counting all disabled accounts of the same kind in this domain, the declared
+        population the stale count is measured against; its Count fills the Population column ("more
+        than <MaxObjects>" when capped). When it is $null or failed and no stale account was found,
+        the row is Not Assessed, because an empty read cannot be told from a read that saw nothing.
+        Untyped, default $null, may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], default
@@ -38876,7 +40142,11 @@ function ConvertFrom-AdfaGpLink {
     .OUTPUTS
         [pscustomobject[]] Raw, Dn, DomainDn, Guid, Options, Disabled, Enforced, UnknownOptions, Parsed.
     .PARAMETER Value
-        The value input of ConvertFrom-AdfaGpLink. Type [string], may be null or empty.
+        One gPLink value as read from a site, domain or OU, made of "[<GPC DN>;<options>]" entries
+        with or without an LDAP:// prefix. Each entry is parsed into its DN, domain, GUID and
+        options; an entry that cannot be parsed is returned with Parsed $false, and a value with no
+        bracketed entry is returned as one unparsed entry. A $null or blank value returns no
+        entries. Type [string], may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -38987,13 +40257,27 @@ function Get-AdfaGpoDirectoryRows {
         The DNS name of the domain this function works on, for example contoso.com. Type [string],
         mandatory.
     .PARAMETER Gpc
-        The gpc input of Get-AdfaGpoDirectoryRows. Untyped, may be null or empty.
+        The read of this domain's groupPolicyContainer objects (displayName, flags, gPCWQLFilter,
+        versionNumber); each record becomes a "GPO: <guid>" row and their GUIDs and own DNs decide
+        which links belong to this domain. When the read failed or reached its cap, only the summary
+        row is returned, Not Assessed - the number of GPOs is not known, not zero. Untyped, may be
+        null or empty.
     .PARAMETER Som
-        The som input of Get-AdfaGpoDirectoryRows. Untyped, may be null or empty.
+        The read of the gPLink and gPOptions of this domain's head and OUs that hold a gPLink. Every
+        record becomes a "GPO links on a SOM" row, even one whose gPLink holds no link that could be
+        parsed, and its links to this domain's GPOs are counted against them; when the read failed
+        or was capped, every GPO's Links stays '' and the summary is Not Assessed, so no GPO is
+        called unlinked. Untyped, may be null or empty.
     .PARAMETER Site
-        The site input of Get-AdfaGpoDirectoryRows. Untyped, may be null or empty.
+        The read of the gPLink of the sites, which is shared across the forest; a site is listed
+        under this domain only when it links one of this domain's GPOs. When the read failed or was
+        capped, the links are treated as not known and the summary is Not Assessed. Untyped, may be
+        null or empty.
     .PARAMETER Wmi
-        The wmi input of Get-AdfaGpoDirectoryRows. Untyped, may be null or empty.
+        The read of this domain's msWMI-Som objects, used to turn the WMI filter GUID in each GPO's
+        gPCWQLFilter into the filter's name. When the read failed or was capped, WmiFilterName says
+        "(WMI filters not read)" and the summary notes why the names are not shown. Untyped, may be
+        null or empty.
     .PARAMETER DomainDn
         The distinguished name of the domain, for example DC=contoso,DC=com. Type [string], default
         '', may be null or empty.
@@ -39001,12 +40285,17 @@ function Get-AdfaGpoDirectoryRows {
         The DNS names of every domain of the forest. Type [string[]], default @(), may be null or
         empty.
     .PARAMETER OtherSom
-        The other som input of Get-AdfaGpoDirectoryRows. Untyped, default @(), may be null or empty.
+        The gPLink reads of the other forest domains, one entry per domain with Domain and Raw,
+        searched for links to this domain's GPOs. A forest domain with no entry here, or whose read
+        failed, is named in OtherDomainsNotRead, the link counts become a floor and no GPO is called
+        unlinked. Untyped, default @(), may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER GpoConfig
-        The gpo config input of Get-AdfaGpoDirectoryRows. Type [hashtable], mandatory.
+        The Gpo configuration table (after any override), whose FlagLabels entries map a
+        groupPolicyContainer flags value to its label in the FlagsLabel column; a value no entry
+        holds is labelled "unknown". Type [hashtable], mandatory.
     .PARAMETER CapSource
         Where MaxObjects came from, in the row's words (Get-AdfaCapSource of the Inventory table in
         force); '' derives it from -Config (Resolve-AdfaCapSource, PORT-PLAN C4b4). Type [string],
@@ -39285,7 +40574,9 @@ function Get-AdfaGpoDirectoryInventory {
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
     .PARAMETER GpoConfig
-        The gpo config input of Get-AdfaGpoDirectoryInventory. Type [hashtable], mandatory.
+        The Gpo configuration table (after any override), passed unchanged to
+        Get-AdfaGpoDirectoryRows for every scoped domain, where its FlagLabels name each GPO's flags
+        value. Type [hashtable], mandatory.
     .PARAMETER CapSource
         Where MaxObjects came from, in the row's words (Get-AdfaCapSource of the Inventory table in
         force), passed to every domain's rows; '' derives it from -Config (PORT-PLAN C4b4). Type
@@ -39390,11 +40681,18 @@ function Get-AdfaEventInventoryRaw {
     .PARAMETER ComputerName
         The host name of the computer to read or probe. Type [string], mandatory.
     .PARAMETER LogName
-        The log name input of Get-AdfaEventInventoryRaw. Type [string], mandatory.
+        The name of the event log to read on the DC, one of the EventLogs of the Inventory table. It
+        goes into the -FilterHashtable LogName of the filtered read and into the one-event
+        confirming read; an error matching EventNoLogPattern marks the result LogAbsent. Type
+        [string], mandatory.
     .PARAMETER StartTime
-        The start time input of Get-AdfaEventInventoryRaw. Type [datetime], mandatory.
+        The start of the window to read: only events at or after this time are returned, through the
+        StartTime key of -FilterHashtable. The caller sets it to the current time minus
+        -EventLookbackDays. Type [datetime], mandatory.
     .PARAMETER Levels
-        The levels input of Get-AdfaEventInventoryRaw. Type [int[]], mandatory.
+        The event levels to read, passed as the Level key of -FilterHashtable; the caller takes them
+        from EventLevels of the Inventory table (1, 2 and 3 for Critical, Error and Warning). Type
+        [int[]], mandatory.
     .PARAMETER MaxEvents
         The most events read per domain controller. Type [int], mandatory, from 1 to 100000.
     .PARAMETER Credential
@@ -39548,15 +40846,22 @@ function Get-AdfaEventInventoryRows {
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default '', may be null or empty.
     .PARAMETER LogName
-        The log name input of Get-AdfaEventInventoryRows. Type [string], mandatory.
+        The name of the event log the rows describe; it is used in the Item text ("Event log: <log>
+        on <dc>" and "Event group: <log> <id> on <dc>"), the Log column and every Detail message.
+        Type [string], mandatory.
     .PARAMETER Raw
         The raw result of the read seam this function interprets (Ok or the error, and the values
         read). Untyped, may be null or empty.
     .PARAMETER Coverage
-        The coverage input of Get-AdfaEventInventoryRows. Untyped, may be null or empty.
-    .PARAMETER Unreachable
-        The unreachable input of Get-AdfaEventInventoryRows. Type [string], default '', may be null
+        The measure of how far back the log reaches over the lookback window, from
+        Get-AdfaEventLogCoverageForLog; only a Coverage of Covered lets no events found be reported
+        as Info 0. When it is $null or any other state, none found is Not Assessed and any count
+        found is reported as a floor, with the state (or "not measured") named. Untyped, may be null
         or empty.
+    .PARAMETER Unreachable
+        The reason the DC was not read, from the reachability probe or the RPC port check. When it
+        is not blank, the log row is Not Assessed with this text and nothing else is examined; empty
+        means the DC was reached. Type [string], default '', may be null or empty.
     .PARAMETER LookbackDays
         How many days back the event scan looks (-EventLookbackDays of the run). Type [int], default
         14.
@@ -39795,7 +41100,11 @@ function Get-AdfaDcW32TimeRaw {
     .PARAMETER OperationTimeoutSec
         Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
     .PARAMETER Values
-        The values input of Get-AdfaDcW32TimeRaw. Untyped, mandatory, may be null or empty.
+        The registry values to read in the one CIM session, each with Id, Key, ValueName and Kind
+        (Dword is read with GetDWORDValue, anything else with GetStringValue); the caller passes
+        W32TimeValues and W32TimePolicyValues of the Inventory table. Null entries are skipped; when
+        no value gets an answer, Ok is $false with the first error, or a message that no value was
+        answered. Untyped, mandatory, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -39952,10 +41261,15 @@ function Get-AdfaW32TimeConfigRow {
         The value of the Scope column: the domain, domain controller or forest the row is about.
         Type [string], default '', may be null or empty.
     .PARAMETER Read
-        The read input of Get-AdfaW32TimeConfigRow. Untyped, may be null or empty.
+        The result of the remote read of the DC's W32Time registry values, carrying Denied and Raw
+        (the Get-AdfaDcW32TimeRaw result with Ok, Protocol, Error and Values). When it is $null the
+        row is Not Assessed with no value read; when Denied is set it is Not Assessed as access
+        denied, and when Raw is missing or not Ok it is Not Assessed as a failed read. Untyped, may
+        be null or empty.
     .PARAMETER Unreachable
-        The unreachable input of Get-AdfaW32TimeConfigRow. Type [string], default '', may be null or
-        empty.
+        The reason the DC was not reached, from the reachability probe. When it is not blank, the
+        row is Not Assessed with this text and no W32Time value is examined; empty means the DC was
+        reached. Type [string], default '', may be null or empty.
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
@@ -40852,9 +42166,15 @@ function ConvertTo-AdfaConsolidatedFinding {
     .PARAMETER Section
         The name of the report section. Type [string], mandatory.
     .PARAMETER Row
-        The row input of ConvertTo-AdfaConsolidatedFinding. Untyped, mandatory.
+        One row of a report section to turn into a consolidated finding. Its Item (or TrustName,
+        DomainController, Group, PolicyName; the section name when none is present) becomes the
+        item, its Scope the scope, and its Detail, Reasons, FailureDetail, Failures and VerifyDetail
+        are joined into the detail; a NotRun note is appended only after the recommendation has been
+        chosen. Untyped, mandatory.
     .PARAMETER StatusColumn
-        The status column input of ConvertTo-AdfaConsolidatedFinding. Type [string], mandatory.
+        The name of the row's property that holds its status, Status or Health as chosen by the
+        caller. A status of Fail, Broken, Failed, Warning or Degraded gets a recommendation looked
+        up from the recommendation map; any other status gets none. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -40933,7 +42253,8 @@ function ConvertTo-AdfaHtmlText {
         HTML-encodes a value for the report with System.Net.WebUtility, which Windows PowerShell 5.1
         and PowerShell 7 both have; $null gives an empty string.
     .PARAMETER Value
-        The value input of ConvertTo-AdfaHtmlText. Untyped, may be null or empty.
+        The value to write into the HTML report; it is converted to a string and HTML-encoded so its
+        text cannot break the markup. $null returns an empty string. Untyped, may be null or empty.
     .OUTPUTS
         [string]
     #>
@@ -40953,11 +42274,16 @@ function ConvertTo-AdfaHtmlSection {
     .OUTPUTS
         [string]
     .PARAMETER Title
-        The title input of ConvertTo-AdfaHtmlSection. Type [string], mandatory.
+        The heading of the section, written HTML-encoded as an <h2> above its table. Type [string],
+        mandatory.
     .PARAMETER Data
-        The data input of ConvertTo-AdfaHtmlSection. Untyped, may be null or empty.
+        The rows of the section, normalised to one column set before rendering so rows of different
+        shapes keep all their columns; each row is coloured by its Status or Health value. When
+        there are no rows, the section shows "No data collected." instead of a table. Untyped, may
+        be null or empty.
     .PARAMETER Description
-        The description input of ConvertTo-AdfaHtmlSection. Type [string].
+        An optional sentence written HTML-encoded under the heading as a description paragraph; when
+        it is empty or not given, no paragraph is written. Type [string].
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -41009,13 +42335,16 @@ function New-AdfaHtmlReport {
         Writes the human-readable report, Assessment.html, into the run's output folder: the run
         metadata, the roll-up badges and one table per section.
     .PARAMETER Sections
-        The sections input of New-AdfaHtmlReport. Type
-        [System.Collections.Specialized.OrderedDictionary], mandatory.
+        The report sections in the order they are written, each key a section title and each value
+        its rows; every entry becomes one table under its own heading after the run metadata and
+        badges. Type [System.Collections.Specialized.OrderedDictionary], mandatory.
     .PARAMETER Meta
         The run metadata: forest, tool version, time generated, domains scoped and DC count. Type
         [pscustomobject], mandatory.
     .PARAMETER Path
-        The path input of New-AdfaHtmlReport. Type [string], mandatory.
+        The full path of the HTML file to write, Assessment.html in the run folder; the file is
+        written as UTF-8, overwriting any file already there, and the path is returned. Type
+        [string], mandatory.
     .OUTPUTS
         [string] The path written.
     #>
@@ -41078,7 +42407,10 @@ function New-AdfaReportSummary {
     .OUTPUTS
         [System.Collections.Specialized.OrderedDictionary]
     .PARAMETER Summary
-        The summary input of New-AdfaReportSummary. Type [pscustomobject], mandatory.
+        The run's four counters, Pass, Warning, Fail and NotAssessed, as computed for the log line
+        and the HTML badges; they are carried into the roll-up unchanged so the JSON agrees with the
+        HTML and the log. Info, unclassified and total are counted here from -Findings instead. Type
+        [pscustomobject], mandatory.
     .PARAMETER Findings
         The consolidated findings of the run. Untyped, mandatory, may be null or empty.
     #>
@@ -41131,11 +42463,17 @@ function New-AdfaReportDocument {
     .PARAMETER Findings
         The consolidated findings of the run. Untyped, mandatory, may be null or empty.
     .PARAMETER Coverage
-        The coverage input of New-AdfaReportDocument. Untyped, mandatory, may be null or empty.
+        The section reconciliation rows of the run (Section, RowsCollected, FindingsReported, Note),
+        normalised to one column set and written as the coverage array of the document. $null or
+        empty gives an empty array. Untyped, mandatory, may be null or empty.
     .PARAMETER Sections
-        The sections input of New-AdfaReportDocument. Untyped, mandatory, may be null or empty.
+        The collected section data keyed by section name; each section's rows are normalised to one
+        column set and placed under sections, and the keys also fill run.sectionsRun. When it is
+        $null, sections and sectionsRun are empty. Untyped, mandatory, may be null or empty.
     .PARAMETER Summary
-        The summary input of New-AdfaReportDocument. Type [pscustomobject], mandatory.
+        The run's Pass, Warning, Fail and NotAssessed counters, passed to New-AdfaReportSummary to
+        build the summary block of the document together with counts taken from the findings. Type
+        [pscustomobject], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([System.Collections.Specialized.OrderedDictionary])]
@@ -41213,15 +42551,23 @@ function Export-AdfaJsonReport {
     .PARAMETER Findings
         The consolidated findings of the run. Untyped, mandatory, may be null or empty.
     .PARAMETER Coverage
-        The coverage input of Export-AdfaJsonReport. Untyped, mandatory, may be null or empty.
+        The section reconciliation rows of the run, passed unchanged to New-AdfaReportDocument,
+        which writes them as the coverage array of the JSON. Untyped, mandatory, may be null or
+        empty.
     .PARAMETER Sections
-        The sections input of Export-AdfaJsonReport. Untyped, mandatory, may be null or empty.
+        The collected section data keyed by section name, passed unchanged to
+        New-AdfaReportDocument, which writes each section's normalised rows under sections in the
+        JSON. Untyped, mandatory, may be null or empty.
     .PARAMETER Summary
-        The summary input of Export-AdfaJsonReport. Type [pscustomobject], mandatory.
+        The run's Pass, Warning, Fail and NotAssessed counters, passed to New-AdfaReportDocument to
+        build the summary block of the JSON. Type [pscustomobject], mandatory.
     .PARAMETER Path
-        The path input of Export-AdfaJsonReport. Type [string], mandatory.
+        The full path of the JSON file to write, Assessment.json in the run folder; the file is
+        written as UTF-8, overwriting any file already there, and the path is returned. Type
+        [string], mandatory.
     .PARAMETER Depth
-        The depth input of Export-AdfaJsonReport. Type [int], default 12.
+        The nesting depth passed to ConvertTo-Json. It is set well above the ConvertTo-Json default
+        of 2 so section rows are written as values rather than type names. Type [int], default 12.
     #>
     [CmdletBinding()]
     [OutputType([string])]

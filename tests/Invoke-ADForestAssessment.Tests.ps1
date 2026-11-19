@@ -7613,9 +7613,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -9271,9 +9271,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -10261,9 +10261,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -11200,9 +11200,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -12194,9 +12194,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -13434,9 +13434,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -14657,9 +14657,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -16533,9 +16533,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17209,9 +17209,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.45.0 (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17362,9 +17362,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -18693,9 +18693,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -19848,9 +19848,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -24189,9 +24189,9 @@ Describe 'Promise triage: the README and help promises the code did not keep (C1
     }
 
     Context 'Version' {
-        It 'is 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
-            $script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'is 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
+            $script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 }
@@ -25623,9 +25623,9 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
     }
 
     Context 'Version' {
-        It 'is 1.45.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'is 1.46.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 }
@@ -26375,9 +26375,9 @@ exit $LASTEXITCODE
     }
 
     Context 'Version' {
-        It 'is 1.45.0 in the script and the manifest (PORT-PLAN H21; bumped by C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'is 1.46.0 in the script and the manifest (PORT-PLAN H21; bumped by H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 }
@@ -27083,9 +27083,9 @@ Describe 'Replication connection options and destination, the cap source of ever
     }
 
     Context 'Version' {
-        It 'is 1.45.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'is 1.46.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 }
@@ -28018,9 +28018,9 @@ Describe 'Second SYSVOL instrument, the per-DC engine in the dcdiag grid, netlog
     }
 
     Context 'Version' {
-        It 'is 1.45.0 in the script and the manifest (PORT-PLAN C14c and C11e; bumped by C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'is 1.46.0 in the script and the manifest (PORT-PLAN C14c and C11e; bumped by H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 }
@@ -28838,9 +28838,9 @@ Describe 'Intersite for every site, the dcdiag circuit breaker, reachability for
     }
 
     Context 'Version' {
-        It 'is 1.45.0 in the script and the manifest (PORT-PLAN C11f, C2i, C15d and C16d; bumped by C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'is 1.46.0 in the script and the manifest (PORT-PLAN C11f, C2i, C15d and C16d; bumped by H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 }
@@ -28971,9 +28971,9 @@ Describe 'Inventory leftovers: W32Time policy source, raw event occurrences, ran
             [int]$script:LzCfg['RunnerRole']['DcProductType'] | Should -Be 2
             (@($script:LzCfg['RunnerRole']['DomainRoleLabels'].Keys | Sort-Object) -join ',') | Should -Be '0,1,2,3,4,5'
         }
-        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -29853,9 +29853,9 @@ Describe 'Accounts and policy: Kerberos encryption types, PASSWD_NOTREQD, FSMO s
                 @(Get-AdfaRefusedPropertyName -PropertyNames $names -SecretNames @(Get-AdfaSecretAttributeName)).Count | Should -Be 0 -Because $k
             }
         }
-        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
@@ -30515,9 +30515,9 @@ Describe 'Leftovers: ESC1 over published templates and the enrolment ACL, Exchan
             (@($all | ForEach-Object { $_.Key }) -join ',') | Should -Be 'EnrollmentServices,Templates,SchemaMarker,ExchangeContainer,Organization,DomainObjects,Partitions,Dsa'
             foreach ($r in $all) { @(Get-AdfaRefusedPropertyName -PropertyNames $r.Names -SecretNames @(Get-AdfaSecretAttributeName)).Count | Should -Be 0 -Because $r.Key }
         }
-        It 'carries version 1.45.0 in the script and the manifest (bumped by PORT-PLAN C16b(4-7))' {
-            [string]$script:Config.Version | Should -Be '1.45.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.45.0'
+        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
+            [string]$script:Config.Version | Should -Be '1.46.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
         }
     }
 
