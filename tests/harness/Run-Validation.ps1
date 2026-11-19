@@ -2193,7 +2193,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the seventeen sections the file can carry (Inventory since v1.32.0, Reach, SiteCoverage, ClockSkew, Stale and SysvolEngine since v1.31.0, Dns since v1.30.0, DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the eighteen sections the file can carry (AccountsPolicy since v1.44.0, Inventory since v1.32.0, Reach, SiteCoverage, ClockSkew, Stale and SysvolEngine since v1.31.0, Dns since v1.30.0, DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -3187,7 +3187,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.43.0' ([string]$script:Config.Version) 'C14: version 1.43.0 in the script (bumped by PORT-PLAN C15c)'
+Assert-Equal '1.44.0' ([string]$script:Config.Version) 'C14: version 1.44.0 in the script (bumped by PORT-PLAN C16b(1-3))'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3280,7 +3280,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.43.0' ([string]$script:Config.Version) 'C15: version 1.43.0 in the script (bumped by PORT-PLAN C15c)'
+Assert-Equal '1.44.0' ([string]$script:Config.Version) 'C15: version 1.44.0 in the script (bumped by PORT-PLAN C16b(1-3))'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3504,7 +3504,7 @@ $c16Src2 = & {
     Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
 }
 Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
-Assert-Equal '1.43.0' ([string]$script:Config.Version) 'C16: version 1.43.0 in the script (bumped by PORT-PLAN C15c)'
+Assert-Equal '1.44.0' ([string]$script:Config.Version) 'C16: version 1.44.0 in the script (bumped by PORT-PLAN C16b(1-3))'
 
 # ---- PORT-PLAN C1a: the update build revision (pure) -----------------------------------------
 $c1aKey = [string]$script:Config.DcSystem['UbrKey']
@@ -3820,6 +3820,51 @@ Assert-Equal 'Unknown' ([string](Resolve-AdfaRunnerRole -Raw (& $lzRunner 3 $nul
 Assert-Equal 'Unknown' ([string](Resolve-AdfaRunnerRole -Raw (& $lzRunner 4 3) -Config $lzInv).IsDc) 'C15c: two instruments that disagree give Unknown'
 Assert-Equal 'OBSOLETE 0x400000' ((@((Get-AdfaTrustAttributeDecode -Value 0x400000 -Config $lzInv).Reserved)) -join ',') 'C15c: an obsolete trust bit is named by its MS-ADTS range'
 Assert-Equal 0 (@((Get-AdfaTrustAttributeDecode -Value 4294967295 -Config $lzInv).Unknown).Count) 'C15c: no trustAttributes bit is unknown with the ranges of MS-ADTS 6.1.6.7.9'
+# PORT-PLAN C16b(1-3) (v1.44.0): the pure logic of the AccountsPolicy section - the MS-KILE 2.2.7 decode, the
+# encryption type verdict, PASSWD_NOTREQD, the lockout intervals and baseline, the PSO precedence tie and the
+# infrastructure master rule of KB 223346 / KB 248047. Fictional names only.
+$apCfg = $script:Config.AccountsPolicy
+$apRead = { param($Records = @(), [bool]$Ok = $true, [string]$ErrorType = '') [pscustomobject]@{ Ok = $Ok; Error = 'Access is denied.'; ErrorType = $ErrorType; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $false; Filter = '(x)'; Identity = '' } }
+$apUser = { param([string]$Name, $Etypes, $Uac = 512) [pscustomobject]@{ Name = $Name; sAMAccountName = $Name; userAccountControl = $Uac; 'msDS-SupportedEncryptionTypes' = $Etypes } }
+Assert-Equal 12 (@($apCfg['EncryptionTypeBits']).Count) 'C16b: twelve MS-KILE 2.2.7 bits declared (A to L)'
+Assert-True ((ConvertFrom-AdfaEncryptionTypeValue -Value 4 -Config $apCfg).WeakOnly) 'C16b: 0x4 (RC4 only) is weak-only'
+Assert-True (-not (ConvertFrom-AdfaEncryptionTypeValue -Value 28 -Config $apCfg).WeakOnly -and (ConvertFrom-AdfaEncryptionTypeValue -Value 28 -Config $apCfg).Rc4) 'C16b: 0x1C allows RC4 beside AES'
+Assert-Equal 'NotDefined' ([string](ConvertFrom-AdfaEncryptionTypeValue -Value 0 -Config $apCfg).State) 'C16b: 0 is not defined, never graded as RC4'
+$apRecs = @((& $apUser 'svc-a' 4), (& $apUser 'svc-b' 24))
+Assert-Equal 'Warning' ([string](Get-AdfaEncryptionTypeVerdict -DomainName 'contoso.com' -Population 'UsersWithSpn' -Raw (& $apRead $apRecs) -Records $apRecs -Config $apCfg -CapSource 'x').Status) 'C16b: an RC4-only account with an SPN is a Warning (a tool default)'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaEncryptionTypeVerdict -DomainName 'contoso.com' -Population 'DomainControllers' -Raw (& $apRead @()) -Records @() -Config $apCfg -CapSource 'x').Status) 'C16b: no DC computer object read is Not Assessed, never Pass'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaEncryptionTypeVerdict -DomainName 'contoso.com' -Population 'Computers' -Raw (& $apRead @() $false 'System.UnauthorizedAccessException') -Records @() -Config $apCfg -CapSource 'x').Status) 'C16b: a refused read is Not Assessed'
+Assert-Equal 'Warning' ([string](Get-AdfaPasswordNotRequiredVerdict -DomainName 'contoso.com' -Raw (& $apRead @((& $apUser 'kiosk' $null 544))) -Config $apCfg -CapSource 'x').Status) 'C16b: an enabled PASSWD_NOTREQD account is a Warning'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaPasswordNotRequiredVerdict -DomainName 'contoso.com' -Raw (& $apRead @()) -UacProof 'not shown readable' -Config $apCfg -CapSource 'x').Status) 'C16b: an empty PASSWD_NOTREQD answer without proof is Not Assessed'
+Assert-Equal 15 ([double](ConvertFrom-AdfaLockoutInterval -Value ([int64]-9000000000) -Config $apCfg).Minutes) 'C16b: -9000000000 100-ns intervals are 15 minutes'
+Assert-Equal 'Undecoded' ([string](ConvertFrom-AdfaLockoutInterval -Value ([int64]::MinValue) -Config $apCfg).State) 'C16b: Int64.MinValue is not decoded as a duration'
+$apI = { param($V) ConvertFrom-AdfaLockoutInterval -Value $V -Config $apCfg }
+Assert-Equal 'Pass' ([string](Get-AdfaLockoutAssessment -Threshold 10 -Duration (& $apI ([int64]-9000000000)) -Window (& $apI ([int64]-9000000000)) -Config $apCfg).Status) 'C16b: the Windows baseline (10, 15, 15) passes'
+Assert-Equal 'Warning' ([string](Get-AdfaLockoutAssessment -Threshold 11 -Duration (& $apI ([int64]-9000000000)) -Window (& $apI ([int64]-9000000000)) -Config $apCfg).Status) 'C16b: a threshold one above the baseline is a Warning'
+Assert-Equal 'Warning' ([string](Get-AdfaLockoutAssessment -Threshold 0 -Duration (& $apI $null) -Window (& $apI $null) -Config $apCfg).Status) 'C16b: a threshold of 0 is a Warning'
+Assert-Equal 'Warning' ([string](Get-AdfaLockoutAssessment -Threshold 10 -Duration (& $apI ([int64]-9000000000)) -Window (& $apI ([int64]-18000000000)) -Config $apCfg).Status) 'C16b: a duration shorter than the window breaks Learn''s rule'
+$apPso = { param([string]$Name, $Prec) [pscustomobject]@{ Name = $Name; objectGUID = 'g'; 'msDS-PasswordSettingsPrecedence' = $Prec; 'msDS-LockoutThreshold' = 10; 'msDS-LockoutDuration' = [int64]-9000000000; 'msDS-LockoutObservationWindow' = [int64]-9000000000; 'msDS-PSOAppliesToCount' = 1 } }
+$apTie = @(Get-AdfaPsoVerdict -DomainName 'contoso.com' -Raw (& $apRead @((& $apPso 'pso-a' 5), (& $apPso 'pso-b' 5))) -Config $apCfg -CapSource 'x' | Where-Object { $_.Item -eq 'Fine-grained password policy precedence: contoso.com' })
+Assert-True ($apTie.Count -eq 1 -and $apTie[0].Status -eq 'Warning') 'C16b: two PSOs with one precedence are a Warning (cc770394)'
+Assert-True (@(Get-AdfaPsoVerdict -DomainName 'contoso.com' -Raw (& $apRead @()) -Config $apCfg -CapSource 'x' | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) 'C16b: no PSO visible is Not Assessed, never "no PSO"'
+$apNtds = { param([string]$S) ('CN=NTDS Settings,CN={0},CN=Servers,CN=S1,CN=Sites,CN=Configuration,DC=contoso,DC=com' -f $S) }
+$apDsa = & $apRead @([pscustomobject]@{ DistinguishedName = (& $apNtds 'DC1'); options = 1; 'msDS-HasDomainNCs' = @('DC=contoso,DC=com') }, [pscustomobject]@{ DistinguishedName = (& $apNtds 'DC2'); options = 0; 'msDS-HasDomainNCs' = @('DC=contoso,DC=com') })
+$apIm = & $apRead @([pscustomobject]@{ Name = 'Infrastructure'; fSMORoleOwner = (& $apNtds 'DC1') })
+$apForest = { param($Count, $Level, [string]$Rb) [pscustomobject]@{ DomainCount = $Count; DomainCountCause = ''; Level = $Level; LevelCause = ''; RecycleBin = $Rb; RecycleBinCause = 'not read' } }
+Assert-Equal 'Warning' ([string](Get-AdfaInfrastructureMasterVerdict -DomainName 'contoso.com' -DomainDn 'DC=contoso,DC=com' -Raw $apIm -DsaRaw $apDsa -Forest (& $apForest 2 7 'NotEnabled') -Config $apCfg -CapSource 'x').Status) 'C16b: the IM on a GC beside a non-GC DC, Recycle Bin off, two domains, is a Warning'
+Assert-Equal 'Pass' ([string](Get-AdfaInfrastructureMasterVerdict -DomainName 'contoso.com' -DomainDn 'DC=contoso,DC=com' -Raw $apIm -DsaRaw $apDsa -Forest (& $apForest 1 7 'NotEnabled') -Config $apCfg -CapSource 'x').Status) 'C16b: a single-domain forest exempts the IM (KB 223346)'
+Assert-Equal 'Pass' ([string](Get-AdfaInfrastructureMasterVerdict -DomainName 'contoso.com' -DomainDn 'DC=contoso,DC=com' -Raw $apIm -DsaRaw $apDsa -Forest (& $apForest 2 4 'Enabled') -Config $apCfg -CapSource 'x').Status) 'C16b: forest level 4 with the Recycle Bin exempts the IM (KB 248047)'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaInfrastructureMasterVerdict -DomainName 'contoso.com' -DomainDn 'DC=contoso,DC=com' -Raw $apIm -DsaRaw $apDsa -Forest (& $apForest 2 7 'Unknown') -Config $apCfg -CapSource 'x').Status) 'C16b: a Recycle Bin state not read leaves the IM Not Assessed'
+# The independent review fixes of v1.44.0: non-vacuity of the IM population, PASSWD_NOTREQD records without a
+# readable userAccountControl, and a positive lockoutDuration.
+$apDsaOther = & $apRead @([pscustomobject]@{ DistinguishedName = (& $apNtds 'DC1'); options = 1; 'msDS-HasDomainNCs' = @('DC=contoso,DC=com') })
+Assert-Equal 'Not Assessed' ([string](Get-AdfaInfrastructureMasterVerdict -DomainName 'north.contoso.com' -DomainDn 'DC=north,DC=contoso,DC=com' -Raw $apIm -DsaRaw $apDsaOther -Forest (& $apForest 2 3 'NotEnabled') -Config $apCfg -CapSource 'x').Status) 'C16b: a GC holder with no NTDS Settings object naming the domain is Not Assessed, never Pass on an empty population'
+$apDsaNoNc = & $apRead @([pscustomobject]@{ DistinguishedName = (& $apNtds 'DC1'); options = 1; 'msDS-HasDomainNCs' = @('DC=contoso,DC=com') }, [pscustomobject]@{ DistinguishedName = (& $apNtds 'DC4'); options = 0 })
+Assert-Equal 'Not Assessed' ([string](Get-AdfaInfrastructureMasterVerdict -DomainName 'contoso.com' -DomainDn 'DC=contoso,DC=com' -Raw $apIm -DsaRaw $apDsaNoNc -Forest (& $apForest 2 7 'NotEnabled') -Config $apCfg -CapSource 'x').Status) 'C16b: an NTDS Settings object with no msDS-HasDomainNCs keeps the all-GC exemption from being given'
+$apBare = @([pscustomobject]@{ Name = 'a'; sAMAccountName = 'a' }, [pscustomobject]@{ Name = 'b'; sAMAccountName = 'b' })
+Assert-Equal 'Not Assessed' ([string](Get-AdfaPasswordNotRequiredVerdict -DomainName 'contoso.com' -Raw (& $apRead $apBare) -UacProof '' -Config $apCfg -CapSource 'x').Status) 'C16b: matched accounts returned without a readable userAccountControl are Not Assessed, never a measured Pass'
+Assert-Equal 'Undecoded' ([string](ConvertFrom-AdfaLockoutInterval -Value ([int64]9000000000) -Config $apCfg -NegativeRequired).State) 'C16b: a positive lockoutDuration is not decoded (Learn: the negative of the count)'
+Assert-Equal 'Warning' ([string](Get-AdfaEncryptionTypeVerdict -DomainName 'contoso.com' -Population 'Trusts' -Raw (& $apRead @((& $apUser 'fabrikam.com' 131072))) -Records @((& $apUser 'fabrikam.com' 131072)) -Config $apCfg -CapSource 'x').Status) 'C16b: a trust with flag bits only (no AES bit) is the trust grade'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
