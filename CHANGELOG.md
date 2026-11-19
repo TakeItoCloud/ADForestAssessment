@@ -10,6 +10,130 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-19 (Intersite for every site of the forest, a per-DC dcdiag circuit breaker, reachability classified for every per-DC section, DcSecureChannel and the lingering scan on the shared DC list, the opt-in gPLink of unscoped domains, tool v1.42.0)
+
+**PORT-PLAN C11f, C2i, C15d(2) and C16d** (row C11f+C2i+C15d(2)+C16d; every choice approved upfront by the
+operator). No new `-Sections` value and no new section key: the rows stay in `DC Diagnostics`, `Port
+Reachability`, `DC Secure Channel & Machine Passwords`, `Lingering Object Scan (advisory)` and `GPO Directory
+Inventory`. **Run against stubs only** - nothing in this entry has been run against a real directory or DC.
+What was not verified: the text a real hung dcdiag invocation leaves in `Invoke-ExternalCommand`'s error
+(the breaker counts only this tool's own "Timeout after <n>s") and how long two time-outs with every retry
+take on a real unreachable DC; what `Get-ADReplicationSite -Filter *` and the NTDS Settings read return on a
+real forest with an empty site, a site of an unscoped domain and an RODC-only site; whether
+`Get-ADDomainController -Filter *` returns `Site`, `IsReadOnly` and `ComputerObjectDN` under those names
+(Learn names only `Name` and `HostName`); what a `gPLink` read sent to an unscoped domain returns for the
+account the tool runs as (Learn publishes no read right for it). First real run is C11m, with C17.
+
+- **Intersite for every site (C11f, REPL-010).** Only with `-IncludeDcdiagActiveTests` (the default output
+  is unchanged): the forest's sites (the Topology section's list where it was read, otherwise one
+  `Get-ADReplicationSite -Filter *`) and every DC's NTDS Settings object (the existing
+  `Get-AdfaDsaInventory`) are read in a never-throwing seam, `Get-AdfaIntersiteSitePopulation`; each server
+  is placed in the site its DN names (`ConvertTo-AdfaDsaSiteName`). `Resolve-AdfaIntersiteSiteState` (pure)
+  gives every site one row: Intersite as before where the section holds a DC; **`Info` "dcdiag Intersite:
+  no DC in site <site>"** with a Detail starting "Not applicable:" where no NTDS Settings object is under it
+  (this tool has no Not Applicable status); `Not Assessed` naming the DCs and `-AllDomains` where all its DCs
+  are outside the section; `Not Assessed` with the cause where the NTDS Settings objects could not be read
+  (never "no DC"); one **"dcdiag Intersite: site list"** `Not Assessed` row where the site list could not be
+  read. A DC the inventory gave no site is placed by its NTDS Settings object. New Item texts: "dcdiag
+  Intersite: no DC in site <site>", "dcdiag Intersite: site list". The Intersite advice entry now excludes
+  both (neither is Fail or Warning, so neither gets advice anyway).
+- **Per-DC dcdiag circuit breaker (C11f).** After `DcDiag.CircuitBreakerTimeouts` (2) consecutive timed-out
+  invocations on one DC (`Test-AdfaDcdiagTimedOut`: Success false and the whole error matching
+  `DcDiag.TimeoutErrorPattern`, `^Timeout after \d+s$`; `New-AdfaDcdiagBreaker`, `Register-AdfaDcdiagOutcome`,
+  the reference tool's rule: a completed test resets the count, never un-trips; one breaker per DC), no
+  further test is started on it. Those cells read `Not Assessed` and count towards the row; the row's
+  `NotRun` says "circuit breaker: two consecutive time-outs" with the count, threshold and source (never
+  `Failures`); its DNS rows carry the same cause; the DC is not chosen for Topology, the forest tests or
+  Intersite. The threshold is a **tool default, not a Microsoft value** (operator's value from
+  AdAssessment26 SPEC S4, DECISIONS 33/34/44), settable 1 to 10 as `CircuitBreakerTimeouts` in the `DcDiag`
+  key of `-ConfigOverridePath`; the pattern is not settable. DcDiag table version 1.42.0. Detail text change:
+  the "none could run" causes of the domain, forest and site rows now read "... failed dcdiag's
+  Connectivity test, tripped the dcdiag circuit breaker, or is read-only", followed by each DC's own cause.
+- **Reachability for every per-DC section (C2i(1), reverses C2h(1)).** The DCs are classified whenever any
+  section or switch that reaches the probe gate is selected (`$classifySections`: DomainControllers,
+  Replication, Topology, DcDiagnostics, Dns, Sysvol, Gpo, DcHardening, DcSystem, DcDisk, DcCertificates,
+  Backup, DnsAdConsistency, TimeHierarchy, PortMatrix, DcSecureChannel, DsEvents, RestoreIntegrity,
+  DnsRecordExport, and `-IncludeLingeringObjectScan`, `-IncludeRepadmin`, `-IncludeDcdiag`), still once per
+  run through the shared cache. The reachability rows are still reported only with `PortMatrix`. A Pester
+  test derives the list from the call graph and fails on a section missing or padded.
+- **DcSecureChannel and the lingering scan on the shared DC list (C2i(3)).** Both take `$perDcTargets` /
+  `$perDcFailures` through `Select-AdfaDomainDcTarget` (which `Get-AdfaDomainDcHostName` now answers
+  from); `DcSecureChannel` joined `$perDcSections` and `-IncludeLingeringObjectScan` the enumeration guard.
+  `Get-AdfaDcTargetsByDomain` rows carry `Site`, `IsReadOnly` and `ComputerObjectDN` from the object they
+  already hold, and **the DC inventory row (`Domain Controllers` section) gains a last column
+  `ComputerObjectDN`** - no new read. A DC listed without a computer DN has its password row `Not
+  Assessed`; the lingering scan reports a DC with no host name as "Advisory scan: (unnamed)" (new Item) and
+  never probes it; a domain with no DC listed is one "DC enumeration" / "Advisory-mode scan" row with the
+  cause, as before. The instrument stays `nltest /sc_query` on the DC over WinRM, not
+  `Test-ComputerSecureChannel`, and never `-Repair`.
+- **Output change on runs without `DomainControllers` (C2i(3)).** Because `Get-AdfaDcTargetsByDomain` rows now
+  carry `Site` and `IsReadOnly`, the sections that take them read what they did not before: in `DC
+  Diagnostics`, a read-only DC is no longer chosen for Topology, CheckSDRefDom, CrossRefValidation or
+  Intersite (a domain whose only usable DC is an RODC changes from a run verdict to `Not Assessed` "none could
+  run"); with `-IncludeDcdiagActiveTests`, Intersite (which Learn documents as triggering a replication) runs
+  once per site the list names instead of one "dcdiag Intersite: site unknown" row; the sentence "Whether
+  <dc> is writable is not known: the DC inventory was not collected in this run" is left out where the flag
+  was read. In `RID Pool`, an RODC whose RID Set is absent gets the read-only sentence in its Detail (status
+  unchanged, `Not Assessed`). These runs now agree with runs that collect the inventory.
+- **C2i(4)** was already true (the H20a review stubbed `Invoke-Command`); a smoke check now pins it.
+- **The gPLink of unscoped domains, opt-in (C15d(2)).** New switch `-IncludeUnscopedGpoLinks`: the GPO
+  directory inventory also reads the `gPLink` of the domain head and OUs of every forest domain outside
+  the scope - one capped read per domain (`Get-AdfaGpoSomRaw`, now the one call site of that read), from
+  that domain, listed properties, read-only; its DN is built from its DNS name; those domains get no rows.
+  Logged on the Parameters line. Detail text change without the switch: "(-AllDomains reads them;
+  -IncludeUnscopedGpoLinks reads only their gPLink, one capped read per domain)"; the Evidence text names
+  the switch too.
+- **C16d.** (a) A smoke pass exercises the DnsDepth SRV rule with mixed SRV and non-SRV answers; (b) a
+  smoke pass with one FRS-only domain exercises the `-NotDfsrCount` wiring end to end; (c) **closed as
+  documented**: Learn does not document `SecureSecondaries` for a secondary zone, so the zone transfer Pass
+  still counts primary zones only (behaviour unchanged).
+- Tests changed because behaviour legitimately changed: the C14 pin of `PortMatrix` branches (2 to 1), the
+  C2e `$perDcSections` population (twelve to thirteen), the C5 parameter list (`IncludeUnscopedGpoLinks`),
+  the H21 populations (470 functions, 1772 parameters; 24 script parameters), the C4b AD-command count
+  (87 to 88, the new `Get-ADReplicationSite`), the C11/C12 DcDiag table version (1.29.0 to 1.42.0) and every
+  version pin (1.42.0). New Pester Describe "Intersite for every site, the dcdiag circuit breaker, ...
+  (C11f, C2i, C15d, C16d)"; new Run-Validation assertions; new smoke checks in the single-domain,
+  three-domain and failing-collector passes and five new smoke passes.
+
+Found by an independent review of the diff before commit, and fixed in it:
+- A breaker that tripped on the last tests a DC was asked (SystemLog and DNS) left nothing to skip, so the
+  grid row said nothing while the DC was still left out of Topology, the forest tests and Intersite, whose
+  rows gave only the either/or cause. The grid row's `NotRun` now says the breaker tripped whenever it did,
+  and that the DC is therefore not chosen for those tests; every "none could run" Detail (Topology, the
+  forest roll-ups, Intersite) now ends its cause with "Per domain controller: <dc>: <cause>" - unreachable on
+  RPC/135, failed dcdiag's Connectivity test, the breaker, read-only or no host name (Detail text change).
+- The output changes that `Site` and `IsReadOnly` on `Get-AdfaDcTargetsByDomain` rows cause on runs without
+  `DomainControllers` were not listed; they are now (above). The "dcdiag Intersite: site unknown" Detail no
+  longer advises "Name DomainControllers with DcDiagnostics", which no longer gives a site the list does not;
+  it names the DC list that gave no site and ends "This is not a clean result." (Detail text change).
+- `Resolve-AdfaIntersiteSiteState` stated "no DC in site" while an NTDS Settings object read had a server DN
+  no site could be read from (for example a conflict-mangled `CN=NTDS Settings\0ACNF:...` RDN). Such an
+  object now makes a site with no placed DC `Unknown`, reported `Not Assessed` naming the object(s) - never
+  the `Info` "no DC in site" row. The output gains `UnplacedHosts`.
+- The one-read-per-unscoped-domain guard of `-IncludeUnscopedGpoLinks` compared names as given; it now
+  ignores case and a trailing dot, and a test with a domain named three ways fails when the guard is removed.
+
+Vendor sources, each read on Microsoft Learn on 2026-11-19:
+- dcdiag: https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag (no dcdiag
+  time-out or failure threshold published; Intersite needs /a or /e and triggers a replication)
+- Get-ADReplicationSite: https://learn.microsoft.com/powershell/module/activedirectory/get-adreplicationsite
+- Get-ADDomainController: https://learn.microsoft.com/powershell/module/activedirectory/get-addomaincontroller
+  (output properties not listed beyond Name and HostName)
+- Automatic site coverage (adjacent): https://learn.microsoft.com/troubleshoot/windows-server/active-directory/optimize-dc-location-global-catalog
+- Set-DnsServerSecondaryZone: https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserversecondaryzone
+- Get-DnsServerZone: https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverzone
+- Set-DnsServerPrimaryZone: https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserverprimaryzone
+- MicrosoftDNS_Zone: https://learn.microsoft.com/windows/win32/dns/microsoftdns-zone
+- DNS zone types: https://learn.microsoft.com/windows-server/networking/dns/zone-types
+- Resolve-DnsName: https://learn.microsoft.com/powershell/module/dnsclient/resolve-dnsname
+- gPLink: https://learn.microsoft.com/windows/win32/adschema/a-gplink; Group Policy scope:
+  https://learn.microsoft.com/windows-server/identity/ad-ds/manage/group-policy/group-policy-scope;
+  New-GPLink: https://learn.microsoft.com/powershell/module/grouppolicy/new-gplink
+- Test-ComputerSecureChannel: https://learn.microsoft.com/powershell/module/microsoft.powershell.management/test-computersecurechannel
+- repadmin advisory mode: https://learn.microsoft.com/troubleshoot/windows-server/active-directory/active-directory-replication-event-id-1388-1988
+- dfsrmig: https://learn.microsoft.com/windows-server/administration/windows-commands/dfsrmig; FRS
+  deprecation: https://learn.microsoft.com/troubleshoot/windows-server/networking/sysvol-dfsr-migration-fails-after-in-place-upgrade
+
 ### Changed - 2026-11-19 (Second SYSVOL instrument, the per-DC engine in the dcdiag grid, netlogon.bak with an age window, delegated managed service accounts excluded, future logon timestamps, tool v1.41.0)
 
 **PORT-PLAN C14c and C11e.** No new `-Sections` value and no new section key: the rows stay in

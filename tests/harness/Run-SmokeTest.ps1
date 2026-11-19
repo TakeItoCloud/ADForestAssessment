@@ -900,6 +900,12 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubIdentity = [string]$stubNamed['Identity']
     if ($stubIdentity -like 'CN=DFSR-GlobalSettings,CN=System,*' -or $stubIdentity -like 'CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,*' -or $stubIdentity -like 'CN=Domain System Volume (SYSVOL share),CN=NTFRS Subscriptions,*') {
         if ([string]::IsNullOrWhiteSpace([string]$stubNamed['Server'])) { throw 'STUB: a SYSVOL engine object must be read from its own domain' }
+        # PORT-PLAN C16d(b): $script:SmokeFrsOnlyDomain names a domain whose SYSVOL is still replicated by FRS: its DC has
+        # an NTFRS subscriber and no DFSR SYSVOL subscription, and no DFSR global settings object exists.
+        if (-not [string]::IsNullOrWhiteSpace($script:SmokeFrsOnlyDomain) -and [string]$stubNamed['Server'] -eq $script:SmokeFrsOnlyDomain) {
+            if ($stubIdentity -like 'CN=Domain System Volume (SYSVOL share),*') { return [pscustomobject]@{ DistinguishedName = $stubIdentity; ObjectClass = 'nTFRSSubscriber' } }
+            throw (New-Object SmokeStub.ADIdentityNotFoundException ("Cannot find an object with identity: '{0}'" -f $stubIdentity))
+        }
         if ($stubIdentity -like 'CN=Domain System Volume (SYSVOL share),*') { throw (New-Object SmokeStub.ADIdentityNotFoundException ("Cannot find an object with identity: '{0}'" -f $stubIdentity)) }
         if ($stubIdentity -like 'CN=DFSR-GlobalSettings,*') { return [pscustomobject]@{ DistinguishedName = $stubIdentity; ObjectClass = 'msDFSR-GlobalSettings'; 'msDFSR-Flags' = 48 } }
         # The subscription as Get-ADObject returns it when msDFSR-Enabled is asked for and set TRUE: since
@@ -1027,6 +1033,8 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
 # C13: Resolve-DnsName is present only in the DNS scenario ($script:SmokeDnsResolver), so every other pass
 # keeps the shape it had: no DNS query tool on this host.
 $script:SmokeDnsResolver = $false
+# PORT-PLAN C16d(b): no domain is FRS-only except in the FRS pass.
+$script:SmokeFrsOnlyDomain = ''
 # PORT-PLAN C2e: repadmin.exe is present only in the per-domain pass ($script:SmokeRepadmin), where it answers /showbackup.
 $script:SmokeRepadmin = $false
 $script:SmokeRepadminCalls = @()
@@ -1144,6 +1152,11 @@ function Invoke-ExternalCommand {
     $test = ([regex]::Match($Arguments, '/test:(\S+)')).Groups[1].Value
     $server = ([regex]::Match($Arguments, '/s:(\S+)')).Groups[1].Value
     $dc = $server.Split('.')[0].ToUpperInvariant()
+    # PORT-PLAN C11f: 'Timeout' answers Replications and Advertising as the real seam does after its last attempt
+    # at an invocation that did not exit in time (Success $false, no exit code, "Timeout after <n>s", no output).
+    if ($script:SmokeDcdiagMode -eq 'Timeout' -and @('Replications', 'Advertising') -contains $test) {
+        return [pscustomobject]@{ Success = $false; ExitCode = $null; Attempt = $Retries; Error = ("Timeout after {0}s" -f $TimeoutSeconds); OutFile = $OutFile; StdOut = '' }
+    }
     $exit = 0
     if ($script:SmokeDcdiagMode -eq 'PartitionFail' -and $test -eq 'CrossRefValidation') { $exit = 1 }
     [pscustomobject]@{ Success = ($exit -eq 0); ExitCode = $exit; Attempt = 1; Error = $null; OutFile = $OutFile
@@ -1199,12 +1212,21 @@ function Get-DnsServerResourceRecord { param([string]$ComputerName, [string]$Zon
     return $all }
 # Resolve-DnsName -DnsOnly -Server, in the shape of Microsoft.DnsClient.Commands.DnsRecord: an SRV
 # answer carries NameTarget, an A answer IPAddress. It answers from the same records as the zone.
+# PORT-PLAN C16d(a): $script:SmokeDnsDepthMixed makes an SRV answer carry an A record of its Additional section
+# too, and answers the domain's _kerberos._tcp name with the zone's SOA alone (a name with no SRV data, NODATA),
+# as Resolve-DnsName returns every record from the wire (Learn resolve-dnsname, read 2026-11-19).
+$script:SmokeDnsDepthMixed = $false
 function Resolve-DnsName { param([string]$Name, [string]$Type, [string]$Server, [switch]$DnsOnly, $ErrorAction)
     $script:SmokeDnsCalls += ("Resolve-DnsName {0} {1} {2}" -f $Name, $Type, $Server)
     if ($Type -eq 'SRV') {
+        if ($script:SmokeDnsDepthMixed -and $Name -eq '_kerberos._tcp.contoso.com') { return @([pscustomobject]@{ Name = 'contoso.com'; Type = 'SOA'; PrimaryServer = 'dc1.contoso.com' }) }
         $rel = ($Name -replace '\._msdcs\.contoso\.com$', '')
         $hits = @($script:SmokeDnsRecords['_msdcs.contoso.com'] | Where-Object { $_.RecordType -eq 'SRV' -and $_.HostName -eq $rel })
-        if ($hits.Count -gt 0) { return @($hits | ForEach-Object { [pscustomobject]@{ Name = $Name; Type = 'SRV'; NameTarget = $_.RecordData.DomainName.TrimEnd('.') } }) }
+        if ($hits.Count -gt 0) {
+            $srvAnswer = @($hits | ForEach-Object { [pscustomobject]@{ Name = $Name; Type = 'SRV'; NameTarget = $_.RecordData.DomainName.TrimEnd('.') } })
+            if ($script:SmokeDnsDepthMixed) { $srvAnswer += [pscustomobject]@{ Name = 'dc1.contoso.com'; Type = 'A'; IPAddress = '192.0.2.10' } }
+            return $srvAnswer
+        }
     }
     if ($Type -eq 'A' -and $Name -eq 'dc1.contoso.com') { return [pscustomobject]@{ Name = $Name; Type = 'A'; IPAddress = '192.0.2.10' } }
     throw ("{0} : DNS name does not exist" -f $Name) }
@@ -1337,6 +1359,8 @@ $script:IncludeDcdiag = $false
 $script:IncludeRepadmin = $false
 $script:SkipTrustVerification = $false
 $script:IncludeLdapsHandshake = $false
+# PORT-PLAN C15d(2): off unless a pass turns it on.
+$script:IncludeUnscopedGpoLinks = $false
 $script:Server = $null
 $script:Credential = $null
 
@@ -1549,6 +1573,14 @@ Check (@($h20aDcdiag).Count -eq 22) ("H20a: the default run ran the 22 default d
 $h20aRemoteBad = @($smokeDefaultRemote | Where-Object { $_.ScriptBlock -notmatch '^param\(\$a\) & nltest\.exe \$a\b' -or $_.Arguments -notmatch '^/sc_query:\S+$' } | ForEach-Object { '{0}: {1} [{2}]' -f $_.ComputerName, $_.ScriptBlock, $_.Arguments })
 Check (@($smokeDefaultRemote | Where-Object { $_.ComputerName -eq 'dc1.contoso.com' }).Count -ge 1 -and @($h20aRemoteBad).Count -eq 0) ("H20a: every WinRM script block of the default run starts nltest.exe with /sc_query only, the stub DC's among them ({0} calls; not so: {1})" -f @($smokeDefaultRemote).Count, ($h20aRemoteBad -join '; '))
 Check (@($smokeDefaultDirect).Count -eq 0) ("H20a: the default run started no console tool directly in this process ({0})" -f (@($smokeDefaultDirect) -join '; '))
+# PORT-PLAN C2i(4): DcSecureChannel's WinRM read is answered by the Invoke-Command stub above (added by the H20a
+# review), so no real WinRM attempt is made against the fictional host. Declared population: exactly one remote
+# /sc_query of the stub domain for the stub DC, from the shared DC list (C2i(3)); its row reports the stub's
+# refusal, Not Assessed and scoped to its domain, never Pass.
+$c2iRemote = @($smokeDefaultRemote | Where-Object { $_.ComputerName -eq 'dc1.contoso.com' -and $_.Arguments -eq '/sc_query:contoso.com' })
+$c2iSc = @($smokeFindings | Where-Object { $_.Section -eq 'DC Secure Channel & Machine Passwords' -and $_.Item -eq 'Secure channel: dc1.contoso.com' })
+Check ($c2iRemote.Count -eq 1 -and $c2iSc.Count -eq 1 -and $c2iSc[0].Status -eq 'Not Assessed' -and $c2iSc[0].Detail -match 'STUB: WinRM' -and $c2iSc[0].Scope -eq 'contoso.com') ("C2i(4): the DcSecureChannel WinRM read reaches the stub, not a real endpoint - one /sc_query for dc1, its row Not Assessed with the stub's refusal ({0} calls, {1} rows)" -f $c2iRemote.Count, $c2iSc.Count)
+Check (@($smokeFindings | Where-Object { $_.Section -eq 'DC Secure Channel & Machine Passwords' -and $_.Item -eq 'DC enumeration' }).Count -eq 0) 'C2i(3): DcSecureChannel takes the stub domain''s DC from the shared list, with no enumeration row of its own'
 $hfRow = @($dcsRows | Where-Object { $_.Item -like 'Last update installed:*' })
 Check (@($hfRow).Count -eq 1 -and $hfRow[0].Status -eq 'Info' -and $hfRow[0].Detail -match '2026-11-10') 'DC System: the latest update date is the later of the two stub records, with the day/month order proven by the set'
 Check (@($dcsRows | Where-Object { $_.Status -eq 'Pass' -and $_.Item -notlike 'OS lifecycle:*' }).Count -eq 0) 'DC System: no patch-level row is ever a Pass - it is inventory'
@@ -2095,6 +2127,13 @@ foreach ($sec in @('Password Policy', 'Security Posture', 'DNS vs AD Consistency
     $n = @($findings2 | Where-Object { $_.Section -eq $sec }).Count
     Check ($n -gt 0) ("Multi-domain: section '{0}' reached the consolidated findings ({1} rows)" -f $sec, $n)
 }
+# PORT-PLAN C2i(3): DcSecureChannel takes each domain's DCs from the shared per-domain list (the inventory here):
+# one secure channel row per scoped domain, scoped to it, Not Assessed with the stub's WinRM refusal, never Pass.
+foreach ($d in $multiDomains) {
+    $c2iSc2 = @($findings2 | Where-Object { $_.Section -eq 'DC Secure Channel & Machine Passwords' -and $_.Item -eq 'Secure channel: dc1.contoso.com' -and $_.Scope -eq $d })
+    Check ($c2iSc2.Count -eq 1 -and $c2iSc2[0].Status -eq 'Not Assessed' -and $c2iSc2[0].Detail -match 'STUB: WinRM') ("Multi-domain C2i(3): DcSecureChannel has the DC of '{0}', scoped to it, Not Assessed ({1} rows)" -f $d, $c2iSc2.Count)
+}
+Check (@($findings2 | Where-Object { $_.Section -eq 'DC Secure Channel & Machine Passwords' -and ($_.Item -eq 'DC enumeration' -or $_.Status -eq 'Pass') -and $_.Item -notlike 'Machine-account password: *' }).Count -eq 0) 'Multi-domain C2i(3): no DcSecureChannel enumeration row and no secure channel Pass'
 # C11: one grid row, one Topology row and one coverage row per scoped domain, each carrying its own
 # domain; the forest tests once for the forest; and the failed Configuration partition fails its
 # own row and the forest roll-up, never a DC's grid row.
@@ -3067,6 +3106,117 @@ Check (@($xC13 | Where-Object { $_.Item -eq 'Record export: total' -and $_.Detai
 Check (@($script:SmokeDnsCalls | Where-Object { $_ -match '^(Set|Add|Remove|Start|Clear|Register)-' }).Count -eq 0) 'C13: no DNS write was attempted'
 Remove-Item -Recurse -Force $outC13 -ErrorAction SilentlyContinue
 
+# ---- PORT-PLAN C11f + C2i + C15d(2) + C16d (v1.42.0) ---------------------------------------------------------
+# Each pass below runs Invoke-Main on the stubs with the sections that row touches; every name is fictional.
+$lfSavedAllDomains = $script:AllDomains
+$lfSavedSections = @($script:Sections)
+$lfSavedSite = ${function:Get-ADReplicationSite}
+
+# C11f (REPL-010): with -IncludeDcdiagActiveTests, every site of the forest gets one Intersite row. The forest holds
+# two sites; the stub DC's NTDS Settings object (C13's DSA stub) is under Default-First-Site-Name, none under Branch-Empty.
+Write-Host "== Running Invoke-Main with -IncludeDcdiagActiveTests and a site with no DC (C11f) ==" -ForegroundColor Cyan
+function Get-ADReplicationSite { param([Parameter(ValueFromRemainingArguments)]$a)
+    [pscustomobject]@{ Name = 'Default-First-Site-Name'; Description = ''; WhenCreated = $now; WhenChanged = $now }
+    [pscustomobject]@{ Name = 'Branch-Empty'; Description = ''; WhenCreated = $now; WhenChanged = $now } }
+$outLf = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_c11f_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outLf
+$script:AllDomains = $false
+$script:Sections = @('DomainControllers', 'DcDiagnostics')
+$script:IncludeDcdiagActiveTests = $true
+$script:SmokeDnsDsa = $true
+$script:SmokeDcdiagCalls = @()
+$resultLf = Invoke-Main
+$script:SmokeDnsDsa = $false
+$script:IncludeDcdiagActiveTests = $false
+${function:Get-ADReplicationSite} = $lfSavedSite
+$ddLf = @(@(Import-Csv $resultLf.FindingsFile) | Where-Object { $_.Section -eq 'DC Diagnostics' })
+$lfSiteRows = @($ddLf | Where-Object { $_.Item -like 'dcdiag Intersite: *' })
+Check (@($lfSiteRows).Count -eq 2) ("C11f: one Intersite row per site of the forest (declared population: two sites; got {0}: {1})" -f @($lfSiteRows).Count, (@($lfSiteRows | ForEach-Object { $_.Item }) -join ', '))
+Check (@($lfSiteRows | Where-Object { $_.Item -eq 'dcdiag Intersite: Default-First-Site-Name' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C11f: the site of the stub DC is tested and passes'
+Check (@($lfSiteRows | Where-Object { $_.Item -eq 'dcdiag Intersite: no DC in site Branch-Empty' -and $_.Status -eq 'Info' -and $_.Detail -match '^Not applicable: ' }).Count -eq 1) 'C11f: the site with no DC is not applicable (Info), never Pass'
+Check (@($script:SmokeDcdiagCalls | Where-Object { $_.Arguments -match '^/test:Intersite ' }).Count -eq 1 -and @($script:SmokeDcdiagCalls | Where-Object { $_.Arguments -eq '/test:Intersite /s:dc1.contoso.com /a' }).Count -eq 1) 'C11f: Intersite runs once, against the stub DC, with /a'
+Remove-Item -Recurse -Force $outLf -ErrorAction SilentlyContinue
+
+# C11f: the circuit breaker. Replications and Advertising time out on the stub DC; after the second, no further
+# dcdiag test is started on it, the rest read Not Assessed with the cause in NotRun, and the DC is not asked the
+# once-per-domain or forest tests.
+Write-Host "== Running Invoke-Main with two consecutive dcdiag time-outs (C11f circuit breaker) ==" -ForegroundColor Cyan
+$outBk = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_breaker_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outBk
+$script:Sections = @('DomainControllers', 'DcDiagnostics')
+$script:SmokeDcdiagMode = 'Timeout'
+$script:SmokeDcdiagCalls = @()
+$resultBk = Invoke-Main
+$script:SmokeDcdiagMode = 'Pass'
+$ddBk = @(@(Import-Csv $resultBk.FindingsFile) | Where-Object { $_.Section -eq 'DC Diagnostics' })
+$bkCalls = @($script:SmokeDcdiagCalls | ForEach-Object { ([regex]::Match($_.Arguments, '/test:(\S+)')).Groups[1].Value })
+Check (($bkCalls -join ',') -eq 'Connectivity,Replications,Advertising') ("C11f: after two consecutive time-outs no further dcdiag test is started on the DC, and it is not asked Topology or the forest tests ({0})" -f ($bkCalls -join ','))
+$bkGrid = @(Import-Csv (Join-Path $resultBk.CsvPath 'DC Diagnostics.csv') | Where-Object { $_.DomainController -eq 'dc1.contoso.com' })
+Check ($bkGrid.Count -eq 1 -and $bkGrid[0].NotRun -match 'circuit breaker: two consecutive time-outs' -and $bkGrid[0].DCDIAG_Services -eq 'Not Assessed' -and $bkGrid[0].Status -eq 'Warning' -and $bkGrid[0].Failures -notmatch 'circuit breaker') 'C11f: the grid row names the breaker in NotRun, the stopped cells read Not Assessed, the row is a Warning, never Pass'
+Check (@($ddBk | Where-Object { $_.Item -eq 'dcdiag Topology: contoso.com' -and $_.Status -eq 'Not Assessed' }).Count -eq 1) 'C11f: the domain''s Topology is Not Assessed when its only DC tripped the breaker'
+Remove-Item -Recurse -Force $outBk -ErrorAction SilentlyContinue
+
+# C16d(a): the DnsDepth SRV rule with Resolve-DnsName present: an SRV answer that also carries an A record counts its
+# SRV records only, and a name answered with the zone's SOA alone fails as "no SRV record".
+Write-Host "== Running Invoke-Main with Resolve-DnsName and mixed answers (C16d: DnsDepth SRV rule) ==" -ForegroundColor Cyan
+$outDd = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_dnsdepth_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outDd
+$script:Sections = @('DnsDepth')
+$script:SmokeDnsResolver = $true
+$script:SmokeDnsDepthMixed = $true
+$resultDd = Invoke-Main
+$script:SmokeDnsDepthMixed = $false
+$script:SmokeDnsResolver = $false
+$depthDd = @(@(Import-Csv $resultDd.FindingsFile) | Where-Object { $_.Section -eq 'DNS Depth' })
+Check (@($depthDd | Where-Object { $_.Item -eq 'SRV _ldap._tcp.dc._msdcs.contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match '^2 SRV record\(s\)' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'C16d(a): the SRV answer with an A record beside it counts its two SRV records only'
+Check (@($depthDd | Where-Object { $_.Item -eq 'SRV _kerberos._tcp.contoso.com' -and $_.Status -eq 'Fail' -and $_.Detail -match 'type SOA only' }).Count -eq 1) 'C16d(a): a name answered with the zone''s SOA alone is a Fail naming the type, never a Pass'
+Remove-Item -Recurse -Force $outDd -ErrorAction SilentlyContinue
+
+# C16d(b): one FRS-only domain among three: its DC has an NTFRS subscriber and no DFSR SYSVOL subscription, so the
+# subscription verdict of that domain is given the -NotDfsrCount of the engine read, end to end.
+Write-Host "== Running Invoke-Main with an FRS-only domain (C16d: -NotDfsrCount wiring) ==" -ForegroundColor Cyan
+$outFrs = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_frs_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outFrs
+$script:AllDomains = $true
+$script:Sections = @('Sysvol')
+$script:SmokeFrsOnlyDomain = 'south.contoso.com'
+$resultFrs = Invoke-Main
+$script:SmokeFrsOnlyDomain = ''
+$svFrs = @(@(Import-Csv $resultFrs.FindingsFile) | Where-Object { $_.Section -eq 'SYSVOL / DFSR' })
+Check (@($svFrs | Where-Object { $_.Scope -eq 'south.contoso.com' -and $_.Item -eq 'DFSR SYSVOL subscription state' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match '^1 DC\(s\) of this domain have no DFSR SYSVOL subscription object' }).Count -eq 1) 'C16d(b): the FRS-only domain''s subscription row counts its DC with no DFSR subscription (-NotDfsrCount), Not Assessed'
+Check (@($svFrs | Where-Object { $_.Scope -eq 'south.contoso.com' -and $_.Item -like 'DFSR SYSVOL replication*' -and $_.Status -eq 'Pass' }).Count -eq 0) 'C16d(b): the FRS-only domain has no DFSR Pass'
+foreach ($d in @('contoso.com', 'north.contoso.com')) {
+    Check (@($svFrs | Where-Object { $_.Scope -eq $d -and $_.Item -eq 'DFSR SYSVOL replication enabled' -and $_.Status -eq 'Pass' }).Count -eq 1) ("C16d(b): '{0}', DFSR, still passes beside the FRS-only domain" -f $d)
+}
+Remove-Item -Recurse -Force $outFrs -ErrorAction SilentlyContinue
+
+# C15d(2): a single-domain run in the three-domain forest. Without -IncludeUnscopedGpoLinks no other domain is read
+# and the summary names the switch; with it, the gPLink of each unscoped domain is read once, from that domain.
+Write-Host "== Running Invoke-Main on one domain of three, with and without -IncludeUnscopedGpoLinks (C15d) ==" -ForegroundColor Cyan
+foreach ($lfSwitch in @($false, $true)) {
+    $outGp = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_gplink_" + [guid]::NewGuid().ToString('N'))
+    $script:OutputPath = $outGp
+    $script:AllDomains = $false
+    $script:Sections = @('Gpo')
+    $script:IncludeUnscopedGpoLinks = $lfSwitch
+    $script:SmokeInventoryCalls = @()
+    $resultGp = Invoke-Main
+    $script:IncludeUnscopedGpoLinks = $false
+    $gpSom = @($script:SmokeInventoryCalls | Where-Object { $_ -like '(gPLink=*)@*' } | ForEach-Object { ($_ -split '@')[-1] } | Sort-Object)
+    $gpSum = @(Import-Csv (Join-Path $resultGp.CsvPath 'GPO Directory Inventory.csv') | Where-Object { $_.Item -eq 'GPO directory inventory: contoso.com' })
+    if ($lfSwitch) {
+        Check (($gpSom -join ',') -eq 'contoso.com,north.contoso.com,south.contoso.com') ("C15d(2): with the switch, the gPLink of each unscoped domain is read once, from that domain (declared population: the three forest domains; {0})" -f ($gpSom -join ','))
+        Check ($gpSum.Count -eq 1 -and $gpSum[0].OtherDomainSoms -eq 'All read' -and $gpSum[0].Status -eq 'Info') 'C15d(2): with the switch, every forest domain''s SOMs are read and the summary says so'
+        Check ((Get-Content $resultGp.LogFile -Raw) -match 'IncludeUnscopedGpoLinks=True') 'C15d(2): the log records the switch'
+    }
+    else {
+        Check (($gpSom -join ',') -eq 'contoso.com') ("C15d(2): without the switch, only the scoped domain's gPLink is read ({0})" -f ($gpSom -join ','))
+        Check ($gpSum.Count -eq 1 -and $gpSum[0].OtherDomainSoms -eq 'Not all read' -and $gpSum[0].Detail -match 'IncludeUnscopedGpoLinks' -and $gpSum[0].Detail -match 'AllDomains' -and $gpSum[0].Status -ne 'Pass') 'C15d(2): without the switch, the summary names -IncludeUnscopedGpoLinks and -AllDomains, never Pass'
+    }
+    Remove-Item -Recurse -Force $outGp -ErrorAction SilentlyContinue
+}
+$script:AllDomains = $lfSavedAllDomains
+$script:Sections = @($lfSavedSections)
 # ---- Scenario 3: collection failures must be reported, never swallowed -------
 # Regression guard for the empty-catch fixes. The failure mode being pinned is the one this
 # repo already shipped once (v1.6.0): a collector throws, its rows quietly do not appear, and
@@ -3162,6 +3312,13 @@ Check (@($findings3 | Where-Object { $_.Section -eq 'Redundancy & Availability' 
 $site3 = @($findings3 | Where-Object { $_.Section -eq 'Site Health' })
 Check (@($site3 | Where-Object { $_.Item -eq 'Empty sites' -and $_.Status -eq 'Not Assessed' }).Count -eq 1 -and @($site3 | Where-Object { $_.Item -eq 'Site/subnet topology' }).Count -eq 0) 'Failure mode C16 GAP-P6: with the DC inventory failed, empty sites are Not Assessed and the topology row does not pass'
 Check (@($findings3 | Where-Object { $_.Section -eq 'Replication Health' -and $_.Status -eq 'Pass' }).Count -eq 0) 'Failure mode C16 review 5: nothing read, so no replication row passes'
+# PORT-PLAN C2i(3): DcSecureChannel takes the shared DC list, whose enumeration failed for the stub domain: one
+# "DC enumeration" row for it, Not Assessed with the cause, nothing else read and nothing passing.
+$sc3 = @($findings3 | Where-Object { $_.Section -eq 'DC Secure Channel & Machine Passwords' })
+Check (@($sc3).Count -eq 1 -and $sc3[0].Item -eq 'DC enumeration' -and $sc3[0].Status -eq 'Not Assessed' -and $sc3[0].Scope -eq 'contoso.com' -and $sc3[0].Detail -match 'ADWS unreachable') ("Failure mode C2i(3): DcSecureChannel reports the stub domain's DC list as not read, with the cause ({0} rows)" -f @($sc3).Count)
+# PORT-PLAN C11f: no DC enumerated, so no dcdiag test ran and no DC tripped a breaker; nothing in DC Diagnostics passes.
+$dd3 = @($findings3 | Where-Object { $_.Section -eq 'DC Diagnostics' })
+Check (@($dd3 | Where-Object { $_.Status -eq 'Pass' }).Count -eq 0 -and @($dd3 | Where-Object { $_.Item -eq 'dcdiag grid' -and $_.Status -eq 'Not Assessed' }).Count -eq 1 -and @($dd3 | Where-Object { $_.Detail -match 'circuit breaker: ' }).Count -eq 0) 'Failure mode C11f: DC Diagnostics passes nothing with no DC, and names no breaker'
 Check (@($findings3 | Where-Object { $_.Section -eq 'Exchange SE Compatibility' -and $_.Item -eq 'Domain controller operating systems' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'DomainControllers' }).Count -eq 1) 'Failure mode C16 GAP-P20: no DC enumerated, so the DC gate is Not Assessed and names DomainControllers'
 
 $dsRow = @($findings3 | Where-Object { $_.Item -match 'Domain summary' })

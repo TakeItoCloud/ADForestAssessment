@@ -441,7 +441,15 @@
     schema for it. Unreachable, access denied, output not recognised (possibly localised) and an event log
     that could not be queried are each their own Not Assessed cause, never Pass. Like DcDisk it
     covers the DCs of every scoped domain; the site and read-only flag of each DC come from the DC
-    inventory, so name DomainControllers with it for the per-site rows. Since v1.41.0 (PORT-PLAN
+    inventory or, since v1.42.0, from the section's own per-domain enumeration. Since v1.42.0
+    (PORT-PLAN C11f) Intersite covers every site of the forest: the site list (the Topology
+    section's, or one Get-ADReplicationSite read) and the NTDS Settings object of every DC are read,
+    read-only, only with -IncludeDcdiagActiveTests; a site with no DC is one Info "dcdiag Intersite:
+    no DC in site <site>" row (Not applicable), a site whose DCs are all outside the run's scope or
+    whose DCs could not be read is Not Assessed. A per-DC circuit breaker stops the dcdiag tests of
+    a DC after two consecutive time-outs (CircuitBreakerTimeouts, a tool default, not a Microsoft
+    value); the rest read Not Assessed with "circuit breaker: two consecutive time-outs" in the
+    row's NotRun column, and that DC is not asked the domain, forest or site tests. Since v1.41.0 (PORT-PLAN
     C11e) the grid takes each DC's SYSVOL engine (the Sysvol read of its directory objects and
     registry Local State, made once before the grid): DFSREvent is not run on a DC whose engine is
     FRS, nor FrsEvent on one whose engine is DFSR - the AdAssessment26 catalogue rule SYSVOL-002/003,
@@ -698,8 +706,10 @@
 
     And DcDiag, used by the DcDiagnostics section, whose keys are TestTimeoutSeconds (the time-out
     of one dcdiag invocation, a whole number from 5 to 600; it takes precedence over
-    -ExternalToolTimeoutSeconds for dcdiag) and Retries (attempts per invocation, 1 to 10). Both
-    are tool defaults, not Microsoft values: Microsoft publishes no dcdiag time-out. The test
+    -ExternalToolTimeoutSeconds for dcdiag), Retries (attempts per invocation, 1 to 10) and, since
+    v1.42.0, CircuitBreakerTimeouts (consecutive timed-out invocations on one DC after which its
+    remaining dcdiag tests are not run and read Not Assessed, 1 to 10, default 2). All three are
+    tool defaults, not Microsoft values: Microsoft publishes no dcdiag time-out. The test
     lists, the opt-in list, the output markers and the evidence patterns are refused, so a file
     can never add a dcdiag test:
 
@@ -810,6 +820,16 @@
     addresses a certificate names. Each handshake is bounded as a whole by HandshakeTimeoutMs
     and its connection by ConnectTimeoutMs (DcCertificates config, 5000 ms each, tool
     defaults). Without this switch each DC's LDAPS row reads Not Assessed.
+
+.PARAMETER IncludeUnscopedGpoLinks
+    In the Gpo section (GPO Directory Inventory), also read the gPLink of the domain head and OUs
+    of every forest domain this run did not scope - domains the operator did not scope, which is
+    why it is opt-in. Read-only: one capped read per domain (Inventory.MaxObjects), asked of that
+    domain, listed properties only (gPLink, gPOptions), and nothing else of it is read; those
+    domains get no rows of their own. A GPO can be linked from any domain of the forest, so with
+    this switch a single-domain run in a multi-domain forest can state that a GPO is unlinked.
+    Without it the summary row of a domain with a GPO whose link was not found stays Not Assessed
+    and names this switch and -AllDomains.
 
 .PARAMETER IncludeRepadmin
     Also capture raw 'repadmin /replsummary' and per-DC '/showrepl /errorsonly' under raw\.
@@ -944,7 +964,7 @@
 
 .NOTES
     Owner: Carlos Annes (TakeItToCloud)
-    Version: 1.41.0
+    Version: 1.42.0
     Created: 2026-07-22
     Last updated: 2026-11-19
     Requires: Windows PowerShell 5.1 or PowerShell 7+ (5.1 because the script runs on a stock domain controller); RSAT ActiveDirectory module (no minimum version set); DnsServer, GroupPolicy and DFSR modules optional; domain read access; administrative rights on the domain controllers for trust verification, dcdiag and the remote CIM sections; Enterprise Admins for the opt-in dcdiag DNS test (Microsoft's statement).
@@ -1002,6 +1022,11 @@ param(
     # Without it the DcCertificates section reads the directory only.
     [switch]$IncludeLdapsHandshake,
 
+    # PORT-PLAN C15d(2): in the Gpo section, also read the gPLink of the forest domains this run did not
+    # scope (one capped read per domain, read-only), so a GPO linked only from there is found. Opt-in
+    # because it reads domains the operator did not scope.
+    [switch]$IncludeUnscopedGpoLinks,
+
     [string]$Server,
     [pscredential]$Credential,
 
@@ -1057,7 +1082,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.41.0'
+    Version                 = '1.42.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1293,12 +1318,14 @@ $script:Config = @{
     # test with PartitionParts, an enterprise verdict only for a test with EnterpriseParts.
     #
     # The test lists cannot be set from a file: the "DcDiag" key of -ConfigOverridePath accepts only
-    # TestTimeoutSeconds and Retries, so a file can never add a test that changes state. Tests that
+    # TestTimeoutSeconds, Retries and (since v1.42.0) CircuitBreakerTimeouts, so a file can never add a
+    # test that changes state. Tests that
     # Microsoft documents as changing state are in DcdiagActiveTests above and run only with
     # -IncludeDcdiagActiveTests. /fix, /c, /e, /u, /p, /skip and the MachineAccount repair options
     # are never passed.
     DcDiag                  = @{
-        Version            = '1.29.0'
+        # 1.42.0: PORT-PLAN C11f added CircuitBreakerTimeouts, CircuitBreakerSource and TimeoutErrorPattern.
+        Version            = '1.42.0'
         SourceUrl          = 'https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag'
         ReadDate           = '2026-11-16'
         ThresholdSource    = 'tool default, not a Microsoft value'
@@ -1309,6 +1336,22 @@ $script:Config = @{
         TestTimeoutSeconds = $null
         Retries            = $null
         TimeoutSource      = 'tool default, not a Microsoft value (-ExternalToolTimeoutSeconds)'
+        # PORT-PLAN C11f (v1.42.0): the per-DC circuit breaker. After CircuitBreakerTimeouts consecutive
+        # dcdiag invocations on one DC that timed out, the remaining dcdiag tests of that DC are not run and
+        # read Not Assessed with the cause "circuit breaker: <n> consecutive time-outs" (in the row's NotRun
+        # column, never in Failures). A test that completed - whatever it reported - resets the count but
+        # never un-trips the breaker; each DC has its own. Learn publishes no dcdiag time-out and no
+        # failure threshold (dcdiag reference, read 2026-11-19: it says only that offline DCs "will
+        # increase run times due to long time-out periods for RPC and other protocols"), so 2 is the
+        # operator's decision taken over from the reference tool (AdAssessment26 docs/SPEC.md S4,
+        # docs/DECISIONS.md 33, 34 and 44): a tool default, not a Microsoft value. A file can set it,
+        # 1 to 10. TimeoutErrorPattern is the whole text Invoke-ExternalCommand returns as the error of an
+        # invocation that did not exit in time ("Timeout after <n>s"); it is this tool's own text, not a
+        # vendor one, and cannot be set from a file. Each time-out already includes every -Retries
+        # attempt of that invocation.
+        CircuitBreakerTimeouts = 2
+        CircuitBreakerSource   = 'operator decision taken over from AdAssessment26 (SPEC S4, DECISIONS 33/34/44); tool default, not a Microsoft value'
+        TimeoutErrorPattern    = '^Timeout after \d+s$'
         # Per DC, in the reference order (AdAssessment26 SPEC, per-DC order). Connectivity first:
         # "The connectivity test can't be skipped", so it runs in every invocation anyway, and when it
         # fails on a DC no further test is started there. PartitionParts: a verdict this test prints
@@ -5158,6 +5201,10 @@ function Get-AdfaDomainControllerInventory {
             # the warning stream. A reader of Assessment.html previously saw 'Not Assessed' with
             # no cause anywhere in the report - the same defect H10 fixed for dcdiag, missed here.
             EnrichmentError        = $enrichError
+            # PORT-PLAN C2i(3), v1.42.0: the computer object DN this inventory already read (it names the
+            # Get-ADComputer identity above), so DcSecureChannel reads each DC's pwdLastSet from the shared
+            # DC list instead of enumerating the domain again. Last, so the earlier columns keep their order.
+            ComputerObjectDN       = [string](Get-AdfaConfigValue -Entry $dc -Name 'ComputerObjectDN')
         }
     }
     return @($inv)
@@ -6851,6 +6898,239 @@ function Get-AdfaDcdiagScopedDetail {
     return ("Run against {0}. {1}{2}" -f $DomainController, [string]$Verdict.Detail, $writable)
 }
 
+function Test-AdfaDcdiagTimedOut {
+    <#
+    .SYNOPSIS
+        Pure: whether one dcdiag invocation timed out (PORT-PLAN C11f), from the run result alone.
+    .DESCRIPTION
+        True only when the run did not succeed AND its Error is the whole text Invoke-ExternalCommand
+        returns for an invocation that did not exit in time (-Pattern, DcDiag.TimeoutErrorPattern:
+        "Timeout after <n>s"). Never inferred from an empty output, an exit code or any other error:
+        access denied, a drain failure and a tool that could not start are not time-outs. A run that
+        succeeded is a measurement whatever it printed.
+    .OUTPUTS
+        [bool]
+    .PARAMETER Run
+        The result of Invoke-AdfaDcdiagTest (Success, Error). Untyped, may be null or empty.
+    .PARAMETER Pattern
+        The regular expression a time-out error must match as a whole (DcDiag.TimeoutErrorPattern).
+        Type [string], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [AllowNull()]$Run,
+        [Parameter(Mandatory)][string]$Pattern
+    )
+    if ($null -eq $Run) { return $false }
+    $okProp = $Run.PSObject.Properties['Success']
+    if ($null -eq $okProp -or $null -eq $okProp.Value -or [bool]$okProp.Value) { return $false }
+    $errProp = $Run.PSObject.Properties['Error']
+    if ($null -eq $errProp -or $null -eq $errProp.Value) { return $false }
+    $text = ([string]$errProp.Value).Trim()
+    if ($text -eq '') { return $false }
+    return [bool]($text -match $Pattern)
+}
+
+function New-AdfaDcdiagBreaker {
+    <#
+    .SYNOPSIS
+        Pure: a fresh dcdiag circuit breaker for one DC (PORT-PLAN C11f).
+    .DESCRIPTION
+        The reference tool's rule (AdAssessment26 Register-AdaDcdiagOutcome, DECISIONS 33 and 34): a
+        breaker trips at Threshold consecutive time-outs; a completed test resets the consecutive
+        count but never un-trips it; every DC gets its own. The threshold is a tool default, not a
+        Microsoft value (DcDiag.CircuitBreakerTimeouts).
+    .OUTPUTS
+        [pscustomobject] Threshold, ConsecutiveTimeouts, TimeoutCount, CompletedCount, Tripped.
+    .PARAMETER Threshold
+        Consecutive time-outs that trip the breaker. Type [int], mandatory, from 1 to 100.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][ValidateRange(1, 100)][int]$Threshold)
+    return [pscustomobject]@{ Threshold = $Threshold; ConsecutiveTimeouts = 0; TimeoutCount = 0; CompletedCount = 0; Tripped = $false }
+}
+
+function Register-AdfaDcdiagOutcome {
+    <#
+    .SYNOPSIS
+        Pure: the breaker after one more dcdiag invocation on its DC (PORT-PLAN C11f).
+    .DESCRIPTION
+        A time-out adds one to TimeoutCount and ConsecutiveTimeouts and trips the breaker when the
+        consecutive count reaches the threshold. A completed invocation - one that exited in time,
+        whatever it reported, a parsed failure included - adds one to CompletedCount and resets the
+        consecutive count; a tripped breaker stays tripped. The outcome is stated by the caller
+        (Test-AdfaDcdiagTimedOut), never inferred here. Returns a new object; the input is unchanged.
+    .OUTPUTS
+        [pscustomobject] Threshold, ConsecutiveTimeouts, TimeoutCount, CompletedCount, Tripped.
+    .PARAMETER Breaker
+        The breaker of the DC (New-AdfaDcdiagBreaker or a previous result). Untyped, mandatory.
+    .PARAMETER TimedOut
+        True when the invocation timed out, false when it completed. Type [bool], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Breaker,
+        [Parameter(Mandatory)][bool]$TimedOut
+    )
+    $out = [pscustomobject]@{ Threshold = [int]$Breaker.Threshold; ConsecutiveTimeouts = [int]$Breaker.ConsecutiveTimeouts; TimeoutCount = [int]$Breaker.TimeoutCount
+        CompletedCount = [int]$Breaker.CompletedCount; Tripped = [bool]$Breaker.Tripped }
+    if ($TimedOut) {
+        $out.TimeoutCount = $out.TimeoutCount + 1
+        $out.ConsecutiveTimeouts = $out.ConsecutiveTimeouts + 1
+        if ($out.ConsecutiveTimeouts -ge $out.Threshold) { $out.Tripped = $true }
+    }
+    else {
+        $out.CompletedCount = $out.CompletedCount + 1
+        $out.ConsecutiveTimeouts = 0
+    }
+    return $out
+}
+
+function ConvertTo-AdfaDsaSiteName {
+    <#
+    .SYNOPSIS
+        Pure: the site of a domain controller from the DN of its server object (PORT-PLAN C11f).
+    .DESCRIPTION
+        A server object lives at CN=<server>,CN=Servers,CN=<site>,CN=Sites,CN=Configuration,... (MS-ADTS
+        6.1.1.2.2.1.2 Servers Container, read on Learn 2026-11-19 for C4b3); the site is the RDN two
+        levels up. A comma escaped with a backslash belongs to the name and is unescaped. Any other
+        shape gives '', never a guess.
+    .OUTPUTS
+        [string]
+    .PARAMETER ServerDn
+        The distinguished name of the server object (Get-AdfaDsaInventory ServerDn). Type [string],
+        default '', may be null or empty.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$ServerDn = '')
+    if ([string]::IsNullOrWhiteSpace($ServerDn)) { return '' }
+    $m = [regex]::Match($ServerDn.Trim(), '(?i)^CN=(?:[^,\\]|\\.)+,\s*CN=Servers\s*,\s*CN=((?:[^,\\]|\\.)+),\s*CN=Sites\s*,')
+    if (-not $m.Success) { return '' }
+    return ([string]($m.Groups[1].Value -replace '\\(.)', '$1')).Trim()
+}
+
+function Get-AdfaIntersiteSitePopulation {
+    <#
+    .SYNOPSIS
+        The sites of the forest and the domain controllers in each, for dcdiag Intersite (PORT-PLAN
+        C11f, REPL-010). Read-only. Never throws.
+    .DESCRIPTION
+        Sites: the Topology section's site list when it was read (-TopologySites), otherwise one
+        Get-ADReplicationSite -Filter * ("This command gets all Active Directory Replication sites",
+        Learn get-adreplicationsite, read 2026-11-19). DCs per site: every NTDS Settings object of the
+        configuration partition (Get-AdfaDsaInventory, the read the DNS and restore sections share),
+        each placed in the site its server object's DN names (ConvertTo-AdfaDsaSiteName). This is what
+        makes "no DC in this site" a fact of the forest rather than of this run's scope. An empty
+        answer is not a read: a forest has at least one site and one DC.
+    .OUTPUTS
+        [pscustomobject] SitesRead, Sites (string[]), SitesSource, SitesError, DsaRead, DsaServers (Site,
+        HostName, ServerDn), DsaError.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER TopologySites
+        The site objects the Topology section read (Name), or $null to read them here. Untyped,
+        default $null, may be null or empty.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [hashtable]$AdParams = @{},
+        [AllowNull()][AllowEmptyCollection()]$TopologySites = $null
+    )
+    $out = [pscustomobject]@{ SitesRead = $false; Sites = @(); SitesSource = ''; SitesError = ''; DsaRead = $false; DsaServers = @(); DsaError = '' }
+    $siteObjects = @()
+    if ($null -ne $TopologySites -and @($TopologySites | Where-Object { $null -ne $_ }).Count -gt 0) {
+        $siteObjects = @($TopologySites | Where-Object { $null -ne $_ })
+        $out.SitesSource = 'the site list the Topology section read'
+    }
+    else {
+        $out.SitesSource = 'Get-ADReplicationSite -Filter *'
+        try { $siteObjects = @(Get-ADReplicationSite -Filter * @AdParams | Where-Object { $null -ne $_ }) }
+        catch { $out.SitesError = ("{0} ({1})" -f ([string]$_.Exception.Message).Trim().TrimEnd('.'), $_.Exception.GetType().FullName) }
+    }
+    $names = @()
+    foreach ($s in $siteObjects) {
+        $n = ''
+        if ($s -is [string]) { $n = $s }
+        else { $n = [string](Get-AdfaConfigValue -Entry $s -Name 'Name') }
+        $n = $n.Trim()
+        if ($n -ne '' -and @($names | Where-Object { $_ -eq $n }).Count -eq 0) { $names += $n }
+    }
+    if ($out.SitesError -eq '') {
+        if ($names.Count -gt 0) { $out.SitesRead = $true; $out.Sites = @($names) }
+        else { $out.SitesError = ("{0} returned no site" -f $out.SitesSource) }
+    }
+    try {
+        $servers = @()
+        foreach ($d in @(Get-AdfaDsaInventory -AdParams $AdParams | Where-Object { $null -ne $_ })) {
+            $serverDn = [string](Get-AdfaConfigValue -Entry $d -Name 'ServerDn')
+            $servers += [pscustomobject]@{ Site = (ConvertTo-AdfaDsaSiteName -ServerDn $serverDn); HostName = [string](Get-AdfaConfigValue -Entry $d -Name 'DnsHostName'); ServerDn = $serverDn }
+        }
+        if ($servers.Count -gt 0) { $out.DsaRead = $true; $out.DsaServers = @($servers) }
+        else { $out.DsaError = 'the configuration partition returned no NTDS Settings object' }
+    }
+    catch { $out.DsaError = ("{0} ({1})" -f ([string]$_.Exception.Message).Trim().TrimEnd('.'), $_.Exception.GetType().FullName) }
+    return $out
+}
+
+function Resolve-AdfaIntersiteSiteState {
+    <#
+    .SYNOPSIS
+        Pure: what dcdiag Intersite can say of one site (PORT-PLAN C11f, REPL-010).
+    .DESCRIPTION
+        InSection: at least one DC of this section is in the site (Intersite is run against one of
+        them, as in C11). NoDc: none of this section, and the NTDS Settings objects were read and none
+        is under the site - not applicable (catalogue: "site without DC -> Not Applicable"). OutOfScope:
+        the site holds DCs by their NTDS Settings objects, none of them in this section (their domain
+        was not scoped, or its enumeration failed). Unknown: no DC of this section is in it and the NTDS
+        Settings objects could not be read, or none read is under it but at least one read has a server
+        DN whose site could not be told (Site ''), so whether it holds one is not known - never "no DC".
+        Site names are compared without regard to case.
+    .OUTPUTS
+        [pscustomobject] State (InSection, NoDc, OutOfScope, Unknown), InSection (the section's states
+        in the site), DsaHosts (host names, or the server DN where it has none, of the DCs under it),
+        UnplacedHosts (the same, of the NTDS Settings objects read whose site could not be told).
+    .PARAMETER SiteName
+        The name of the site. Type [string], mandatory.
+    .PARAMETER SectionStates
+        The DC states of the dcdiag section (HostName, Site). Untyped, default @(), may be null or
+        empty.
+    .PARAMETER DsaRead
+        Whether the NTDS Settings objects were read. Type [bool], mandatory.
+    .PARAMETER DsaServers
+        The servers the NTDS Settings objects name (Site, HostName, ServerDn). Untyped, default @(),
+        may be null or empty.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$SiteName,
+        [AllowNull()][AllowEmptyCollection()]$SectionStates = @(),
+        [Parameter(Mandatory)][bool]$DsaRead,
+        [AllowNull()][AllowEmptyCollection()]$DsaServers = @()
+    )
+    $key = $SiteName.Trim().ToLowerInvariant()
+    $inSection = @(@($SectionStates) | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.HostName) -and ([string]$_.Site).Trim().ToLowerInvariant() -eq $key })
+    $here = @(@($DsaServers) | Where-Object { $null -ne $_ -and ([string]$_.Site).Trim().ToLowerInvariant() -eq $key })
+    $hosts = @($here | ForEach-Object { $h = [string]$_.HostName; if ([string]::IsNullOrWhiteSpace($h)) { $h = [string]$_.ServerDn }; $h })
+    # Independent review: an NTDS Settings object read whose site could not be told from its DN (Site '')
+    # may be in this site, so it blocks "no DC" - an absence is stated only when every one read was placed.
+    $unplaced = @(@($DsaServers) | Where-Object { $null -ne $_ -and [string]::IsNullOrWhiteSpace([string]$_.Site) })
+    $unplacedHosts = @($unplaced | ForEach-Object { $h = [string]$_.HostName; if ([string]::IsNullOrWhiteSpace($h)) { $h = [string]$_.ServerDn }; if ([string]::IsNullOrWhiteSpace($h)) { $h = '(no name)' }; $h })
+    $state = 'OutOfScope'
+    if ($inSection.Count -gt 0) { $state = 'InSection' }
+    elseif (-not $DsaRead) { $state = 'Unknown' }
+    elseif ($here.Count -eq 0 -and $unplaced.Count -gt 0) { $state = 'Unknown' }
+    elseif ($here.Count -eq 0) { $state = 'NoDc' }
+    return [pscustomobject]@{ State = $state; InSection = $inSection; DsaHosts = [string[]]@($hosts); UnplacedHosts = [string[]]@($unplacedHosts) }
+}
+
 function Get-AdfaDcDiagnostic {
     <#
     .SYNOPSIS
@@ -6888,6 +7168,20 @@ function Get-AdfaDcDiagnostic {
         against a DC of the forest root domain if one is usable, else any; one row per part dcdiag
         printed (a partition) and a roll-up row. Per site that holds a DC, with
         -IncludeActiveTests: Intersite /a; a DC whose site is not known gets a "site unknown" row.
+        With -SitePopulation (PORT-PLAN C11f, REPL-010) every site of the forest gets one row: a site
+        with no NTDS Settings object under it is Info "dcdiag Intersite: no DC in site <site>" with a
+        "Not applicable:" Detail (this tool has no Not Applicable status); a site whose DCs are all
+        outside this section is Not Assessed; a site whose DC membership could not be read is Not
+        Assessed; a site list that could not be read is one "dcdiag Intersite: site list" Not Assessed
+        row, and the sites of the section's DCs are still tested.
+
+        Circuit breaker (PORT-PLAN C11f): each DC has its own (New-AdfaDcdiagBreaker). After
+        DcDiag.CircuitBreakerTimeouts consecutive invocations on it timed out (Test-AdfaDcdiagTimedOut:
+        the seam's own "Timeout after <n>s"), no further test is started on it; those cells read Not
+        Assessed and count towards the row's status, NotRun says "circuit breaker: <n> consecutive
+        time-outs" (never Failures), its DNS rows carry the same cause, and the DC is not chosen for
+        Topology, the forest tests or Intersite. A completed test resets the count but never un-trips
+        the breaker. The threshold is a tool default (2), not a Microsoft value.
         LocatorCheck is never run (not in Learn's known-tests table) and has a row saying so.
 
         DNS summary (PORT-PLAN C12), with -IncludeActiveTests: the summary table of each DC's DNS
@@ -6904,7 +7198,9 @@ function Get-AdfaDcDiagnostic {
         for the domain (Get-AdfaDcPopulationGap) - and, with the opt-in, one "dcdiag DNS <group>:
         domain <domain>" row per group over every DC of the domain, or one "dcdiag DNS not run:
         <domain>" row without it. Forest: one roll-up row per forest test. Sites: one row per site
-        holding a DC, with the opt-in; one "not run" row without it.
+        holding a DC, with the opt-in; with -SitePopulation one row per site the forest's site list
+        holds (and per site of a DC it does not hold), whatever it holds; one "not run" row without
+        the opt-in.
     .OUTPUTS
         [pscustomobject[]] Grid rows and scoped rows (New-AdfaDcDiagRow).
     .PARAMETER DomainControllers
@@ -6945,6 +7241,10 @@ function Get-AdfaDcDiagnostic {
         The SYSVOL engine of each DC, from Get-AdfaSysvolEngineByDc: lowercased host name to an object
         with Engine and Source. $null or a DC not listed keeps every test applicable. Type
         [hashtable], default $null, may be null or empty.
+    .PARAMETER SitePopulation
+        The sites of the forest and the DCs in each, from Get-AdfaIntersiteSitePopulation (PORT-PLAN
+        C11f); $null keeps the C11 rule (the sites of this section's DCs only). Untyped, default
+        $null, may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -6972,7 +7272,9 @@ function Get-AdfaDcDiagnostic {
         # The forest root domain's DNS name: whose DCs the forest tests are asked first.
         [AllowNull()][AllowEmptyString()][string]$ForestRoot = '',
         # The SYSVOL engine of each DC (PORT-PLAN C11e), from Get-AdfaSysvolEngineByDc.
-        [AllowNull()][hashtable]$SysvolEngines = $null
+        [AllowNull()][hashtable]$SysvolEngines = $null,
+        # The sites of the forest and the DCs in each (PORT-PLAN C11f), from Get-AdfaIntersiteSitePopulation.
+        [AllowNull()]$SitePopulation = $null
     )
     if ($null -eq $Config) { $Config = $script:Config.DcDiag }
     $na = $script:Status.NotAssessed
@@ -6986,6 +7288,18 @@ function Get-AdfaDcDiagnostic {
     if ($timeoutSource -eq '') { $timeoutSource = 'tool default, not a Microsoft value' }
     $perDc = @(@(Get-AdfaConfigValue -Entry $Config -Name 'PerDcTests') | Where-Object { $null -ne $_ })
     $testNames = @($perDc | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Test') })
+    # PORT-PLAN C11f: the per-DC circuit breaker; a table without the keys takes the built-in ones.
+    $breakerThreshold = Get-AdfaConfigValue -Entry $Config -Name 'CircuitBreakerTimeouts'
+    if ($null -eq $breakerThreshold) { $breakerThreshold = $script:Config.DcDiag['CircuitBreakerTimeouts'] }
+    $breakerThreshold = [int]$breakerThreshold
+    $breakerSource = [string](Get-AdfaConfigValue -Entry $Config -Name 'CircuitBreakerSource')
+    if ($breakerSource -eq '') { $breakerSource = [string]$script:Config.DcDiag['CircuitBreakerSource'] }
+    $timeoutPattern = [string](Get-AdfaConfigValue -Entry $Config -Name 'TimeoutErrorPattern')
+    if ($timeoutPattern -eq '') { $timeoutPattern = [string]$script:Config.DcDiag['TimeoutErrorPattern'] }
+    $countWords = @('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten')
+    $breakerWord = [string]$breakerThreshold
+    if ($breakerThreshold -ge 0 -and $breakerThreshold -lt $countWords.Count) { $breakerWord = $countWords[$breakerThreshold] }
+    $breakerCause = ("circuit breaker: {0} consecutive time-outs" -f $breakerWord)
 
     # Tests held back unless asked for, and the sentence that explains each held-back cell.
     $active = @($script:Config.DcdiagActiveTests)
@@ -7030,7 +7344,7 @@ function Get-AdfaDcDiagnostic {
         # Dns*: what the DNS summary rows of this DC are graded from (PORT-PLAN C12): a cause that
         # stopped the test, or the run's own cause, overall verdict and parsed summary table.
         $state = [pscustomobject]@{ HostName = $dc; Scope = $scope; Site = $site; IsReadOnly = $readOnly; Usable = $false; Connectivity = $na; Status = $na
-            DnsCause = ''; DnsRunCause = ''; DnsOverall = ''; DnsOverallLine = ''; DnsSummary = $null }
+            DnsCause = ''; DnsRunCause = ''; DnsOverall = ''; DnsOverallLine = ''; DnsSummary = $null; BreakerTripped = $false; Excluded = '' }
         [void]$states.Add($state)
         $row = [ordered]@{ DomainController = $dc; Scope = $scope; Status = $null; Ping = $null }
         foreach ($t in $testNames) { $row["DCDIAG_$t"] = $na }
@@ -7046,6 +7360,7 @@ function Get-AdfaDcDiagnostic {
             $row.Status = $na
             $row.Failures = 'The inventory holds a domain controller with no host name, so dcdiag could not be run against it.'
             $state.DnsCause = 'the inventory holds this domain controller with no host name, so dcdiag could not be run against it.'
+            $state.Excluded = 'no host name'
             [void]$rows.Add([pscustomobject]$row)
             continue
         }
@@ -7062,6 +7377,7 @@ function Get-AdfaDcDiagnostic {
                 $row.Failures = ("DC not reachable - no dcdiag tests run. {0}" -f (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'it was not probed again'))
                 $state.DnsCause = (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'dcdiag was not run against it')
             }
+            $state.Excluded = 'unreachable on RPC/135'
             $state.Status = $row.Status
             [void]$rows.Add([pscustomobject]$row)
             continue
@@ -7082,6 +7398,9 @@ function Get-AdfaDcDiagnostic {
         $otherDetails = New-Object System.Collections.Generic.List[string]
         $skipped = New-Object System.Collections.Generic.List[string]
         $gated = $false
+        # PORT-PLAN C11f: this DC's own circuit breaker, and the tests it stopped.
+        $breaker = New-AdfaDcdiagBreaker -Threshold $breakerThreshold
+        $breakerSkipped = @()
         # PORT-PLAN C11e: the tests the catalogue rule makes not applicable to this DC's SYSVOL engine.
         $notApplicable = @()
         $notApplicableWhy = @()
@@ -7105,7 +7424,11 @@ function Get-AdfaDcDiagnostic {
             # Decided, not attempted (C11e): a test not applicable to this DC's SYSVOL engine.
             if ($notApplicable -contains $t) { $row["DCDIAG_$t"] = 'Not Applicable'; continue }
             if ($gated) { $skipped.Add($t); continue }
+            # PORT-PLAN C11f: after the breaker tripped, no further test is started on this DC; its cell
+            # stays Not Assessed and counts towards the row (not measured), and NotRun names the cause.
+            if ([bool]$breaker.Tripped) { $breakerSkipped += $t; continue }
             $run = Invoke-AdfaDcdiagTest -TestName $t -DomainController $dc -TimeoutSeconds $timeout -Retries $tries -RetryDelaySeconds $RetryDelaySeconds
+            $breaker = Register-AdfaDcdiagOutcome -Breaker $breaker -TimedOut (Test-AdfaDcdiagTimedOut -Run $run -Pattern $timeoutPattern)
             $parsed = ConvertFrom-AdfaDcdiagOutput -StdOut $run.StdOut -Config $Config
             $verdict = Resolve-AdfaDcdiagVerdict -Parsed $parsed -TestName $t -Mode 'Dc' -HostName $dc `
                 -PartitionParts ([bool](Get-AdfaConfigValue -Entry $entry -Name 'PartitionParts')) -EnterpriseParts ([bool](Get-AdfaConfigValue -Entry $entry -Name 'EnterpriseParts')) -EventLog ([bool](Get-AdfaConfigValue -Entry $entry -Name 'EventLog')) `
@@ -7143,6 +7466,19 @@ function Get-AdfaDcDiagnostic {
         if ($skipped -contains 'DNS') {
             $state.DnsCause = "not run after dcdiag's Connectivity test failed on this domain controller: no further dcdiag test was started on it."
         }
+        # Independent review: the breaker can trip on the last test this DC was asked, so nothing is left to
+        # skip; the row still says it tripped, and that the DC is therefore left out of the scoped tests.
+        $breakerExcludes = 'This DC is therefore not chosen for the once-per-domain, -forest or -site dcdiag tests (Topology, CheckSDRefDom, CrossRefValidation, Intersite).'
+        if (@($breakerSkipped).Count -gt 0) {
+            $notRunNotes.Add(("Not run, {0}: {1} dcdiag invocations in a row on this DC timed out ({2}), so no further dcdiag test was started on it (the threshold is {3}). Not assessed: {4}. Each time-out already includes every retry of that invocation. {5}" -f $breakerCause, [int]$breaker.ConsecutiveTimeouts, $breakerSource, $breakerThreshold, (@($breakerSkipped) -join ', '), $breakerExcludes))
+        }
+        elseif ([bool]$breaker.Tripped) {
+            $notRunNotes.Add(("Tripped, {0}: the last {1} dcdiag invocations on this DC timed out ({2}; the threshold is {3}). No test of this grid was left to run on it after the trip. Each time-out already includes every retry of that invocation. {4}" -f $breakerCause, [int]$breaker.ConsecutiveTimeouts, $breakerSource, $breakerThreshold, $breakerExcludes))
+        }
+        if (@($breakerSkipped) -contains 'DNS') {
+            $state.DnsCause = ("not run, {0} on this domain controller: no further dcdiag test was started on it." -f $breakerCause)
+        }
+        $state.BreakerTripped = [bool]$breaker.Tripped
         if ($heldBackNote -ne '') { $notRunNotes.Add($heldBackNote) }
         foreach ($why in $notApplicableWhy) { $notRunNotes.Add($why) }
 
@@ -7159,10 +7495,28 @@ function Get-AdfaDcDiagnostic {
         $row.NotRun = $notRunNotes -join ' | '
         $row.Failures = (@(@($failDetails.ToArray()) + @($otherDetails.ToArray())) -join ' | ')
         $state.Status = $row.Status
-        $state.Usable = ($state.Connectivity -ne $script:Status.Fail)
+        # PORT-PLAN C11f: a DC whose breaker tripped is not asked the once-per-domain, -forest or -site tests.
+        $state.Usable = ($state.Connectivity -ne $script:Status.Fail -and -not [bool]$state.BreakerTripped)
+        if ([bool]$state.BreakerTripped) { $state.Excluded = $breakerCause }
+        elseif ($state.Connectivity -eq $script:Status.Fail) { $state.Excluded = "failed dcdiag's Connectivity test" }
         [void]$rows.Add([pscustomobject]$row)
     }
     $allStates = @($states.ToArray())
+    # Independent review: a "none could run" row names, per DC, why that DC was not chosen, so a DC left
+    # out for its circuit breaker (or any other cause) is named on the row that lost it.
+    $exclusionText = {
+        param($Set)
+        $parts = @(@($Set) | Where-Object { $null -ne $_ } | ForEach-Object {
+                $n = [string]$_.HostName
+                if ([string]::IsNullOrWhiteSpace($n)) { $n = '(unnamed)' }
+                $w = [string]$_.Excluded
+                if ($w -eq '' -and $_.IsReadOnly -is [bool] -and [bool]$_.IsReadOnly) { $w = 'read-only' }
+                if ($w -eq '') { $w = 'not usable' }
+                ("{0}: {1}" -f $n, $w)
+            })
+        if ($parts.Count -eq 0) { return '' }
+        return (" Per domain controller: {0}." -f ($parts -join '; '))
+    }
 
     # ---- Per scoped domain: Topology ----
     $domains = New-Object System.Collections.ArrayList
@@ -7186,7 +7540,7 @@ function Get-AdfaDcDiagnostic {
             if ($null -eq $pick) {
                 $cause = ("No domain controller of this domain is in this section's list, so dcdiag /test:{0}, which runs once per domain, was not run. This is not a clean result." -f $t)
                 if ($inDomain.Count -gt 0) {
-                    $cause = ("None of the {0} domain controller(s) of this domain in this section could run it: each was unreachable on RPC/135, failed dcdiag's Connectivity test, or is read-only. dcdiag /test:{1} was not run, which is not a clean result." -f $inDomain.Count, $t)
+                    $cause = ("None of the {0} domain controller(s) of this domain in this section could run it: each was unreachable on RPC/135, failed dcdiag's Connectivity test, tripped the dcdiag circuit breaker, or is read-only.{2} dcdiag /test:{1} was not run, which is not a clean result." -f $inDomain.Count, $t, (& $exclusionText $inDomain))
                 }
                 [void]$rows.Add((New-AdfaDcDiagRow -Scope $domain -Item $item -Status $na -Detail $cause))
                 continue
@@ -7210,7 +7564,7 @@ function Get-AdfaDcDiagnostic {
         if (-not $haveDcdiag) { [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $rollItem -Status $na -Detail $noDcdiag)); continue }
         if ($null -eq $forestPick) {
             [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $rollItem -Status $na `
-                        -Detail ("No domain controller in this section could run it: each was unreachable on RPC/135, failed dcdiag's Connectivity test, or is read-only, or none was enumerated. dcdiag /test:{0}, which runs once per forest, was not run. This is not a clean result." -f $t)))
+                        -Detail ("No domain controller in this section could run it: each was unreachable on RPC/135, failed dcdiag's Connectivity test, tripped the dcdiag circuit breaker, or is read-only, or none was enumerated.{1} dcdiag /test:{0}, which runs once per forest, was not run. This is not a clean result." -f $t, (& $exclusionText $allStates))))
             continue
         }
         $host1 = [string]$forestPick.HostName
@@ -7247,23 +7601,86 @@ function Get-AdfaDcDiagnostic {
         }
         if (-not $haveDcdiag) { [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: not run" -f $t) -Status $na -Detail $noDcdiag)); continue }
         $named = @($allStates | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.HostName) })
+        # PORT-PLAN C11f (REPL-010): with the forest's sites and the NTDS Settings object of every DC
+        # (Get-AdfaIntersiteSitePopulation), every site gets one row - a site with no DC is not applicable,
+        # one whose DCs are all outside this section is not assessed - and a DC the inventory gave no site
+        # is placed in the site its NTDS Settings object names, matched by host name.
+        $popGiven = ($null -ne $SitePopulation)
+        $dsaRead = $false
+        $dsaServers = @()
+        if ($popGiven) {
+            $dsaRead = [bool](Get-AdfaConfigValue -Entry $SitePopulation -Name 'DsaRead')
+            $dsaServers = @(@(Get-AdfaConfigValue -Entry $SitePopulation -Name 'DsaServers') | Where-Object { $null -ne $_ })
+            foreach ($st in @($named | Where-Object { [string]$_.Site -eq '' })) {
+                $hostKey = ([string]$st.HostName).Trim().TrimEnd('.').ToLowerInvariant()
+                $placed = @($dsaServers | Where-Object { ([string]$_.HostName).Trim().TrimEnd('.').ToLowerInvariant() -eq $hostKey -and -not [string]::IsNullOrWhiteSpace([string]$_.Site) })
+                if ($placed.Count -gt 0) { $st.Site = [string]$placed[0].Site }
+            }
+        }
         $unknown = @($named | Where-Object { [string]$_.Site -eq '' })
         if ($unknown.Count -gt 0) {
             [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: site unknown" -f $t) -Status $na `
-                        -Detail ("The site of {0} domain controller(s) is not known ({1}): the DC inventory was not collected in this run, or gave no site. {2} runs once per site, so their sites were not tested unless another domain controller of the same site was. Name DomainControllers with DcDiagnostics." -f $unknown.Count, (@($unknown | ForEach-Object { [string]$_.HostName }) -join ', '), $t)))
+                        -Detail ("The site of {0} domain controller(s) is not known ({1}): the domain controller list of this run (the DC inventory, or one Get-ADDomainController -Filter * per domain when DomainControllers was not selected) gave no site for them, and no NTDS Settings object read in this run placed them. {2} runs once per site, so their sites were not tested unless another domain controller of the same site was. This is not a clean result." -f $unknown.Count, (@($unknown | ForEach-Object { [string]$_.HostName }) -join ', '), $t)))
         }
         $sites = @($named | Where-Object { [string]$_.Site -ne '' } | ForEach-Object { [string]$_.Site } | Sort-Object -Unique)
+        if ($popGiven) {
+            if ([bool](Get-AdfaConfigValue -Entry $SitePopulation -Name 'SitesRead')) {
+                # DECLARED POPULATION: every site read, in the order read, then any site of a DC that the
+                # list did not hold; names compared without regard to case. Each gets exactly one row.
+                $allSites = @()
+                foreach ($s in @(@(Get-AdfaConfigValue -Entry $SitePopulation -Name 'Sites') + @($sites))) {
+                    $sn = ([string]$s).Trim()
+                    if ($sn -ne '' -and @($allSites | Where-Object { $_ -eq $sn }).Count -eq 0) { $allSites += $sn }
+                }
+                $sites = @($allSites)
+            }
+            else {
+                $siteError = ([string](Get-AdfaConfigValue -Entry $SitePopulation -Name 'SitesError')).Trim().TrimEnd('.')
+                if ($siteError -eq '') { $siteError = 'no cause was given' }
+                [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: site list" -f $t) -Status $na `
+                            -Detail ("The forest's site list could not be read ({0}), so a site with no domain controller, or one whose domain controllers are not in this section, is not reported. Only the sites of this section's domain controllers were tested with dcdiag /test:{1}. This is not a clean result." -f $siteError, $t)))
+            }
+        }
         if ($sites.Count -eq 0 -and $unknown.Count -eq 0) {
             [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: no site" -f $t) -Status $na `
                         -Detail ("No domain controller was enumerated, so no site was tested with dcdiag /test:{0}. This is not a clean result." -f $t)))
         }
         foreach ($siteName in $sites) {
             $item = ("dcdiag {0}: {1}" -f $t, $siteName)
+            if ($popGiven) {
+                $siteState = Resolve-AdfaIntersiteSiteState -SiteName $siteName -SectionStates $named -DsaRead $dsaRead -DsaServers $dsaServers
+                if ([string]$siteState.State -eq 'NoDc') {
+                    # Not Applicable in the catalogue (REPL-010); this tool has no such status, so Info with a
+                    # "Not applicable:" Detail, as its other not-applicable rows (decision recorded in C11f).
+                    [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item ("dcdiag {0}: no DC in site {1}" -f $t, $siteName) -Status $script:Status.Info `
+                                -Detail ("Not applicable: no domain controller is in this site - the configuration partition holds no NTDS Settings object under it - so dcdiag /test:{0}, which is run against a domain controller of the site, has nothing to run against. A site with no domain controller is a supported design (automatic site coverage); Microsoft does not publish what {0} reports for such a site." -f $t) `
+                                -Evidence 'NTDS Settings objects (nTDSDSA) of the configuration partition: none under this site.' `
+                                -NotRun ("Not run: no domain controller in this site, so dcdiag /test:{0} has no server to run against." -f $t)))
+                    continue
+                }
+                if ([string]$siteState.State -eq 'OutOfScope') {
+                    [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $item -Status $na `
+                                -Detail ("This site holds {0} domain controller(s) by their NTDS Settings objects ({1}), and none of them is in this section's list: their domain is not in this run's scope, or their enumeration failed. dcdiag /test:{2} was not run for this site, which is not a clean result. -AllDomains scopes every domain of the forest." -f @($siteState.DsaHosts).Count, (@($siteState.DsaHosts) -join ', '), $t)))
+                    continue
+                }
+                if ([string]$siteState.State -eq 'Unknown' -and $dsaRead) {
+                    [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $item -Status $na `
+                                -Detail ("Whether this site holds a domain controller is not known: no NTDS Settings object read is under it, but the site of {0} NTDS Settings object(s) read could not be told from the server's distinguished name ({1}), so any of them may be in this site. No domain controller of this section is in it, so dcdiag /test:{2} was not run for it. This is not a clean result." -f @($siteState.UnplacedHosts).Count, (@($siteState.UnplacedHosts) -join ', '), $t)))
+                    continue
+                }
+                if ([string]$siteState.State -eq 'Unknown') {
+                    $dsaError = ([string](Get-AdfaConfigValue -Entry $SitePopulation -Name 'DsaError')).Trim().TrimEnd('.')
+                    if ($dsaError -eq '') { $dsaError = 'no cause was given' }
+                    [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $item -Status $na `
+                                -Detail ("Whether this site holds a domain controller is not known: the NTDS Settings objects of the forest could not be read ({0}). No domain controller of this section is in it, so dcdiag /test:{1} was not run for it. This is not a clean result." -f $dsaError, $t)))
+                    continue
+                }
+            }
             $inSite = @($named | Where-Object { [string]$_.Site -eq $siteName })
             $pick = Select-AdfaDcdiagTarget -States $inSite
             if ($null -eq $pick) {
                 [void]$rows.Add((New-AdfaDcDiagRow -Scope $forestScope -Item $item -Status $na `
-                            -Detail ("This site holds {0} domain controller(s) in this section, and none could run dcdiag: each was unreachable on RPC/135, failed dcdiag's Connectivity test, or is read-only. dcdiag /test:{1} was not run for this site, which is not a clean result." -f $inSite.Count, $t)))
+                            -Detail ("This site holds {0} domain controller(s) in this section, and none could run dcdiag: each was unreachable on RPC/135, failed dcdiag's Connectivity test, tripped the dcdiag circuit breaker, or is read-only.{2} dcdiag /test:{1} was not run for this site, which is not a clean result." -f $inSite.Count, $t, (& $exclusionText $inSite))))
                 continue
             }
             $res = Invoke-AdfaDcdiagScopedTest -TestName $t -DomainController ([string]$pick.HostName) -Config $Config -TimeoutSeconds $timeout -Retries $tries -RetryDelaySeconds $RetryDelaySeconds
@@ -9007,6 +9424,14 @@ function Get-AdfaDnsHealth {
             # https://learn.microsoft.com/powershell/module/dnsserver/set-dnsserversecondaryzone,
             # https://learn.microsoft.com/windows-server/networking/dns/manage-dns-zones, read
             # 2026-11-18). Independent review of the C16 diff, finding 2.
+            # PORT-PLAN C16d(c), closed as documented (re-read 2026-11-19): Set-DnsServerSecondaryZone lists no
+            # SecureSecondaries parameter (nor any zone transfer setting) and Get-DnsServerZone publishes no output
+            # property (https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverzone); only
+            # Set-DnsServerPrimaryZone documents -SecureSecondaries. MicrosoftDNS_Zone documents the WMI property
+            # for every zone with no value mapping, and Learn's zone-types page says transfers can be made from
+            # secondaries too - neither is a SecureSecondaries contract for a secondary zone. So a secondary zone
+            # that does carry the setting is still not counted in this Pass; a TransferAnyServer on any zone type
+            # is still the Warning above.
             $xferZones = @($zones | Where-Object { $graded -contains [string]$_.ZoneType })
             $xferUnread = @($xferZones | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.SecureSecondaries) })
             $xferTypes = ($graded -join ', ')
@@ -17822,7 +18247,9 @@ function Get-AdfaDcTargetsByDomain {
         the caller can give it a Not Assessed row; a DC returned with no host name is kept, for
         the caller to report, not dropped.
     .OUTPUTS
-        [pscustomobject] Targets (Scope, HostName), Failures (Domain, Error).
+        [pscustomobject] Targets (Scope, HostName and, since v1.42.0, Site, IsReadOnly and
+        ComputerObjectDN from the same object: '' or $null when it carries none), Failures (Domain,
+        Error).
     .PARAMETER Domains
         The DNS names of the domains to assess. Type [string[]], default @(), may be null or empty.
     .PARAMETER AdParams
@@ -17847,7 +18274,19 @@ function Get-AdfaDcTargetsByDomain {
                 $hostName = ''
                 $hostProp = $dc.PSObject.Properties['HostName']
                 if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $hostName = [string]$hostProp.Value }
-                [void]$targets.Add([pscustomobject]@{ Scope = [string]$domain; HostName = $hostName })
+                # PORT-PLAN C2i(3): what the same object already carries - no new read. The three names are
+                # the ones the DC inventory reads from Get-ADDomainController; Learn's page (read 2026-11-19)
+                # names only Name and HostName, so an absent value stays '' or $null, never a guess.
+                $siteName = ''
+                $siteProp = $dc.PSObject.Properties['Site']
+                if ($null -ne $siteProp -and $null -ne $siteProp.Value) { $siteName = ([string]$siteProp.Value).Trim() }
+                $readOnly = $null
+                $readOnlyProp = $dc.PSObject.Properties['IsReadOnly']
+                if ($null -ne $readOnlyProp -and $readOnlyProp.Value -is [bool]) { $readOnly = [bool]$readOnlyProp.Value }
+                $computerDn = ''
+                $computerDnProp = $dc.PSObject.Properties['ComputerObjectDN']
+                if ($null -ne $computerDnProp -and $null -ne $computerDnProp.Value) { $computerDn = ([string]$computerDnProp.Value).Trim() }
+                [void]$targets.Add([pscustomobject]@{ Scope = [string]$domain; HostName = $hostName; Site = $siteName; IsReadOnly = $readOnly; ComputerObjectDN = $computerDn })
             }
         }
         catch {
@@ -18049,21 +18488,61 @@ function Get-AdfaDomainDcHostName {
         [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
         [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
+    # PORT-PLAN C2i(3): one rule for both callers - the target objects, from Select-AdfaDomainDcTarget.
+    $selected = Select-AdfaDomainDcTarget -Domain $Domain -Targets $Targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains
+    $names = @(@($selected.Targets) | ForEach-Object { [string](ConvertTo-AdfaDcTarget -Target $_).HostName })
+    return [pscustomobject]@{ HostNames = [string[]]@($names); Gap = $selected.Gap }
+}
+
+function Select-AdfaDomainDcTarget {
+    <#
+    .SYNOPSIS
+        Pure: the per-DC targets of ONE scoped domain, as the target objects, or why there are none
+        (PORT-PLAN C2i(3)). For a per-domain consumer that needs more than the host name, such as
+        DcSecureChannel (the computer object's DN).
+    .DESCRIPTION
+        Targets: the targets whose Scope is -Domain (case-insensitive, no trailing dot). When no target
+        carries a domain at all (the unscoped fallback enumeration against the default server) and
+        -Domain is the only scoped domain, the unscoped targets are that domain's and are returned; in
+        every other case they are not taken for this domain. Gap: when Targets is empty, this domain's
+        entry of Get-AdfaDcPopulationGap (its enumeration threw, with the error; or it returned no DC);
+        $null otherwise. Get-AdfaDomainDcHostName answers from this function.
+    .OUTPUTS
+        [pscustomobject] Targets (object[]), Gap.
+    .PARAMETER Domain
+        The DNS name of the domain, for example contoso.com. Type [string], mandatory.
+    .PARAMETER Targets
+        The targets input of Select-AdfaDomainDcTarget: inventory rows, (Scope, HostName) rows or
+        plain host names. Untyped, default @(), may be null or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Domain,
+        [AllowNull()][AllowEmptyCollection()]$Targets = @(),
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+    )
     $key = $Domain.Trim().TrimEnd('.').ToLowerInvariant()
-    $named = @(@($Targets | Where-Object { $null -ne $_ }) | ForEach-Object { ConvertTo-AdfaDcTarget -Target $_ })
-    $names = @($named | Where-Object { $_.Scope.Trim().TrimEnd('.').ToLowerInvariant() -eq $key } | ForEach-Object { [string]$_.HostName })
-    $anyScoped = (@($named | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Scope) }).Count -gt 0)
+    $all = @(@($Targets) | Where-Object { $null -ne $_ })
+    $own = @($all | Where-Object { ([string](ConvertTo-AdfaDcTarget -Target $_).Scope).Trim().TrimEnd('.').ToLowerInvariant() -eq $key })
+    $anyScoped = (@($all | Where-Object { -not [string]::IsNullOrWhiteSpace([string](ConvertTo-AdfaDcTarget -Target $_).Scope) }).Count -gt 0)
     $scoped = @(@($ScopedDomains) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ([string]$_).Trim().TrimEnd('.').ToLowerInvariant() } | Sort-Object -Unique)
-    if ($names.Count -eq 0 -and -not $anyScoped -and $scoped.Count -eq 1 -and $scoped[0] -eq $key) {
-        $names = @($named | ForEach-Object { [string]$_.HostName })
-    }
+    if ($own.Count -eq 0 -and -not $anyScoped -and $scoped.Count -eq 1 -and $scoped[0] -eq $key) { $own = @($all) }
     $gap = $null
-    if ($names.Count -eq 0) {
+    if ($own.Count -eq 0) {
         $ownFailures = @(@($InventoryFailures | Where-Object { $null -ne $_ }) | Where-Object { ([string]$_.Domain).Trim().TrimEnd('.').ToLowerInvariant() -eq $key })
         $gaps = @(Get-AdfaDcPopulationGap -Targets @($Targets) -InventoryFailures $ownFailures -ScopedDomains @($Domain))
         if ($gaps.Count -gt 0) { $gap = $gaps[0] }
     }
-    return [pscustomobject]@{ HostNames = [string[]]@($names); Gap = $gap }
+    return [pscustomobject]@{ Targets = @($own); Gap = $gap }
 }
 
 function Invoke-AdfaDcRemoteRead {
@@ -23821,7 +24300,10 @@ function Merge-AdfaDcDiagConfig {
         What a file can change: TestTimeoutSeconds, the time-out of one dcdiag invocation (a whole
         number from 5 to 600, the range of -ExternalToolTimeoutSeconds), and Retries, the attempts
         per invocation (1 to 10, the range of -Retries). Microsoft publishes neither: both are tool
-        defaults.
+        defaults. Since v1.42.0 (PORT-PLAN C11f) also CircuitBreakerTimeouts, the consecutive
+        timed-out invocations on one DC after which its remaining tests are not run (1 to 10; the
+        operator's value 2 is a tool default, not a Microsoft value); CircuitBreakerSource then
+        says the file set it, without naming the path. TimeoutErrorPattern cannot be set.
 
             { "DcDiag": { "TestTimeoutSeconds": 180 } }
 
@@ -23868,8 +24350,10 @@ function Merge-AdfaDcDiagConfig {
         throw 'dcdiag config override is an empty object. It names no key, so it would change nothing while appearing to be in force.'
     }
     $ranges = [ordered]@{
-        TestTimeoutSeconds = @(5, 600, 'seconds for one dcdiag invocation')
-        Retries            = @(1, 10, 'attempts per dcdiag invocation')
+        TestTimeoutSeconds     = @(5, 600, 'seconds for one dcdiag invocation')
+        Retries                = @(1, 10, 'attempts per dcdiag invocation')
+        # PORT-PLAN C11f: consecutive timed-out invocations on one DC before its other tests are not run.
+        CircuitBreakerTimeouts = @(1, 10, 'consecutive timed-out dcdiag invocations on one DC before its remaining tests are not run')
     }
     $known = @($ranges.Keys)
     $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
@@ -23912,6 +24396,7 @@ function Merge-AdfaDcDiagConfig {
     if ($builtIn.Count -gt 0) { $text = ("{0}; {1}, for {2}" -f $text, [string]$BaseConfig['ThresholdSource'], ($builtIn -join ', ')) }
     $merged['ThresholdSource'] = $text
     if ($supplied -contains 'TestTimeoutSeconds') { $merged['TimeoutSource'] = 'set in the -ConfigOverridePath file; not a Microsoft value' }
+    if ($supplied -contains 'CircuitBreakerTimeouts') { $merged['CircuitBreakerSource'] = 'set in the -ConfigOverridePath file; not a Microsoft value' }
     return $merged
 }
 
@@ -26068,6 +26553,18 @@ function Get-AdfaLingeringObjectScan {
     .PARAMETER RpcPortTimeoutMs
         Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
         default 1200.
+    .PARAMETER DomainControllers
+        PORT-PLAN C2i(3): the run's shared per-domain DC list. When given, this domain's DCs are taken
+        from it (Get-AdfaDomainDcHostName) and the domain is not enumerated again; Get-ADDomain is
+        still read for the naming context and the PDC emulator. Untyped, default $null, may be null
+        or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -26075,7 +26572,11 @@ function Get-AdfaLingeringObjectScan {
         [Parameter(Mandatory)][string]$DomainName,
         [hashtable]$AdParams = @{},
         [int]$TimeoutSeconds = 300,
-        [int]$RpcPortTimeoutMs = 1200
+        [int]$RpcPortTimeoutMs = 1200,
+        # PORT-PLAN C2i(3): the shared per-domain DC list of the run; when given, the domain is not enumerated again.
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = $null,
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
     $rows = @()
     if (-not (Test-CommandAvailable -Name 'repadmin.exe')) {
@@ -26083,14 +26584,26 @@ function Get-AdfaLingeringObjectScan {
     }
     $p = @{} + $AdParams; $p.Server = $DomainName
     $domainNc = ''; $refDc = ''; $dcs = @()
+    $fromList = $PSBoundParameters.ContainsKey('DomainControllers')
     try {
         $dom = Get-ADDomain @p
         $domainNc = [string]$dom.DistinguishedName
         $refDc = [string]$dom.PDCEmulator
-        $dcs = @(Get-ADDomainController -Filter * @p | Select-Object -ExpandProperty HostName)
+        if (-not $fromList) { $dcs = @(Get-ADDomainController -Filter * @p | Select-Object -ExpandProperty HostName) }
     }
     catch {
         return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed -Detail $_.Exception.Message)
+    }
+    if ($fromList) {
+        # PORT-PLAN C2i(3): this domain's DCs from the shared list; a domain with none says why in its own row.
+        $listed = Get-AdfaDomainDcHostName -Domain $DomainName -Targets $DomainControllers -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains
+        $dcs = @($listed.HostNames)
+        if ($dcs.Count -eq 0) {
+            $gap = $listed.Gap
+            if ($null -eq $gap) { $gap = [pscustomobject]@{ Domain = $DomainName; Failed = $false; Error = ''; Seen = $false; WithoutDomain = 0 } }
+            return @(New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory-mode scan' -Status $script:Status.NotAssessed `
+                    -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No domain controller of it was scanned for lingering objects.'))
+        }
     }
     $refGuid = ''
     $refGuidError = ''
@@ -26114,6 +26627,12 @@ function Get-AdfaLingeringObjectScan {
     }
 
     foreach ($dc in $dcs) {
+        # A DC with no host name is reported, never probed (PORT-PLAN C2i(3)).
+        if ([string]::IsNullOrWhiteSpace([string]$dc)) {
+            $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item 'Advisory scan: (unnamed)' -Status $script:Status.NotAssessed `
+                -Detail 'The DC list holds a domain controller of this domain with no host name, so the advisory scan had nothing to run against.'
+            continue
+        }
         if ($dc.ToLowerInvariant().TrimEnd('.') -eq $refDc.ToLowerInvariant().TrimEnd('.')) { continue }
         $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $RpcPortTimeoutMs
         if ($gate.Cause) {
@@ -28766,6 +29285,19 @@ function Get-AdfaDcSecureChannel {
     .PARAMETER RpcPortTimeoutMs
         Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
         default 1200.
+    .PARAMETER DomainControllers
+        PORT-PLAN C2i(3): the run's shared per-domain DC list (inventory rows or Get-AdfaDcTargetsByDomain
+        rows, which carry ComputerObjectDN). When given, this domain's DCs are taken from it
+        (Select-AdfaDomainDcTarget) and the domain is not enumerated again; a DC it carries without a
+        computer object DN has its password row Not Assessed. Untyped, default $null, may be null or
+        empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, so a domain whose DCs could
+        not be listed is reported Not Assessed rather than left out. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
+        current or -Server domain). Type [string[]], default @(), may be null or empty.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -28778,49 +29310,75 @@ function Get-AdfaDcSecureChannel {
         # Run nltest /sc_verify on each DC instead of /sc_query. /sc_verify resets a channel
         # that is not working, on every DC it reaches; off unless asked for.
         [switch]$LiveVerify,
-        [int]$RpcPortTimeoutMs = 1200
+        [int]$RpcPortTimeoutMs = 1200,
+        # PORT-PLAN C2i(3): the shared per-domain DC list of the run; when given, the domain is not enumerated again.
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = $null,
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
     )
     $rows = @()
     $scArgument = Get-AdfaNltestScArgument -Domain $DomainName -LiveVerify:$LiveVerify
     $p = @{} + $AdParams; $p.Server = $DomainName
     $dcs = @()
-    # PORT-PLAN C2e: the domain's own enumeration (-Server <domain>), so every scoped domain is read; a
-    # domain that cannot be enumerated, or that returns no DC, says so in its own row.
-    try { $dcs = @(Get-ADDomainController -Filter * @p | Where-Object { $null -ne $_ }) }
-    catch {
-        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'DC enumeration' -Status $script:Status.NotAssessed `
-            -Detail (Get-AdfaDcPopulationGapText -Gap ([pscustomobject]@{ Domain = $DomainName; Failed = $true; Error = [string]$_.Exception.Message; Seen = $false; WithoutDomain = 0 }) `
-                -NothingRead 'No machine-account password and no secure channel of its DCs was read.')
-        return @($rows)
+    $nothingRead = 'No machine-account password and no secure channel of its DCs was read.'
+    if ($PSBoundParameters.ContainsKey('DomainControllers')) {
+        # PORT-PLAN C2i(3): this domain's DCs from the shared list (Select-AdfaDomainDcTarget); a domain whose
+        # DCs could not be listed, or that has none in it, says so in its own row with the cause.
+        $selected = Select-AdfaDomainDcTarget -Domain $DomainName -Targets $DomainControllers -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains
+        $dcs = @($selected.Targets)
+        if ($dcs.Count -eq 0) {
+            $gap = $selected.Gap
+            if ($null -eq $gap) { $gap = [pscustomobject]@{ Domain = $DomainName; Failed = $false; Error = ''; Seen = $false; WithoutDomain = 0 } }
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'DC enumeration' -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead $nothingRead)
+            return @($rows)
+        }
     }
-    if ($dcs.Count -eq 0) {
-        $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'DC enumeration' -Status $script:Status.NotAssessed `
-            -Detail (Get-AdfaDcPopulationGapText -Gap ([pscustomobject]@{ Domain = $DomainName; Failed = $false; Error = ''; Seen = $false; WithoutDomain = 0 }) `
-                -NothingRead 'No machine-account password and no secure channel of its DCs was read.')
-        return @($rows)
+    else {
+        # A direct caller with no list: the domain's own enumeration (-Server <domain>), as before C2i(3).
+        try { $dcs = @(Get-ADDomainController -Filter * @p | Where-Object { $null -ne $_ }) }
+        catch {
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'DC enumeration' -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcPopulationGapText -Gap ([pscustomobject]@{ Domain = $DomainName; Failed = $true; Error = [string]$_.Exception.Message; Seen = $false; WithoutDomain = 0 }) `
+                    -NothingRead $nothingRead)
+            return @($rows)
+        }
+        if ($dcs.Count -eq 0) {
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'DC enumeration' -Status $script:Status.NotAssessed `
+                -Detail (Get-AdfaDcPopulationGapText -Gap ([pscustomobject]@{ Domain = $DomainName; Failed = $false; Error = ''; Seen = $false; WithoutDomain = 0 }) `
+                    -NothingRead $nothingRead)
+            return @($rows)
+        }
     }
 
     foreach ($dc in $dcs) {
-        $dcHost = ''
-        $hostProp = $dc.PSObject.Properties['HostName']
-        if ($null -ne $hostProp -and $null -ne $hostProp.Value) { $dcHost = [string]$hostProp.Value }
+        $dcHost = [string](ConvertTo-AdfaDcTarget -Target $dc).HostName
         if ([string]::IsNullOrWhiteSpace($dcHost)) {
             $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item 'Secure channel: (unnamed)' -Status $script:Status.NotAssessed `
                 -Detail 'The enumeration returned a domain controller with no host name, so there was nothing to connect to: neither its machine-account password nor its secure channel was read.'
             continue
         }
-        # (1) Machine-account password age - central, from the replicated attribute.
-        try {
-            $comp = Get-ADComputer -Identity $dc.ComputerObjectDN -Properties PasswordLastSet @p
-            $age = $null
-            if ($comp.PasswordLastSet) { $age = ((Get-Date) - $comp.PasswordLastSet).TotalDays }
-            $verdict = Resolve-AdfaDcPasswordVerdict -AgeDays $age -WarnDays $WarnDays -FailDays $FailDays
-            $ageText = 'never set / not readable'
-            if ($null -ne $age) { $ageText = ('{0:N0} day(s) old (set {1:yyyy-MM-dd})' -f $age, $comp.PasswordLastSet) }
-            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Machine-account password: {0}" -f $dc.HostName) -Status $verdict -Detail ("pwdLastSet is {0}. Default rotation is every 30 days; a stale value on a DC usually means it was restored from an old backup or rotation is disabled." -f $ageText)
+        $dcDn = ''
+        if ($dc -isnot [string]) { $dcDn = ([string](Get-AdfaConfigValue -Entry $dc -Name 'ComputerObjectDN')).Trim() }
+        # (1) Machine-account password age - central, from the replicated attribute. PORT-PLAN C2i(3): read by
+        # the computer object DN the DC list carries; without one it is not read, never looked up by a guess.
+        if ($dcDn -eq '') {
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Machine-account password: {0}" -f $dcHost) -Status $script:Status.NotAssessed `
+                -Detail "The DC list this run took does not carry the distinguished name of this DC's computer object, so its pwdLastSet was not read. This is not a clean result."
         }
-        catch {
-            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Machine-account password: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+        else {
+            try {
+                $comp = Get-ADComputer -Identity $dcDn -Properties PasswordLastSet @p
+                $age = $null
+                if ($comp.PasswordLastSet) { $age = ((Get-Date) - $comp.PasswordLastSet).TotalDays }
+                $verdict = Resolve-AdfaDcPasswordVerdict -AgeDays $age -WarnDays $WarnDays -FailDays $FailDays
+                $ageText = 'never set / not readable'
+                if ($null -ne $age) { $ageText = ('{0:N0} day(s) old (set {1:yyyy-MM-dd})' -f $age, $comp.PasswordLastSet) }
+                $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Machine-account password: {0}" -f $dcHost) -Status $verdict -Detail ("pwdLastSet is {0}. Default rotation is every 30 days; a stale value on a DC usually means it was restored from an old backup or rotation is disabled." -f $ageText)
+            }
+            catch {
+                $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Machine-account password: {0}" -f $dcHost) -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+            }
         }
 
         # (2) Secure channel verified ON the DC, via WinRM where reachable. PORT-PLAN C1b/C14c: through
@@ -28833,14 +29391,14 @@ function Get-AdfaDcSecureChannel {
         elseif ($scGate.Open[5985]) {
             try {
                 $icm = @{
-                    ComputerName = $dc.HostName
+                    ComputerName = $dcHost
                     ScriptBlock  = { param($a) & nltest.exe $a 2>&1 | Out-String }
                     ArgumentList = $scArgument
                     ErrorAction  = 'Stop'
                 }
                 if ($Credential) { $icm.Credential = $Credential }
                 $out = [string](Invoke-Command @icm)
-                $scItem = ("Secure channel: {0}" -f $dc.HostName)
+                $scItem = ("Secure channel: {0}" -f $dcHost)
                 if ($LiveVerify) {
                     $v = Get-AdfaScVerifyOutcome -Output $out
                     if ($v.Outcome -eq 'Ok') {
@@ -28867,11 +29425,11 @@ function Get-AdfaDcSecureChannel {
                 }
             }
             catch {
-                $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail ("WinRM query failed: {0}. Run 'nltest {1}' locally on the DC." -f $_.Exception.Message, $scArgument)
+                $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dcHost) -Status $script:Status.NotAssessed -Detail ("WinRM query failed: {0}. Run 'nltest {1}' locally on the DC." -f $_.Exception.Message, $scArgument)
             }
         }
         else {
-            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dc.HostName) -Status $script:Status.NotAssessed -Detail ("WinRM (5985) not reachable from this host. Run 'nltest {0}' locally on the DC." -f $scArgument)
+            $rows += New-Finding -Scope $DomainName -Area 'DcSecureChannel' -Item ("Secure channel: {0}" -f $dcHost) -Status $script:Status.NotAssessed -Detail ("WinRM (5985) not reachable from this host. Run 'nltest {0}' locally on the DC." -f $scArgument)
         }
     }
     return @($rows)
@@ -34944,7 +35502,7 @@ function Get-AdfaGpoDirectoryRows {
     )
     $cap = Resolve-AdfaCapSource -CapSource $CapSource -Config $Config -Label 'Inventory'
     $max = [int]$Config['MaxObjects']
-    $evidence = ("groupPolicyContainer objects one level under CN=Policies,CN=System (displayName, flags, gPCWQLFilter, versionNumber); gPLink and gPOptions of the domain head, its OUs and every site, and of the domain head and OUs of every other scoped domain; msWMI-Som under CN=System. Read from the domain, listed properties, at most {0} objects per read. gPLink options: Learn group-policy-scope; gPCWQLFilter, msWMI-Som: Learn adschema; a GPO can be linked anywhere in the forest: Learn group-policy-management-console (read 2026-11-17); flags labels: the Gpo table (MS-GPOL). Inventory only (catalogue INV-011): not graded." -f $max)
+    $evidence = ("groupPolicyContainer objects one level under CN=Policies,CN=System (displayName, flags, gPCWQLFilter, versionNumber); gPLink and gPOptions of the domain head, its OUs and every site, and of the domain head and OUs of every other scoped domain (and, with -IncludeUnscopedGpoLinks, of every other forest domain); msWMI-Som under CN=System. Read from the domain, listed properties, at most {0} objects per read. gPLink options: Learn group-policy-scope; gPCWQLFilter, msWMI-Som: Learn adschema; a GPO can be linked anywhere in the forest: Learn group-policy-management-console (read 2026-11-17); flags labels: the Gpo table (MS-GPOL). Inventory only (catalogue INV-011): not graded." -f $max)
     $sumItem = ("GPO directory inventory: {0}" -f $DomainName)
     $sumColumns = [ordered]@{ Gpos = ''; Linked = ''; Unlinked = ''; NoLinkFound = ''; Soms = ''; SomsWithNoLink = ''; Links = ''; UnparsedLinks = ''; LinksToOtherGpos = ''; OtherDomainSoms = ''; OtherDomainsNotRead = ''; UnlinkedGpos = ''; NoLinkFoundGpos = '' }
     $thisDn = ConvertTo-AdfaGpLinkDomainDn -Dn $DomainDn -DomainName $DomainName
@@ -34993,7 +35551,7 @@ function Get-AdfaGpoDirectoryRows {
         $otherDone++
         foreach ($s in @(@(Get-AdfaConfigValue -Entry $otherRaw -Name 'Records') | Where-Object { $null -ne $_ })) { $otherSources += [pscustomobject]@{ Record = $s; IsSite = $false; IsOther = $true } }
     }
-    if ($outOfScope -gt 0) { $crossCauses += ("The domain head and OUs of {0} other forest domain(s) were not read: they are not in this run's scope (-AllDomains reads them)." -f $outOfScope) }
+    if ($outOfScope -gt 0) { $crossCauses += ("The domain head and OUs of {0} other forest domain(s) were not read: they are not in this run's scope (-AllDomains reads them; -IncludeUnscopedGpoLinks reads only their gPLink, one capped read per domain)." -f $outOfScope) }
     $crossKnown = ($crossCauses.Count -eq 0)
     $counters = @{}
     $rows = @()
@@ -35130,6 +35688,46 @@ function Get-AdfaGpoDirectoryRows {
     return @($rows)
 }
 
+function Get-AdfaGpoSomRaw {
+    <#
+    .SYNOPSIS
+        The gPLink read of one domain: its head and every OU that holds a gPLink, from that domain,
+        listed properties, capped (INV-011). Never throws (Get-AdfaInventoryDirectoryRaw).
+    .DESCRIPTION
+        The one place the GPO inventory reads the gPLink of a domain's SOMs, for a scoped domain and,
+        with -IncludeUnscopedGpoLinks, for a forest domain outside the scope (PORT-PLAN C15d(2)). gPLink
+        is "a sorted list of Group Policy options" on Organizational-Unit, Sam-Domain, Site and
+        Configuration objects (Learn adschema a-gplink, read 2026-11-19); reading it changes nothing.
+    .OUTPUTS
+        [pscustomobject] the seam's read result (Ok, Error, ErrorType, NotFound, Records, Count, Capped).
+    .PARAMETER DomainName
+        The DNS name of the domain this function works on, for example contoso.com. Type [string],
+        mandatory.
+    .PARAMETER DomainDn
+        The distinguished name of the domain, for example DC=contoso,DC=com: the search base. Type
+        [string], mandatory.
+    .PARAMETER Config
+        The Inventory table (SomProperties, the declared list read). Type [hashtable], mandatory.
+    .PARAMETER MaxObjects
+        The most objects to read. A read that reaches it says that the list may be cut off. Type
+        [int], default 100000, from 1 to 1000000.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [Parameter(Mandatory)][string]$DomainDn,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [ValidateRange(1, 1000000)][int]$MaxObjects = 100000,
+        [hashtable]$AdParams = @{}
+    )
+    return (Get-AdfaInventoryDirectoryRaw -Server $DomainName -SearchBase $DomainDn -SearchScope 'Subtree' -LDAPFilter '(gPLink=*)' -Properties @($Config['SomProperties']) -MaxObjects $MaxObjects -AdParams $AdParams)
+}
+
 function Get-AdfaGpoDirectoryInventory {
     <#
     .SYNOPSIS
@@ -35139,7 +35737,10 @@ function Get-AdfaGpoDirectoryInventory {
         Every scoped domain is read first, so each domain's GPOs are matched against the SOMs of
         every other scoped domain too: a GPO can be linked from any domain of the forest. The
         domains of -ForestDomains outside the scope are not read; their absence is named in the
-        rows and keeps "no link" from being stated.
+        rows and keeps "no link" from being stated. With -IncludeUnscopedDomains (the script's
+        -IncludeUnscopedGpoLinks, PORT-PLAN C15d(2)) the gPLink of the domain head and OUs of each of
+        them is read too - one capped read per domain, from that domain, read-only - and they get no
+        rows of their own; a read that fails keeps its domain in OtherDomainsNotRead with the cause.
     .OUTPUTS
         [pscustomobject[]]
     .PARAMETER Domains
@@ -35165,6 +35766,10 @@ function Get-AdfaGpoDirectoryInventory {
         Where MaxObjects came from, in the row's words (Get-AdfaCapSource of the Inventory table in
         force), passed to every domain's rows; '' derives it from -Config (PORT-PLAN C4b4). Type
         [string], default '', may be empty.
+    .PARAMETER IncludeUnscopedDomains
+        Also read the gPLink of the domain head and OUs of every forest domain outside -Domains (one
+        capped read each); off unless asked for, because it reads domains the operator did not scope.
+        Switch.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -35176,7 +35781,9 @@ function Get-AdfaGpoDirectoryInventory {
         [hashtable]$AdParams = @{},
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][hashtable]$GpoConfig,
-        [AllowEmptyString()][string]$CapSource = ''
+        [AllowEmptyString()][string]$CapSource = '',
+        # PORT-PLAN C15d(2): also read the gPLink of the forest domains outside the scope (opt-in).
+        [switch]$IncludeUnscopedDomains
     )
     $cap = Resolve-AdfaCapSource -CapSource $CapSource -Config $Config -Label 'Inventory'
     if (-not [string]::IsNullOrWhiteSpace($ForestError)) {
@@ -35199,7 +35806,7 @@ function Get-AdfaGpoDirectoryInventory {
         if ($dn.Ok) {
             $domainDn = [string]$dn.Dn
             $gpc = Get-AdfaInventoryDirectoryRaw -Server $d -SearchBase ("CN=Policies,CN=System,{0}" -f $dn.Dn) -SearchScope 'OneLevel' -LDAPFilter '(objectClass=groupPolicyContainer)' -Properties @($Config['GpoContainerProperties']) -MaxObjects $max -AdParams $AdParams
-            $som = Get-AdfaInventoryDirectoryRaw -Server $d -SearchBase $dn.Dn -SearchScope 'Subtree' -LDAPFilter '(gPLink=*)' -Properties $somProps -MaxObjects $max -AdParams $AdParams
+            $som = Get-AdfaGpoSomRaw -DomainName $d -DomainDn $dn.Dn -Config $Config -MaxObjects $max -AdParams $AdParams
             $wmi = Get-AdfaInventoryDirectoryRaw -Server $d -SearchBase ("CN=System,{0}" -f $dn.Dn) -SearchScope 'Subtree' -LDAPFilter '(objectClass=msWMI-Som)' -Properties @($Config['WmiFilterProperties']) -MaxObjects $max -AdParams $AdParams
         }
         else {
@@ -35209,9 +35816,23 @@ function Get-AdfaGpoDirectoryInventory {
         }
         $reads += [pscustomobject]@{ Domain = $d; DomainDn = $domainDn; Gpc = $gpc; Som = $som; Wmi = $wmi }
     }
+    # PORT-PLAN C15d(2), opt-in (-IncludeUnscopedGpoLinks): the gPLink of the domain head and OUs of every
+    # forest domain outside the scope - one capped read per domain, from that domain, read-only - so a GPO
+    # linked only from there is found, and "no link" can be stated. Its DN is built from its DNS name (DC= per
+    # label), so no other read is made. Off by default: it reads domains the operator did not scope.
+    $unscopedSom = @()
+    if ($IncludeUnscopedDomains) {
+        $scopedKeys = @(@($Domains) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ([string]$_).Trim().TrimEnd('.').ToLowerInvariant() })
+        foreach ($fd in @(@($ForestDomains) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim() })) {
+            if ($scopedKeys -contains $fd.TrimEnd('.').ToLowerInvariant()) { continue }
+            # One read per domain: a name given twice, in another case or with a trailing dot, is read once.
+            if (@($unscopedSom | Where-Object { ([string]$_.Domain).TrimEnd('.').ToLowerInvariant() -eq $fd.TrimEnd('.').ToLowerInvariant() }).Count -gt 0) { continue }
+            $unscopedSom += [pscustomobject]@{ Domain = $fd; Raw = (Get-AdfaGpoSomRaw -DomainName $fd -DomainDn (ConvertTo-AdfaGpLinkDomainDn -DomainName $fd) -Config $Config -MaxObjects $max -AdParams $AdParams) }
+        }
+    }
     $rows = @()
     foreach ($r in $reads) {
-        $other = @($reads | Where-Object { $_.Domain -ne $r.Domain } | ForEach-Object { [pscustomobject]@{ Domain = $_.Domain; Raw = $_.Som } })
+        $other = @(@($reads | Where-Object { $_.Domain -ne $r.Domain } | ForEach-Object { [pscustomobject]@{ Domain = $_.Domain; Raw = $_.Som } }) + @($unscopedSom))
         $rows += @(Get-AdfaGpoDirectoryRows -DomainName $r.Domain -DomainDn $r.DomainDn -Gpc $r.Gpc -Som $r.Som -Site $site -Wmi $r.Wmi -ForestDomains $ForestDomains -OtherSom $other -Config $Config -GpoConfig $GpoConfig -CapSource $cap)
     }
     return @($rows)
@@ -35995,7 +36616,7 @@ $script:RecommendationMap = @(
        Text  = 'dcdiag CheckSDRefDom reported an application directory partition whose security descriptor reference domain is not right. Microsoft documents that this test validates the cross-reference objects in CN=Partitions,CN=Configuration of the forest root domain and checks that their msDS-SDReferenceDomain attribute holds the correct domain name. Run "dcdiag /test:CheckSDRefDom /s:<dc> /v" to see which partition, then read msDS-SDReferenceDomain on that partition''s crossRef object. This tool changes nothing.' }
     @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag CrossRefValidation: '
        Text  = 'dcdiag CrossRefValidation reported a cross-reference that is not valid. Microsoft documents that this test reads the nCName, dnsRoot, nETBIOSName and systemFlags attributes of the crossRef objects in CN=Partitions,CN=Configuration to find names that are invalid or null, names altered by CNF or 0ADEL (a name conflict or a deleted object), wrong systemFlags, and empty (orphaned) replica sets. Run "dcdiag /test:CrossRefValidation /s:<dc> /v" to see which partition, then read those four attributes on its crossRef object. This tool changes nothing.' }
-    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag Intersite: (?!(not run|site unknown|no site) :: )'
+    @{ Section = '(?i)^dc diagnostics'; Match = '(?i)^DC Diagnostics :: dcdiag Intersite: (?!(not run|site unknown|no site|site list) :: |no DC in site )'
        Text  = 'dcdiag Intersite reported a failure that would prevent or hold up intersite replication for this site. Microsoft documents that this test locates and connects to the Intersite Topology Generator and the bridgehead servers, reports replication failures, and validates that the DCs in sites with inbound connections to this site are available. Run dcdiag''s Intersite test by hand against the DC named in this row, with /a and /v, to see the servers it names, and check their availability and the site links between the sites. Microsoft documents that this test triggers a replication; this tool ran it only because -IncludeDcdiagActiveTests was given.' }
     # --- Section-scoped: the DNS summary rows of DC Diagnostics, one per test group, per DC and per
     #     domain (PORT-PLAN C12). Anchored on the Item prefix this tool writes ("dcdiag DNS <group>: "),
@@ -37431,10 +38052,10 @@ function Invoke-Main {
     if ($Credential) { $credentialText = '<redacted>' }
     $outputPathText = '(default)'
     if ($OutputPath) { $outputPathText = $OutputPath }
-    Write-Log -Level INFO ("Parameters: OutputPath={0} AllDomains={1} Sections={2} IncludeDcdiag={3} IncludeRepadmin={4} IncludeLingeringObjectScan={5} IncludeSysvolBacklog={6} SkipTrustVerification={7} IncludeSecureChannelVerify={8} IncludeDcdiagActiveTests={9} IncludeLdapsHandshake={10} Server={11} Credential={12} ExchangeSeConfigPath={13} DcSystemConfigPath={14} ConfigOverridePath={15} StaleDays={16} KrbtgtMaxAgeDays={17} EventLookbackDays={18} RpcPortTimeoutMs={19} ExternalToolTimeoutSeconds={20} Retries={21} RetryDelaySeconds={22}" -f `
+    Write-Log -Level INFO ("Parameters: OutputPath={0} AllDomains={1} Sections={2} IncludeDcdiag={3} IncludeRepadmin={4} IncludeLingeringObjectScan={5} IncludeSysvolBacklog={6} SkipTrustVerification={7} IncludeSecureChannelVerify={8} IncludeDcdiagActiveTests={9} IncludeLdapsHandshake={10} IncludeUnscopedGpoLinks={23} Server={11} Credential={12} ExchangeSeConfigPath={13} DcSystemConfigPath={14} ConfigOverridePath={15} StaleDays={16} KrbtgtMaxAgeDays={17} EventLookbackDays={18} RpcPortTimeoutMs={19} ExternalToolTimeoutSeconds={20} Retries={21} RetryDelaySeconds={22}" -f `
         $outputPathText, [bool]$AllDomains, ($Sections -join ','), [bool]$IncludeDcdiag, [bool]$IncludeRepadmin, [bool]$IncludeLingeringObjectScan, [bool]$IncludeSysvolBacklog, `
         [bool]$SkipTrustVerification, [bool]$IncludeSecureChannelVerify, [bool]$IncludeDcdiagActiveTests, [bool]$IncludeLdapsHandshake, $Server, $credentialText, `
-        $ExchangeSeConfigPath, $DcSystemConfigPath, $ConfigOverridePath, $StaleDays, $KrbtgtMaxAgeDays, $EventLookbackDays, $RpcPortTimeoutMs, $ExternalToolTimeoutSeconds, $Retries, $RetryDelaySeconds)
+        $ExchangeSeConfigPath, $DcSystemConfigPath, $ConfigOverridePath, $StaleDays, $KrbtgtMaxAgeDays, $EventLookbackDays, $RpcPortTimeoutMs, $ExternalToolTimeoutSeconds, $Retries, $RetryDelaySeconds, [bool]$IncludeUnscopedGpoLinks)
     # The log path on screen at the start (and again at the end, in the finally below).
     Write-Log -Level INFO ("Detailed log: {0}" -f $script:LogFile)
     if (-not $runFolder.RootExisted) {
@@ -37642,7 +38263,15 @@ function Invoke-Main {
         # The DCs of EVERY scoped domain, each carrying its domain, exactly as DcDisk takes them.
         $c14Targets = @($allDcInventory)
         $c14Failures = @($dcInventoryFailures)
-        if (-not $dcInventoryCollected -and ((Test-SectionSelected 'PortMatrix' $Sections) -or (Test-SectionSelected 'Topology' $Sections))) {
+        # PORT-PLAN C2i(1), reversing C2h(1): the DCs are classified whenever any section or switch that probes
+        # a DC is selected, not only PortMatrix, so every per-DC section reads the class and each port is
+        # probed once per run through the shared cache. The list is every section whose branch reaches the
+        # probe gate (Get-AdfaDcProbeGate), DomainControllers for its DC DNS client read; a test derives the
+        # same list from the call graph and fails on a section missing here or listed without a probe.
+        $classifySections = @('DomainControllers', 'Replication', 'Topology', 'DcDiagnostics', 'Dns', 'Sysvol', 'Gpo', 'DcHardening', 'DcSystem', 'DcDisk',
+            'DcCertificates', 'Backup', 'DnsAdConsistency', 'TimeHierarchy', 'PortMatrix', 'DcSecureChannel', 'DsEvents', 'RestoreIntegrity', 'DnsRecordExport')
+        $classifyDcs = ((@($classifySections | Where-Object { Test-SectionSelected $_ $Sections }).Count -gt 0) -or $IncludeLingeringObjectScan -or $IncludeRepadmin -or $IncludeDcdiag)
+        if (-not $dcInventoryCollected -and ($classifyDcs -or (Test-SectionSelected 'Topology' $Sections))) {
             $c14Enumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
             $c14Targets = @($c14Enumeration.Targets)
             $c14Failures = @($c14Enumeration.Failures)
@@ -37660,7 +38289,7 @@ function Invoke-Main {
         $inventoryCapSource = Get-AdfaCapSource -Config $inventoryConfig -BaseConfig $script:Config.Inventory -Key 'MaxObjects' -Label 'Inventory'
         $c15Targets = @($c14Targets)
         $c15Failures = @($c14Failures)
-        $c14PerDomain = ($dcInventoryCollected -or (Test-SectionSelected 'PortMatrix' $Sections) -or (Test-SectionSelected 'Topology' $Sections))
+        $c14PerDomain = ($dcInventoryCollected -or $classifyDcs -or (Test-SectionSelected 'Topology' $Sections))
         # Whether $c15Targets is a per-domain list (PORT-PLAN C2e reuses it rather than enumerating again).
         $c15PerDomain = $c14PerDomain
         if (-not $c14PerDomain -and ((Test-SectionSelected 'Forest' $Sections) -or (Test-SectionSelected 'DsEvents' $Sections) -or (Test-SectionSelected 'TimeHierarchy' $Sections))) {
@@ -37676,8 +38305,9 @@ function Invoke-Main {
                     -DomainControllers $c15Targets -InventoryFailures $c15Failures -ScopedDomains $targetDomains -ForestError $forestError -AdParams $adParams -Config $inventoryConfig -CapSource $inventoryCapSource)
         }
         $reachRows = @()
-        if (Test-SectionSelected 'PortMatrix' $Sections) {
-            Write-Stage 'DC reachability (name resolution, LDAP 389, WinRM 5985, RPC 135; once per DC, reused by Site Health and Time Hierarchy)'
+        if ($classifyDcs) {
+            # The rows are reported in Port Reachability only, when PortMatrix is selected (its branch below).
+            Write-Stage 'DC reachability (name resolution, LDAP 389, WinRM 5985, RPC 135; once per DC, read by every per-DC section)'
             $reachRows = @(Get-AdfaDcReachabilityRows -DomainControllers $c14Targets -Config $reachConfig -InventoryFailures $c14Failures `
                     -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
         }
@@ -37700,10 +38330,11 @@ function Invoke-Main {
         # by all of them (one Get-ADDomainController per domain per run), and the unscoped names last.
         $perDcTargets = @($c15Targets)
         $perDcFailures = @($c15Failures)
+        # PORT-PLAN C2i(3): DcSecureChannel and the lingering-object scan take this list too.
         $perDcSections = @('Replication', 'Sysvol', 'DcSystem', 'Backup', 'DnsAdConsistency', 'DsaCname', 'GcConsistency', 'MsdcsDelegation',
-            'TimeHierarchy', 'PortMatrix', 'DsEvents', 'RestoreIntegrity')
+            'TimeHierarchy', 'PortMatrix', 'DsEvents', 'RestoreIntegrity', 'DcSecureChannel')
         $perDcSelected = (@($perDcSections | Where-Object { Test-SectionSelected $_ $Sections }).Count -gt 0)
-        if (-not $c15PerDomain -and ($perDcSelected -or $IncludeRepadmin -or $IncludeDcdiag)) {
+        if (-not $c15PerDomain -and ($perDcSelected -or $IncludeRepadmin -or $IncludeDcdiag -or $IncludeLingeringObjectScan)) {
             $perDcEnumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
             $perDcTargets = @($perDcEnumeration.Targets)
             $perDcFailures = @($perDcEnumeration.Failures)
@@ -37857,9 +38488,17 @@ function Invoke-Main {
                 $dcDiagFailures = @($dcDiagEnumeration.Failures)
             }
             if ($dcDiagTargets.Count -eq 0) { $dcDiagTargets = @($dcNames) }
+            # PORT-PLAN C11f (REPL-010): only when Intersite runs, the sites of the forest and the DCs in each
+            # (the Topology section's site list where it was read, otherwise one read), read-only.
+            $intersitePopulation = $null
+            if ($IncludeDcdiagActiveTests -and -not $forestError) {
+                $intersiteSites = $null
+                if ($null -ne $topology) { $intersiteSites = @($topology.Sites) }
+                $intersitePopulation = Get-AdfaIntersiteSitePopulation -AdParams $adParams -TopologySites $intersiteSites
+            }
             $sectionData['DC Diagnostics'] = @(Get-AdfaDcDiagnostic -DomainControllers $dcDiagTargets -IncludeActiveTests:$IncludeDcdiagActiveTests @ext -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
                     -Config $dcDiagConfig -InventoryFailures $dcDiagFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains -ForestRoot $rootDomain `
-                    -SysvolEngines $sysvolEngines)
+                    -SysvolEngines $sysvolEngines -SitePopulation $intersitePopulation)
         }
         if (Test-SectionSelected 'Dns' $Sections) {
             Write-Stage 'DNS health (zone dynamic update, aging and scavenging, zone inventory; per DNS server)'
@@ -37970,8 +38609,9 @@ function Invoke-Main {
             # PORT-PLAN C15 (INV-011): from the directory, without the GroupPolicy module - each GPO's
             # status flags, WMI filter and links, and the links of every site, domain and OU; inventory only.
             Write-Stage 'GPO directory inventory (status flags, WMI filters, links per site, domain and OU)'
+            # PORT-PLAN C15d(2): the gPLink of the unscoped forest domains only with -IncludeUnscopedGpoLinks.
             $sectionData['GPO Directory Inventory'] = @(Get-AdfaGpoDirectoryInventory -Domains $targetDomains -ForestDomains @($forest.Domains) -RootDomain $rootDomain -ForestError $forestError `
-                    -AdParams $adParams -Config $inventoryConfig -GpoConfig $gpoConfig -CapSource $inventoryCapSource)
+                    -AdParams $adParams -Config $inventoryConfig -GpoConfig $gpoConfig -CapSource $inventoryCapSource -IncludeUnscopedDomains:$IncludeUnscopedGpoLinks)
         }
         if (Test-SectionSelected 'PasswordPolicy' $Sections) {
             $pp = foreach ($d in $targetDomains) { Get-AdfaPasswordPolicy -DomainName $d -AdParams $adParams }
@@ -38347,10 +38987,11 @@ function Invoke-Main {
         }
         if (Test-SectionSelected 'DcSecureChannel' $Sections) {
             Write-Stage 'DC machine-account passwords & secure channels'
+            # PORT-PLAN C2i(3): the DCs of each scoped domain from the shared per-domain list, no second enumeration.
             $scRows = foreach ($d in $targetDomains) {
                 Get-AdfaDcSecureChannel -DomainName $d -AdParams $adParams -Credential $Credential -LiveVerify:$IncludeSecureChannelVerify `
                     -WarnDays $script:Config.DcPasswordWarnDays -FailDays $script:Config.DcPasswordFailDays `
-                    -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+                    -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs -DomainControllers $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
             }
             $sectionData['DC Secure Channel & Machine Passwords'] = @($scRows)
         }
@@ -38385,8 +39026,10 @@ function Invoke-Main {
 
         if ($IncludeLingeringObjectScan) {
             Write-Stage 'Lingering object scan (repadmin advisory mode - no changes)'
+            # PORT-PLAN C2i(3): the DCs of each scoped domain from the shared per-domain list, no second enumeration.
             $loRows = foreach ($d in $targetDomains) {
-                Get-AdfaLingeringObjectScan -DomainName $d -AdParams $adParams -TimeoutSeconds 300 -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs
+                Get-AdfaLingeringObjectScan -DomainName $d -AdParams $adParams -TimeoutSeconds 300 -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                    -DomainControllers $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
             }
             $sectionData['Lingering Object Scan (advisory)'] = @($loRows)
         }
