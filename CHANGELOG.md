@@ -91,6 +91,12 @@ run is row C15e, with C17.
   Run-Validation assertions; new smoke checks in the single-domain, three-domain and failing-collector passes
   (a policy `Type`, a group of 1600 members counted by range, the runner role refused).
 
+Found by CI on the pull request, and fixed in it: on the Linux runner `Get-CimInstance` does not
+exist, and its two-line "not recognized" message went into the runner-role cause unchanged, so the
+run log gained a line with no timestamp (the H21 end-to-end test of whole log lines failed). The
+cause now folds the error text to one line. A new C15c test feeds a two-line error and was shown
+red without the fold; the C15c and H21 Describes pass on pwsh 7 and 5.1 (174 each).
+
 Found by an independent review of the diff before commit, and fixed in it:
 - **A primary-group read that returned no object counted as complete.** An account that cannot read
   `primaryGroupID` gets no object and no error back from `(primaryGroupID=*)`, so `ConvertTo-AdfaPrimaryGroupCount`
