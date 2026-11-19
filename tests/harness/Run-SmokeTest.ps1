@@ -309,6 +309,14 @@ function ConvertTo-AdfaAclDescriptor {
                 (New-StubAce -Sid 'S-1-5-9' -Mask 0x20094)
             )
         }
+        # PORT-PLAN C16b(4-7): a certificate template's DACL - Domain Admins full control, Authenticated Users read and Enroll.
+        'Template' {
+            $stubAces = @(
+                (New-StubAce -Sid ("{0}-512" -f $stubAclSid) -Mask 0xF01FF)
+                (New-StubAce -Sid 'S-1-5-11' -Mask 0x20094)
+                (New-StubAce -Sid 'S-1-5-11' -Mask 0x100 -ObjectType '0e10c968-78fb-11d2-90d4-00c04f79dc55')
+            )
+        }
         default { throw ("STUB: no descriptor stubbed for '{0}'" -f [string]$Value.SmokeSdKind) }
     }
     for ($i = 0; $i -lt $stubAces.Count; $i++) { $stubAces[$i].Index = $i }
@@ -411,7 +419,10 @@ function Get-ADComputer {
 # its properties. InstalledOn is given as the string Learn documents, in a form whose day/month
 # order the set itself proves (23 > 12).
 function New-CimSessionOption { param([string]$Protocol) [pscustomobject]@{ Protocol = $Protocol } }
+# PORT-PLAN C16b(4-7): a session opened with a credential is recorded with its host (the credentialed DNS pass).
+$script:SmokeCredSessions = @()
 function New-CimSession { param([string]$ComputerName, $SessionOption, [uint32]$OperationTimeoutSec, [pscredential]$Credential, $ErrorAction)
+    if ($null -ne $Credential) { $script:SmokeCredSessions += $ComputerName }
     [pscustomobject]@{ ComputerName = $ComputerName; Protocol = 'WSMAN' } }
 function Remove-CimSession { param([Parameter(ValueFromRemainingArguments)]$a) }
 function Get-CimInstance {
@@ -783,6 +794,82 @@ function Get-ADRootDSE { param([Parameter(ValueFromRemainingArguments)]$a)
     [pscustomobject]@{ configurationNamingContext='CN=Configuration,DC=contoso,DC=com'; schemaNamingContext='CN=Schema,CN=Configuration,DC=contoso,DC=com'
         # C15 (INV-001): the DC that answered the run.
         dnsHostName='dc1.contoso.com' } }
+# PORT-PLAN C16b(4-7): the declared reads of the Pki, ExchangeAdVersions and LingeringObjects tables, told apart by
+# their declared filter (or identity) AND list, each recorded with the domain it named; $script:SmokeC16bFail refuses
+# them (access denied). The answers are in the shape Get-ADObject returns: the default Name and DistinguishedName,
+# then the asked LDAP names where set. One enterprise CA publishes SmokeWebEsc (the ESC1 shape, Authenticated Users
+# may enrol: a Fail) and User (no supply-in-the-request flag); SmokeUnpublishedEsc has the shape and no CA publishes
+# it (never graded). The Exchange organisation is at Exchange SE RTM / 2019 CU15 (17003, 16763); contoso.com is
+# prepared to 13243, north.contoso.com to 13242 (below: a Warning) and south.contoso.com has no Microsoft Exchange
+# System Objects container (not found: Info, not prepared). A template's descriptor is recorded apart from the C9 reads.
+$script:SmokeC16bFail = $false
+$script:SmokeC16bCalls = @()
+$script:SmokePkiAclCalls = @()
+function Get-StubC16bAnswer {
+    param($Named, [string[]]$Asked)
+    $c16Filter = [string]$Named['LDAPFilter']
+    $c16Identity = [string]$Named['Identity']
+    $c16Server = [string]$Named['Server']
+    $c16Base = [string]$Named['SearchBase']
+    $c16List = (@($Asked) -join ',')
+    $c16Cfg = 'CN=Configuration,DC=contoso,DC=com'
+    if ($c16List -eq 'nTSecurityDescriptor' -and $c16Identity -like ("CN=*,CN=Certificate Templates,CN=Public Key Services,CN=Services,{0}" -f $c16Cfg)) {
+        if ($c16Server -ne 'contoso.com') { throw ("STUB: a template descriptor must be read from the forest root, not from '{0}'" -f $c16Server) }
+        $script:SmokePkiAclCalls += ("{0}@{1}" -f $c16Identity, $c16Server)
+        if ($script:SmokeC16bFail) { throw [System.UnauthorizedAccessException]'STUB: template descriptor read refused' }
+        return [pscustomobject]@{ Hit = $true; Value = [pscustomobject]@{ DistinguishedName = $c16Identity; Name = 'template'; ObjectClass = 'pKICertificateTemplate'; nTSecurityDescriptor = [pscustomobject]@{ SmokeSdKind = 'Template'; SmokeDomain = $c16Server } } }
+    }
+    $c16Kind = ''
+    foreach ($c16Table in @(@{ N = 'Pki'; T = $script:Config.Pki }, @{ N = 'Exa'; T = $script:Config.ExchangeAdVersions }, @{ N = 'Lo'; T = $script:Config.LingeringObjects })) {
+        foreach ($c16Key in @($c16Table.T['Reads'].Keys)) {
+            $c16Spec = $c16Table.T['Reads'][$c16Key]
+            if ((@($c16Spec['Properties']) -join ',') -ne $c16List) { continue }
+            if ($c16Spec.ContainsKey('Filter')) { if ([string]$c16Spec['Filter'] -ne $c16Filter) { continue } }
+            elseif ($c16Identity -eq '' -or $c16Filter -ne '') { continue }
+            $c16Kind = ("{0}.{1}" -f $c16Table.N, $c16Key)
+        }
+    }
+    if ($c16Kind -eq 'Exa.ExchangeContainer' -and $c16Identity -notlike 'CN=Microsoft Exchange,CN=Services,*') { $c16Kind = '' }
+    if ($c16Kind -eq 'Exa.DomainObjects' -and $c16Identity -notlike 'CN=Microsoft Exchange System Objects,*') { $c16Kind = '' }
+    if ($c16Kind -eq 'Exa.SchemaMarker' -and $c16Identity -notlike 'CN=ms-Exch-Schema-Version-Pt,CN=Schema,*') { $c16Kind = '' }
+    if ($c16Kind -eq '') { return $null }
+    if ([string]::IsNullOrWhiteSpace($c16Server)) { throw ("STUB: the {0} read must name its domain" -f $c16Kind) }
+    $script:SmokeC16bCalls += ("{0}@{1}" -f $c16Kind, $c16Server)
+    if ($script:SmokeC16bFail) { throw [System.UnauthorizedAccessException]('STUB: {0} read refused' -f $c16Kind) }
+    $c16Tpl = { param([string]$Cn, $NameFlag, $EnrollFlag, $Ra, $Eku)
+        [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Certificate Templates,CN=Public Key Services,CN=Services,{1}" -f $Cn, $c16Cfg); Name = $Cn; cn = $Cn; displayName = $Cn
+            'msPKI-Certificate-Name-Flag' = $NameFlag; 'msPKI-Enrollment-Flag' = $EnrollFlag; 'msPKI-RA-Signature' = $Ra; pKIExtendedKeyUsage = $Eku } }
+    switch ($c16Kind) {
+        'Pki.EnrollmentServices' {
+            if ($c16Base -ne ("CN=Enrollment Services,CN=Public Key Services,CN=Services,{0}" -f $c16Cfg)) { throw ("STUB: the enterprise CAs are one level under CN=Enrollment Services, not '{0}'" -f $c16Base) }
+            return [pscustomobject]@{ Hit = $true; Value = [pscustomobject]@{ DistinguishedName = ("CN=Contoso-Issuing-CA,{0}" -f $c16Base); Name = 'Contoso-Issuing-CA'; cn = 'Contoso-Issuing-CA'; dNSHostName = 'ca1.contoso.com'; certificateTemplates = @('SmokeWebEsc', 'User') } }
+        }
+        'Pki.Templates' {
+            if ($c16Base -ne ("CN=Certificate Templates,CN=Public Key Services,CN=Services,{0}" -f $c16Cfg)) { throw ("STUB: the templates are one level under CN=Certificate Templates, not '{0}'" -f $c16Base) }
+            return [pscustomobject]@{ Hit = $true; Value = @(
+                    (& $c16Tpl 'SmokeWebEsc' 1 0 0 @('1.3.6.1.5.5.7.3.2', '1.3.6.1.5.5.7.3.1'))
+                    (& $c16Tpl 'User' -1509949440 41 0 @('1.3.6.1.4.1.311.10.3.4', '1.3.6.1.5.5.7.3.4', '1.3.6.1.5.5.7.3.2'))
+                    (& $c16Tpl 'SmokeUnpublishedEsc' 1 0 0 @('1.3.6.1.5.5.7.3.2'))) }
+        }
+        'Exa.SchemaMarker' { return [pscustomobject]@{ Hit = $true; Value = [pscustomobject]@{ DistinguishedName = $c16Identity; Name = 'ms-Exch-Schema-Version-Pt'; rangeUpper = 17003 } } }
+        'Exa.ExchangeContainer' { return [pscustomobject]@{ Hit = $true; Value = [pscustomobject]@{ DistinguishedName = $c16Identity; Name = 'Microsoft Exchange'; cn = 'Microsoft Exchange' } } }
+        'Exa.Organization' { return [pscustomobject]@{ Hit = $true; Value = [pscustomobject]@{ DistinguishedName = ("CN=Contoso Messaging,{0}" -f $c16Base); Name = 'Contoso Messaging'; cn = 'Contoso Messaging'; objectVersion = 16763; msExchProductID = '15.2.2562.17' } } }
+        'Exa.DomainObjects' {
+            if ($c16Server -eq 'south.contoso.com') { throw (New-Object SmokeStub.ADIdentityNotFoundException ("Cannot find an object with identity: '{0}'" -f $c16Identity)) }
+            $c16Version = 13243
+            if ($c16Server -eq 'north.contoso.com') { $c16Version = 13242 }
+            return [pscustomobject]@{ Hit = $true; Value = [pscustomobject]@{ DistinguishedName = $c16Identity; Name = 'Microsoft Exchange System Objects'; objectVersion = $c16Version } }
+        }
+        'Lo.Partitions' {
+            return [pscustomobject]@{ Hit = $true; Value = @(
+                    [pscustomobject]@{ DistinguishedName = ("CN=Enterprise Configuration,CN=Partitions,{0}" -f $c16Cfg); Name = 'Enterprise Configuration'; nCName = $c16Cfg; systemFlags = 1 }
+                    [pscustomobject]@{ DistinguishedName = ("CN=CONTOSO,CN=Partitions,{0}" -f $c16Cfg); Name = 'CONTOSO'; nCName = 'DC=contoso,DC=com'; systemFlags = 3 }
+                    [pscustomobject]@{ DistinguishedName = ("CN=ForestDnsZones,CN=Partitions,{0}" -f $c16Cfg); Name = 'ForestDnsZones'; nCName = 'DC=ForestDnsZones,DC=contoso,DC=com'; systemFlags = 5 }) }
+        }
+        'Lo.Dsa' { return [pscustomobject]@{ Hit = $true; Value = @() } }
+    }
+    return $null
+}
 # C4 (Laps): one more behaviour, selected by the filter. A search for attributeSchema objects by
 # lDAPDisplayName - which only the Laps schema read sends - is answered with one object per name
 # that is both asked for and in $script:SmokeLapsSchema, in the shape the cmdlet returns. Every
@@ -800,6 +887,8 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubInvIdentity = [string]$stubNamed['Identity']
     # C4b: no directory read may ask for every attribute or name a secret one.
     foreach ($p in $stubInvAsked) { if ($p -match '[*?]' -or $script:SmokeAllSecretNames -contains $p) { throw ("STUB: a directory read asked for '{0}', which no read may request (PORT-PLAN C4b)" -f $p) } }
+    $stubC16 = Get-StubC16bAnswer -Named $stubNamed -Asked $stubInvAsked
+    if ($null -ne $stubC16) { return $stubC16.Value }
     # C4b: the Identity export, told apart by its declared filter AND its declared list (the user filter
     # is also the Inventory count filter). Users: an enabled one, a disabled one (514) and a service
     # account with two SPNs; computers: the DC, a workstation and a gMSA (a computer subclass). In the
@@ -1307,19 +1396,24 @@ $script:SmokeDnsRecords = @{
         (New-StubDnsRecord $script:SmokeOrphanGuid 'CNAME' @{ HostNameAlias = 'old-dc.contoso.com.' }),
         (New-StubDnsRecord '@' 'NS' @{ NameServer = 'dc1.contoso.com.' }))
 }
-function Get-DnsServerZone { param([string]$ComputerName, [string]$Name, $ErrorAction)
-    $script:SmokeDnsCalls += ("Get-DnsServerZone {0}" -f $ComputerName)
+# PORT-PLAN C16b(4-7): every DnsServer stub also takes -CimSession, in the shape the session stub returns; a read over a
+# session is recorded apart ($script:SmokeDnsSessionCalls) and answered for the session's host.
+$script:SmokeDnsSessionCalls = @()
+function Get-DnsServerZone { param([string]$ComputerName, [string]$Name, $CimSession, $ErrorAction)
+    if ($null -ne $CimSession) { $ComputerName = [string]$CimSession.ComputerName; $script:SmokeDnsSessionCalls += ("Get-DnsServerZone {0}" -f $ComputerName) }
+    else { $script:SmokeDnsCalls += ("Get-DnsServerZone {0}" -f $ComputerName) }
     if ($ComputerName -ne 'dc1.contoso.com') { throw ("STUB: {0} is not a DNS server" -f $ComputerName) }
     @((New-StubDnsZone 'contoso.com' 'NonsecureAndSecure'), (New-StubDnsZone '_msdcs.contoso.com' 'Secure' -Scope 'Forest'), (New-StubDnsZone '0.in-addr.arpa' 'None' -Ds $false -Auto $true),
         (New-StubDnsZone 'fabrikam.com' 'None' -Ds $false -Type 'Forwarder')) }
-function Get-DnsServerScavenging { param([string]$ComputerName, $ErrorAction) $script:SmokeDnsCalls += ("Get-DnsServerScavenging {0}" -f $ComputerName)
+function Get-DnsServerScavenging { param([string]$ComputerName, $CimSession, $ErrorAction) if ($null -ne $CimSession) { $script:SmokeDnsSessionCalls += ("Get-DnsServerScavenging {0}" -f [string]$CimSession.ComputerName) } else { $script:SmokeDnsCalls += ("Get-DnsServerScavenging {0}" -f $ComputerName) }
     [pscustomobject]@{ ScavengingInterval = [timespan]::FromDays(7); ScavengingState = $true; NoRefreshInterval = [timespan]::FromDays(7); RefreshInterval = [timespan]::FromDays(7) } }
-function Get-DnsServerZoneAging { param([string]$Name, [string]$ComputerName, $ErrorAction) $script:SmokeDnsCalls += ("Get-DnsServerZoneAging {0} {1}" -f $ComputerName, $Name)
+function Get-DnsServerZoneAging { param([string]$Name, [string]$ComputerName, $CimSession, $ErrorAction) if ($null -ne $CimSession) { $script:SmokeDnsSessionCalls += ("Get-DnsServerZoneAging {0} {1}" -f [string]$CimSession.ComputerName, $Name) } else { $script:SmokeDnsCalls += ("Get-DnsServerZoneAging {0} {1}" -f $ComputerName, $Name) }
     [pscustomobject]@{ ZoneName = $Name; AgingEnabled = $true; NoRefreshInterval = [timespan]::FromDays(7); RefreshInterval = [timespan]::FromDays(7); ScavengeServers = $null } }
-function Get-DnsServerForwarder { param([string]$ComputerName, $ErrorAction) $script:SmokeDnsCalls += ("Get-DnsServerForwarder {0}" -f $ComputerName)
+function Get-DnsServerForwarder { param([string]$ComputerName, $CimSession, $ErrorAction) if ($null -ne $CimSession) { $script:SmokeDnsSessionCalls += ("Get-DnsServerForwarder {0}" -f [string]$CimSession.ComputerName) } else { $script:SmokeDnsCalls += ("Get-DnsServerForwarder {0}" -f $ComputerName) }
     [pscustomobject]@{ IPAddress = @('192.0.2.53'); UseRootHint = $true } }
-function Get-DnsServerResourceRecord { param([string]$ComputerName, [string]$ZoneName, [string]$Name, [string]$RRType, $ErrorAction)
-    $script:SmokeDnsCalls += ("Get-DnsServerResourceRecord {0} {1} {2} {3}" -f $ComputerName, $ZoneName, $Name, $RRType)
+function Get-DnsServerResourceRecord { param([string]$ComputerName, [string]$ZoneName, [string]$Name, [string]$RRType, $CimSession, $ErrorAction)
+    if ($null -ne $CimSession) { $ComputerName = [string]$CimSession.ComputerName; $script:SmokeDnsSessionCalls += ("Get-DnsServerResourceRecord {0} {1} {2} {3}" -f $ComputerName, $ZoneName, $Name, $RRType) }
+    else { $script:SmokeDnsCalls += ("Get-DnsServerResourceRecord {0} {1} {2} {3}" -f $ComputerName, $ZoneName, $Name, $RRType) }
     $all = @($script:SmokeDnsRecords[$ZoneName.ToLowerInvariant()])
     if ($Name -ne '') { $all = @($all | Where-Object { $_.HostName -eq $Name }) }
     if ($RRType -ne '') { $all = @($all | Where-Object { $_.RecordType -eq $RRType }) }
@@ -2119,6 +2213,19 @@ if (Test-Path $c16RepCsv) {
 }
 else { Check $false 'C16 review 5: Replication Health CSV exists' }
 
+# PORT-PLAN C16b(4-7) (v1.45.0) in the single-domain pass: PKI over the published templates (wired by 'All'), the
+# Exchange AD versions of the organisation and contoso.com, each read from the forest root or the domain itself.
+$pkiRows = @($smokeFindings | Where-Object { $_.Section -eq 'PKI / AD CS' })
+Check (@($pkiRows | Where-Object { $_.Item -eq 'ESC1 template: SmokeWebEsc' -and $_.Status -eq 'Fail' -and $_.Recommendation -match 'Harden the template' -and $_.Detail -match 'S-1-5-11: Enroll' }).Count -eq 1) 'C16b(4-7): the published ESC1-shaped template Authenticated Users may enrol in is a Fail with its advice'
+Check (@($pkiRows | Where-Object { $_.Item -like 'ESC1 template: SmokeUnpublishedEsc' -or $_.Item -like 'ESC1 template: User' }).Count -eq 0) 'C16b(4-7): the unpublished template and the template without the shape get no ESC1 row'
+Check (@($pkiRows | Where-Object { $_.Item -eq 'Certificate templates published' -and $_.Status -eq 'Info' -and $_.Detail -match '2 of 3' -and $_.Detail -match 'SmokeUnpublishedEsc' }).Count -eq 1) 'C16b(4-7): the published row counts 2 of 3 and names the unpublished template'
+Check (@($pkiRows | Where-Object { $_.Item -eq 'ESC1-susceptible templates' -and $_.Status -eq 'Fail' }).Count -eq 1) 'C16b(4-7): the ESC1 summary is a Fail'
+Check (@($script:SmokePkiAclCalls).Count -eq 1 -and $script:SmokePkiAclCalls[0] -like 'CN=SmokeWebEsc,*@contoso.com') ("C16b(4-7): one template descriptor read, the published shaped one, from the forest root ({0})" -f ($script:SmokePkiAclCalls -join ', '))
+$exaRows = @($smokeFindings | Where-Object { $_.Section -eq 'Exchange AD Versions' })
+Check (@($exaRows | Where-Object { $_.Item -eq 'Exchange organisation: Contoso Messaging' -and $_.Status -eq 'Info' -and $_.Detail -match 'Exchange SE RTM or Exchange 2019 CU15' }).Count -eq 1) 'C16b(4-7): the organisation maps to every build that shares its values'
+Check (@($exaRows | Where-Object { $_.Item -eq 'Exchange domain preparation: contoso.com' -and $_.Status -eq 'Info' -and $_.Scope -eq 'contoso.com' }).Count -eq 1) 'C16b(4-7): contoso.com is prepared to the organisation''s level (Info), scoped to it'
+Check (@($script:SmokeC16bCalls | Where-Object { $_ -notlike '*@contoso.com' }).Count -eq 0 -and @($script:SmokeC16bCalls | Where-Object { $_ -like 'Exa.DomainObjects@*' }).Count -eq 1) ("C16b(4-7): every Pki and Exchange read named contoso.com ({0})" -f ($script:SmokeC16bCalls -join ', '))
+Check (@($script:SmokeC16bCalls | Where-Object { $_ -like 'Lo.*' }).Count -eq 0) 'C16b(4-7): no partition read without -IncludeLingeringObjectScan'
 # PORT-PLAN C16b(1-3) (v1.44.0): the AccountsPolicy section in the single-domain pass - wired by 'All', every row of
 # contoso.com read from contoso.com, the declared population of rows (the forest spread, five encryption rows, the
 # PASSWD_NOTREQD, spread, infrastructure master and lockout rows, one PSO and its two summary rows: 13).
@@ -2267,6 +2374,8 @@ $script:SmokeRunnerCalls = @()
 $c15cCallsBefore2 = @($script:SmokeInventoryCalls).Count
 # PORT-PLAN C16b(1-3): the AccountsPolicy reads of this pass alone.
 $script:SmokeAccountsPolicyCalls = @()
+# PORT-PLAN C16b(4-7): the Pki and Exchange reads of this pass alone.
+$script:SmokeC16bCalls = @()
 $result2 = Invoke-Main
 $script:SmokeW32TimePolicy = @{}
 $script:SmokeBigGroup = $false
@@ -2479,7 +2588,16 @@ Check (@($pa2 | Where-Object { $_.Item -match '^(Schema|Enterprise) Admins membe
 Check (@($pa2 | Where-Object { $_.Item -match '^Privileged group: (Schema Admins|Enterprise Admins): (north|south)\.' }).Count -eq 0) 'Multi-domain: no child domain is given a forest-root group'
 Check (@($pa2 | Where-Object { $_.Item -match '^Privileged group: (Administrators|Domain Admins): ' }).Count -eq 6 -and @($pa2 | Where-Object { $_.Item -match '^Privileged group: (Administrators|Domain Admins): ' -and $_.Status -ne 'Not Assessed' }).Count -eq 0) 'Multi-domain: no count of a group with members is given on members it could not route (6 rows, all Not Assessed)'
 
-# PORT-PLAN C16b(1-3) (v1.44.0) in the three-domain run: every family per scoped domain, scoped to it, each domain
+# PORT-PLAN C16b(4-7) (v1.45.0) in the three-domain run: one Exchange domain row per scoped domain, scoped to it and
+# read from it - contoso.com prepared (Info), north.contoso.com below the organisation's level (Warning, with the
+# section's advice) and south.contoso.com not prepared (Info) (declared population: the three domains).
+$exa2 = @($findings2 | Where-Object { $_.Section -eq 'Exchange AD Versions' })
+foreach ($d in $multiDomains) {
+    Check (@($exa2 | Where-Object { $_.Item -eq ('Exchange domain preparation: {0}' -f $d) -and $_.Scope -eq $d }).Count -eq 1) ("C16b(4-7) multi-domain: one Exchange domain row for '{0}', scoped to it" -f $d)
+    if ($d -ne 'south.contoso.com') { Check (@($script:SmokeC16bCalls | Where-Object { $_ -eq ('Exa.DomainObjects@{0}' -f $d) }).Count -ge 1) ("C16b(4-7) multi-domain: the Exchange container of '{0}' is read from that domain" -f $d) }
+}
+Check (@($exa2 | Where-Object { $_.Item -eq 'Exchange domain preparation: north.contoso.com' -and $_.Status -eq 'Warning' -and $_.Recommendation -match '/PrepareDomain' -and $_.Detail -match '13242' }).Count -eq 1) 'C16b(4-7) multi-domain: the domain below the organisation''s level is a Warning with the PrepareDomain advice'
+Check (@($exa2 | Where-Object { $_.Item -eq 'Exchange domain preparation: south.contoso.com' -and $_.Status -eq 'Info' -and $_.Detail -match 'not prepared' }).Count -eq 1) 'C16b(4-7) multi-domain: the domain with no Microsoft Exchange System Objects container is Info, not prepared'# PORT-PLAN C16b(1-3) (v1.44.0) in the three-domain run: every family per scoped domain, scoped to it, each domain
 # read from itself (declared population: the three domains).
 $ap2 = @($findings2 | Where-Object { $_.Section -eq 'Accounts & Policy' })
 foreach ($d in $multiDomains) {
@@ -3032,6 +3150,18 @@ Check (@($findingsU | Where-Object { $_.Section -eq 'DC System' }).Count -gt 0) 
 Check (@($findingsU | Where-Object { $_.Section -eq 'DC Disk Space' }).Count -eq 0) 'Override: an unselected section is still not run'
 Remove-Item -Recurse -Force $outU -ErrorAction SilentlyContinue
 
+# Independent review of C16b(4-7): the LingeringObjects table is read only with -IncludeLingeringObjectScan, so a run
+# that selects Replication without that switch logs the table as unused, never as in force.
+'{ "LingeringObjects": { "MaxScans": 50 } }' | Out-File -LiteralPath $overrideFile -Encoding UTF8
+$outLoU = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_override_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outLoU
+$script:Sections = @('DomainControllers', 'Replication')
+$resultLoU = Invoke-Main
+$logLoU = Get-Content $resultLoU.LogFile -Raw
+Check ($logLoU -match 'section LingeringObjects was validated but is not used by this run, because -IncludeLingeringObjectScan was not given') 'C16b(4-7) review: a LingeringObjects override without -IncludeLingeringObjectScan is logged as unused even with Replication selected'
+Remove-Item -Recurse -Force $outLoU -ErrorAction SilentlyContinue
+'{ "DcDisk": { "WarnBelowPercent": 70, "FailBelowPercent": 55 } }' | Out-File -LiteralPath $overrideFile -Encoding UTF8
+
 # A registry value that is not set on the DC. The stub answers as the provider was measured to:
 # 1 for a value that does not exist under a key that does. The role must come back Not Assessed
 # and named Not found - not as an uninterpreted read failure - and the other two roles must
@@ -3304,6 +3434,26 @@ Check (@($xC13 | Where-Object { $_.Item -eq 'Record export: total' -and $_.Detai
 Check (@($script:SmokeDnsCalls | Where-Object { $_ -match '^(Set|Add|Remove|Start|Clear|Register)-' }).Count -eq 0) 'C13: no DNS write was attempted'
 Remove-Item -Recurse -Force $outC13 -ErrorAction SilentlyContinue
 
+# PORT-PLAN C16b(4-7) (v1.45.0): the DNS server read with -Credential - one CIM session opened with it per read, the
+# DnsServer cmdlets given -CimSession and never -ComputerName; the same stub server, so the same rows.
+Write-Host "== Running Invoke-Main with -Credential on the DNS sections (C16b(4-7)) ==" -ForegroundColor Cyan
+$outCred = Join-Path ([IO.Path]::GetTempPath()) ("adfa_smoke_dnscred_" + [guid]::NewGuid().ToString('N'))
+$script:OutputPath = $outCred
+$script:Sections = @('Dns')
+$script:SmokeDnsModule = $true
+$script:SmokeDnsCalls = @()
+$script:SmokeDnsSessionCalls = @()
+$script:SmokeCredSessions = @()
+$script:Credential = New-Object System.Management.Automation.PSCredential -ArgumentList 'CONTOSO\smoke-reader', (New-Object System.Security.SecureString)
+$resultCred = Invoke-Main
+$script:Credential = $null
+$script:SmokeDnsModule = $false
+$script:Sections = @('All')
+$fCred = @(Import-Csv $resultCred.FindingsFile)
+Check (@($fCred | Where-Object { $_.Section -eq 'DNS Health' -and $_.Item -eq 'DNS server: dc1.contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'C16b(4-7): with -Credential the stub DNS server is read'
+Check (@($script:SmokeDnsSessionCalls | Where-Object { $_ -eq 'Get-DnsServerZone dc1.contoso.com' }).Count -ge 1 -and @($script:SmokeDnsCalls | Where-Object { $_ -like 'Get-DnsServer*' }).Count -eq 0) ("C16b(4-7): with -Credential every DnsServer read went over a session, none with -ComputerName ({0} over a session, {1} without)" -f @($script:SmokeDnsSessionCalls).Count, @($script:SmokeDnsCalls).Count)
+Check (@($script:SmokeCredSessions | Where-Object { $_ -eq 'dc1.contoso.com' }).Count -ge 1) 'C16b(4-7): the session was opened with the credential, to the DNS server'
+Remove-Item -Recurse -Force $outCred -ErrorAction SilentlyContinue
 # ---- PORT-PLAN C11f + C2i + C15d(2) + C16d (v1.42.0) ---------------------------------------------------------
 # Each pass below runs Invoke-Main on the stubs with the sections that row touches; every name is fictional.
 $lfSavedAllDomains = $script:AllDomains
@@ -3460,6 +3610,9 @@ $script:SmokeInventoryFail = $true
 $script:SmokeEventsFail = $true
 # PORT-PLAN C16b(1-3): the AccountsPolicy reads are refused too (access denied).
 $script:SmokeAccountsPolicyFail = $true
+# PORT-PLAN C16b(4-7): the Pki and Exchange reads are refused too (access denied).
+$script:SmokeC16bFail = $true
+$script:SmokeC16bCalls = @()
 $script:SmokeAccountsPolicyCalls = @()
 $script:SmokeEventCalls = @()
 $script:SmokePopulationCalls = @()
@@ -3502,7 +3655,14 @@ Check (Test-Path $result3.FindingsFile) 'Failure mode: consolidated findings sti
 $findings3 = @(Import-Csv $result3.FindingsFile)
 Check ($findings3.Count -gt 0) ("Failure mode: findings are not empty ({0} rows)" -f $findings3.Count)
 
-# PORT-PLAN C16b(1-3): with every AccountsPolicy read refused, the section is still wired and every row is Not Assessed
+# PORT-PLAN C16b(4-7): with every Pki and Exchange read refused, both sections are still wired and every row is Not
+# Assessed with access denied - never Pass, never Info.
+$pki3 = @($findings3 | Where-Object { $_.Section -eq 'PKI / AD CS' })
+Check ($pki3.Count -gt 0 -and @($pki3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0 -and @($pki3 | Where-Object { $_.Detail -match 'access denied' }).Count -ge 1) ("Failure mode C16b(4-7): every PKI / AD CS row is Not Assessed, access denied ({0} rows)" -f $pki3.Count)
+$exa3 = @($findings3 | Where-Object { $_.Section -eq 'Exchange AD Versions' })
+Check ($exa3.Count -gt 0 -and @($exa3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode C16b(4-7): every Exchange AD Versions row is Not Assessed ({0} rows; {1})" -f $exa3.Count, (@($exa3 | Where-Object { $_.Status -ne 'Not Assessed' } | ForEach-Object { $_.Item }) -join ', '))
+Check (@($script:SmokeC16bCalls).Count -gt 0) 'Failure mode C16b(4-7): non-vacuity - the Pki and Exchange reads were attempted and refused'
+$script:SmokeC16bFail = $false# PORT-PLAN C16b(1-3): with every AccountsPolicy read refused, the section is still wired and every row is Not Assessed
 # with access denied or another named cause - never Pass, never Info.
 $ap3 = @($findings3 | Where-Object { $_.Section -eq 'Accounts & Policy' })
 Check ($ap3.Count -gt 0 -and @($ap3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode C16b: every Accounts & Policy row is Not Assessed ({0} rows; {1})" -f $ap3.Count, (@($ap3 | Where-Object { $_.Status -ne 'Not Assessed' } | ForEach-Object { '{0}={1}' -f $_.Item, $_.Status }) -join '; '))

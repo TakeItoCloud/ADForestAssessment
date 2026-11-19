@@ -10,6 +10,187 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added - 2026-11-19 (ESC1 over published templates with the enrolment ACL, Exchange AD versions, the lingering-object scan of the other partitions, DNS server reads with -Credential, tool v1.45.0)
+
+**PORT-PLAN C16b(4-7)** (the last four of the seven C16b coverage additions; every choice approved upfront by the
+operator). **No new `-Sections` value and no new script parameter**: Pki, ExchangeSchema, the
+`-IncludeLingeringObjectScan` switch and the DNS sections carry the work. New config tables `Pki` (not settable),
+`ExchangeAdVersions` and `LingeringObjects` (both settable from `-ConfigOverridePath`). **Run against stubs only** -
+nothing in this entry has been read from a real directory, CA, Exchange organisation, repadmin or DNS server. What was
+not verified: the format of a CA's `certificateTemplates` values (Learn does not state it is the template `cn`; a
+value is matched to the `cn`, then the `displayName`); whether every template returns `msPKI-RA-Signature` and the
+flag attributes; who may read a template's `nTSecurityDescriptor`; whether the Exchange organisation container is
+the only child of `CN=Microsoft Exchange` with `objectVersion`, and its objectClass (not on Learn, not used); the
+type of `msExchProductID`; what `repadmin /removelingeringobjects /advisory_mode` prints for the configuration NC,
+an application partition and a GC partial replica, and the rights it needs there; the DnsServer cmdlets over a CIM
+session opened with a credential, and whether `-OperationTimeoutSec` bounds the connect. First real run is row C16h,
+with C17.
+
+- **ESC1 over published templates (C16b(4)).** ESC1 is a community name, not a Microsoft term, and every ESC1 row
+  says so. The forest root's enterprise CAs (`pKIEnrollmentService`: `cn`, `dNSHostName`, `certificateTemplates`)
+  and templates are read through the new seam `Get-AdfaDeclaredReadRaw`; a template no CA publishes is listed in a
+  new `Info` row "Certificate templates published" as not published and **never graded** (Defender for Identity:
+  "Templates that aren't published can't be requested"). Each published template is shaped by `Get-AdfaEsc1Shape`
+  from MS-CRTD (2.28 `CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT` 0x1; 2.26 `CT_FLAG_PEND_ALL_REQUESTS` 0x2; 2.18
+  `msPKI-RA-Signature`; 2.12 and 2.25 the EKUs of `pKIExtendedKeyUsage` and `msPKI-Certificate-Application-Policy`:
+  client authentication, smart card logon, PKINIT, any purpose and, new, any application policy
+  1.3.6.1.4.1.311.10.12.1); `CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME` (0x10000) is named, not graded. A shaped
+  template's `nTSecurityDescriptor` (alone, through the C9 seam `Get-AdfaAclObjectRaw`) is graded by
+  `Get-AdfaTemplateEnrolmentVerdict`, by SID: Enroll and AutoEnroll (MS-CRTD 2.5.2 GUIDs), every extended right,
+  GenericAll, WriteDacl, WriteOwner. A new row per shaped template, "ESC1 template: <cn>": `Fail` when Everyone,
+  Authenticated Users or any domain's Domain Users or Domain Computers holds one of them, `Warning` when only other
+  principals do, `Info` when none does, `Not Assessed` when the shape or the DACL is not known. Group membership is
+  not expanded.
+- **Exchange AD versions (C16b(5)).** A new report section `Exchange AD Versions` (Area `ExchangeVersions`) in the
+  ExchangeSchema branch, after the kept "Exchange Schema Markers": the schema `rangeUpper`, the organisation's
+  `objectVersion` (the child of `CN=Microsoft Exchange,CN=Services` that carries it; `msExchProductID` shown raw and
+  never graded) and each scoped domain's `CN=Microsoft Exchange System Objects` `objectVersion`, read from that
+  domain, mapped through the 45 rows of Microsoft's "Exchange Active Directory versions" table. Every build that
+  shares a value is named; a domain below the lowest `objectVersion (Default)` of the organisation's builds is a
+  `Warning` (`DomainBehindStatus`, a tool default); no container in a domain is `Info` "not prepared"; a value not in
+  the table is `Info`, shown raw; no organisation is `Info` "Not applicable:"; a refused read `Not Assessed`.
+  `-ConfigOverridePath` key `ExchangeAdVersions`: `AdditionalRows` (a new CU is a config edit) and
+  `DomainBehindStatus` (Info, Warning or Fail), validated by `Merge-AdfaExchangeAdVersionsConfig`.
+- **Lingering objects in the other partitions (C16b(6)).** With `-IncludeLingeringObjectScan`, a new
+  `Get-AdfaLingeringPartitionScan` scans, on every DC of the shared per-domain list, the configuration NC, each
+  application partition the DC holds (`msDS-hasMasterNCs`) and each GC partial replica (`hasPartialReplicaNCs`),
+  each against another DC holding a writable copy, never the schema NC; rows "Advisory scan (<partition>): <dc>" in
+  the same report section, `Fail` with the count, `Pass` on a count of 0 that was read, `Not Assessed` otherwise. At
+  most `LingeringObjects.MaxScans` (200, a tool default, settable; key `LingeringObjects`) per run; the rest are one
+  `Not Assessed` row "cap reached". The one repadmin call of the script moved, unchanged (same literal form, same
+  `-Retries 1`, 300 s), into `Invoke-AdfaLingeringAdvisory`, used by both scans.
+- **DNS server reads with `-Credential` (C16b(7)).** `Invoke-AdfaDnsServerRead` (a seventh CIM session owner): with
+  `-Credential`, one bounded session per read opened with it (WinRM when the shared probe answers, otherwise DCOM)
+  and the DnsServer cmdlets given `-CimSession`, never `-ComputerName`; closed with `-WhatIf:$false -Confirm:$false`.
+  Without `-Credential` the reads are what they were. `-Credential` now reaches the DNS vs AD and record export reads.
+- **Existing rows changed (listed as the house rules require).** PKI / AD CS: "ESC1-susceptible templates" keeps its
+  Item; it now grades published templates only and the enrolment ACL, may be `Not Assessed` or `Warning`, and its
+  Detail changed; "Certificate Authorities" and "AD CS assessment" keep their Items (a refused read now names its
+  class). `Test-AdfaEsc1Template` reads a flag attribute that was not returned as unknown (not vulnerable), no longer
+  as 0. Lingering Object Scan: the domain NC rows keep their Items and statuses; their Detail says the other
+  partitions "have rows of their own" instead of "were not scanned". Exchange SE Readiness: the Detail of "Scope of
+  this check" names the new rows. The help (`.DESCRIPTION`, `-IncludeLingeringObjectScan`, `-Credential`,
+  `-ConfigOverridePath`), the README Coverage rows (AD CS / PKI, Recovery: lingering objects, Exchange) and the DNS
+  rights paragraph say what is now covered. The three top-level config keys `EnrolleeSuppliesSubject`,
+  `PendAllRequests` and `AuthEkuOids` moved into the `Pki` table.
+- **Advice.** Two PKI entries anchored on the ESC1 Items (no catch-all, so the section's other rows keep what they
+  matched), one Exchange domain entry and an Exchange catch-all with no advice, ahead of the unscoped map.
+- **Side-effect inventory.** docs/SIDE-EFFECT-AUDIT.md: the repadmin row names `Invoke-AdfaLingeringAdvisory` and
+  the second Learn page; `New-CimSession` and `Remove-CimSession` name the seventh owner; the five DnsServer rows
+  name `-CimSession`; `Get-ADObject` names the new reads. No new command, tool form or method key.
+- **Tests.** A new Describe (91 tests, one of them Windows-only: a real descriptor from SDDL). Existing tests
+  changed only where a count or pin moved with this row: the 20 version pins (1.44.0 to 1.45.0), the ten
+  `ConfigOverridePath` key-list pins (`,ExchangeAdVersions,LingeringObjects` appended), the C2 CIM session owner list
+  (six to seven, `Invoke-AdfaDnsServerRead`), `C4PropertiesArgumentCount` and `C4bArgumentCount` (40 to 39: the two
+  literal lists of the old PKI collector removed, the one seam call of `Get-AdfaDeclaredReadRaw` added), the
+  ActiveDirectory command count (89 to 86: the old PKI collector's `Get-ADRootDSE` and two `Get-ADObject` removed),
+  the C4b4 count of `Get-AdfaInventoryReadCause` calls (24 to 32) and the H21 function and parameter counts (493 to
+  507, 1870 to 1940); none deleted or weakened. Run-Validation: the version pins, the override key list and 18
+  pure-logic assertions. The smoke harness: stubs in the real shape for the Pki, Exchange and partition reads and a
+  template descriptor, a `-CimSession` parameter on every DnsServer stub, checks in the single-domain,
+  three-domain and failing-collector passes, and a new credentialed DNS pass.
+- **Mutations** (scratch copy of the repository, new Describe only, pwsh 7; each restored and SHA-256 checked):
+  M1 the Exchange domain verdict direction inverted (above the bar is behind) - killed (1 test); M2 an ungraded
+  template or an unmatched CA value no longer stops the ESC1 all-clear (Not Assessed turned into Pass) - killed (2);
+  M3 the RPC 135 gate of the partition scan ignored (an unreachable DC read as reachable) - killed (1); M4 a refused
+  CIM session worded as "The RPC server is unavailable" (access denied reported as unreachable) - killed (1); M5 an
+  empty AdditionalRows list accepted (override validation removed) - killed (1); M6 the Exchange AD Versions section
+  key renamed in Invoke-Main (wiring dropped) - killed (1); M7 one scan fewer than MaxScans (off by one) - killed (2);
+  M8 the partition scan takes only the first DC of each domain - killed (2). None survived.
+
+Found by an independent review of the diff before commit, and fixed in it (each behaviour fix with a test that fails
+on the code before the fix; run against stubs only, like the rest of this entry):
+
+- **The PORT-PLAN C16e row had been merged into the new C16i row** (the line break between them was lost, so C16e,
+  a deferred row with an owner, no longer existed as a row). The two rows are split again.
+- **An RODC's application partitions were never scanned, silently.** The NTDS Settings read declared only
+  `msDS-hasMasterNCs` (writable partitions) and `hasPartialReplicaNCs`; an RODC holds DomainDnsZones and
+  ForestDnsZones read-only. The read now also declares `msDS-hasFullReplicaNCs` (Learn: "Identifies the partitions
+  held as full replicas", on NTDS-DSA-RO too), carried as `FullNcs`; `Get-AdfaLingeringScanPlan` plans an application
+  partition held in either list (the reference must still hold it in `msDS-hasMasterNCs`), and a DC whose object
+  returned neither list while the forest has application partitions is one Not Assessed row "Advisory scan
+  (application partitions): <dc>" naming both attributes. Whether an RODC really lists them there, and what repadmin
+  advisory mode prints against an RODC, is added to the first-real-run row C16h.
+- **DNS rows with `-Credential` named the wrong principal and called a failed connection an answer.** A CIM session
+  that could not be opened with the supplied credential is now classed apart by `Get-AdfaDnsReadErrorClass`:
+  `SessionRefused` ("Access denied: the credential supplied with -Credential was refused when the CIM session to the
+  DNS server was opened, so the DNS server was not asked.") and `SessionNotOpened` ("Not connected: no CIM session to
+  the DNS server could be opened with the supplied credential ..."). **Existing rows changed**: the `AccessDenied`
+  lead of every DNS Health, DNS vs AD and DNS record export Not Assessed row, with or without `-Credential`, was
+  "Access denied: the account running the assessment was refused by the DNS server." and is now "Access denied: the
+  DNS server refused the account used for the read (the -Credential account when one was supplied, otherwise the
+  account running the assessment)."; Items and statuses are unchanged. Existing test changed because the behaviour
+  legitimately changed: the C16b(4-7) test "a session that cannot be opened ..." now expects `SessionRefused`, not
+  `AccessDenied`, and also asserts the lead.
+- **A LingeringObjects override was logged as in force by a run that does not read it.** A run selecting
+  Replication (or All) without `-IncludeLingeringObjectScan` logged "section LingeringObjects taken from ..." and no
+  warning. The rule is now a pure function, `Get-AdfaConfigOverrideUnusedReason`: a table whose registry entry names
+  a switch is used only when that switch is set, whatever `-Sections` says; otherwise Invoke-Main logs "... was
+  validated but is not used by this run, because -IncludeLingeringObjectScan was not given ...". The other tables
+  keep their rule and their log text. The AST-only test of the old `$usedBySwitch` assignment, which no behaviour
+  mutation could fail, is replaced by tests of the function (switch on and off, Replication and All selected, a
+  table without a switch) and of its one call in Invoke-Main; the smoke harness checks the log of such a run.
+  Existing test changed because the rule moved: the C10 test "is registered for -ConfigOverridePath under Privileged ..."
+  looked for the `AlsoUsedBy` assignment in Invoke-Main; it now finds it in `Get-AdfaConfigOverrideUnusedReason`, checks
+  that a run selecting only Kerberos uses the table, and that Invoke-Main calls the function once.
+- **Full control scoped to the template's own class was ignored.** `Get-AdfaTemplateEnrolmentVerdict` graded an
+  object ACE only when its GUID was Enroll or AutoEnroll, so Everyone with GenericAll scoped to the
+  `pKICertificateTemplate` class GUID was "no grant". An ObjectType that is the template's class
+  (e5209ca2-3bba-11d2-90cc-00c04fd91ab1, Learn c-pkicertificatetemplate) or Top (bf967ab7-0de6-11d0-a285-00aa003049e2,
+  Learn c-top; the class is a "Subclass of Top") is now the object itself, as in the C9 rule (`Get-AdfaAclAceRight`,
+  MS-DTYP 2.5.3.2); the GUIDs are the new, not settable `Pki.TemplateClassGuids`.
+- **Counts moved by the fixes**: the H21 function and parameter counts (507 to 508, 1940 to 1943, the new pure
+  function). Run-Validation gained 10 assertions for the fixes. The new Describe gained nine tests (three data-driven
+  cases and six It blocks; Pester discovers 120 tests in it with every data-driven case expanded).
+- **Mutations of the fixes** (scratch copy of the repository, pwsh 7, the review tests only; green baseline 26 of 26 first;
+  each restored and SHA-256 checked): R1 the plan reads `msDS-hasMasterNCs` only again - killed (2); R2
+  `msDS-hasFullReplicaNCs` dropped from the declared read - killed (1); R3 a session failure classed AccessDenied or
+  Error again - killed (2); R4 a table with a switch falls back to the -Sections rule - killed (1); R5 the class-GUID
+  rule removed from the enrolment verdict - killed (4); R6 Invoke-Main no longer passes the switch state - killed (1).
+  None survived.
+Sources (each read on Microsoft Learn on 2026-11-19):
+https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/1192823c-d839-4bc3-9b6b-fa8c53507ae1,
+https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/ec71fd43-61c2-407b-83c9-b52272dec8a1,
+https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/160d0057-bfa9-46c5-a839-72e7588f0420,
+https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/be8af2e6-01d8-49a5-bacf-be641041ac73,
+https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/44012f2d-5ef3-440d-a61b-b30d3d978130,
+https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/211ab1e3-bad6-416d-9d56-8480b42617a4,
+https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/4be42fa6-c421-4763-890b-07a9ab5a319d,
+https://learn.microsoft.com/windows/win32/adschema/r-certificate-enrollment,
+https://learn.microsoft.com/windows/win32/adschema/a-certificatetemplates,
+https://learn.microsoft.com/windows/win32/adschema/c-pkicertificatetemplate,
+https://learn.microsoft.com/windows/win32/api/certenroll/nn-certenroll-ix509extensionenhancedkeyusage,
+https://learn.microsoft.com/windows/security/operating-system-security/network-security/vpn/how-to-use-single-sign-on-sso-over-vpn-and-wi-fi-connections,
+https://learn.microsoft.com/intune/cloud-pki/configure-byoca,
+https://learn.microsoft.com/defender-for-identity/security-posture-assessments/certificates,
+https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-identifiers,
+https://learn.microsoft.com/windows-server/identity/ad-cs/monitor-ad-cs-health-enterprise-pki,
+https://learn.microsoft.com/dotnet/api/system.directoryservices.activedirectoryrights?view=netframework-4.8.1,
+https://learn.microsoft.com/exchange/plan-and-deploy/prepare-ad-and-domains,
+https://learn.microsoft.com/exchange/release-notes-for-exchange-2013-exchange-2013-help,
+https://learn.microsoft.com/exchange/plan-and-deploy/active-directory/ad-changes (search excerpt),
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/active-directory-replication-event-id-1388-1988,
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/active-directory-replication-event-id-2042,
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8606,
+https://learn.microsoft.com/windows/win32/adschema/a-systemflags,
+https://learn.microsoft.com/windows/win32/ad/enumerating-application-directory-partitions-in-a-forest,
+https://learn.microsoft.com/windows/win32/ad/enumerating-replicas-of-an-application-directory-partition,
+https://learn.microsoft.com/windows/win32/adschema/a-haspartialreplicancs,
+https://learn.microsoft.com/windows/win32/adschema/a-msds-hasfullreplicancs,
+https://learn.microsoft.com/windows/win32/adschema/c-ntdsdsaro (search excerpt),
+https://learn.microsoft.com/windows/win32/adschema/c-pkicertificatetemplate,
+https://learn.microsoft.com/windows/win32/adschema/c-top (search excerpt),
+https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverzone,
+https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverscavenging,
+https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverzoneaging,
+https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverforwarder,
+https://learn.microsoft.com/powershell/module/dnsserver/get-dnsserverresourcerecord,
+https://learn.microsoft.com/powershell/module/cimcmdlets/new-cimsession,
+https://learn.microsoft.com/powershell/module/cimcmdlets/remove-cimsession.
+Not found on Learn: the adschema page of Certificate-AutoEnrollment (404; the GUID is taken from MS-CRTD 2.5.2), the
+objectClass of the Exchange organisation container, the format of `certificateTemplates` values, the event IDs
+advisory mode writes, and a rule for `-ComputerName` and `-CimSession` given together.
+
 ### Added - 2026-11-19 (Accounts and policy: Kerberos encryption types, PASSWD_NOTREQD, FSMO spread and the infrastructure master on a global catalog, lockout policy and fine-grained password policies, tool v1.44.0)
 
 **PORT-PLAN C16b(1-3)** (the first three of the seven C16b coverage additions; every choice approved upfront by

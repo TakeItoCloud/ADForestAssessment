@@ -85,8 +85,9 @@
           this script asks the directory for every attribute, and none names a password, password
           hash, LAPS password, trust secret or other secret attribute. The CSV columns are the
           declared list plus Enabled and ListComplete; a capped read marks every row "No"
-        - AD CS / PKI: enrolment CAs, and an ESC1 heuristic over the configuration of every
-          certificate template object (whether a CA publishes it and who may enrol are not read)
+        - AD CS / PKI: enrolment CAs, the templates they publish (each CA's certificateTemplates),
+          and ESC1 over the published templates only, with who may enrol from each template's DACL
+          (ESC1 is a community name, not a Microsoft term; unpublished templates are not graded)
         - Dangerous ACLs, per scoped domain: principals outside an allowlist, matched by SID and
           never by name, that hold a replication (DCSync) right, WriteDacl, WriteOwner, write of
           all properties or full control on the domain head, or a write or control right or
@@ -175,7 +176,9 @@
               USN rollback (2095), unsupported restore (2103), GUID DNS lookup failures
               (2087/2088), KCC topology failures (1311/1865/1925)
         - Exchange schema marker: one marker (ms-Exch-Schema-Version-Pt rangeUpper), inventory with
-          no verdict; organisation and domain objectVersion are not read
+          no verdict; and Exchange AD versions: the organisation and each scoped domain's
+          objectVersion, mapped through Microsoft's table, a domain below its organisation's level a
+          Warning
         - Optional raw repadmin / dcdiag capture
 
     Every Fail / Warning / Broken / Degraded row in the consolidated findings carries a
@@ -213,7 +216,9 @@
                                    replication) and the DNS test above, independently of
                                    -IncludeDcdiagActiveTests.
       -IncludeLingeringObjectScan  repadmin /removelingeringobjects in advisory mode, which
-                                   removes nothing but writes events on the target DCs.
+                                   removes nothing but writes events on the target DCs;
+                                   domain, configuration and application partitions and
+                                   global catalog partial replicas.
       -IncludeLdapsHandshake       a TLS handshake to port 636 of each DC. It writes nothing,
                                    but Microsoft does not state that a handshake leaves no
                                    trace, and Schannel logs errors by default, so a DC that
@@ -486,7 +491,7 @@
 
     Dns asks every DC of every scoped domain as a DNS server, through the DnsServer module of the
     host running the assessment (Get-DnsServerZone, Get-DnsServerScavenging, Get-DnsServerZoneAging,
-    Get-DnsServerForwarder; reads only). Per DC, one "DNS server" row and one "Zone configuration"
+    Get-DnsServerForwarder; reads only; with -Credential over a CIM session opened with it). Per DC, one "DNS server" row and one "Zone configuration"
     row per zone (inventory). Per domain and primary zone, over every DNS server of the domain:
     "Zone dynamic update" (Nonsecure and secure on an AD-integrated zone is a Fail - Microsoft
     recommends Secure only; a zone that is not AD-integrated is Info) and "Zone scavenging" (zone
@@ -805,6 +810,20 @@
 
         { "AccountsPolicy": { "WeakOnlyStatus": "Fail" } }
 
+    And ExchangeAdVersions, used by the ExchangeSchema section (PORT-PLAN C16b(4-7), v1.45.0), whose
+    keys are AdditionalRows (a list of rows appended to Microsoft's "Exchange Active Directory
+    versions" table, each with exactly Build, RangeUpper, DomainVersion and OrgVersion, so a new
+    cumulative update is a config edit) and DomainBehindStatus (Info, Warning or Fail; Warning is a
+    tool default). The built-in rows, the containers and the reads are refused:
+
+        { "ExchangeAdVersions": { "AdditionalRows": [ { "Build": "Exchange SE CU1", "RangeUpper": 17003, "DomainVersion": 13243, "OrgVersion": 16764 } ] } }
+
+    And LingeringObjects, used by -IncludeLingeringObjectScan (v1.45.0), whose one key is MaxScans (1
+    to 100000 scans of the configuration partition, the application partitions and the global
+    catalog partial replicas per run; 200 is a tool default, not a Microsoft value):
+
+        { "LingeringObjects": { "MaxScans": 50 } }
+
     Keys a section omits keep their built-in value, and findings cite the file only for the
     values it supplied. Each section's value is checked by that section's own rules. The run
     stops, before anything is collected, on a missing or malformed file, a file that is not one
@@ -874,9 +893,11 @@
 
 .PARAMETER IncludeLingeringObjectScan
     Proactively enumerate lingering objects per DC with
-    'repadmin /removelingeringobjects ... /advisory_mode' (each DC compared against its
-    domain's PDC emulator), in the DOMAIN naming context only: the configuration partition,
-    application partitions and global catalog partial replicas are not scanned. Advisory mode
+    'repadmin /removelingeringobjects ... /advisory_mode': the domain naming context (each DC
+    compared against its domain's PDC emulator) and, since v1.45.0, the configuration partition,
+    the application partitions the DC holds and its global catalog partial replicas (each against
+    another DC holding a writable copy; at most LingeringObjects.MaxScans of these, a tool default
+    of 200, settable with -ConfigOverridePath). The schema partition is not scanned. Advisory mode
     changes NOTHING in the directory, but it does write events (1938/1942/1946) to the target
     DCs' Directory Service logs - hence opt-in. A DC whose output carries no count this tool can
     read is Not Assessed, never a Pass. Strongly recommended in a post-restore recovery, where
@@ -911,8 +932,9 @@
 
 .PARAMETER Credential
     Optional credential for the ActiveDirectory module cmdlets, the remote CIM sessions, the event
-    log reads and the inbound trust check over WinRM. It is NOT applied to: the GroupPolicy module
-    (Get-GPO has no -Credential), the DnsServer module reads (called with -ComputerName only), the
+    log reads, the inbound trust check over WinRM and, since v1.45.0, the DnsServer module reads (one
+    bounded CIM session per read, opened with this credential, the cmdlets given -CimSession). It is NOT
+    applied to: the GroupPolicy module (Get-GPO has no -Credential), the
     SYSVOL file reads (GPT.INI, the Policies folder, the central store, netlogon.log), the remote
     registry read of the USN marker, and every external tool (nltest, netdom, dcdiag, repadmin,
     w32tm, dfsrmig), which run as the account running the script.
@@ -1002,7 +1024,7 @@
 
 .NOTES
     Owner: Carlos Annes (TakeItToCloud)
-    Version: 1.44.0
+    Version: 1.45.0
     Created: 2026-07-22
     Last updated: 2026-11-19
     Requires: Windows PowerShell 5.1 or PowerShell 7+ (5.1 because the script runs on a stock domain controller); RSAT ActiveDirectory module (no minimum version set); DnsServer, GroupPolicy and DFSR modules optional; domain read access; administrative rights on the domain controllers for trust verification, dcdiag and the remote CIM sections; Enterprise Admins for the opt-in dcdiag DNS test (Microsoft's statement).
@@ -1086,7 +1108,7 @@ param(
     [string]$DcSystemConfigPath,
 
     # One JSON file that replaces built-in config tables section by section. Its top-level keys
-    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl", "Privileged", "DcDiag", "Dns", "Reach", "SiteCoverage", "ClockSkew", "Stale", "SysvolEngine", "Inventory" and "AccountsPolicy" - and each value is checked by that section's
+    # are section config names - "DcDisk", "DcHardening", "Laps", "DcCertificates", "RidPool", "SidHistory", "Gpo", "Acl", "Privileged", "DcDiag", "Dns", "Reach", "SiteCoverage", "ClockSkew", "Stale", "SysvolEngine", "Inventory", "AccountsPolicy", "ExchangeAdVersions" and "LingeringObjects" - and each value is checked by that section's
     # own validator. Keys a section omits keep their built-in value, and a finding cites the
     # file only for the values the file supplied. A missing or malformed file, an unknown
     # section, an unknown key, a null or a value that cannot be used is a terminating error,
@@ -1120,7 +1142,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.44.0'
+    Version                 = '1.45.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -1191,10 +1213,7 @@ $script:Config = @{
         USE_DES_KEY_ONLY       = 0x200000
         ENCRYPTED_TEXT_PWD     = 0x0080
     }
-    # Certificate template flags for ESC1 detection.
-    EnrolleeSuppliesSubject = 0x00000001  # msPKI-Certificate-Name-Flag
-    PendAllRequests         = 0x00000002  # msPKI-Enrollment-Flag (manager approval)
-    AuthEkuOids             = @('1.3.6.1.5.5.7.3.2', '1.3.6.1.4.1.311.20.2.2', '1.3.6.1.5.2.3.4', '2.5.29.37.0')
+    # The certificate template flags and EKUs of ESC1 are in the Pki table (PORT-PLAN C16b(4-7)).
     # --- Recovery & consistency checks (post-incident) ---
     # DC machine-account passwords rotate every 30 days by default (client-initiated).
     # pwdLastSet is a replicated attribute, so age is collectable centrally; an old value
@@ -4044,6 +4063,228 @@ $script:Config = @{
             LockoutBaselineStatus     = @{ Kind = 'Status'; Allowed = @('Info', 'Warning') }
             PrecedenceTieStatus       = @{ Kind = 'Status'; Allowed = @('Info', 'Warning', 'Fail') }
             PsoAppliedToNothingStatus = @{ Kind = 'Status'; Allowed = @('Info', 'Warning') }
+        }
+    }
+    # --- PKI / AD CS: ESC1 over PUBLISHED certificate templates and the template enrolment ACL
+    #     (PORT-PLAN C16b(4-7), section Pki, report section "PKI / AD CS") ---
+    # Directory reads only, from the forest root domain: the pKIEnrollmentService objects one level under
+    # CN=Enrollment Services (cn, dNSHostName, certificateTemplates), the pKICertificateTemplate objects one
+    # level under CN=Certificate Templates (the listed attributes below), and nTSecurityDescriptor ALONE of
+    # each published template whose shape is ESC1 (the C9 seam Get-AdfaAclObjectRaw). Every URL below was
+    # read on 2026-11-19.
+    #   MS-CRTD 2.28 msPKI-Certificate-Name-Flag: 0x00000001 CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT "This flag
+    #   instructs the client to supply subject information in the certificate request"; 0x00010000
+    #   CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME (subject alternative name; recorded and named, not graded).
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/1192823c-d839-4bc3-9b6b-fa8c53507ae1
+    #   MS-CRTD 2.26 msPKI-Enrollment-Flag: 0x00000002 CT_FLAG_PEND_ALL_REQUESTS "This flag instructs the CA
+    #   to put all requests in a pending state" (manager approval).
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/ec71fd43-61c2-407b-83c9-b52272dec8a1
+    #   MS-CRTD 2.18 msPKI-RA-Signature: "the number of recovery agent signatures that are required on a
+    #   request that references this template". Learn does not say that an absent value means 0, so an
+    #   absent value is never read as 0 here.
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/160d0057-bfa9-46c5-a839-72e7588f0420
+    #   MS-CRTD 2.12 pKIExtendedKeyUsage and 2.25 msPKI-Certificate-Application-Policy: lists of EKU OIDs
+    #   ("Application policy OIDs are the same as extended key usage OIDs").
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/be8af2e6-01d8-49a5-bacf-be641041ac73
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/44012f2d-5ef3-440d-a61b-b30d3d978130
+    #   Authentication EKUs: 1.3.6.1.5.5.7.3.2 client authentication, 1.3.6.1.4.1.311.20.2.2 smart card
+    #   logon and 1.3.6.1.4.1.311.10.12.1 any application policy (certenroll); 1.3.6.1.5.2.3.4 PKINIT client
+    #   authentication; 2.5.29.37.0 any purpose.
+    #     https://learn.microsoft.com/windows/win32/api/certenroll/nn-certenroll-ix509extensionenhancedkeyusage
+    #     https://learn.microsoft.com/windows/security/operating-system-security/network-security/vpn/how-to-use-single-sign-on-sso-over-vpn-and-wi-fi-connections
+    #     https://learn.microsoft.com/intune/cloud-pki/configure-byoca
+    #   MS-CRTD 2.5.2: the ObjectType GUIDs of the template's ACCESS_ALLOWED_OBJECT_ACE with control access
+    #   (CR): Enroll 0e10c968-78fb-11d2-90d4-00c04f79dc55 and AutoEnroll a05b8cc2-17bc-4802-a710-e7c15ab866a2;
+    #   an ACCESS_ALLOWED_ACE with the same bit grants it too; the matching ACCESS_DENIED_OBJECT_ACE denies.
+    #     https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/211ab1e3-bad6-416d-9d56-8480b42617a4
+    #     https://learn.microsoft.com/windows/win32/adschema/r-certificate-enrollment
+    #   An object ACE whose ObjectType is the template's own class, pKICertificateTemplate (Schema-Id-Guid
+    #   e5209ca2-3bba-11d2-90cc-00c04fd91ab1, "Subclass of Top"), or Top (bf967ab7-0de6-11d0-a285-00aa003049e2)
+    #   is the node of the object itself (OBJECT_TYPE_LIST level zero, MS-DTYP 2.5.3.2, the C9 rule of
+    #   Get-AdfaAclAceRight) and is graded as if it had no ObjectType (read 2026-11-19):
+    #     https://learn.microsoft.com/windows/win32/adschema/c-pkicertificatetemplate
+    #     https://learn.microsoft.com/windows/win32/adschema/c-top
+    #   ESC1 is a community name (from published offensive research), not a Microsoft term; Microsoft
+    #   Defender for Identity uses it for "Supply in the request" with an authentication EKU, no "Manager
+    #   approval or required authorized signatures", and enrolment for an unprivileged group ("Examples of
+    #   built-in, unprivileged groups include Authenticated Users or Everyone"), and says "Templates that
+    #   aren't published can't be requested, and therefore can't be exploited."
+    #     https://learn.microsoft.com/defender-for-identity/security-posture-assessments/certificates
+    #   Well-known SIDs: S-1-1-0 Everyone, S-1-5-11 Authenticated Users, <domain>-513 Domain Users,
+    #   <domain>-515 Domain Computers.
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-security-identifiers
+    #   CN=Enrollment Services "Holds the pKIEnrollmentService object that an enterprise CA creates. It records
+    #   which certificate types the CA can issue"; certificateTemplates is multi-valued. NOT PUBLISHED: that
+    #   a certificateTemplates value is the template's cn. A value is matched to a template's cn, then to its
+    #   displayName, case-insensitively (tool rule), and a value that matches neither is reported, so the
+    #   "not published" claim can be checked.
+    #     https://learn.microsoft.com/windows-server/identity/ad-cs/monitor-ad-cs-health-enterprise-pki
+    #     https://learn.microsoft.com/windows/win32/adschema/a-certificatetemplates
+    #
+    # TOOL DEFAULTS, not Microsoft values: MaxObjects 100000 per read, NameListCap 20, LowPrivilegeStatus
+    # Fail and OtherPrincipalStatus Warning, and the reading of every Domain Users (-513) and Domain Computers
+    # (-515) SID as low-privilege whatever its domain. Not settable from -ConfigOverridePath.
+    Pki                     = @{
+        SourceUrl                      = 'https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/1192823c-d839-4bc3-9b6b-fa8c53507ae1 and https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/ec71fd43-61c2-407b-83c9-b52272dec8a1 and https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/160d0057-bfa9-46c5-a839-72e7588f0420 and https://learn.microsoft.com/openspecs/windows_protocols/ms-crtd/211ab1e3-bad6-416d-9d56-8480b42617a4 and https://learn.microsoft.com/defender-for-identity/security-posture-assessments/certificates'
+        ReadDate                       = '2026-11-19'
+        ThresholdSource                = 'tool defaults, not Microsoft values'
+        OverrideLabel                  = 'Pki'
+        MaxObjects                     = 100000
+        NameListCap                    = 20
+        EnrolleeSuppliesSubject        = 0x00000001
+        EnrolleeSuppliesSubjectAltName = 0x00010000
+        PendAllRequests                = 0x00000002
+        AuthEkuOids                    = @('1.3.6.1.5.5.7.3.2', '1.3.6.1.4.1.311.20.2.2', '1.3.6.1.5.2.3.4', '2.5.29.37.0', '1.3.6.1.4.1.311.10.12.1')
+        EnrolRights                    = @(
+            @{ Name = 'Enroll'; Guid = '0e10c968-78fb-11d2-90d4-00c04f79dc55' }
+            @{ Name = 'AutoEnroll'; Guid = 'a05b8cc2-17bc-4802-a710-e7c15ab866a2' }
+        )
+        TemplateClassGuids             = @('e5209ca2-3bba-11d2-90cc-00c04fd91ab1', 'bf967ab7-0de6-11d0-a285-00aa003049e2')
+        LowPrivilegeSids               = @('S-1-1-0', 'S-1-5-11')
+        LowPrivilegeRidPattern         = '^S-1-5-21-\d+-\d+-\d+-(513|515)$'
+        EnrollmentServicesContainer    = 'CN=Enrollment Services,CN=Public Key Services,CN=Services'
+        TemplatesContainer             = 'CN=Certificate Templates,CN=Public Key Services,CN=Services'
+        Reads                          = [ordered]@{
+            EnrollmentServices = @{ Filter = '(objectClass=pKIEnrollmentService)'; Scope = 'OneLevel'; Properties = @('cn', 'dNSHostName', 'certificateTemplates') }
+            Templates          = @{ Filter = '(objectClass=pKICertificateTemplate)'; Scope = 'OneLevel'; Properties = @('cn', 'displayName', 'msPKI-Certificate-Name-Flag', 'msPKI-Enrollment-Flag', 'msPKI-RA-Signature', 'pKIExtendedKeyUsage', 'msPKI-Certificate-Application-Policy') }
+        }
+        LowPrivilegeStatus             = 'Fail'
+        OtherPrincipalStatus           = 'Warning'
+        CommunityNote                  = 'ESC1 is a community name (not a Microsoft term) for this configuration'
+    }
+    # --- Exchange organisation and domain objectVersion (PORT-PLAN C16b(4-7), section ExchangeSchema,
+    #     report section "Exchange AD Versions") ---
+    # Directory reads only: rangeUpper of CN=ms-Exch-Schema-Version-Pt in the schema NC; the container
+    # CN=Microsoft Exchange,CN=Services in the configuration NC and the children one level under it that carry
+    # objectVersion (the organisation container; its objectClass is not on Learn, so it is not used); per
+    # scoped domain, objectVersion of CN=Microsoft Exchange System Objects in the domain NC, read from that
+    # domain. Learn, read 2026-11-19 (https://learn.microsoft.com/exchange/plan-and-deploy/prepare-ad-and-domains,
+    # "Exchange Active Directory versions"): "rangeUpper is located in the Schema naming context in the
+    # properties of the ms-Exch-Schema-Version-Pt container"; "objectVersion (Default) ... of the Microsoft
+    # Exchange System Objects container"; "objectVersion (Configuration) ... in Services > Microsoft Exchange
+    # in the properties of the <Your Exchange Organization Name> container"; "You can compare the object
+    # versions you see with the values in the tables"; "You need to prepare any domain that will contain
+    # mail-enabled users, even if the domain won't contain any Exchange servers." The Rows below are that
+    # page's three tables, every row as published (SE 1, Exchange 2019 18, Exchange 2016 26: 45 rows).
+    # Several builds share one triple (Exchange SE RTM and Exchange 2019 CU15), so a triple maps to every
+    # build that has it. The Default and Configuration objectVersion are different number spaces (13243
+    # against 16763 on one build), so a domain is compared with the Default value of the builds the
+    # organisation maps to, never with the organisation's own number. msExchProductID is not on that page
+    # (Learn documents it only for Exchange 2013, as "the version of Exchange 2013 that last made changes to
+    # the Active Directory schema"), so it is shown raw and never graded.
+    # TOOL DEFAULTS, not Microsoft values: DomainBehindStatus Warning and MaxObjects 1000 per read.
+    # -ConfigOverridePath, key "ExchangeAdVersions": AdditionalRows (rows appended to the table, so a new
+    # cumulative update is a config edit) and DomainBehindStatus; everything else is refused.
+    ExchangeAdVersions      = @{
+        SourceUrl              = 'https://learn.microsoft.com/exchange/plan-and-deploy/prepare-ad-and-domains'
+        ReadDate               = '2026-11-19'
+        ThresholdSource        = 'the Learn table (Microsoft values); DomainBehindStatus and MaxObjects are tool defaults, not Microsoft values'
+        OverrideLabel          = 'ExchangeAdVersions'
+        MaxObjects             = 1000
+        DomainBehindStatus     = 'Warning'
+        SchemaMarker           = 'CN=ms-Exch-Schema-Version-Pt'
+        ExchangeContainer      = 'CN=Microsoft Exchange,CN=Services'
+        SystemObjectsContainer = 'CN=Microsoft Exchange System Objects'
+        Reads                  = [ordered]@{
+            SchemaMarker      = @{ Properties = @('rangeUpper') }
+            ExchangeContainer = @{ Properties = @('cn') }
+            Organization      = @{ Filter = '(objectVersion=*)'; Scope = 'OneLevel'; Properties = @('cn', 'objectVersion', 'msExchProductID') }
+            DomainObjects     = @{ Properties = @('objectVersion') }
+        }
+        Rows                   = @(
+            @{ Build = 'Exchange SE RTM'; RangeUpper = 17003; DomainVersion = 13243; OrgVersion = 16763 }
+            @{ Build = 'Exchange 2019 CU15'; RangeUpper = 17003; DomainVersion = 13243; OrgVersion = 16763 }
+            @{ Build = 'Exchange 2019 CU14'; RangeUpper = 17003; DomainVersion = 13243; OrgVersion = 16762 }
+            @{ Build = 'Exchange 2019 CU13'; RangeUpper = 17003; DomainVersion = 13243; OrgVersion = 16761 }
+            @{ Build = 'Exchange 2019 CU12'; RangeUpper = 17003; DomainVersion = 13243; OrgVersion = 16760 }
+            @{ Build = 'Exchange 2019 CU11 with KB5014260'; RangeUpper = 17003; DomainVersion = 13243; OrgVersion = 16759 }
+            @{ Build = 'Exchange 2019 CU11'; RangeUpper = 17003; DomainVersion = 13242; OrgVersion = 16759 }
+            @{ Build = 'Exchange 2019 CU10'; RangeUpper = 17003; DomainVersion = 13241; OrgVersion = 16758 }
+            @{ Build = 'Exchange 2019 CU9'; RangeUpper = 17002; DomainVersion = 13240; OrgVersion = 16757 }
+            @{ Build = 'Exchange 2019 CU8'; RangeUpper = 17002; DomainVersion = 13239; OrgVersion = 16756 }
+            @{ Build = 'Exchange 2019 CU7'; RangeUpper = 17001; DomainVersion = 13238; OrgVersion = 16755 }
+            @{ Build = 'Exchange 2019 CU6'; RangeUpper = 17001; DomainVersion = 13237; OrgVersion = 16754 }
+            @{ Build = 'Exchange 2019 CU5'; RangeUpper = 17001; DomainVersion = 13237; OrgVersion = 16754 }
+            @{ Build = 'Exchange 2019 CU4'; RangeUpper = 17001; DomainVersion = 13237; OrgVersion = 16754 }
+            @{ Build = 'Exchange 2019 CU3'; RangeUpper = 17001; DomainVersion = 13237; OrgVersion = 16754 }
+            @{ Build = 'Exchange 2019 CU2'; RangeUpper = 17001; DomainVersion = 13237; OrgVersion = 16754 }
+            @{ Build = 'Exchange 2019 CU1'; RangeUpper = 17000; DomainVersion = 13236; OrgVersion = 16752 }
+            @{ Build = 'Exchange 2019 RTM'; RangeUpper = 17000; DomainVersion = 13236; OrgVersion = 16751 }
+            @{ Build = 'Exchange 2019 Preview'; RangeUpper = 15332; DomainVersion = 13236; OrgVersion = 16213 }
+            @{ Build = 'Exchange 2016 CU23'; RangeUpper = 15334; DomainVersion = 13243; OrgVersion = 16223 }
+            @{ Build = 'Exchange 2016 CU22 with KB5014260'; RangeUpper = 15334; DomainVersion = 13243; OrgVersion = 16222 }
+            @{ Build = 'Exchange 2016 CU22'; RangeUpper = 15334; DomainVersion = 13242; OrgVersion = 16222 }
+            @{ Build = 'Exchange 2016 CU21'; RangeUpper = 15334; DomainVersion = 13241; OrgVersion = 16221 }
+            @{ Build = 'Exchange 2016 CU20'; RangeUpper = 15333; DomainVersion = 13240; OrgVersion = 16220 }
+            @{ Build = 'Exchange 2016 CU19'; RangeUpper = 15333; DomainVersion = 13239; OrgVersion = 16219 }
+            @{ Build = 'Exchange 2016 CU18'; RangeUpper = 15332; DomainVersion = 13238; OrgVersion = 16218 }
+            @{ Build = 'Exchange 2016 CU17'; RangeUpper = 15332; DomainVersion = 13237; OrgVersion = 16217 }
+            @{ Build = 'Exchange 2016 CU16'; RangeUpper = 15332; DomainVersion = 13237; OrgVersion = 16217 }
+            @{ Build = 'Exchange 2016 CU15'; RangeUpper = 15332; DomainVersion = 13237; OrgVersion = 16217 }
+            @{ Build = 'Exchange 2016 CU14'; RangeUpper = 15332; DomainVersion = 13237; OrgVersion = 16217 }
+            @{ Build = 'Exchange 2016 CU13'; RangeUpper = 15332; DomainVersion = 13237; OrgVersion = 16217 }
+            @{ Build = 'Exchange 2016 CU12'; RangeUpper = 15332; DomainVersion = 13236; OrgVersion = 16215 }
+            @{ Build = 'Exchange 2016 CU11'; RangeUpper = 15332; DomainVersion = 13236; OrgVersion = 16214 }
+            @{ Build = 'Exchange 2016 CU10'; RangeUpper = 15332; DomainVersion = 13236; OrgVersion = 16213 }
+            @{ Build = 'Exchange 2016 CU9'; RangeUpper = 15332; DomainVersion = 13236; OrgVersion = 16213 }
+            @{ Build = 'Exchange 2016 CU8'; RangeUpper = 15332; DomainVersion = 13236; OrgVersion = 16213 }
+            @{ Build = 'Exchange 2016 CU7'; RangeUpper = 15332; DomainVersion = 13236; OrgVersion = 16213 }
+            @{ Build = 'Exchange 2016 CU6'; RangeUpper = 15330; DomainVersion = 13236; OrgVersion = 16213 }
+            @{ Build = 'Exchange 2016 CU5'; RangeUpper = 15326; DomainVersion = 13236; OrgVersion = 16213 }
+            @{ Build = 'Exchange 2016 CU4'; RangeUpper = 15326; DomainVersion = 13236; OrgVersion = 16213 }
+            @{ Build = 'Exchange 2016 CU3'; RangeUpper = 15326; DomainVersion = 13236; OrgVersion = 16212 }
+            @{ Build = 'Exchange 2016 CU2'; RangeUpper = 15325; DomainVersion = 13236; OrgVersion = 16212 }
+            @{ Build = 'Exchange 2016 CU1'; RangeUpper = 15323; DomainVersion = 13236; OrgVersion = 16211 }
+            @{ Build = 'Exchange 2016 RTM'; RangeUpper = 15317; DomainVersion = 13236; OrgVersion = 16210 }
+            @{ Build = 'Exchange 2016 Preview'; RangeUpper = 15317; DomainVersion = 13236; OrgVersion = 16041 }
+        )
+        OverrideExample        = '{ "AdditionalRows": [ { "Build": "Exchange SE CU1", "RangeUpper": 17003, "DomainVersion": 13243, "OrgVersion": 16764 } ] }'
+        OverrideRefused        = 'The built-in Rows (the Learn table), the containers and the reads are refused; a new build is added with AdditionalRows.'
+    }
+    # --- The lingering-object scan of the configuration partition, the application partitions and the
+    #     global catalog partial replicas (PORT-PLAN C16b(4-7), opt-in -IncludeLingeringObjectScan) ---
+    # The same command as the domain scan, in advisory mode only: repadmin /removelingeringobjects <dc>
+    # <reference DSA GUID> <NC> /advisory_mode. Learn, read 2026-11-19: /advisory_mode "Logs the lingering
+    # objects that will be removed so that you can review them, but does not remove them"
+    # (https://learn.microsoft.com/troubleshoot/windows-server/active-directory/active-directory-replication-event-id-1388-1988),
+    # "This makes it possible for you to assess the lingering objects without actually removing anything"
+    # (https://learn.microsoft.com/troubleshoot/windows-server/active-directory/active-directory-replication-event-id-2042);
+    # the source must be "a domain controller that hosts a writable copy of the directory partition";
+    # "Lingering objects are most frequently found in read-only domain partitions on GCs. Lingering objects may
+    # also exist in writable domain partitions as well as the configuration partition. The schema partition
+    # does not support deletes" - so the schema partition is not scanned
+    # (https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8606).
+    # Partitions: the crossRef objects one level under CN=Partitions; systemFlags 1 "the naming context is in
+    # NTDS" and 2 "the naming context is a domain" (https://learn.microsoft.com/windows/win32/adschema/a-systemflags);
+    # an application partition has 1 and not 2 and is neither the schema nor the configuration NC
+    # (https://learn.microsoft.com/windows/win32/ad/enumerating-application-directory-partitions-in-a-forest).
+    # Holders: msDS-hasMasterNCs "contains the distinguished names of all writable directory partitions that
+    # the domain controller hosts, including application directory partitions"
+    # (https://learn.microsoft.com/windows/win32/ad/enumerating-replicas-of-an-application-directory-partition);
+    # msDS-hasFullReplicaNCs "Identifies the partitions held as full replicas", on the NTDS-DSA-RO class of an RODC too
+    # (https://learn.microsoft.com/windows/win32/adschema/a-msds-hasfullreplicancs, .../c-ntdsdsaro, read 2026-11-19),
+    # so an RODC's read-only application partitions, absent from its msDS-hasMasterNCs, are still planned;
+    # hasPartialReplicaNCs "reflects the distinguished name for all other-domain NCs that have been replicated
+    # into a global catalog" (https://learn.microsoft.com/windows/win32/adschema/a-haspartialreplicancs).
+    # TOOL DEFAULTS, not Microsoft values: MaxScans 200 partition scans per run (Microsoft publishes no number)
+    # and MaxObjects 100000 per read. -ConfigOverridePath, key "LingeringObjects": MaxScans only.
+    LingeringObjects        = @{
+        SourceUrl        = 'https://learn.microsoft.com/troubleshoot/windows-server/active-directory/active-directory-replication-event-id-1388-1988 and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/replication-error-8606 and https://learn.microsoft.com/windows/win32/ad/enumerating-application-directory-partitions-in-a-forest'
+        ReadDate         = '2026-11-19'
+        ThresholdSource  = 'tool defaults, not Microsoft values'
+        OverrideLabel    = 'LingeringObjects'
+        MaxScans         = 200
+        MaxObjects       = 100000
+        CrNtdsNc         = 1
+        CrNtdsDomain     = 2
+        Reads            = [ordered]@{
+            Partitions = @{ Filter = '(objectClass=crossRef)'; Scope = 'OneLevel'; Properties = @('nCName', 'systemFlags') }
+            Dsa        = @{ Filter = '(objectClass=nTDSDSA)'; Scope = 'Subtree'; Properties = @('msDS-hasMasterNCs', 'msDS-hasFullReplicaNCs', 'hasPartialReplicaNCs') }
+        }
+        OverrideExample  = '{ "MaxScans": 50 }'
+        OverrideRefused  = 'The flags, the filters and the property lists are refused.'
+        OverrideSpec     = [ordered]@{
+            MaxScans = @{ Kind = 'Int'; Min = 1; Max = 100000; Unit = 'partition scans per run' }
         }
     }
     # --- DNS: zone dynamic update, aging and scavenging, DC locator SRV records, DC A records,
@@ -8320,8 +8561,14 @@ function Test-AdfaDnsServerScavenges {
 function Get-AdfaDnsReadErrorClass {
     <#
     .SYNOPSIS
-        Pure: the class of a DNS read failure - AccessDenied, NoProvider, Timeout, NotFound or Error.
+        Pure: the class of a DNS read failure - SessionRefused, SessionNotOpened, AccessDenied,
+        NoProvider, Timeout, NotFound or Error.
     .DESCRIPTION
+        A CIM session that Invoke-AdfaDnsServerRead could not open with -Credential (its message begins
+        "A CIM session to <host> could not be opened with the supplied credential:") is classed first and
+        apart, because the DNS server was never asked: SessionRefused when the session was refused
+        (Get-AdfaRemoteReadErrorClass), SessionNotOpened otherwise (unreachable or a transport failure -
+        never "the DNS server answered"; PORT-PLAN C16b(4-7), independent review).
         Refusal first, by the CIM error code and then the text (Get-AdfaRemoteReadErrorClass). Then
         the DNS CIM provider missing (InvalidNamespace, InvalidClass - reference decision 60), a
         time-out (text only: NativeErrorCode has no time-out value, read 2026-11-17), and "no such
@@ -8346,7 +8593,12 @@ function Get-AdfaDnsReadErrorClass {
         [AllowNull()][AllowEmptyString()][string]$ErrorCode,
         [Parameter(Mandatory)][hashtable]$Config
     )
-    if ((Get-AdfaRemoteReadErrorClass -Message $Message -ErrorCode $ErrorCode) -eq 'AccessDenied') { return 'AccessDenied' }
+    $remote = Get-AdfaRemoteReadErrorClass -Message $Message -ErrorCode $ErrorCode
+    if (([string]$Message) -match '^A CIM session to \S+ could not be opened with the supplied credential: ') {
+        if ($remote -eq 'AccessDenied') { return 'SessionRefused' }
+        return 'SessionNotOpened'
+    }
+    if ($remote -eq 'AccessDenied') { return 'AccessDenied' }
     $code = ([string]$ErrorCode).Trim()
     if ($code -ne '' -and @($Config['NoProviderErrorCodes']) -contains $code) { return 'NoProvider' }
     $text = [string]$Message
@@ -8359,6 +8611,11 @@ function Get-AdfaDnsReadCause {
     <#
     .SYNOPSIS
         Pure: the fixed lead of a Not Assessed cause for one failed DNS read, then what was reported.
+    .DESCRIPTION
+        The AccessDenied lead names no principal: with -Credential the DNS server refused that account,
+        without it the account running the assessment. A session that could not be opened with
+        -Credential has leads of its own (SessionRefused, SessionNotOpened) that say the server was not
+        asked (PORT-PLAN C16b(4-7), independent review).
     .PARAMETER Class
         The class input of Get-AdfaDnsReadCause. Type [string], mandatory.
     .PARAMETER Message
@@ -8368,7 +8625,9 @@ function Get-AdfaDnsReadCause {
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Class, [AllowNull()][AllowEmptyString()][string]$Message)
     $lead = switch ($Class) {
-        'AccessDenied' { 'Access denied: the account running the assessment was refused by the DNS server.'; break }
+        'SessionRefused' { 'Access denied: the credential supplied with -Credential was refused when the CIM session to the DNS server was opened, so the DNS server was not asked.'; break }
+        'SessionNotOpened' { 'Not connected: no CIM session to the DNS server could be opened with the supplied credential (the server was not reached over WinRM or DCOM, or the transport failed), so the DNS server was not asked.'; break }
+        'AccessDenied' { 'Access denied: the DNS server refused the account used for the read (the -Credential account when one was supplied, otherwise the account running the assessment).'; break }
         'NoProvider' { 'DNS provider did not answer: the DNS server management provider is not there (the DNS Server role may not be installed on this DC).'; break }
         'Timeout' { 'Timed out: the DNS server did not answer in time.'; break }
         'NotFound' { 'Not found: the DNS server reports no such object.'; break }
@@ -8401,17 +8660,23 @@ function Get-AdfaDnsServerRaw {
         ForwardersOk, Forwarders, ForwarderError.
     .PARAMETER ComputerName
         The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER CimSession
+        PORT-PLAN C16b(4-7): a CIM session to the DNS server, opened with -Credential by
+        Invoke-AdfaDnsServerRead; when given, every cmdlet is called with -CimSession and never with
+        -ComputerName. Untyped, default $null.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
-    param([Parameter(Mandatory)][string]$ComputerName)
+    param([Parameter(Mandatory)][string]$ComputerName, [AllowNull()]$CimSession = $null)
     $out = [pscustomobject]@{
         Ok = $false; Error = ''; ErrorCode = ''; Zones = @(); ScavengingOk = $false; ScavengingInterval = $null; ScavengingState = $null
         ScavengingError = ''; Aging = @{}; ForwardersOk = $false; Forwarders = @(); ForwarderError = ''
     }
+    $target = @{ ComputerName = $ComputerName }
+    if ($null -ne $CimSession) { $target = @{ CimSession = $CimSession } }
     try {
         $list = New-Object System.Collections.ArrayList
-        foreach ($z in @(Get-DnsServerZone -ComputerName $ComputerName -ErrorAction Stop)) {
+        foreach ($z in @(Get-DnsServerZone @target -ErrorAction Stop)) {
             if ($null -eq $z) { continue }
             $text = { param($Name) $v = Get-AdfaCimRawValue -Instance $z -Name $Name; if ($null -eq $v) { return '' } return ([string]$v).Trim() }
             [void]$list.Add([pscustomobject]@{
@@ -8435,7 +8700,7 @@ function Get-AdfaDnsServerRaw {
         return $out
     }
     try {
-        $s = Get-DnsServerScavenging -ComputerName $ComputerName -ErrorAction Stop
+        $s = Get-DnsServerScavenging @target -ErrorAction Stop
         $out.ScavengingInterval = Get-AdfaCimRawValue -Instance $s -Name 'ScavengingInterval'
         $out.ScavengingState = ConvertTo-AdfaDnsBool -Value (Get-AdfaCimRawValue -Instance $s -Name 'ScavengingState')
         $out.ScavengingOk = $true
@@ -8449,7 +8714,7 @@ function Get-AdfaDnsServerRaw {
         if ([string]$z.ZoneName -eq '' -or [string]$z.ZoneType -ne 'Primary' -or $z.IsAutoCreated -eq $true) { continue }
         $entry = [pscustomobject]@{ Ok = $false; AgingEnabled = $null; NoRefreshInterval = $null; RefreshInterval = $null; ScavengeServers = @(); Error = '' }
         try {
-            $a = Get-DnsServerZoneAging -Name ([string]$z.ZoneName) -ComputerName $ComputerName -ErrorAction Stop
+            $a = Get-DnsServerZoneAging -Name ([string]$z.ZoneName) @target -ErrorAction Stop
             $entry.AgingEnabled = ConvertTo-AdfaDnsBool -Value (Get-AdfaCimRawValue -Instance $a -Name 'AgingEnabled')
             $entry.NoRefreshInterval = Get-AdfaCimRawValue -Instance $a -Name 'NoRefreshInterval'
             $entry.RefreshInterval = Get-AdfaCimRawValue -Instance $a -Name 'RefreshInterval'
@@ -8461,7 +8726,7 @@ function Get-AdfaDnsServerRaw {
     }
     $out.Aging = $aging
     try {
-        $out.Forwarders = @(Get-AdfaForwarderAddress -Forwarder (Get-DnsServerForwarder -ComputerName $ComputerName -ErrorAction Stop))
+        $out.Forwarders = @(Get-AdfaForwarderAddress -Forwarder (Get-DnsServerForwarder @target -ErrorAction Stop))
         $out.ForwardersOk = $true
     }
     catch { $out.ForwarderError = [string]$_.Exception.Message }
@@ -8550,6 +8815,10 @@ function Get-AdfaDnsRecordSetRaw {
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], default
         $script:Config.Dns.
+    .PARAMETER CimSession
+        PORT-PLAN C16b(4-7): a CIM session to the DNS server, opened with -Credential by
+        Invoke-AdfaDnsServerRead; when given, the cmdlet is called with -CimSession and never with
+        -ComputerName. Untyped, default $null.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8559,11 +8828,13 @@ function Get-AdfaDnsRecordSetRaw {
         [AllowEmptyString()][string]$Name = '',
         [AllowEmptyString()][string]$RRType = '',
         [ValidateRange(0, 1000000)][int]$Cap = 0,
-        [hashtable]$Config = $script:Config.Dns
+        [hashtable]$Config = $script:Config.Dns,
+        [AllowNull()]$CimSession = $null
     )
     $out = [pscustomobject]@{ Ok = $false; Outcome = 'Error'; Records = @(); RealCount = 0; Truncated = $false; Error = ''; ErrorCode = ''; ErrorId = '' }
     try {
         $rrArgs = @{ ComputerName = $ComputerName; ZoneName = $ZoneName; ErrorAction = 'Stop' }
+        if ($null -ne $CimSession) { $rrArgs = @{ CimSession = $CimSession; ZoneName = $ZoneName; ErrorAction = 'Stop' } }
         if ($Name -ne '') { $rrArgs.Name = $Name }
         if ($RRType -ne '') { $rrArgs.RRType = $RRType }
         $list = New-Object System.Collections.ArrayList
@@ -8618,16 +8889,22 @@ function Get-AdfaDnsServerZoneNames {
         [pscustomobject] Ok, Names, Types (lower-case zone name -> ZoneType), Error, ErrorCode.
     .PARAMETER ComputerName
         The host name of the computer to read or probe. Type [string], mandatory.
+    .PARAMETER CimSession
+        PORT-PLAN C16b(4-7): a CIM session to the DNS server, opened with -Credential by
+        Invoke-AdfaDnsServerRead; when given, the cmdlet is called with -CimSession and never with
+        -ComputerName. The cache stays keyed by -ComputerName. Untyped, default $null.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
-    param([Parameter(Mandatory)][string]$ComputerName)
+    param([Parameter(Mandatory)][string]$ComputerName, [AllowNull()]$CimSession = $null)
     $key = $ComputerName.ToLowerInvariant()
     if ($script:DnsZoneListCache.ContainsKey($key)) { return $script:DnsZoneListCache[$key] }
     $out = [pscustomobject]@{ Ok = $false; Names = @(); Types = @{}; Error = ''; ErrorCode = '' }
+    $target = @{ ComputerName = $ComputerName }
+    if ($null -ne $CimSession) { $target = @{ CimSession = $CimSession } }
     try {
         $names = @(); $types = @{}
-        foreach ($z in @(@(Get-DnsServerZone -ComputerName $ComputerName -ErrorAction Stop) | Where-Object { $null -ne $_ })) {
+        foreach ($z in @(@(Get-DnsServerZone @target -ErrorAction Stop) | Where-Object { $null -ne $_ })) {
             $n = [string](Get-AdfaCimRawValue -Instance $z -Name 'ZoneName')
             if ($n -eq '') { continue }
             $t = Get-AdfaCimRawValue -Instance $z -Name 'ZoneType'
@@ -8718,14 +8995,18 @@ function Get-AdfaDnsZoneDelegation {
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER Credential
+        The credential for the DNS server read (PORT-PLAN C16b(4-7): a CIM session through
+        Invoke-AdfaDnsServerRead). When it is absent the account running the assessment is used.
+        Type [pscredential].
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
-    param([Parameter(Mandatory)][string]$ComputerName, [Parameter(Mandatory)][string]$ZoneName, [Parameter(Mandatory)][hashtable]$Config)
+    param([Parameter(Mandatory)][string]$ComputerName, [Parameter(Mandatory)][string]$ZoneName, [Parameter(Mandatory)][hashtable]$Config, [pscredential]$Credential)
     $key = ("{0}|{1}" -f $ComputerName, $ZoneName).ToLowerInvariant()
     if ($script:DnsDelegationCache.ContainsKey($key)) { return $script:DnsDelegationCache[$key] }
     $out = [pscustomobject]@{ Ok = $false; Names = @(); Cause = '' }
-    $read = Get-AdfaDnsRecordSetRaw -ComputerName $ComputerName -ZoneName $ZoneName -RRType 'Ns' -Config $Config
+    $read = Invoke-AdfaDnsServerRead -ComputerName $ComputerName -Read 'Records' -ReadArguments @{ ZoneName = $ZoneName; RRType = 'Ns'; Config = $Config } -Credential $Credential -Config $Config
     if ($read.Outcome -eq 'Resolved') {
         $out.Names = @(@($read.Records) | ForEach-Object { ([string]$_.HostName).Trim().TrimEnd('.').ToLowerInvariant() } | Where-Object { $_ -ne '' -and $_ -ne '@' } | Sort-Object -Unique)
         $out.Ok = $true
@@ -8762,12 +9043,16 @@ function Resolve-AdfaDnsServerZone {
     .PARAMETER Config
         The configuration table this function reads its names, thresholds and limits from: a table
         of $script:Config, after any override file was merged onto it. Type [hashtable], mandatory.
+    .PARAMETER Credential
+        The credential for the DNS server reads (PORT-PLAN C16b(4-7): a CIM session through
+        Invoke-AdfaDnsServerRead). When it is absent the account running the assessment is used.
+        Type [pscredential].
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
-    param([Parameter(Mandatory)][string]$ComputerName, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][hashtable]$Config)
+    param([Parameter(Mandatory)][string]$ComputerName, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][hashtable]$Config, [pscredential]$Credential)
     $fail = { param([string]$Cause) [pscustomobject]@{ Ok = $false; Zone = ''; Relative = ''; Cause = $Cause } }
-    $zones = Get-AdfaDnsServerZoneNames -ComputerName $ComputerName
+    $zones = Invoke-AdfaDnsServerRead -ComputerName $ComputerName -Read 'Zones' -Credential $Credential -Config $Config
     if (-not $zones.Ok) {
         $class = Get-AdfaDnsReadErrorClass -Message $zones.Error -ErrorCode $zones.ErrorCode -Config $Config
         return (& $fail (Get-AdfaDnsReadCause -Class $class -Message $zones.Error))
@@ -8784,7 +9069,7 @@ function Resolve-AdfaDnsServerZone {
         return (& $fail ("the zone this DNS server holds for the name is of type '{0}', which does not hold its records, so its zone was not read." -f $shown))
     }
     if ([string]$where.Relative -ne '@') {
-        $del = Get-AdfaDnsZoneDelegation -ComputerName $ComputerName -ZoneName ([string]$where.Zone) -Config $Config
+        $del = Get-AdfaDnsZoneDelegation -ComputerName $ComputerName -ZoneName ([string]$where.Zone) -Config $Config -Credential $Credential
         if (-not $del.Ok) { return (& $fail ("{0}, so its zone was not read for the name." -f [string]$del.Cause)) }
         $point = Get-AdfaDnsDelegationPoint -Relative ([string]$where.Relative) -Delegations @($del.Names)
         if ($point -ne '') { return (& $fail 'the name sits below a delegation in the zone this DNS server holds, so that zone does not hold the record and was not read for it.') }
@@ -8821,6 +9106,10 @@ function Get-AdfaDnsServerRecord {
     .PARAMETER PortTimeoutMs
         Milliseconds to wait for each TCP port probe before the port is treated as not answering.
         Type [int], default 1200.
+    .PARAMETER Credential
+        The credential for the DNS server reads (PORT-PLAN C16b(4-7): a CIM session through
+        Invoke-AdfaDnsServerRead). When it is absent the account running the assessment is used.
+        Type [pscredential].
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -8830,7 +9119,8 @@ function Get-AdfaDnsServerRecord {
         [Parameter(Mandatory)][ValidateSet('SRV', 'A', 'CNAME')][string]$Type,
         [Parameter(Mandatory)][hashtable]$Config,
         [bool]$ModuleAvailable = $true,
-        [int]$PortTimeoutMs = 1200
+        [int]$PortTimeoutMs = 1200,
+        [pscredential]$Credential
     )
     $unread = { param([string]$Cause) [pscustomobject]@{ Outcome = 'Unread'; Targets = @(); Cause = $Cause } }
     if (-not $ModuleAvailable) { return (& $unread 'Server read: the DnsServer PowerShell module is not installed on the host running the assessment.') }
@@ -8840,10 +9130,10 @@ function Get-AdfaDnsServerRecord {
     if (-not $gate.Open[$rpcPort]) {
         return (& $unread ("Server read: Unreachable: RPC ({0}) did not answer within {1} ms." -f $rpcPort, $PortTimeoutMs))
     }
-    $where = Resolve-AdfaDnsServerZone -ComputerName $ComputerName -Name $Name -Config $Config
+    $where = Resolve-AdfaDnsServerZone -ComputerName $ComputerName -Name $Name -Config $Config -Credential $Credential
     if (-not $where.Ok) { return (& $unread ("Server read: {0}" -f [string]$where.Cause)) }
     $rr = switch ($Type) { 'SRV' { 'Srv' } 'A' { 'A' } default { 'CName' } }
-    $read = Get-AdfaDnsRecordSetRaw -ComputerName $ComputerName -ZoneName ([string]$where.Zone) -Name ([string]$where.Relative) -RRType $rr -Config $Config
+    $read = Invoke-AdfaDnsServerRead -ComputerName $ComputerName -Read 'Records' -ReadArguments @{ ZoneName = ([string]$where.Zone); Name = ([string]$where.Relative); RRType = $rr; Config = $Config } -Credential $Credential -Config $Config -PortTimeoutMs $PortTimeoutMs
     if ($read.Outcome -eq 'Resolved') {
         $targets = @(@($read.Records) | ForEach-Object { ([string]$_.Target).Trim().TrimEnd('.') } | Where-Object { $_ -ne '' } | Sort-Object -Unique)
         return [pscustomobject]@{ Outcome = 'Present'; Targets = $targets; Cause = '' }
@@ -9616,8 +9906,10 @@ function Get-AdfaDnsHealth {
         setting on Learn and are not counted) instead of no row; the "<dc>: zones" and "<dc>: scavenging" rows are replaced by the zone rows (the
         old scavenging row passed a zone whose aging property was not returned).
 
-        -Credential is NOT used: the DnsServer cmdlets are called with -ComputerName only, so they
-        run as the account running the script (PORT-PLAN C16b(4-7)).
+        Since v1.45.0 (PORT-PLAN C16b(4-7)) -Credential is used: with it, each DNS server read goes
+        over one bounded CIM session opened with that credential (Invoke-AdfaDnsServerRead, WinRM or
+        DCOM) and the DnsServer cmdlets take -CimSession; without it they are called with
+        -ComputerName as before, as the account running the script.
     .OUTPUTS
         [pscustomobject[]]
     .PARAMETER DomainControllers
@@ -9703,7 +9995,7 @@ function Get-AdfaDnsHealth {
             $entry.Cause = ("Unreachable: RPC ({0}) did not answer within {1} ms, so no DNS server read was attempted." -f $rpcPort, $PortTimeoutMs)
         }
         else {
-            $raw = Get-AdfaDnsServerRaw -ComputerName $dc
+            $raw = Invoke-AdfaDnsServerRead -ComputerName $dc -Read 'Server' -Credential $Credential -Config $Config -PortTimeoutMs $PortTimeoutMs
             if ($null -eq $raw -or -not $raw.Ok) {
                 $message = ''; $code = ''
                 if ($null -ne $raw) { $message = [string]$raw.Error; $code = [string]$raw.ErrorCode }
@@ -9964,7 +10256,7 @@ function Get-AdfaDnsLocatorFinding {
         $recordName = ([string](Get-AdfaConfigValue -Entry $definition -Name 'Name')) -f $DomainName
         $mnemonic = [string](Get-AdfaConfigValue -Entry $definition -Name 'Mnemonic')
         foreach ($srv in $servers) {
-            $a = Get-AdfaDnsServerRecord -ComputerName $srv -Name $recordName -Type 'SRV' -Config $Config -ModuleAvailable $module -PortTimeoutMs $PortTimeoutMs
+            $a = Get-AdfaDnsServerRecord -ComputerName $srv -Name $recordName -Type 'SRV' -Config $Config -ModuleAvailable $module -PortTimeoutMs $PortTimeoutMs -Credential $Credential
             $b = Get-AdfaDnsResolverRecord -Name $recordName -Type 'SRV' -Server $srv
             $srvEvidence[("{0}|{1}" -f $mnemonic, $srv)] = [pscustomobject]@{ Mnemonic = $mnemonic; Record = $recordName; Server = $srv; A = $a; B = $b }
             foreach ($t in @(@($a.Targets) + @($b.Targets))) { $candidates += [pscustomobject]@{ Name = $recordName; Type = 'SRV'; Target = [string]$t; Server = $srv } }
@@ -10002,7 +10294,7 @@ function Get-AdfaDnsLocatorFinding {
         if ($net.Status -eq 'Read') { $configured = @($net.IPv4) } else { $configuredCause = [string]$net.Cause }
         $answers = @()
         foreach ($srv in $servers) {
-            $a = Get-AdfaDnsServerRecord -ComputerName $srv -Name $dcHost -Type 'A' -Config $Config -ModuleAvailable $module -PortTimeoutMs $PortTimeoutMs
+            $a = Get-AdfaDnsServerRecord -ComputerName $srv -Name $dcHost -Type 'A' -Config $Config -ModuleAvailable $module -PortTimeoutMs $PortTimeoutMs -Credential $Credential
             $b = Get-AdfaDnsResolverRecord -Name $dcHost -Type 'A' -Server $srv
             $addresses = @(@(@($a.Targets) + @($b.Targets)) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
             $answers += [pscustomobject]@{ Server = $srv; State = (Get-AdfaDnsEvidenceState -ServerOutcome ([string]$a.Outcome) -ResolverOutcome ([string]$b.Outcome)); Addresses = $addresses }
@@ -10028,9 +10320,9 @@ function Get-AdfaDnsLocatorFinding {
             if (-not $srvGate.Open[[int]$Config['RpcPort']]) { $unread += ("CNAME on {0}: unreachable" -f $srv); continue }
             # The zone that holds <guid>._msdcs.<forest> on this server, or why none can be read: no
             # zone, a stub or forwarder zone, or a delegation of _msdcs out of the zone it holds.
-            $where = Resolve-AdfaDnsServerZone -ComputerName $srv -Name ("00000000-0000-0000-0000-000000000000.{0}" -f $msdcs) -Config $Config
+            $where = Resolve-AdfaDnsServerZone -ComputerName $srv -Name ("00000000-0000-0000-0000-000000000000.{0}" -f $msdcs) -Config $Config -Credential $Credential
             if (-not $where.Ok) { $unread += ("CNAME on {0}: {1}" -f $srv, ([string]$where.Cause).TrimEnd('.')); continue }
-            $read = Get-AdfaDnsRecordSetRaw -ComputerName $srv -ZoneName ([string]$where.Zone) -RRType 'CName' -Config $Config
+            $read = Invoke-AdfaDnsServerRead -ComputerName $srv -Read 'Records' -ReadArguments @{ ZoneName = ([string]$where.Zone); RRType = 'CName'; Config = $Config } -Credential $Credential -Config $Config -PortTimeoutMs $PortTimeoutMs -OperationTimeoutSec $OperationTimeoutSec
             if ($read.Outcome -eq 'Error') { $unread += ("CNAME on {0}: {1}" -f $srv, (Get-AdfaDnsReadErrorClass -Message $read.Error -ErrorCode $read.ErrorCode -Config $Config)); continue }
             foreach ($r in @($read.Records)) {
                 $fqdn = [string]$where.Zone
@@ -10214,6 +10506,10 @@ function Export-AdfaDnsRecord {
     .PARAMETER ScopedDomains
         The DNS names of the domains this run assesses (every domain with -AllDomains, otherwise the
         current or -Server domain). Type [string[]], default @(), may be null or empty.
+    .PARAMETER Credential
+        The credential for the DNS server reads (PORT-PLAN C16b(4-7): a CIM session through
+        Invoke-AdfaDnsServerRead). When it is absent the account running the assessment is used.
+        Type [pscredential].
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -10224,7 +10520,8 @@ function Export-AdfaDnsRecord {
         [int]$PortTimeoutMs = 1200,
         [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
         [AllowNull()][AllowEmptyString()][string]$EnumerationError = '',
-        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @()
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [pscredential]$Credential
     )
     $rows = @()
     $area = 'DnsRecordExport'
@@ -10259,7 +10556,7 @@ function Export-AdfaDnsRecord {
         }
         $zones = $null
         if ($cause -eq '') {
-            $zones = Get-AdfaDnsServerZoneNames -ComputerName $dc
+            $zones = Invoke-AdfaDnsServerRead -ComputerName $dc -Read 'Zones' -Credential $Credential -Config $Config -PortTimeoutMs $PortTimeoutMs
             if (-not $zones.Ok) { $cause = Get-AdfaDnsReadCause -Class (Get-AdfaDnsReadErrorClass -Message $zones.Error -ErrorCode $zones.ErrorCode -Config $Config) -Message $zones.Error }
         }
         if ($cause -ne '') {
@@ -10269,7 +10566,7 @@ function Export-AdfaDnsRecord {
         $serversDone++
         $ok = 0; $failed = 0
         foreach ($zoneName in @($zones.Names)) {
-            $read = Get-AdfaDnsRecordSetRaw -ComputerName $dc -ZoneName ([string]$zoneName) -Cap $cap -Config $Config
+            $read = Invoke-AdfaDnsServerRead -ComputerName $dc -Read 'Records' -ReadArguments @{ ZoneName = ([string]$zoneName); Cap = $cap; Config = $Config } -Credential $Credential -Config $Config -PortTimeoutMs $PortTimeoutMs
             $zoneItem = ("Record export: {0} on {1}" -f [string]$zoneName, $label)
             if ($read.Outcome -eq 'Error') {
                 $failed++
@@ -12436,6 +12733,11 @@ function Test-AdfaEsc1Template {
     .SYNOPSIS
         ESC1 heuristic for a certificate template: enrollee-supplies-subject + auth EKU +
         no manager approval + no enrollment-agent signatures. Pure function.
+    .DESCRIPTION
+        Since v1.45.0 (PORT-PLAN C16b(4-7)) the rule is Get-AdfaEsc1Shape's, with the Pki table:
+        Vulnerable only when the shape is Shaped. An attribute that was not returned is no longer
+        read as 0, so such a template is not Vulnerable here (its shape is Unknown). The PKI section
+        calls Get-AdfaEsc1Shape itself.
     .OUTPUTS
         [pscustomobject] Vulnerable (bool), Reason
     .PARAMETER Template
@@ -12445,18 +12747,8 @@ function Test-AdfaEsc1Template {
     [OutputType([pscustomobject])]
     param([Parameter(Mandatory)][pscustomobject]$Template)
 
-    $names = $Template.PSObject.Properties.Name
-    $nameFlag = if ($names -contains 'msPKI-Certificate-Name-Flag') { [int64]$Template.'msPKI-Certificate-Name-Flag' } else { 0 }
-    $enrollFlag = if ($names -contains 'msPKI-Enrollment-Flag') { [int64]$Template.'msPKI-Enrollment-Flag' } else { 0 }
-    $raSig = if ($names -contains 'msPKI-RA-Signature') { [int]$Template.'msPKI-RA-Signature' } else { 0 }
-    $ekus = @()
-    if ($names -contains 'pKIExtendedKeyUsage' -and $Template.'pKIExtendedKeyUsage') { $ekus = @($Template.'pKIExtendedKeyUsage') }
-
-    $suppliesSubject = ($nameFlag -band $script:Config.EnrolleeSuppliesSubject) -ne 0
-    $approvalRequired = ($enrollFlag -band $script:Config.PendAllRequests) -ne 0
-    $authEku = ($ekus.Count -eq 0) -or (@($ekus | Where-Object { $script:Config.AuthEkuOids -contains $_ }).Count -gt 0)
-
-    $vulnerable = $suppliesSubject -and $authEku -and (-not $approvalRequired) -and ($raSig -le 0)
+    $shape = Get-AdfaEsc1Shape -Template $Template -Config $script:Config.Pki
+    $vulnerable = ([string]$shape.State -eq 'Shaped')
     $reason = if ($vulnerable) {
         'ENROLLEE_SUPPLIES_SUBJECT + client-auth EKU + no manager approval + no enrollment-agent signature (ESC1-susceptible; verify enrollment rights).'
     }
@@ -12500,50 +12792,154 @@ function Find-AdfaDuplicateSpn {
 function Get-AdfaPkiHealth {
     <#
     .SYNOPSIS
-        Enterprise PKI (AD CS): enrolment CAs and an ESC1 heuristic over the configuration of
-        every certificate template object.
+        Enterprise PKI (AD CS): the enterprise CAs, the templates they publish, and ESC1 over the
+        PUBLISHED templates with who may enrol in each (PORT-PLAN C16b(4-7)). ESC1 is a community
+        name, not a Microsoft term.
     .DESCRIPTION
-        A configuration-only heuristic (PORT-PLAN C16, GAP-P12): every object in the Certificate
-        Templates container is graded, whether or not a CA publishes it (the CA's certificateTemplates
-        attribute is not read), and the template ACL is not read, so who may enrol is not known. A
-        template with no EKU counts as authentication-capable. Published templates and enrolment
-        rights are PORT-PLAN C16b(4-7).
+        Directory reads only, from the forest root domain, through Get-AdfaDeclaredReadRaw (declared
+        lists of the Pki table): the pKIEnrollmentService objects one level under CN=Enrollment
+        Services (cn, dNSHostName, certificateTemplates) and the pKICertificateTemplate objects one
+        level under CN=Certificate Templates; then nTSecurityDescriptor alone of each published
+        template with the ESC1 shape (Get-AdfaAclObjectRaw, the C9 seam, read in memory).
+
+        A template no enterprise CA publishes is listed as not published and never graded (Defender
+        for Identity: "Templates that aren't published can't be requested"). Each published template
+        is shaped by Get-AdfaEsc1Shape (MS-CRTD flag definitions; an attribute not returned is Unknown,
+        never 0) and, when shaped, graded by Get-AdfaTemplateEnrolmentVerdict: "ESC1 template: <cn>" is
+        LowPrivilegeStatus (Fail) when Everyone, Authenticated Users, Domain Users or Domain Computers
+        holds Enroll, AutoEnroll, every extended right, GenericAll, WriteDacl or WriteOwner,
+        OtherPrincipalStatus (Warning) when only other principals do, Info when none does, and Not
+        Assessed when the shape or the DACL is unknown. "ESC1-susceptible templates" is Fail when any
+        template is, Not Assessed when any could not be graded or a CA value names no template object,
+        Warning when a shaped template is open to other principals only, and Pass only when every
+        published template was read and none is shaped. No enterprise CA is Info (a measured absence);
+        a read that failed is one "AD CS assessment" Not Assessed row with its class.
     .OUTPUTS
         [pscustomobject[]]
+    .PARAMETER RootDomain
+        The DNS name of the forest root domain; the reads are sent to it. Type [string], default '',
+        may be empty.
     .PARAMETER AdParams
         Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
         -Server and -Credential; empty to use the current domain and account. Type [hashtable],
         default @{}.
+    .PARAMETER Config
+        The Pki table. Type [hashtable], mandatory.
+    .PARAMETER AclConfig
+        The Acl table: the nTSecurityDescriptor-only property list of Get-AdfaAclObjectRaw and the
+        masks. Type [hashtable], mandatory.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words. Type [string], mandatory.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([hashtable]$AdParams = @{})
+    param(
+        [AllowEmptyString()][string]$RootDomain = '',
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$AclConfig,
+        [Parameter(Mandatory)][string]$CapSource
+    )
+    $note = [string]$Config['CommunityNote']
+    $max = [int]$Config['MaxObjects']
+    $cap = [int]$Config['NameListCap']
+    if ([string]::IsNullOrWhiteSpace($RootDomain)) {
+        return @(New-Finding -Area 'PKI' -Item 'AD CS assessment' -Status $script:Status.NotAssessed -Detail 'No forest root domain was named, so the enterprise CAs and the certificate templates were not read. This is not a clean result.')
+    }
+    $rootDn = Get-AdfaInventoryDomainDn -DomainName $RootDomain -AdParams $AdParams
+    if (-not $rootDn.Ok) {
+        $class = Get-AdfaDirectoryReadErrorClass -Message ([string]$rootDn.Error) -TypeName ([string]$rootDn.ErrorType)
+        return @(New-Finding -Area 'PKI' -Item 'AD CS assessment' -Status $script:Status.NotAssessed -Detail ("The forest root domain's distinguished name could not be read ({0}): {1}. This is not a clean result." -f (Get-AdfaReadClassPhrase -Class $class), ([string]$rootDn.Error).Trim().TrimEnd('.')))
+    }
+    $cfgNc = ("CN=Configuration,{0}" -f [string]$rootDn.Dn)
     $rows = @()
-    try {
-        $cfg = (Get-ADRootDSE @AdParams).configurationNamingContext
-        $pkiBase = "CN=Public Key Services,CN=Services,$cfg"
-        $cas = @(Get-ADObject -SearchBase "CN=Enrollment Services,$pkiBase" -LDAPFilter '(objectClass=pKIEnrollmentService)' -Properties dNSHostName, cn @AdParams -ErrorAction Stop)
-        if ($cas.Count -eq 0) {
-            $rows += New-Finding -Area 'PKI' -Item 'Certificate Authorities' -Status $script:Status.Info -Detail 'No enterprise CA found in the forest.'
-            return @($rows)
+    $caRaw = Get-AdfaDeclaredReadRaw -Server $RootDomain -Read 'EnrollmentServices' -SearchBase ("{0},{1}" -f [string]$Config['EnrollmentServicesContainer'], $cfgNc) -Config $Config -AdParams $AdParams
+    if ([bool](Get-AdfaConfigValue -Entry $caRaw -Name 'NotFound')) {
+        return @(New-Finding -Area 'PKI' -Item 'Certificate Authorities' -Status $script:Status.Info -Detail 'No enterprise CA found in the forest (there is no CN=Enrollment Services container).')
+    }
+    $cause = Get-AdfaInventoryReadCause -Raw $caRaw -What 'the enterprise CAs (pKIEnrollmentService)' -MaxObjects $max -CapSource $CapSource
+    if ($cause -ne '') { return @(New-Finding -Area 'PKI' -Item 'AD CS assessment' -Status $script:Status.NotAssessed -Detail ("{0} This is not a clean result." -f $cause)) }
+    $cas = @(@(Get-AdfaConfigValue -Entry $caRaw -Name 'Records') | Where-Object { $null -ne $_ })
+    if ($cas.Count -eq 0) {
+        return @(New-Finding -Area 'PKI' -Item 'Certificate Authorities' -Status $script:Status.Info -Detail 'No enterprise CA found in the forest.')
+    }
+    $rows += New-Finding -Area 'PKI' -Item 'Certificate Authorities' -Status $script:Status.Info -Detail (("{0} CA(s): {1}" -f $cas.Count, ((@($cas | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'dNSHostName') })) -join ', ')))
+    $tplRaw = Get-AdfaDeclaredReadRaw -Server $RootDomain -Read 'Templates' -SearchBase ("{0},{1}" -f [string]$Config['TemplatesContainer'], $cfgNc) -Config $Config -AdParams $AdParams
+    $cause = Get-AdfaInventoryReadCause -Raw $tplRaw -What 'the certificate templates (pKICertificateTemplate)' -MaxObjects $max -CapSource $CapSource
+    if ($cause -ne '') {
+        $rows += New-Finding -Area 'PKI' -Item 'AD CS assessment' -Status $script:Status.NotAssessed -Detail ("{0} No template was graded. This is not a clean result." -f $cause)
+        return @($rows)
+    }
+    $pub = Get-AdfaTemplatePublication -Cas $cas -Templates @(Get-AdfaConfigValue -Entry $tplRaw -Name 'Records')
+    $all = @($pub.Templates)
+    $published = @($all | Where-Object { $_.Published })
+    $unpublished = @($all | Where-Object { -not $_.Published } | ForEach-Object { [string]$_.Name })
+    $unmatched = @($pub.Unmatched)
+    $pubText = ("{0} of {1} certificate template(s) are published by an enterprise CA." -f $published.Count, $all.Count)
+    if ($unpublished.Count -gt 0) { $pubText = ("{0} Not published by any enterprise CA - not graded (a template no CA publishes cannot be requested): {1}." -f $pubText, (Get-AdfaC14NameList -Names $unpublished -Cap $cap)) }
+    if ($unmatched.Count -gt 0) { $pubText = ("{0} Published names that match no template object by cn or displayName: {1}." -f $pubText, (Get-AdfaC14NameList -Names $unmatched -Cap $cap)) }
+    $rows += New-Finding -Area 'PKI' -Item 'Certificate templates published' -Status $script:Status.Info -Detail $pubText
+    $failed = @(); $warned = @(); $unknown = @(); $shaped = 0
+    foreach ($t in $published) {
+        $item = ("ESC1 template: {0}" -f [string]$t.Name)
+        $by = (@($t.PublishedBy) -join ', ')
+        $shape = Get-AdfaEsc1Shape -Template $t.Record -Config $Config
+        if ([string]$shape.State -eq 'NotShaped') { continue }
+        if ([string]$shape.State -eq 'Unknown') {
+            $unknown += [string]$t.Name
+            $rows += New-Finding -Area 'PKI' -Item $item -Status $script:Status.NotAssessed -Detail ("Not graded: {0} not returned, so whether this template has the ESC1 shape is not known (a value not returned is never read as 0). Published by {1}. {2}. {3}." -f ((@($shape.Missing)) -join ', '), $by, [string]$shape.Text, $note)
+            continue
         }
-        $rows += New-Finding -Area 'PKI' -Item 'Certificate Authorities' -Status $script:Status.Info -Detail (("{0} CA(s): {1}" -f $cas.Count, (($cas | ForEach-Object { $_.dNSHostName }) -join ', ')))
-
-        $templates = @(Get-ADObject -SearchBase "CN=Certificate Templates,$pkiBase" -LDAPFilter '(objectClass=pKICertificateTemplate)' -Properties 'msPKI-Certificate-Name-Flag', 'msPKI-Enrollment-Flag', 'msPKI-RA-Signature', 'pKIExtendedKeyUsage', 'cn' @AdParams -ErrorAction Stop)
-        $vuln = @()
-        foreach ($t in $templates) {
-            $r = Test-AdfaEsc1Template -Template $t
-            if ($r.Vulnerable) { $vuln += $t.cn }
+        $shaped++
+        $dn = [string](Get-AdfaConfigValue -Entry $t.Record -Name 'DistinguishedName')
+        $acl = Get-AdfaAclObjectRaw -Dn $dn -Server $RootDomain -AdParams $AdParams -Config $AclConfig
+        $descriptor = $acl.Descriptor
+        if ($null -eq $descriptor) {
+            $unknown += [string]$t.Name
+            $rows += New-Finding -Area 'PKI' -Item $item -Status $script:Status.NotAssessed -Detail ("Has the ESC1 shape ({0}) and is published by {1}, but its security descriptor could not be read ({2}: {3}), so who may enrol is not known. {4}." -f [string]$shape.Text, $by, (Get-AdfaReadClassPhrase -Class ([string]$acl.Class)), ([string]$acl.Error).Trim().TrimEnd('.'), $note)
+            continue
         }
-        if ($vuln.Count -gt 0) {
-            $rows += New-Finding -Area 'PKI' -Item 'ESC1-susceptible templates' -Status $script:Status.Fail -Detail ("{0}: {1}" -f $vuln.Count, ($vuln -join ', '))
-        }
-        else {
-            $rows += New-Finding -Area 'PKI' -Item 'ESC1-susceptible templates' -Status $script:Status.Pass -Detail ("0 of {0} templates flagged by the ESC1 heuristic." -f $templates.Count)
+        $v = Get-AdfaTemplateEnrolmentVerdict -Descriptor $descriptor -Config $Config -AclConfig $AclConfig
+        $others = 'none'
+        if (@($v.Other).Count -gt 0) { $others = (@($v.Other) -join '; ') }
+        $lead = ("Has the ESC1 shape ({0}) and is published by {1}." -f [string]$shape.Text, $by)
+        $scope = 'Rights read from the template''s DACL by SID (MS-CRTD 2.5.1, 2.5.2); group membership is not expanded, so effective access is not computed.'
+        switch ([string]$v.State) {
+            'LowPrivilege' {
+                $failed += [string]$t.Name
+                $rows += New-Finding -Area 'PKI' -Item $item -Status ([string]$Config['LowPrivilegeStatus']) -Detail ("{0} A low-privilege principal may enrol in it or control it: {1}. Other principals: {2}. {3} {4}; Microsoft Defender for Identity grades this configuration." -f $lead, (@($v.LowPrivilege) -join '; '), $others, $scope, $note)
+                break
+            }
+            'OtherOnly' {
+                $warned += [string]$t.Name
+                $rows += New-Finding -Area 'PKI' -Item $item -Status ([string]$Config['OtherPrincipalStatus']) -Detail ("{0} None of Everyone, Authenticated Users, Domain Users or Domain Computers holds an enrolment or control right; these principals do: {1}. {2} {3}." -f $lead, $others, $scope, $note)
+                break
+            }
+            'NoGrant' {
+                $rows += New-Finding -Area 'PKI' -Item $item -Status $script:Status.Info -Detail ("{0} No principal holds an enrolment or control right in its DACL as read. {1} {2}." -f $lead, $scope, $note)
+                break
+            }
+            default {
+                $unknown += [string]$t.Name
+                $rows += New-Finding -Area 'PKI' -Item $item -Status $script:Status.NotAssessed -Detail ("{0} Who may enrol is not known: {1}. {2}." -f $lead, ([string]$v.Cause).Trim().TrimEnd('.'), $note)
+            }
         }
     }
-    catch {
-        $rows += New-Finding -Area 'PKI' -Item 'AD CS assessment' -Status $script:Status.NotAssessed -Detail $_.Exception.Message
+    $summary = 'ESC1-susceptible templates'
+    if ($failed.Count -gt 0) {
+        $rows += New-Finding -Area 'PKI' -Item $summary -Status $script:Status.Fail -Detail ("{0}: {1} - published templates with the ESC1 shape that a low-privilege principal may enrol in or control. {2}." -f $failed.Count, ($failed -join ', '), $note)
+    }
+    elseif ($unknown.Count -gt 0 -or $unmatched.Count -gt 0) {
+        $why = @()
+        if ($unknown.Count -gt 0) { $why += ("{0} published template(s) could not be graded: {1}" -f $unknown.Count, ($unknown -join ', ')) }
+        if ($unmatched.Count -gt 0) { $why += ("a CA publishes names that match no template object: {0}" -f (Get-AdfaC14NameList -Names $unmatched -Cap $cap)) }
+        $rows += New-Finding -Area 'PKI' -Item $summary -Status $script:Status.NotAssessed -Detail ("{0}, so no all-clear is given. {1}." -f ($why -join '; '), $note)
+    }
+    elseif ($warned.Count -gt 0) {
+        $rows += New-Finding -Area 'PKI' -Item $summary -Status $script:Status.Warning -Detail ("{0}: {1} - published templates with the ESC1 shape that only other principals may enrol in or control. {2}." -f $warned.Count, ($warned -join ', '), $note)
+    }
+    else {
+        $rows += New-Finding -Area 'PKI' -Item $summary -Status $script:Status.Pass -Detail ("0 of {0} published template(s) with the ESC1 shape that a principal may enrol in ({1} with the shape and no enrolment right); templates no CA publishes are not graded. {2}." -f $published.Count, $shaped, $note)
     }
     return @($rows)
 }
@@ -26041,6 +26437,11 @@ $script:ConfigOverrideSections = [ordered]@{
     Inventory      = @{ ConfigKey = 'Inventory'; Section = 'Identity'; AlsoUsedBy = @('Forest', 'Trusts', 'Gpo', 'DsEvents', 'TimeHierarchy', 'Topology'); Merge = 'Merge-AdfaSpecConfig' }
     # PORT-PLAN C16b(1-3): the caps and the eight grades only; no bit, filter, property list, baseline figure or DN.
     AccountsPolicy = @{ ConfigKey = 'AccountsPolicy'; Section = 'AccountsPolicy'; Merge = 'Merge-AdfaSpecConfig' }
+    # PORT-PLAN C16b(4-7): rows appended to the Learn table and the domain grade only; no built-in row, container or read.
+    ExchangeAdVersions = @{ ConfigKey = 'ExchangeAdVersions'; Section = 'ExchangeSchema'; Merge = 'Merge-AdfaExchangeAdVersionsConfig' }
+    # PORT-PLAN C16b(4-7): the scan cap only. Read only with -IncludeLingeringObjectScan (Switch), which no -Sections
+    # value selects; Section names the nearest one, Replication, because the registry needs one.
+    LingeringObjects = @{ ConfigKey = 'LingeringObjects'; Section = 'Replication'; Switch = 'IncludeLingeringObjectScan'; Merge = 'Merge-AdfaSpecConfig' }
 }
 
 function Resolve-AdfaConfigOverride {
@@ -26879,9 +27280,10 @@ function Get-AdfaLingeringObjectScan {
         1988, instead of after. Opt-in via -IncludeLingeringObjectScan because it writes
         events (1938/1942/1946) to the target DCs' Directory Service logs.
 
-        Scope: the DOMAIN naming context of each DC's own domain only. The configuration
-        partition, application partitions and the partial replicas a global catalog holds are not
-        scanned (PORT-PLAN C16b(4-7)). Fail closed (PORT-PLAN C16, GAP-P26): a count is read from the
+        Scope: the DOMAIN naming context of each DC's own domain. Since v1.45.0 the configuration
+        partition, the application partitions and the partial replicas a global catalog holds are
+        scanned by Get-AdfaLingeringPartitionScan, in the same report section (PORT-PLAN C16b(4-7));
+        both run the one repadmin call of Invoke-AdfaLingeringAdvisory. Fail closed (PORT-PLAN C16, GAP-P26): a count is read from the
         output ("<n> lingering object(s)", or one line per object); repadmin exiting 0 with no
         count this tool can read is Not Assessed with an excerpt - before v1.36.0 it was a Pass.
         The advisory-mode output format is not published by Microsoft (PORT-PLAN C16c).
@@ -26991,19 +27393,11 @@ function Get-AdfaLingeringObjectScan {
             $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.NotAssessed -Detail 'DC not reachable (RPC/135).'
             continue
         }
-        $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' `
-            -Arguments ('/removelingeringobjects {0} {1} "{2}" /advisory_mode' -f $dc, $refGuid, $domainNc) `
-            -TimeoutSeconds $TimeoutSeconds -Retries 1
-        $out = [string]$r.StdOut
-        $count = -1
-        if ($out -match '(?i)(\d+)\s+lingering object') { $count = [int]$Matches[1] }
-        else {
-            $perLine = ([regex]::Matches($out, '(?i)^\s*lingering obj', [System.Text.RegularExpressions.RegexOptions]::Multiline)).Count
-            if ($perLine -gt 0) { $count = $perLine }
-            # No "elseif exit 0 then 0" (PORT-PLAN C16, GAP-P26): a clean exit with no count read is
-            # not a count of 0.
-        }
-        $ncScope = 'the domain naming context only; the configuration partition, application partitions and global catalog partial replicas were not scanned'
+        # PORT-PLAN C16b(4-7): the one repadmin call of the script and its count parsing moved into
+        # Invoke-AdfaLingeringAdvisory, shared with the scan of the other partitions; unchanged.
+        $r = Invoke-AdfaLingeringAdvisory -DomainController $dc -ReferenceGuid $refGuid -NamingContext $domainNc -TimeoutSeconds $TimeoutSeconds
+        $count = [int]$r.Count
+        $ncScope = 'the domain naming context only; the configuration partition, application partitions and global catalog partial replicas have rows of their own'
         if ($count -gt 0) {
             $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.Fail -Detail ("{0} lingering object(s) found relative to {1} on {2} ({3}). Directory Service events 1946 on {4} list each object." -f $count, $refDc, $domainNc, $ncScope, $dc)
         }
@@ -27011,13 +27405,8 @@ function Get-AdfaLingeringObjectScan {
             $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.Pass -Detail ("No lingering objects relative to {0} on {1} ({2})." -f $refDc, $domainNc, $ncScope)
         }
         else {
-            $excerpt = (($out -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First 3) -join ' | '
-            if (-not $excerpt) { $excerpt = [string]$r.Error }
-            if (-not $excerpt) { $excerpt = 'no output' }
-            $exitText = 'did not complete'
-            if ($r.Success) { $exitText = 'exited 0' }
             $rows += New-Finding -Scope $DomainName -Area 'LingeringObjects' -Item ("Advisory scan: {0}" -f $dc) -Status $script:Status.NotAssessed `
-                -Detail ("repadmin {0} but printed no count of lingering objects this tool can read, so none is concluded (the advisory-mode output format is not published): {1}" -f $exitText, $excerpt)
+                -Detail ("repadmin {0} but printed no count of lingering objects this tool can read, so none is concluded (the advisory-mode output format is not published): {1}" -f [string]$r.ExitText, [string]$r.Excerpt)
         }
     }
     if (@($rows).Count -eq 0) {
@@ -27803,7 +28192,7 @@ function Get-AdfaExchangeSeCompatibility {
 
     # Scope statement, so nobody reads this section as full SE readiness.
     $rows += New-Finding -Area 'ExchangeSeReadiness' -Item 'Scope of this check' -Status $script:Status.Info `
-        -Detail ("Covers the AD prerequisites this tool can answer from the directory: forest functional level and DC operating systems. It does NOT cover schema or organisation object versions, the per-site writeable global catalog requirement, Exchange server inventory or coexistence builds.")
+        -Detail ("Covers the AD prerequisites this tool can answer from the directory: forest functional level and DC operating systems. It does NOT cover schema or organisation object versions (the Exchange AD Versions rows of the ExchangeSchema section read them), the per-site writeable global catalog requirement, Exchange server inventory or coexistence builds.")
     return @($rows)
 }
 # ===========================================================================
@@ -27834,6 +28223,1135 @@ function Get-AdfaExchangeSchemaMarker {
     }
     catch { $m += [pscustomobject]@{ Marker = 'ms-Exch-Schema-Version-Pt'; RangeUpper = $null; WhenChanged = $null; Note = $_.Exception.Message } }
     return @($m)
+}
+
+# ===========================================================================
+# region Leftovers of C16b (PORT-PLAN C16b(4-7)): the declared read seam, ESC1 over published
+# templates, Exchange AD versions, the lingering-object scan of the other partitions and the DNS
+# server reads over a CIM session. Sources and read dates are next to the Pki, ExchangeAdVersions,
+# LingeringObjects and Dns config tables.
+# ===========================================================================
+
+function Get-AdfaDeclaredReadRaw {
+    <#
+    .SYNOPSIS
+        One directory read of a C16b(4-7) table (Pki, ExchangeAdVersions, LingeringObjects): the entry
+        of the table's Reads that -Read names, through the capped C15 seam. Never throws.
+    .DESCRIPTION
+        The entry gives the declared Properties and, for a search, the LDAP Filter and Scope; an entry
+        with no Filter reads the one object -Identity names. The property list is checked before
+        anything is sent: a wildcard, a name that is not a plain attribute name or a secret attribute
+        name refuses the read (Get-AdfaRefusedPropertyName), and so does a read name the table does
+        not hold. -Server is always sent, and the table's MaxObjects caps a search (Capped, never
+        silently cut). Read-only: a Get-ADObject read with listed properties.
+    .OUTPUTS
+        [pscustomobject] the seam's result: Ok, Error, ErrorType, NotFound, Records, Count, Capped,
+        Filter, Identity.
+    .PARAMETER Server
+        The domain (or DC) the read is sent to. Type [string], mandatory.
+    .PARAMETER Read
+        The name of the read in the table's Reads, for example Templates. Type [string], mandatory.
+    .PARAMETER Identity
+        The distinguished name of the one object to read, for a read with no Filter. Type [string],
+        default '', may be empty.
+    .PARAMETER SearchBase
+        The distinguished name to search under, for a read with a Filter. Type [string], default '',
+        may be empty.
+    .PARAMETER Config
+        The table in force (Pki, ExchangeAdVersions or LingeringObjects, after any override file was
+        merged onto it); its Reads, MaxObjects and OverrideLabel are read. Type [hashtable], mandatory.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Server,
+        [Parameter(Mandatory)][string]$Read,
+        [AllowEmptyString()][string]$Identity = '',
+        [AllowEmptyString()][string]$SearchBase = '',
+        [Parameter(Mandatory)][hashtable]$Config,
+        [hashtable]$AdParams = @{}
+    )
+    $label = [string]$Config['OverrideLabel']
+    $reads = $Config['Reads']
+    if ($null -eq $reads -or -not $reads.Contains($Read)) {
+        return (New-AdfaInventoryFailedRead -ErrorText ("the {0} table declares no read named '{1}' (a defect in the tool)" -f $label, $Read))
+    }
+    $spec = $reads[$Read]
+    $props = @(@($spec['Properties']) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+    $refused = @(Get-AdfaRefusedPropertyName -PropertyNames $props -SecretNames @(Get-AdfaSecretAttributeName))
+    if ($refused.Count -gt 0) {
+        return (New-AdfaInventoryFailedRead -ErrorText ("the property list of the read '{0}' was refused before anything was sent: {1}" -f $Read, ($refused -join ', ')))
+    }
+    $filter = ''
+    $scope = ''
+    $id = $Identity
+    $base = ''
+    if ($spec.ContainsKey('Filter')) {
+        $filter = [string]$spec['Filter']
+        $scope = [string]$spec['Scope']
+        $base = $SearchBase
+        $id = ''
+        if ([string]::IsNullOrWhiteSpace($base)) { return (New-AdfaInventoryFailedRead -ErrorText ("the search '{0}' was given no search base" -f $Read)) }
+    }
+    elseif ([string]::IsNullOrWhiteSpace($id)) {
+        return (New-AdfaInventoryFailedRead -ErrorText ("the read '{0}' names one object and was given no identity" -f $Read))
+    }
+    return (Get-AdfaInventoryDirectoryRaw -Server $Server -Identity $id -SearchBase $base -SearchScope $scope -LDAPFilter $filter -Properties $props `
+            -MaxObjects ([int]$Config['MaxObjects']) -AdParams $AdParams)
+}
+
+function Get-AdfaEsc1Shape {
+    <#
+    .SYNOPSIS
+        Pure: whether one certificate template has the ESC1 shape, from the MS-CRTD flag
+        definitions. ESC1 is a community name, not a Microsoft term.
+    .DESCRIPTION
+        The four conditions, each from the template's own attributes: CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT
+        (0x1) set in msPKI-Certificate-Name-Flag (MS-CRTD 2.28); CT_FLAG_PEND_ALL_REQUESTS (0x2, manager
+        approval) clear in msPKI-Enrollment-Flag (MS-CRTD 2.26); msPKI-RA-Signature 0 (MS-CRTD 2.18: the
+        number of signatures a request needs); and an authentication EKU among pKIExtendedKeyUsage and
+        msPKI-Certificate-Application-Policy (MS-CRTD 2.12, 2.25), or no EKU at all (any purpose,
+        counted as authentication-capable as before v1.45.0). CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME
+        (0x10000) is reported (SubjectAltName) and not graded.
+
+        Fail closed: an attribute that was not returned is never read as 0. State is NotShaped when a
+        condition that WAS read rules the shape out, Unknown when none does and an attribute is missing
+        (named in Missing), and Shaped when all four hold.
+    .OUTPUTS
+        [pscustomobject] State (Shaped|NotShaped|Unknown), Subject, SubjectAltName, PendAllRequests,
+        RaSignature, Ekus, AuthEkus, NoEku, Missing, Text.
+    .PARAMETER Template
+        One template record as the directory read returned it (its attributes as properties, $null or
+        absent when not returned). Untyped, mandatory, may be null.
+    .PARAMETER Config
+        The Pki table: the flag bits and AuthEkuOids. Type [hashtable], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][AllowNull()]$Template, [Parameter(Mandatory)][hashtable]$Config)
+    $nameFlag = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $Template -Name 'msPKI-Certificate-Name-Flag')
+    $enrollFlag = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $Template -Name 'msPKI-Enrollment-Flag')
+    $ra = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $Template -Name 'msPKI-RA-Signature')
+    $missing = @()
+    if ($null -eq $nameFlag) { $missing += 'msPKI-Certificate-Name-Flag' }
+    if ($null -eq $enrollFlag) { $missing += 'msPKI-Enrollment-Flag' }
+    if ($null -eq $ra) { $missing += 'msPKI-RA-Signature' }
+    $listed = @(@(Get-AdfaConfigValue -Entry $Template -Name 'pKIExtendedKeyUsage') + @(Get-AdfaConfigValue -Entry $Template -Name 'msPKI-Certificate-Application-Policy'))
+    $ekus = @($listed | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim() } | Sort-Object -Unique)
+    $authOids = @(@($Config['AuthEkuOids']) | ForEach-Object { [string]$_ })
+    $authEkus = @($ekus | Where-Object { $authOids -contains $_ })
+    $noEku = ($ekus.Count -eq 0)
+    $authCapable = ($noEku -or $authEkus.Count -gt 0)
+    $subject = $null
+    $san = $false
+    $pend = $null
+    $signature = $null
+    if ($null -ne $nameFlag) {
+        $subject = (($nameFlag -band [int64]$Config['EnrolleeSuppliesSubject']) -ne 0)
+        $san = (($nameFlag -band [int64]$Config['EnrolleeSuppliesSubjectAltName']) -ne 0)
+    }
+    if ($null -ne $enrollFlag) { $pend = (($enrollFlag -band [int64]$Config['PendAllRequests']) -ne 0) }
+    if ($null -ne $ra) { $signature = ($ra -gt 0) }
+    $state = 'Shaped'
+    if ($subject -eq $false -or $pend -eq $true -or $signature -eq $true -or -not $authCapable) { $state = 'NotShaped' }
+    elseif ($missing.Count -gt 0) { $state = 'Unknown' }
+    $word = { param($Value, [string]$Set, [string]$Clear) if ($null -eq $Value) { return 'not returned' } if ($Value) { return $Set } return $Clear }
+    $ekuText = 'none listed (any purpose; Defender for Identity grades a template with no EKU apart, as ESC2)'
+    if (-not $noEku) {
+        if ($authEkus.Count -gt 0) { $ekuText = ("authentication EKU {0}" -f ($authEkus -join ', ')) }
+        else { $ekuText = ("no authentication EKU ({0})" -f ($ekus -join ', ')) }
+    }
+    $raText = 'not returned'
+    if ($null -ne $ra) { $raText = [string]$ra }
+    $parts = @(
+        ("ENROLLEE_SUPPLIES_SUBJECT (0x1 of msPKI-Certificate-Name-Flag, MS-CRTD 2.28) {0}" -f (& $word $subject 'set' 'clear'))
+        ("PEND_ALL_REQUESTS (0x2 of msPKI-Enrollment-Flag, MS-CRTD 2.26, manager approval) {0}" -f (& $word $pend 'set' 'clear'))
+        ("msPKI-RA-Signature (MS-CRTD 2.18) {0}" -f $raText)
+        ("EKUs (MS-CRTD 2.12, 2.25): {0}" -f $ekuText)
+    )
+    if ($san) { $parts += 'ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME (0x10000) set (named, not graded)' }
+    return [pscustomobject]@{
+        State = $state; Subject = $subject; SubjectAltName = [bool]$san; PendAllRequests = $pend; RaSignature = $ra
+        Ekus = @($ekus); AuthEkus = @($authEkus); NoEku = $noEku; Missing = @($missing); Text = ($parts -join '; ')
+    }
+}
+
+function Get-AdfaTemplatePublication {
+    <#
+    .SYNOPSIS
+        Pure: which certificate templates an enterprise CA publishes, from each CA's
+        certificateTemplates, and the CA values that name no template.
+    .DESCRIPTION
+        Learn does not state that a certificateTemplates value is the template's cn, so a value is
+        matched to a template's cn first and then to its displayName, case-insensitively (tool rule).
+        A value that matches neither is listed in Unmatched as "<value> (<CA>)", so a caller never
+        concludes "not published" from a value it could not match. A CA with no value publishes
+        nothing (LDAP returns no empty multi-valued attribute).
+    .OUTPUTS
+        [pscustomobject] Templates (Name, Record, Published, PublishedBy), Unmatched.
+    .PARAMETER Cas
+        The pKIEnrollmentService records (cn, certificateTemplates). Untyped, default @(), may be null
+        or empty.
+    .PARAMETER Templates
+        The pKICertificateTemplate records (cn, displayName). Untyped, default @(), may be null or
+        empty.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()][AllowEmptyCollection()]$Cas = @(), [AllowNull()][AllowEmptyCollection()]$Templates = @())
+    $tpl = @($Templates | Where-Object { $null -ne $_ })
+    $cnKeys = @($tpl | ForEach-Object { ([string](Get-AdfaConfigValue -Entry $_ -Name 'cn')).Trim().ToLowerInvariant() })
+    $displayKeys = @($tpl | ForEach-Object { ([string](Get-AdfaConfigValue -Entry $_ -Name 'displayName')).Trim().ToLowerInvariant() })
+    $by = @{}
+    $unmatched = @()
+    foreach ($ca in @($Cas | Where-Object { $null -ne $_ })) {
+        $caName = ([string](Get-AdfaConfigValue -Entry $ca -Name 'cn')).Trim()
+        foreach ($v in @(@(Get-AdfaConfigValue -Entry $ca -Name 'certificateTemplates') | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+            $want = ([string]$v).Trim().ToLowerInvariant()
+            $hit = -1
+            for ($i = 0; $i -lt $tpl.Count; $i++) { if ($cnKeys[$i] -ne '' -and $cnKeys[$i] -eq $want) { $hit = $i; break } }
+            if ($hit -lt 0) { for ($i = 0; $i -lt $tpl.Count; $i++) { if ($displayKeys[$i] -ne '' -and $displayKeys[$i] -eq $want) { $hit = $i; break } } }
+            if ($hit -lt 0) { $unmatched += ("{0} ({1})" -f ([string]$v).Trim(), $caName); continue }
+            if (-not $by.ContainsKey($hit)) { $by[$hit] = @() }
+            if (@($by[$hit]) -notcontains $caName) { $by[$hit] = @(@($by[$hit]) + @($caName)) }
+        }
+    }
+    $out = @()
+    for ($i = 0; $i -lt $tpl.Count; $i++) {
+        $name = ([string](Get-AdfaConfigValue -Entry $tpl[$i] -Name 'cn')).Trim()
+        if ($name -eq '') { $name = ([string](Get-AdfaConfigValue -Entry $tpl[$i] -Name 'Name')).Trim() }
+        $pubBy = @()
+        if ($by.ContainsKey($i)) { $pubBy = @($by[$i]) }
+        $out += [pscustomobject]@{ Name = $name; Record = $tpl[$i]; Published = ($pubBy.Count -gt 0); PublishedBy = @($pubBy) }
+    }
+    return [pscustomobject]@{ Templates = @($out); Unmatched = @($unmatched) }
+}
+
+function Get-AdfaTemplateEnrolmentVerdict {
+    <#
+    .SYNOPSIS
+        Pure: who may enrol in, or take control of, one certificate template, from its DACL, and
+        whether a low-privilege principal is among them.
+    .DESCRIPTION
+        Rights graded, per MS-CRTD 2.5.1 and 2.5.2: Enroll and AutoEnroll (an allow object ACE whose
+        ObjectType is the right's GUID, with control access, ExtendedRight 0x100), every extended right
+        (an allow ACE with no ObjectType carrying 0x100), and GenericAll, WriteDacl and WriteOwner
+        (control of the template). An object ACE whose ObjectType is the template's own class or a class
+        above it (Pki.TemplateClassGuids: pKICertificateTemplate, Top) is the node of the object itself
+        and is graded as if it had no ObjectType, as Get-AdfaAclAceRight does for C9 (MS-DTYP 2.5.3.2).
+        An inherit-only ACE is skipped, and a deny is honoured only when it
+        is beyond doubt (Test-AdfaAclDenyCover). Group membership is not expanded: effective access is
+        not computed.
+
+        Low-privilege: Everyone (S-1-1-0), Authenticated Users (S-1-5-11) and any domain's Domain Users
+        (-513) or Domain Computers (-515), matched by SID only. A NULL DACL is Everyone with every
+        right. A descriptor that was not read, has no DACL or could not be parsed is Unknown with its
+        class; so is a DACL holding an ACE this tool does not interpret, unless a low-privilege grant
+        was already found.
+    .OUTPUTS
+        [pscustomobject] State (LowPrivilege|OtherOnly|NoGrant|Unknown), LowPrivilege ("<SID>: <rights>"),
+        Other, Cause.
+    .PARAMETER Descriptor
+        The descriptor as ConvertTo-AdfaAclDescriptor reads it (Class, Aces). Untyped, may be null.
+    .PARAMETER Config
+        The Pki table: EnrolRights, TemplateClassGuids, LowPrivilegeSids, LowPrivilegeRidPattern. Type [hashtable],
+        mandatory.
+    .PARAMETER AclConfig
+        The Acl table: its Masks. Type [hashtable], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$Descriptor, [Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][hashtable]$AclConfig)
+    $out = [pscustomobject]@{ State = 'Unknown'; LowPrivilege = @(); Other = @(); Cause = '' }
+    if ($null -eq $Descriptor) { $out.Cause = 'the security descriptor was not read'; return $out }
+    $class = [string](Get-AdfaConfigValue -Entry $Descriptor -Name 'Class')
+    if ($class -eq 'NullDacl') {
+        $out.State = 'LowPrivilege'
+        $out.LowPrivilege = @('S-1-1-0: every right (a NULL DACL)')
+        return $out
+    }
+    if ($class -ne 'Read') {
+        $out.Cause = ("the security descriptor could not be graded ({0}: {1})" -f $class, ([string](Get-AdfaConfigValue -Entry $Descriptor -Name 'Error')).Trim().TrimEnd('.'))
+        return $out
+    }
+    $m = $AclConfig['Masks']
+    $enrol = @{}
+    foreach ($r in @($Config['EnrolRights'])) { $enrol[([string]$r['Guid']).ToLowerInvariant()] = [string]$r['Name'] }
+    $selfTypes = @(@($Config['TemplateClassGuids']) | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() })
+    $lowSids = @(@($Config['LowPrivilegeSids']) | ForEach-Object { [string]$_ })
+    $ridPattern = [string]$Config['LowPrivilegeRidPattern']
+    $aces = @(Get-AdfaConfigValue -Entry $Descriptor -Name 'Aces')
+    $unreadable = 0
+    $order = @()
+    $held = @{}
+    for ($i = 0; $i -lt $aces.Count; $i++) {
+        $a = $aces[$i]
+        if ($null -eq $a) { continue }
+        if ([string]$a.Kind -eq 'Other') { $unreadable++; continue }
+        if (-not [bool]$a.Allow -or [bool]$a.InheritOnly) { continue }
+        $mask = Get-AdfaAclNormalMask -Mask ([int64]$a.Mask) -Config $AclConfig
+        $type = ([string]$a.ObjectType).Trim().ToLowerInvariant()
+        # The template's own class (or Top) is the object itself: graded as an ACE with no ObjectType.
+        if ($type -ne '' -and $selfTypes -contains $type) { $type = '' }
+        $rights = @()
+        if ($type -eq '') {
+            if (($mask -band [int64]$m['GenericAll']) -eq [int64]$m['GenericAll']) { $rights += 'GenericAll' }
+            else {
+                if (($mask -band [int64]$m['WriteDacl']) -ne 0) { $rights += 'WriteDacl' }
+                if (($mask -band [int64]$m['WriteOwner']) -ne 0) { $rights += 'WriteOwner' }
+                if (($mask -band [int64]$m['ExtendedRight']) -ne 0) { $rights += 'AllExtendedRights' }
+            }
+        }
+        elseif ($enrol.ContainsKey($type) -and ($mask -band [int64]$m['ExtendedRight']) -ne 0) { $rights += [string]$enrol[$type] }
+        if ($rights.Count -eq 0) { continue }
+        if (Test-AdfaAclDenyCover -Aces $aces -Index $i -Config $AclConfig) { continue }
+        $sid = [string]$a.Sid
+        if (-not $held.ContainsKey($sid)) { $held[$sid] = @(); $order += $sid }
+        foreach ($x in $rights) { if (@($held[$sid]) -notcontains $x) { $held[$sid] = @(@($held[$sid]) + @($x)) } }
+    }
+    $low = @()
+    $other = @()
+    foreach ($sid in $order) {
+        $text = ("{0}: {1}" -f $sid, (@($held[$sid]) -join ', '))
+        if ($lowSids -contains $sid -or ($ridPattern -ne '' -and $sid -match $ridPattern)) { $low += $text } else { $other += $text }
+    }
+    $out.LowPrivilege = @($low)
+    $out.Other = @($other)
+    if ($low.Count -gt 0) { $out.State = 'LowPrivilege' }
+    elseif ($unreadable -gt 0) { $out.State = 'Unknown'; $out.Cause = ("the DACL holds {0} ACE(s) this tool does not interpret, so whether a low-privilege principal may enrol is not known" -f $unreadable) }
+    elseif ($other.Count -gt 0) { $out.State = 'OtherOnly' }
+    else { $out.State = 'NoGrant' }
+    return $out
+}
+
+function Get-AdfaExchangeAdVersionRow {
+    <#
+    .SYNOPSIS
+        Pure: one Exchange AD Versions row (Area ExchangeVersions).
+    .OUTPUTS
+        [pscustomobject]
+    .PARAMETER Scope
+        The value of the Scope column: the domain or the forest the row is about. Type [string],
+        default '', may be empty.
+    .PARAMETER Item
+        The value of the Item column. Type [string], mandatory.
+    .PARAMETER Status
+        The status, from the tool's status vocabulary (Pass, Warning, Fail, Not Assessed, Info).
+        Type [string], mandatory.
+    .PARAMETER Detail
+        The value of the Detail column: what was found, or why it could not be assessed. Type
+        [string], default '', may be empty.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowEmptyString()][string]$Scope = '', [Parameter(Mandatory)][string]$Item, [Parameter(Mandatory)][string]$Status, [AllowEmptyString()][string]$Detail = '')
+    return (New-Finding -Scope $Scope -Area 'ExchangeVersions' -Item $Item -Status $Status -Detail $Detail)
+}
+
+function Merge-AdfaExchangeAdVersionsConfig {
+    <#
+    .SYNOPSIS
+        Pure merge of an ExchangeAdVersions override (-ConfigOverridePath key "ExchangeAdVersions")
+        over the built-in table, with validation.
+    .DESCRIPTION
+        Two keys may be set: AdditionalRows, a non-empty list of rows appended to the built-in Rows
+        (each one object with exactly Build, a non-empty string, and RangeUpper, DomainVersion and
+        OrgVersion, whole JSON numbers from 1 to 1000000), so a new cumulative update is a config edit;
+        and DomainBehindStatus, one of Info, Warning, Fail. Everything else - the built-in Rows, the
+        containers, the reads - is refused. Refused with the reason: an override that is not one
+        object, an empty object, an unknown key, a key named twice, a null, an empty list, a row that
+        is not an object, a row with a missing or unknown key, a number written as text, a fraction, a
+        number out of range, an empty Build, a status that is not a string or not in its set.
+        Provenance (ThresholdSource) names the file for the keys it supplied.
+    .OUTPUTS
+        [hashtable]
+    .PARAMETER BaseConfig
+        The built-in configuration table the override is checked against and merged onto. Type
+        [hashtable], mandatory.
+    .PARAMETER Override
+        The override read from the JSON file, or $null for none. Anything malformed is refused with
+        a terminating error, never ignored. Untyped, may be null or empty.
+    .PARAMETER OverrideSource
+        The path of the file the override came from, cited in a finding for every value the file
+        supplied. Type [string], default ''.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param([Parameter(Mandatory)][hashtable]$BaseConfig, [AllowNull()]$Override, [string]$OverrideSource = '')
+    $merged = @{}
+    foreach ($k in @($BaseConfig.Keys)) { $merged[$k] = $BaseConfig[$k] }
+    if ($null -eq $Override) { return $merged }
+    $label = 'ExchangeAdVersions'
+    $table = ConvertTo-AdfaOverrideTable -Value $Override
+    if ($null -eq $table) { throw ("{0} config override must be a single object with named keys (for example {1}), not a {2}." -f $label, [string]$BaseConfig['OverrideExample'], $Override.GetType().Name) }
+    if ($table.Count -eq 0) { throw ("{0} config override is an empty object. It names no key, so it would change nothing while appearing to be in force." -f $label) }
+    $known = @('AdditionalRows', 'DomainBehindStatus')
+    $numericTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64], [single], [double], [decimal])
+    $statuses = @('Info', 'Warning', 'Fail')
+    $rowKeys = @('Build', 'RangeUpper', 'DomainVersion', 'OrgVersion')
+    $supplied = @()
+    $added = @()
+    foreach ($k in @($table.Keys)) {
+        $given = [string]$k
+        $match = @($known | Where-Object { $_ -eq $given })
+        if ($match.Count -eq 0) { throw ("{0} config override names an unknown key '{1}'. Known keys: {2}. {3}" -f $label, $given, ($known -join ', '), [string]$BaseConfig['OverrideRefused']) }
+        $name = [string]$match[0]
+        if ($supplied -contains $name) { throw ("{0} config override names '{1}' more than once." -f $label, $name) }
+        $value = $table[$k]
+        if ($null -eq $value) { throw ("{0} config override sets '{1}' to null. Remove the key to keep the built-in value." -f $label, $name) }
+        if ($name -eq 'DomainBehindStatus') {
+            if ($value -isnot [string]) { throw ("{0} config override sets '{1}' to a {2}. It must be a string: one of {3}." -f $label, $name, $value.GetType().Name, ($statuses -join ', ')) }
+            $ok = @($statuses | Where-Object { $_ -eq $value.Trim() })
+            if ($ok.Count -eq 0) { throw ("{0} config override sets '{1}' to '{2}'. It must be one of {3}." -f $label, $name, $value, ($statuses -join ', ')) }
+            $merged[$name] = [string]$ok[0]
+        }
+        else {
+            if ($value -is [string] -or $value -isnot [System.Collections.IEnumerable] -or $value -is [System.Collections.IDictionary]) { throw ("{0} config override sets '{1}' to a {2}. It must be a list of rows." -f $label, $name, $value.GetType().Name) }
+            $list = @($value)
+            if ($list.Count -eq 0) { throw ("{0} config override sets '{1}' to an empty list. Remove the key to keep the built-in table." -f $label, $name) }
+            for ($i = 0; $i -lt $list.Count; $i++) {
+                $n = $i + 1
+                $row = $null
+                if ($null -ne $list[$i]) { $row = ConvertTo-AdfaOverrideTable -Value $list[$i] }
+                if ($null -eq $row) { throw ("{0} config override: AdditionalRows row {1} is not an object with Build, RangeUpper, DomainVersion and OrgVersion." -f $label, $n) }
+                foreach ($rk in @($row.Keys)) {
+                    if (@($rowKeys | Where-Object { $_ -eq [string]$rk }).Count -eq 0) { throw ("{0} config override: AdditionalRows row {1} names an unknown key '{2}'. Known keys: {3}." -f $label, $n, [string]$rk, ($rowKeys -join ', ')) }
+                }
+                $clean = @{}
+                foreach ($rk in $rowKeys) {
+                    $present = @($row.Keys | Where-Object { [string]$_ -eq $rk })
+                    if ($present.Count -eq 0) { throw ("{0} config override: AdditionalRows row {1} has no '{2}'." -f $label, $n, $rk) }
+                    $rv = $row[$present[0]]
+                    if ($rk -eq 'Build') {
+                        if ($rv -isnot [string] -or [string]::IsNullOrWhiteSpace($rv)) { throw ("{0} config override: AdditionalRows row {1}: Build must be a non-empty string." -f $label, $n) }
+                        $clean['Build'] = $rv.Trim()
+                        continue
+                    }
+                    $isNumber = ($null -ne $rv -and $rv -isnot [array] -and $numericTypes -contains $rv.GetType())
+                    $number = 0.0
+                    if ($isNumber) { $number = [double]$rv }
+                    if (-not $isNumber -or [double]::IsNaN($number) -or [double]::IsInfinity($number) -or $number -ne [math]::Floor($number) -or $number -lt 1 -or $number -gt 1000000) {
+                        throw ("{0} config override: AdditionalRows row {1}: '{2}' must be a whole number from 1 to 1000000, written without quotes." -f $label, $n, $rk)
+                    }
+                    $clean[$rk] = [int]$number
+                }
+                $added += $clean
+            }
+            $merged['Rows'] = @(@($BaseConfig['Rows']) + @($added))
+        }
+        $supplied += $name
+    }
+    $from = 'an override whose source was not recorded'
+    if (-not [string]::IsNullOrWhiteSpace($OverrideSource)) { $from = ("{0} (loaded {1})" -f $OverrideSource, (Get-Date).ToString('yyyy-MM-dd')) }
+    $merged['ThresholdSource'] = ("{0} for {1}; {2}" -f $from, ($supplied -join ', '), [string]$BaseConfig['ThresholdSource'])
+    return $merged
+}
+
+function Resolve-AdfaExchangeAdVersion {
+    <#
+    .SYNOPSIS
+        Pure: the Exchange builds the Learn table lists for a schema rangeUpper and an organisation
+        objectVersion (Configuration), and the objectVersion (Default) a domain prepared by them has.
+    .DESCRIPTION
+        Every row whose rangeUpper and objectVersion (Configuration) are both the values given:
+        several builds share one pair (Exchange SE RTM and Exchange 2019 CU15), so every one is named
+        and none is chosen. ExpectedDomain is the lowest objectVersion (Default) of those rows (the
+        bar a prepared domain must reach), $null when no row matches. Nothing is guessed for a value
+        the table does not hold.
+    .OUTPUTS
+        [pscustomobject] Mapped, Builds, ExpectedDomain.
+    .PARAMETER RangeUpper
+        rangeUpper of ms-Exch-Schema-Version-Pt. Untyped, may be null.
+    .PARAMETER OrgVersion
+        objectVersion of the Exchange organisation container. Untyped, may be null.
+    .PARAMETER Rows
+        The table rows (Build, RangeUpper, DomainVersion, OrgVersion). Untyped, default @(), may be
+        null or empty.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowNull()]$RangeUpper, [AllowNull()]$OrgVersion, [AllowNull()][AllowEmptyCollection()]$Rows = @())
+    $ru = ConvertTo-AdfaInventoryInteger -Value $RangeUpper
+    $ov = ConvertTo-AdfaInventoryInteger -Value $OrgVersion
+    $builds = @()
+    $expected = $null
+    if ($null -ne $ru -and $null -ne $ov) {
+        foreach ($r in @($Rows | Where-Object { $null -ne $_ })) {
+            $rr = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $r -Name 'RangeUpper')
+            $ro = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $r -Name 'OrgVersion')
+            $rd = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $r -Name 'DomainVersion')
+            if ($null -eq $rr -or $null -eq $ro -or $rr -ne $ru -or $ro -ne $ov) { continue }
+            $builds += [string](Get-AdfaConfigValue -Entry $r -Name 'Build')
+            if ($null -ne $rd -and ($null -eq $expected -or $rd -lt $expected)) { $expected = $rd }
+        }
+    }
+    return [pscustomobject]@{ Mapped = ($builds.Count -gt 0); Builds = @($builds); ExpectedDomain = $expected }
+}
+
+function Get-AdfaExchangeAdVersionVerdict {
+    <#
+    .SYNOPSIS
+        Pure: the Exchange AD Versions rows from what was read - the schema marker, the organisation
+        container and the Microsoft Exchange System Objects container of each scoped domain.
+    .DESCRIPTION
+        No organisation (no child of CN=Microsoft Exchange carries objectVersion, or the container is
+        not there) is a measured absence: one Info row whose Detail begins "Not applicable:". An
+        organisation that could not be read, or more than one, is Not Assessed, and so is every domain.
+        Otherwise the organisation is mapped through the table (Resolve-AdfaExchangeAdVersion): Info
+        naming every build, or Info "not in the table" with the raw values. Each domain is compared with
+        the objectVersion (Default) of those builds, never with the organisation's own number (another
+        number space): below it is DomainBehindStatus (Warning by default; Learn: prepare every domain
+        that holds Exchange servers or mail-enabled users), equal or above Info, no container Info
+        "not prepared" (Learn requires preparing only some domains), a refused read Not Assessed.
+        msExchProductID is shown raw and never graded.
+    .OUTPUTS
+        [pscustomobject[]]
+    .PARAMETER Facts
+        Schema (State Read|Absent|Failed, Value, Cause), Organization (State Read|Absent|Failed|Multiple,
+        Name, Version, ProductId, Cause) and Domains (Domain, State Read|Absent|Failed, Version, Cause).
+        Untyped, mandatory.
+    .PARAMETER Config
+        The ExchangeAdVersions table in force. Type [hashtable], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)]$Facts, [Parameter(Mandatory)][hashtable]$Config)
+    $rows = @()
+    $schema = $Facts.Schema
+    $org = $Facts.Organization
+    $domains = @(@($Facts.Domains) | Where-Object { $null -ne $_ })
+    $source = ("{0}, read {1}" -f [string]$Config['SourceUrl'], [string]$Config['ReadDate'])
+    $schemaText = switch ([string]$schema.State) {
+        'Read' { ("rangeUpper of ms-Exch-Schema-Version-Pt is {0}" -f [string]$schema.Value); break }
+        'Absent' { 'the schema holds no ms-Exch-Schema-Version-Pt (it was not extended for Exchange)'; break }
+        default { ("the schema marker could not be read: {0}" -f ([string]$schema.Cause).Trim().TrimEnd('.')) }
+    }
+    $orgState = [string]$org.State
+    if ($orgState -eq 'Absent') {
+        return @(Get-AdfaExchangeAdVersionRow -Item 'Exchange organisation' -Status $script:Status.Info `
+                -Detail ("Not applicable: no Exchange organisation in this forest (no child of CN=Microsoft Exchange,CN=Services carries objectVersion) - a measured absence, so no domain is compared; {0}." -f $schemaText))
+    }
+    $domainNa = {
+        param([string]$Why)
+        foreach ($d in $domains) {
+            $raw = ''
+            if ([string]$d.State -eq 'Read') { $raw = (" Read: objectVersion (Default) {0}." -f [string]$d.Version) }
+            Get-AdfaExchangeAdVersionRow -Scope ([string]$d.Domain) -Item ("Exchange domain preparation: {0}" -f [string]$d.Domain) -Status $script:Status.NotAssessed -Detail ("Not compared: {0}.{1}" -f $Why, $raw)
+        }
+    }
+    if ($orgState -eq 'Failed' -or $orgState -eq 'Multiple') {
+        $why = ([string]$org.Cause).Trim().TrimEnd('.')
+        $rows += Get-AdfaExchangeAdVersionRow -Item 'Exchange organisation' -Status $script:Status.NotAssessed -Detail ("{0}. This is not a clean result." -f $why)
+        $rows += @(& $domainNa 'the Exchange organisation was not read')
+        return @($rows)
+    }
+    $orgItem = ("Exchange organisation: {0}" -f [string]$org.Name)
+    $product = 'msExchProductID not returned'
+    if (-not [string]::IsNullOrWhiteSpace([string]$org.ProductId)) { $product = ("msExchProductID {0} (shown raw, not graded: Learn documents it only for Exchange 2013)" -f [string]$org.ProductId) }
+    if ([string]$schema.State -ne 'Read') {
+        $rows += Get-AdfaExchangeAdVersionRow -Item $orgItem -Status $script:Status.NotAssessed -Detail ("objectVersion (Configuration) {0}, but {1}, so the build is not mapped; {2}." -f [string]$org.Version, $schemaText, $product)
+        $rows += @(& $domainNa 'the schema marker was not read, so the organisation''s build is not mapped')
+        return @($rows)
+    }
+    $map = Resolve-AdfaExchangeAdVersion -RangeUpper $schema.Value -OrgVersion $org.Version -Rows @($Config['Rows'])
+    if (-not $map.Mapped) {
+        $rows += Get-AdfaExchangeAdVersionRow -Item $orgItem -Status $script:Status.Info -Detail ("rangeUpper {0} and objectVersion (Configuration) {1}: not in the table ({2} rows from {3}), so no build is named and nothing is guessed; {4}." -f [string]$schema.Value, [string]$org.Version, @($Config['Rows']).Count, $source, $product)
+    }
+    else {
+        $agree = (@($domains | Where-Object { [string]$_.State -ne 'Read' -or [int64]$_.Version -ne [int64]$map.ExpectedDomain }).Count -eq 0)
+        $tail = ''
+        if ($agree -and $domains.Count -gt 0) { $tail = ' The organisation, the schema and every scoped domain agree.' }
+        $rows += Get-AdfaExchangeAdVersionRow -Item $orgItem -Status $script:Status.Info -Detail ("Maps to {0} (rangeUpper {1}, objectVersion (Configuration) {2}; the Learn table, {3}). A domain prepared by it has objectVersion (Default) {4}; {5}.{6}" -f (@($map.Builds) -join ' or '), [string]$schema.Value, [string]$org.Version, $source, [string]$map.ExpectedDomain, $product, $tail)
+    }
+    $behind = [string]$Config['DomainBehindStatus']
+    foreach ($d in $domains) {
+        $scope = [string]$d.Domain
+        $item = ("Exchange domain preparation: {0}" -f $scope)
+        switch ([string]$d.State) {
+            'Absent' {
+                $rows += Get-AdfaExchangeAdVersionRow -Scope $scope -Item $item -Status $script:Status.Info -Detail 'Not prepared for Exchange: this domain has no CN=Microsoft Exchange System Objects container. Learn requires preparing only the domains that hold Exchange servers or mail-enabled users, so this may be intended; it is reported, not graded.'
+                break
+            }
+            'Read' {
+                $v = [int64]$d.Version
+                if (-not $map.Mapped) {
+                    $rows += Get-AdfaExchangeAdVersionRow -Scope $scope -Item $item -Status $script:Status.Info -Detail ("objectVersion (Default) {0} of CN=Microsoft Exchange System Objects; not compared, because the organisation's build is not in the table." -f $v)
+                }
+                elseif ($v -lt [int64]$map.ExpectedDomain) {
+                    $rows += Get-AdfaExchangeAdVersionRow -Scope $scope -Item $item -Status $behind -Detail ("objectVersion (Default) {0} of CN=Microsoft Exchange System Objects is below {1}, the value the Learn table lists for {2}: the domain was not prepared to the organisation's level. Learn: prepare every domain where an Exchange server will be installed or mail-enabled users will be located." -f $v, [string]$map.ExpectedDomain, (@($map.Builds) -join ' or '))
+                }
+                elseif ($v -eq [int64]$map.ExpectedDomain) {
+                    $rows += Get-AdfaExchangeAdVersionRow -Scope $scope -Item $item -Status $script:Status.Info -Detail ("objectVersion (Default) {0} of CN=Microsoft Exchange System Objects matches the value the Learn table lists for {1}." -f $v, (@($map.Builds) -join ' or '))
+                }
+                else {
+                    $rows += Get-AdfaExchangeAdVersionRow -Scope $scope -Item $item -Status $script:Status.Info -Detail ("objectVersion (Default) {0} of CN=Microsoft Exchange System Objects is above {1}, the value the Learn table lists for {2} (prepared by a later build than the organisation's; not graded)." -f $v, [string]$map.ExpectedDomain, (@($map.Builds) -join ' or '))
+                }
+                break
+            }
+            default {
+                $rows += Get-AdfaExchangeAdVersionRow -Scope $scope -Item $item -Status $script:Status.NotAssessed -Detail ("{0}. This is not a clean result." -f ([string]$d.Cause).Trim().TrimEnd('.'))
+            }
+        }
+    }
+    return @($rows)
+}
+
+function Get-AdfaExchangeAdVersion {
+    <#
+    .SYNOPSIS
+        Exchange AD Versions: the schema rangeUpper, the organisation's objectVersion (and its raw
+        msExchProductID) and each scoped domain's objectVersion, mapped through the Learn table.
+        Read-only.
+    .DESCRIPTION
+        Reads, each through Get-AdfaDeclaredReadRaw (declared properties, -Server always sent): from
+        the forest root domain CN=ms-Exch-Schema-Version-Pt,CN=Schema (rangeUpper), CN=Microsoft
+        Exchange,CN=Services (whether it exists) and the children one level under it that carry
+        objectVersion; per scoped domain, from that domain, CN=Microsoft Exchange System Objects
+        (objectVersion). A container that is not there (not found) is a measured absence; a refused or
+        failed read is Failed with its cause, never an absence. The domains are read only when an
+        organisation exists. Every decision is in Get-AdfaExchangeAdVersionVerdict.
+    .OUTPUTS
+        [pscustomobject[]]
+    .PARAMETER RootDomain
+        The DNS name of the forest root domain. Type [string], default '', may be empty.
+    .PARAMETER Domains
+        The DNS names of the scoped domains. Type [string[]], default @(), may be null or empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The ExchangeAdVersions table in force (after any override file was merged onto it). Type
+        [hashtable], mandatory.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words (Get-AdfaCapSource of the table in force).
+        Type [string], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyString()][string]$RootDomain = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$Domains = @(),
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$CapSource
+    )
+    if ([string]::IsNullOrWhiteSpace($RootDomain)) {
+        return @(Get-AdfaExchangeAdVersionRow -Item 'Exchange organisation' -Status $script:Status.NotAssessed -Detail 'No forest root domain was named, so the Exchange organisation was not read. This is not a clean result.')
+    }
+    $max = [int]$Config['MaxObjects']
+    $rootDn = Get-AdfaInventoryDomainDn -DomainName $RootDomain -AdParams $AdParams
+    if (-not $rootDn.Ok) {
+        $class = Get-AdfaDirectoryReadErrorClass -Message ([string]$rootDn.Error) -TypeName ([string]$rootDn.ErrorType)
+        return @(Get-AdfaExchangeAdVersionRow -Item 'Exchange organisation' -Status $script:Status.NotAssessed -Detail ("The forest root domain's distinguished name could not be read ({0}): {1}. This is not a clean result." -f (Get-AdfaReadClassPhrase -Class $class), ([string]$rootDn.Error).Trim().TrimEnd('.')))
+    }
+    $cfgNc = ("CN=Configuration,{0}" -f [string]$rootDn.Dn)
+    $schema = [pscustomobject]@{ State = 'Failed'; Value = $null; Cause = '' }
+    $raw = Get-AdfaDeclaredReadRaw -Server $RootDomain -Read 'SchemaMarker' -Identity ("{0},CN=Schema,{1}" -f [string]$Config['SchemaMarker'], $cfgNc) -Config $Config -AdParams $AdParams
+    if ([bool](Get-AdfaConfigValue -Entry $raw -Name 'NotFound')) { $schema.State = 'Absent' }
+    else {
+        $cause = Get-AdfaInventoryReadCause -Raw $raw -What 'the schema marker ms-Exch-Schema-Version-Pt' -MaxObjects $max -CapSource $CapSource
+        $records = @(@(Get-AdfaConfigValue -Entry $raw -Name 'Records') | Where-Object { $null -ne $_ })
+        $value = $null
+        if ($cause -eq '' -and $records.Count -gt 0) { $value = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $records[0] -Name 'rangeUpper') }
+        if ($cause -eq '' -and $null -eq $value) { $cause = 'The schema marker ms-Exch-Schema-Version-Pt was read without a whole-number rangeUpper.' }
+        if ($cause -eq '') { $schema.State = 'Read'; $schema.Value = $value } else { $schema.Cause = $cause }
+    }
+    $org = [pscustomobject]@{ State = 'Failed'; Name = ''; Version = $null; ProductId = ''; Cause = '' }
+    $containerDn = ("{0},{1}" -f [string]$Config['ExchangeContainer'], $cfgNc)
+    $container = Get-AdfaDeclaredReadRaw -Server $RootDomain -Read 'ExchangeContainer' -Identity $containerDn -Config $Config -AdParams $AdParams
+    if ([bool](Get-AdfaConfigValue -Entry $container -Name 'NotFound')) { $org.State = 'Absent' }
+    else {
+        $cause = Get-AdfaInventoryReadCause -Raw $container -What 'the Exchange organisation (CN=Microsoft Exchange,CN=Services)' -MaxObjects $max -CapSource $CapSource
+        if ($cause -ne '') { $org.Cause = $cause }
+        else {
+            $orgRaw = Get-AdfaDeclaredReadRaw -Server $RootDomain -Read 'Organization' -SearchBase $containerDn -Config $Config -AdParams $AdParams
+            $cause = Get-AdfaInventoryReadCause -Raw $orgRaw -What 'the Exchange organisation (the children of CN=Microsoft Exchange that carry objectVersion)' -MaxObjects $max -CapSource $CapSource
+            $children = @(@(Get-AdfaConfigValue -Entry $orgRaw -Name 'Records') | Where-Object { $null -ne $_ })
+            if ($cause -ne '') { $org.Cause = $cause }
+            elseif ($children.Count -eq 0) { $org.State = 'Absent' }
+            elseif ($children.Count -gt 1) {
+                $org.State = 'Multiple'
+                $org.Cause = ("More than one child of CN=Microsoft Exchange carries objectVersion ({0}); Learn describes one organisation container, so none is chosen" -f ((@($children | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'cn') })) -join ', '))
+            }
+            else {
+                $c = $children[0]
+                $org.Name = [string](Get-AdfaConfigValue -Entry $c -Name 'cn')
+                if ($org.Name -eq '') { $org.Name = [string](Get-AdfaConfigValue -Entry $c -Name 'Name') }
+                $org.Version = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $c -Name 'objectVersion')
+                $productId = Get-AdfaConfigValue -Entry $c -Name 'msExchProductID'
+                if ($null -ne $productId) { $org.ProductId = ((@($productId) | ForEach-Object { [string]$_ }) -join ', ') }
+                if ($null -eq $org.Version) { $org.Cause = ("The Exchange organisation {0} was read without a whole-number objectVersion" -f $org.Name) }
+                else { $org.State = 'Read' }
+            }
+        }
+    }
+    $domainFacts = @()
+    if ($org.State -ne 'Absent') {
+        foreach ($d in @(@($Domains) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+            $fact = [pscustomobject]@{ Domain = [string]$d; State = 'Failed'; Version = $null; Cause = '' }
+            $isRoot = [string]::Equals(([string]$d).TrimEnd('.'), $RootDomain.TrimEnd('.'), [System.StringComparison]::OrdinalIgnoreCase)
+            $dn = $rootDn
+            if (-not $isRoot) { $dn = Get-AdfaInventoryDomainDn -DomainName $d -AdParams $AdParams }
+            if (-not $dn.Ok) {
+                $class = Get-AdfaDirectoryReadErrorClass -Message ([string]$dn.Error) -TypeName ([string]$dn.ErrorType)
+                $fact.Cause = ("The domain's distinguished name could not be read ({0}): {1}" -f (Get-AdfaReadClassPhrase -Class $class), ([string]$dn.Error).Trim().TrimEnd('.'))
+            }
+            else {
+                $mr = Get-AdfaDeclaredReadRaw -Server $d -Read 'DomainObjects' -Identity ("{0},{1}" -f [string]$Config['SystemObjectsContainer'], [string]$dn.Dn) -Config $Config -AdParams $AdParams
+                if ([bool](Get-AdfaConfigValue -Entry $mr -Name 'NotFound')) { $fact.State = 'Absent' }
+                else {
+                    $cause = Get-AdfaInventoryReadCause -Raw $mr -What 'the Microsoft Exchange System Objects container' -MaxObjects $max -CapSource $CapSource
+                    $recs = @(@(Get-AdfaConfigValue -Entry $mr -Name 'Records') | Where-Object { $null -ne $_ })
+                    $v = $null
+                    if ($cause -eq '' -and $recs.Count -gt 0) { $v = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $recs[0] -Name 'objectVersion') }
+                    if ($cause -eq '' -and $null -eq $v) { $cause = 'The Microsoft Exchange System Objects container was read without a whole-number objectVersion (the account may not be allowed to read it)' }
+                    if ($cause -eq '') { $fact.State = 'Read'; $fact.Version = $v } else { $fact.Cause = $cause }
+                }
+            }
+            $domainFacts += $fact
+        }
+    }
+    return @(Get-AdfaExchangeAdVersionVerdict -Facts ([pscustomobject]@{ Schema = $schema; Organization = $org; Domains = @($domainFacts) }) -Config $Config)
+}
+
+function Invoke-AdfaLingeringAdvisory {
+    <#
+    .SYNOPSIS
+        One advisory-mode lingering-object scan: repadmin /removelingeringobjects <dc> <reference DSA
+        GUID> <NC> /advisory_mode, and the count it printed. The one place the script runs it.
+    .DESCRIPTION
+        Learn (read 2026-11-19): /advisory_mode "Logs the lingering objects that will be removed so
+        that you can review them, but does not remove them"; it writes Directory Service events on the
+        DC scanned (a log write, no directory change). The count is read from the output ("<n>
+        lingering object(s)", or one line per object); a clean exit with no count this tool can read is
+        a count of -1, never 0 (PORT-PLAN C16, GAP-P26). The advisory-mode output format is not
+        published (PORT-PLAN C16c).
+    .OUTPUTS
+        [pscustomobject] Count (-1 when none was read), Excerpt, ExitText, Success.
+    .PARAMETER DomainController
+        The DC to scan (its host name). Type [string], mandatory.
+    .PARAMETER ReferenceGuid
+        The DSA GUID of a DC that holds a writable copy of the naming context. Type [string],
+        mandatory.
+    .PARAMETER NamingContext
+        The distinguished name of the naming context to scan. Type [string], mandatory.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped. Type [int], default 300.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainController,
+        [Parameter(Mandatory)][string]$ReferenceGuid,
+        [Parameter(Mandatory)][string]$NamingContext,
+        [int]$TimeoutSeconds = 300
+    )
+    $dc = $DomainController
+    $refGuid = $ReferenceGuid
+    $domainNc = $NamingContext
+    $r = Invoke-ExternalCommand -FilePath 'repadmin.exe' `
+        -Arguments ('/removelingeringobjects {0} {1} "{2}" /advisory_mode' -f $dc, $refGuid, $domainNc) `
+        -TimeoutSeconds $TimeoutSeconds -Retries 1
+    $out = [string]$r.StdOut
+    $count = -1
+    if ($out -match '(?i)(\d+)\s+lingering object') { $count = [int]$Matches[1] }
+    else {
+        $perLine = ([regex]::Matches($out, '(?i)^\s*lingering obj', [System.Text.RegularExpressions.RegexOptions]::Multiline)).Count
+        if ($perLine -gt 0) { $count = $perLine }
+        # No "elseif exit 0 then 0" (PORT-PLAN C16, GAP-P26): a clean exit with no count read is not a count of 0.
+    }
+    $excerpt = (($out -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First 3) -join ' | '
+    if (-not $excerpt) { $excerpt = [string]$r.Error }
+    if (-not $excerpt) { $excerpt = 'no output' }
+    $exitText = 'did not complete'
+    if ($r.Success) { $exitText = 'exited 0' }
+    return [pscustomobject]@{ Count = $count; Excerpt = $excerpt; ExitText = $exitText; Success = [bool]$r.Success }
+}
+
+function Get-AdfaLingeringPartitionRaw {
+    <#
+    .SYNOPSIS
+        The partitions of the forest and, per DC, the ones it holds: the crossRef objects under
+        CN=Partitions (nCName, systemFlags) and the NTDS Settings objects under CN=Sites
+        (msDS-hasMasterNCs, msDS-hasFullReplicaNCs, hasPartialReplicaNCs), joined to each DC's host name and DSA GUID
+        (Get-AdfaDsaInventory). Read-only. Never throws.
+    .DESCRIPTION
+        Kinds, by Learn: the configuration and schema NCs by their names; systemFlags bit 2 "the naming
+        context is a domain" is Domain; bit 1 "the naming context is in NTDS" without bit 2 is
+        Application; anything else is External (not scanned). Any read that fails leaves Ok $false with
+        its cause, so no partition is scanned on a partial picture.
+    .OUTPUTS
+        [pscustomobject] Ok, Cause, Partitions (Nc, Kind), Dsas (Host, Guid, MasterNcs, FullNcs, PartialNcs).
+    .PARAMETER RootDomain
+        The DNS name of the forest root domain. Type [string], default '', may be empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The LingeringObjects table in force. Type [hashtable], mandatory.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words. Type [string], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowEmptyString()][string]$RootDomain = '', [hashtable]$AdParams = @{}, [Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][string]$CapSource)
+    $out = [pscustomobject]@{ Ok = $false; Cause = ''; Partitions = @(); Dsas = @() }
+    if ([string]::IsNullOrWhiteSpace($RootDomain)) { $out.Cause = 'no forest root domain was named'; return $out }
+    $rootDn = Get-AdfaInventoryDomainDn -DomainName $RootDomain -AdParams $AdParams
+    if (-not $rootDn.Ok) {
+        $class = Get-AdfaDirectoryReadErrorClass -Message ([string]$rootDn.Error) -TypeName ([string]$rootDn.ErrorType)
+        $out.Cause = ("the forest root domain's distinguished name could not be read ({0}): {1}" -f (Get-AdfaReadClassPhrase -Class $class), ([string]$rootDn.Error).Trim().TrimEnd('.'))
+        return $out
+    }
+    $max = [int]$Config['MaxObjects']
+    $cfgNc = ("CN=Configuration,{0}" -f [string]$rootDn.Dn)
+    $schemaNc = ("CN=Schema,{0}" -f $cfgNc)
+    $cr = Get-AdfaDeclaredReadRaw -Server $RootDomain -Read 'Partitions' -SearchBase ("CN=Partitions,{0}" -f $cfgNc) -Config $Config -AdParams $AdParams
+    $cause = Get-AdfaInventoryReadCause -Raw $cr -What 'the crossRef objects under CN=Partitions' -MaxObjects $max -CapSource $CapSource
+    if ($cause -ne '') { $out.Cause = $cause; return $out }
+    $parts = @()
+    foreach ($rec in @(@(Get-AdfaConfigValue -Entry $cr -Name 'Records') | Where-Object { $null -ne $_ })) {
+        $nc = ([string](Get-AdfaConfigValue -Entry $rec -Name 'nCName')).Trim()
+        if ($nc -eq '') { continue }
+        $flags = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $rec -Name 'systemFlags')
+        $kind = 'External'
+        if ([string]::Equals($nc, $cfgNc, [System.StringComparison]::OrdinalIgnoreCase)) { $kind = 'Configuration' }
+        elseif ([string]::Equals($nc, $schemaNc, [System.StringComparison]::OrdinalIgnoreCase)) { $kind = 'Schema' }
+        elseif ($null -eq $flags) { $kind = 'Unknown' }
+        elseif (($flags -band [int64]$Config['CrNtdsDomain']) -ne 0) { $kind = 'Domain' }
+        elseif (($flags -band [int64]$Config['CrNtdsNc']) -ne 0) { $kind = 'Application' }
+        $parts += [pscustomobject]@{ Nc = $nc; Kind = $kind }
+    }
+    if (@($parts | Where-Object { $_.Kind -eq 'Configuration' }).Count -eq 0) { $out.Cause = 'the crossRef objects were read, but none names the configuration naming context'; return $out }
+    $dsaRaw = Get-AdfaDeclaredReadRaw -Server $RootDomain -Read 'Dsa' -SearchBase ("CN=Sites,{0}" -f $cfgNc) -Config $Config -AdParams $AdParams
+    $cause = Get-AdfaInventoryReadCause -Raw $dsaRaw -What 'the NTDS Settings objects under CN=Sites' -MaxObjects $max -CapSource $CapSource
+    if ($cause -ne '') { $out.Cause = $cause; return $out }
+    $inventory = @()
+    try { $inventory = @(Get-AdfaDsaInventory -AdParams $AdParams) }
+    catch { $out.Cause = ("the host names of the NTDS Settings objects could not be read: {0}" -f (([string]$_.Exception.Message).Trim() -replace '\s*\r?\n\s*', ' / ')); return $out }
+    $dsas = @()
+    foreach ($rec in @(@(Get-AdfaConfigValue -Entry $dsaRaw -Name 'Records') | Where-Object { $null -ne $_ })) {
+        $dn = [string](Get-AdfaConfigValue -Entry $rec -Name 'DistinguishedName')
+        $match = @($inventory | Where-Object { $null -ne $_ -and [string]::Equals(("CN=NTDS Settings,{0}" -f [string](Get-AdfaConfigValue -Entry $_ -Name 'ServerDn')), $dn, [System.StringComparison]::OrdinalIgnoreCase) })
+        $dcHost = ''
+        $guid = ''
+        if ($match.Count -gt 0) { $dcHost = [string](Get-AdfaConfigValue -Entry $match[0] -Name 'DnsHostName'); $guid = [string](Get-AdfaConfigValue -Entry $match[0] -Name 'DsaGuid') }
+        $master = @(@(Get-AdfaConfigValue -Entry $rec -Name 'msDS-hasMasterNCs') | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Trim() })
+        $full = @(@(Get-AdfaConfigValue -Entry $rec -Name 'msDS-hasFullReplicaNCs') | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Trim() })
+        $partial = @(@(Get-AdfaConfigValue -Entry $rec -Name 'hasPartialReplicaNCs') | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Trim() })
+        $dsas += [pscustomobject]@{ Host = $dcHost; Guid = $guid; MasterNcs = @($master); FullNcs = @($full); PartialNcs = @($partial) }
+    }
+    $out.Partitions = @($parts)
+    $out.Dsas = @($dsas)
+    $out.Ok = $true
+    return $out
+}
+
+function Get-AdfaLingeringScanPlan {
+    <#
+    .SYNOPSIS
+        Pure: the advisory scans of the partitions other than a DC's own domain NC - the configuration
+        NC, each application partition the DC holds and each global catalog partial replica - each
+        against a reference DC that holds a writable copy, capped.
+    .DESCRIPTION
+        A DC is found among the NTDS Settings objects by its host name (case-insensitive). Its
+        partitions: the configuration NC (every DC holds it), each Application partition in its
+        msDS-hasMasterNCs or msDS-hasFullReplicaNCs (an RODC lists its read-only replicas in the
+        second only), and each NC in its hasPartialReplicaNCs. A DC whose object returned neither list
+        while the forest has application partitions is one skipped row naming that, never silence. The schema NC is never planned
+        (Learn: "The schema partition does not support deletes") and the domain NC has its own scan.
+        The reference is the first other DC, by host name, whose msDS-hasMasterNCs holds the NC (Learn:
+        the source must host a writable copy); none is a skipped scan with that cause. The first
+        MaxScans scans are kept, in the order of the targets; the rest are CappedOut, never dropped.
+    .OUTPUTS
+        [pscustomobject] Scans and CappedOut (Dc, Domain, Nc, Kind, Label, ReferenceGuid,
+        ReferenceHost), Skipped (Dc, Domain, Nc, Kind, Label, Cause).
+    .PARAMETER Targets
+        The DCs to scan (HostName, Domain). Untyped, default @(), may be null or empty.
+    .PARAMETER Partitions
+        The partitions (Nc, Kind) from Get-AdfaLingeringPartitionRaw. Untyped, default @(), may be null
+        or empty.
+    .PARAMETER Dsas
+        The NTDS Settings objects (Host, Guid, MasterNcs, PartialNcs, and FullNcs when read). Untyped,
+        default @(), may be null or empty.
+    .PARAMETER MaxScans
+        The most scans planned; the rest are CappedOut. Type [int], default 200, from 0 to 1000000.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$Targets = @(),
+        [AllowNull()][AllowEmptyCollection()]$Partitions = @(),
+        [AllowNull()][AllowEmptyCollection()]$Dsas = @(),
+        [ValidateRange(0, 1000000)][int]$MaxScans = 200
+    )
+    $key = { param($Value) ([string]$Value).Trim().TrimEnd('.').ToLowerInvariant() }
+    $dsaList = @(@($Dsas | Where-Object { $null -ne $_ }) | Sort-Object -Property @{ Expression = { ([string]$_.Host).Trim().ToLowerInvariant() } })
+    $parts = @($Partitions | Where-Object { $null -ne $_ })
+    $configNc = @($parts | Where-Object { [string]$_.Kind -eq 'Configuration' } | ForEach-Object { [string]$_.Nc })
+    $appNcs = @($parts | Where-Object { [string]$_.Kind -eq 'Application' } | ForEach-Object { [string]$_.Nc } | Sort-Object)
+    $all = @()
+    $skipped = @()
+    foreach ($t in @($Targets | Where-Object { $null -ne $_ })) {
+        $dc = ([string]$t.HostName).Trim()
+        $domain = [string]$t.Domain
+        if ($dc -eq '') {
+            $skipped += [pscustomobject]@{ Dc = '(unnamed)'; Domain = $domain; Nc = ''; Kind = 'All'; Label = 'other partitions'; Cause = 'The DC list holds a domain controller of this domain with no host name, so its other partitions were not scanned.' }
+            continue
+        }
+        $dcKey = & $key $dc
+        $own = @($dsaList | Where-Object { (& $key $_.Host) -eq $dcKey })
+        if ($own.Count -eq 0) {
+            $skipped += [pscustomobject]@{ Dc = $dc; Domain = $domain; Nc = ''; Kind = 'All'; Label = 'other partitions'; Cause = 'No NTDS Settings object whose server has this host name was read, so the partitions this DC holds are not known and none was scanned.' }
+            continue
+        }
+        $masters = @(@($own[0].MasterNcs) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { & $key $_ })
+        $fullProp = $own[0].PSObject.Properties['FullNcs']
+        $fulls = @()
+        if ($null -ne $fullProp) { $fulls = @(@($fullProp.Value) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { & $key $_ }) }
+        $held = @($masters) + @($fulls)
+        $wanted = @()
+        foreach ($nc in $configNc) { $wanted += [pscustomobject]@{ Nc = $nc; Kind = 'Configuration'; Label = 'configuration' } }
+        if ($held.Count -eq 0 -and $appNcs.Count -gt 0) {
+            $skipped += [pscustomobject]@{ Dc = $dc; Domain = $domain; Nc = ''; Kind = 'Application'; Label = 'application partitions'; Cause = 'The NTDS Settings object of this DC returned neither msDS-hasMasterNCs nor msDS-hasFullReplicaNCs, so the application partitions it holds are not known and none was scanned.' }
+        }
+        foreach ($nc in $appNcs) { if ($held -contains (& $key $nc)) { $wanted += [pscustomobject]@{ Nc = $nc; Kind = 'Application'; Label = ("application partition {0}" -f $nc) } } }
+        foreach ($nc in @(@($own[0].PartialNcs) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object)) { $wanted += [pscustomobject]@{ Nc = [string]$nc; Kind = 'GcPartial'; Label = ("GC partial replica {0}" -f [string]$nc) } }
+        foreach ($w in $wanted) {
+            $ncKey = & $key $w.Nc
+            $ref = @($dsaList | Where-Object { (& $key $_.Host) -ne '' -and (& $key $_.Host) -ne $dcKey -and -not [string]::IsNullOrWhiteSpace([string]$_.Guid) -and @(@($_.MasterNcs) | ForEach-Object { & $key $_ }) -contains $ncKey })
+            if ($ref.Count -eq 0) {
+                $skipped += [pscustomobject]@{ Dc = $dc; Domain = $domain; Nc = $w.Nc; Kind = $w.Kind; Label = $w.Label; Cause = ("No other domain controller holds a writable copy of {0} (msDS-hasMasterNCs), so there is no reference to compare against and it was not scanned." -f $w.Nc) }
+                continue
+            }
+            $all += [pscustomobject]@{ Dc = $dc; Domain = $domain; Nc = $w.Nc; Kind = $w.Kind; Label = $w.Label; ReferenceGuid = [string]$ref[0].Guid; ReferenceHost = [string]$ref[0].Host }
+        }
+    }
+    $scans = @($all | Select-Object -First $MaxScans)
+    $capped = @($all | Select-Object -Skip $MaxScans)
+    return [pscustomobject]@{ Scans = @($scans); Skipped = @($skipped); CappedOut = @($capped) }
+}
+
+function Get-AdfaLingeringPartitionScan {
+    <#
+    .SYNOPSIS
+        The lingering-object scan of the configuration partition, the application partitions and the
+        global catalog partial replicas, in advisory mode, on every DC of the scoped domains. Opt-in
+        with -IncludeLingeringObjectScan, like the domain scan.
+    .DESCRIPTION
+        The partitions and holders are read once (Get-AdfaLingeringPartitionRaw), the scans planned
+        and capped (Get-AdfaLingeringScanPlan, LingeringObjects.MaxScans, a tool default), and each
+        scan gated on RPC 135 like the domain scan (Get-AdfaDcProbeGate) and run through
+        Invoke-AdfaLingeringAdvisory, which removes nothing. Rows: "Advisory scan (<partition>): <dc>",
+        Fail with the count, Pass on a count of 0 that was read, Not Assessed with the cause otherwise
+        (unreachable, no readable count, no reference DC, no NTDS Settings object). The scans the cap
+        stopped are one Not Assessed row naming them; a partition list that could not be read is one
+        Not Assessed row and no scan.
+    .OUTPUTS
+        [pscustomobject[]]
+    .PARAMETER RootDomain
+        The DNS name of the forest root domain. Type [string], default '', may be empty.
+    .PARAMETER Domains
+        The DNS names of the scoped domains whose DCs are scanned. Type [string[]], default @(), may be
+        null or empty.
+    .PARAMETER DomainControllers
+        The run's shared per-domain DC list (Scope, HostName). Untyped, default @(), may be null or
+        empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause. Untyped, default @(), may be
+        null or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses. Type [string[]], default @(), may be null or
+        empty.
+    .PARAMETER AdParams
+        Parameters splatted onto every ActiveDirectory cmdlet this function calls, for example
+        -Server and -Credential; empty to use the current domain and account. Type [hashtable],
+        default @{}.
+    .PARAMETER Config
+        The LingeringObjects table in force (after any override file was merged onto it). Type
+        [hashtable], mandatory.
+    .PARAMETER CapSource
+        Where MaxScans came from, in the row's words (Get-AdfaCapSource of the table in force). Type
+        [string], mandatory.
+    .PARAMETER TimeoutSeconds
+        Seconds an external tool may run before it is stopped. Type [int], default 300.
+    .PARAMETER RpcPortTimeoutMs
+        Milliseconds to wait for each TCP port probe (-RpcPortTimeoutMs of the run). Type [int],
+        default 1200.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowEmptyString()][string]$RootDomain = '',
+        [AllowNull()][AllowEmptyCollection()][string[]]$Domains = @(),
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [hashtable]$AdParams = @{},
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$CapSource,
+        [int]$TimeoutSeconds = 300,
+        [int]$RpcPortTimeoutMs = 1200
+    )
+    $area = 'LingeringObjects'
+    $whole = 'Advisory scan (other partitions)'
+    $notScanned = 'so the configuration partition, the application partitions and the global catalog partial replicas were not scanned'
+    if (-not (Test-CommandAvailable -Name 'repadmin.exe')) {
+        return @(New-Finding -Area $area -Item $whole -Status $script:Status.NotAssessed -Detail ("repadmin.exe is not available on this host, {0}." -f $notScanned))
+    }
+    $raw = Get-AdfaLingeringPartitionRaw -RootDomain $RootDomain -AdParams $AdParams -Config $Config -CapSource $CapSource
+    if (-not $raw.Ok) {
+        return @(New-Finding -Area $area -Item $whole -Status $script:Status.NotAssessed -Detail ("The partitions and the DCs that hold them could not be read, {0}: {1}" -f $notScanned, ([string]$raw.Cause).Trim()))
+    }
+    $targets = @()
+    foreach ($d in @(@($Domains) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        # A domain with no DC listed is reported by the domain scan's own row; here it has nothing to scan.
+        $listed = Get-AdfaDomainDcHostName -Domain $d -Targets $DomainControllers -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains
+        foreach ($h in @($listed.HostNames)) { $targets += [pscustomobject]@{ HostName = [string]$h; Domain = [string]$d } }
+    }
+    $plan = Get-AdfaLingeringScanPlan -Targets $targets -Partitions @($raw.Partitions) -Dsas @($raw.Dsas) -MaxScans ([int]$Config['MaxScans'])
+    $rows = @()
+    foreach ($s in @($plan.Skipped)) {
+        $rows += New-Finding -Scope ([string]$s.Domain) -Area $area -Item ("Advisory scan ({0}): {1}" -f [string]$s.Label, [string]$s.Dc) -Status $script:Status.NotAssessed -Detail ([string]$s.Cause)
+    }
+    foreach ($s in @($plan.Scans)) {
+        $dc = [string]$s.Dc
+        $item = ("Advisory scan ({0}): {1}" -f [string]$s.Label, $dc)
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @(135) -TimeoutMs $RpcPortTimeoutMs
+        if ($gate.Cause) {
+            $rows += New-Finding -Scope ([string]$s.Domain) -Area $area -Item $item -Status $script:Status.NotAssessed -Detail (Get-AdfaDcGateText -Cause $gate.Cause -NotRead 'the advisory scan was not run against it')
+            continue
+        }
+        if (-not $gate.Open[135]) {
+            $rows += New-Finding -Scope ([string]$s.Domain) -Area $area -Item $item -Status $script:Status.NotAssessed -Detail 'DC not reachable (RPC/135), so the advisory scan was not run against it.'
+            continue
+        }
+        $r = Invoke-AdfaLingeringAdvisory -DomainController $dc -ReferenceGuid ([string]$s.ReferenceGuid) -NamingContext ([string]$s.Nc) -TimeoutSeconds $TimeoutSeconds
+        if ($r.Count -gt 0) {
+            $rows += New-Finding -Scope ([string]$s.Domain) -Area $area -Item $item -Status $script:Status.Fail `
+                -Detail ("{0} lingering object(s) found on {1} ({2}) of {3}, relative to {4} (DSA {5}), by repadmin /removelingeringobjects in advisory mode, which removes nothing. Directory Service events on {3} list each object." -f $r.Count, [string]$s.Nc, [string]$s.Label, $dc, [string]$s.ReferenceHost, [string]$s.ReferenceGuid)
+        }
+        elseif ($r.Count -eq 0) {
+            $rows += New-Finding -Scope ([string]$s.Domain) -Area $area -Item $item -Status $script:Status.Pass -Detail ("No lingering objects on {0} ({1}) of {2}, relative to {3}." -f [string]$s.Nc, [string]$s.Label, $dc, [string]$s.ReferenceHost)
+        }
+        else {
+            $rows += New-Finding -Scope ([string]$s.Domain) -Area $area -Item $item -Status $script:Status.NotAssessed `
+                -Detail ("repadmin {0} but printed no count of lingering objects this tool can read, so none is concluded (the advisory-mode output format is not published): {1}" -f $r.ExitText, $r.Excerpt)
+        }
+    }
+    $capped = @($plan.CappedOut)
+    if ($capped.Count -gt 0) {
+        $names = @($capped | ForEach-Object { "{0} on {1}" -f [string]$_.Label, [string]$_.Dc })
+        $rows += New-Finding -Area $area -Item ("{0}: cap reached" -f $whole) -Status $script:Status.NotAssessed `
+            -Detail ("{0} partition scan(s) were not run: the cap of {1} scans per run ({2}) was reached. Not run: {3}." -f $capped.Count, [int]$Config['MaxScans'], $CapSource, (Get-AdfaC14NameList -Names $names -Cap 20))
+    }
+    return @($rows)
+}
+
+function Invoke-AdfaDnsServerRead {
+    <#
+    .SYNOPSIS
+        The one way the DNS sections read a DNS server (PORT-PLAN C16b(4-7)): without -Credential the
+        DnsServer seam is called with -ComputerName, as before; with it, over one bounded CIM session
+        opened with that credential and closed after the read.
+    .DESCRIPTION
+        -Read names the seam: Server (Get-AdfaDnsServerRaw), Zones (Get-AdfaDnsServerZoneNames) or
+        Records (Get-AdfaDnsRecordSetRaw, with -ReadArguments). With -Credential: New-CimSession
+        -ComputerName -Credential -OperationTimeoutSec (WinRM when the WinRM port answers through the
+        shared probe cache, otherwise DCOM), the seam called with -CimSession and never -ComputerName
+        (Learn documents -CimSession on every DnsServer cmdlet the seams use and is silent on the two
+        together), and Remove-CimSession -WhatIf:$false -Confirm:$false in finally. A session that
+        cannot be opened is a failed read in the seam's own shape, with the error folded to one line
+        and its NativeErrorCode; Get-AdfaDnsReadErrorClass classes it SessionRefused or SessionNotOpened,
+        apart from a read the DNS server answered, so a row never says the server answered or that the
+        account running the assessment was refused when the supplied credential was. A zone list already read for the server in this run is not read again.
+        Learn (read 2026-11-19): New-CimSession "If Credential is not specified, the current user
+        account is used"; Remove-CimSession "removes one or more CIM session objects from the local
+        PowerShell session".
+    .OUTPUTS
+        [pscustomobject] the seam's result.
+    .PARAMETER ComputerName
+        The host name of the DNS server (a DC). Type [string], mandatory.
+    .PARAMETER Read
+        Which seam: Server, Zones or Records. Type [string], mandatory, one of Server, Zones, Records.
+    .PARAMETER ReadArguments
+        The seam's other arguments (ZoneName, Name, RRType, Cap, Config for Records). Type [hashtable],
+        default @{}.
+    .PARAMETER Credential
+        The credential for the DNS server read. When it is absent the account running the assessment
+        is used and no session is opened. Type [pscredential].
+    .PARAMETER Config
+        The Dns table: WsmanPort. Type [hashtable], default $script:Config.Dns.
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for the WinRM port probe. Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a CIM operation of the session may take (New-CimSession -OperationTimeoutSec). Type
+        [int], default the run's external tool time-out.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][ValidateSet('Server', 'Zones', 'Records')][string]$Read,
+        [hashtable]$ReadArguments = @{},
+        [pscredential]$Credential,
+        [hashtable]$Config = $script:Config.Dns,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = $script:Config.ExternalToolTimeoutSec
+    )
+    $readArgs = @{} + $ReadArguments
+    $readArgs['ComputerName'] = $ComputerName
+    if (-not $Credential) {
+        switch ($Read) {
+            'Server' { return (Get-AdfaDnsServerRaw @readArgs) }
+            'Zones' { return (Get-AdfaDnsServerZoneNames @readArgs) }
+            default { return (Get-AdfaDnsRecordSetRaw @readArgs) }
+        }
+    }
+    $cacheKey = $ComputerName.ToLowerInvariant()
+    if ($Read -eq 'Zones' -and $script:DnsZoneListCache.ContainsKey($cacheKey)) { return $script:DnsZoneListCache[$cacheKey] }
+    $session = $null
+    try {
+        $sessionArgs = @{ ComputerName = $ComputerName; Credential = $Credential; OperationTimeoutSec = [uint32]$OperationTimeoutSec; ErrorAction = 'Stop' }
+        $wsmanPort = [int]$Config['WsmanPort']
+        if (-not (Get-AdfaDcProbeGate -ComputerName $ComputerName -Ports @($wsmanPort) -TimeoutMs $PortTimeoutMs).Open[$wsmanPort]) { $sessionArgs.SessionOption = New-CimSessionOption -Protocol Dcom }
+        $session = New-CimSession @sessionArgs
+        $readArgs['CimSession'] = $session
+        switch ($Read) {
+            'Server' { return (Get-AdfaDnsServerRaw @readArgs) }
+            'Zones' { return (Get-AdfaDnsServerZoneNames @readArgs) }
+            default { return (Get-AdfaDnsRecordSetRaw @readArgs) }
+        }
+    }
+    catch {
+        $message = ("A CIM session to {0} could not be opened with the supplied credential: {1}" -f $ComputerName, (([string]$_.Exception.Message).Trim() -replace '\s*\r?\n\s*', ' / '))
+        $code = ''
+        $codeProp = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $codeProp -and $null -ne $codeProp.Value) { $code = [string]$codeProp.Value }
+        if ($Read -eq 'Server') {
+            return [pscustomobject]@{
+                Ok = $false; Error = $message; ErrorCode = $code; Zones = @(); ScavengingOk = $false; ScavengingInterval = $null; ScavengingState = $null
+                ScavengingError = ''; Aging = @{}; ForwardersOk = $false; Forwarders = @(); ForwarderError = ''
+            }
+        }
+        if ($Read -eq 'Zones') {
+            $failed = [pscustomobject]@{ Ok = $false; Names = @(); Types = @{}; Error = $message; ErrorCode = $code }
+            $script:DnsZoneListCache[$cacheKey] = $failed
+            return $failed
+        }
+        return [pscustomobject]@{ Ok = $false; Outcome = 'Error'; Records = @(); RealCount = 0; Truncated = $false; Error = $message; ErrorCode = $code; ErrorId = '' }
+    }
+    finally {
+        if ($null -ne $session) {
+            try { Remove-CimSession -CimSession $session -WhatIf:$false -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+        }
+    }
 }
 
 # ===========================================================================
@@ -39002,6 +40520,22 @@ $script:RecommendationMap = @(
        Text  = 'Give each PSO named in the TiedPolicies column a unique msDS-PasswordSettingsPrecedence: Microsoft recommends a unique value for each PSO, and when several PSOs with one value apply to a user, the PSO with the smallest GUID is applied, which is rarely what was intended. This report reads only and changes nothing.' }
     @{ Section = '(?i)^accounts & policy'; Match = '.'
        Text  = '' }
+    # --- Section-scoped: PKI / AD CS and Exchange AD Versions (PORT-PLAN C16b(4-7)). PKI is anchored on its two
+    #     ESC1 Item prefixes only (no catch-all, so its other rows keep what they matched before); Exchange AD
+    #     Versions on its Item prefix, then a catch-all with no advice. Read on Learn on 2026-11-19:
+    #       Defender for Identity: the mitigations "Manager approval or required authorized signatures", and
+    #       "Remove the certificate template from being published by any CA. Templates that aren't published
+    #       can't be requested, and therefore can't be exploited."
+    #         - https://learn.microsoft.com/defender-for-identity/security-posture-assessments/certificates
+    #       Setup /PrepareDomain and /PrepareAllDomains; "You need to prepare any domain that will contain
+    #       mail-enabled users"; compare the object versions with the table
+    #         - https://learn.microsoft.com/exchange/plan-and-deploy/prepare-ad-and-domains
+    @{ Section = '(?i)^pki / ad cs$'; Match = '(?i)^PKI / AD CS :: (ESC1 template: |ESC1-susceptible templates ::)'
+       Text  = 'Harden the template: Microsoft Defender for Identity names the mitigations as manager approval (CT_FLAG_PEND_ALL_REQUESTS) or required authorized signatures (msPKI-RA-Signature), and says a template that is not published "can''t be requested, and therefore can''t be exploited" - so unpublish it from every CA if nothing needs it, otherwise clear "Supply in the request" (ENROLLEE_SUPPLIES_SUBJECT) or require approval, and remove the enrolment and control rights of the low-privilege principals named in this finding. Audit the certificates already issued from the template (certutil -view) and revoke anything you cannot explain - a certificate outlives a password reset. ESC1 is a community name, not a Microsoft term. This report reads only and changes nothing.' }
+    @{ Section = '(?i)^exchange ad versions$'; Match = '(?i)^Exchange AD Versions :: Exchange domain preparation: '
+       Text  = 'Prepare the domain to the organisation''s level with the Setup of the Exchange build in use: Setup.exe /IAcceptExchangeServerLicenseTerms_DiagnosticDataON /PrepareDomain:<domain FQDN> (or /PrepareAllDomains as an Enterprise Admin), then compare objectVersion of its Microsoft Exchange System Objects container with Microsoft''s "Exchange Active Directory versions" table again. Microsoft requires preparing every domain where an Exchange server will be installed or mail-enabled users will be located; a domain with neither may be left as it is. This report reads only and changes nothing.' }
+    @{ Section = '(?i)^exchange ad versions$'; Match = '.'
+       Text  = '' }
     # --- Section-scoped: GPO version consistency rows of GPO Inventory (PORT-PLAN C8). Anchored on
     #     the Item prefixes this tool writes ("GPO version: {GUID}", "GPO version summary: <domain>",
     #     "GPO folder without container: {GUID}"), NOT on the section: the inventory's older rows
@@ -40214,6 +41748,45 @@ function Test-SectionSelected {
     return ($Selected -contains 'All' -or $Selected -contains $Name)
 }
 
+function Get-AdfaConfigOverrideUnusedReason {
+    <#
+    .SYNOPSIS
+        Pure: why a validated -ConfigOverridePath table is not used by this run, or '' when it is.
+    .DESCRIPTION
+        A registry entry ($script:ConfigOverrideSections) names the -Sections value that reads the table
+        (Section) and any other (AlsoUsedBy, PORT-PLAN C10): the table is used when one of them is
+        selected. An entry that names an opt-in switch (Switch, PORT-PLAN C16b(4-7)) is read ONLY when
+        that switch is set, whatever -Sections says: without it the table is unused even when its
+        Section is selected (independent review: the LingeringObjects table was logged as in force by
+        a run with Replication selected and no -IncludeLingeringObjectScan).
+    .OUTPUTS
+        [string] '' when used; otherwise the reason, starting "-Sections does not include" or "-<switch>
+        was not given".
+    .PARAMETER Entry
+        The registry entry of the table (Section, AlsoUsedBy, Switch). Type [hashtable], mandatory.
+    .PARAMETER Sections
+        The -Sections values of the run. Type [string[]], default @(), may be empty.
+    .PARAMETER SwitchState
+        The opt-in switches of the run by name, each $true when given. Type [hashtable], default @{}.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][hashtable]$Entry,
+        [AllowEmptyCollection()][string[]]$Sections = @(),
+        [hashtable]$SwitchState = @{}
+    )
+    $switchName = ''
+    if ($Entry.ContainsKey('Switch')) { $switchName = ([string]$Entry['Switch']).Trim() }
+    if ($switchName -ne '') {
+        if ($SwitchState.ContainsKey($switchName) -and [bool]$SwitchState[$switchName]) { return '' }
+        return ("-{0} was not given (the table is read only by that switch, whatever -Sections says)" -f $switchName)
+    }
+    $usedBy = @(@([string]$Entry['Section']) + @(@($Entry['AlsoUsedBy']) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ }))
+    if (@($usedBy | Where-Object { Test-SectionSelected -Name $_ -Selected $Sections }).Count -gt 0) { return '' }
+    return ("-Sections does not include {0}" -f ($usedBy -join ' or '))
+}
+
 function Invoke-Main {
     <#
     .SYNOPSIS
@@ -40314,10 +41887,11 @@ function Invoke-Main {
             foreach ($name in @($configOverrides.Keys | Sort-Object)) {
                 Write-Log -Level INFO ("Config override: section {0} taken from {1}" -f $name, $ConfigOverridePath)
                 # A table may serve more than one section (AlsoUsedBy, PORT-PLAN C10); it is unused only when
-                # none of them is selected.
-                $usedBy = @(@([string]$script:ConfigOverrideSections[[string]$name]['Section']) + @(@($script:ConfigOverrideSections[[string]$name]['AlsoUsedBy']) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ }))
-                if (@($usedBy | Where-Object { Test-SectionSelected -Name $_ -Selected $Sections }).Count -eq 0) {
-                    Write-Log -Level WARN -Message ("Config override: section {0} was validated but is not used by this run, because -Sections does not include {1}." -f $name, ($usedBy -join ' or '))
+                # none of them is selected. A table read by an opt-in switch (Switch, PORT-PLAN C16b(4-7)) is
+                # used only when that switch is set: LingeringObjects only with -IncludeLingeringObjectScan.
+                $unusedBecause = Get-AdfaConfigOverrideUnusedReason -Entry $script:ConfigOverrideSections[[string]$name] -Sections $Sections -SwitchState @{ IncludeLingeringObjectScan = [bool]$IncludeLingeringObjectScan }
+                if ($unusedBecause -ne '') {
+                    Write-Log -Level WARN -Message ("Config override: section {0} was validated but is not used by this run, because {1}." -f $name, $unusedBecause)
                 }
             }
         }
@@ -40914,8 +42488,10 @@ function Invoke-Main {
 
         # ---- Deep security & reliability ----
         if (Test-SectionSelected 'Pki' $Sections) {
-            Write-Stage 'AD CS / PKI (ESC1 heuristic)'
-            $sectionData['PKI / AD CS'] = Get-AdfaPkiHealth -AdParams $adParams
+            Write-Stage 'AD CS / PKI (ESC1 over published templates, with the enrolment ACL)'
+            # PORT-PLAN C16b(4-7): from the forest root; the Pki table is not settable from a file.
+            $pkiCapSource = Get-AdfaCapSource -Config $script:Config.Pki -BaseConfig $script:Config.Pki -Key 'MaxObjects' -Label 'Pki'
+            $sectionData['PKI / AD CS'] = @(Get-AdfaPkiHealth -RootDomain $rootDomain -AdParams $adParams -Config $script:Config.Pki -AclConfig $script:Config.Acl -CapSource $pkiCapSource)
         }
         if (Test-SectionSelected 'Acl' $Sections) {
             # Dangerous rights (PORT-PLAN C9): per scoped domain, the domain head's replication and control
@@ -41259,11 +42835,23 @@ function Invoke-Main {
                 Get-AdfaLingeringObjectScan -DomainName $d -AdParams $adParams -TimeoutSeconds 300 -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs `
                     -DomainControllers $perDcTargets -InventoryFailures $perDcFailures -ScopedDomains $targetDomains
             }
+            # PORT-PLAN C16b(4-7): the configuration partition, the application partitions and the global
+            # catalog partial replicas of the same DCs, in advisory mode, capped (LingeringObjects.MaxScans).
+            $loConfig = $script:Config.LingeringObjects
+            if ($configOverrides.ContainsKey('LingeringObjects')) { $loConfig = $configOverrides['LingeringObjects'] }
+            $loCapSource = Get-AdfaCapSource -Config $loConfig -BaseConfig $script:Config.LingeringObjects -Key 'MaxScans' -Label 'LingeringObjects'
+            $loRows = @(@($loRows) + @(Get-AdfaLingeringPartitionScan -RootDomain $rootDomain -Domains $targetDomains -DomainControllers $perDcTargets -InventoryFailures $perDcFailures `
+                        -ScopedDomains $targetDomains -AdParams $adParams -Config $loConfig -CapSource $loCapSource -TimeoutSeconds 300 -RpcPortTimeoutMs $script:Config.RpcPortTimeoutMs))
             $sectionData['Lingering Object Scan (advisory)'] = @($loRows)
         }
 
         if (Test-SectionSelected 'ExchangeSchema' $Sections) {
             $sectionData['Exchange Schema Markers'] = Get-AdfaExchangeSchemaMarker -AdParams $adParams
+            # PORT-PLAN C16b(4-7): the organisation's and each scoped domain's objectVersion, mapped through the Learn table.
+            $exaConfig = $script:Config.ExchangeAdVersions
+            if ($configOverrides.ContainsKey('ExchangeAdVersions')) { $exaConfig = $configOverrides['ExchangeAdVersions'] }
+            $exaCapSource = Get-AdfaCapSource -Config $exaConfig -BaseConfig $script:Config.ExchangeAdVersions -Key 'MaxObjects' -Label 'ExchangeAdVersions'
+            $sectionData['Exchange AD Versions'] = @(Get-AdfaExchangeAdVersion -RootDomain $rootDomain -Domains $targetDomains -AdParams $adParams -Config $exaConfig -CapSource $exaCapSource)
         }
 
         if (Test-SectionSelected 'ExchangeSeReadiness' $Sections) {
@@ -41354,7 +42942,7 @@ function Invoke-Main {
             }
             if ($dnsExportTargets.Count -eq 0) { $dnsExportTargets = @($dcNames) }
             $sectionData['DNS Record Export'] = @(Export-AdfaDnsRecord -DomainControllers $dnsExportTargets -Config $dnsConfig -CsvPath $csvPath `
-                    -PortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $dnsExportFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
+                    -PortTimeoutMs $script:Config.RpcPortTimeoutMs -InventoryFailures $dnsExportFailures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains -Credential $Credential)
         }
 
         # ---- Raw diagnostics ----

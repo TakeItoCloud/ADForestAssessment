@@ -2193,7 +2193,7 @@ Assert-True ([string]@($hardMovedTwo | Where-Object { [string]$_.Item -match '^L
 Assert-Equal 3 (@(@(@{ Id = 'LdapEnforceChannelBinding'; B = 26100 }, @{ Id = 'LmCompatibilityLevel'; B = 26100 }, @{ Id = 'SmbServerSigning'; B = 17763 }) | Where-Object { $v = Get-HardVerdict -Id $_.Id -Build $_.B; [string]$v.Status -eq 'Not Assessed' -and [string]$v.Detail -match 'default in force is not known' -and [string]$v.Detail -match 'Source: https://learn\.microsoft\.com/' }).Count) 'Hardening verdict: a row that is Not Assessed because no default is known cites the Microsoft page beside the claim (declared population: three settings)'
 $hardOvr = Resolve-AdfaConfigOverride -Override ('{ "DcHardening": { "Settings": { "SmbClientSigning": { "OtherStatus": "Fail" } } } }' | ConvertFrom-Json) -BaseConfig $script:Config -Sections $script:ConfigOverrideSections -OverrideSource 'C:\cfg\all.json'
 Assert-Equal 'DcHardening' (@($hardOvr.Keys) -join ',') 'Config override: the DcHardening section goes through its own validator'
-Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the eighteen sections the file can carry (AccountsPolicy since v1.44.0, Inventory since v1.32.0, Reach, SiteCoverage, ClockSkew, Stale and SysvolEngine since v1.31.0, Dns since v1.30.0, DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
+Assert-Equal 'DcDisk,DcHardening,Laps,DcCertificates,RidPool,SidHistory,Gpo,Acl,Privileged,DcDiag,Dns,Reach,SiteCoverage,ClockSkew,Stale,SysvolEngine,Inventory,AccountsPolicy,ExchangeAdVersions,LingeringObjects' (@($script:ConfigOverrideSections.Keys) -join ',') 'Config override: declared population - the eighteen sections the file can carry (AccountsPolicy since v1.44.0, Inventory since v1.32.0, Reach, SiteCoverage, ClockSkew, Stale and SysvolEngine since v1.31.0, Dns since v1.30.0, DcDiag since v1.28.0, Privileged since v1.27.0, Acl since v1.26.0, Gpo since v1.25.0, SidHistory since v1.24.0)'
 
 Write-Host "== Windows LAPS (C4): pure logic ==" -ForegroundColor Cyan
 $lapsCfg = $script:Config.Laps
@@ -3187,7 +3187,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.44.0' ([string]$script:Config.Version) 'C14: version 1.44.0 in the script (bumped by PORT-PLAN C16b(1-3))'
+Assert-Equal '1.45.0' ([string]$script:Config.Version) 'C14: version 1.45.0 in the script (bumped by PORT-PLAN C16b(4-7))'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3280,7 +3280,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.44.0' ([string]$script:Config.Version) 'C15: version 1.44.0 in the script (bumped by PORT-PLAN C16b(1-3))'
+Assert-Equal '1.45.0' ([string]$script:Config.Version) 'C15: version 1.45.0 in the script (bumped by PORT-PLAN C16b(4-7))'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3504,7 +3504,7 @@ $c16Src2 = & {
     Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
 }
 Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
-Assert-Equal '1.44.0' ([string]$script:Config.Version) 'C16: version 1.44.0 in the script (bumped by PORT-PLAN C16b(1-3))'
+Assert-Equal '1.45.0' ([string]$script:Config.Version) 'C16: version 1.45.0 in the script (bumped by PORT-PLAN C16b(4-7))'
 
 # ---- PORT-PLAN C1a: the update build revision (pure) -----------------------------------------
 $c1aKey = [string]$script:Config.DcSystem['UbrKey']
@@ -3865,6 +3865,62 @@ $apBare = @([pscustomobject]@{ Name = 'a'; sAMAccountName = 'a' }, [pscustomobje
 Assert-Equal 'Not Assessed' ([string](Get-AdfaPasswordNotRequiredVerdict -DomainName 'contoso.com' -Raw (& $apRead $apBare) -UacProof '' -Config $apCfg -CapSource 'x').Status) 'C16b: matched accounts returned without a readable userAccountControl are Not Assessed, never a measured Pass'
 Assert-Equal 'Undecoded' ([string](ConvertFrom-AdfaLockoutInterval -Value ([int64]9000000000) -Config $apCfg -NegativeRequired).State) 'C16b: a positive lockoutDuration is not decoded (Learn: the negative of the count)'
 Assert-Equal 'Warning' ([string](Get-AdfaEncryptionTypeVerdict -DomainName 'contoso.com' -Population 'Trusts' -Raw (& $apRead @((& $apUser 'fabrikam.com' 131072))) -Records @((& $apUser 'fabrikam.com' 131072)) -Config $apCfg -CapSource 'x').Status) 'C16b: a trust with flag bits only (no AES bit) is the trust grade'
+
+Write-Host "== C16b(4-7): ESC1 shape, publication, enrolment ACL, Exchange AD versions, the lingering scan plan ==" -ForegroundColor Cyan
+# PORT-PLAN C16b(4-7) (v1.45.0): the pure logic of the four leftovers. Every name is fictional.
+$lxPki = $script:Config.Pki
+$lxAcl = $script:Config.Acl
+$lxTpl = { param([string]$Cn, $NameFlag = 1, $EnrollFlag = 0, $Ra = 0, $Eku = @('1.3.6.1.5.5.7.3.2'))
+    [pscustomobject]@{ DistinguishedName = ("CN={0},CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=contoso,DC=com" -f $Cn); Name = $Cn; cn = $Cn; displayName = $Cn
+        'msPKI-Certificate-Name-Flag' = $NameFlag; 'msPKI-Enrollment-Flag' = $EnrollFlag; 'msPKI-RA-Signature' = $Ra; pKIExtendedKeyUsage = $Eku; 'msPKI-Certificate-Application-Policy' = $null } }
+Assert-Equal 'Shaped' ([string](Get-AdfaEsc1Shape -Template (& $lxTpl 'A') -Config $lxPki).State) 'C16b(4-7): supply-in-request, client auth, no approval, no signature is the ESC1 shape (MS-CRTD 2.28, 2.26, 2.18)'
+Assert-Equal 'NotShaped' ([string](Get-AdfaEsc1Shape -Template (& $lxTpl 'B' -EnrollFlag 2) -Config $lxPki).State) 'C16b(4-7): manager approval (PEND_ALL_REQUESTS) rules the shape out'
+Assert-Equal 'Unknown' ([string](Get-AdfaEsc1Shape -Template (& $lxTpl 'C' -Ra $null) -Config $lxPki).State) 'C16b(4-7): msPKI-RA-Signature not returned is Unknown, never read as 0'
+Assert-Equal 'NotShaped' ([string](Get-AdfaEsc1Shape -Template (& $lxTpl 'D' -NameFlag 65536) -Config $lxPki).State) 'C16b(4-7): the SAN flag alone is named, not graded'
+$lxPub = Get-AdfaTemplatePublication -Cas @([pscustomobject]@{ cn = 'CA-One'; certificateTemplates = @('a', 'Ghost') }) -Templates @((& $lxTpl 'A'), (& $lxTpl 'B'))
+Assert-True ((@($lxPub.Templates | Where-Object { $_.Published } | ForEach-Object { $_.Name }) -join ',') -eq 'A') 'C16b(4-7): a CA value is matched to a template cn case-insensitively; an unlisted template is not published'
+Assert-Equal 'Ghost (CA-One)' ((@($lxPub.Unmatched)) -join ',') 'C16b(4-7): a CA value that names no template object is listed, never dropped'
+$lxAce = { param([string]$Sid, [int64]$Mask, [string]$Type = '') [pscustomobject]@{ Index = 0; Sid = $Sid; Allow = $true; Deny = $false; Kind = $(if ($Type -ne '') { 'Object' } else { 'Common' }); Mask = $Mask; InheritOnly = $false; Inherited = $false; ObjectType = $Type; InheritedObjectType = '' } }
+$lxSd = { param($Aces) [pscustomobject]@{ Ok = $true; Class = 'Read'; Error = ''; OwnerSid = 'S-1-5-32-544'; Aces = @($Aces); AceCount = @($Aces).Count } }
+Assert-Equal 'LowPrivilege' ([string](Get-AdfaTemplateEnrolmentVerdict -Descriptor (& $lxSd @((& $lxAce 'S-1-5-11' 256 '0e10c968-78fb-11d2-90d4-00c04f79dc55'))) -Config $lxPki -AclConfig $lxAcl).State) 'C16b(4-7): Authenticated Users with Enroll (MS-CRTD 2.5.2 GUID) is a low-privilege enrolment right'
+Assert-Equal 'OtherOnly' ([string](Get-AdfaTemplateEnrolmentVerdict -Descriptor (& $lxSd @((& $lxAce 'S-1-5-21-1-2-3-512' 983551), (& $lxAce 'S-1-5-11' 131220))) -Config $lxPki -AclConfig $lxAcl).State) 'C16b(4-7): the default template descriptor (Domain Admins full control, Authenticated Users read) grants no low-privilege enrolment'
+Assert-Equal 'Unknown' ([string](Get-AdfaTemplateEnrolmentVerdict -Descriptor ([pscustomobject]@{ Ok = $false; Class = 'DaclAbsent'; Error = 'no DACL'; Aces = @() }) -Config $lxPki -AclConfig $lxAcl).State) 'C16b(4-7): a descriptor without a DACL is Unknown, never no grant'
+$lxExa = $script:Config.ExchangeAdVersions
+Assert-Equal 45 @($lxExa['Rows']).Count 'C16b(4-7): the Exchange AD versions table holds the 45 rows of the Learn page (SE 1, 2019 18, 2016 26)'
+$lxMap = Resolve-AdfaExchangeAdVersion -RangeUpper 17003 -OrgVersion 16763 -Rows $lxExa['Rows']
+Assert-Equal 'Exchange SE RTM or Exchange 2019 CU15' ((@($lxMap.Builds)) -join ' or ') 'C16b(4-7): a shared triple names every build, never one'
+Assert-Equal 13243 ([int64]$lxMap.ExpectedDomain) 'C16b(4-7): the domain bar is the Default objectVersion of those builds'
+$lxFacts = [pscustomobject]@{ Schema = [pscustomobject]@{ State = 'Read'; Value = 17003; Cause = '' }; Organization = [pscustomobject]@{ State = 'Read'; Name = 'Org'; Version = 16763; ProductId = ''; Cause = '' }
+    Domains = @([pscustomobject]@{ Domain = 'north.contoso.com'; State = 'Read'; Version = 13242; Cause = '' }) }
+Assert-Equal 'Warning' ([string]@(Get-AdfaExchangeAdVersionVerdict -Facts $lxFacts -Config $lxExa | Where-Object { $_.Item -eq 'Exchange domain preparation: north.contoso.com' })[0].Status) 'C16b(4-7): a domain below the organisation''s Default value is a Warning'
+$lxFacts.Organization.State = 'Absent'
+$lxNone = @(Get-AdfaExchangeAdVersionVerdict -Facts $lxFacts -Config $lxExa)
+Assert-True ($lxNone.Count -eq 1 -and $lxNone[0].Status -eq 'Info' -and $lxNone[0].Detail -match '^Not applicable:') 'C16b(4-7): no Exchange organisation is a measured absence, Info "Not applicable"'
+$lxDsa = { param([string]$H, [string]$G, $M, $P) [pscustomobject]@{ Host = $H; Guid = $G; MasterNcs = @($M); PartialNcs = @($P) } }
+$lxCfgNc = 'CN=Configuration,DC=contoso,DC=com'
+$lxPlan = Get-AdfaLingeringScanPlan -Targets @([pscustomobject]@{ HostName = 'dc1.contoso.com'; Domain = 'contoso.com' }, [pscustomobject]@{ HostName = 'dc2.contoso.com'; Domain = 'contoso.com' }) `
+    -Partitions @([pscustomobject]@{ Nc = $lxCfgNc; Kind = 'Configuration' }, [pscustomobject]@{ Nc = 'DC=ForestDnsZones,DC=contoso,DC=com'; Kind = 'Application' }) `
+    -Dsas @((& $lxDsa 'dc1.contoso.com' '11111111-1111-4111-8111-111111111111' @($lxCfgNc, 'DC=ForestDnsZones,DC=contoso,DC=com') @()), (& $lxDsa 'dc2.contoso.com' '22222222-2222-4222-8222-222222222222' @($lxCfgNc, 'DC=ForestDnsZones,DC=contoso,DC=com') @())) -MaxScans 200
+Assert-Equal 4 @($lxPlan.Scans).Count 'C16b(4-7): a configuration scan and an application partition scan per DC, each against the other (declared population: 4)'
+Assert-True (@($lxPlan.Scans | Where-Object { $_.ReferenceHost -eq $_.Dc }).Count -eq 0) 'C16b(4-7): no DC is its own reference'
+Assert-True (@($lxPlan.Skipped).Count -eq 0) 'C16b(4-7): nothing skipped when every partition has another writable holder'
+Assert-Equal 1 @((Get-AdfaLingeringScanPlan -Targets @([pscustomobject]@{ HostName = 'dc1.contoso.com'; Domain = 'contoso.com' }) -Partitions @([pscustomobject]@{ Nc = 'DC=ForestDnsZones,DC=contoso,DC=com'; Kind = 'Application' }) -Dsas @((& $lxDsa 'dc1.contoso.com' 'g1' @('DC=ForestDnsZones,DC=contoso,DC=com') @())) -MaxScans 200).Skipped).Count 'C16b(4-7): an application partition no other DC holds is skipped with its cause, never scanned against itself'
+# Independent review of C16b(4-7), fixed before commit.
+$lxRodc = [pscustomobject]@{ Host = 'rodc1.contoso.com'; Guid = '55555555-5555-4555-8555-555555555555'; MasterNcs = @(); FullNcs = @($lxCfgNc, 'DC=ForestDnsZones,DC=contoso,DC=com'); PartialNcs = @() }
+$lxRodcPlan = Get-AdfaLingeringScanPlan -Targets @([pscustomobject]@{ HostName = 'rodc1.contoso.com'; Domain = 'contoso.com' }) -Partitions @([pscustomobject]@{ Nc = $lxCfgNc; Kind = 'Configuration' }, [pscustomobject]@{ Nc = 'DC=ForestDnsZones,DC=contoso,DC=com'; Kind = 'Application' }) `
+    -Dsas @((& $lxDsa 'dc1.contoso.com' '11111111-1111-4111-8111-111111111111' @($lxCfgNc, 'DC=ForestDnsZones,DC=contoso,DC=com') @()), $lxRodc) -MaxScans 200
+Assert-Equal 1 @($lxRodcPlan.Scans | Where-Object { $_.Kind -eq 'Application' -and $_.ReferenceHost -eq 'dc1.contoso.com' }).Count 'C16b(4-7) review: an RODC''s read-only application partition (msDS-hasFullReplicaNCs) is planned against a writable holder'
+$lxBare = [pscustomobject]@{ Host = 'dc5.contoso.com'; Guid = '66666666-6666-4666-8666-666666666666'; MasterNcs = @(); FullNcs = @(); PartialNcs = @() }
+$lxBarePlan = Get-AdfaLingeringScanPlan -Targets @([pscustomobject]@{ HostName = 'dc5.contoso.com'; Domain = 'contoso.com' }) -Partitions @([pscustomobject]@{ Nc = 'DC=ForestDnsZones,DC=contoso,DC=com'; Kind = 'Application' }) -Dsas @((& $lxDsa 'dc1.contoso.com' 'g1' @('DC=ForestDnsZones,DC=contoso,DC=com') @()), $lxBare) -MaxScans 200
+Assert-True (@($lxBarePlan.Skipped | Where-Object { $_.Kind -eq 'Application' -and [string]$_.Cause -match 'msDS-hasFullReplicaNCs' }).Count -eq 1) 'C16b(4-7) review: a DC returning neither partition list is one skipped row, never silence'
+Assert-Equal 'LowPrivilege' ([string](Get-AdfaTemplateEnrolmentVerdict -Descriptor (& $lxSd @((& $lxAce 'S-1-1-0' 983551 'e5209ca2-3bba-11d2-90cc-00c04fd91ab1'))) -Config $lxPki -AclConfig $lxAcl).State) 'C16b(4-7) review: full control scoped to the pKICertificateTemplate class is on the template itself'
+$lxSessionDenied = 'A CIM session to dc1.contoso.com could not be opened with the supplied credential: Access is denied.'
+Assert-Equal 'SessionRefused' (Get-AdfaDnsReadErrorClass -Message $lxSessionDenied -ErrorCode '' -Config $script:Config.Dns) 'C16b(4-7) review: a refused credential session is classed apart from a refusal by the DNS server'
+Assert-Equal 'SessionNotOpened' (Get-AdfaDnsReadErrorClass -Message 'A CIM session to dc1.contoso.com could not be opened with the supplied credential: WinRM cannot complete the operation.' -ErrorCode '' -Config $script:Config.Dns) 'C16b(4-7) review: a credential session that could not connect is not a DNS server error'
+Assert-True ((Get-AdfaDnsReadCause -Class 'SessionNotOpened' -Message 'x') -notmatch 'answered') 'C16b(4-7) review: a session that never opened is never worded as the DNS server answering'
+Assert-True ((Get-AdfaDnsReadCause -Class 'AccessDenied' -Message 'x') -notmatch 'account running the assessment was refused') 'C16b(4-7) review: the access denied lead names no single principal'
+Assert-True ((Get-AdfaConfigOverrideUnusedReason -Entry $script:ConfigOverrideSections['LingeringObjects'] -Sections @('All') -SwitchState @{ IncludeLingeringObjectScan = $false }) -match '^-IncludeLingeringObjectScan was not given') 'C16b(4-7) review: the LingeringObjects override is unused without -IncludeLingeringObjectScan, even with All'
+Assert-Equal '' (Get-AdfaConfigOverrideUnusedReason -Entry $script:ConfigOverrideSections['LingeringObjects'] -Sections @('Dns') -SwitchState @{ IncludeLingeringObjectScan = $true }) 'C16b(4-7) review: the LingeringObjects override is used with the switch, whatever -Sections'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
