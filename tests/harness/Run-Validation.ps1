@@ -3187,7 +3187,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.40.0' ([string]$script:Config.Version) 'C14: version 1.40.0 in the script (bumped by PORT-PLAN C4b3, C4b4 and C11h)'
+Assert-Equal '1.41.0' ([string]$script:Config.Version) 'C14: version 1.41.0 in the script (bumped by PORT-PLAN C14c and C11e)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3280,7 +3280,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.40.0' ([string]$script:Config.Version) 'C15: version 1.40.0 in the script (bumped by PORT-PLAN C4b3, C4b4 and C11h)'
+Assert-Equal '1.41.0' ([string]$script:Config.Version) 'C15: version 1.41.0 in the script (bumped by PORT-PLAN C14c and C11e)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3504,7 +3504,7 @@ $c16Src2 = & {
     Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
 }
 Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
-Assert-Equal '1.40.0' ([string]$script:Config.Version) 'C16: version 1.40.0 in the script (bumped by PORT-PLAN C4b3, C4b4 and C11h)'
+Assert-Equal '1.41.0' ([string]$script:Config.Version) 'C16: version 1.41.0 in the script (bumped by PORT-PLAN C14c and C11e)'
 
 # ---- PORT-PLAN C1a: the update build revision (pure) -----------------------------------------
 $c1aKey = [string]$script:Config.DcSystem['UbrKey']
@@ -3680,6 +3680,68 @@ Assert-True ((Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contos
 $lhGated = ("DC not reachable - no dcdiag tests run. {0}" -f (Get-AdfaDcGateText -Cause 'Unreachable, classified once for this run by the reachability probe: the name does not resolve' -NotRead 'it was not probed again'))
 $lhGatedRec = Get-AdfaRecommendation -Section 'DC Diagnostics' -Item 'dc1.contoso.com' -Detail $lhGated
 Assert-True ($lhGatedRec -match 'classified this domain controller Unreachable' -and $lhGatedRec -notmatch 'did not answer on RPC/135' -and $lhUnscoped -notcontains $lhGatedRec) 'C11h: a DC classified Unreachable (never probed on 135) gets advice that states no RPC/135 result'
+
+# --- PORT-PLAN C14c and C11e: the second SYSVOL instrument, the engine in the grid, netlogon.bak, dMSA, future timestamps ---
+$ccSys = $script:Config.SysvolEngine
+Assert-Equal 4 @($ccSys['RegistryValues']).Count 'C14c: four registry values are read - the three Learn spellings of Local State and the Netlogon SysVol path (declared population)'
+function New-CcValRead { param($LocalState = 'absent', $Alt = 'absent', $NoSpace = 'nokey', $Path = 'C:\Windows\SYSVOL\sysvol', [bool]$Denied = $false, [bool]$Ok = $true)
+    $one = { param([string]$Id, $Spec)
+        $rv = 0; $v = $Spec
+        if ($Spec -is [string]) { switch ($Spec) { 'absent' { $rv = 1; $v = $null } 'nokey' { $rv = 2; $v = $null } 'denied' { $rv = 5; $v = $null } } }
+        [pscustomobject]@{ Id = $Id; Key = ''; ValueName = ''; Kind = ''; Answered = $true; ReturnValue = $rv; Value = $v; Method = ''; Error = ''; ErrorCode = '' } }
+    $vals = @((& $one 'LocalState' $LocalState), (& $one 'LocalStateAlt' $Alt), (& $one 'LocalStateNoSpace' $NoSpace), (& $one 'SysVolPath' $Path))
+    if (-not $Ok) { $vals = @() }
+    [pscustomobject]@{ Raw = [pscustomobject]@{ Ok = $Ok; Protocol = 'Wsman'; Error = 'Access is denied.'; ErrorCode = ''; Values = $vals }; Denied = $Denied; Attempts = @() }
+}
+Assert-Equal 'DFSR' ([string](Resolve-AdfaSysvolRegistryEngine -Read (New-CcValRead -LocalState 3) -Config $ccSys).Engine) 'C14c: Local State 3 (Eliminated) is DFSR'
+Assert-Equal 'FRS' ([string](Resolve-AdfaSysvolRegistryEngine -Read (New-CcValRead -Alt 0) -Config $ccSys).Engine) 'C14c: LocalState 0 (Start) under the VSS spelling is FRS'
+Assert-Equal 'Transitional' ([string](Resolve-AdfaSysvolRegistryEngine -Read (New-CcValRead -LocalState 2) -Config $ccSys).Engine) 'C14c: Local State 2 (Redirected) is a migration in progress'
+Assert-Equal 'Unknown' ([string](Resolve-AdfaSysvolRegistryEngine -Read (New-CcValRead -LocalState 42) -Config $ccSys).Engine) 'C14c: a number Learn does not map is Unknown'
+$ccAbsent = Resolve-AdfaSysvolRegistryEngine -Read (New-CcValRead) -Config $ccSys
+Assert-True ($ccAbsent.Engine -eq 'Absent' -and $ccAbsent.Detail -match 'FRS is being used' -and $ccAbsent.Detail -match 'not graded') 'C14c: every spelling absent is reported with Learn''s rule quoted and never graded FRS'
+$ccDenied = Resolve-AdfaSysvolRegistryEngine -Read (New-CcValRead -Ok $false -Denied $true) -Config $ccSys
+Assert-True ($ccDenied.Engine -eq 'Unread' -and $ccDenied.Class -eq 'AccessDenied' -and $ccDenied.Detail -notmatch '(?i)unreachable') 'C14c: a refused registry read is access denied, never unreachable'
+$ccUnreach = Resolve-AdfaSysvolRegistryEngine -Read $null -Unreachable 'Unreachable: neither WinRM (5985) nor RPC (135) answered within 1200 ms, so the registry was not read.' -Config $ccSys
+Assert-True ($ccUnreach.Engine -eq 'Unread' -and $ccUnreach.Class -eq 'Unreachable' -and $ccUnreach.Detail -notmatch '(?i)access denied') 'C14c: an unreachable DC is unreachable, never access denied'
+Assert-Equal 'DFSR|registry' (@((Resolve-AdfaSysvolEngineCombined -DirectoryEngine 'Unknown' -RegistryEngine 'DFSR').PSObject.Properties.Value) -join '|') 'C14c: a DC whose directory objects could not tell is graded from the registry'
+Assert-Equal 'Unknown|disagree' (@((Resolve-AdfaSysvolEngineCombined -DirectoryEngine 'DFSR' -RegistryEngine 'FRS').PSObject.Properties.Value) -join '|') 'C14c: two instruments that disagree are Unknown'
+Assert-Equal 'FRS|directory' (@((Resolve-AdfaSysvolEngineCombined -DirectoryEngine 'FRS' -RegistryEngine 'Absent').PSObject.Properties.Value) -join '|') 'C14c: an absent registry value leaves the directory engine'
+Assert-Equal 'Unknown|disagree' (@((Resolve-AdfaSysvolEngineCombined -DirectoryEngine 'Unknown' -RegistryEngine 'DFSR' -Dfsr 'Unread' -Frs 'Present').PSObject.Properties.Value) -join '|') 'C14c review: a measured NTFRS subscriber is never overruled by a registry DFSR'
+Assert-Equal 'Unknown|disagree' (@((Resolve-AdfaSysvolEngineCombined -DirectoryEngine 'Unknown' -RegistryEngine 'DFSR' -Dfsr 'Absent' -Frs 'Absent').PSObject.Properties.Value) -join '|') 'C14c review: two objects measured absent are not graded from the registry'
+Assert-Equal 'DFSR|registry' (@((Resolve-AdfaSysvolEngineCombined -DirectoryEngine 'Unknown' -RegistryEngine 'DFSR' -Dfsr 'Present' -Frs 'Unread').PSObject.Properties.Value) -join '|') 'C14c review: one object read and agreeing lets the registry grade'
+Assert-True ($null -eq (ConvertTo-AdfaFileWriteTimeUtc -Written ([datetime]::new(1601, 1, 1))).Time) 'C14c review: GetLastWriteTimeUtc''s 1601-01-01 is read as not known'
+Assert-Equal ([System.DateTimeKind]::Utc) ((ConvertTo-AdfaFileWriteTimeUtc -Written ([datetime]::new(2026, 11, 18))).Time.Kind) 'C14c review: a real last write time is returned as UTC'
+$ccSrcCfg = Merge-AdfaSpecConfig -BaseConfig $script:Config.SiteCoverage -Override @{ NoClientSiteMaxAgeDays = 7 } -OverrideSource 'C:\Config for engagements\cc.json'
+Assert-True ((Get-AdfaOverrideKeySource -Config $ccSrcCfg -Key 'NoClientSiteMaxAgeDays' -BuiltIn 'BUILTIN') -like 'set by C:\Config for engagements\cc.json (loaded *)') 'C14c review: an override path holding '' for '' is still named as the source of the key it set'
+Assert-True (-not (Resolve-AdfaDcdiagApplicability -TestName 'FrsEvent' -Engine 'DFSR' -Source 'registry').Applicable) 'C11e: FrsEvent is not applicable on a DFSR DC (catalogue SYSVOL-003)'
+Assert-True (-not (Resolve-AdfaDcdiagApplicability -TestName 'DFSREvent' -Engine 'FRS' -Source 'directory').Applicable) 'C11e: DFSREvent is not applicable on an FRS DC (catalogue SYSVOL-002)'
+foreach ($ccE in @('Transitional', 'Unknown', '')) {
+    Assert-True ((Resolve-AdfaDcdiagApplicability -TestName 'FrsEvent' -Engine $ccE).Applicable -and (Resolve-AdfaDcdiagApplicability -TestName 'DFSREvent' -Engine $ccE).Applicable) ("C11e: engine '{0}' keeps both tests graded from their own output" -f $ccE)
+}
+Assert-True ([string](Resolve-AdfaDcdiagApplicability -TestName 'FrsEvent' -Engine 'DFSR').Reason -match 'not a Microsoft rule') 'C11e: the reason says the rule is the catalogue''s, not Microsoft''s'
+$ccNow = [datetime]::new(2026, 11, 19, 12, 0, 0, [System.DateTimeKind]::Utc)
+$ccLine = '11/19 10:00:01 [MISC] [1234] CONTOSO: NO_CLIENT_SITE: WS01 198.51.100.77'
+function New-CcFile { param([string]$Text, $Written, [bool]$Ok = $true, [string]$Class = 'Read')
+    [pscustomobject]@{ Ok = $Ok; Class = $Class; Text = $Text; Error = ''; ErrorType = ''; HResult = 0; Path = 'x'; Partial = $false; BytesRead = $Text.Length; FileLength = [int64]0; LastWriteTimeUtc = $Written; LastWriteError = '' } }
+$ccNoBak = New-CcFile -Text '' -Written $null -Ok $false -Class 'NotFound'
+Assert-Equal 'Warning' ([string](Get-AdfaNoClientSiteVerdict -HostName 'dc1.contoso.com' -Raw (New-CcFile -Text $ccLine -Written $ccNow.AddDays(-30)) -BakRaw $ccNoBak -Now $ccNow -Config $script:Config.SiteCoverage).Status) 'C14c: a file last written at the edge of the 30-day window is current'
+Assert-Equal 'Info' ([string](Get-AdfaNoClientSiteVerdict -HostName 'dc1.contoso.com' -Raw (New-CcFile -Text $ccLine -Written $ccNow.AddDays(-30).AddSeconds(-1)) -BakRaw $ccNoBak -Now $ccNow -Config $script:Config.SiteCoverage).Status) 'C14c: a file older than the window holds only old clients: Info, never current'
+Assert-Equal 'Warning' ([string](Get-AdfaNoClientSiteVerdict -HostName 'dc1.contoso.com' -Raw (New-CcFile -Text 'x' -Written $ccNow) -BakRaw (New-CcFile -Text $ccLine -Written $ccNow.AddDays(-1)) -Now $ccNow -Config $script:Config.SiteCoverage).Status) 'C14c: clients named only in a recent netlogon.bak are current'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaNoClientSiteVerdict -HostName 'dc1.contoso.com' -Raw (New-CcFile -Text 'x' -Written $ccNow) -BakRaw (New-CcFile -Text '' -Written $null -Ok $false -Class 'AccessDenied') -Now $ccNow -Config $script:Config.SiteCoverage).Status) 'C14c: nothing current and netlogon.bak refused is Not Assessed'
+Assert-Throws { Merge-AdfaSpecConfig -BaseConfig $script:Config.SiteCoverage -Override @{ NoClientSiteMaxAgeDays = 0 } -OverrideSource 'C:\cfg\cc.json' } 'whole number' 'C14c: an age window of 0 days is refused'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaNoClientSiteVerdict -HostName 'dc1.contoso.com' -Raw (New-CcFile -Text 'a NO_CLIENT_SITE: ' -Written $null) -BakRaw $ccNoBak -Now $ccNow -Config $script:Config.SiteCoverage).Status) 'C14c review: an unparsed marker line in a file of unknown age is Not Assessed, never Info'
+foreach ($ccK in @('Computer', 'EnabledComputer', 'DisabledComputer', 'AllDisabledComputer', 'FutureComputer')) {
+    Assert-True ((Get-AdfaStaleLdapFilter -Kind $ccK -CutoffUtc $ccNow) -match '\(!\(objectClass=msDS-DelegatedManagedServiceAccount\)\)') ("C14c: the {0} filter excludes delegated managed service accounts" -f $ccK)
+}
+$ccFuture = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Filter = '(x)'; Properties = @()
+    Records = @([pscustomobject]@{ Name = 'at'; HasLastLogon = $true; LastLogonUtc = $ccNow.AddSeconds(300); WhenCreatedUtc = $null }, [pscustomobject]@{ Name = 'before'; HasLastLogon = $true; LastLogonUtc = $ccNow.AddSeconds(299); WhenCreatedUtc = $null }) }
+Assert-Equal 1 ([int](Get-AdfaFutureLogonCount -Raw $ccFuture -Now $ccNow -ToleranceSeconds 300).Count) 'C14c: a lastLogonTimestamp at the tolerance counts as future, one second before it does not'
+$ccPop = [pscustomobject]@{ Ok = $true; Count = 10; Capped = $false; Error = ''; ErrorType = ''; Filter = '(x)' }
+$ccNone = [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; Capped = $false; Filter = '(x)'; Properties = @(); Records = @() }
+$ccInterval = [pscustomobject]@{ Ok = $true; Present = $false; Value = $null; Error = '' }
+Assert-Equal 'Info' ([string](Get-AdfaFutureLogonVerdict -DomainName 'contoso.com' -Kind User -Raw $ccFuture -Now $ccNow -Population $ccPop).Status) 'C14c: accounts with a future lastLogonTimestamp are Info, never Pass'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind User -Raw $ccNone -Interval $ccInterval -StaleDays 90 -Now $ccNow -Population $ccPop -Future $ccFuture).Status) 'C14c: the inactive row cannot pass while an account carries a future lastLogonTimestamp'
+Assert-Equal 'Pass' ([string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind User -Raw $ccNone -Interval $ccInterval -StaleDays 90 -Now $ccNow -Population $ccPop -Future $ccNone).Status) 'C14c: none stale and none in the future, in complete reads, passes'
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue

@@ -10,6 +10,161 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-19 (Second SYSVOL instrument, the per-DC engine in the dcdiag grid, netlogon.bak with an age window, delegated managed service accounts excluded, future logon timestamps, tool v1.41.0)
+
+**PORT-PLAN C14c and C11e.** No new `-Sections` value and no new section key: the rows stay in
+`SYSVOL / DFSR`, `DC Diagnostics`, `Site Health` and `Stale Objects`. **Run against stubs only** -
+nothing in this entry has been run against a real directory or DC. What was not verified: which
+spelling of `Local State` a real DC carries, and what `StdRegProv` answers for a value absent under a
+key that exists on a DC (measured on one Windows 11 host only, C2/C3); whether a natively-DFSR domain
+has the `Migrating SysVols` key at all (Learn does not say); the registry type of the Netlogon `SysVol`
+value; the netlogon.log line time stamp format (not published, so the age window is per file); what
+`GetLastWriteTimeUtc` returns over `ADMIN$` on a real DC; the class name `msDS-DelegatedManagedServiceAccount`
+(not published on Learn) and how a filter naming it behaves on a forest whose schema predates Windows
+Server 2025; and how many accounts a real forest has with a future `lastLogonTimestamp`. First real run
+is C17.
+
+- **Second SYSVOL instrument per DC (C14c).** One bounded CIM session per DC
+  (`Get-AdfaSysvolRegistryRaw`, WinRM then DCOM through `Invoke-AdfaDcRemoteRead`, the shared probe
+  gate; a refusal is not retried) reads `HKLM\SYSTEM\CurrentControlSet\Services\DFSR\Parameters\SysVols\Migrating SysVols`
+  `Local State` and `LocalState`, `...\SysVols\MigratingSysVols` `Local State` (the three spellings
+  Learn uses; key names are not case sensitive, a space is) with `GetDWORDValue`, and
+  `...\Netlogon\Parameters` `SysVol` with `GetStringValue` (`GetExpandedStringValue` only after a type
+  mismatch, because the type is not published). `Local State` 3 (Eliminated) is DFSR, 0 (Start) FRS,
+  1, 2 and 4 to 9 a migration in progress (dd641052); a number outside 0 to 9, two spellings that
+  differ, or a value of another type is Unknown. Every spelling absent is reported with Learn's own
+  rule quoted ("If the subkey does not exist, or if it has a different value, FRS is being used", for
+  a DC running Windows Server 2008) beside the same page's sentence that a domain born at the 2008
+  level uses DFSR, and **never graded FRS** (operator decision). A `SysVol` path under `SYSVOL_DFSR`
+  means Redirected or later and is corroboration only. `Resolve-AdfaSysvolEngineCombined` combines the
+  two instruments: the directory engine where known (the registry agreeing or saying nothing), the
+  registry engine where at least one directory object could not be read and every object that was
+  read is in the state that engine implies ("registry only" when neither was read), and Unknown
+  where they disagree - including an object that was read and contradicts the registry, or both
+  objects read and both absent. **Output change** on `SYSVOL engine: <dc>`: the columns `Source`,
+  `LocalState` and `SysVolPath`, and a sentence on the registry in Detail; a DC whose objects could
+  not be read is now `Info` when the registry tells its engine (was `Not Assessed`), and a DC whose
+  two instruments disagree is `Not Assessed` (was `Info`). The domain row may now `Pass` with DCs
+  graded from the registry, and says how many. Unreachable, both CIM ports silent, access denied
+  and a failed read are separate causes.
+- **The per-DC engine in the dcdiag grid (C11e).** Both instruments are read once per run, before the
+  dcdiag grid, whenever `Sysvol` or `DcDiagnostics` is selected (`Get-AdfaSysvolEngineByDc`); the
+  Sysvol section reuses that read. `Resolve-AdfaDcdiagApplicability`: DFSREvent is not run on a DC
+  whose engine is FRS, nor FrsEvent on one whose engine is DFSR - the AdAssessment26 catalogue rule
+  SYSVOL-002/003, **not a Microsoft rule** (Learn's dcdiag page states none). **Output change**: that
+  cell reads `Not Applicable` (a grid-cell value, not a status; the status vocabulary is unchanged),
+  does not count towards the row's status, and the reason is in `NotRun`, never in `Failures`, so it
+  cannot choose advice. A DC whose engine is Transitional, Unknown or not read keeps both tests graded
+  from their own output. A default run starts one dcdiag invocation fewer per DC whose engine is known.
+- **netlogon.bak and an age window (C14c).** `Get-AdfaClientSiteRows` reads `\\<dc>\ADMIN$\debug\netlogon.bak`
+  the same read-only way after a successful read of netlogon.log (never after a refused one), and
+  `Get-AdfaNetlogonLogRaw` returns each file's `LastWriteTimeUtc` (`[System.IO.File]::GetLastWriteTimeUtc`;
+  1601-01-01, its value for a missing file, is read as not known). A file last written more than
+  `NoClientSiteMaxAgeDays` (30, a tool default, not a Microsoft value; 1 to 365 from
+  `-ConfigOverridePath`) before the run holds only old lines: they are counted in `OldClientCount` and
+  never graded. The window is applied per file because the line time stamp is not published.
+  **Output change** on `Clients without a site: <dc>`: the columns `OldClientCount`, `BakPath`,
+  `LogLastWriteUtc` and `BakLastWriteUtc`; a client named only in a file older than the window is no
+  longer a `Warning` (`Info`); a client named only in netlogon.bak now is one; nothing current and
+  netlogon.bak refused, unreachable, timed out or failed is `Not Assessed`; a file naming clients
+  with no last write time is `Not Assessed`. **Text change**: `NotRun` was "netlogon.bak, where the
+  log rolls over when full, is not read."; it now says the line time stamps are not read. Item
+  unchanged. **Advice text change** (RecommendationMap, `Site Health :: Clients without a site: `):
+  the last sentence was "Look at netlogon.bak on the DC as well, which this tool does not read."; it
+  now says the Clients column holds the clients named in netlogon.log and netlogon.bak in a file
+  last written inside the age window, and that clients named only in an older file are counted in
+  `OldClientCount` and not listed.
+- **Delegated managed service accounts excluded from the stale computer read (C14c).** Every
+  computer filter (`Computer`, `EnabledComputer`, `DisabledComputer`, `AllDisabledComputer` and the new
+  `FutureComputer`) adds `(!(objectClass=msDS-DelegatedManagedServiceAccount))` beside the group and
+  standalone classes (each "Subclass of Computer" on adschema). The dMSA class name is not published on
+  Learn (no adschema page found; the dMSA overview calls it a migration "to a machine account"), so the
+  exclusion is an operator decision, stated in the Evidence of `Inactive enabled computers`. **Text
+  change** (filter and Evidence only; Item and Status unchanged).
+- **A lastLogonTimestamp in the future (C14c).** Two more reads of the stale seam per domain
+  (`FutureUser`, `FutureComputer`: enabled, `lastLogonTimestamp` at or after the run's time plus
+  `Stale.FutureToleranceSeconds`, 300, a tool default, not a Microsoft value; 0 to 86400 from
+  `-ConfigOverridePath`) and two new rows, **`Future logon timestamps: users`** and **`...: computers`**:
+  `Info` with the count (names in `Accounts` only) - Microsoft: a DC "with its system time set in the
+  future" writes that time and the remedies include to "Ignore the lastLogonTimestamp value and use
+  other metrics" - or `Info` 0 after a complete read against a counted population; `Not Assessed` when
+  the read failed, was capped or the population is empty; never `Pass`. **Status change** on
+  `Inactive enabled users / computers` (operator decision, fail-closed): a row that would `Pass` is now
+  `Not Assessed` while any account carries a future value or that read failed (their activity is not
+  known); a `Warning` stands and says how many; new column `FutureLogon`.
+- **Tests changed because behaviour changed**: the two pins of `Invoke-AdfaDcRemoteRead`'s ReadCommand
+  set include `Get-AdfaSysvolRegistryRaw`; the H20/C1a test of the CIM-method sections maps
+  `Get-AdfaSysvolRegistryRaw` to Sysvol and expects "Five sections ..." in the help and the README; the
+  C14 NO_CLIENT_SITE tests give their raw reads a `LastWriteTimeUtc`, pass a netlogon.bak that was not
+  found, and count three file reads (two logs and one bak) instead of two; the C14 population filter
+  pin includes the dMSA clause; the C4b4 test counts seven capped Stale verdicts (was five); the H21
+  help population is 462 functions and 1743 parameters (ten new functions with 41 parameters, and
+  `-Registry`, `-SysvolEngines`, `-BakRaw`, `-Now` on two functions and `-Future`; the review fix
+  below added `ConvertTo-AdfaFileWriteTimeUtc` and `-Dfsr`, `-Frs` on
+  `Resolve-AdfaSysvolEngineCombined`); every version pin is 1.41.0. In the smoke
+  harness: 18 per-DC dcdiag tests on the DFSR stub DC (was 19; 54 for three domains, was 57) and
+  netlogon.log then netlogon.bak read.
+- **Found by an independent review of the diff before commit, and fixed in it.** (1) The registry
+  overruled directory objects that were read: a DC whose NTFRS subscriber was read Present (its DFSR
+  subscription unread), or whose two objects were both read Absent, was graded DFSR from `Local
+  State` 3, the domain row passed, and the dcdiag grid was handed DFSR, so FrsEvent read `Not
+  Applicable`. `Resolve-AdfaSysvolEngineCombined` now takes `-Dfsr` and `-Frs` and grades from the
+  registry only where at least one object was not read and every object read is in the state the
+  registry engine implies; otherwise Unknown, Source `disagree` (`Not Assessed`), in the Sysvol row
+  and in the engine handed to the grid. (2) An unparsed `NO_CLIENT_SITE:` line in a file whose last
+  write time could not be read gave `Info` claiming a 30-day window that was not measured; it is now
+  `Not Assessed` with the file and the cause, and an `Info` row says when the window could not be
+  applied to a file of unknown age. (3) The advice for `Clients without a site` still said netlogon.bak
+  is not read; reworded (above). (4) `Get-AdfaOverrideKeySource` split `ThresholdSource` at the first
+  " for ", which can fall inside an override file path, and then labelled a value the file set as the
+  built-in tool default; the split is now anchored on the merge's `(loaded yyyy-MM-dd)` stamp and a
+  list of key names. (5) The 1601-01-01 guard of `Get-AdfaNetlogonLogRaw` had no test that could fail:
+  it is now the pure `ConvertTo-AdfaFileWriteTimeUtc` (File.GetLastWriteTimeUtc: for a missing file
+  "this method returns 12:00 midnight, January 1, 1601 A.D. (C.E.) Coordinated Universal Time (UTC)",
+  re-read 2026-11-19), tested directly, by AST wiring, and on a real file set to 1601 (Windows only).
+  Each fix has a test shown red against a scratch copy with the fix removed. **Test changed**: the C14c
+  test of a DC graded from the registry now expects "1 of them graded from the registry" (was "1 of
+  them from the registry alone"), because the domain row's old text claimed the directory objects
+  "could not be read", which is false for a DC with one object read.
+- **Found by CI on the pull request, and fixed in it.** The C2 read-only guard counted five
+  `New-CimSession` and five `Remove-CimSession` calls; the new SYSVOL registry seam is the sixth, and
+  closes its session with `-WhatIf:$false -Confirm:$false` like the others. The targeted test set had
+  not included the C2 Describe. The guard now names the six functions that open and close a session
+  instead of counting them, so a seventh fails on its name; shown red against a scratch copy with a
+  seventh seam added.
+- **Vendor sources, all read 2026-11-19**:
+  dd639712 (SYSVOL migration, Migrating SysVols key, Redirected step)
+  https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd639712(v=ws.10);
+  dd639789 (Local State values, MigratingSysVols spelling)
+  https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd639789(v=ws.10);
+  dd641052 (migration states 0 to 9)
+  https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd641052(v=ws.10);
+  Backing up and restoring an FRS-replicated SYSVOL folder (LocalState rule)
+  https://learn.microsoft.com/windows/win32/vss/backing-up-and-restoring-an-frs-replicated-sysvol-folder;
+  KB 4493934 (Local State, REG_DWORD)
+  https://learn.microsoft.com/troubleshoot/windows-server/networking/sysvol-dfsr-migration-fails-after-in-place-upgrade;
+  Structure of the Registry https://learn.microsoft.com/windows/win32/sysinfo/structure-of-the-registry;
+  GetDWORDValue https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getdwordvalue-method-in-class-stdregprov;
+  GetStringValue https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getstringvalue-method-in-class-stdregprov;
+  dcdiag https://learn.microsoft.com/windows-server/administration/windows-commands/dcdiag;
+  KB 2668820 (event 5807, netlogon.bak)
+  https://learn.microsoft.com/troubleshoot/windows-server/active-directory/dc-delayed-response-to-ldap-kerberos-request;
+  Netlogon debug logging (KB 109626, the rename to Netlogon.bak)
+  https://learn.microsoft.com/troubleshoot/windows-client/windows-security/enable-debug-logging-netlogon-service;
+  Policy CSP ADMX_Netlogon https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-netlogon;
+  File.GetLastWriteTimeUtc https://learn.microsoft.com/dotnet/api/system.io.file.getlastwritetimeutc;
+  ms-DS-Managed-Service-Account https://learn.microsoft.com/windows/win32/adschema/c-msds-managedserviceaccount;
+  ms-DS-Group-Managed-Service-Account https://learn.microsoft.com/windows/win32/adschema/c-msds-groupmanagedserviceaccount;
+  objectCategory vs objectClass https://learn.microsoft.com/windows/win32/adsi/objectcategory-vs--objectclass;
+  dMSA overview https://learn.microsoft.com/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview;
+  accounts-lastlogontimestamp-future-time
+  https://learn.microsoft.com/troubleshoot/windows-server/active-directory/accounts-lastlogontimestamp-future-time;
+  Last-Logon-Timestamp https://learn.microsoft.com/windows/win32/adschema/a-lastlogontimestamp.
+  Not published on the pages read: the dMSA class name; whether the `Migrating SysVols` key exists in a
+  natively-DFSR domain; the `SysVol` value's registry type; the rights to read these registry values
+  or the ADMIN$ log files; the netlogon.log line time stamp; any age window; any tolerance for a future
+  `lastLogonTimestamp`; any Not Applicable rule for DFSREvent or FrsEvent.
+
 ### Changed - 2026-11-19 (Replication connection options and destination, the cap source of every C15 and Stale row, one advice entry per dcdiag grid test, tool v1.40.0)
 
 **PORT-PLAN C4b3, C4b4 and C11h.** No new `-Sections` value and no new section key; nothing new is
