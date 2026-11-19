@@ -3187,7 +3187,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.41.0' ([string]$script:Config.Version) 'C14: version 1.41.0 in the script (bumped by PORT-PLAN C14c and C11e)'
+Assert-Equal '1.42.0' ([string]$script:Config.Version) 'C14: version 1.42.0 in the script (bumped by PORT-PLAN C11f, C2i, C15d and C16d)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3280,7 +3280,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.41.0' ([string]$script:Config.Version) 'C15: version 1.41.0 in the script (bumped by PORT-PLAN C14c and C11e)'
+Assert-Equal '1.42.0' ([string]$script:Config.Version) 'C15: version 1.42.0 in the script (bumped by PORT-PLAN C11f, C2i, C15d and C16d)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3504,7 +3504,7 @@ $c16Src2 = & {
     Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
 }
 Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
-Assert-Equal '1.41.0' ([string]$script:Config.Version) 'C16: version 1.41.0 in the script (bumped by PORT-PLAN C14c and C11e)'
+Assert-Equal '1.42.0' ([string]$script:Config.Version) 'C16: version 1.42.0 in the script (bumped by PORT-PLAN C11f, C2i, C15d and C16d)'
 
 # ---- PORT-PLAN C1a: the update build revision (pure) -----------------------------------------
 $c1aKey = [string]$script:Config.DcSystem['UbrKey']
@@ -3742,7 +3742,41 @@ $ccInterval = [pscustomobject]@{ Ok = $true; Present = $false; Value = $null; Er
 Assert-Equal 'Info' ([string](Get-AdfaFutureLogonVerdict -DomainName 'contoso.com' -Kind User -Raw $ccFuture -Now $ccNow -Population $ccPop).Status) 'C14c: accounts with a future lastLogonTimestamp are Info, never Pass'
 Assert-Equal 'Not Assessed' ([string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind User -Raw $ccNone -Interval $ccInterval -StaleDays 90 -Now $ccNow -Population $ccPop -Future $ccFuture).Status) 'C14c: the inactive row cannot pass while an account carries a future lastLogonTimestamp'
 Assert-Equal 'Pass' ([string](Get-AdfaStaleCountVerdict -DomainName 'contoso.com' -Kind User -Raw $ccNone -Interval $ccInterval -StaleDays 90 -Now $ccNow -Population $ccPop -Future $ccNone).Status) 'C14c: none stale and none in the future, in complete reads, passes'
-Write-Host ""
+# PORT-PLAN C11f + C2i + C15d(2) + C16d (v1.42.0): the pure logic of the dcdiag circuit breaker, the Intersite site
+# states and the per-domain target selection. Fictional names only.
+$lfPattern = [string]$script:Config.DcDiag['TimeoutErrorPattern']
+Assert-True (Test-AdfaDcdiagTimedOut -Run ([pscustomobject]@{ Success = $false; Error = 'Timeout after 90s' }) -Pattern $lfPattern) 'C11f: the seam''s own time-out text is a time-out'
+Assert-True (-not (Test-AdfaDcdiagTimedOut -Run ([pscustomobject]@{ Success = $false; Error = 'Access is denied.' }) -Pattern $lfPattern)) 'C11f: access denied is not a time-out'
+Assert-True (-not (Test-AdfaDcdiagTimedOut -Run ([pscustomobject]@{ Success = $true; Error = 'Timeout after 90s' }) -Pattern $lfPattern)) 'C11f: a run that succeeded is a measurement, never a time-out'
+$lfB = New-AdfaDcdiagBreaker -Threshold 2
+$lfB = Register-AdfaDcdiagOutcome -Breaker $lfB -TimedOut $true
+Assert-True (-not $lfB.Tripped) 'C11f: one time-out does not trip a breaker of two'
+$lfB = Register-AdfaDcdiagOutcome -Breaker $lfB -TimedOut $true
+Assert-True ([bool]$lfB.Tripped) 'C11f: two consecutive time-outs trip it'
+$lfB = Register-AdfaDcdiagOutcome -Breaker $lfB -TimedOut $false
+Assert-True ([bool]$lfB.Tripped -and [int]$lfB.ConsecutiveTimeouts -eq 0) 'C11f: a later completed test resets the count but never un-trips the breaker'
+$lfA = New-AdfaDcdiagBreaker -Threshold 2
+foreach ($lfI in 1..5) { $lfA = Register-AdfaDcdiagOutcome -Breaker $lfA -TimedOut $true; $lfA = Register-AdfaDcdiagOutcome -Breaker $lfA -TimedOut $false }
+Assert-True (-not $lfA.Tripped) 'C11f: alternating time-outs never trip it'
+Assert-Equal 2 ([int]$script:Config.DcDiag['CircuitBreakerTimeouts']) 'C11f: the threshold is 2, the operator''s value'
+Assert-True ([string]$script:Config.DcDiag['CircuitBreakerSource'] -match 'not a Microsoft value') 'C11f: the threshold is labelled a tool default, not a Microsoft value'
+Assert-Throws { Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override @{ CircuitBreakerTimeouts = 0 } } 'whole number from 1 to 10' 'C11f: a threshold of 0 is refused'
+Assert-Throws { Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override @{ TimeoutErrorPattern = '.*' } } "unknown key 'TimeoutErrorPattern'" 'C11f: the time-out pattern cannot be set from a file'
+Assert-Equal 'HQ' (ConvertTo-AdfaDsaSiteName -ServerDn 'CN=DC1,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com') 'C11f: the site of a server object is read from its DN'
+Assert-Equal '' (ConvertTo-AdfaDsaSiteName -ServerDn 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com') 'C11f: no site is read from a DN of another shape'
+$lfStates = @([pscustomobject]@{ HostName = 'dc1.contoso.com'; Site = 'HQ' })
+$lfDsa = @([pscustomobject]@{ Site = 'HQ'; HostName = 'dc1.contoso.com'; ServerDn = 'x' }, [pscustomobject]@{ Site = 'Remote'; HostName = 'dc7.fabrikam.com'; ServerDn = 'y' })
+Assert-Equal 'NoDc' ([string](Resolve-AdfaIntersiteSiteState -SiteName 'Warehouse' -SectionStates $lfStates -DsaRead $true -DsaServers $lfDsa).State) 'C11f: a site with no NTDS Settings object is not applicable'
+Assert-Equal 'OutOfScope' ([string](Resolve-AdfaIntersiteSiteState -SiteName 'Remote' -SectionStates $lfStates -DsaRead $true -DsaServers $lfDsa).State) 'C11f: a site whose DCs are all outside the section is told apart'
+Assert-Equal 'Unknown' ([string](Resolve-AdfaIntersiteSiteState -SiteName 'Warehouse' -SectionStates $lfStates -DsaRead $false -DsaServers @()).State) 'C11f: with the NTDS Settings objects not read, a site is never called empty'
+Assert-Equal 'InSection' ([string](Resolve-AdfaIntersiteSiteState -SiteName 'hq' -SectionStates $lfStates -DsaRead $true -DsaServers $lfDsa).State) 'C11f: site names are not case sensitive'
+$lfUnplaced = @($lfDsa) + @([pscustomobject]@{ Site = ''; HostName = 'dc9.contoso.com'; ServerDn = 'CN=NTDS Settings\0ACNF:1234,CN=DC9,CN=Servers,CN=Branch,CN=Sites,CN=Configuration,DC=contoso,DC=com' })
+Assert-Equal 'Unknown' ([string](Resolve-AdfaIntersiteSiteState -SiteName 'Warehouse' -SectionStates $lfStates -DsaRead $true -DsaServers $lfUnplaced).State) 'C11f review: an NTDS Settings object read with no site blocks "no DC in site"'
+Assert-Equal '' (ConvertTo-AdfaDsaSiteName -ServerDn 'CN=NTDS Settings\0ACNF:1234,CN=DC9,CN=Servers,CN=Branch,CN=Sites,CN=Configuration,DC=contoso,DC=com') 'C11f review: a conflict-mangled DN gives no site, never a guess'
+$lfTargets = @([pscustomobject]@{ HostName = 'dc1.contoso.com'; Scope = 'contoso.com'; ComputerObjectDN = 'CN=DC1,DC=contoso,DC=com' }, [pscustomobject]@{ HostName = 'dc3.north.contoso.com'; Scope = 'north.contoso.com' })
+Assert-Equal 'dc1.contoso.com' ((@((Select-AdfaDomainDcTarget -Domain 'contoso.com' -Targets $lfTargets -ScopedDomains @('contoso.com', 'north.contoso.com')).Targets) | ForEach-Object { $_.HostName }) -join ',') 'C2i(3): one domain''s targets only'
+Assert-True ([bool](Select-AdfaDomainDcTarget -Domain 'south.contoso.com' -Targets $lfTargets -InventoryFailures @([pscustomobject]@{ Domain = 'south.contoso.com'; Error = 'STUB' }) -ScopedDomains @('south.contoso.com')).Gap.Failed) 'C2i(3): a domain whose DCs could not be listed has its gap, never another domain''s DCs'
+Assert-Equal 'Primary' (@($script:Config.Dns['GradedZoneTypes']) -join ',') 'C16d(c): the zone transfer setting is graded on primary zones only (Learn documents SecureSecondaries on Set-DnsServerPrimaryZone alone)'Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }

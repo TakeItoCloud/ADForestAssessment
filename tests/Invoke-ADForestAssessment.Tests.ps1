@@ -7603,9 +7603,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 
@@ -9115,7 +9115,8 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
                 'ExternalToolTimeoutSeconds', 'Retries', 'RetryDelaySeconds')
             # Declared population: the 22 parameters of v1.21.0.
             $v121.Count | Should -Be 22
-            $expected = @($v121[0..9]) + @('IncludeLdapsHandshake') + @($v121[10..21])
+            # v1.42.0 (PORT-PLAN C15d(2)) added IncludeUnscopedGpoLinks after IncludeLdapsHandshake, on purpose.
+            $expected = @($v121[0..9]) + @('IncludeLdapsHandshake', 'IncludeUnscopedGpoLinks') + @($v121[10..21])
             $actual = @($script:C5Ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
             ($actual -join ',') | Should -Be ($expected -join ',')
         }
@@ -9260,9 +9261,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 
@@ -10250,9 +10251,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 
@@ -11189,9 +11190,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 
@@ -12183,9 +12184,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 
@@ -13423,9 +13424,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 
@@ -14641,9 +14642,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 
@@ -15728,8 +15729,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
                 $entry['InLearnTable'] | Should -BeTrue -Because $t
                 @($script:C11LearnTests | Where-Object { $_ -eq $t }).Count | Should -Be 1 -Because "$t must be in Learn's table"
             }
-            # 1.29.0 since PORT-PLAN C12 added the DNS summary table to this config table.
-            [string]$script:C11Cfg['Version'] | Should -Be '1.29.0'
+            # 1.29.0 since PORT-PLAN C12 added the DNS summary table to this config table; 1.42.0 since PORT-PLAN C11f added
+            # the circuit breaker keys (CircuitBreakerTimeouts, CircuitBreakerSource, TimeoutErrorPattern).
+            [string]$script:C11Cfg['Version'] | Should -Be '1.42.0'
             [string]$script:C11Cfg['SourceUrl'] | Should -Be $script:C11Url
             [string]$script:C11Cfg['ReadDate'] | Should -Be '2026-11-16'
             [string]$script:C11Cfg['ThresholdSource'] | Should -Be 'tool default, not a Microsoft value'
@@ -16516,9 +16518,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -16636,7 +16638,8 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             (@($cats | Where-Object { -not $_['InLearn'] } | ForEach-Object { [string]$_['Token'] }) -join ',') | Should -Be 'Ext'
             [string]$ds['SourceUrl'] | Should -Be $script:C12LearnUrl
             [string]$ds['ReadDate'] | Should -Be '2026-11-16'
-            [string]$script:C12Cfg['Version'] | Should -Be '1.29.0'
+            # 1.42.0 since PORT-PLAN C11f added the circuit breaker keys to the same table.
+            [string]$script:C12Cfg['Version'] | Should -Be '1.42.0'
         }
         It 'maps PASS, FAIL and n/a as Learn shows them, and WARN from Learn''s prose, marked provisional' {
             $cells = @($script:C12Cfg['DnsSummary']['Cells'])
@@ -17191,9 +17194,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.41.0 (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries the same version in the script and the manifest: 1.42.0 (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17344,9 +17347,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.41.0 in the script and the manifest (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries version 1.42.0 in the script and the manifest (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 
@@ -18675,9 +18678,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.41.0 in the script and the manifest (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries version 1.42.0 in the script and the manifest (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 
@@ -19570,7 +19573,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             $repl.Count | Should -Be 1
             $calls[0].Extent.StartOffset | Should -BeLessThan $repl[0].Extent.StartOffset
             $port = @(Get-C14Branch "Test-SectionSelected 'PortMatrix' `$Sections")
-            $port.Count | Should -Be 2
+            # One since v1.42.0 (PORT-PLAN C2i(1)): the classification runs under $classifyDcs, whenever any
+            # section that probes a DC is selected, and only the PortMatrix branch reports its rows.
+            $port.Count | Should -Be 1
             # The later PortMatrix branch puts the rows in its section, next to the port matrix.
             $last = $port | Sort-Object { $_.Extent.StartOffset } | Select-Object -Last 1
             $last.Extent.Text | Should -Match '\$reachRows'
@@ -19821,9 +19826,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.41.0 in the script and the manifest (bumped by PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'carries version 1.42.0 in the script and the manifest (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 
@@ -21216,7 +21221,8 @@ Describe 'Declared property lists: no read of every attribute, no secret attribu
                     Where-Object { [string]$_.GetCommandName() -match '(?i)^[a-z]+-AD' -and [string]$_.GetCommandName() -notmatch '(?i)^[a-z]+-Adfa' })
             # 87 at v1.33.0 (26 Get-ADObject, 17 Get-ADDomain, 8 Get-ADDomainController, 7 each of
             # Get-ADComputer, Get-ADUser and Get-ADRootDSE, 4 Get-ADForest, 11 others once each).
-            $adCalls.Count | Should -Be 87
+            # 88 since v1.42.0: PORT-PLAN C11f added the Get-ADReplicationSite of Get-AdfaIntersiteSitePopulation (no -Properties).
+            $adCalls.Count | Should -Be 88
             $short = @()
             foreach ($c in $adCalls) {
                 foreach ($e in @($c.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] })) {
@@ -22589,8 +22595,9 @@ Describe 'Per-domain DC targets, one probe per port, the reachability class in e
             $assign = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$perDcSections' }, $true))
             $assign.Count | Should -Be 1
             $listed = @($assign[0].Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { [string]$_.Value })
-            # Declared population: the twelve sections whose branches take the per-domain targets.
-            (@($listed | Sort-Object) -join ',') | Should -Be 'Backup,DcSystem,DnsAdConsistency,DsaCname,DsEvents,GcConsistency,MsdcsDelegation,PortMatrix,Replication,RestoreIntegrity,Sysvol,TimeHierarchy'
+            # Declared population: the thirteen sections whose branches take the per-domain targets (DcSecureChannel
+            # since v1.42.0, PORT-PLAN C2i(3)).
+            (@($listed | Sort-Object) -join ',') | Should -Be 'Backup,DcSecureChannel,DcSystem,DnsAdConsistency,DsaCname,DsEvents,GcConsistency,MsdcsDelegation,PortMatrix,Replication,RestoreIntegrity,Sysvol,TimeHierarchy'
             $enumCall = @($script:C2eMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$perDcEnumeration' }, $true))
             $enumCall.Count | Should -Be 1
             $guard = $enumCall[0].Parent
@@ -24147,9 +24154,9 @@ Describe 'Promise triage: the README and help promises the code did not keep (C1
     }
 
     Context 'Version' {
-        It 'is 1.41.0 in the script and the manifest (bumped by PORT-PLAN C14c and C11e)' {
-            $script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'is 1.42.0 in the script and the manifest (bumped by PORT-PLAN C11f, C2i, C15d and C16d)' {
+            $script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 }
@@ -25580,9 +25587,9 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
     }
 
     Context 'Version' {
-        It 'is 1.41.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'is 1.42.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 }
@@ -26222,8 +26229,12 @@ exit $LASTEXITCODE
             # Declared population, measured from the parsed script on v1.38.0: 449 functions, 1670 parameters (the independent review fix added New-AdfaRunFolder, 3, and Get-AdfaScriptExitCode, 1); v1.40.0 (PORT-PLAN C4b3, C4b4) added ConvertFrom-AdfaConnectionOptions, Get-AdfaConnectionDestination and Resolve-AdfaCapSource (452 functions) and 26 parameters (1696: those three functions 7, -OptionsConfig 1, -CapSource on 18 functions); v1.41.0 (PORT-PLAN C14c, C11e) added nine functions (461: Get-AdfaSysvolRegistryRaw 5, Resolve-AdfaSysvolRegistryEngine 3, Get-AdfaSysvolRegistryRead 5, Resolve-AdfaSysvolEngineCombined 2, Get-AdfaSysvolEngineByDc 6, Resolve-AdfaDcdiagApplicability 4, Get-AdfaOverrideKeySource 3, Get-AdfaFutureLogonCount 3, Get-AdfaFutureLogonVerdict 7) and 44 parameters (1740: those 38, -Registry, -SysvolEngines, -BakRaw, -Now on two functions, -Future).
             $script:H21Help.Count | Should -Be @($script:H21Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)).Count
             # The independent review fix of v1.41.0 added ConvertTo-AdfaFileWriteTimeUtc (1 parameter; 462 functions) and -Dfsr, -Frs on Resolve-AdfaSysvolEngineCombined (1743 parameters).
-            $script:H21Help.Count | Should -Be 462 -Because 'declared population: the 462 functions of the script'
-            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1743 -Because 'declared population: the 1743 parameters of those functions'
+            # v1.42.0 (PORT-PLAN C11f, C2i, C15d(2)) added eight functions (470: Test-AdfaDcdiagTimedOut 2, New-AdfaDcdiagBreaker 1,
+            # Register-AdfaDcdiagOutcome 2, ConvertTo-AdfaDsaSiteName 1, Get-AdfaIntersiteSitePopulation 2, Resolve-AdfaIntersiteSiteState 4,
+            # Select-AdfaDomainDcTarget 4, Get-AdfaGpoSomRaw 5) and 29 parameters (1772: those 21, -SitePopulation, -DomainControllers,
+            # -InventoryFailures and -ScopedDomains on Get-AdfaDcSecureChannel and Get-AdfaLingeringObjectScan, -IncludeUnscopedDomains).
+            $script:H21Help.Count | Should -Be 470 -Because 'declared population: the 470 functions of the script'
+            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1772 -Because 'declared population: the 1772 parameters of those functions'
             @($script:H21Help | Where-Object { -not $_.HasHelp } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { -not $_.HasSynopsis } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { @($_.Missing).Count -gt 0 } | ForEach-Object { '{0}: {1}' -f $_.Name, (@($_.Missing) -join ',') }) | Should -BeNullOrEmpty
@@ -26277,9 +26288,9 @@ exit $LASTEXITCODE
         }
         It 'the script help documents every script parameter, the new default folder and the exit codes' {
             $help = $script:H21Ast.GetHelpContent()
-            # Declared population: the 23 parameters of the script.
+            # Declared population: the 24 parameters of the script (IncludeUnscopedGpoLinks since v1.42.0, PORT-PLAN C15d(2)).
             $params = @($script:H21Ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
-            $params.Count | Should -Be 23
+            $params.Count | Should -Be 24
             foreach ($p in $params) { $help.Parameters.ContainsKey($p.ToUpperInvariant()) | Should -BeTrue -Because ('-{0}' -f $p) }
             $help.Parameters['OUTPUTPATH'] | Should -Match ([regex]::Escape('C:\Scripts\Securnet\Reports'))
             $help.Parameters['OUTPUTPATH'] | Should -Match 'ADForestAssessment-yyyyMMdd-HHmmss'
@@ -26311,9 +26322,9 @@ exit $LASTEXITCODE
     }
 
     Context 'Version' {
-        It 'is 1.41.0 in the script and the manifest (PORT-PLAN H21; bumped by C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'is 1.42.0 in the script and the manifest (PORT-PLAN H21; bumped by C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 }
@@ -27014,9 +27025,9 @@ Describe 'Replication connection options and destination, the cap source of ever
     }
 
     Context 'Version' {
-        It 'is 1.41.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'is 1.42.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 }
@@ -27949,9 +27960,829 @@ Describe 'Second SYSVOL instrument, the per-DC engine in the dcdiag grid, netlog
     }
 
     Context 'Version' {
-        It 'is 1.41.0 in the script and the manifest (PORT-PLAN C14c and C11e)' {
-            [string]$script:Config.Version | Should -Be '1.41.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.41.0'
+        It 'is 1.42.0 in the script and the manifest (PORT-PLAN C14c and C11e; bumped by C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
+        }
+    }
+}
+Describe 'Intersite for every site, the dcdiag circuit breaker, reachability for every per-DC section, the shared DC list, the unscoped gPLink opt-in (C11f, C2i, C15d, C16d)' {
+    # PORT-PLAN C11f+C2i+C15d(2)+C16d (v1.42.0). No new -Sections value and no new section key: the rows stay in
+    # 'DC Diagnostics', 'Port Reachability', 'DC Secure Channel & Machine Passwords', 'Lingering Object Scan
+    # (advisory)' and 'GPO Directory Inventory'. Every name is fictional (contoso, fabrikam) and held in a
+    # variable (PSAvoidUsingComputerNameHardcoded). Vendor facts read on Learn 2026-11-19 (URLs in the config
+    # table and the CHANGELOG); the breaker threshold is the operator's decision, not a Microsoft value.
+    BeforeAll {
+        $script:LfAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:LfMain = @($script:LfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))[0]
+        function Get-LfFunction { param([string]$Name) @($script:LfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
+        function Get-LfCall { param($Ast, [string]$Name) @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq $Name }.GetNewClosure(), $true)) }
+        function Get-LfParameter { param($Call, [string]$Name)
+            $elements = @($Call.CommandElements)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $Name) {
+                    if ($null -ne $e.Argument) { return $e.Argument }
+                    if (($i + 1) -lt $elements.Count) { return $elements[$i + 1] }
+                }
+            }
+            return $null
+        }
+        function Get-LfGuard { param($Node)
+            $g = $Node.Parent
+            while ($null -ne $g -and $g -isnot [System.Management.Automation.Language.IfStatementAst]) { $g = $g.Parent }
+            if ($null -eq $g) { return '' }
+            return [string]$g.Clauses[0].Item1.Extent.Text
+        }
+        # The comma keeps a one-row answer an array, so .Count works under StrictMode on Windows PowerShell 5.1.
+        function Get-LfRow { param($Rows, [string]$Item) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -eq $Item }) }
+        function Get-LfGrid { param($Rows) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['DomainController'] }) }
+        $script:LfDom1 = 'contoso.com'
+        $script:LfDom2 = 'north.contoso.com'
+        $script:LfDom3 = 'south.contoso.com'
+        $script:LfDc1 = 'dc1.contoso.com'
+        $script:LfDc2 = 'dc2.contoso.com'
+        $script:LfDc3 = 'dc3.north.contoso.com'
+        $script:LfDc7 = 'dc7.south.contoso.com'
+        $script:LfSiteHq = 'HQ'
+        $script:LfSiteBranch = 'Branch'
+        $script:LfSiteEmpty = 'Warehouse'
+        $script:LfSiteOther = 'Remote'
+        $script:LfTimeout = 'Timeout after 5s'
+        function New-LfTarget { param([string]$HostName, [string]$Scope, [string]$Site = '', [AllowNull()]$IsReadOnly = $false, [string]$Dn = '')
+            [pscustomobject]@{ HostName = $HostName; Scope = $Scope; Site = $Site; IsReadOnly = $IsReadOnly; ComputerObjectDN = $Dn } }
+        # The shape the dcdiag command reference prints (Learn, read 2026-11-16): a banner, the Connectivity
+        # block under "Testing server: <site>\<DC>", then the test's own block.
+        function New-LfDcdiagOutput { param([string]$Dc, [string]$Test)
+            $b = New-Object System.Collections.Generic.List[string]
+            foreach ($l in @('Directory Server Diagnosis', '', 'Performing initial setup:', ("   Home Server = {0}" -f $Dc), '', 'Doing initial required tests', '',
+                    ("   Testing server: Default-First-Site-Name\{0}" -f $Dc), '      Starting test: Connectivity', ("         ......................... {0} passed test Connectivity" -f $Dc), '', 'Doing primary tests', '')) { $b.Add($l) }
+            if (@('CheckSDRefDom', 'CrossRefValidation') -contains $Test) {
+                foreach ($p in @('Schema', 'Configuration')) { $b.Add(("   Running partition tests on : {0}" -f $p)); $b.Add(("      Starting test: {0}" -f $Test)); $b.Add(("         ......................... {0} passed test {1}" -f $p, $Test)) }
+            }
+            elseif (@('Intersite', 'FsmoCheck') -contains $Test) {
+                $b.Add('   Running enterprise tests on : contoso.com'); $b.Add(("      Starting test: {0}" -f $Test)); $b.Add(("         ......................... contoso.com passed test {0}" -f $Test))
+            }
+            elseif ($Test -ne 'Connectivity') {
+                $b.Add(("   Testing server: Default-First-Site-Name\{0}" -f $Dc)); $b.Add(("      Starting test: {0}" -f $Test)); $b.Add(("         ......................... {0} passed test {1}" -f $Dc, $Test))
+            }
+            return ($b -join "`r`n")
+        }
+        # The answer of Invoke-ExternalCommand for one dcdiag call. A time-out answers as the seam does after
+        # its last attempt (Success $false, ExitCode $null, Error "Timeout after <n>s", no output).
+        function New-LfAnswer { param([string]$Server, [string]$Test)
+            $key = ('{0}|{1}' -f $Server, $Test)
+            if ($script:LfAnswers.ContainsKey($key)) {
+                $spec = [string]$script:LfAnswers[$key]
+                if ($spec -eq 'timeout') { return [pscustomobject]@{ Success = $false; ExitCode = $null; Attempt = 1; Error = $script:LfTimeout; StdOut = ''; OutFile = $null } }
+                return [pscustomobject]@{ Success = $false; ExitCode = $null; Attempt = 1; Error = $spec; StdOut = ''; OutFile = $null }
+            }
+            return [pscustomobject]@{ Success = $true; ExitCode = 0; Attempt = 1; Error = $null; StdOut = (New-LfDcdiagOutput -Dc ($Server.Split('.')[0].ToUpperInvariant()) -Test $Test); OutFile = $null }
+        }
+        function Invoke-LfGrid {
+            param([object[]]$Targets, [switch]$Active, [string[]]$Scoped = @('contoso.com'), [hashtable]$Config = $script:Config.DcDiag, [string[]]$Down = @(), $SitePopulation = $null)
+            $script:LfCalls = @()
+            $script:LfDown = @($Down)
+            Clear-AdfaDcPortCache
+            Mock Test-CommandAvailable { $true }
+            Mock Test-TcpPort { $script:LfDown -notcontains [string]$ComputerName }
+            Mock Invoke-ExternalCommand {
+                $t = ([regex]::Match([string]$Arguments, '/test:(\S+)')).Groups[1].Value
+                $s = ([regex]::Match([string]$Arguments, '/s:(\S+)')).Groups[1].Value
+                $script:LfCalls += [pscustomobject]@{ Arguments = [string]$Arguments; Test = $t; Server = $s }
+                New-LfAnswer -Server $s -Test $t
+            }
+            return @(Get-AdfaDcDiagnostic -DomainControllers $Targets -IncludeActiveTests:$Active -TimeoutSeconds 5 -Retries 1 -RetryDelaySeconds 0 `
+                    -Config $Config -ScopedDomains $Scoped -ForestRoot 'contoso.com' -SitePopulation $SitePopulation)
+        }
+        function Get-LfPerDcCalls { param([string]$Server) return , @($script:LfCalls | Where-Object { $_.Server -eq $Server -and $_.Test -notmatch '^(Topology|CheckSDRefDom|CrossRefValidation|Intersite)$' }) }
+        function New-LfSitePopulation { param([string[]]$Sites, $Dsa = @(), [bool]$SitesRead = $true, [bool]$DsaRead = $true, [string]$SitesError = '', [string]$DsaError = '')
+            [pscustomobject]@{ SitesRead = $SitesRead; Sites = @($Sites); SitesSource = 'stub'; SitesError = $SitesError; DsaRead = $DsaRead; DsaServers = @($Dsa); DsaError = $DsaError } }
+        function New-LfDsa { param([string]$Site, [string]$HostName)
+            [pscustomobject]@{ Site = $Site; HostName = $HostName; ServerDn = ('CN={0},CN=Servers,CN={1},CN=Sites,CN=Configuration,DC=contoso,DC=com' -f ($HostName.Split('.')[0].ToUpperInvariant()), $Site) } }
+        $script:LfAnswers = @{}
+        $script:LfScOk = "Flags: 30 HAS_IP  HAS_TIMESERV`nTrusted DC Name \\dc1.contoso.com`nTrusted DC Connection Status Status = 0 0x0 NERR_Success`nThe command completed successfully"
+    }
+
+    Context 'Circuit breaker: what counts as a time-out (pure)' {
+        It 'counts only a failed run whose error is the time-out the seam raises, anchored to its whole text' {
+            $pattern = [string]$script:Config.DcDiag['TimeoutErrorPattern']
+            $pattern | Should -Be '^Timeout after \d+s$'
+            Test-AdfaDcdiagTimedOut -Run ([pscustomobject]@{ Success = $false; Error = 'Timeout after 90s' }) -Pattern $pattern | Should -BeTrue
+            # A run that completed is a measurement, whatever text it carries.
+            Test-AdfaDcdiagTimedOut -Run ([pscustomobject]@{ Success = $true; Error = 'Timeout after 90s' }) -Pattern $pattern | Should -BeFalse
+            # Access denied, a drain failure and an empty error are not time-outs; nothing is inferred from no output.
+            Test-AdfaDcdiagTimedOut -Run ([pscustomobject]@{ Success = $false; Error = 'Access is denied.' }) -Pattern $pattern | Should -BeFalse
+            Test-AdfaDcdiagTimedOut -Run ([pscustomobject]@{ Success = $false; Error = 'The tool exited (exit code 0) but its output was not complete within 5000 ms (another process may still hold its output open), so no output is returned' }) -Pattern $pattern | Should -BeFalse
+            Test-AdfaDcdiagTimedOut -Run ([pscustomobject]@{ Success = $false; Error = '' }) -Pattern $pattern | Should -BeFalse
+            Test-AdfaDcdiagTimedOut -Run ([pscustomobject]@{ Success = $false; Error = 'Timeout after 90s; and more' }) -Pattern $pattern | Should -BeFalse
+            Test-AdfaDcdiagTimedOut -Run ([pscustomobject]@{ Success = $false }) -Pattern $pattern | Should -BeFalse
+            Test-AdfaDcdiagTimedOut -Run $null -Pattern $pattern | Should -BeFalse
+        }
+    }
+
+    Context 'Circuit breaker: the per-DC state (pure)' {
+        It 'trips at exactly the threshold of consecutive time-outs, not one before' {
+            $b = New-AdfaDcdiagBreaker -Threshold 2
+            $b = Register-AdfaDcdiagOutcome -Breaker $b -TimedOut $true
+            [bool]$b.Tripped | Should -BeFalse
+            [int]$b.ConsecutiveTimeouts | Should -Be 1
+            $b = Register-AdfaDcdiagOutcome -Breaker $b -TimedOut $true
+            [bool]$b.Tripped | Should -BeTrue
+            [int]$b.TimeoutCount | Should -Be 2
+            $three = New-AdfaDcdiagBreaker -Threshold 3
+            foreach ($i in 1..2) { $three = Register-AdfaDcdiagOutcome -Breaker $three -TimedOut $true }
+            [bool]$three.Tripped | Should -BeFalse -Because 'two of a threshold of three'
+            $three = Register-AdfaDcdiagOutcome -Breaker $three -TimedOut $true
+            [bool]$three.Tripped | Should -BeTrue
+        }
+        It 'does not trip on time-outs that are not consecutive, over a long alternating run' {
+            $b = New-AdfaDcdiagBreaker -Threshold 2
+            foreach ($i in 1..10) {
+                $b = Register-AdfaDcdiagOutcome -Breaker $b -TimedOut $true
+                $b = Register-AdfaDcdiagOutcome -Breaker $b -TimedOut $false
+            }
+            [bool]$b.Tripped | Should -BeFalse
+            [int]$b.TimeoutCount | Should -Be 10
+            [int]$b.CompletedCount | Should -Be 10
+            [int]$b.ConsecutiveTimeouts | Should -Be 0
+        }
+        It 'stays tripped after a later completed test, and a new breaker starts fresh' {
+            $b = New-AdfaDcdiagBreaker -Threshold 2
+            $b = Register-AdfaDcdiagOutcome -Breaker $b -TimedOut $true
+            $b = Register-AdfaDcdiagOutcome -Breaker $b -TimedOut $true
+            $b = Register-AdfaDcdiagOutcome -Breaker $b -TimedOut $false
+            [bool]$b.Tripped | Should -BeTrue
+            [int]$b.ConsecutiveTimeouts | Should -Be 0
+            $fresh = New-AdfaDcdiagBreaker -Threshold 2
+            [bool]$fresh.Tripped | Should -BeFalse
+            [int]$fresh.TimeoutCount | Should -Be 0
+        }
+        It 'refuses a threshold of 0' {
+            { New-AdfaDcdiagBreaker -Threshold 0 } | Should -Throw
+        }
+    }
+
+    Context 'Circuit breaker: in the dcdiag grid' {
+        BeforeEach { $script:LfAnswers = @{} }
+        It 'stops the tests of a DC after two consecutive time-outs, reports the rest Not Assessed with the cause in NotRun, and still runs every test of the next DC' {
+            $script:LfAnswers[('{0}|Replications' -f $script:LfDc1)] = 'timeout'
+            $script:LfAnswers[('{0}|Advertising' -f $script:LfDc1)] = 'timeout'
+            $targets = @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq), (New-LfTarget $script:LfDc2 $script:LfDom1 $script:LfSiteHq))
+            $rows = Invoke-LfGrid -Targets $targets
+            # Declared population: Connectivity, Replications and Advertising on dc1; the 19 default per-DC tests on dc2.
+            (@(Get-LfPerDcCalls $script:LfDc1 | ForEach-Object { $_.Test }) -join ',') | Should -Be 'Connectivity,Replications,Advertising'
+            (Get-LfPerDcCalls $script:LfDc2).Count | Should -Be 19
+            $one = @((Get-LfGrid $rows) | Where-Object { $_.DomainController -eq $script:LfDc1 })[0]
+            [string]$one.DCDIAG_Services | Should -Be 'Not Assessed'
+            [string]$one.DCDIAG_Connectivity | Should -Be 'Pass'
+            [string]$one.NotRun | Should -Match 'circuit breaker: two consecutive time-outs'
+            [string]$one.NotRun | Should -Match 'Services'
+            [string]$one.Failures | Should -Not -Match 'circuit breaker'
+            [string]$one.Status | Should -Be 'Warning' -Because 'Connectivity was read; the cells the breaker stopped count as not measured, never as a pass'
+            $two = @((Get-LfGrid $rows) | Where-Object { $_.DomainController -eq $script:LfDc2 })[0]
+            [string]$two.Status | Should -Be 'Pass'
+            [string]$two.NotRun | Should -Not -Match 'circuit breaker'
+            # A tripped DC is not chosen for the scoped tests: Topology ran against dc2.
+            (@($script:LfCalls | Where-Object { $_.Test -eq 'Topology' } | ForEach-Object { $_.Server }) -join ',') | Should -Be $script:LfDc2
+        }
+        It 'does not trip on time-outs that are not consecutive' {
+            $script:LfAnswers[('{0}|Replications' -f $script:LfDc1)] = 'timeout'
+            $script:LfAnswers[('{0}|Services' -f $script:LfDc1)] = 'timeout'
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq), (New-LfTarget $script:LfDc2 $script:LfDom1 $script:LfSiteHq))
+            (Get-LfPerDcCalls $script:LfDc1).Count | Should -Be 19
+            [string]@((Get-LfGrid $rows) | Where-Object { $_.DomainController -eq $script:LfDc1 })[0].NotRun | Should -Not -Match 'circuit breaker'
+        }
+        It 'does not count a failure that is not a time-out (access denied)' {
+            $script:LfAnswers[('{0}|Replications' -f $script:LfDc1)] = 'Access is denied.'
+            $script:LfAnswers[('{0}|Advertising' -f $script:LfDc1)] = 'Access is denied.'
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq))
+            (Get-LfPerDcCalls $script:LfDc1).Count | Should -Be 19
+            [string](Get-LfGrid $rows)[0].NotRun | Should -Not -Match 'circuit breaker'
+        }
+        It 'leaves an unreachable DC to the reachability cause, with no breaker' {
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq), (New-LfTarget $script:LfDc2 $script:LfDom1 $script:LfSiteHq)) -Down @($script:LfDc1)
+            $one = @((Get-LfGrid $rows) | Where-Object { $_.DomainController -eq $script:LfDc1 })[0]
+            [string]$one.Status | Should -Be 'Fail'
+            [string]$one.Failures | Should -Match 'not reachable'
+            [string]$one.NotRun | Should -Not -Match 'circuit breaker'
+            (Get-LfPerDcCalls $script:LfDc1).Count | Should -Be 0
+            (Get-LfPerDcCalls $script:LfDc2).Count | Should -Be 19
+        }
+        It 'gives the DNS rows of a tripped DC the breaker as their cause, with the opt-in' {
+            $script:LfAnswers[('{0}|Connectivity' -f $script:LfDc1)] = 'timeout'
+            $script:LfAnswers[('{0}|Replications' -f $script:LfDc1)] = 'timeout'
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq)) -Active
+            $dns = @($rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like ('dcdiag DNS *: {0}' -f $script:LfDc1) })
+            $dns.Count | Should -Be 7
+            @($dns | Where-Object { $_.Status -ne 'Not Assessed' -or $_.Detail -notmatch 'circuit breaker' }).Count | Should -Be 0
+            [string](Get-LfGrid $rows)[0].Status | Should -Be 'Not Assessed' -Because 'no attempted cell could be read'
+            # The breaker's DC is not chosen for Intersite either.
+            @($script:LfCalls | Where-Object { $_.Test -eq 'Intersite' }).Count | Should -Be 0
+        }
+        It 'takes the threshold from the table: three consecutive time-outs are needed when the file sets 3' {
+            $cfg = Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ('{ "CircuitBreakerTimeouts": 3 }' | ConvertFrom-Json) -OverrideSource 'C:\cfg\dcdiag.json'
+            $script:LfAnswers[('{0}|Replications' -f $script:LfDc1)] = 'timeout'
+            $script:LfAnswers[('{0}|Advertising' -f $script:LfDc1)] = 'timeout'
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq)) -Config $cfg
+            (Get-LfPerDcCalls $script:LfDc1).Count | Should -Be 19
+            $script:LfAnswers[('{0}|Services' -f $script:LfDc1)] = 'timeout'
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq)) -Config $cfg
+            (Get-LfPerDcCalls $script:LfDc1).Count | Should -Be 4
+            [string](Get-LfGrid $rows)[0].NotRun | Should -Match 'circuit breaker: three consecutive time-outs'
+            [string](Get-LfGrid $rows)[0].NotRun | Should -Match 'set in the -ConfigOverridePath file'
+        }
+        It 'says so on the grid row, and names the cause on every scoped row it lost, when the breaker trips on the last tests of a DC (independent review)' {
+            # SystemLog and DNS are the last two per-DC tests: the breaker trips with no test left to skip.
+            $script:LfAnswers[('{0}|SystemLog' -f $script:LfDc1)] = 'timeout'
+            $script:LfAnswers[('{0}|DNS' -f $script:LfDc1)] = 'timeout'
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq)) -Active
+            # Declared population: the 21 per-DC tests of the opt-in run, every one of them attempted.
+            (Get-LfPerDcCalls $script:LfDc1).Count | Should -Be 21
+            $one = (Get-LfGrid $rows)[0]
+            [string]$one.NotRun | Should -Match 'circuit breaker: two consecutive time-outs'
+            [string]$one.NotRun | Should -Match 'not chosen for the once-per-domain, -forest or -site dcdiag tests'
+            [string]$one.Failures | Should -Not -Match 'circuit breaker'
+            @($script:LfCalls | Where-Object { $_.Test -match '^(Topology|CheckSDRefDom|CrossRefValidation|Intersite)$' }).Count | Should -Be 0
+            # Declared population: the Topology row of the domain, the two forest roll-ups and the Intersite row of the site.
+            $lost = @(('dcdiag Topology: {0}' -f $script:LfDom1), ('dcdiag CheckSDRefDom: forest {0}' -f $script:LfDom1), ('dcdiag CrossRefValidation: forest {0}' -f $script:LfDom1), ('dcdiag Intersite: {0}' -f $script:LfSiteHq))
+            foreach ($item in $lost) {
+                $r = Get-LfRow $rows $item
+                $r.Count | Should -Be 1 -Because $item
+                [string]$r[0].Status | Should -Be 'Not Assessed' -Because $item
+                [string]$r[0].Detail | Should -Match ('Per domain controller: {0}: circuit breaker: two consecutive time-outs\.' -f [regex]::Escape($script:LfDc1)) -Because $item
+            }
+        }
+        It 'names each DC''s own cause on a "none could run" row: unreachable and read-only (independent review)' {
+            $targets = @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq), (New-LfTarget $script:LfDc2 $script:LfDom1 $script:LfSiteHq $true))
+            $rows = Invoke-LfGrid -Targets $targets -Down @($script:LfDc1)
+            $topo = Get-LfRow $rows ('dcdiag Topology: {0}' -f $script:LfDom1)
+            [string]$topo[0].Status | Should -Be 'Not Assessed'
+            [string]$topo[0].Detail | Should -Match ('Per domain controller: {0}: unreachable on RPC/135; {1}: read-only\.' -f [regex]::Escape($script:LfDc1), [regex]::Escape($script:LfDc2))
+            # The read-only DC passed every per-DC test; only the scoped tests left it out.
+            [string]@((Get-LfGrid $rows) | Where-Object { $_.DomainController -eq $script:LfDc2 })[0].Status | Should -Be 'Pass'
+        }
+    }
+
+    Context 'Circuit breaker: the config table and the override file' {
+        It 'holds the threshold as a tool default with its source, not a Microsoft value' {
+            [int]$script:Config.DcDiag['CircuitBreakerTimeouts'] | Should -Be 2
+            [string]$script:Config.DcDiag['CircuitBreakerSource'] | Should -Match 'not a Microsoft value'
+            [string]$script:Config.DcDiag['CircuitBreakerSource'] | Should -Match 'AdAssessment26'
+        }
+        It 'accepts a whole number from 1 to 10 and names the file in the source' {
+            $m = Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ('{ "CircuitBreakerTimeouts": 10 }' | ConvertFrom-Json) -OverrideSource 'C:\cfg\dcdiag.json'
+            [int]$m['CircuitBreakerTimeouts'] | Should -Be 10
+            [string]$m['CircuitBreakerSource'] | Should -Be 'set in the -ConfigOverridePath file; not a Microsoft value'
+            [int]$script:Config.DcDiag['CircuitBreakerTimeouts'] | Should -Be 2 -Because 'a merge does not change the built-in table'
+            $one = Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ('{ "CircuitBreakerTimeouts": 1 }' | ConvertFrom-Json)
+            [int]$one['CircuitBreakerTimeouts'] | Should -Be 1
+        }
+        It 'refuses <Name>' -ForEach @(
+            @{ Name = 'zero'; Json = '{ "CircuitBreakerTimeouts": 0 }'; Expect = 'whole number from 1 to 10' }
+            @{ Name = 'eleven'; Json = '{ "CircuitBreakerTimeouts": 11 }'; Expect = 'whole number from 1 to 10' }
+            @{ Name = 'a fraction'; Json = '{ "CircuitBreakerTimeouts": 2.5 }'; Expect = 'whole number from 1 to 10' }
+            @{ Name = 'a quoted number'; Json = '{ "CircuitBreakerTimeouts": "2" }'; Expect = 'JSON number' }
+            @{ Name = 'a null'; Json = '{ "CircuitBreakerTimeouts": null }'; Expect = 'null' }
+            @{ Name = 'a boolean'; Json = '{ "CircuitBreakerTimeouts": true }'; Expect = 'JSON number' }
+            @{ Name = 'the time-out pattern'; Json = '{ "TimeoutErrorPattern": ".*" }'; Expect = "unknown key 'TimeoutErrorPattern'" }
+        ) {
+            { Merge-AdfaDcDiagConfig -BaseConfig $script:Config.DcDiag -Override ($Json | ConvertFrom-Json) -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage ("*{0}*" -f $Expect)
+        }
+    }
+
+    Context 'Intersite: every site of the forest (pure)' {
+        It 'reads the site of a server object from its distinguished name, and nothing from any other DN' {
+            ConvertTo-AdfaDsaSiteName -ServerDn 'CN=DC1,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com' | Should -Be 'HQ'
+            ConvertTo-AdfaDsaSiteName -ServerDn 'CN=DC2,CN=Servers,CN=Branch\, East,CN=Sites,CN=Configuration,DC=contoso,DC=com' | Should -Be 'Branch, East'
+            ConvertTo-AdfaDsaSiteName -ServerDn 'cn=DC3,cn=servers,cn=Remote,cn=sites,cn=configuration,dc=contoso,dc=com' | Should -Be 'Remote'
+            ConvertTo-AdfaDsaSiteName -ServerDn 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' | Should -Be ''
+            ConvertTo-AdfaDsaSiteName -ServerDn '' | Should -Be ''
+        }
+        It 'tells apart a site with DCs in this section, with no DC, with DCs outside this section, and one that cannot be known' {
+            $states = @([pscustomobject]@{ HostName = $script:LfDc1; Site = $script:LfSiteHq }, [pscustomobject]@{ HostName = $script:LfDc2; Site = $script:LfSiteBranch })
+            $dsa = @((New-LfDsa $script:LfSiteHq $script:LfDc1), (New-LfDsa $script:LfSiteBranch $script:LfDc2), (New-LfDsa $script:LfSiteOther $script:LfDc7))
+            (Resolve-AdfaIntersiteSiteState -SiteName $script:LfSiteHq -SectionStates $states -DsaRead $true -DsaServers $dsa).State | Should -Be 'InSection'
+            (Resolve-AdfaIntersiteSiteState -SiteName 'hq' -SectionStates $states -DsaRead $true -DsaServers $dsa).State | Should -Be 'InSection' -Because 'site names are not case sensitive'
+            (Resolve-AdfaIntersiteSiteState -SiteName $script:LfSiteEmpty -SectionStates $states -DsaRead $true -DsaServers $dsa).State | Should -Be 'NoDc'
+            $other = Resolve-AdfaIntersiteSiteState -SiteName $script:LfSiteOther -SectionStates $states -DsaRead $true -DsaServers $dsa
+            $other.State | Should -Be 'OutOfScope'
+            (@($other.DsaHosts) -join ',') | Should -Be $script:LfDc7
+            # The NTDS Settings objects not read: a site with no DC of this section is unknown, never "no DC".
+            (Resolve-AdfaIntersiteSiteState -SiteName $script:LfSiteEmpty -SectionStates $states -DsaRead $false -DsaServers @()).State | Should -Be 'Unknown'
+            (Resolve-AdfaIntersiteSiteState -SiteName $script:LfSiteHq -SectionStates $states -DsaRead $false -DsaServers @()).State | Should -Be 'InSection'
+            (Resolve-AdfaIntersiteSiteState -SiteName $script:LfSiteEmpty -SectionStates @() -DsaRead $true -DsaServers @()).State | Should -Be 'NoDc'
+        }
+        It 'never says "no DC" while an NTDS Settings object read could not be placed in a site (independent review)' {
+            # A conflict-mangled NTDS Settings RDN leaves a server DN the site cannot be read from.
+            $mangled = 'CN=NTDS Settings\0ACNF:1234,CN=DC9,CN=Servers,CN=Branch,CN=Sites,CN=Configuration,DC=contoso,DC=com'
+            ConvertTo-AdfaDsaSiteName -ServerDn $mangled | Should -Be ''
+            $dc9 = 'dc9.contoso.com'
+            $unplaced = [pscustomobject]@{ Site = ''; HostName = $dc9; ServerDn = $mangled }
+            $s = Resolve-AdfaIntersiteSiteState -SiteName $script:LfSiteEmpty -SectionStates @() -DsaRead $true -DsaServers @($unplaced)
+            $s.State | Should -Be 'Unknown'
+            (@($s.UnplacedHosts) -join ',') | Should -Be $dc9
+            # A site that holds a placed DC is still told apart: its DCs are known, whatever else is unplaced.
+            (Resolve-AdfaIntersiteSiteState -SiteName $script:LfSiteOther -SectionStates @() -DsaRead $true -DsaServers @((New-LfDsa $script:LfSiteOther $script:LfDc7), $unplaced)).State | Should -Be 'OutOfScope'
+            # Every NTDS Settings object placed: the absence is measured.
+            (Resolve-AdfaIntersiteSiteState -SiteName $script:LfSiteEmpty -SectionStates @() -DsaRead $true -DsaServers @((New-LfDsa $script:LfSiteOther $script:LfDc7))).State | Should -Be 'NoDc'
+        }
+    }
+
+    Context 'Intersite: every site of the forest, in the collector' {
+        BeforeEach { $script:LfAnswers = @{} }
+        It 'gives every site read exactly one row: run, not applicable, or not assessed (declared population: four sites)' {
+            $targets = @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq), (New-LfTarget $script:LfDc2 $script:LfDom1 $script:LfSiteBranch))
+            $dsa = @((New-LfDsa $script:LfSiteHq $script:LfDc1), (New-LfDsa $script:LfSiteBranch $script:LfDc2), (New-LfDsa $script:LfSiteOther $script:LfDc7))
+            $pop = New-LfSitePopulation -Sites @($script:LfSiteHq, $script:LfSiteBranch, $script:LfSiteEmpty, $script:LfSiteOther) -Dsa $dsa
+            $rows = Invoke-LfGrid -Targets $targets -Active -SitePopulation $pop
+            $site = @($rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like 'dcdiag Intersite: *' })
+            $site.Count | Should -Be 4
+            [string](Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteHq))[0].Status | Should -Be 'Pass'
+            [string](Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteBranch))[0].Status | Should -Be 'Pass'
+            $none = Get-LfRow $rows ('dcdiag Intersite: no DC in site {0}' -f $script:LfSiteEmpty)
+            $none.Count | Should -Be 1
+            [string]$none[0].Status | Should -Be 'Info'
+            [string]$none[0].Detail | Should -Match '^Not applicable: '
+            [string]$none[0].NotRun | Should -Match 'no domain controller'
+            $out = Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteOther)
+            [string]$out[0].Status | Should -Be 'Not Assessed'
+            [string]$out[0].Detail | Should -Match ([regex]::Escape($script:LfDc7))
+            [string]$out[0].Detail | Should -Match 'AllDomains'
+            # Intersite ran once per site that holds a DC of this section, with /a.
+            $inter = @($script:LfCalls | Where-Object { $_.Test -eq 'Intersite' })
+            $inter.Count | Should -Be 2
+            @($inter | Where-Object { $_.Arguments -notmatch '\s/a$' }).Count | Should -Be 0
+            @($site | Where-Object { $_.Status -eq 'Pass' -and $_.Item -notmatch ('{0}|{1}' -f $script:LfSiteHq, $script:LfSiteBranch) }).Count | Should -Be 0
+        }
+        It 'reports a site list that could not be read in one Not Assessed row, and still tests the sites of the DCs' {
+            $pop = New-LfSitePopulation -Sites @() -SitesRead $false -SitesError 'Access is denied (System.UnauthorizedAccessException)' -Dsa @((New-LfDsa $script:LfSiteHq $script:LfDc1))
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq)) -Active -SitePopulation $pop
+            $list = Get-LfRow $rows 'dcdiag Intersite: site list'
+            $list.Count | Should -Be 1
+            [string]$list[0].Status | Should -Be 'Not Assessed'
+            [string]$list[0].Detail | Should -Match 'Access is denied'
+            [string](Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteHq))[0].Status | Should -Be 'Pass'
+        }
+        It 'never calls a site empty when the NTDS Settings objects could not be read' {
+            $pop = New-LfSitePopulation -Sites @($script:LfSiteHq, $script:LfSiteEmpty) -DsaRead $false -DsaError 'The server is not operational'
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq)) -Active -SitePopulation $pop
+            (Get-LfRow $rows ('dcdiag Intersite: no DC in site {0}' -f $script:LfSiteEmpty)).Count | Should -Be 0
+            $unk = Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteEmpty)
+            [string]$unk[0].Status | Should -Be 'Not Assessed'
+            [string]$unk[0].Detail | Should -Match 'not operational'
+        }
+        It 'never calls a site empty while an NTDS Settings object read has no site, and names that object (independent review)' {
+            $dc9 = 'dc9.contoso.com'
+            $unplaced = [pscustomobject]@{ Site = ''; HostName = $dc9; ServerDn = 'CN=NTDS Settings\0ACNF:1234,CN=DC9,CN=Servers,CN=Branch,CN=Sites,CN=Configuration,DC=contoso,DC=com' }
+            $pop = New-LfSitePopulation -Sites @($script:LfSiteHq, $script:LfSiteEmpty) -Dsa @((New-LfDsa $script:LfSiteHq $script:LfDc1), $unplaced)
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq)) -Active -SitePopulation $pop
+            (Get-LfRow $rows ('dcdiag Intersite: no DC in site {0}' -f $script:LfSiteEmpty)).Count | Should -Be 0
+            $unk = Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteEmpty)
+            $unk.Count | Should -Be 1
+            [string]$unk[0].Status | Should -Be 'Not Assessed'
+            [string]$unk[0].Detail | Should -Match ([regex]::Escape($dc9))
+            [string]$unk[0].Detail | Should -Match 'could not be told'
+            [string](Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteHq))[0].Status | Should -Be 'Pass'
+        }
+        It 'takes the site of a DC the inventory gave none from its NTDS Settings object' {
+            $pop = New-LfSitePopulation -Sites @($script:LfSiteHq) -Dsa @((New-LfDsa $script:LfSiteHq $script:LfDc1))
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 '')) -Active -SitePopulation $pop
+            (Get-LfRow $rows 'dcdiag Intersite: site unknown').Count | Should -Be 0
+            [string](Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteHq))[0].Status | Should -Be 'Pass'
+        }
+        It 'keeps the site unknown row for a DC whose site neither source gives' {
+            $pop = New-LfSitePopulation -Sites @($script:LfSiteHq) -Dsa @((New-LfDsa $script:LfSiteHq $script:LfDc1))
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq), (New-LfTarget $script:LfDc2 $script:LfDom1 '')) -Active -SitePopulation $pop
+            $u = Get-LfRow $rows 'dcdiag Intersite: site unknown'
+            [string]$u[0].Status | Should -Be 'Not Assessed'
+            [string]$u[0].Detail | Should -Match ([regex]::Escape($script:LfDc2))
+        }
+        It 'without the opt-in writes one not run row and no site row' {
+            $pop = New-LfSitePopulation -Sites @($script:LfSiteHq, $script:LfSiteEmpty) -Dsa @((New-LfDsa $script:LfSiteHq $script:LfDc1))
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq)) -SitePopulation $pop
+            (@($rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like 'dcdiag Intersite: *' } | ForEach-Object { $_.Item }) -join ',') | Should -Be 'dcdiag Intersite: not run'
+        }
+        It 'without a site population keeps the C11 behaviour (the sites of the DCs only)' {
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq)) -Active
+            (@($rows | Where-Object { $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like 'dcdiag Intersite: *' } | ForEach-Object { $_.Item }) -join ',') | Should -Be ('dcdiag Intersite: {0}' -f $script:LfSiteHq)
+        }
+        It 'gives a site whose only DC is unreachable Not Assessed, never Pass' {
+            $pop = New-LfSitePopulation -Sites @($script:LfSiteHq, $script:LfSiteBranch) -Dsa @((New-LfDsa $script:LfSiteHq $script:LfDc1), (New-LfDsa $script:LfSiteBranch $script:LfDc2))
+            $rows = Invoke-LfGrid -Targets @((New-LfTarget $script:LfDc1 $script:LfDom1 $script:LfSiteHq), (New-LfTarget $script:LfDc2 $script:LfDom1 $script:LfSiteBranch)) -Active -SitePopulation $pop -Down @($script:LfDc2)
+            [string](Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteBranch))[0].Status | Should -Be 'Not Assessed'
+            [string](Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteHq))[0].Status | Should -Be 'Pass'
+        }
+        It 'gives none of the new Item texts the Intersite advice' {
+            $map = @($script:RecommendationMap | Where-Object { $_.ContainsKey('Section') -and [string]$_.Match -like '*dcdiag Intersite*' })
+            $map.Count | Should -Be 1
+            foreach ($item in @(('dcdiag Intersite: no DC in site {0}' -f $script:LfSiteEmpty), 'dcdiag Intersite: site list')) {
+                ('DC Diagnostics :: {0} :: x' -f $item) -match [string]$map[0].Match | Should -BeFalse -Because $item
+            }
+            ('DC Diagnostics :: dcdiag Intersite: {0} :: x' -f $script:LfSiteHq) -match [string]$map[0].Match | Should -BeTrue
+        }
+    }
+
+    Context 'Intersite: the site population seam' {
+        It 'reads the site names and the NTDS Settings objects, and gives each server its site' {
+            function Get-ADReplicationSite { param([Parameter(ValueFromRemainingArguments)]$a) $script:LfSiteCalls++; @([pscustomobject]@{ Name = 'HQ' }, [pscustomobject]@{ Name = 'Warehouse' }) }
+            function Get-AdfaDsaInventory { param([hashtable]$AdParams) @([pscustomobject]@{ DsaGuid = '11111111-2222-4333-8444-555555555555'; ServerDn = 'CN=DC1,CN=Servers,CN=HQ,CN=Sites,CN=Configuration,DC=contoso,DC=com'; DnsHostName = 'dc1.contoso.com'; InvocationId = '' }) }
+            $script:LfSiteCalls = 0
+            $p = Get-AdfaIntersiteSitePopulation -AdParams @{}
+            [bool]$p.SitesRead | Should -BeTrue
+            (@($p.Sites) -join ',') | Should -Be 'HQ,Warehouse'
+            [bool]$p.DsaRead | Should -BeTrue
+            @($p.DsaServers).Count | Should -Be 1
+            [string]@($p.DsaServers)[0].Site | Should -Be 'HQ'
+            [string]@($p.DsaServers)[0].HostName | Should -Be $script:LfDc1
+            $script:LfSiteCalls | Should -Be 1
+            # The Topology section's site list is reused: no second read.
+            $p2 = Get-AdfaIntersiteSitePopulation -AdParams @{} -TopologySites @([pscustomobject]@{ Name = 'HQ' })
+            (@($p2.Sites) -join ',') | Should -Be 'HQ'
+            $script:LfSiteCalls | Should -Be 1
+        }
+        It 'never throws: a refused site read and a failed NTDS Settings read are each not read, with the cause' {
+            function Get-ADReplicationSite { param([Parameter(ValueFromRemainingArguments)]$a) throw [System.UnauthorizedAccessException]'Access is denied.' }
+            function Get-AdfaDsaInventory { param([hashtable]$AdParams) throw 'The server is not operational' }
+            $p = Get-AdfaIntersiteSitePopulation -AdParams @{}
+            [bool]$p.SitesRead | Should -BeFalse
+            [string]$p.SitesError | Should -Match 'Access is denied'
+            [string]$p.SitesError | Should -Match 'UnauthorizedAccessException'
+            [bool]$p.DsaRead | Should -BeFalse
+            [string]$p.DsaError | Should -Match 'not operational'
+        }
+        It 'does not take an empty answer as a read' {
+            function Get-ADReplicationSite { param([Parameter(ValueFromRemainingArguments)]$a) }
+            function Get-AdfaDsaInventory { param([hashtable]$AdParams) }
+            $p = Get-AdfaIntersiteSitePopulation -AdParams @{}
+            [bool]$p.SitesRead | Should -BeFalse
+            [bool]$p.DsaRead | Should -BeFalse
+            [string]$p.DsaError | Should -Match 'no NTDS Settings object'
+        }
+        It 'is read by Invoke-Main only with -IncludeDcdiagActiveTests, in the DcDiagnostics branch, and handed to the collector' {
+            $seam = @(Get-LfCall $script:LfMain 'Get-AdfaIntersiteSitePopulation')
+            $seam.Count | Should -Be 1
+            (Get-LfGuard $seam[0]) | Should -Match '\$IncludeDcdiagActiveTests'
+            $branch = $seam[0].Parent
+            while ($null -ne $branch -and -not ($branch -is [System.Management.Automation.Language.IfStatementAst] -and $branch.Clauses[0].Item1.Extent.Text -eq "Test-SectionSelected 'DcDiagnostics' `$Sections")) { $branch = $branch.Parent }
+            $null -ne $branch | Should -BeTrue
+            $dd = @(Get-LfCall $script:LfMain 'Get-AdfaDcDiagnostic')
+            $dd.Count | Should -Be 1
+            (Get-LfParameter -Call $dd[0] -Name 'SitePopulation').Extent.Text | Should -Be '$intersitePopulation'
+        }
+    }
+
+    Context 'Reachability classification for every per-DC section (C2i(1))' {
+        BeforeAll {
+            # Derived, not hand-kept: every function that reaches the probe gate, through any chain of calls.
+            $script:LfGraph = @{}
+            foreach ($f in @($script:LfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true))) {
+                $script:LfGraph[$f.Name] = @($f.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [string]$_.GetCommandName() } | Where-Object { $_ } | Sort-Object -Unique)
+            }
+            $script:LfReach = @{ 'Get-AdfaDcProbeGate' = $true }
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($k in @($script:LfGraph.Keys)) {
+                    if ($script:LfReach.ContainsKey($k)) { continue }
+                    if (@($script:LfGraph[$k] | Where-Object { $script:LfReach.ContainsKey($_) }).Count -gt 0) { $script:LfReach[$k] = $true; $changed = $true }
+                }
+            }
+            $assign = @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$classifySections' }, $true))
+            $script:LfClassifyAssign = $assign
+            $script:LfListed = @()
+            if ($assign.Count -eq 1) { $script:LfListed = @($assign[0].Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { [string]$_.Value }) }
+            $flag = @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$classifyDcs' }, $true))
+            $script:LfFlag = $flag
+            $script:LfSwitches = @()
+            if ($flag.Count -eq 1) { $script:LfSwitches = @($flag[0].Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and [string]$n.VariablePath.UserPath -like 'Include*' }, $true) | ForEach-Object { [string]$_.VariablePath.UserPath }) }
+        }
+        It 'declares one list of sections and one flag that the switches join' {
+            $script:LfClassifyAssign.Count | Should -Be 1
+            $script:LfFlag.Count | Should -Be 1
+            $script:LfFlag[0].Right.Extent.Text | Should -Match '\$classifySections'
+        }
+        It 'classifies whenever any section or switch that reaches the probe gate is selected (derived from the call graph)' {
+            # The conditions a variable stands for: the sections named where it is assigned or set to $true.
+            $aliases = @{}
+            foreach ($v in @('sysvolEngineWanted', 'dcInventoryCollected')) {
+                $names = @()
+                foreach ($a in @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('$' + $v) }.GetNewClosure(), $true))) {
+                    $names += @($a.Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-SectionSelected' -and $n.CommandElements[1] -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { [string]$_.CommandElements[1].Value })
+                    if ($a.Right.Extent.Text -eq '$true') {
+                        $g = Get-LfGuard $a
+                        if ($g -match "Test-SectionSelected '(\w+)'") { $names += $Matches[1] }
+                    }
+                }
+                $aliases[$v] = @($names | Sort-Object -Unique)
+            }
+            $aliases['dcInventoryCollected'] | Should -Be @('DomainControllers')
+            $checked = 0
+            foreach ($c in @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+                $name = [string]$c.GetCommandName()
+                if (-not $script:LfReach.ContainsKey($name) -or $name -eq 'Get-AdfaDcReachabilityRows') { continue }
+                $sections = @(); $switches = @()
+                $p = $c.Parent
+                while ($null -ne $p -and $p -ne $script:LfMain) {
+                    if ($p -is [System.Management.Automation.Language.IfStatementAst]) {
+                        $cond = $p.Clauses[0].Item1
+                        $sections += @($cond.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-SectionSelected' -and $n.CommandElements[1] -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { [string]$_.CommandElements[1].Value })
+                        if ($cond.Extent.Text -match "\`$Sections -contains '(\w+)'") { $sections += $Matches[1] }
+                        foreach ($vx in @($cond.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true))) {
+                            $vn = [string]$vx.VariablePath.UserPath
+                            if ($vn -like 'Include*') { $switches += $vn }
+                            if ($aliases.ContainsKey($vn)) { $sections += $aliases[$vn] }
+                        }
+                    }
+                    $p = $p.Parent
+                }
+                $checked++
+                $covered = (@($sections | Where-Object { $script:LfListed -contains $_ }).Count -gt 0) -or (@($switches | Where-Object { $script:LfSwitches -contains $_ }).Count -gt 0)
+                $covered | Should -BeTrue -Because ('{0} at line {1} reaches the probe gate under sections [{2}] and switches [{3}]' -f $name, $c.Extent.StartLineNumber, ($sections -join ','), ($switches -join ','))
+            }
+            $checked | Should -BeGreaterThan 20 -Because 'non-vacuity: the gate-reaching calls of Invoke-Main were found'
+            # Declared population of the three switches that probe outside a section branch.
+            (@($script:LfSwitches | Sort-Object -Unique) -join ',') | Should -Be 'IncludeDcdiag,IncludeLingeringObjectScan,IncludeRepadmin'
+        }
+        It 'lists no section that reaches no probe (the list is not padded)' {
+            $reaching = @()
+            foreach ($c in @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true))) {
+                $cond = $c.Clauses[0].Item1.Extent.Text
+                $sec = ''
+                if ($cond -match "^Test-SectionSelected '(\w+)' \`$Sections$") { $sec = $Matches[1] }
+                elseif ($cond -match "^\`$Sections -contains '(\w+)'$") { $sec = $Matches[1] }
+                if ($sec -eq '') { continue }
+                $calls = @($c.Clauses[0].Item2.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | Where-Object { $script:LfReach.ContainsKey([string]$_.GetCommandName()) })
+                if ($calls.Count -gt 0) { $reaching += $sec }
+            }
+            $reaching += 'DomainControllers'
+            @($script:LfListed | Where-Object { $reaching -notcontains $_ }) | Should -BeNullOrEmpty
+            @($reaching | Sort-Object -Unique | Where-Object { $script:LfListed -notcontains $_ }) | Should -BeNullOrEmpty
+        }
+        It 'classifies once, under the flag, before every call that probes, and reports the rows in Port Reachability only' {
+            $calls = @(Get-LfCall $script:LfMain 'Get-AdfaDcReachabilityRows')
+            $calls.Count | Should -Be 1
+            (Get-LfGuard $calls[0]) | Should -Be '$classifyDcs'
+            $first = @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $script:LfReach.ContainsKey([string]$n.GetCommandName()) -and [string]$n.GetCommandName() -ne 'Get-AdfaDcReachabilityRows' }, $true) | Sort-Object { $_.Extent.StartOffset })[0]
+            $calls[0].Extent.StartOffset | Should -BeLessThan $first.Extent.StartOffset
+            $uses = @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -eq 'reachRows' -and $n.Parent -isnot [System.Management.Automation.Language.AssignmentStatementAst] }, $true))
+            $uses.Count | Should -Be 1
+            (Get-LfGuard $uses[0]) | Should -Be "Test-SectionSelected 'PortMatrix' `$Sections"
+        }
+        It 'enumerates the DCs per domain for the classification when there is no inventory' {
+            $enum = @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$c14Enumeration' }, $true))
+            $enum.Count | Should -Be 1
+            (Get-LfGuard $enum[0]) | Should -Match '^-not \$dcInventoryCollected -and .*\$classifyDcs'
+            $per = @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$c14PerDomain' }, $true))
+            $per.Count | Should -Be 1
+            $per[0].Right.Extent.Text | Should -Match '\$classifyDcs'
+        }
+    }
+
+    Context 'DcSecureChannel and the lingering scan on the shared DC list (C2i(3))' {
+        BeforeEach {
+            Clear-AdfaDcPortCache
+            $script:LfComputerIds = @()
+            $script:LfRemote = @()
+            function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: this section must take the shared DC list, not enumerate again' }
+            function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a)
+                $named = @{}
+                for ($i = 0; $i -lt @($a).Count; $i++) { if ([string]$a[$i] -match '^-(\w+):?$' -and ($i + 1) -lt @($a).Count) { $named[$Matches[1]] = $a[$i + 1] } }
+                $script:LfComputerIds += [string]$named['Identity']
+                [pscustomobject]@{ PasswordLastSet = (Get-Date).AddDays(-5) } }
+        }
+        It 'selects one domain''s targets only, the single-domain fallback names, and the gap of a domain that failed' {
+            $targets = @((New-LfTarget $script:LfDc1 $script:LfDom1), (New-LfTarget $script:LfDc3 $script:LfDom2), (New-LfTarget $script:LfDc2 $script:LfDom1))
+            $sel = Select-AdfaDomainDcTarget -Domain $script:LfDom1 -Targets $targets -ScopedDomains @($script:LfDom1, $script:LfDom2)
+            (@($sel.Targets | ForEach-Object { $_.HostName }) -join ',') | Should -Be ('{0},{1}' -f $script:LfDc1, $script:LfDc2)
+            $null -eq $sel.Gap | Should -BeTrue
+            $failed = Select-AdfaDomainDcTarget -Domain $script:LfDom3 -Targets $targets -InventoryFailures @([pscustomobject]@{ Domain = $script:LfDom3; Error = 'STUB: ADWS unreachable' }) -ScopedDomains @($script:LfDom1, $script:LfDom3)
+            @($failed.Targets).Count | Should -Be 0
+            [bool]$failed.Gap.Failed | Should -BeTrue
+            $single = Select-AdfaDomainDcTarget -Domain $script:LfDom1 -Targets @($script:LfDc1, $script:LfDc2) -ScopedDomains @($script:LfDom1)
+            @($single.Targets).Count | Should -Be 2
+            $multi = Select-AdfaDomainDcTarget -Domain $script:LfDom2 -Targets @($script:LfDc1, $script:LfDc2) -ScopedDomains @($script:LfDom1, $script:LfDom2)
+            @($multi.Targets).Count | Should -Be 0
+            # Get-AdfaDomainDcHostName answers from it, unchanged.
+            (@((Get-AdfaDomainDcHostName -Domain $script:LfDom1 -Targets $targets -ScopedDomains @($script:LfDom1)).HostNames) -join ',') | Should -Be ('{0},{1}' -f $script:LfDc1, $script:LfDc2)
+        }
+        It 'DcSecureChannel reads every DC of the domain from the shared list, the password by the computer DN the list carries' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { $script:LfRemote += [string]$ComputerName; $script:LfScOk }
+            $targets = @((New-LfTarget $script:LfDc1 $script:LfDom1 -Dn 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'), (New-LfTarget $script:LfDc3 $script:LfDom2 -Dn 'CN=DC3,OU=Domain Controllers,DC=north,DC=contoso,DC=com'),
+                (New-LfTarget $script:LfDc2 $script:LfDom1 -Dn 'CN=DC2,OU=Domain Controllers,DC=contoso,DC=com'))
+            $rows = @(Get-AdfaDcSecureChannel -DomainName $script:LfDom1 -AdParams @{} -DomainControllers $targets -ScopedDomains @($script:LfDom1, $script:LfDom2) -RpcPortTimeoutMs 100)
+            # Declared population: the password and channel rows of the two DCs of contoso.com.
+            (@($rows | ForEach-Object { $_.Item }) -join ',') | Should -Be ('Machine-account password: {0},Secure channel: {0},Machine-account password: {1},Secure channel: {1}' -f $script:LfDc1, $script:LfDc2)
+            (@($script:LfComputerIds) -join '|') | Should -Be 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com|CN=DC2,OU=Domain Controllers,DC=contoso,DC=com'
+            (@($script:LfRemote) -join ',') | Should -Be ('{0},{1}' -f $script:LfDc1, $script:LfDc2)
+            @($rows | Where-Object { $_.Scope -ne $script:LfDom1 }).Count | Should -Be 0
+        }
+        It 'DcSecureChannel: a DC the list carries without a computer DN has its password Not Assessed with that cause, never read by a guess' {
+            Mock Test-TcpPort { $true }
+            Mock Invoke-Command { $script:LfScOk }
+            $rows = @(Get-AdfaDcSecureChannel -DomainName $script:LfDom1 -DomainControllers @((New-LfTarget $script:LfDc1 $script:LfDom1), (New-LfTarget $script:LfDc2 $script:LfDom1 -Dn 'CN=DC2,OU=Domain Controllers,DC=contoso,DC=com')) -ScopedDomains @($script:LfDom1) -RpcPortTimeoutMs 100)
+            $pw = Get-LfRow $rows ('Machine-account password: {0}' -f $script:LfDc1)
+            [string]$pw[0].Status | Should -Be 'Not Assessed'
+            [string]$pw[0].Detail | Should -Match 'distinguished name'
+            (@($script:LfComputerIds) -join '|') | Should -Be 'CN=DC2,OU=Domain Controllers,DC=contoso,DC=com'
+            [string](Get-LfRow $rows ('Machine-account password: {0}' -f $script:LfDc2))[0].Status | Should -Be 'Pass'
+        }
+        It 'DcSecureChannel: unreachable on WinRM, and access denied, are two different Not Assessed causes' {
+            Mock Test-TcpPort { [string]$ComputerName -ne $script:LfDc1 }
+            Mock Invoke-Command { throw [System.UnauthorizedAccessException]'Access is denied.' }
+            $rows = @(Get-AdfaDcSecureChannel -DomainName $script:LfDom1 -DomainControllers @((New-LfTarget $script:LfDc1 $script:LfDom1 -Dn 'CN=DC1,DC=contoso,DC=com'), (New-LfTarget $script:LfDc2 $script:LfDom1 -Dn 'CN=DC2,DC=contoso,DC=com')) -ScopedDomains @($script:LfDom1) -RpcPortTimeoutMs 100)
+            $dead = Get-LfRow $rows ('Secure channel: {0}' -f $script:LfDc1)
+            [string]$dead[0].Status | Should -Be 'Not Assessed'
+            [string]$dead[0].Detail | Should -Match 'WinRM \(5985\) not reachable'
+            $denied = Get-LfRow $rows ('Secure channel: {0}' -f $script:LfDc2)
+            [string]$denied[0].Status | Should -Be 'Not Assessed'
+            [string]$denied[0].Detail | Should -Match 'Access is denied'
+            @($rows | Where-Object { $_.Item -like 'Secure channel:*' -and $_.Status -eq 'Pass' }).Count | Should -Be 0
+        }
+        It 'DcSecureChannel: a domain whose DCs could not be listed has one DC enumeration row with the cause' {
+            $rows = @(Get-AdfaDcSecureChannel -DomainName $script:LfDom3 -DomainControllers @((New-LfTarget $script:LfDc1 $script:LfDom1)) -InventoryFailures @([pscustomobject]@{ Domain = $script:LfDom3; Error = 'STUB: ADWS unreachable' }) -ScopedDomains @($script:LfDom1, $script:LfDom3))
+            $rows.Count | Should -Be 1
+            [string]$rows[0].Item | Should -Be 'DC enumeration'
+            [string]$rows[0].Status | Should -Be 'Not Assessed'
+            [string]$rows[0].Detail | Should -Match 'STUB: ADWS unreachable'
+            $empty = @(Get-AdfaDcSecureChannel -DomainName $script:LfDom3 -DomainControllers @() -ScopedDomains @($script:LfDom3))
+            [string]$empty[0].Item | Should -Be 'DC enumeration'
+            [string]$empty[0].Status | Should -Be 'Not Assessed'
+        }
+        It 'lingering scan: every DC of the domain from the shared list except the reference, and a domain with none says why' {
+            function Test-CommandAvailable { param([string]$Name) return $true }
+            function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; PDCEmulator = $script:LfDc1 } }
+            function Get-AdfaDsaInventory { param([hashtable]$AdParams) [pscustomobject]@{ DnsHostName = $script:LfDc1; DsaGuid = '11111111-2222-4333-8444-555555555555' } }
+            function Invoke-ExternalCommand { param([string]$FilePath, [string]$Arguments, [int]$TimeoutSeconds, [int]$Retries)
+                $script:LfRepadmin += $Arguments
+                [pscustomobject]@{ Success = $true; ExitCode = 0; Error = $null; StdOut = '0 lingering objects' } }
+            Mock Test-TcpPort { $true }
+            $script:LfRepadmin = @()
+            $targets = @((New-LfTarget $script:LfDc1 $script:LfDom1), (New-LfTarget $script:LfDc2 $script:LfDom1), (New-LfTarget 'dc4.contoso.com' $script:LfDom1), (New-LfTarget $script:LfDc3 $script:LfDom2))
+            $rows = @(Get-AdfaLingeringObjectScan -DomainName $script:LfDom1 -AdParams @{} -DomainControllers $targets -ScopedDomains @($script:LfDom1, $script:LfDom2) -RpcPortTimeoutMs 100)
+            # Declared population: the two DCs of contoso.com other than the reference (its PDC emulator).
+            (@($rows | ForEach-Object { $_.Item }) -join ',') | Should -Be ('Advisory scan: {0},Advisory scan: dc4.contoso.com' -f $script:LfDc2)
+            @($script:LfRepadmin | Where-Object { $_ -notmatch '/advisory_mode$' }).Count | Should -Be 0
+            $script:LfRepadmin.Count | Should -Be 2
+            $gap = @(Get-AdfaLingeringObjectScan -DomainName $script:LfDom3 -AdParams @{} -DomainControllers $targets -InventoryFailures @([pscustomobject]@{ Domain = $script:LfDom3; Error = 'STUB: ADWS unreachable' }) -ScopedDomains @($script:LfDom1, $script:LfDom3) -RpcPortTimeoutMs 100)
+            $gap.Count | Should -Be 1
+            [string]$gap[0].Status | Should -Be 'Not Assessed'
+            [string]$gap[0].Detail | Should -Match 'STUB: ADWS unreachable'
+        }
+        It 'lingering scan: a DC with no host name is one row and is never probed' {
+            function Test-CommandAvailable { param([string]$Name) return $true }
+            function Get-ADDomain { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ DistinguishedName = 'DC=contoso,DC=com'; PDCEmulator = $script:LfDc1 } }
+            function Get-AdfaDsaInventory { param([hashtable]$AdParams) [pscustomobject]@{ DnsHostName = $script:LfDc1; DsaGuid = '11111111-2222-4333-8444-555555555555' } }
+            function Invoke-ExternalCommand { param([Parameter(ValueFromRemainingArguments)]$a) throw 'STUB: repadmin may not run in this test' }
+            $script:LfProbes = @()
+            Mock Test-TcpPort { $script:LfProbes += [string]$ComputerName; $false }
+            $rows = @(Get-AdfaLingeringObjectScan -DomainName $script:LfDom1 -DomainControllers @((New-LfTarget '' $script:LfDom1), (New-LfTarget $script:LfDc2 $script:LfDom1)) -ScopedDomains @($script:LfDom1) -RpcPortTimeoutMs 100)
+            (@($rows | ForEach-Object { $_.Item }) -join ',') | Should -Be ('Advisory scan: (unnamed),Advisory scan: {0}' -f $script:LfDc2)
+            @($rows | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
+            @($script:LfProbes | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count | Should -Be 0
+        }
+        It 'Invoke-Main hands both the shared list, its failures and the scoped domains, and enumerates per domain for them' {
+            foreach ($name in @('Get-AdfaDcSecureChannel', 'Get-AdfaLingeringObjectScan')) {
+                $calls = @(Get-LfCall $script:LfMain $name)
+                $calls.Count | Should -Be 1 -Because $name
+                (Get-LfParameter -Call $calls[0] -Name 'DomainControllers').Extent.Text | Should -Be '$perDcTargets' -Because $name
+                (Get-LfParameter -Call $calls[0] -Name 'InventoryFailures').Extent.Text | Should -Be '$perDcFailures' -Because $name
+                (Get-LfParameter -Call $calls[0] -Name 'ScopedDomains').Extent.Text | Should -Be '$targetDomains' -Because $name
+            }
+            $list = @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$perDcSections' }, $true))
+            @($list[0].Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { [string]$_.Value }) | Should -Contain 'DcSecureChannel'
+            $enum = @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$perDcEnumeration' }, $true))
+            (Get-LfGuard $enum[0]) | Should -Match '\$IncludeLingeringObjectScan'
+        }
+        It 'Get-AdfaDcTargetsByDomain carries the computer DN, the site and read-only flag it already holds, and nothing invented when absent' {
+            function Get-ADDomainController { param($Filter, [string]$Server, [pscredential]$Credential)
+                [pscustomobject]@{ HostName = 'dc1.contoso.com'; Site = 'HQ'; IsReadOnly = $false; ComputerObjectDN = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' }
+                [pscustomobject]@{ HostName = 'dc2.contoso.com' } }
+            $r = Get-AdfaDcTargetsByDomain -Domains @($script:LfDom1)
+            @($r.Targets).Count | Should -Be 2
+            $r.Targets[0].ComputerObjectDN | Should -Be 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'
+            $r.Targets[0].Site | Should -Be 'HQ'
+            $r.Targets[0].IsReadOnly | Should -BeFalse
+            $r.Targets[1].ComputerObjectDN | Should -Be ''
+            $r.Targets[1].Site | Should -Be ''
+            $null -eq $r.Targets[1].IsReadOnly | Should -BeTrue
+        }
+        It 'gives dcdiag the site and read-only flag of that list on a run without DomainControllers: the output change the CHANGELOG lists (independent review)' {
+            $script:LfAnswers = @{}
+            function Get-ADDomainController { param($Filter, [string]$Server, [pscredential]$Credential)
+                [pscustomobject]@{ HostName = $script:LfDc1; Site = $script:LfSiteHq; IsReadOnly = $true }
+                [pscustomobject]@{ HostName = $script:LfDc2; Site = $script:LfSiteBranch; IsReadOnly = $false }
+                [pscustomobject]@{ HostName = $script:LfDc7 } }
+            $list = Get-AdfaDcTargetsByDomain -Domains @($script:LfDom1)
+            # Declared population: the three DCs the stub returns, in its order.
+            (@($list.Targets | ForEach-Object { $_.HostName }) -join ',') | Should -Be (@($script:LfDc1, $script:LfDc2, $script:LfDc7) -join ',')
+            $rows = Invoke-LfGrid -Targets @($list.Targets) -Active
+            # The read-only DC is not chosen for Topology; the writable one is.
+            (@($script:LfCalls | Where-Object { $_.Test -eq 'Topology' } | ForEach-Object { $_.Server }) -join ',') | Should -Be $script:LfDc2
+            # Intersite runs once per site the list names, with /a, and the RODC-only site is Not Assessed with its cause.
+            (@($script:LfCalls | Where-Object { $_.Test -eq 'Intersite' } | ForEach-Object { $_.Server }) -join ',') | Should -Be $script:LfDc2
+            $hq = Get-LfRow $rows ('dcdiag Intersite: {0}' -f $script:LfSiteHq)
+            [string]$hq[0].Status | Should -Be 'Not Assessed'
+            [string]$hq[0].Detail | Should -Match ('{0}: read-only' -f [regex]::Escape($script:LfDc1))
+            # The DC the list gave no site keeps the site unknown row; its cause names the list, not a section to add.
+            $u = Get-LfRow $rows 'dcdiag Intersite: site unknown'
+            [string]$u[0].Detail | Should -Match ([regex]::Escape($script:LfDc7))
+            [string]$u[0].Detail | Should -Match 'Get-ADDomainController -Filter \* per domain'
+            [string]$u[0].Detail | Should -Not -Match 'Name DomainControllers'
+        }
+        It 'the DC inventory row carries the computer DN the inventory already read' {
+            function Get-ADDomainController { param([Parameter(ValueFromRemainingArguments)]$a)
+                [pscustomobject]@{ HostName = 'dc1.contoso.com'; Name = 'DC1'; Site = 'HQ'; IPv4Address = '192.0.2.10'; IsGlobalCatalog = $true; IsReadOnly = $false; ComputerObjectDN = 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com' } }
+            function Get-ADComputer { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ OperatingSystem = 'Windows Server 2022 Standard'; OperatingSystemVersion = '10.0 (20348)'; Enabled = $true } }
+            $inv = @(Get-AdfaDomainControllerInventory -DomainName $script:LfDom1)
+            $inv[0].ComputerObjectDN | Should -Be 'CN=DC1,OU=Domain Controllers,DC=contoso,DC=com'
+            # The column is added after the columns the row had, so their order is unchanged.
+            (@($inv[0].PSObject.Properties.Name) -join ',') | Should -Be 'Scope,HostName,Name,Site,IPv4Address,IsGlobalCatalog,IsReadOnly,OperatingSystem,OperatingSystemVersion,Enabled,EnrichmentError,ComputerObjectDN'
+        }
+    }
+
+    Context 'The gPLink of forest domains outside the run''s scope, opt-in (C15d(2))' {
+        BeforeEach {
+            $script:LfInvReads = @()
+            $script:LfDeny = ''
+            function Get-AdfaRootDseRaw { param([hashtable]$AdParams) [pscustomobject]@{ Ok = $true; DnsHostName = 'dc1.contoso.com'; ConfigurationNamingContext = 'CN=Configuration,DC=contoso,DC=com'; Error = ''; ErrorType = '' } }
+            function Get-AdfaInventoryDomainDn { param([string]$DomainName, [hashtable]$AdParams) [pscustomobject]@{ Ok = $true; Dn = ('DC=' + ($DomainName -replace '\.', ',DC=')); Error = ''; ErrorType = '' } }
+            function Get-AdfaInventoryDirectoryRaw {
+                param([string]$Server, [string]$Identity, [string]$SearchBase, [string]$SearchScope, [string]$LDAPFilter, [string[]]$Properties, [string[]]$CountProperties, [int]$MaxObjects, [hashtable]$AdParams)
+                $script:LfInvReads += ('{0}|{1}|{2}' -f $LDAPFilter, $Server, $SearchBase)
+                if ($Server -eq $script:LfDeny -and $LDAPFilter -eq '(gPLink=*)') { return [pscustomobject]@{ Ok = $false; Error = 'Access is denied.'; ErrorType = 'System.UnauthorizedAccessException'; NotFound = $false; Records = @(); Count = 0; Capped = $false; Filter = $LDAPFilter; Identity = '' } }
+                $records = @()
+                $gpo = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+                if ($LDAPFilter -eq '(objectClass=groupPolicyContainer)') { $records = @([pscustomobject]@{ DistinguishedName = ('CN={0},CN=Policies,CN=System,DC=contoso,DC=com' -f $gpo); Name = $gpo; displayName = 'Default Domain Policy'; flags = 0; versionNumber = 1 }) }
+                # The one GPO of contoso.com is linked only from an OU of south.contoso.com, outside the scope.
+                if ($LDAPFilter -eq '(gPLink=*)' -and $Server -eq $script:LfDom3) { $records = @([pscustomobject]@{ DistinguishedName = 'OU=Branch,DC=south,DC=contoso,DC=com'; Name = 'Branch'; objectClass = @('top', 'organizationalUnit'); gPLink = ('[LDAP://cn={0},cn=policies,cn=system,DC=contoso,DC=com;0]' -f $gpo) }) }
+                [pscustomobject]@{ Ok = $true; Error = ''; ErrorType = ''; NotFound = $false; Records = $records; Count = @($records).Count; Capped = $false; Filter = $LDAPFilter; Identity = '' }
+            }
+        }
+        It 'without the switch reads only the scoped domain, and the summary names the switch, never "unlinked"' {
+            $rows = @(Get-AdfaGpoDirectoryInventory -Domains @($script:LfDom1) -ForestDomains @($script:LfDom1, $script:LfDom2, $script:LfDom3) -RootDomain $script:LfDom1 -Config $script:Config.Inventory -GpoConfig $script:Config.Gpo)
+            @($script:LfInvReads | Where-Object { $_ -match ('\|({0}|{1})\|' -f [regex]::Escape($script:LfDom2), [regex]::Escape($script:LfDom3)) }).Count | Should -Be 0
+            $sum = Get-LfRow $rows ('GPO directory inventory: {0}' -f $script:LfDom1)
+            [string]$sum[0].Status | Should -Be 'Not Assessed'
+            [string]$sum[0].Detail | Should -Match 'IncludeUnscopedGpoLinks'
+            [string]$sum[0].Detail | Should -Match 'AllDomains'
+        }
+        It 'with the switch reads the gPLink of each unscoped forest domain once, capped, and finds the link there (declared population: two domains)' {
+            $rows = @(Get-AdfaGpoDirectoryInventory -Domains @($script:LfDom1) -ForestDomains @($script:LfDom1, $script:LfDom2, $script:LfDom3) -RootDomain $script:LfDom1 -Config $script:Config.Inventory -GpoConfig $script:Config.Gpo -IncludeUnscopedDomains)
+            $unscoped = @($script:LfInvReads | Where-Object { $_ -match ('\|({0}|{1})\|' -f [regex]::Escape($script:LfDom2), [regex]::Escape($script:LfDom3)) })
+            (@($unscoped) -join ';') | Should -Be ('(gPLink=*)|{0}|dc=north,dc=contoso,dc=com;(gPLink=*)|{1}|dc=south,dc=contoso,dc=com' -f $script:LfDom2, $script:LfDom3)
+            $sum = Get-LfRow $rows ('GPO directory inventory: {0}' -f $script:LfDom1)
+            [string]$sum[0].Status | Should -Be 'Info'
+            [string]$sum[0].OtherDomainSoms | Should -Be 'All read'
+            [string]$sum[0].Linked | Should -Be '1'
+            @($rows | Where-Object { $null -ne $_.PSObject.Properties['Scope'] -and [string]$_.Scope -ne $script:LfDom1 }).Count | Should -Be 0 -Because 'the unscoped domains get no rows of their own'
+        }
+        It 'reads an unscoped domain named twice, in another case or with a trailing dot, once (independent review)' {
+            $forest = @($script:LfDom1, $script:LfDom2, $script:LfDom2.ToUpperInvariant(), ('{0}.' -f $script:LfDom2), $script:LfDom3, $script:LfDom3)
+            $null = @(Get-AdfaGpoDirectoryInventory -Domains @($script:LfDom1) -ForestDomains $forest -RootDomain $script:LfDom1 -Config $script:Config.Inventory -GpoConfig $script:Config.Gpo -IncludeUnscopedDomains)
+            # Declared population: one gPLink read for each of the two distinct unscoped domains.
+            $unscoped = @($script:LfInvReads | Where-Object { $_ -like '(gPLink=*)|*' -and $_ -notmatch ('\|{0}\|' -f [regex]::Escape($script:LfDom1)) })
+            $unscoped.Count | Should -Be 2
+            (@($unscoped | ForEach-Object { $_.Split('|')[1].TrimEnd('.').ToLowerInvariant() }) -join ',') | Should -Be (@($script:LfDom2, $script:LfDom3) -join ',')
+        }
+        It 'with the switch, an unscoped read refused keeps the link counts a floor and names that domain and the cause' {
+            $script:LfDeny = $script:LfDom2
+            $rows = @(Get-AdfaGpoDirectoryInventory -Domains @($script:LfDom1) -ForestDomains @($script:LfDom1, $script:LfDom2, $script:LfDom3) -RootDomain $script:LfDom1 -Config $script:Config.Inventory -GpoConfig $script:Config.Gpo -IncludeUnscopedDomains)
+            $sum = Get-LfRow $rows ('GPO directory inventory: {0}' -f $script:LfDom1)
+            [string]$sum[0].OtherDomainSoms | Should -Be 'Not all read'
+            [string]$sum[0].OtherDomainsNotRead | Should -Be $script:LfDom2
+            [string]$sum[0].Detail | Should -Match '(?i)access denied'
+        }
+        It 'is an opt-in switch of the script, off by default, logged, documented as reading unscoped domains, and wired to the collector' {
+            $p = @($script:LfAst.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'IncludeUnscopedGpoLinks' })
+            $p.Count | Should -Be 1
+            $p[0].StaticType.Name | Should -Be 'SwitchParameter'
+            $p[0].DefaultValue | Should -BeNullOrEmpty
+            $help = $script:LfAst.GetHelpContent()
+            $text = [string]$help.Parameters['INCLUDEUNSCOPEDGPOLINKS']
+            $text | Should -Match 'did not scope'
+            $text | Should -Match 'read-only'
+            $call = @(Get-LfCall $script:LfMain 'Get-AdfaGpoDirectoryInventory')
+            $call.Count | Should -Be 1
+            (Get-LfParameter -Call $call[0] -Name 'IncludeUnscopedDomains').Extent.Text | Should -Be '$IncludeUnscopedGpoLinks'
+            $log = @($script:LfMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Write-Log' -and $n.Extent.Text -match 'Parameters: OutputPath=' }, $true))
+            $log.Count | Should -Be 1
+            $log[0].Extent.Text | Should -Match 'IncludeUnscopedGpoLinks=\{\d+\}'
+            $log[0].Extent.Text | Should -Match '\[bool\]\$IncludeUnscopedGpoLinks'
+        }
+    }
+
+    Context 'Secondary zones and SecureSecondaries (C16d(c), closed as documented)' {
+        It 'still grades primary zones only for the zone transfer setting' {
+            (@($script:Config.Dns['GradedZoneTypes']) -join ',') | Should -Be 'Primary'
+        }
+    }
+
+    Context 'Version' {
+        It 'is 1.42.0 in the script and the manifest (PORT-PLAN C11f, C2i, C15d and C16d)' {
+            [string]$script:Config.Version | Should -Be '1.42.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.42.0'
         }
     }
 }
