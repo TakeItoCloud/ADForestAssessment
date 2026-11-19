@@ -10,6 +10,132 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Added - 2026-11-19 (Accounts and policy: Kerberos encryption types, PASSWD_NOTREQD, FSMO spread and the infrastructure master on a global catalog, lockout policy and fine-grained password policies, tool v1.44.0)
+
+**PORT-PLAN C16b(1-3)** (the first three of the seven C16b coverage additions; every choice approved upfront by
+the operator; the other four stay Planned as C16b(4-7), owner leftovers batch, next as v1.45.0). A **new
+`-Sections` value `AccountsPolicy`** (part of `All`), report section `Accounts & Policy`, config table
+`AccountsPolicy` (settable from `-ConfigOverridePath`; "Eighteen sections can be named"). No new script parameter.
+**Run against stubs only** - nothing in this entry has been read from a real directory. What was not verified:
+whether `Get-ADObject` returns `objectClass` as a list or the single most specific class when asked for it; the
+.NET types of `msDS-SupportedEncryptionTypes`, the lockout intervals and `options`; whether an account outside
+Domain Admins sees PSO objects at all; what `Get-ADOptionalFeature` returns in `EnabledScopes` for such an account;
+whether every NTDS Settings object carries `msDS-HasDomainNCs`; the cost of the enabled-computer read near the
+100000 cap. First real run is row C16f, with C17.
+
+- **Kerberos encryption types (C16b(1)).** Five rows per scoped domain - enabled users with an SPN, enabled
+  computers, managed service accounts (gMSA, sMSA, dMSA), domain controllers (`SERVER_TRUST_ACCOUNT` or
+  `PARTIAL_SECRETS_ACCOUNT`) and trusts - from the stored `msDS-SupportedEncryptionTypes`, decoded per MS-KILE
+  2.2.7. Only RC4 or DES is a `Warning`, RC4 or DES beside AES `Info`, AES only `Pass`; **no value (or 0) is never
+  graded**: the KDC then takes its own `DefaultDomainSupportedEncTypes`, which an LDAP read does not see and whose
+  default Learn states two ways. A trust with no value or no AES bit is a `Warning`. A computer whose
+  `operatingSystemVersion` begins with a digit below 6 is counted apart. Names in columns, never in Detail.
+- **Password not required.** Enabled accounts with `PASSWD_NOTREQD` (0x20), interdomain trust accounts left out,
+  each record checked again; a `Warning` naming them. An empty answer is a `Pass` only when `userAccountControl`
+  was read on the domain controllers' computer objects in the same domain; otherwise `Not Assessed`.
+- **FSMO (C16b(2)).** "FSMO role spread (forest)" and "(domain)" rows, `Info` with the KB 223346 placements;
+  "Infrastructure master on a global catalog" graded exactly as KB 223346 and KB 248047 state, with the GC flag
+  read from `options` bit 1 of the holder's NTDS Settings object (matched by DN) and every DC of the domain
+  (`msDS-HasDomainNCs`), the forest's domain count, its level and the Recycle Bin.
+- **Lockout and fine-grained policies (C16b(3)).** "Lockout policy" per domain from `lockoutThreshold`,
+  `lockoutDuration` and `lockOutObservationWindow` against the Windows security baseline figures Learn quotes
+  (10, about 15 minutes, 15 minutes, and the reset time not above the duration) - at most a `Warning`; one row per
+  PSO, a precedence-tie row (`Warning`) and an applied-to-nothing row (`Info`). No PSO returned is
+  `Not Assessed`, "none visible to this account", never "no PSO".
+- **Reads.** Every directory read goes through `Get-AdfaAccountsPolicyRaw`, one call of the capped C15 seam with
+  the declared lists of `AccountsPolicy.Reads` (refused before sending on a wildcard, a name that is not plain or a
+  secret attribute), `-Server` always the domain; `Get-ADOptionalFeature` once, only in a multi-domain forest.
+  Unreachable, access denied and timed out are each their own `Not Assessed`.
+- **Grades** are tool defaults, not Microsoft values: `WeakOnlyStatus` (Warning or Fail), `Rc4AllowedStatus` (Info
+  or Warning), `TrustNoAesStatus`, `PasswordNotRequiredStatus`, `PrecedenceTieStatus` (Info, Warning or Fail),
+  `InfrastructureOnGcStatus` (Warning or Fail), `LockoutBaselineStatus` (Info or Warning), `PsoAppliedToNothingStatus`
+  (Info or Warning), plus `MaxObjects` and `NameListCap`. The bits, filters, property lists, the baseline figures,
+  the container and the feature name are refused.
+- **Advice.** Six section-scoped recommendation entries and a catch-all with no advice ahead of the unscoped map,
+  so no unscoped entry (PDC emulator, global catalog, Recycle Bin, lockout, trust, event 1419, NOT a pass) answers
+  these rows.
+- **Wording, no behaviour change.** The help (`.DESCRIPTION`, `.PARAMETER Sections` and `ConfigOverridePath`), the
+  README Coverage rows Policy, Security posture and Resilience, `Get-AdfaSecurityPosture`'s comment and
+  `Get-AdfaRedundancy`'s synopsis ("FSMO concentration is not evaluated here; see the AccountsPolicy section") point at
+  the new section; the help and README references to the four items left are now "PORT-PLAN C16b(4-7)". No Item
+  text or status of an existing row changed. docs/SIDE-EFFECT-AUDIT.md: the `Command:Get-ADObject` and
+  `Command:Get-ADOptionalFeature` rows name the new reads; no new command. docs/GAP-ANALYSIS.md: GAP-P10, P18 and
+  P27 closed.
+- **Tests.** A new Describe (90 tests; 97 after the review fixes below). Existing tests changed only where a count or pin moved with this row:
+  the 19 version pins (1.43.0 to 1.44.0), the eleven `ConfigOverrideSections` key-list pins (`,AccountsPolicy`
+  appended), the nine "Seventeen sections can be named" pins ("Eighteen"), `C4PropertiesArgumentCount` and
+  `C4bArgumentCount` (39 to 40: the one seam call of `Get-AdfaAccountsPolicyRaw`), the ActiveDirectory command
+  count (88 to 89: the `Get-ADOptionalFeature` of `Get-AdfaRecycleBinRaw`), the C4b4 count of `Get-AdfaInventoryReadCause`
+  calls that pass `-CapSource` (15 to 24) and the H21 function and parameter counts (479 to 493, 1804 to 1869); one
+  unused variable removed from the new Describe after PSScriptAnalyzer; none deleted or weakened. Run-Validation: the version pins, the override key list and 21 pure-logic
+  assertions (26 after the review fixes); the smoke harness: an AccountsPolicy stub branch and checks in the single-domain, three-domain and
+  failing-collector passes.
+- **Mutations** (scratch copy, new Describe only, pwsh 7; each restored and SHA-256 checked): M1 the infrastructure
+  master's GC test inverted - killed (9 tests); M2 an empty PASSWD_NOTREQD answer without proof passes - killed (1);
+  M3 the encryption type verdict ignores a failed read - killed (3); M4 the Recycle Bin cause always called
+  unreachable - killed (1); M5 WeakOnlyStatus accepts Pass - killed (1); M6 the Invoke-Main branch names another
+  section - killed (1); M7 a lockout threshold of 10 flagged (off by one) - killed (5); M8 the per-DC loop of the
+  infrastructure master reads only the first DC - killed (7). None survived.
+
+**Found by an independent review of the diff before commit, and fixed in it.** Each behaviour fix has a test in
+the new Describe that was shown red before the fix (the fix taken out on a scratch copy, Windows PowerShell 5.1,
+Pester 5.9.1, new Describe only, baseline 97/0; the real file SHA-256 checked unchanged), and an assertion in
+Run-Validation.
+(1) **Infrastructure master on a GC graded Pass over an empty population.** A GC holder in a domain that no NTDS
+Settings object named in `msDS-HasDomainNCs` got "every one of the 0 DC(s) of the domain" and `Pass`. Now the
+population (the NTDS Settings objects naming the domain) must be non-empty and must hold the holder's own object;
+otherwise `Not Assessed` with the cause. (2) **Password not required: Pass over records whose
+`userAccountControl` was not read.** A record the search matched but returned without a readable
+`userAccountControl` was counted with the disabled and trust accounts (`NotCounted`), and an empty count was a
+`Pass`. It is now counted in a new `NotRead` column; with no account counted and any `NotRead`, the row is
+`Not Assessed`, and a `Warning` says how many more were not read. (3) **The collector's proof was not pinned.**
+A new collector test (north's computer read returns a workstation and no DC) shows the empty PASSWD_NOTREQD answer
+`Not Assessed`; removing the proof now fails it. (4) **The `msDS-HasDomainNCs`-not-returned guard was not pinned.**
+A new test (a DSA with no domain beside an all-GC domain) is `Not Assessed`, with a control that passes without it.
+(5) **A flags-only trust value and a ranged `msDS-PSOAppliesTo` were not pinned.** New tests: a trust holding
+0x20000 only is the trust grade; a ranged PSO is not listed as applied to nothing (with a non-ranged control).
+(6) **A positive `lockoutDuration` was decoded as a duration**, against Learn's "the negative of the number of
+100-nanosecond intervals" and the config comment. `ConvertFrom-AdfaLockoutInterval` gains `-NegativeRequired`,
+set for `lockoutDuration` only: a value above 0 is now "not decoded" and the row `Info`, never `Pass`. The other
+three intervals (`lockOutObservationWindow`, `msDS-LockoutDuration`, `msDS-LockoutObservationWindow`) keep the
+magnitude, because their Learn pages do not state a sign; the comment now says exactly that, and that the
+`msDS-*` pages do not state the unit either (100-ns is taken from the domain attributes they mirror).
+Also found while fixing: two harness lines had lost their line break (a Run-Validation assertion ran into
+`Write-Host ""`, which would have bound an extra positional argument, and a smoke check ran into the next
+comment); both split. Tests changed by the fix: the H21 parameter count 1869 to 1870 (`-NegativeRequired`); the
+new Describe grows from 90 to 97 tests, and its north computer stub takes an `ApMode['nodc']` switch.
+
+Sources (each read on Microsoft Learn on 2026-11-19):
+https://learn.microsoft.com/windows/win32/adschema/a-msds-supportedencryptiontypes,
+https://learn.microsoft.com/openspecs/windows_protocols/ms-kile/6cfc7b50-11ed-4b4d-846d-6f08f0812919,
+https://learn.microsoft.com/windows-server/security/kerberos/detect-remediate-rc4-kerberos,
+https://learn.microsoft.com/troubleshoot/windows-server/windows-security/kerberos-protocol-registry-kdc-configuration-keys,
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/linux-accounts-cannot-get-aes-tickets (search excerpt),
+https://learn.microsoft.com/troubleshoot/windows-server/windows-security/unsupported-etype-error-accessing-trusted-domain,
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties,
+https://learn.microsoft.com/windows/win32/adsi/search-filter-syntax,
+https://learn.microsoft.com/windows/win32/ad/creating-a-user (search excerpt),
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/fsmo-placement-and-optimization-on-ad-dcs,
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/phantoms-tombstones-infrastructure-master,
+https://learn.microsoft.com/windows-server/identity/ad-ds/manage/understand-fsmo-roles,
+https://learn.microsoft.com/windows/win32/ad/binding-to-the-global-catalog,
+https://learn.microsoft.com/windows/win32/adschema/a-msds-hasdomainncs,
+https://learn.microsoft.com/windows/win32/adschema/a-msds-enabledfeature,
+https://learn.microsoft.com/windows/win32/adschema/c-ntdsdsaro,
+https://learn.microsoft.com/windows-server/identity/ad-ds/get-started/adac/active-directory-recycle-bin,
+https://learn.microsoft.com/windows/win32/adschema/a-lockoutduration,
+https://learn.microsoft.com/windows/win32/adschema/a-lockoutobservationwindow,
+https://learn.microsoft.com/windows/win32/adschema/a-lockoutthreshold,
+https://learn.microsoft.com/windows/win32/adschema/a-msds-lockoutduration,
+https://learn.microsoft.com/windows/win32/adschema/a-msds-lockoutobservationwindow,
+https://learn.microsoft.com/windows/win32/adschema/s-interval,
+https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/account-lockout-threshold,
+https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/account-lockout-duration,
+https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/reset-account-lockout-counter-after,
+https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc770394(v=ws.10),
+https://learn.microsoft.com/windows/win32/adschema/c-msds-passwordsettings.
+Not read: KB 5073381 (support.microsoft.com, not Learn) - no value is taken from it.
+
 ### Changed - 2026-11-19 (W32Time policy source, raw event occurrences, ranged and primary-group member counts, gPOptions meaning, whether the runner is a DC, trust bits and type by name, tool v1.43.0)
 
 **PORT-PLAN C15c** (the leftovers batch of C15; every choice approved upfront by the operator). No new

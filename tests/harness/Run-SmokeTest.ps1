@@ -807,7 +807,55 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     # the requested LDAP names where set - objectSid a SecurityIdentifier, the times raw Int64 FILETIME,
     # whenCreated a DateTime. Each object also carries the seven secret LAPS attributes holding the
     # sentinel, as if the module had handed them back: none may reach a file.
-    $stubExportKind = ''
+    # PORT-PLAN C16b(1-3): the reads of the AccountsPolicy section, told apart by their declared filter AND list
+    # (AccountsPolicy.Reads) - the role reads (fSMORoleOwner alone) and CN=Partitions keep the topology answer below.
+    # Each must name its domain; the answers are in the shape Get-ADObject returns (the default Name, DistinguishedName
+    # and ObjectClass, then the asked LDAP names where set). $script:SmokeAccountsPolicyFail refuses them (access denied).
+    $stubApRead = ''
+    foreach ($stubApKey in @($script:Config.AccountsPolicy['Reads'].Keys)) {
+        $stubApSpec = $script:Config.AccountsPolicy['Reads'][$stubApKey]
+        if (-not $stubApSpec.ContainsKey('Filter') -and $stubApKey -ne 'DomainHead') { continue }
+        if ($stubApSpec.ContainsKey('Filter') -and [string]$stubApSpec['Filter'] -ne $stubInvFilter) { continue }
+        $stubApList = @(@($stubApSpec['Properties']) + @(@($stubApSpec['CountProperties']) | Where-Object { $null -ne $_ }))
+        if (($stubInvAsked -join ',') -ne ($stubApList -join ',')) { continue }
+        $stubApRead = [string]$stubApKey
+    }
+    if ($stubApRead -ne '') {
+        $stubApServer = [string]$stubNamed['Server']
+        if ([string]::IsNullOrWhiteSpace($stubApServer)) { throw 'STUB: an AccountsPolicy read must name its domain' }
+        $script:SmokeAccountsPolicyCalls += ("{0}@{1}" -f $stubApRead, $stubApServer)
+        if ($script:SmokeAccountsPolicyFail) { throw [System.UnauthorizedAccessException]'STUB: AccountsPolicy read refused' }
+        $stubApDn = 'DC=' + ($stubApServer -replace '\.', ',DC=')
+        $stubApUserClass = @('top', 'person', 'organizationalPerson', 'user')
+        switch ($stubApRead) {
+            'UsersWithSpn' { return [pscustomobject]@{ DistinguishedName = ("CN=svc.smoke,CN=Users,{0}" -f $stubApDn); Name = 'svc.smoke'; ObjectClass = 'user'; sAMAccountName = 'svc.smoke'; userAccountControl = 66048; 'msDS-SupportedEncryptionTypes' = 4 } }
+            'Computers' {
+                return @(
+                    [pscustomobject]@{ DistinguishedName = ("CN=DC1,OU=Domain Controllers,{0}" -f $stubApDn); Name = 'DC1'; sAMAccountName = 'DC1$'; userAccountControl = 532480; objectClass = @($stubApUserClass + @('computer')); operatingSystemVersion = '10.0 (20348)'; 'msDS-SupportedEncryptionTypes' = 24 }
+                    [pscustomobject]@{ DistinguishedName = ("CN=WS1,CN=Computers,{0}" -f $stubApDn); Name = 'WS1'; sAMAccountName = 'WS1$'; userAccountControl = 4096; objectClass = @($stubApUserClass + @('computer')); operatingSystemVersion = '10.0 (22631)'; 'msDS-SupportedEncryptionTypes' = 28 }
+                    [pscustomobject]@{ DistinguishedName = ("CN=gmsa1,CN=Managed Service Accounts,{0}" -f $stubApDn); Name = 'gmsa1'; sAMAccountName = 'gmsa1$'; userAccountControl = 4096; objectClass = 'msDS-GroupManagedServiceAccount'; 'msDS-SupportedEncryptionTypes' = 24 }
+                )
+            }
+            'Trusts' {
+                if ($stubApServer -ne 'contoso.com') { return }
+                return [pscustomobject]@{ DistinguishedName = 'CN=fabrikam.com,CN=System,DC=contoso,DC=com'; Name = 'fabrikam.com'; ObjectClass = 'trustedDomain'; trustPartner = 'fabrikam.com'; 'msDS-SupportedEncryptionTypes' = 24 }
+            }
+            'PasswordNotRequired' { return }
+            'Dsa' {
+                return [pscustomobject]@{ DistinguishedName = 'CN=NTDS Settings,CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,CN=Configuration,DC=contoso,DC=com'; Name = 'NTDS Settings'; ObjectClass = 'nTDSDSA'; options = 1; 'msDS-HasDomainNCs' = @('DC=contoso,DC=com') }
+            }
+            'Pso' {
+                if ($stubApServer -ne 'contoso.com') { return }
+                return [pscustomobject]@{ DistinguishedName = 'CN=pso-admins,CN=Password Settings Container,CN=System,DC=contoso,DC=com'; Name = 'pso-admins'; ObjectClass = 'msDS-PasswordSettings'; objectGUID = [guid]'33333333-0000-4000-8000-000000000001'
+                    'msDS-PasswordSettingsPrecedence' = 10; 'msDS-LockoutDuration' = [int64]-9000000000; 'msDS-LockoutObservationWindow' = [int64]-9000000000; 'msDS-LockoutThreshold' = 10; 'msDS-PSOAppliesTo' = @(("CN=Domain Admins,CN=Users,{0}" -f $stubApDn)) }
+            }
+            'DomainHead' {
+                return [pscustomobject]@{ DistinguishedName = $stubApDn; Name = ($stubApServer -replace '\..*$', ''); ObjectClass = 'domainDNS'
+                    fSMORoleOwner = 'CN=NTDS Settings,CN=DC1,CN=Servers,CN=Default-First-Site-Name,CN=Sites,CN=Configuration,DC=contoso,DC=com'
+                    lockoutThreshold = 10; lockoutDuration = [int64]-9000000000; lockOutObservationWindow = [int64]-9000000000 }
+            }
+        }
+    }    $stubExportKind = ''
     if ($stubInvFilter -eq [string]$script:Config.DirectoryRead['UserExportFilter'] -and ($stubInvAsked -join ',') -eq (@($script:Config.DirectoryRead['UserExportProperties']) -join ',')) { $stubExportKind = 'User' }
     if ($stubInvFilter -eq [string]$script:Config.DirectoryRead['ComputerExportFilter'] -and ($stubInvAsked -join ',') -eq (@($script:Config.DirectoryRead['ComputerExportProperties']) -join ',')) { $stubExportKind = 'Computer' }
     if ($stubExportKind -ne '') {
@@ -1344,6 +1392,10 @@ if ($null -eq ('SmokeStub.ADIdentityNotFoundException' -as [type])) {
 # C15: the inventory directory reads, the disabled-account reads and the event reads, each recorded; the
 # failing-collectors pass refuses them.
 $script:SmokeInventoryFail = $false
+# PORT-PLAN C16b(1-3): the AccountsPolicy reads, each recorded with the domain it named; the failing-collectors pass
+# refuses them.
+$script:SmokeAccountsPolicyFail = $false
+$script:SmokeAccountsPolicyCalls = @()
 $script:SmokeInventoryCalls = @()
 $script:SmokeDisabledCalls = @()
 # C4b: the export, trust, site link and connection reads, each recorded with what it sent; the
@@ -2067,6 +2119,23 @@ if (Test-Path $c16RepCsv) {
 }
 else { Check $false 'C16 review 5: Replication Health CSV exists' }
 
+# PORT-PLAN C16b(1-3) (v1.44.0): the AccountsPolicy section in the single-domain pass - wired by 'All', every row of
+# contoso.com read from contoso.com, the declared population of rows (the forest spread, five encryption rows, the
+# PASSWD_NOTREQD, spread, infrastructure master and lockout rows, one PSO and its two summary rows: 13).
+$apRows = @($smokeFindings | Where-Object { $_.Section -eq 'Accounts & Policy' })
+Check ($apRows.Count -eq 13) ("C16b: the 'Accounts & Policy' section is wired by All and gives 13 rows for the stub forest ({0})" -f $apRows.Count)
+Check (@($apRows | Where-Object { $_.Item -ne 'FSMO role spread (forest): contoso.com' -and $_.Scope -ne 'contoso.com' }).Count -eq 0) 'C16b: every domain row is scoped to contoso.com'
+Check (@($script:SmokeAccountsPolicyCalls | Where-Object { $_ -notlike '*@contoso.com' }).Count -eq 0 -and @($script:SmokeAccountsPolicyCalls).Count -ge 7) ("C16b: every AccountsPolicy read named contoso.com ({0})" -f (@($script:SmokeAccountsPolicyCalls) -join ', '))
+$apSpn = @($apRows | Where-Object { $_.Item -eq 'Kerberos encryption types (users with an SPN): contoso.com' })
+Check ($apSpn.Count -eq 1 -and $apSpn[0].Status -eq 'Warning' -and $apSpn[0].Recommendation -match 'MS-KILE 2\.2\.7') 'C16b: the RC4-only service account is a Warning with the section''s own advice'
+Check (@($apRows | Where-Object { $_.Item -eq 'Kerberos encryption types (domain controllers): contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C16b: the stub DC (AES only) passes'
+Check (@($apRows | Where-Object { $_.Item -eq 'Kerberos encryption types (computers): contoso.com' -and $_.Status -eq 'Info' }).Count -eq 1) 'C16b: the workstation with RC4 beside AES is Info (a tool default)'
+Check (@($apRows | Where-Object { $_.Item -eq 'Kerberos encryption types (managed service accounts): contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C16b: the gMSA is split from the computers and passes'
+Check (@($apRows | Where-Object { $_.Item -eq 'Password not required: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C16b: no PASSWD_NOTREQD account, with userAccountControl read on the DC, is a measured Pass'
+Check (@($apRows | Where-Object { $_.Item -eq 'Infrastructure master on a global catalog: contoso.com' -and $_.Status -eq 'Pass' -and $_.Detail -match 'one domain' }).Count -eq 1) 'C16b: a single-domain forest exempts the infrastructure master'
+Check (@($apRows | Where-Object { $_.Item -eq 'Lockout policy: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C16b: the stub lockout policy (10, 15, 15) passes'
+Check (@($apRows | Where-Object { $_.Item -like 'FSMO role spread *' -and $_.Status -ne 'Info' }).Count -eq 0) 'C16b: the FSMO spread rows are Info, never graded'
+Check (@($apRows | Where-Object { $_.Item -eq 'Fine-grained password policy precedence: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C16b: one PSO read in full has no precedence tie'
 Write-Host ""
 Write-Host ("Output bundle: {0}" -f $result.OutputRoot)
 Get-ChildItem -Recurse $result.OutputRoot | Select-Object -First 30 FullName | ForEach-Object { Write-Host ("   {0}" -f $_.FullName) }
@@ -2196,6 +2265,8 @@ $script:SmokeW32TimePolicy = @{ 'SOFTWARE\Policies\Microsoft\W32Time\TimeProvide
 $script:SmokeBigGroup = $true
 $script:SmokeRunnerCalls = @()
 $c15cCallsBefore2 = @($script:SmokeInventoryCalls).Count
+# PORT-PLAN C16b(1-3): the AccountsPolicy reads of this pass alone.
+$script:SmokeAccountsPolicyCalls = @()
 $result2 = Invoke-Main
 $script:SmokeW32TimePolicy = @{}
 $script:SmokeBigGroup = $false
@@ -2408,6 +2479,17 @@ Check (@($pa2 | Where-Object { $_.Item -match '^(Schema|Enterprise) Admins membe
 Check (@($pa2 | Where-Object { $_.Item -match '^Privileged group: (Schema Admins|Enterprise Admins): (north|south)\.' }).Count -eq 0) 'Multi-domain: no child domain is given a forest-root group'
 Check (@($pa2 | Where-Object { $_.Item -match '^Privileged group: (Administrators|Domain Admins): ' }).Count -eq 6 -and @($pa2 | Where-Object { $_.Item -match '^Privileged group: (Administrators|Domain Admins): ' -and $_.Status -ne 'Not Assessed' }).Count -eq 0) 'Multi-domain: no count of a group with members is given on members it could not route (6 rows, all Not Assessed)'
 
+# PORT-PLAN C16b(1-3) (v1.44.0) in the three-domain run: every family per scoped domain, scoped to it, each domain
+# read from itself (declared population: the three domains).
+$ap2 = @($findings2 | Where-Object { $_.Section -eq 'Accounts & Policy' })
+foreach ($d in $multiDomains) {
+    foreach ($apItem in @(('Kerberos encryption types (domain controllers): {0}' -f $d), ('Password not required: {0}' -f $d), ('FSMO role spread (domain): {0}' -f $d), ('Infrastructure master on a global catalog: {0}' -f $d), ('Lockout policy: {0}' -f $d))) {
+        Check (@($ap2 | Where-Object { $_.Item -eq $apItem -and $_.Scope -eq $d }).Count -eq 1) ("C16b multi-domain: '{0}' appears once, scoped to its domain" -f $apItem)
+    }
+    Check (@($script:SmokeAccountsPolicyCalls | Where-Object { $_ -eq ('UsersWithSpn@{0}' -f $d) }).Count -eq 1) ("C16b multi-domain: the users with an SPN of '{0}' are read from that domain" -f $d)
+}
+Check (@($ap2 | Where-Object { $_.Item -like 'Infrastructure master on a global catalog: *' -and $_.Status -eq 'Pass' -and $_.Detail -match 'Recycle Bin is enabled' }).Count -eq 3) 'C16b multi-domain: the enabled Recycle Bin at forest level 7 exempts the infrastructure master in each of the three domains'
+Check (@($ap2 | Where-Object { $_.Item -like 'Fine-grained password policy precedence: *' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'none visible to this account' }).Count -eq 2) 'C16b multi-domain: a domain with no PSO visible is Not Assessed, never "no PSO"'
 # PORT-PLAN C16 (GAP-P1, P9, P20) in the three-domain run: one subscription verdict and one central
 # store row per scoped domain, each read from that domain, and the DC gate over the whole forest.
 foreach ($d in $multiDomains) {
@@ -3376,6 +3458,9 @@ $script:SmokeStaleFail = $true
 # are refused with the stale reads above.
 $script:SmokeInventoryFail = $true
 $script:SmokeEventsFail = $true
+# PORT-PLAN C16b(1-3): the AccountsPolicy reads are refused too (access denied).
+$script:SmokeAccountsPolicyFail = $true
+$script:SmokeAccountsPolicyCalls = @()
 $script:SmokeEventCalls = @()
 $script:SmokePopulationCalls = @()
 $script:SmokeFutureCalls = @()
@@ -3417,7 +3502,13 @@ Check (Test-Path $result3.FindingsFile) 'Failure mode: consolidated findings sti
 $findings3 = @(Import-Csv $result3.FindingsFile)
 Check ($findings3.Count -gt 0) ("Failure mode: findings are not empty ({0} rows)" -f $findings3.Count)
 
-# Nothing may be reported as healthy on the strength of a collector that threw.
+# PORT-PLAN C16b(1-3): with every AccountsPolicy read refused, the section is still wired and every row is Not Assessed
+# with access denied or another named cause - never Pass, never Info.
+$ap3 = @($findings3 | Where-Object { $_.Section -eq 'Accounts & Policy' })
+Check ($ap3.Count -gt 0 -and @($ap3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode C16b: every Accounts & Policy row is Not Assessed ({0} rows; {1})" -f $ap3.Count, (@($ap3 | Where-Object { $_.Status -ne 'Not Assessed' } | ForEach-Object { '{0}={1}' -f $_.Item, $_.Status }) -join '; '))
+Check (@($ap3 | Where-Object { $_.Item -like 'Kerberos encryption types (users with an SPN): *' -and $_.Detail -match 'access denied' }).Count -eq 1) 'Failure mode C16b: the refused read is worded as access denied'
+Check (@($script:SmokeAccountsPolicyCalls).Count -gt 0) 'Failure mode C16b: non-vacuity - the AccountsPolicy reads were attempted and refused'
+$script:SmokeAccountsPolicyFail = $false# Nothing may be reported as healthy on the strength of a collector that threw.
 $dcEnum = @($findings3 | Where-Object { $_.Item -match 'Domain controller enumeration' })
 Check ($dcEnum.Count -ge 1) 'Failure mode: DC enumeration failure is a first-class finding'
 if ($dcEnum.Count -ge 1) {
