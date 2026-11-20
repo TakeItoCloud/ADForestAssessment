@@ -3187,7 +3187,7 @@ $dnsProv = Get-AdfaDnsDynamicUpdateVerdict -Observations @((& $dnsObs 'dc1.conto
 Assert-True ($dnsProv.Status -eq 'Warning' -and $dnsProv.Detail -match 'Graded Warning: C:\\cfg\\dns\.json \(loaded' -and $dnsProv.Detail -notmatch 'The grade is a tool default') 'C13 review: a grade a file set names the file, not a tool default'
 
 Write-Host "== C14: reachability classes, site coverage, clock offset against the forest root PDC, stale objects, SYSVOL engine ==" -ForegroundColor Cyan
-Assert-Equal '1.46.0' ([string]$script:Config.Version) 'C14: version 1.46.0 in the script (bumped by PORT-PLAN H21b)'
+Assert-Equal '1.47.0' ([string]$script:Config.Version) 'C14: version 1.47.0 in the script (bumped by PORT-PLAN C16e+C14e)'
 $c14Reach = $script:Config.Reach
 $c14Res = { param([bool]$Ok = $true, [string[]]$A = @('192.0.2.21'), [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Ok = $Ok; Addresses = @($A); SocketError = $Se; TimedOut = $To; Error = '' } }
 $c14Probe = { param([string]$O = 'Open', [string]$Se = '', [bool]$To = $false) [pscustomobject]@{ Outcome = $O; SocketError = $Se; TimedOut = $To; Error = '' } }
@@ -3280,7 +3280,7 @@ $c14Advice = @(
 )
 Assert-True ($c14Advice[0] -match 'metadata cleanup' -and $c14Advice[1] -match 'subnet object' -and $c14Advice[2] -match 'forest root PDC emulator' -and $c14Advice[3] -match 'lastLogonTimestamp' -and $c14Advice[4] -match 'dfsrmig') 'C14 advice: each family gets its own advice whatever the Detail says (declared population: five families)'
 Write-Host "== C15: inventory depth - topology, trusts, suffixes, object counts, stale disabled objects, groups, GPOs, events, w32tm configuration ==" -ForegroundColor Cyan
-Assert-Equal '1.46.0' ([string]$script:Config.Version) 'C15: version 1.46.0 in the script (bumped by PORT-PLAN H21b)'
+Assert-Equal '1.47.0' ([string]$script:Config.Version) 'C15: version 1.47.0 in the script (bumped by PORT-PLAN C16e+C14e)'
 $c15Cfg = $script:Config.Inventory
 $c15Dc = 'dc1.contoso.com'
 $c15Read = { param($Records = @(), [bool]$Ok = $true, [string]$E = '', [string]$T = '', [bool]$Cap = $false) [pscustomobject]@{ Ok = $Ok; Error = $E; ErrorType = $T; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $Cap; Filter = '(x)'; Identity = '' } }
@@ -3504,7 +3504,7 @@ $c16Src2 = & {
     Resolve-AdfaTrustSourceDc -DomainName 'contoso.com' -AdParams @{}
 }
 Assert-Equal 'dc1.contoso.com' ([string]$c16Src2.HostName) 'C16 GAP-P3: the PDC emulator is the source DC'
-Assert-Equal '1.46.0' ([string]$script:Config.Version) 'C16: version 1.46.0 in the script (bumped by PORT-PLAN H21b)'
+Assert-Equal '1.47.0' ([string]$script:Config.Version) 'C16: version 1.47.0 in the script (bumped by PORT-PLAN C16e+C14e)'
 
 # ---- PORT-PLAN C1a: the update build revision (pure) -----------------------------------------
 $c1aKey = [string]$script:Config.DcSystem['UbrKey']
@@ -3921,7 +3921,45 @@ Assert-True ((Get-AdfaDnsReadCause -Class 'SessionNotOpened' -Message 'x') -notm
 Assert-True ((Get-AdfaDnsReadCause -Class 'AccessDenied' -Message 'x') -notmatch 'account running the assessment was refused') 'C16b(4-7) review: the access denied lead names no single principal'
 Assert-True ((Get-AdfaConfigOverrideUnusedReason -Entry $script:ConfigOverrideSections['LingeringObjects'] -Sections @('All') -SwitchState @{ IncludeLingeringObjectScan = $false }) -match '^-IncludeLingeringObjectScan was not given') 'C16b(4-7) review: the LingeringObjects override is unused without -IncludeLingeringObjectScan, even with All'
 Assert-Equal '' (Get-AdfaConfigOverrideUnusedReason -Entry $script:ConfigOverrideSections['LingeringObjects'] -Sections @('Dns') -SwitchState @{ IncludeLingeringObjectScan = $true }) 'C16b(4-7) review: the LingeringObjects override is used with the switch, whatever -Sections'
-Write-Host ""
+# PORT-PLAN C16e and C14e (v1.47.0): the pure verdicts of the leftovers batch. Fictional names only.
+$lbCfg = $script:Config.AccountsPolicy
+$lbRead = { param($Records, [bool]$Ok = $true, [string]$Err = '', [string]$Type = '') [pscustomobject]@{ Ok = $Ok; Error = $Err; ErrorType = $Type; NotFound = $false; Records = @($Records); Count = @($Records).Count; Capped = $false; Filter = ''; Identity = '' } }
+$lbSubj = { param([string[]]$Class, $GroupType) & $lbRead @([pscustomobject]@{ DistinguishedName = 'CN=g,DC=contoso,DC=com'; Name = 'g'; objectClass = @($Class); groupType = $GroupType }) }
+Assert-Equal 'Honoured' ([string](Resolve-AdfaPsoSubject -Dn 'CN=g' -Raw (& $lbSubj @('top', 'group') -2147483646) -Config $lbCfg -CapSource 'x').Kind) 'C16e(a): a global security group (0x80000002) is honoured (Learn: global security groups and user objects)'
+Assert-Equal 'Ignored' ([string](Resolve-AdfaPsoSubject -Dn 'CN=g' -Raw (& $lbSubj @('top', 'group') 2) -Config $lbCfg -CapSource 'x').Kind) 'C16e(a): a global distribution group is ignored'
+Assert-Equal 'Ignored' ([string](Resolve-AdfaPsoSubject -Dn 'CN=g' -Raw (& $lbSubj @('top', 'group') -2147483644) -Config $lbCfg -CapSource 'x').Kind) 'C16e(a): a domain local security group is ignored'
+Assert-Equal 'Unknown' ([string](Resolve-AdfaPsoSubject -Dn 'CN=g' -Raw (& $lbSubj @('top', 'group') $null) -Config $lbCfg -CapSource 'x').Kind) 'C16e(a): a group whose groupType was not returned is Unknown, never ignored'
+Assert-Equal 'Unknown' ([string](Resolve-AdfaPsoSubject -Dn 'CN=g' -Raw (& $lbRead @() $false 'Access is denied.' 'System.UnauthorizedAccessException') -Config $lbCfg -CapSource 'x').Kind) 'C16e(a): a refused subject read is Unknown'
+$lbNtds = { param([string]$S) ("CN=NTDS Settings,CN={0},CN=Servers,CN=S,CN=Sites,CN=Configuration,DC=contoso,DC=com" -f $S) }
+$lbDsa = & $lbRead @([pscustomobject]@{ DistinguishedName = (& $lbNtds 'DC1'); Name = 'NTDS Settings'; objectClass = @('top', 'nTDSDSA') }, [pscustomobject]@{ DistinguishedName = (& $lbNtds 'RODC1'); Name = 'NTDS Settings'; objectClass = @('top', 'nTDSDSA', 'nTDSDSARO') })
+$lbRole = { param([string]$Role, [string]$S) [pscustomobject]@{ Role = $Role; Raw = (& $lbRead @([pscustomobject]@{ DistinguishedName = 'CN=x'; Name = 'x'; fSMORoleOwner = (& $lbNtds $S) })) } }
+Assert-Equal 'Fail' ([string](Get-AdfaRodcRoleHolderVerdict -Scope 'contoso.com' -Kind 'Domain' -Roles @((& $lbRole 'PDC emulator' 'DC1'), (& $lbRole 'RID master' 'RODC1')) -DsaRaw $lbDsa -Config $lbCfg -CapSource 'x').Status) 'C16e(c): an RODC named as a role holder is a Fail (Learn: RODCs cannot act as operations master role holders)'
+Assert-Equal 'Pass' ([string](Get-AdfaRodcRoleHolderVerdict -Scope 'contoso.com' -Kind 'Domain' -Roles @((& $lbRole 'PDC emulator' 'DC1')) -DsaRaw $lbDsa -Config $lbCfg -CapSource 'x').Status) 'C16e(c): a writable holder found in a complete read passes'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaRodcRoleHolderVerdict -Scope 'contoso.com' -Kind 'Domain' -Roles @((& $lbRole 'PDC emulator' 'DC9')) -DsaRaw $lbDsa -Config $lbCfg -CapSource 'x').Status) 'C16e(c): a holder not among the NTDS Settings objects read is Not Assessed'
+$lbCross = & $lbRead @([pscustomobject]@{ DistinguishedName = 'CN=a'; Name = 'a'; nCName = 'DC=contoso,DC=com' }, [pscustomobject]@{ DistinguishedName = 'CN=b'; Name = 'b'; nCName = 'DC=DomainDnsZones,DC=contoso,DC=com' })
+$lbInfra = { param([string]$Holder) & $lbRead @([pscustomobject]@{ DistinguishedName = 'CN=Infrastructure'; Name = 'Infrastructure'; fSMORoleOwner = $Holder }) }
+Assert-Equal 'Warning' ([string](Get-AdfaAppPartitionInfraVerdict -PartitionDn 'DC=DomainDnsZones,DC=contoso,DC=com' -PartitionsRaw $lbCross -Raw (& $lbInfra 'CN=NTDS Settings\0ADEL:1,CN=DC4\0ADEL:2,CN=Servers,CN=S,CN=Sites,CN=Configuration,DC=contoso,DC=com') -DsaRaw $lbDsa -Config $lbCfg -CapSource 'x').Status) 'C16e(d): a holder carrying 0ADEL is a Warning (KB 2694933)'
+Assert-Equal 'Info' ([string](Get-AdfaAppPartitionInfraVerdict -PartitionDn 'DC=DomainDnsZones,DC=contoso,DC=com' -PartitionsRaw $lbCross -Raw (& $lbInfra (& $lbNtds 'DC1')) -DsaRaw $lbDsa -Config $lbCfg -CapSource 'x').Status) 'C16e(d): a live holder is Info, never Pass'
+Assert-Equal 'Warning' ([string](Get-AdfaAppPartitionInfraVerdict -PartitionDn 'DC=DomainDnsZones,DC=contoso,DC=com' -PartitionsRaw $lbCross -Raw (& $lbInfra (& $lbNtds 'DC8')) -DsaRaw $lbDsa -Config $lbCfg -CapSource 'x').Status) 'C16e(d): a holder naming a DSA absent from a complete read is a Warning'
+$lbReg = { param($Values, [bool]$Denied = $false) [pscustomobject]@{ Raw = [pscustomobject]@{ Ok = (-not $Denied); Protocol = 'Wsman'; Error = $(if ($Denied) { 'Access is denied.' } else { '' }); ErrorCode = ''; Values = @($Values) }; Denied = $Denied; Attempts = @() } }
+$lbVal = { param([string]$Id, $Rv, $V) [pscustomobject]@{ Id = $Id; Key = 'k'; ValueName = $Id; Kind = 'Dword'; Answered = $true; ReturnValue = $Rv; Value = $V; Method = 'GetDWORDValue'; Error = ''; ErrorCode = '' } }
+$lbDc1 = 'dc1.contoso.com'; $lbDc2 = 'dc2.contoso.com'; $lbDc3 = 'dc3.contoso.com'
+$lbK1 = Get-AdfaKdcDefaultRow -ComputerName $lbDc1 -Scope 'contoso.com' -Read (& $lbReg @(& $lbVal 'DefaultDomainSupportedEncTypes' 0 24)) -Config $lbCfg
+$lbK2 = Get-AdfaKdcDefaultRow -ComputerName $lbDc2 -Scope 'contoso.com' -Read (& $lbReg @(& $lbVal 'DefaultDomainSupportedEncTypes' 0 28)) -Config $lbCfg
+$lbK3 = Get-AdfaKdcDefaultRow -ComputerName $lbDc3 -Scope 'contoso.com' -Read (& $lbReg @() $true) -Config $lbCfg
+Assert-Equal 'Set' ([string]$lbK1.KdcState) 'C16e(b): DefaultDomainSupportedEncTypes read with GetDWORDValue is Set'
+Assert-Equal 'Known' ([string](Resolve-AdfaKdcDomainDefault -DomainName 'contoso.com' -Rows @($lbK1) -Config $lbCfg).State) 'C16e(b): one DC read with a value is Known'
+Assert-Equal 'Differs' ([string](Resolve-AdfaKdcDomainDefault -DomainName 'contoso.com' -Rows @($lbK1, $lbK2) -Config $lbCfg).State) 'C16e(b): two DCs with different values Differ (a Warning, tool default)'
+Assert-Equal 'Unknown' ([string](Resolve-AdfaKdcDomainDefault -DomainName 'contoso.com' -Rows @($lbK1, $lbK3) -Config $lbCfg).State) 'C16e(b): a DC whose read was refused leaves the domain Unknown, never Known'
+$lbCis = @{} + $lbCfg; $lbCis['LockoutBaseline'] = 'AzureGuestConfigCis'
+$lbIv = { param($Min) ConvertFrom-AdfaLockoutInterval -Value ([int64](-1 * $Min * 600000000)) -Config $lbCfg }
+Assert-Equal 'Pass' ([string](Get-AdfaLockoutAssessment -Threshold 5 -Duration (& $lbIv 15) -Window (& $lbIv 15) -Config $lbCis).Status) 'C16e(e): CIS-mapped baseline, threshold 5 passes'
+Assert-Equal 'Warning' ([string](Get-AdfaLockoutAssessment -Threshold 6 -Duration (& $lbIv 15) -Window (& $lbIv 15) -Config $lbCis).Status) 'C16e(e): CIS-mapped baseline, threshold 6 is flagged'
+Assert-Equal 'Pass' ([string](Get-AdfaLockoutAssessment -Threshold 10 -Duration (& $lbIv 15) -Window (& $lbIv 15) -Config $lbCfg).Status) 'C16e(e): the Windows baseline stays the default (threshold 10 passes)'
+$lbSite = $script:Config.SiteCoverage
+Assert-Equal '40000000' ([string](Get-AdfaNetlogonLogCapacityRow -ComputerName $lbDc1 -Read (& $lbReg @((& $lbVal 'MaximumLogFileSize' 1 $null), (& $lbVal 'LogFileMaxSize' 1 $null))) -Config $lbSite).HistoryBytes) 'C14e(3): neither size value set is the documented 20000000 bytes, twice for log and bak'
+Assert-Equal 'Not Assessed' ([string](Get-AdfaNetlogonLogCapacityRow -ComputerName $lbDc1 -Read (& $lbReg @((& $lbVal 'MaximumLogFileSize' 0 30000000), (& $lbVal 'LogFileMaxSize' 0 50000000))) -Config $lbSite).Status) 'C14e(3): two size values that differ are Not Assessed (Learn does not say which wins)'
+Assert-True ((@($script:Config.Laps['ExcludedClasses']) -contains 'msDS-DelegatedManagedServiceAccount') -and ([string]$script:Config.Inventory['CountFilters']['Computers'] -match [regex]::Escape('(!(objectClass=msDS-DelegatedManagedServiceAccount))'))) 'C14e(1): dMSA is excluded from the LAPS computer population and the computer count'Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Passed, $script:Failures) -ForegroundColor $(if ($script:Failures -eq 0) { 'Green' } else { 'Red' })
 Remove-Item Env:\ADFA_NO_AUTORUN -ErrorAction SilentlyContinue
 if ($script:Failures -gt 0) { exit 1 }

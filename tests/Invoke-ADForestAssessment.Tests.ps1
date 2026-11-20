@@ -7613,9 +7613,9 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             $text | Should -Match 'never reads a password'
             $text | Should -Match 'Microsoft Entra ID'
         }
-        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries the same version in the script and the manifest: 1.47.0 (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -7822,7 +7822,8 @@ Describe 'Windows LAPS: schema, DSRM password backup, computers with no LAPS exp
             [string]$script:Lc['SourceUrl'] | Should -Match '^https://learn\.microsoft\.com/'
             [string]$script:Lc['ReadDate'] | Should -Be '2026-11-15'
             [string]$script:Lc['SchemaControl'] | Should -Be 'operatingSystemVersion'
-            (@($script:Lc['ExcludedClasses']) -join ',') | Should -Be 'msDS-GroupManagedServiceAccount,msDS-ManagedServiceAccount'
+            # PORT-PLAN C14e(1) (v1.47.0): dMSA excluded too (class name not published on Learn; operator decision C14d(7)).
+            (@($script:Lc['ExcludedClasses']) -join ',') | Should -Be 'msDS-GroupManagedServiceAccount,msDS-ManagedServiceAccount,msDS-DelegatedManagedServiceAccount'
             # Declared population: the two build ranges Microsoft's LAPS CSP page lists.
             @($script:Lc['CapableBuilds']).Count | Should -Be 2
             (@($script:Lc['CapableBuilds'] | ForEach-Object { "{0}-{1}" -f $_['MinBuild'], $_['MaxBuild'] }) -join ',') | Should -Be '17763-17763,19041-'
@@ -9271,9 +9272,9 @@ Describe 'DC certificates: the LDAPS certificate each DC presents, and those pub
             $row[0] | Should -Match 'userCertificate'
             @($readme | Where-Object { $_ -match '^\| \*\*Windows LAPS\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries the same version in the script and the manifest: 1.47.0 (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -10261,9 +10262,9 @@ Describe 'RID pool: allocation enabled, global RID space issued, per-DC pool (C6
             $row[0] | Should -Match 'SidCompatibilityVersion'
             @($readme | Where-Object { $_ -match '^\| \*\*DC certificates\*\* \|' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries the same version in the script and the manifest: 1.47.0 (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -11200,9 +11201,9 @@ Describe 'SID history: principals with sIDHistory, same-domain and privileged hi
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## RID pool' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries the same version in the script and the manifest: 1.47.0 (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -12194,9 +12195,9 @@ Describe 'GPO version consistency: versionNumber in the directory against GPT.IN
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## SID history' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries the same version in the script and the manifest: 1.47.0 (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -13434,9 +13435,9 @@ Describe 'Dangerous rights: replication and control rights on the domain head, A
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## GPO version consistency' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries the same version in the script and the manifest: 1.47.0 (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -14657,9 +14658,9 @@ Describe 'Privileged groups and delegation: Schema and Enterprise Admins, group 
             @($readme | Where-Object { $_ -eq '## Privileged groups and delegation' }).Count | Should -Be 1
             @($readme | Where-Object { $_ -eq '## Dangerous rights in the directory' }).Count | Should -Be 1   # non-vacuity
         }
-        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries the same version in the script and the manifest: 1.47.0 (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -16533,9 +16534,9 @@ Describe 'dcdiag per DC, per partition and per scope: the grid, Topology, CheckS
             $i = [array]::IndexOf(@($runs[0].CommandElements), $args0[0])
             $runs[0].CommandElements[$i + 1].Extent.Text | Should -Match '^\(Get-AdfaDcdiagArgument '
         }
-        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries the same version in the script and the manifest: 1.47.0 (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
         It 'documents the override key, the opt-in tests and the per-scope rows in the help and the README' {
             $help = $script:C11Ast.GetHelpContent()
@@ -17209,9 +17210,9 @@ Describe 'dcdiag DNS summary per test group: Auth, Basc, Forw, Del, Dyn, RReg, E
             $strings = @($script:C12Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true))
             @($strings | Where-Object { $_.Extent.Text -match '(?i)(^|[\s''"])/x:' }).Count | Should -Be 0
         }
-        It 'carries the same version in the script and the manifest: 1.46.0 (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries the same version in the script and the manifest: 1.47.0 (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
         It 'documents the per-group rows in the help and the README' {
             $help = $script:C12Ast.GetHelpContent()
@@ -17362,9 +17363,9 @@ Describe 'DNS: dynamic update, aging and scavenging, locator records, DC A recor
             [int]$script:C13Cfg['RecordExportCap'] | Should -Be 50000
             [int]$script:C13Cfg['RpcPort'] | Should -Be 135
         }
-        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries version 1.47.0 in the script and the manifest (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -18693,9 +18694,9 @@ Describe 'Reachability classes, subnets and clients without a site, clock offset
             (@($e['GlobalStateNames'].Keys | Sort-Object { [int]$_ }) -join ',') | Should -Be '0,16,32,48'
             [string]$e['GlobalStateNames']['48'] | Should -Be 'Eliminated'
         }
-        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries version 1.47.0 in the script and the manifest (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -19848,9 +19849,9 @@ Describe 'Inventory depth: topology, trusts, suffixes, object counts, stale disa
             (@($w | Where-Object { $_.Id -eq 'AnnounceFlags' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Config'
             (@($w | Where-Object { $_.Id -eq 'Type' })[0]).Key | Should -Be 'SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
         }
-        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries version 1.47.0 in the script and the manifest (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -24189,9 +24190,9 @@ Describe 'Promise triage: the README and help promises the code did not keep (C1
     }
 
     Context 'Version' {
-        It 'is 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
-            $script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'is 1.47.0 in the script and the manifest (bumped by PORT-PLAN C16e+C14e)' {
+            $script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 }
@@ -25509,11 +25510,11 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
             $help = $script:H20Ast.GetHelpContent()
             $helpText = ($help.Description + ' ' + (@($help.Parameters.Values) -join ' ')) -replace '\s+', ' '
             $helpText | Should -Not -Match 'they are the only ones in the script'
-            $helpText | Should -Match 'Five sections make CIM METHOD calls, and DcDiagnostics shares one of them \(since v1\.41\.0\); no other section does'
+            $helpText | Should -Match 'Seven sections make CIM METHOD calls, and DcDiagnostics shares one of them \(since v1\.41\.0\); no other section does'
             $readme = [System.IO.File]::ReadAllText($script:H20ReadmePath) -replace '\s+', ' '
             $readme | Should -Not -Match 'Only this section and `DcHardening` make any'
             $readme | Should -Not -Match 'Two of those remote reads are CIM method calls'
-            $readme | Should -Match 'Five sections make one: this section, `DcHardening`, `TimeHierarchy`'
+            $readme | Should -Match 'Seven sections make one: this section, `DcHardening`, `TimeHierarchy`'
             foreach ($s in @($sectionOf.Values)) {
                 $helpText | Should -Match ('\b{0}\b[^.]*\b(GetDWORDValue|GetStringValue)' -f $s) -Because ('the help names {0} with the method it calls' -f $s)
                 $readme | Should -Match ('`{0}` reads[^.]*`(GetDWORDValue|GetStringValue)' -f $s) -Because ('the README names {0} with the method it calls' -f $s)
@@ -25623,9 +25624,9 @@ Describe 'Functional level wording, the side-effect inventory of every command, 
     }
 
     Context 'Version' {
-        It 'is 1.46.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'is 1.47.0 in the script and the manifest (PORT-PLAN H18, H20a, C1a, H20c, H20d; bumped by C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 }
@@ -26286,8 +26287,9 @@ exit $LASTEXITCODE
             # parameters (1940: those 59, -RootDomain, -Config, -AclConfig and -CapSource on Get-AdfaPkiHealth, -CimSession on the three
             # DnsServer seams, -Credential on Get-AdfaDnsZoneDelegation, Resolve-AdfaDnsServerZone, Get-AdfaDnsServerRecord and Export-AdfaDnsRecord).
             # The independent review fix of v1.45.0 added Get-AdfaConfigOverrideUnusedReason (508) with -Entry, -Sections and -SwitchState (1943).
-            $script:H21Help.Count | Should -Be 508 -Because 'declared population: the 508 functions of the script'
-            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1943 -Because 'declared population: the 1943 parameters of those functions'
+            # PORT-PLAN C16e+C14e (v1.47.0) added nine functions (517) and their 54 parameters (1997).
+            $script:H21Help.Count | Should -Be 517 -Because 'declared population: the 517 functions of the script'
+            (@($script:H21Help | ForEach-Object { @($_.Declared).Count }) | Measure-Object -Sum).Sum | Should -Be 1997 -Because 'declared population: the 1997 parameters of those functions'
             @($script:H21Help | Where-Object { -not $_.HasHelp } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { -not $_.HasSynopsis } | ForEach-Object { $_.Name }) | Should -BeNullOrEmpty
             @($script:H21Help | Where-Object { @($_.Missing).Count -gt 0 } | ForEach-Object { '{0}: {1}' -f $_.Name, (@($_.Missing) -join ',') }) | Should -BeNullOrEmpty
@@ -26375,9 +26377,9 @@ exit $LASTEXITCODE
     }
 
     Context 'Version' {
-        It 'is 1.46.0 in the script and the manifest (PORT-PLAN H21; bumped by H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'is 1.47.0 in the script and the manifest (PORT-PLAN H21; bumped by C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 }
@@ -26708,7 +26710,8 @@ Describe 'Replication connection options and destination, the cap source of ever
             # the infrastructure master's two reads and the collector's CN=Partitions and computer-proof reads), each with -CapSource.
             # 32 since v1.45.0: PORT-PLAN C16b(4-7) added eight calls (Get-AdfaPkiHealth two, Get-AdfaExchangeAdVersion four,
             # Get-AdfaLingeringPartitionRaw two), each with -CapSource.
-            $calls.Count | Should -Be 32
+            # PORT-PLAN C16e+C14e (v1.47.0): nine more calls in the new AccountsPolicy verdicts and collector (32 to 41).
+            $calls.Count | Should -Be 41
             foreach ($c in $calls) { (Get-LhParameter -Call $c -Name 'CapSource') | Should -Not -BeNullOrEmpty -Because ("line {0}" -f $c.Extent.StartLineNumber) }
         }
         It 'gives none of the C15 and Stale row functions a default that says "a tool default", and no string says "(MaxObjects, a tool default)"' {
@@ -27083,9 +27086,9 @@ Describe 'Replication connection options and destination, the cap source of ever
     }
 
     Context 'Version' {
-        It 'is 1.46.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'is 1.47.0 in the script and the manifest (PORT-PLAN C4b3, C4b4, C11h; bumped by C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 }
@@ -28018,9 +28021,9 @@ Describe 'Second SYSVOL instrument, the per-DC engine in the dcdiag grid, netlog
     }
 
     Context 'Version' {
-        It 'is 1.46.0 in the script and the manifest (PORT-PLAN C14c and C11e; bumped by H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'is 1.47.0 in the script and the manifest (PORT-PLAN C14c and C11e; bumped by C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 }
@@ -28838,9 +28841,9 @@ Describe 'Intersite for every site, the dcdiag circuit breaker, reachability for
     }
 
     Context 'Version' {
-        It 'is 1.46.0 in the script and the manifest (PORT-PLAN C11f, C2i, C15d and C16d; bumped by H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'is 1.47.0 in the script and the manifest (PORT-PLAN C11f, C2i, C15d and C16d; bumped by C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 }
@@ -28971,9 +28974,9 @@ Describe 'Inventory leftovers: W32Time policy source, raw event occurrences, ran
             [int]$script:LzCfg['RunnerRole']['DcProductType'] | Should -Be 2
             (@($script:LzCfg['RunnerRole']['DomainRoleLabels'].Keys | Sort-Object) -join ',') | Should -Be '0,1,2,3,4,5'
         }
-        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries version 1.47.0 in the script and the manifest (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -29845,17 +29848,17 @@ Describe 'Accounts and policy: Kerberos encryption types, PASSWD_NOTREQD, FSMO s
             [int64]$script:ApCfg['TicksPerMinute'] | Should -Be 600000000
             [int]$script:ApCfg['RecycleBinMinForestLevel'] | Should -Be 4
         }
-        It 'declares every read with a list of plain attribute names and no secret (declared population: the nine reads)' {
+        It 'declares every read with a list of plain attribute names and no secret (declared population: the twelve reads; PsoLinks, PsoSubject and AppPartitions added by PORT-PLAN C16e)' {
             $reads = $script:ApCfg['Reads']
-            (@($reads.Keys) -join ',') | Should -Be 'UsersWithSpn,Computers,Trusts,PasswordNotRequired,Dsa,Pso,DomainHead,Partitions,FsmoRole'
+            (@($reads.Keys) -join ',') | Should -Be 'UsersWithSpn,Computers,Trusts,PasswordNotRequired,Dsa,Pso,DomainHead,Partitions,FsmoRole,PsoLinks,PsoSubject,AppPartitions'
             foreach ($k in @($reads.Keys)) {
                 $names = @(@($reads[$k]['Properties']) + @($reads[$k]['CountProperties'] | Where-Object { $null -ne $_ }))
                 @(Get-AdfaRefusedPropertyName -PropertyNames $names -SecretNames @(Get-AdfaSecretAttributeName)).Count | Should -Be 0 -Because $k
             }
         }
-        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries version 1.47.0 in the script and the manifest (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -30250,7 +30253,8 @@ Describe 'Accounts and policy: Kerberos encryption types, PASSWD_NOTREQD, FSMO s
             (Get-ApRow $rows 'FSMO role spread (forest): contoso.com').Count | Should -Be 1
             (Get-ApRow $rows 'FSMO role spread (domain): contoso.com').Count | Should -Be 1
             (Get-ApRow $rows 'FSMO role spread (domain): north.contoso.com').Count | Should -Be 1
-            $rows.Count | Should -Be (1 + 2 * 9 + 4 + 2)
+            # PORT-PLAN C16e: plus the forest's RODC and ForestDnsZones rows and, per domain, its RODC and DomainDnsZones rows.
+            $rows.Count | Should -Be (1 + 2 + 2 * 11 + 4 + 2)
             (Get-ApRow $rows 'Kerberos encryption types (users with an SPN): contoso.com')[0].Status | Should -Be 'Warning'
             (Get-ApRow $rows 'Kerberos encryption types (domain controllers): contoso.com')[0].Accounts | Should -Be 2
             (Get-ApRow $rows 'Kerberos encryption types (managed service accounts): contoso.com')[0].Accounts | Should -Be 1
@@ -30274,7 +30278,8 @@ Describe 'Accounts and policy: Kerberos encryption types, PASSWD_NOTREQD, FSMO s
             $script:ApMode[$script:ApDom2] = 'unreachable'
             $rows = @(Get-AdfaAccountsPolicy -ForestName $script:ApForest -RootDomain $script:ApDom1 -Domains @($script:ApDom1, $script:ApDom2) -ForestDomains @($script:ApDom1, $script:ApDom2) -Config $script:ApCfg -CapSource $script:ApCap)
             $north = @($rows | Where-Object { $_.Scope -eq $script:ApDom2 })
-            $north.Count | Should -Be 11
+            # PORT-PLAN C16e: north's RODC and DomainDnsZones rows join its nine family rows and two PSO summaries.
+            $north.Count | Should -Be 13
             @($north | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
             @($north | Where-Object { $_.Detail -notmatch 'unreachable' }).Count | Should -Be 0
             (Get-ApRow $rows 'Kerberos encryption types (users with an SPN): contoso.com')[0].Status | Should -Be 'Warning'
@@ -30295,7 +30300,8 @@ Describe 'Accounts and policy: Kerberos encryption types, PASSWD_NOTREQD, FSMO s
             $script:ApMode[$script:ApDom2] = 'denied'
             $rows = @(Get-AdfaAccountsPolicy -ForestName $script:ApForest -RootDomain $script:ApDom1 -Domains @($script:ApDom2) -ForestDomains @($script:ApDom1, $script:ApDom2) -Config $script:ApCfg -CapSource $script:ApCap)
             $north = @($rows | Where-Object { $_.Scope -eq $script:ApDom2 })
-            $north.Count | Should -Be 11
+            # PORT-PLAN C16e: north's RODC and DomainDnsZones rows join its nine family rows and two PSO summaries.
+            $north.Count | Should -Be 13
             @($north | Where-Object { $_.Status -ne 'Not Assessed' }).Count | Should -Be 0
             @($north | Where-Object { $_.Detail -notmatch 'access denied' }).Count | Should -Be 0
         }
@@ -30371,7 +30377,7 @@ Describe 'Accounts and policy: Kerberos encryption types, PASSWD_NOTREQD, FSMO s
         }
         It 'documents the section in the help and the README, and the override key in the help' {
             $help = $script:ApAst.GetHelpContent()
-            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'AccountsPolicy reads the directory only'
+            ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ') | Should -Match 'AccountsPolicy reads the directory and, since v1\.47\.0 \(PORT-PLAN C16e\), DefaultDomainSupportedEncTypes'
             ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'Eighteen sections can be named'
             ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'And AccountsPolicy'
             $readme = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'README.md'))
@@ -30515,9 +30521,9 @@ Describe 'Leftovers: ESC1 over published templates and the enrolment ACL, Exchan
             (@($all | ForEach-Object { $_.Key }) -join ',') | Should -Be 'EnrollmentServices,Templates,SchemaMarker,ExchangeContainer,Organization,DomainObjects,Partitions,Dsa'
             foreach ($r in $all) { @(Get-AdfaRefusedPropertyName -PropertyNames $r.Names -SecretNames @(Get-AdfaSecretAttributeName)).Count | Should -Be 0 -Because $r.Key }
         }
-        It 'carries version 1.46.0 in the script and the manifest (bumped by PORT-PLAN H21b)' {
-            [string]$script:Config.Version | Should -Be '1.46.0'
-            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.46.0'
+        It 'carries version 1.47.0 in the script and the manifest (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
         }
     }
 
@@ -31285,6 +31291,688 @@ Describe 'Leftovers: ESC1 over published templates and the enrolment ACL, Exchan
                 @{ Section = 'Exchange AD Versions'; Item = ('Exchange domain preparation: {0}' -f $script:LxDom2); Detail = 'objectVersion 13242 below 13243 replication global catalog stale delegation'; Expect = '/PrepareDomain' }
                 @{ Section = 'Exchange AD Versions'; Item = 'Exchange organisation'; Detail = 'replication'; Expect = '' }
                 @{ Section = 'Lingering Object Scan (advisory)'; Item = ('Advisory scan (GC partial replica {0}): {1}' -f $script:LxDn2, $script:LxDc1); Detail = '4 lingering object(s) found on the global catalog partial replica, relative to dc3 (replication)'; Expect = 'removelingeringobjects' }
+            )
+            foreach ($c in $cases) {
+                $rec = Get-AdfaRecommendation -Section $c.Section -Item $c.Item -Detail $c.Detail
+                if ($c.Expect -eq '') { $rec | Should -Be '' -Because $c.Item } else { $rec | Should -Match ([regex]::Escape($c.Expect)) -Because $c.Item }
+            }
+        }
+    }
+}
+
+Describe 'Leftovers batch: PSO link targets, KDC default encryption types, RODC FSMO holders, application-partition infrastructure masters, the CIS lockout baseline, dMSA exclusions, Netlogon log capacity (C16e, C14e, 1.47.0)' {
+    # PORT-PLAN C16e (a)-(e) and C14e (1), (3) (v1.47.0). Every name is fictional (contoso, fabrikam) and held in a
+    # variable (PSAvoidUsingComputerNameHardcoded). Vendor facts read on Learn 2026-11-20 (URLs in the config tables
+    # and the CHANGELOG); every *Status is a tool default.
+    BeforeAll {
+        $script:LbCfg = $script:Config.AccountsPolicy
+        $script:LbSite = $script:Config.SiteCoverage
+        $script:LbCap = 'AccountsPolicy.MaxObjects, a tool default'
+        $script:LbDom1 = 'contoso.com'
+        $script:LbDom2 = 'north.contoso.com'
+        $script:LbDn1 = 'DC=contoso,DC=com'
+        $script:LbDn2 = 'DC=north,DC=contoso,DC=com'
+        $script:LbDc1 = 'dc1.contoso.com'
+        $script:LbDc2 = 'dc2.contoso.com'
+        $script:LbDc3 = 'dc3.north.contoso.com'
+        $script:LbAst = [System.Management.Automation.Language.Parser]::ParseFile($script:Target, [ref]$null, [ref]$null)
+        $script:LbMain = @($script:LbAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Main' }, $true))[0]
+        function Get-LbFunction { param([string]$Name) @($script:LbAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true)) }
+        function Get-LbCall { param($Ast, [string]$Name) @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -eq $Name }.GetNewClosure(), $true)) }
+        function Get-LbRow { param($Rows, [string]$Item) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -eq $Item }) }
+        function Get-LbLike { param($Rows, [string]$Pattern) return , @($Rows | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Item'] -and [string]$_.Item -like $Pattern }) }
+        function New-LbRead { param($Records = @(), [bool]$Ok = $true, [string]$ErrorText = '', [string]$ErrorType = '', [bool]$Capped = $false, [bool]$NotFound = $false)
+            [pscustomobject]@{ Ok = $Ok; Error = $ErrorText; ErrorType = $ErrorType; NotFound = $NotFound; Records = @($Records); Count = @($Records).Count; Capped = $Capped; Filter = '(x)'; Identity = '' } }
+        function New-LbDenied { New-LbRead -Ok $false -ErrorText 'Access is denied.' -ErrorType 'System.UnauthorizedAccessException' }
+        function New-LbDown { New-LbRead -Ok $false -ErrorText 'Unable to contact the server.' -ErrorType 'Microsoft.ActiveDirectory.Management.ADServerDownException' }
+        function New-LbNotFound { New-LbRead -Ok $false -ErrorText 'Cannot find an object with identity.' -ErrorType 'Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException' -NotFound $true }
+        function New-LbNtds { param([string]$Server) ("CN=NTDS Settings,CN={0},CN=Servers,CN=Default-First-Site-Name,CN=Sites,CN=Configuration,DC=contoso,DC=com" -f $Server) }
+        function New-LbDsa { param([string]$Server, [string[]]$Class = @('top', 'applicationSettings', 'nTDSDSA'), [switch]$NoClass)
+            $o = [ordered]@{ DistinguishedName = (New-LbNtds -Server $Server); Name = 'NTDS Settings'; options = 1; 'msDS-HasDomainNCs' = @('DC=contoso,DC=com') }
+            if ($NoClass) { $o['objectClass'] = $null } else { $o['objectClass'] = @($Class) }
+            [pscustomobject]$o }
+        function New-LbRodc { param([string]$Server) New-LbDsa -Server $Server -Class @('top', 'applicationSettings', 'nTDSDSA', 'nTDSDSARO') }
+        function New-LbRole { param([string]$Role, [string]$HolderDn) [pscustomobject]@{ Role = $Role; Raw = (New-LbRead -Records @([pscustomobject]@{ DistinguishedName = 'CN=x'; Name = 'x'; fSMORoleOwner = $HolderDn })) } }
+        function New-LbSubject { param([string]$Dn, [string[]]$Class = @('top', 'group'), $GroupType = $null, [switch]$NoGroupType)
+            $o = [ordered]@{ DistinguishedName = $Dn; Name = 'x'; objectClass = @($Class) }
+            if (-not $NoGroupType) { $o['groupType'] = $GroupType }
+            New-LbRead -Records @([pscustomobject]$o) }
+        function New-LbPsoRecord { param([string]$Name, $Precedence = 10, [int]$AppliesTo = 1, [bool]$Ranged = $false)
+            $o = [ordered]@{ DistinguishedName = ("CN={0},CN=Password Settings Container,CN=System,DC=contoso,DC=com" -f $Name); Name = $Name; objectGUID = [guid]::NewGuid().ToString()
+                'msDS-PasswordSettingsPrecedence' = $Precedence; 'msDS-LockoutThreshold' = 10; 'msDS-LockoutDuration' = -9000000000; 'msDS-LockoutObservationWindow' = -9000000000; 'msDS-PSOAppliesToCount' = $AppliesTo }
+            if ($Ranged) { $o['msDS-PSOAppliesToRangeReturned'] = $true }
+            [pscustomobject]$o }
+        function New-LbLink { param([string]$PsoName, [string[]]$Targets, $Subjects, [string]$NotRead = '', $LinksRaw = $null)
+            $dn = ("CN={0},CN=Password Settings Container,CN=System,DC=contoso,DC=com" -f $PsoName)
+            if ($null -eq $LinksRaw) { $LinksRaw = New-LbRead -Records @([pscustomobject]@{ DistinguishedName = $dn; Name = $PsoName; 'msDS-PSOAppliesTo' = @($Targets) }) }
+            [pscustomobject]@{ Dn = $dn; LinksRaw = $LinksRaw; Subjects = @($Subjects); NotRead = $NotRead } }
+        function New-LbRegValue { param([string]$Id, $ReturnValue = 0, $Value = $null, [string]$ErrorText = '')
+            [pscustomobject]@{ Id = $Id; Key = 'k'; ValueName = $Id; Kind = 'Dword'; Answered = ($ErrorText -eq ''); ReturnValue = $ReturnValue; Value = $Value; Method = 'GetDWORDValue'; Error = $ErrorText; ErrorCode = '' } }
+        function New-LbRegRead { param($Values = @(), [bool]$Ok = $true, [bool]$Denied = $false, [string]$ErrorText = '')
+            [pscustomobject]@{ Raw = [pscustomobject]@{ Ok = $Ok; Protocol = 'Wsman'; Error = $ErrorText; ErrorCode = ''; Values = @($Values) }; Denied = $Denied; Attempts = @() } }
+        function New-LbTarget { param([string]$HostName, [string]$Scope) [pscustomobject]@{ HostName = $HostName; Scope = $Scope } }
+        function New-LbKdcRow { param([string]$Dc, [string]$Scope, $Read, [string]$Unreachable = '') Get-AdfaKdcDefaultRow -ComputerName $Dc -Scope $Scope -Read $Read -Unreachable $Unreachable -Config $script:LbCfg }
+        $script:LbGlobalSec = -2147483646
+        $script:LbGlobalDist = 2
+        $script:LbLocalSec = -2147483644
+        $script:LbUniversalSec = -2147483640
+    }
+
+    Context 'Config tables (Learn, read 2026-11-20) and version' {
+        It 'declares the KDC value, the new reads, the groupType bits, the RODC class and the new grades, each labelled' {
+            $kdc = @($script:LbCfg['KdcValues'])
+            $kdc.Count | Should -Be 1
+            [string]$kdc[0]['Key'] | Should -Be 'SYSTEM\CurrentControlSet\Services\Kdc'
+            [string]$kdc[0]['ValueName'] | Should -Be 'DefaultDomainSupportedEncTypes'
+            [string]$kdc[0]['Kind'] | Should -Be 'Dword'
+            @([int]$script:LbCfg['WsmanPort'], [int]$script:LbCfg['RpcPort']) | Should -Be @(5985, 135)
+            (@($script:LbCfg['Reads'].Keys) -join ',') | Should -Be 'UsersWithSpn,Computers,Trusts,PasswordNotRequired,Dsa,Pso,DomainHead,Partitions,FsmoRole,PsoLinks,PsoSubject,AppPartitions'
+            @($script:LbCfg['Reads']['Dsa']['Properties']) | Should -Contain 'objectClass'
+            (@($script:LbCfg['Reads']['PsoSubject']['Properties']) -join ',') | Should -Be 'objectClass,groupType'
+            (@($script:LbCfg['Reads']['PsoLinks']['Properties']) -join ',') | Should -Be 'msDS-PSOAppliesTo'
+            [string]$script:LbCfg['Reads']['AppPartitions']['Filter'] | Should -Be '(objectClass=crossRef)'
+            @([int64]$script:LbCfg['GroupTypeGlobalBit'], [int64]$script:LbCfg['GroupTypeSecurityBit']) | Should -Be @(2, 2147483648)
+            [string]$script:LbCfg['RodcDsaClass'] | Should -Be 'nTDSDSARO'
+            @([string]$script:LbCfg['RodcRoleHolderStatus'], [string]$script:LbCfg['AppPartitionHolderDeletedStatus'], [string]$script:LbCfg['KdcDefaultDiffersStatus'], [string]$script:LbCfg['LockoutBaseline']) | Should -Be @('Fail', 'Warning', 'Warning', 'WindowsSecurityBaseline')
+            [int]$script:LbCfg['PsoLinkReadCap'] | Should -Be 500
+            [string]$script:LbCfg['C16eReadDate'] | Should -Be '2026-11-20'
+            foreach ($u in @('kerberos-protocol-registry-kdc-configuration-keys', 'planning-operations-master-role-placement', 'dcpromo-demotion-fails', 'error-run-adprep-rodcprep-command', 'adac/fine-grained-password-policies', 'a-grouptype', 'guest-configuration-baseline-windows')) {
+                [string]$script:LbCfg['C16eSourceUrl'] | Should -Match ([regex]::Escape($u)) -Because $u
+            }
+            $text = [System.IO.File]::ReadAllText($script:Target)
+            $text | Should -Match ([regex]::Escape('"RODCs cannot act as operations master role holders"'))
+            $text | Should -Match 'PsoLinkReadCap 500 \(tool default, not a Microsoft value\)'
+        }
+        It 'holds the CIS-mapped Azure guest-configuration figures beside the Windows baseline, and the "In 1-3" cell named as a discrepancy' {
+            $cis = $script:LbCfg['LockoutBaselines']['AzureGuestConfigCis']
+            @([int]$cis['ThresholdMax'], [int]$cis['DurationMinutes'], [int]$cis['WindowMinutes']) | Should -Be @(5, 15, 15)
+            [bool]$cis['ZeroDurationFlagged'] | Should -BeTrue
+            [string]$cis['Source'] | Should -Match 'AZ-WIN-73311'
+            [string]$cis['Source'] | Should -Match 'In 1-3'
+            (@($script:LbCfg['LockoutBaselines'].Keys) -join ',') | Should -Be 'WindowsSecurityBaseline,AzureGuestConfigCis'
+        }
+        It 'excludes dMSA from the LAPS computer population and the C15 computer count, as gMSA and sMSA are (C14e(1))' {
+            (@($script:Config.Laps['ExcludedClasses']) -join ',') | Should -Be 'msDS-GroupManagedServiceAccount,msDS-ManagedServiceAccount,msDS-DelegatedManagedServiceAccount'
+            [string]$script:Config.Inventory['CountFilters']['Computers'] | Should -Be '(&(objectCategory=computer)(!(objectClass=msDS-GroupManagedServiceAccount))(!(objectClass=msDS-ManagedServiceAccount))(!(objectClass=msDS-DelegatedManagedServiceAccount)))'
+            $dmsa = [pscustomobject]@{ ObjectClasses = @('top', 'person', 'organizationalPerson', 'user', 'computer', 'msDS-DelegatedManagedServiceAccount'); UserAccountControl = 4096; OperatingSystem = 'Windows Server 2025'; OperatingSystemVersion = '10.0 (26100)'; LastLogonTimestamp = (Get-Date).ToFileTimeUtc() }
+            Get-AdfaLapsComputerClass -Computer $dmsa -Config $script:Config.Laps -StaleCutoffUtc ((Get-Date).ToUniversalTime().AddDays(-90)) | Should -Be 'ServiceAccount'
+            $text = [System.IO.File]::ReadAllText($script:Target)
+            $text | Should -Match 'msDS-DelegatedManagedServiceAccount is not published on Learn'
+        }
+        It 'declares the two Netlogon log size values Learn names, on one key, and the 20000000-byte default' {
+            $v = @($script:LbSite['NetlogonLogSizeValues'])
+            (@($v | ForEach-Object { [string]$_['ValueName'] }) -join ',') | Should -Be 'MaximumLogFileSize,LogFileMaxSize'
+            @($v | Where-Object { [string]$_['Key'] -ne 'SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' -or [string]$_['Kind'] -ne 'Dword' }).Count | Should -Be 0
+            [int64]$script:LbSite['NetlogonLogSizeDefaultBytes'] | Should -Be 20000000
+            [string]$script:LbSite['NetlogonLogSizeSourceUrl'] | Should -Match 'enable-debug-logging-netlogon-service'
+            [string]$script:LbSite['NetlogonLogSizeSourceUrl'] | Should -Match 'dc-delayed-response-to-ldap-kerberos-request'
+        }
+        It 'carries version 1.47.0 in the script and the manifest (bumped by PORT-PLAN C16e+C14e)' {
+            [string]$script:Config.Version | Should -Be '1.47.0'
+            (Import-PowerShellDataFile -Path (Join-Path $script:RepoRoot 'src/ADForestAssessment/ADForestAssessment.psd1')).ModuleVersion | Should -Be '1.47.0'
+        }
+    }
+
+    Context 'Config override (Merge-AdfaSpecConfig, keys AccountsPolicy and SiteCoverage)' {
+        It 'merges a valid override of the new keys, naming the file' {
+            $m = Merge-AdfaSpecConfig -BaseConfig $script:LbCfg -Override ([pscustomobject]@{ LockoutBaseline = 'AzureGuestConfigCis'; RodcRoleHolderStatus = 'Warning'; PsoLinkReadCap = 10; KdcDefaultDiffersStatus = 'Fail'; AppPartitionHolderDeletedStatus = 'Info' }) -OverrideSource 'C:\cfg\lb.json'
+            @([string]$m['LockoutBaseline'], [string]$m['RodcRoleHolderStatus'], [int]$m['PsoLinkReadCap'], [string]$m['KdcDefaultDiffersStatus'], [string]$m['AppPartitionHolderDeletedStatus']) | Should -Be @('AzureGuestConfigCis', 'Warning', 10, 'Fail', 'Info')
+            [string]$m['ThresholdSource'] | Should -Match 'lb\.json'
+        }
+        It 'refuses a malformed override: <Name>' -ForEach @(
+            @{ Name = 'an unknown baseline name'; Override = [pscustomobject]@{ LockoutBaseline = 'Cis' }; Pattern = 'one of WindowsSecurityBaseline, AzureGuestConfigCis' }
+            @{ Name = 'a baseline that is not a string'; Override = [pscustomobject]@{ LockoutBaseline = 5 }; Pattern = 'must be a string' }
+            @{ Name = 'an RODC grade of Info'; Override = [pscustomobject]@{ RodcRoleHolderStatus = 'Info' }; Pattern = 'one of Warning, Fail' }
+            @{ Name = 'a deleted-holder grade of Fail'; Override = [pscustomobject]@{ AppPartitionHolderDeletedStatus = 'Fail' }; Pattern = 'one of Info, Warning' }
+            @{ Name = 'a KDC grade of Pass'; Override = [pscustomobject]@{ KdcDefaultDiffersStatus = 'Pass' }; Pattern = 'one of Info, Warning, Fail' }
+            @{ Name = 'a negative link cap'; Override = [pscustomobject]@{ PsoLinkReadCap = -1 }; Pattern = 'from 0 to 100000' }
+            @{ Name = 'a link cap written as text'; Override = [pscustomobject]@{ PsoLinkReadCap = '5' }; Pattern = 'JSON number' }
+            @{ Name = 'a null baseline'; Override = [pscustomobject]@{ LockoutBaseline = $null }; Pattern = 'to null' }
+            @{ Name = 'the KDC value (refused)'; Override = [pscustomobject]@{ KdcValues = @() }; Pattern = "unknown key 'KdcValues'" }
+            @{ Name = 'the baseline figures (refused)'; Override = [pscustomobject]@{ LockoutBaselines = [pscustomobject]@{} }; Pattern = "unknown key 'LockoutBaselines'" }
+            @{ Name = 'the WinRM port (refused, C3g)'; Override = [pscustomobject]@{ WsmanPort = 5986 }; Pattern = "unknown key 'WsmanPort'" }
+            @{ Name = 'the RODC class (refused)'; Override = [pscustomobject]@{ RodcDsaClass = 'x' }; Pattern = "unknown key 'RodcDsaClass'" }
+        ) {
+            { Merge-AdfaSpecConfig -BaseConfig $script:LbCfg -Override $Override -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage ("*{0}*" -f $Pattern)
+        }
+        It 'refuses the Netlogon size values and default from a SiteCoverage file' {
+            { Merge-AdfaSpecConfig -BaseConfig $script:LbSite -Override ([pscustomobject]@{ NetlogonLogSizeValues = @() }) -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage "*unknown key 'NetlogonLogSizeValues'*"
+            { Merge-AdfaSpecConfig -BaseConfig $script:LbSite -Override ([pscustomobject]@{ NetlogonLogSizeDefaultBytes = 1 }) -OverrideSource 'x.json' } | Should -Throw -ExpectedMessage "*unknown key 'NetlogonLogSizeDefaultBytes'*"
+        }
+    }
+
+    Context '(a) The objects a PSO is linked to (pure, Learn fine-grained-password-policies and cc770394)' {
+        It 'classifies <Name>' -ForEach @(
+            @{ Name = 'a user'; Raw = { New-LbSubject -Dn 'CN=u1,DC=contoso,DC=com' -Class @('top', 'person', 'organizationalPerson', 'user') -NoGroupType }; Kind = 'Honoured' }
+            @{ Name = 'an inetOrgPerson alone'; Raw = { New-LbSubject -Dn 'CN=i1,DC=contoso,DC=com' -Class @('inetOrgPerson') -NoGroupType }; Kind = 'Honoured' }
+            @{ Name = 'a global security group (0x80000002)'; Raw = { New-LbSubject -Dn 'CN=g1,DC=contoso,DC=com' -GroupType $script:LbGlobalSec }; Kind = 'Honoured' }
+            @{ Name = 'a global distribution group (0x2)'; Raw = { New-LbSubject -Dn 'CN=g2,DC=contoso,DC=com' -GroupType $script:LbGlobalDist }; Kind = 'Ignored' }
+            @{ Name = 'a domain local security group'; Raw = { New-LbSubject -Dn 'CN=g3,DC=contoso,DC=com' -GroupType $script:LbLocalSec }; Kind = 'Ignored' }
+            @{ Name = 'a universal security group'; Raw = { New-LbSubject -Dn 'CN=g4,DC=contoso,DC=com' -GroupType $script:LbUniversalSec }; Kind = 'Ignored' }
+            @{ Name = 'a group whose groupType was not returned'; Raw = { New-LbSubject -Dn 'CN=g5,DC=contoso,DC=com' -NoGroupType }; Kind = 'Unknown' }
+            @{ Name = 'a groupType that is not a number'; Raw = { New-LbSubject -Dn 'CN=g6,DC=contoso,DC=com' -GroupType 'abc' }; Kind = 'Unknown' }
+            @{ Name = 'an object with no objectClass returned'; Raw = { New-LbSubject -Dn 'CN=x,DC=contoso,DC=com' -Class @() -NoGroupType }; Kind = 'Unknown' }
+            @{ Name = 'a computer named by its most specific class only'; Raw = { New-LbSubject -Dn 'CN=c1,DC=contoso,DC=com' -Class @('computer') -NoGroupType }; Kind = 'Unknown' }
+            @{ Name = 'a read refused'; Raw = { New-LbDenied }; Kind = 'Unknown' }
+            @{ Name = 'an object not found'; Raw = { New-LbNotFound }; Kind = 'Unknown' }
+        ) {
+            $s = Resolve-AdfaPsoSubject -Dn 'CN=t,DC=contoso,DC=com' -Raw (& $Raw) -Config $script:LbCfg -CapSource $script:LbCap
+            [string]$s.Kind | Should -Be $Kind
+            if ($Kind -ne 'Honoured') { [string]$s.Why | Should -Not -BeNullOrEmpty }
+        }
+        It 'words a refused and an unreachable subject read apart' {
+            [string](Resolve-AdfaPsoSubject -Dn 'CN=t' -Raw (New-LbDenied) -Config $script:LbCfg -CapSource $script:LbCap).Why | Should -Match 'access denied'
+            [string](Resolve-AdfaPsoSubject -Dn 'CN=t' -Raw (New-LbDown) -Config $script:LbCfg -CapSource $script:LbCap).Why | Should -Match 'unreachable'
+        }
+        It 'normal data: a PSO linked only to a distribution group is applied to nothing Windows honours, citing Learn (declared population: two PSOs)' {
+            $raw = New-LbRead -Records @((New-LbPsoRecord -Name 'pso-admins' -Precedence 1), (New-LbPsoRecord -Name 'pso-dist' -Precedence 2))
+            $links = @(
+                (New-LbLink -PsoName 'pso-admins' -Targets @('CN=Tier0,DC=contoso,DC=com') -Subjects @([pscustomobject]@{ Dn = 'CN=Tier0,DC=contoso,DC=com'; Raw = (New-LbSubject -Dn 'CN=Tier0,DC=contoso,DC=com' -GroupType $script:LbGlobalSec) }))
+                (New-LbLink -PsoName 'pso-dist' -Targets @('CN=News,DC=contoso,DC=com') -Subjects @([pscustomobject]@{ Dn = 'CN=News,DC=contoso,DC=com'; Raw = (New-LbSubject -Dn 'CN=News,DC=contoso,DC=com' -GroupType $script:LbGlobalDist) }))
+            )
+            $rows = @(Get-AdfaPsoVerdict -DomainName $script:LbDom1 -Raw $raw -Links $links -Config $script:LbCfg -CapSource $script:LbCap)
+            $r = (Get-LbRow $rows ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))
+            $r.Count | Should -Be 1
+            $r[0].Status | Should -Be 'Info'
+            $r[0].NotHonoured | Should -Be 'pso-dist'
+            [int]$r[0].LinksRead | Should -Be 2
+            $r[0].Undecided | Should -Be ''
+            $r[0].Detail | Should -Match 'apply only to global security groups and user objects'
+            $r[0].Detail | Should -Not -Match 'pso-dist'
+            $r[0].NotRun | Should -Not -Match 'groupType of each linked object is not read'
+            $over = @{} + $script:LbCfg; $over['PsoAppliedToNothingStatus'] = 'Warning'
+            (Get-LbRow @(Get-AdfaPsoVerdict -DomainName $script:LbDom1 -Raw $raw -Links $links -Config $over -CapSource $script:LbCap) ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))[0].Status | Should -Be 'Warning'
+        }
+        It 'Pass only when every link of every PSO was read and each PSO has one Windows honours (two links on one PSO, the second honoured)' {
+            $raw = New-LbRead -Records @((New-LbPsoRecord -Name 'pso-a' -AppliesTo 2))
+            $links = @(New-LbLink -PsoName 'pso-a' -Targets @('CN=News,DC=contoso,DC=com', 'CN=u1,DC=contoso,DC=com') -Subjects @(
+                    [pscustomobject]@{ Dn = 'CN=News,DC=contoso,DC=com'; Raw = (New-LbSubject -Dn 'CN=News,DC=contoso,DC=com' -GroupType $script:LbGlobalDist) },
+                    [pscustomobject]@{ Dn = 'CN=u1,DC=contoso,DC=com'; Raw = (New-LbSubject -Dn 'CN=u1,DC=contoso,DC=com' -Class @('top', 'user') -NoGroupType) }))
+            $r = (Get-LbRow @(Get-AdfaPsoVerdict -DomainName $script:LbDom1 -Raw $raw -Links $links -Config $script:LbCfg -CapSource $script:LbCap) ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))[0]
+            $r.Status | Should -Be 'Pass'
+            [int]$r.LinksRead | Should -Be 2
+        }
+        It 'an unread groupType is never ignored: the PSO is undecided and the row Not Assessed, naming the cause (access denied)' {
+            $raw = New-LbRead -Records @((New-LbPsoRecord -Name 'pso-a'), (New-LbPsoRecord -Name 'pso-b' -Precedence 11))
+            $links = @(
+                (New-LbLink -PsoName 'pso-a' -Targets @('CN=g1,DC=contoso,DC=com') -Subjects @([pscustomobject]@{ Dn = 'CN=g1,DC=contoso,DC=com'; Raw = (New-LbSubject -Dn 'CN=g1,DC=contoso,DC=com' -GroupType $script:LbGlobalSec) }))
+                (New-LbLink -PsoName 'pso-b' -Targets @('CN=g2,DC=contoso,DC=com') -Subjects @([pscustomobject]@{ Dn = 'CN=g2,DC=contoso,DC=com'; Raw = (New-LbDenied) }))
+            )
+            $r = (Get-LbRow @(Get-AdfaPsoVerdict -DomainName $script:LbDom1 -Raw $raw -Links $links -Config $script:LbCfg -CapSource $script:LbCap) ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))[0]
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Undecided | Should -Be 'pso-b'
+            $r.NotHonoured | Should -Be ''
+            $r.Detail | Should -Match 'access denied'
+            # A group read without groupType is the same: undecided, never Ignored.
+            $links[1] = New-LbLink -PsoName 'pso-b' -Targets @('CN=g2,DC=contoso,DC=com') -Subjects @([pscustomobject]@{ Dn = 'CN=g2,DC=contoso,DC=com'; Raw = (New-LbSubject -Dn 'CN=g2,DC=contoso,DC=com' -NoGroupType) })
+            $r2 = (Get-LbRow @(Get-AdfaPsoVerdict -DomainName $script:LbDom1 -Raw $raw -Links $links -Config $script:LbCfg -CapSource $script:LbCap) ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))[0]
+            $r2.Status | Should -Be 'Not Assessed'
+            $r2.NotHonoured | Should -Be ''
+        }
+        It 'mixed result: a PSO decided applied-to-nothing is graded even while another is undecided, and both are named' {
+            $raw = New-LbRead -Records @((New-LbPsoRecord -Name 'pso-dist'), (New-LbPsoRecord -Name 'pso-b' -Precedence 11))
+            $links = @(
+                (New-LbLink -PsoName 'pso-dist' -Targets @('CN=g3,DC=contoso,DC=com') -Subjects @([pscustomobject]@{ Dn = 'CN=g3,DC=contoso,DC=com'; Raw = (New-LbSubject -Dn 'CN=g3,DC=contoso,DC=com' -GroupType $script:LbLocalSec) }))
+                (New-LbLink -PsoName 'pso-b' -Targets @('CN=g2,DC=contoso,DC=com') -Subjects @([pscustomobject]@{ Dn = 'CN=g2,DC=contoso,DC=com'; Raw = (New-LbDown) }))
+            )
+            $r = (Get-LbRow @(Get-AdfaPsoVerdict -DomainName $script:LbDom1 -Raw $raw -Links $links -Config $script:LbCfg -CapSource $script:LbCap) ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))[0]
+            $r.Status | Should -Be 'Info'
+            $r.NotHonoured | Should -Be 'pso-dist'
+            $r.Undecided | Should -Be 'pso-b'
+        }
+        It 'a link list that failed, came back ranged, does not match the counted links, or was not read under the cap leaves the PSO undecided' {
+            $raw = New-LbRead -Records @((New-LbPsoRecord -Name 'pso-a' -AppliesTo 2), (New-LbPsoRecord -Name 'pso-r' -Precedence 11 -Ranged $true), (New-LbPsoRecord -Name 'pso-c' -Precedence 12), (New-LbPsoRecord -Name 'pso-d' -Precedence 13))
+            $links = @(
+                (New-LbLink -PsoName 'pso-a' -Targets @('CN=g1,DC=contoso,DC=com') -Subjects @([pscustomobject]@{ Dn = 'CN=g1,DC=contoso,DC=com'; Raw = (New-LbSubject -Dn 'CN=g1,DC=contoso,DC=com' -GroupType $script:LbGlobalDist) }))
+                (New-LbLink -PsoName 'pso-c' -Targets @() -Subjects @() -LinksRaw (New-LbDenied))
+                (New-LbLink -PsoName 'pso-d' -Targets @() -Subjects @() -NotRead 'the link read cap of 500 (AccountsPolicy.PsoLinkReadCap, a tool default) was reached')
+            )
+            $r = (Get-LbRow @(Get-AdfaPsoVerdict -DomainName $script:LbDom1 -Raw $raw -Links $links -Config $script:LbCfg -CapSource $script:LbCap) ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))[0]
+            $r.Status | Should -Be 'Not Assessed'
+            $r.NotHonoured | Should -Be ''
+            (@(([string]$r.Undecided) -split '; ') | Sort-Object) | Should -Be @('pso-a', 'pso-c', 'pso-d', 'pso-r')
+            $r.Detail | Should -Match 'cap'
+        }
+        It 'a PSO with no link at all is still applied to nothing, as before (no link read needed)' {
+            $raw = New-LbRead -Records @((New-LbPsoRecord -Name 'pso-none' -AppliesTo 0))
+            $r = (Get-LbRow @(Get-AdfaPsoVerdict -DomainName $script:LbDom1 -Raw $raw -Links @() -Config $script:LbCfg -CapSource $script:LbCap) ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))[0]
+            $r.Status | Should -Be 'Info'
+            $r.NotApplied | Should -Be 'pso-none'
+        }
+    }
+
+    Context '(b) DefaultDomainSupportedEncTypes per DC and per domain (pure)' {
+        It 'per DC: <Name>' -ForEach @(
+            @{ Name = 'set to 0x18'; Read = { New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -Value 24) }; Unreachable = ''; Status = 'Info'; State = 'Set'; Pattern = 'AES' }
+            @{ Name = 'value not set (1)'; Read = { New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -ReturnValue 1) }; Unreachable = ''; Status = 'Info'; State = 'NotSet'; Pattern = 'not set' }
+            @{ Name = 'Kdc key absent (2)'; Read = { New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -ReturnValue 2) }; Unreachable = ''; Status = 'Info'; State = 'NotSet'; Pattern = 'not set' }
+            @{ Name = 'access denied by the session'; Read = { New-LbRegRead -Ok $false -Denied $true -ErrorText 'Access is denied.' }; Unreachable = ''; Status = 'Not Assessed'; State = 'Unread'; Pattern = 'Access denied' }
+            @{ Name = 'access denied by the provider (5)'; Read = { New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -ReturnValue 5) }; Unreachable = ''; Status = 'Not Assessed'; State = 'Unread'; Pattern = 'access denied' }
+            @{ Name = 'another type'; Read = { New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -ReturnValue 2147749893) }; Unreachable = ''; Status = 'Not Assessed'; State = 'Unread'; Pattern = 'type' }
+            @{ Name = 'a read that failed'; Read = { New-LbRegRead -Ok $false -ErrorText 'The WinRM client cannot process the request.' }; Unreachable = ''; Status = 'Not Assessed'; State = 'Unread'; Pattern = 'Read failed' }
+            @{ Name = 'unreachable'; Read = { $null }; Unreachable = 'Unreachable: neither WinRM (5985) nor RPC (135) answered.'; Status = 'Not Assessed'; State = 'Unread'; Pattern = 'Unreachable' }
+        ) {
+            $r = New-LbKdcRow -Dc $script:LbDc1 -Scope $script:LbDom1 -Read (& $Read) -Unreachable $Unreachable
+            $r.Item | Should -Be ('KDC default encryption types: {0}' -f $script:LbDc1)
+            $r.Status | Should -Be $Status
+            $r.KdcState | Should -Be $State
+            $r.Detail | Should -Match $Pattern
+            $r.Area | Should -Be 'AccountsPolicy'
+        }
+        It 'per domain: <Name>' -ForEach @(
+            @{ Name = 'two DCs at 0x18: known, Pass'; A = 24; B = 24; State = 'Known'; Status = 'Pass' }
+            @{ Name = 'two DCs that differ: Warning'; A = 24; B = 28; State = 'Differs'; Status = 'Warning' }
+            @{ Name = 'one DC set, one not set: Warning'; A = 24; B = 'notset'; State = 'Differs'; Status = 'Warning' }
+            @{ Name = 'both not set: Info, never graded'; A = 'notset'; B = 'notset'; State = 'NotSet'; Status = 'Info' }
+            @{ Name = 'one DC unread: Not Assessed'; A = 24; B = 'denied'; State = 'Unknown'; Status = 'Not Assessed' }
+            @{ Name = 'the second DC unreachable: Not Assessed'; A = 24; B = 'down'; State = 'Unknown'; Status = 'Not Assessed' }
+        ) {
+            $rows = @()
+            $i = 0
+            foreach ($v in @($A, $B)) {
+                $i++
+                $dc = ('dc{0}.contoso.com' -f $i)
+                if ($v -eq 'notset') { $rows += New-LbKdcRow -Dc $dc -Scope $script:LbDom1 -Read (New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -ReturnValue 1)) }
+                elseif ($v -eq 'denied') { $rows += New-LbKdcRow -Dc $dc -Scope $script:LbDom1 -Read (New-LbRegRead -Ok $false -Denied $true -ErrorText 'Access is denied.') }
+                elseif ($v -eq 'down') { $rows += New-LbKdcRow -Dc $dc -Scope $script:LbDom1 -Read $null -Unreachable 'Unreachable, classified once for this run by the reachability probe: refused' }
+                else { $rows += New-LbKdcRow -Dc $dc -Scope $script:LbDom1 -Read (New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -Value $v)) }
+            }
+            $d = Resolve-AdfaKdcDomainDefault -DomainName $script:LbDom1 -Rows $rows -Config $script:LbCfg
+            [string]$d.State | Should -Be $State
+            $d.Row.Item | Should -Be ('KDC default encryption types: {0}' -f $script:LbDom1)
+            $d.Row.Status | Should -Be $Status
+            [int]$d.Row.DcsRead | Should -Be (@($rows | Where-Object { $_.KdcState -ne 'Unread' }).Count)
+            if ($State -eq 'Known') { [int64]$d.Value | Should -Be 24 } else { $d.Cause | Should -Not -BeNullOrEmpty }
+        }
+        It 'per domain: a population gap or no DC row is Not Assessed with the cause, never Known; the differ grade can be set to Fail' {
+            $gap = [pscustomobject]@{ Domain = $script:LbDom2; Failed = $true; Error = 'The server is not operational.'; Seen = $false; WithoutDomain = 0 }
+            $d = Resolve-AdfaKdcDomainDefault -DomainName $script:LbDom2 -Rows @() -Gap $gap -Config $script:LbCfg
+            [string]$d.State | Should -Be 'Unknown'
+            $d.Row.Status | Should -Be 'Not Assessed'
+            $d.Row.Detail | Should -Match 'not operational'
+            (Resolve-AdfaKdcDomainDefault -DomainName $script:LbDom2 -Rows @() -Config $script:LbCfg).Row.Status | Should -Be 'Not Assessed'
+            $over = @{} + $script:LbCfg; $over['KdcDefaultDiffersStatus'] = 'Fail'
+            $rows = @((New-LbKdcRow -Dc $script:LbDc1 -Scope $script:LbDom1 -Read (New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -Value 24))), (New-LbKdcRow -Dc $script:LbDc2 -Scope $script:LbDom1 -Read (New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -Value 4))))
+            (Resolve-AdfaKdcDomainDefault -DomainName $script:LbDom1 -Rows $rows -Config $over).Row.Status | Should -Be 'Fail'
+        }
+        It 'grades accounts with no msDS-SupportedEncryptionTypes on the domain value only when it is Known (<Name>)' -ForEach @(
+            @{ Name = 'RC4 only on every DC: WeakOnly'; Kdc = @{ State = 'Known'; Value = 4; Cause = '' }; Status = 'Warning'; Graded = 2 }
+            @{ Name = 'AES only on every DC: Pass'; Kdc = @{ State = 'Known'; Value = 24; Cause = '' }; Status = 'Pass'; Graded = 2 }
+            @{ Name = 'RC4 beside AES on every DC: Info by default'; Kdc = @{ State = 'Known'; Value = 28; Cause = '' }; Status = 'Info'; Graded = 2 }
+            @{ Name = 'values that differ: ungraded'; Kdc = @{ State = 'Differs'; Value = $null; Cause = 'the DCs hold different values' }; Status = 'Info'; Graded = 0 }
+            @{ Name = 'a DC unread: ungraded'; Kdc = @{ State = 'Unknown'; Value = $null; Cause = 'dc2 could not be read (access denied)' }; Status = 'Info'; Graded = 0 }
+        ) {
+            $acc = @(
+                [pscustomobject]@{ DistinguishedName = 'CN=svc1'; Name = 'svc1'; sAMAccountName = 'svc1'; userAccountControl = 512; 'msDS-SupportedEncryptionTypes' = $null },
+                [pscustomobject]@{ DistinguishedName = 'CN=svc2'; Name = 'svc2'; sAMAccountName = 'svc2'; userAccountControl = 512; 'msDS-SupportedEncryptionTypes' = 0 })
+            $r = Get-AdfaEncryptionTypeVerdict -DomainName $script:LbDom1 -Population 'UsersWithSpn' -Raw (New-LbRead -Records $acc) -Records $acc -KdcDefault ([pscustomobject]$Kdc) -Config $script:LbCfg -CapSource $script:LbCap
+            $r.Status | Should -Be $Status
+            [int]$r.GradedByKdcDefault | Should -Be $Graded
+            [int]$r.NotDefined | Should -Be 2
+            if ($Graded -eq 0) { $r.Detail | Should -Match ([regex]::Escape([string]$Kdc.Cause)) }
+        }
+        It 'leaves trusts on their own rule whatever the KDC value (a trust with no value stays the trust grade)' {
+            $t = @([pscustomobject]@{ DistinguishedName = 'CN=fabrikam.com'; Name = 'fabrikam.com'; trustPartner = 'fabrikam.com'; 'msDS-SupportedEncryptionTypes' = $null })
+            $r = Get-AdfaEncryptionTypeVerdict -DomainName $script:LbDom1 -Population 'Trusts' -Raw (New-LbRead -Records $t) -Records $t -KdcDefault ([pscustomobject]@{ State = 'Known'; Value = 24; Cause = '' }) -Config $script:LbCfg -CapSource $script:LbCap
+            $r.Status | Should -Be 'Warning'
+            [int]$r.GradedByKdcDefault | Should -Be 0
+        }
+    }
+
+    Context '(b) The per-DC KDC read (driver, stubs, three DCs in two domains)' {
+        It 'reads every reachable DC once through the shared W32Time registry seam, and words unreachable and access denied apart' {
+            Mock Get-AdfaDcReachCause { param($HostName) if ($HostName -eq $script:LbDc3) { return 'Unreachable, classified once for this run by the reachability probe: the name does not resolve' } '' }
+            Mock Get-AdfaDcProbeGate { [pscustomobject]@{ Cause = ''; Open = @{ 5985 = $true; 135 = $true } } }
+            Mock Invoke-AdfaDcRemoteRead { param($ComputerName, $Protocols, $ReadCommand, $ReadArguments)
+                if ($ComputerName -eq $script:LbDc2) { return (New-LbRegRead -Ok $false -Denied $true -ErrorText 'Access is denied.') }
+                New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -Value 24) }
+            $inv = Get-AdfaKdcDefaultInventory -DomainControllers @((New-LbTarget $script:LbDc1 $script:LbDom1), (New-LbTarget $script:LbDc2 $script:LbDom1), (New-LbTarget $script:LbDc3 $script:LbDom2)) -ScopedDomains @($script:LbDom1, $script:LbDom2) -Config $script:LbCfg
+            $rows = @($inv.Rows)
+            # Declared population: three per-DC rows and two domain rows.
+            (Get-LbLike $rows 'KDC default encryption types: *').Count | Should -Be 5
+            (Get-LbRow $rows ('KDC default encryption types: {0}' -f $script:LbDc1))[0].Status | Should -Be 'Info'
+            (Get-LbRow $rows ('KDC default encryption types: {0}' -f $script:LbDc2))[0].Detail | Should -Match 'Access denied'
+            (Get-LbRow $rows ('KDC default encryption types: {0}' -f $script:LbDc3))[0].Detail | Should -Match 'classified once'
+            (Get-LbRow $rows ('KDC default encryption types: {0}' -f $script:LbDc3))[0].Detail | Should -Not -Match 'Access denied'
+            [string]$inv.ByDomain[$script:LbDom1].State | Should -Be 'Unknown'
+            [string]$inv.ByDomain[$script:LbDom2].State | Should -Be 'Unknown'
+            Should -Invoke Invoke-AdfaDcRemoteRead -Times 2 -Exactly -ParameterFilter { $ReadCommand -eq 'Get-AdfaDcW32TimeRaw' -and (@($ReadArguments['Values'] | ForEach-Object { $_['ValueName'] }) -join ',') -eq 'DefaultDomainSupportedEncTypes' }
+            Should -Invoke Invoke-AdfaDcRemoteRead -Times 1 -Exactly -ParameterFilter { $ComputerName -eq $script:LbDc2 }
+        }
+        It 'a domain whose every DC was read with one value is Known; a DC answering on neither port is not read; a scoped domain with no DC gets a population row' {
+            Mock Get-AdfaDcReachCause { '' }
+            Mock Get-AdfaDcProbeGate { param($ComputerName, $Ports, $TimeoutMs) $open = ($ComputerName -ne $script:LbDc3); [pscustomobject]@{ Cause = ''; Open = @{ 5985 = $open; 135 = $open } } }
+            Mock Invoke-AdfaDcRemoteRead { New-LbRegRead -Values @(New-LbRegValue -Id 'DefaultDomainSupportedEncTypes' -Value 24) }
+            $inv = Get-AdfaKdcDefaultInventory -DomainControllers @((New-LbTarget $script:LbDc1 $script:LbDom1), (New-LbTarget $script:LbDc2 $script:LbDom1), (New-LbTarget $script:LbDc3 $script:LbDom2)) -ScopedDomains @($script:LbDom1, $script:LbDom2, 'south.contoso.com') -Config $script:LbCfg
+            [string]$inv.ByDomain[$script:LbDom1].State | Should -Be 'Known'
+            [int64]$inv.ByDomain[$script:LbDom1].Value | Should -Be 24
+            (Get-LbRow @($inv.Rows) ('KDC default encryption types: {0}' -f $script:LbDc3))[0].Detail | Should -Match 'neither WinRM'
+            (Get-LbRow @($inv.Rows) 'KDC default encryption types (population): south.contoso.com')[0].Status | Should -Be 'Not Assessed'
+            [string]$inv.ByDomain['south.contoso.com'].State | Should -Be 'Unknown'
+            Should -Invoke Invoke-AdfaDcRemoteRead -Times 2 -Exactly
+        }
+    }
+
+    Context '(c) An RODC named as a FSMO holder (pure, Learn planning-operations-master-role-placement)' {
+        BeforeAll {
+            $script:LbDsaRaw = New-LbRead -Records @((New-LbDsa -Server 'DC1'), (New-LbDsa -Server 'DC2'), (New-LbRodc -Server 'RODC1'))
+        }
+        It 'Pass when every role was read and no holder is an RODC (declared population: the three domain roles)' {
+            $roles = @((New-LbRole 'PDC emulator' (New-LbNtds 'DC1')), (New-LbRole 'RID master' (New-LbNtds 'DC1')), (New-LbRole 'Infrastructure master' (New-LbNtds 'DC2')))
+            $r = Get-AdfaRodcRoleHolderVerdict -Scope $script:LbDom1 -Kind 'Domain' -Roles $roles -DsaRaw $script:LbDsaRaw -Config $script:LbCfg -CapSource $script:LbCap
+            $r.Item | Should -Be ('FSMO role on a read-only domain controller (domain): {0}' -f $script:LbDom1)
+            $r.Status | Should -Be 'Pass'
+            [int]$r.RolesRead | Should -Be 3
+        }
+        It 'Fail when the third role is held by an RODC, quoting Learn; the holder is in a column; the grade can be Warning by override' {
+            $roles = @((New-LbRole 'PDC emulator' (New-LbNtds 'DC1')), (New-LbRole 'RID master' (New-LbNtds 'DC1')), (New-LbRole 'Infrastructure master' (New-LbNtds 'RODC1')))
+            $r = Get-AdfaRodcRoleHolderVerdict -Scope $script:LbDom1 -Kind 'Domain' -Roles $roles -DsaRaw $script:LbDsaRaw -Config $script:LbCfg -CapSource $script:LbCap
+            $r.Status | Should -Be 'Fail'
+            $r.Detail | Should -Match 'RODCs cannot act as operations master role holders'
+            $r.RodcHolders | Should -Be 'Infrastructure master=RODC1'
+            $over = @{} + $script:LbCfg; $over['RodcRoleHolderStatus'] = 'Warning'
+            (Get-AdfaRodcRoleHolderVerdict -Scope $script:LbDom1 -Kind 'Domain' -Roles $roles -DsaRaw $script:LbDsaRaw -Config $over -CapSource $script:LbCap).Status | Should -Be 'Warning'
+        }
+        It 'an RODC holder stands as Fail even when another role could not be read (mixed result)' {
+            $roles = @((New-LbRole 'Schema master' (New-LbNtds 'RODC1')), [pscustomobject]@{ Role = 'Domain naming master'; Raw = (New-LbDown) })
+            $r = Get-AdfaRodcRoleHolderVerdict -Scope $script:LbDom1 -Kind 'Forest' -Roles $roles -DsaRaw $script:LbDsaRaw -Config $script:LbCfg -CapSource $script:LbCap
+            $r.Item | Should -Be ('FSMO role on a read-only domain controller (forest): {0}' -f $script:LbDom1)
+            $r.Status | Should -Be 'Fail'
+            $r.Detail | Should -Match 'unreachable'
+        }
+        It 'Not Assessed, never Pass: <Name>' -ForEach @(
+            @{ Name = 'a role read unreachable'; Roles = { @((New-LbRole 'PDC emulator' (New-LbNtds 'DC1')), [pscustomobject]@{ Role = 'RID master'; Raw = (New-LbDown) }) }; Dsa = { $script:LbDsaRaw }; Pattern = 'unreachable' }
+            @{ Name = 'a role read refused'; Roles = { @([pscustomobject]@{ Role = 'RID master'; Raw = (New-LbDenied) }) }; Dsa = { $script:LbDsaRaw }; Pattern = 'access denied' }
+            @{ Name = 'the NTDS Settings read refused'; Roles = { @(New-LbRole 'PDC emulator' (New-LbNtds 'DC1')) }; Dsa = { New-LbDenied }; Pattern = 'access denied' }
+            @{ Name = 'the NTDS Settings read capped'; Roles = { @(New-LbRole 'PDC emulator' (New-LbNtds 'DC1')) }; Dsa = { New-LbRead -Records @(New-LbDsa -Server 'DC1') -Capped $true }; Pattern = 'cap' }
+            @{ Name = 'the holder not among the objects read'; Roles = { @(New-LbRole 'PDC emulator' (New-LbNtds 'DC9')) }; Dsa = { $script:LbDsaRaw }; Pattern = 'not among' }
+            @{ Name = 'objectClass not returned on the holder'; Roles = { @(New-LbRole 'PDC emulator' (New-LbNtds 'DC5')) }; Dsa = { New-LbRead -Records @(New-LbDsa -Server 'DC5' -NoClass) }; Pattern = 'objectClass' }
+            @{ Name = 'a holder that names a deleted object'; Roles = { @(New-LbRole 'PDC emulator' ("CN=NTDS Settings`nDEL:1b2c,CN=DC7,CN=Servers,CN=S,CN=Sites,CN=Configuration,DC=contoso,DC=com")) }; Dsa = { $script:LbDsaRaw }; Pattern = 'deleted' }
+        ) {
+            $r = Get-AdfaRodcRoleHolderVerdict -Scope $script:LbDom1 -Kind 'Domain' -Roles (& $Roles) -DsaRaw (& $Dsa) -Config $script:LbCfg -CapSource $script:LbCap
+            $r.Status | Should -Be 'Not Assessed'
+            $r.Detail | Should -Match $Pattern
+        }
+    }
+
+    Context '(d) Application-partition infrastructure masters (pure, KB 223346, KB 2694933, KB 949257)' {
+        BeforeAll {
+            $script:LbPart = 'DC=DomainDnsZones,DC=contoso,DC=com'
+            $script:LbCross = New-LbRead -Records @(
+                [pscustomobject]@{ DistinguishedName = 'CN=contoso,CN=Partitions'; Name = 'contoso'; nCName = 'DC=contoso,DC=com'; systemFlags = 3 },
+                [pscustomobject]@{ DistinguishedName = 'CN=dz,CN=Partitions'; Name = 'dz'; nCName = 'DC=DomainDnsZones,DC=contoso,DC=com'; systemFlags = 5 })
+            $script:LbDsaRaw2 = New-LbRead -Records @((New-LbDsa -Server 'DC1'), (New-LbDsa -Server 'DC2'))
+            function New-LbInfra { param([string]$Holder) New-LbRead -Records @([pscustomobject]@{ DistinguishedName = ('CN=Infrastructure,{0}' -f $script:LbPart); Name = 'Infrastructure'; fSMORoleOwner = $Holder }) }
+        }
+        It '<Name>' -ForEach @(
+            @{ Name = 'a live holder is Info, named'; Raw = { New-LbInfra (New-LbNtds 'DC2') }; Cross = { $script:LbCross }; Dsa = { $script:LbDsaRaw2 }; Status = 'Info'; State = 'Live' }
+            @{ Name = 'a holder holding the 0ADEL mark (KB 2694933) is a Warning'; Raw = { New-LbInfra ("CN=NTDS Settings\0ADEL:3a1f,CN=DC4\0ADEL:9c2e,CN=Servers,CN=S,CN=Sites,CN=Configuration,DC=contoso,DC=com") }; Cross = { $script:LbCross }; Dsa = { $script:LbDsaRaw2 }; Status = 'Warning'; State = 'Deleted' }
+            @{ Name = 'a holder holding the DEL: form is a Warning'; Raw = { New-LbInfra ("CN=NTDS Settings`nDEL:3a1f,CN=DC4,CN=Servers,CN=S,CN=Sites,CN=Configuration,DC=contoso,DC=com") }; Cross = { $script:LbCross }; Dsa = { $script:LbDsaRaw2 }; Status = 'Warning'; State = 'Deleted' }
+            @{ Name = 'a holder naming a DSA absent from a complete read is a Warning'; Raw = { New-LbInfra (New-LbNtds 'DC8') }; Cross = { $script:LbCross }; Dsa = { $script:LbDsaRaw2 }; Status = 'Warning'; State = 'Missing' }
+            @{ Name = 'a holder absent from a capped read is Not Assessed'; Raw = { New-LbInfra (New-LbNtds 'DC8') }; Cross = { $script:LbCross }; Dsa = { New-LbRead -Records @(New-LbDsa -Server 'DC1') -Capped $true }; Status = 'Not Assessed'; State = '' }
+            @{ Name = 'the NTDS Settings read refused is Not Assessed'; Raw = { New-LbInfra (New-LbNtds 'DC2') }; Cross = { $script:LbCross }; Dsa = { New-LbDenied }; Status = 'Not Assessed'; State = '' }
+            @{ Name = 'a partition the crossRefs do not list is Info "not present"'; Raw = { $null }; Cross = { New-LbRead -Records @([pscustomobject]@{ DistinguishedName = 'CN=contoso,CN=Partitions'; Name = 'contoso'; nCName = 'DC=contoso,DC=com'; systemFlags = 3 }) }; Dsa = { $script:LbDsaRaw2 }; Status = 'Info'; State = 'NotPresent' }
+            @{ Name = 'a crossRef list without the parent naming context is Not Assessed'; Raw = { $null }; Cross = { New-LbRead -Records @() }; Dsa = { $script:LbDsaRaw2 }; Status = 'Not Assessed'; State = '' }
+            @{ Name = 'the crossRef read refused is Not Assessed'; Raw = { $null }; Cross = { New-LbDenied }; Dsa = { $script:LbDsaRaw2 }; Status = 'Not Assessed'; State = '' }
+            @{ Name = 'CN=Infrastructure not found is Not Assessed'; Raw = { New-LbNotFound }; Cross = { $script:LbCross }; Dsa = { $script:LbDsaRaw2 }; Status = 'Not Assessed'; State = '' }
+            @{ Name = 'CN=Infrastructure unreachable is Not Assessed'; Raw = { New-LbDown }; Cross = { $script:LbCross }; Dsa = { $script:LbDsaRaw2 }; Status = 'Not Assessed'; State = '' }
+        ) {
+            $r = Get-AdfaAppPartitionInfraVerdict -PartitionDn $script:LbPart -Scope $script:LbDom1 -PartitionsRaw (& $Cross) -Raw (& $Raw) -DsaRaw (& $Dsa) -Config $script:LbCfg -CapSource $script:LbCap
+            $r.Item | Should -Be ('Infrastructure master (application partition): {0}' -f $script:LbPart)
+            $r.Status | Should -Be $Status
+            if ($State -ne '') { $r.HolderState | Should -Be $State }
+        }
+        It 'the deleted-holder grade can be set to Info, and the Warning cites KB 2694933' {
+            $raw = New-LbInfra ("CN=NTDS Settings\0ADEL:3a1f,CN=DC4\0ADEL:9c2e,CN=Servers,CN=S,CN=Sites,CN=Configuration,DC=contoso,DC=com")
+            (Get-AdfaAppPartitionInfraVerdict -PartitionDn $script:LbPart -Scope $script:LbDom1 -PartitionsRaw $script:LbCross -Raw $raw -DsaRaw $script:LbDsaRaw2 -Config $script:LbCfg -CapSource $script:LbCap).Detail | Should -Match 'KB 2694933'
+            $over = @{} + $script:LbCfg; $over['AppPartitionHolderDeletedStatus'] = 'Info'
+            (Get-AdfaAppPartitionInfraVerdict -PartitionDn $script:LbPart -Scope $script:LbDom1 -PartitionsRaw $script:LbCross -Raw $raw -DsaRaw $script:LbDsaRaw2 -Config $over -CapSource $script:LbCap).Status | Should -Be 'Info'
+        }
+    }
+
+    Context '(e) The CIS-mapped Azure guest-configuration lockout baseline, selectable (pure)' {
+        BeforeAll {
+            $script:LbCis = @{} + $script:LbCfg
+            $script:LbCis['LockoutBaseline'] = 'AzureGuestConfigCis'
+            function New-LbInterval { param($Minutes) ConvertFrom-AdfaLockoutInterval -Value ([int64](-1 * $Minutes * 600000000)) -Config $script:LbCfg -NegativeRequired }
+        }
+        It 'resolves the baseline in force: Windows by default, CIS when selected' {
+            $w = Get-AdfaLockoutBaseline -Config $script:LbCfg
+            @([string]$w.Name, [int]$w.ThresholdMax, [int]$w.DurationMinutes, [int]$w.WindowMinutes) | Should -Be @('WindowsSecurityBaseline', 10, 15, 15)
+            $c = Get-AdfaLockoutBaseline -Config $script:LbCis
+            @([string]$c.Name, [int]$c.ThresholdMax) | Should -Be @('AzureGuestConfigCis', 5)
+        }
+        It '<Name>' -ForEach @(
+            @{ Name = 'Windows: threshold 10 passes'; Cis = $false; T = 10; D = 15; W = 15; Status = 'Pass' }
+            @{ Name = 'Windows: threshold 11 is flagged'; Cis = $false; T = 11; D = 15; W = 15; Status = 'Warning' }
+            @{ Name = 'Windows: threshold 6 passes'; Cis = $false; T = 6; D = 15; W = 15; Status = 'Pass' }
+            @{ Name = 'Windows: duration 0 is noted, not graded'; Cis = $false; T = 5; D = 0; W = 15; Status = 'Info' }
+            @{ Name = 'CIS: threshold 5 passes'; Cis = $true; T = 5; D = 15; W = 15; Status = 'Pass' }
+            @{ Name = 'CIS: threshold 6 is flagged'; Cis = $true; T = 6; D = 15; W = 15; Status = 'Warning' }
+            @{ Name = 'CIS: threshold 0 is flagged'; Cis = $true; T = 0; D = 15; W = 15; Status = 'Warning' }
+            @{ Name = 'CIS: duration 0 is flagged (15 or more minutes)'; Cis = $true; T = 5; D = 0; W = 15; Status = 'Warning' }
+            @{ Name = 'CIS: duration 14 is flagged'; Cis = $true; T = 5; D = 14; W = 14; Status = 'Warning' }
+            @{ Name = 'CIS: window 14 is flagged'; Cis = $true; T = 5; D = 30; W = 14; Status = 'Warning' }
+        ) {
+            $cfg = $script:LbCfg
+            if ($Cis) { $cfg = $script:LbCis }
+            $a = Get-AdfaLockoutAssessment -Threshold $T -Duration (New-LbInterval $D) -Window (ConvertFrom-AdfaLockoutInterval -Value ([int64](-1 * $W * 600000000)) -Config $script:LbCfg) -Config $cfg
+            [string]$a.Status | Should -Be $Status
+        }
+        It 'the lockout row names the baseline in force and where its choice came from' {
+            $head = New-LbRead -Records @([pscustomobject]@{ DistinguishedName = $script:LbDn1; Name = 'contoso'; lockoutThreshold = 8; lockoutDuration = -9000000000; lockOutObservationWindow = -9000000000 })
+            $w = Get-AdfaLockoutVerdict -DomainName $script:LbDom1 -Raw $head -Config $script:LbCfg -CapSource $script:LbCap
+            $w.Status | Should -Be 'Pass'
+            $w.Baseline | Should -Be 'WindowsSecurityBaseline'
+            $w.Evidence | Should -Match 'Windows security baseline'
+            $c = Get-AdfaLockoutVerdict -DomainName $script:LbDom1 -Raw $head -Config $script:LbCis -CapSource $script:LbCap
+            $c.Status | Should -Be 'Warning'
+            $c.Baseline | Should -Be 'AzureGuestConfigCis'
+            $c.Evidence | Should -Match 'AZ-WIN-73311'
+            $c.Detail | Should -Match 'CIS-mapped Azure guest-configuration baseline'
+            $c.Item | Should -Be $w.Item
+        }
+    }
+
+    Context 'C14e(3) Netlogon log capacity per DC (pure and driver)' {
+        BeforeAll {
+            function New-LbNl { param($Max = 'absent', $Alt = 'absent', [string]$MaxError = '')
+                $vals = @()
+                foreach ($pair in @(@('MaximumLogFileSize', $Max), @('LogFileMaxSize', $Alt))) {
+                    if ($pair[1] -eq 'absent') { $vals += New-LbRegValue -Id $pair[0] -ReturnValue 1 }
+                    elseif ($pair[1] -eq 'nokey') { $vals += New-LbRegValue -Id $pair[0] -ReturnValue 2 }
+                    elseif ($pair[1] -eq 'type') { $vals += New-LbRegValue -Id $pair[0] -ReturnValue 2147749893 }
+                    else { $vals += New-LbRegValue -Id $pair[0] -Value $pair[1] }
+                }
+                New-LbRegRead -Values $vals }
+        }
+        It '<Name>' -ForEach @(
+            @{ Name = 'neither value set: the documented default, twice for the two files'; Read = { New-LbNl }; Status = 'Info'; Per = '20000000'; History = '40000000' }
+            @{ Name = 'MaximumLogFileSize set alone'; Read = { New-LbNl -Max 50000000 }; Status = 'Info'; Per = '50000000'; History = '100000000' }
+            @{ Name = 'LogFileMaxSize set alone'; Read = { New-LbNl -Alt 30000000 }; Status = 'Info'; Per = '30000000'; History = '60000000' }
+            @{ Name = 'both set to one value'; Read = { New-LbNl -Max 30000000 -Alt 30000000 }; Status = 'Info'; Per = '30000000'; History = '60000000' }
+            @{ Name = 'both set to different values: Not Assessed'; Read = { New-LbNl -Max 30000000 -Alt 50000000 }; Status = 'Not Assessed'; Per = ''; History = '' }
+            @{ Name = 'a value of 0: Not Assessed'; Read = { New-LbNl -Max 0 }; Status = 'Not Assessed'; Per = ''; History = '' }
+            @{ Name = 'a value of another type: Not Assessed'; Read = { New-LbNl -Max 'type' }; Status = 'Not Assessed'; Per = ''; History = '' }
+            @{ Name = 'the key absent: the default'; Read = { New-LbNl -Max 'nokey' -Alt 'nokey' }; Status = 'Info'; Per = '20000000'; History = '40000000' }
+            @{ Name = 'access denied'; Read = { New-LbRegRead -Ok $false -Denied $true -ErrorText 'Access is denied.' }; Status = 'Not Assessed'; Per = ''; History = '' }
+        ) {
+            $r = Get-AdfaNetlogonLogCapacityRow -ComputerName $script:LbDc1 -Scope $script:LbDom1 -Read (& $Read) -Config $script:LbSite
+            $r.Item | Should -Be ('Netlogon log capacity: {0}' -f $script:LbDc1)
+            $r.Area | Should -Be 'Sites'
+            $r.Status | Should -Be $Status
+            [string]$r.BytesPerFile | Should -Be $Per
+            [string]$r.HistoryBytes | Should -Be $History
+        }
+        It 'unreachable and access denied are worded apart; the policy area is named in NotRun, not in Detail' {
+            $u = Get-AdfaNetlogonLogCapacityRow -ComputerName $script:LbDc1 -Scope $script:LbDom1 -Read $null -Unreachable 'Unreachable, classified once for this run by the reachability probe: refused' -Config $script:LbSite
+            $u.Status | Should -Be 'Not Assessed'
+            $u.Detail | Should -Match 'classified once'
+            $d = Get-AdfaNetlogonLogCapacityRow -ComputerName $script:LbDc1 -Scope $script:LbDom1 -Read (New-LbRegRead -Ok $false -Denied $true -ErrorText 'Access is denied.') -Config $script:LbSite
+            $d.Detail | Should -Match 'Access denied'
+            $d.Detail | Should -Not -Match 'classified once'
+            $ok = Get-AdfaNetlogonLogCapacityRow -ComputerName $script:LbDc1 -Scope $script:LbDom1 -Read (New-LbNl) -Config $script:LbSite
+            $ok.NotRun | Should -Match 'Software\\Policies\\Microsoft\\Netlogon\\Parameters'
+            $ok.Detail | Should -Not -Match '(?i)backup|stale|replication|NOT a pass'
+        }
+        It 'the driver reads every reachable DC of two domains once through the shared seam, gives a scoped domain with no DC a population row, and skips a DC on neither port' {
+            Mock Get-AdfaDcReachCause { '' }
+            Mock Get-AdfaDcProbeGate { param($ComputerName, $Ports, $TimeoutMs) $open = ($ComputerName -ne $script:LbDc2); [pscustomobject]@{ Cause = ''; Open = @{ 5985 = $open; 135 = $open } } }
+            Mock Invoke-AdfaDcRemoteRead { New-LbNl -Max 50000000 }
+            $rows = @(Get-AdfaNetlogonCapacityRows -DomainControllers @((New-LbTarget $script:LbDc1 $script:LbDom1), (New-LbTarget $script:LbDc2 $script:LbDom1), (New-LbTarget $script:LbDc3 $script:LbDom2)) -ScopedDomains @($script:LbDom1, $script:LbDom2, 'south.contoso.com') -Config $script:LbSite)
+            # Declared population: three DC rows and one population row.
+            (Get-LbLike $rows 'Netlogon log capacity: *').Count | Should -Be 3
+            (Get-LbRow $rows ('Netlogon log capacity: {0}' -f $script:LbDc3))[0].Status | Should -Be 'Info'
+            (Get-LbRow $rows ('Netlogon log capacity: {0}' -f $script:LbDc2))[0].Detail | Should -Match 'neither WinRM'
+            (Get-LbRow $rows 'Netlogon log capacity (population): south.contoso.com')[0].Status | Should -Be 'Not Assessed'
+            Should -Invoke Invoke-AdfaDcRemoteRead -Times 2 -Exactly -ParameterFilter { $ReadCommand -eq 'Get-AdfaDcW32TimeRaw' -and (@($ReadArguments['Values'] | ForEach-Object { $_['ValueName'] }) -join ',') -eq 'MaximumLogFileSize,LogFileMaxSize' }
+        }
+    }
+
+    Context 'The collector over a two-domain forest (stubs in the shape Get-ADObject returns)' {
+        BeforeEach {
+            $script:LbSent = New-Object System.Collections.ArrayList
+            $script:LbMode = @{}
+            function script:Get-ADDomain { param([string]$Identity, [string]$Server, $Credential, $ErrorAction)
+                [pscustomobject]@{ DistinguishedName = ('DC=' + (([string]$Identity).TrimEnd('.') -replace '\.', ',DC=')); DNSRoot = $Identity } }
+            function script:Get-ADOptionalFeature { param($Filter, [string]$Server, $Credential, $ErrorAction) [pscustomobject]@{ Name = 'Recycle Bin Feature'; EnabledScopes = @() } }
+            function script:Get-ADObject { param([string]$Server, [string]$Identity, [string]$LDAPFilter, [string]$SearchBase, $SearchScope, [string[]]$Properties, $ResultSetSize, $Credential, $ErrorAction)
+                [void]$script:LbSent.Add([pscustomobject]@{ Server = $Server; Identity = $Identity; Filter = $LDAPFilter; SearchBase = $SearchBase; Properties = (@($Properties) -join ',') })
+                $isNorth = ($Server -eq $script:LbDom2)
+                if ($Identity -like 'CN=Partitions,*') { return [pscustomobject]@{ DistinguishedName = $Identity; Name = 'Partitions'; fSMORoleOwner = (New-LbNtds 'DC1'); 'msDS-Behavior-Version' = 7 } }
+                if ($Identity -like 'CN=Infrastructure,DC=DomainDnsZones,DC=north*') { return [pscustomobject]@{ DistinguishedName = $Identity; Name = 'Infrastructure'; fSMORoleOwner = "CN=NTDS Settings\0ADEL:3a1f,CN=DC4\0ADEL:9c2e,CN=Servers,CN=S,CN=Sites,CN=Configuration,DC=contoso,DC=com" } }
+                if ($Identity -like 'CN=Infrastructure,*') { return [pscustomobject]@{ DistinguishedName = $Identity; Name = 'Infrastructure'; fSMORoleOwner = (New-LbNtds 'DC2') } }
+                if ($Identity -like 'CN=RID Manager$,*' -and $isNorth) { return [pscustomobject]@{ DistinguishedName = $Identity; Name = 'x'; fSMORoleOwner = (New-LbNtds 'RODC1') } }
+                if ($Identity -like 'CN=Schema,*' -or $Identity -like 'CN=RID Manager$,*') { return [pscustomobject]@{ DistinguishedName = $Identity; Name = 'x'; fSMORoleOwner = (New-LbNtds 'DC1') } }
+                if ($Identity -like 'CN=pso-*') { return [pscustomobject]@{ DistinguishedName = $Identity; Name = 'pso'; 'msDS-PSOAppliesTo' = @('CN=News,CN=Users,DC=contoso,DC=com') } }
+                if ($Identity -eq 'CN=News,CN=Users,DC=contoso,DC=com') { if ($script:LbMode['subject'] -eq 'denied') { throw [System.UnauthorizedAccessException]::new('Access is denied.') }; return [pscustomobject]@{ DistinguishedName = $Identity; Name = 'News'; objectClass = @('top', 'group'); groupType = 2 } }
+                if ($Identity -like 'DC=*') { return [pscustomobject]@{ DistinguishedName = $Identity; Name = 'head'; fSMORoleOwner = (New-LbNtds 'DC1'); lockoutThreshold = 10; lockoutDuration = -9000000000; lockOutObservationWindow = -9000000000 } }
+                if ($SearchBase -like 'CN=Sites,*') { return @((New-LbDsa -Server 'DC1'), (New-LbDsa -Server 'DC2'), (New-LbRodc -Server 'RODC1')) }
+                if ($LDAPFilter -eq '(objectClass=crossRef)') { return @(
+                        [pscustomobject]@{ DistinguishedName = 'CN=a'; Name = 'a'; nCName = 'DC=contoso,DC=com'; systemFlags = 3 },
+                        [pscustomobject]@{ DistinguishedName = 'CN=b'; Name = 'b'; nCName = 'DC=north,DC=contoso,DC=com'; systemFlags = 3 },
+                        [pscustomobject]@{ DistinguishedName = 'CN=c'; Name = 'c'; nCName = 'DC=DomainDnsZones,DC=contoso,DC=com'; systemFlags = 5 },
+                        [pscustomobject]@{ DistinguishedName = 'CN=d'; Name = 'd'; nCName = 'DC=DomainDnsZones,DC=north,DC=contoso,DC=com'; systemFlags = 5 },
+                        [pscustomobject]@{ DistinguishedName = 'CN=e'; Name = 'e'; nCName = 'DC=ForestDnsZones,DC=contoso,DC=com'; systemFlags = 5 }) }
+                if ($LDAPFilter -like '*servicePrincipalName=*') { return @([pscustomobject]@{ DistinguishedName = 'CN=svc'; Name = 'svc'; sAMAccountName = 'svc'; userAccountControl = 512 }) }
+                if ($LDAPFilter -like '(&(objectClass=computer)*') { return @([pscustomobject]@{ DistinguishedName = 'CN=DC1'; Name = 'DC1'; sAMAccountName = 'DC1$'; userAccountControl = 532480; objectClass = @('top', 'computer'); 'msDS-SupportedEncryptionTypes' = 24 }) }
+                if ($LDAPFilter -eq '(objectClass=msDS-PasswordSettings)') { if ($isNorth) { return @() }; return @([pscustomobject]@{ DistinguishedName = 'CN=pso-dist,CN=Password Settings Container,CN=System,DC=contoso,DC=com'; Name = 'pso-dist'; objectGUID = 'g'; 'msDS-PasswordSettingsPrecedence' = 1; 'msDS-LockoutThreshold' = 10; 'msDS-LockoutDuration' = -9000000000; 'msDS-LockoutObservationWindow' = -9000000000; 'msDS-PSOAppliesTo' = @('CN=News,CN=Users,DC=contoso,DC=com') }) }
+                return @()
+            }
+            Mock Get-AdfaKdcDefaultInventory { [pscustomobject]@{ Rows = @(); ByDomain = @{ 'contoso.com' = [pscustomobject]@{ State = 'Known'; Value = 4; Cause = '' }; 'north.contoso.com' = [pscustomobject]@{ State = 'Unknown'; Value = $null; Cause = 'dc3 could not be read (access denied)' } } } }
+        }
+        AfterEach { foreach ($n in @('Get-ADDomain', 'Get-ADOptionalFeature', 'Get-ADObject')) { Remove-Item -Path ("Function:\script:{0}" -f $n) -ErrorAction SilentlyContinue } }
+        It 'grades the PSO links, the RODC holder, the deleted DNS-partition holder and the KDC default, each domain read from itself' {
+            $rows = @(Get-AdfaAccountsPolicy -ForestName $script:LbDom1 -RootDomain $script:LbDom1 -Domains @($script:LbDom1, $script:LbDom2) -ForestDomains @($script:LbDom1, $script:LbDom2) -DomainControllers @((New-LbTarget $script:LbDc1 $script:LbDom1), (New-LbTarget $script:LbDc3 $script:LbDom2)) -Config $script:LbCfg -CapSource $script:LbCap)
+            $p = (Get-LbRow $rows ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))[0]
+            $p.Status | Should -Be 'Info'
+            $p.NotHonoured | Should -Be 'pso-dist'
+            (Get-LbRow $rows ('FSMO role on a read-only domain controller (domain): {0}' -f $script:LbDom2))[0].Status | Should -Be 'Fail'
+            (Get-LbRow $rows ('FSMO role on a read-only domain controller (domain): {0}' -f $script:LbDom1))[0].Status | Should -Be 'Pass'
+            (Get-LbRow $rows ('FSMO role on a read-only domain controller (forest): {0}' -f $script:LbDom1))[0].Status | Should -Be 'Pass'
+            (Get-LbRow $rows 'Infrastructure master (application partition): DC=DomainDnsZones,DC=north,DC=contoso,DC=com')[0].Status | Should -Be 'Warning'
+            (Get-LbRow $rows 'Infrastructure master (application partition): DC=DomainDnsZones,DC=contoso,DC=com')[0].Status | Should -Be 'Info'
+            (Get-LbRow $rows 'Infrastructure master (application partition): DC=ForestDnsZones,DC=contoso,DC=com')[0].Status | Should -Be 'Info'
+            # contoso: the user with an SPN and no value is graded on the domain's RC4-only KDC value; north stays ungraded.
+            $u1 = (Get-LbRow $rows ('Kerberos encryption types (users with an SPN): {0}' -f $script:LbDom1))[0]
+            $u1.Status | Should -Be 'Warning'
+            [int]$u1.GradedByKdcDefault | Should -Be 1
+            $u2 = (Get-LbRow $rows ('Kerberos encryption types (users with an SPN): {0}' -f $script:LbDom2))[0]
+            $u2.Status | Should -Be 'Info'
+            $u2.Detail | Should -Match 'access denied'
+            # Reads: the PSO subject from the PSO's own domain with the declared list; the crossRefs once, from the root.
+            @($script:LbSent | Where-Object { $_.Identity -eq 'CN=News,CN=Users,DC=contoso,DC=com' } | ForEach-Object { '{0}|{1}' -f $_.Server, $_.Properties }) | Should -Be @('contoso.com|objectClass,groupType')
+            @($script:LbSent | Where-Object { $_.Filter -eq '(objectClass=crossRef)' } | ForEach-Object { $_.Server }) | Should -Be @($script:LbDom1)
+            @($script:LbSent | Where-Object { $_.Identity -like 'CN=Infrastructure,DC=DomainDnsZones,DC=north*' } | ForEach-Object { $_.Server }) | Should -Be @($script:LbDom2)
+            @($script:LbSent | Where-Object { $_.Identity -like 'CN=Infrastructure,DC=ForestDnsZones,*' } | ForEach-Object { $_.Server }) | Should -Be @($script:LbDom1)
+            Should -Invoke Get-AdfaKdcDefaultInventory -Times 1 -Exactly
+        }
+        It 'a refused subject read leaves the PSO undecided (Not Assessed, access denied); a link cap of 0 reads no subject' {
+            $script:LbMode['subject'] = 'denied'
+            $rows = @(Get-AdfaAccountsPolicy -ForestName $script:LbDom1 -RootDomain $script:LbDom1 -Domains @($script:LbDom1) -ForestDomains @($script:LbDom1) -DomainControllers @((New-LbTarget $script:LbDc1 $script:LbDom1)) -Config $script:LbCfg -CapSource $script:LbCap)
+            $p = (Get-LbRow $rows ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))[0]
+            $p.Status | Should -Be 'Not Assessed'
+            $p.Detail | Should -Match 'access denied'
+            $script:LbSent.Clear()
+            $script:LbMode['subject'] = ''
+            $cap0 = @{} + $script:LbCfg; $cap0['PsoLinkReadCap'] = 0
+            $rows = @(Get-AdfaAccountsPolicy -ForestName $script:LbDom1 -RootDomain $script:LbDom1 -Domains @($script:LbDom1) -ForestDomains @($script:LbDom1) -DomainControllers @((New-LbTarget $script:LbDc1 $script:LbDom1)) -Config $cap0 -CapSource $script:LbCap)
+            (Get-LbRow $rows ('Fine-grained password policies applied to nothing: {0}' -f $script:LbDom1))[0].Status | Should -Be 'Not Assessed'
+            @($script:LbSent | Where-Object { $_.Identity -eq 'CN=News,CN=Users,DC=contoso,DC=com' }).Count | Should -Be 0
+        }
+        It 'without -DomainControllers no KDC read is made and accounts with no value stay ungraded as before' {
+            $rows = @(Get-AdfaAccountsPolicy -ForestName $script:LbDom1 -RootDomain $script:LbDom1 -Domains @($script:LbDom1) -ForestDomains @($script:LbDom1) -Config $script:LbCfg -CapSource $script:LbCap)
+            Should -Invoke Get-AdfaKdcDefaultInventory -Times 0 -Exactly
+            [int](Get-LbRow $rows ('Kerberos encryption types (users with an SPN): {0}' -f $script:LbDom1))[0].GradedByKdcDefault | Should -Be 0
+        }
+    }
+
+    Context 'Section wiring, help, README and advice (AST and text)' {
+        It 'classifies the DCs when AccountsPolicy is selected, and passes the per-domain DC list, the failures and the credential to the collector' {
+            $assign = @($script:LbMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$classifySections' }, $true))
+            @($assign[0].Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value }) | Should -Contain 'AccountsPolicy'
+            $branch = @($script:LbMain.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq "Test-SectionSelected 'AccountsPolicy' `$Sections" }, $true))
+            $branch.Count | Should -Be 1
+            $call = @(Get-LbCall -Ast $branch[0] -Name 'Get-AdfaAccountsPolicy')
+            $call.Count | Should -Be 1
+            foreach ($p in @('-DomainControllers \$c14Targets', '-InventoryFailures \$c14Failures', '-Credential \$Credential', '-PortTimeoutMs \$script:Config.RpcPortTimeoutMs', '-OperationTimeoutSec')) { $call[0].Extent.Text | Should -Match $p -Because $p }
+        }
+        It 'calls the Netlogon capacity rows once, in the Topology branch, over the same DC list as the clients without a site' {
+            $calls = @(Get-LbCall -Ast $script:LbMain -Name 'Get-AdfaNetlogonCapacityRows')
+            $calls.Count | Should -Be 1
+            $calls[0].Extent.Text | Should -Match '-DomainControllers \$c14Targets'
+            $p = $calls[0].Parent
+            while ($null -ne $p -and -not ($p -is [System.Management.Automation.Language.IfStatementAst] -and $p.Clauses[0].Item1.Extent.Text -eq "Test-SectionSelected 'Topology' `$Sections")) { $p = $p.Parent }
+            $null -ne $p | Should -BeTrue
+            $assign = $calls[0].Parent
+            while ($null -ne $assign -and $assign -isnot [System.Management.Automation.Language.AssignmentStatementAst]) { $assign = $assign.Parent }
+            $assign.Left.Extent.Text | Should -Be '$siteRows'
+        }
+        It 'reads the registry only through the shared seam, opens no new CIM session and calls no AD or CIM command in a pure verdict (declared population: the new functions)' {
+            foreach ($n in @('Get-AdfaKdcDefaultInventory', 'Get-AdfaNetlogonCapacityRows')) {
+                $f = @(Get-LbFunction -Name $n)
+                $f.Count | Should -Be 1 -Because $n
+                $c = @(Get-LbCall -Ast $f[0] -Name 'Invoke-AdfaDcRemoteRead')
+                $c.Count | Should -Be 1 -Because $n
+                $c[0].Extent.Text | Should -Match "-ReadCommand 'Get-AdfaDcW32TimeRaw'"
+                @(Get-LbCall -Ast $f[0] -Name 'Get-AdfaDcProbeGate').Count | Should -Be 1 -Because $n
+                @(Get-LbCall -Ast $f[0] -Name 'New-CimSession').Count | Should -Be 0 -Because $n
+            }
+            $pure = @('Resolve-AdfaPsoSubject', 'Get-AdfaKdcDefaultRow', 'Resolve-AdfaKdcDomainDefault', 'Get-AdfaRodcRoleHolderVerdict', 'Get-AdfaAppPartitionInfraVerdict', 'Get-AdfaLockoutBaseline', 'Get-AdfaNetlogonLogCapacityRow')
+            foreach ($n in $pure) {
+                $f = @(Get-LbFunction -Name $n)
+                $f.Count | Should -Be 1 -Because $n
+                @($f[0].FindAll({ param($x) $x -is [System.Management.Automation.Language.CommandAst] -and [string]$x.GetCommandName() -match '^[A-Za-z]+-(AD(?!fa)|Cim)' }, $true)).Count | Should -Be 0 -Because $n
+            }
+            $col = @(Get-LbFunction -Name 'Get-AdfaAccountsPolicy')[0]
+            @(Get-LbCall -Ast $col -Name 'Get-ADObject').Count | Should -Be 0
+            $reads = @(Get-LbCall -Ast $col -Name 'Get-AdfaAccountsPolicyRaw' | ForEach-Object { if ($_.Extent.Text -match "-Read '([A-Za-z]+)'") { $Matches[1] } } | Sort-Object -Unique)
+            foreach ($r in @('PsoLinks', 'PsoSubject', 'AppPartitions')) { $reads | Should -Contain $r }
+        }
+        It 'documents the new reads in the help and the README, and the CIM-method sentence names the two new callers' {
+            $help = $script:LbAst.GetHelpContent()
+            $sections = ([string]$help.Parameters['SECTIONS'] -replace '\s+', ' ')
+            $sections | Should -Match 'DefaultDomainSupportedEncTypes'
+            $sections | Should -Not -Match 'AccountsPolicy reads the directory only'
+            $all = (($help.Description + ' ' + (@($help.Parameters.Values) -join ' ')) -replace '\s+', ' ')
+            $all | Should -Match 'Seven sections make CIM METHOD calls'
+            $all | Should -Match 'AccountsPolicy reads DefaultDomainSupportedEncTypes[^.]*GetDWORDValue'
+            $all | Should -Match 'Topology reads MaximumLogFileSize and LogFileMaxSize[^.]*GetDWORDValue'
+            ([string]$help.Parameters['CONFIGOVERRIDEPATH'] -replace '\s+', ' ') | Should -Match 'LockoutBaseline'
+            $readme = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'README.md')) -replace '\s+', ' '
+            $readme | Should -Match 'DefaultDomainSupportedEncTypes'
+            $readme | Should -Match 'Netlogon log capacity'
+            $readme | Should -Match 'AzureGuestConfigCis'
+            $readme | Should -Match 'msDS-DelegatedManagedServiceAccount'
+        }
+        It 'gives each new Warning or Fail row its own advice and the Netlogon capacity row none, and no unscoped entry captures them' {
+            $cases = @(
+                @{ Section = 'Accounts & Policy'; Item = 'FSMO role on a read-only domain controller (domain): contoso.com'; Detail = 'RODC PDC emulator global catalog replication'; Expect = 'RODCs cannot act as operations master role holders' }
+                @{ Section = 'Accounts & Policy'; Item = 'Infrastructure master (application partition): DC=DomainDnsZones,DC=contoso,DC=com'; Detail = 'deleted 0ADEL replication backup'; Expect = 'fSMORoleOwner' }
+                @{ Section = 'Accounts & Policy'; Item = 'KDC default encryption types: contoso.com'; Detail = 'differ RC4 stale'; Expect = 'DefaultDomainSupportedEncTypes' }
+                @{ Section = 'Accounts & Policy'; Item = 'Fine-grained password policies applied to nothing: contoso.com'; Detail = 'distribution group password policy lockout'; Expect = 'global security groups' }
+                @{ Section = 'Accounts & Policy'; Item = 'Lockout policy: contoso.com'; Detail = 'lockout'; Expect = 'LockoutBaseline' }
+                @{ Section = 'Site Health'; Item = 'Netlogon log capacity: dc1.contoso.com'; Detail = 'netlogon log dcdiag netlogons replication backup stale time sync'; Expect = '' }
             )
             foreach ($c in $cases) {
                 $rec = Get-AdfaRecommendation -Section $c.Section -Item $c.Item -Detail $c.Detail

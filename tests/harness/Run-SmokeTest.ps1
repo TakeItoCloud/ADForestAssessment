@@ -567,10 +567,15 @@ function Invoke-CimMethod {
         # first Learn spelling only; 'LocalState' under the same key then answers 1 (key exists, value not
         # set) and 'Local State' under 'MigratingSysVols' answers 2 (no such key), as measured.
         'SYSTEM\CurrentControlSet\Services\DFSR\Parameters\SysVols\Migrating SysVols|Local State' = [uint32]3
+        # PORT-PLAN C16e(b): DefaultDomainSupportedEncTypes 0x18 (AES only) on every stub DC, REG_DWORD as Learn names it.
+        # The Netlogon log size values are not set (the Netlogon\Parameters key exists: 1, value not set).
+        'SYSTEM\CurrentControlSet\Services\Kdc|DefaultDomainSupportedEncTypes'              = [uint32]24
     }
     # Keys that exist although the stub holds no value under them.
     $stubEmptyKeys = @('SYSTEM\CurrentControlSet\Services\LanManWorkstation\Parameters')
     $stubKey = ('{0}|{1}' -f [string]$Arguments['sSubKeyName'], [string]$Arguments['sValueName'])
+    # PORT-PLAN C16e(b): with the AccountsPolicy reads refused, the KDC registry read is refused too (StdRegProv 5).
+    if ($script:SmokeAccountsPolicyFail -and [string]$Arguments['sSubKeyName'] -eq 'SYSTEM\CurrentControlSet\Services\Kdc') { return [pscustomobject]@{ ReturnValue = [uint32]5; uValue = $null; PSComputerName = 'stub' } }
     $stubAbsent = (@($script:SmokeAbsentValues) -contains [string]$Arguments['sValueName'])
     $stubIsString = ($stubRegistry.ContainsKey($stubKey) -and -not $stubAbsent)
     $stubIsDword = ($stubDwords.ContainsKey($stubKey) -and -not $stubAbsent)
@@ -903,7 +908,9 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
     $stubApRead = ''
     foreach ($stubApKey in @($script:Config.AccountsPolicy['Reads'].Keys)) {
         $stubApSpec = $script:Config.AccountsPolicy['Reads'][$stubApKey]
-        if (-not $stubApSpec.ContainsKey('Filter') -and $stubApKey -ne 'DomainHead') { continue }
+        # PORT-PLAN C16e(a): the PSO link and linked-object reads are told apart by their lists too (AppPartitions shares
+        # its filter and list with the lingering-object crossRef read, which answers it above).
+        if (-not $stubApSpec.ContainsKey('Filter') -and @('DomainHead', 'PsoLinks', 'PsoSubject') -notcontains [string]$stubApKey) { continue }
         if ($stubApSpec.ContainsKey('Filter') -and [string]$stubApSpec['Filter'] -ne $stubInvFilter) { continue }
         $stubApList = @(@($stubApSpec['Properties']) + @(@($stubApSpec['CountProperties']) | Where-Object { $null -ne $_ }))
         if (($stubInvAsked -join ',') -ne ($stubApList -join ',')) { continue }
@@ -937,6 +944,13 @@ function Get-ADObject { param([Parameter(ValueFromRemainingArguments)]$a)
                 if ($stubApServer -ne 'contoso.com') { return }
                 return [pscustomobject]@{ DistinguishedName = 'CN=pso-admins,CN=Password Settings Container,CN=System,DC=contoso,DC=com'; Name = 'pso-admins'; ObjectClass = 'msDS-PasswordSettings'; objectGUID = [guid]'33333333-0000-4000-8000-000000000001'
                     'msDS-PasswordSettingsPrecedence' = 10; 'msDS-LockoutDuration' = [int64]-9000000000; 'msDS-LockoutObservationWindow' = [int64]-9000000000; 'msDS-LockoutThreshold' = 10; 'msDS-PSOAppliesTo' = @(("CN=Domain Admins,CN=Users,{0}" -f $stubApDn)) }
+            }
+            # PORT-PLAN C16e(a): pso-admins links Domain Admins, a global security group (groupType 0x80000002).
+            'PsoLinks' {
+                return [pscustomobject]@{ DistinguishedName = [string]$stubNamed['Identity']; Name = 'pso-admins'; ObjectClass = 'msDS-PasswordSettings'; 'msDS-PSOAppliesTo' = @(("CN=Domain Admins,CN=Users,{0}" -f $stubApDn)) }
+            }
+            'PsoSubject' {
+                return [pscustomobject]@{ DistinguishedName = [string]$stubNamed['Identity']; Name = 'Domain Admins'; objectClass = @('top', 'group'); groupType = [int32]-2147483646 }
             }
             'DomainHead' {
                 return [pscustomobject]@{ DistinguishedName = $stubApDn; Name = ($stubApServer -replace '\..*$', ''); ObjectClass = 'domainDNS'
@@ -2230,7 +2244,17 @@ Check (@($script:SmokeC16bCalls | Where-Object { $_ -like 'Lo.*' }).Count -eq 0)
 # contoso.com read from contoso.com, the declared population of rows (the forest spread, five encryption rows, the
 # PASSWD_NOTREQD, spread, infrastructure master and lockout rows, one PSO and its two summary rows: 13).
 $apRows = @($smokeFindings | Where-Object { $_.Section -eq 'Accounts & Policy' })
-Check ($apRows.Count -eq 13) ("C16b: the 'Accounts & Policy' section is wired by All and gives 13 rows for the stub forest ({0})" -f $apRows.Count)
+# PORT-PLAN C16e (v1.47.0): plus the forest's and the domain's RODC rows, the ForestDnsZones and DomainDnsZones rows,
+# one KDC row per stub DC and one for the domain.
+$apKdcDc = @($apRows | Where-Object { $_.Item -like 'KDC default encryption types: *' -and $_.Item -ne 'KDC default encryption types: contoso.com' })
+Check ($apKdcDc.Count -ge 1 -and $apRows.Count -eq (13 + 4 + 1 + $apKdcDc.Count)) ("C16b/C16e: the 'Accounts & Policy' section is wired by All and gives 13 + 4 + 1 + {0} (KDC per DC) rows for the stub forest ({1})" -f $apKdcDc.Count, $apRows.Count)
+Check (@($apKdcDc | Where-Object { $_.Status -ne 'Info' -or [string]$_.ValueHex -ne '0x18' -or $_.Scope -ne 'contoso.com' }).Count -eq 0) 'C16e(b): every stub DC''s DefaultDomainSupportedEncTypes is read (0x18), Info, scoped to contoso.com'
+Check (@($apRows | Where-Object { $_.Item -eq 'KDC default encryption types: contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 1) 'C16e(b): every DC of contoso.com holds one value: the domain row passes'
+Check (@($apRows | Where-Object { $_.Item -like 'FSMO role on a read-only domain controller (*): contoso.com' -and $_.Status -eq 'Pass' }).Count -eq 2) 'C16e(c): no role is held by an RODC (forest and domain rows Pass)'
+Check (@($apRows | Where-Object { $_.Item -like 'Infrastructure master (application partition): *' -and $_.Status -eq 'Info' }).Count -eq 2) 'C16e(d): the ForestDnsZones and DomainDnsZones rows are Info, never Pass'
+Check (@($apRows | Where-Object { $_.Item -eq 'Fine-grained password policies applied to nothing: contoso.com' -and $_.Status -eq 'Pass' -and [int]$_.LinksRead -eq 1 }).Count -eq 1) 'C16e(a): the PSO linked to a global security group (Domain Admins) is honoured: Pass over one link read'
+$nlCap = @($smokeFindings | Where-Object { $_.Section -eq 'Site Health' -and $_.Item -like 'Netlogon log capacity: *' })
+Check ($nlCap.Count -ge 1 -and @($nlCap | Where-Object { $_.Status -ne 'Info' -or [string]$_.HistoryBytes -ne '40000000' }).Count -eq 0) ("C14e(3): every DC gets a Netlogon log capacity row, Info, the documented default twice ({0} rows)" -f $nlCap.Count)
 Check (@($apRows | Where-Object { $_.Item -ne 'FSMO role spread (forest): contoso.com' -and $_.Scope -ne 'contoso.com' }).Count -eq 0) 'C16b: every domain row is scoped to contoso.com'
 Check (@($script:SmokeAccountsPolicyCalls | Where-Object { $_ -notlike '*@contoso.com' }).Count -eq 0 -and @($script:SmokeAccountsPolicyCalls).Count -ge 7) ("C16b: every AccountsPolicy read named contoso.com ({0})" -f (@($script:SmokeAccountsPolicyCalls) -join ', '))
 $apSpn = @($apRows | Where-Object { $_.Item -eq 'Kerberos encryption types (users with an SPN): contoso.com' })
@@ -2605,6 +2629,11 @@ foreach ($d in $multiDomains) {
         Check (@($ap2 | Where-Object { $_.Item -eq $apItem -and $_.Scope -eq $d }).Count -eq 1) ("C16b multi-domain: '{0}' appears once, scoped to its domain" -f $apItem)
     }
     Check (@($script:SmokeAccountsPolicyCalls | Where-Object { $_ -eq ('UsersWithSpn@{0}' -f $d) }).Count -eq 1) ("C16b multi-domain: the users with an SPN of '{0}' are read from that domain" -f $d)
+    # PORT-PLAN C16e: the new per-domain rows, each once and scoped to its domain.
+    foreach ($apItem in @(('FSMO role on a read-only domain controller (domain): {0}' -f $d), ('KDC default encryption types: {0}' -f $d))) {
+        Check (@($ap2 | Where-Object { $_.Item -eq $apItem -and $_.Scope -eq $d }).Count -eq 1) ("C16e multi-domain: '{0}' appears once, scoped to its domain" -f $apItem)
+    }
+    Check (@($ap2 | Where-Object { $_.Item -like 'Infrastructure master (application partition): *' -and $_.Scope -eq $d -and $_.Status -ne 'Pass' }).Count -eq 1) ("C16e multi-domain: '{0}' has one DomainDnsZones row, never Pass" -f $d)
 }
 Check (@($ap2 | Where-Object { $_.Item -like 'Infrastructure master on a global catalog: *' -and $_.Status -eq 'Pass' -and $_.Detail -match 'Recycle Bin is enabled' }).Count -eq 3) 'C16b multi-domain: the enabled Recycle Bin at forest level 7 exempts the infrastructure master in each of the three domains'
 Check (@($ap2 | Where-Object { $_.Item -like 'Fine-grained password policy precedence: *' -and $_.Status -eq 'Not Assessed' -and $_.Detail -match 'none visible to this account' }).Count -eq 2) 'C16b multi-domain: a domain with no PSO visible is Not Assessed, never "no PSO"'
@@ -3668,6 +3697,9 @@ $ap3 = @($findings3 | Where-Object { $_.Section -eq 'Accounts & Policy' })
 Check ($ap3.Count -gt 0 -and @($ap3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode C16b: every Accounts & Policy row is Not Assessed ({0} rows; {1})" -f $ap3.Count, (@($ap3 | Where-Object { $_.Status -ne 'Not Assessed' } | ForEach-Object { '{0}={1}' -f $_.Item, $_.Status }) -join '; '))
 Check (@($ap3 | Where-Object { $_.Item -like 'Kerberos encryption types (users with an SPN): *' -and $_.Detail -match 'access denied' }).Count -eq 1) 'Failure mode C16b: the refused read is worded as access denied'
 Check (@($script:SmokeAccountsPolicyCalls).Count -gt 0) 'Failure mode C16b: non-vacuity - the AccountsPolicy reads were attempted and refused'
+Check (@($ap3 | Where-Object { $_.Item -like 'KDC default encryption types*' }).Count -ge 1) 'Failure mode C16e(b): the KDC rows are still there, Not Assessed'
+$nl3 = @($findings3 | Where-Object { $_.Item -like 'Netlogon log capacity*' })
+Check ($nl3.Count -ge 1 -and @($nl3 | Where-Object { $_.Status -ne 'Not Assessed' }).Count -eq 0) ("Failure mode C14e(3): with no DC enumerated, the Netlogon log capacity rows are Not Assessed, never Info ({0} rows)" -f $nl3.Count)
 $script:SmokeAccountsPolicyFail = $false# Nothing may be reported as healthy on the strength of a collector that threw.
 $dcEnum = @($findings3 | Where-Object { $_.Item -match 'Domain controller enumeration' })
 Check ($dcEnum.Count -ge 1) 'Failure mode: DC enumeration failure is a first-class finding'

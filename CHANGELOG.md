@@ -10,6 +10,133 @@ The tool's own changelog from before the extraction is kept at
 
 ## [Unreleased]
 
+### Changed - 2026-11-20 (PSO link targets, each DC's KDC default encryption types, an RODC as FSMO holder, the application-partition infrastructure masters, a selectable CIS-mapped lockout baseline, dMSA excluded from the LAPS and count populations, Netlogon log capacity, tool v1.47.0)
+
+**PORT-PLAN C16e (a)-(e) and C14e (1) and (3)** (leftovers batch; every choice approved upfront by the operator,
+recorded in PORT-PLAN C16j). C14e (2), an age per NO_CLIENT_SITE line, stays Planned: it waits on C14f (operator).
+No new `-Sections` value, section key, script parameter, CIM session owner, CIM method, ActiveDirectory command or
+`-Properties` call site: every new directory read goes through `Get-AdfaAccountsPolicyRaw` (the capped C15 seam with
+declared lists), every new registry read through `Get-AdfaDcW32TimeRaw` (StdRegProv `GetDWORDValue`, one bounded CIM
+session, WinRM then DCOM) behind the shared probe gate and `Invoke-AdfaDcRemoteRead`. **Run against stubs only** -
+nothing here has been read from a real directory or registry. What was not verified: the StdRegProv return codes on a
+real DC for an absent Kdc key or value and for the two Netlogon size values (read as 2 and 1, measured on a
+workstation only); which Netlogon size name Netlogon honours when both are set, and the policy's value name (Learn
+publishes neither); whether `Get-ADObject -Server <domain>` answers CN=Infrastructure under DomainDnsZones or
+ForestDnsZones when the answering DC does not hold the partition; the form a deleted `fSMORoleOwner` takes through
+ADWS; whether `objectClass` comes back as the class list or the most specific class (C16f); whether an account outside
+Domain Admins can read `msDS-PSOAppliesTo` and `groupType`; whether `msDS-DelegatedManagedServiceAccount` is the dMSA
+class on a Windows Server 2025 schema (C14f). First real run is row C16k, with C17.
+
+- **(a) PSOs applied to nothing Windows honours.** For each PSO whose `msDS-PSOAppliesTo` the Pso read counted (not
+  ranged): one identity read of the values (`AccountsPolicy.Reads.PsoLinks`) and one identity read per linked object
+  in the domain (`Reads.PsoSubject`: `objectClass`, `groupType`), at most `PsoLinkReadCap` (500, a tool default, 0 to
+  100000 by override) link targets per domain. Pure `Resolve-AdfaPsoSubject`: Honoured (`user` or `inetOrgPerson`,
+  or a group whose `groupType` has 0x80000000 and 0x2), Ignored (a distribution group, or a security group that is not
+  global), Unknown (a read that failed - unreachable, access denied and not found worded apart - no `objectClass`, no
+  or non-numeric `groupType`, or another class). "Fine-grained password policies applied to nothing: <domain>" (Item
+  unchanged) gains `NotHonoured`, `Undecided` and `LinksRead`; a PSO is applied to nothing only when every link was
+  read and none is Honoured; an unread `groupType` is never taken as ignored. **Status change**: a PSO linked only to
+  distribution or non-global security groups now makes the row `PsoAppliedToNothingStatus` (Info by default) where it
+  passed; a PSO whose links could not all be read makes it `Not Assessed` where it passed. The `NotRun` note "the
+  groupType of each linked object is not read" is gone when the links were read.
+- **(b) KDC default encryption types.** `DefaultDomainSupportedEncTypes` under `SYSTEM\CurrentControlSet\Services\Kdc`
+  on every DC of every scoped domain (`Get-AdfaKdcDefaultInventory`, the run's per-domain DC list). New rows "KDC
+  default encryption types: <dc>" (Info, Set with the value and its MS-KILE names, or not set and not decoded; Not
+  Assessed when not reached, refused, of another type or failed) and "KDC default encryption types: <domain>" (`Pass`
+  when every DC holds one value, `KdcDefaultDiffersStatus` - Warning, a tool default - when they differ or some hold
+  none, Info when none holds one, Not Assessed when any DC was not read or the domain's DCs could not be listed, with
+  a population row). **Status change**: "Kerberos encryption types" rows grade accounts with no
+  `msDS-SupportedEncryptionTypes` on that value only when it is known for the domain (named "(KDC default)", counted
+  in the new column `GradedByKdcDefault`; the value in `KdcDefault`), so such a row can now be a `Warning` or `Pass`
+  where it was `Info`; trusts are never graded on it. Without the KDC read (a direct call with no
+  `-DomainControllers`) the v1.44.0 wording stays.
+- **(c) FSMO role on a read-only domain controller.** The NTDS Settings read gains `objectClass`. New rows "FSMO
+  role on a read-only domain controller (forest): <forest>" and "(domain): <domain>": a holder whose NTDS Settings
+  object is of class `nTDSDSARO` is `RodcRoleHolderStatus` (Fail, a tool default; Warning by override), quoting
+  Learn; it stands even beside a role that could not be read; `Pass` only with every role read and every holder found,
+  with `objectClass`, in a complete read; otherwise Not Assessed with each cause.
+- **(d) Application-partition infrastructure masters.** The crossRef objects under CN=Partitions (`Reads.AppPartitions`,
+  from the forest root) and `fSMORoleOwner` of CN=Infrastructure under ForestDnsZones (from the root) and each
+  domain's DomainDnsZones (from that domain), read only where a crossRef lists the partition. New rows
+  "Infrastructure master (application partition): <partition DN>": the deleted mark (`\0ADEL` or `DEL:`) or a DSA
+  absent from a complete NTDS Settings read is `AppPartitionHolderDeletedStatus` (Warning, a tool default; Info by
+  override); a live holder Info; a partition the crossRef read (trusted only when it holds the parent naming
+  context's crossRef) does not list Info "not present"; anything unread Not Assessed.
+- **(e) Lockout baseline.** `AccountsPolicy.LockoutBaseline`: `WindowsSecurityBaseline` (the default, unchanged) or
+  `AzureGuestConfigCis` - threshold 5 or fewer and not 0, duration and observation window 15 minutes or more (a
+  duration of 0 flagged), the reset not longer than the duration. The figures are in the refused table
+  `LockoutBaselines`. The lockout rows gain a `Baseline` column and name the baseline in their Evidence; Items and
+  the default grades are unchanged. Learn's AZ-WIN-73311 row says "5 or fewer ... but not 0" in its text and "In
+  1-3" in its Expected value cell; the text is used (operator decision), and the discrepancy is recorded.
+- **C14e(1) dMSA.** `Laps.ExcludedClasses` and `Inventory.CountFilters.Computers` exclude
+  `msDS-DelegatedManagedServiceAccount`, as they exclude gMSA and sMSA. The class name is not published on Learn (no
+  adschema page, searched 2026-11-20): the operator decision of C14d(7), awaiting C14f. No dMSA count kind is added.
+  **Status change**: a dMSA without a LAPS expiry time no longer counts against the LAPS coverage row, and the
+  "Object count: Computers" rows no longer count dMSAs.
+- **C14e(3) Netlogon log capacity.** New rows "Netlogon log capacity: <dc>" in Site Health (Topology), Info, never
+  graded: `MaximumLogFileSize` and `LogFileMaxSize` under `SYSTEM\CurrentControlSet\Services\Netlogon\Parameters`
+  (`SiteCoverage.NetlogonLogSizeValues`, refused from a file); neither set is the documented 20000000 bytes, one set or
+  both equal that value, and the two files hold at most twice it; both set to different values, 0, another type, a
+  refused or failed read or a DC not reached is Not Assessed. The Group Policy value is not read (Learn publishes no
+  value name), said in `NotRun`. The "Clients without a site" rows are unchanged.
+- **Wiring.** `AccountsPolicy` joins `$classifySections` (its branch reaches the probe gate); Invoke-Main passes it
+  `-DomainControllers $c14Targets -InventoryFailures $c14Failures -Credential -PortTimeoutMs -OperationTimeoutSec`;
+  the Topology branch calls `Get-AdfaNetlogonCapacityRows` over the same targets as the clients without a site.
+- **Advice.** Four section-scoped Accounts & Policy entries before the catch-all (RODC holder: Learn's sentence and a
+  transfer to a writable DC; application-partition holder: KB 2694933 and KB 949257; KDC default: one value on every
+  DC, 0x18, 0x24 only for legacy RC4; applied to nothing: link to users or global security groups). The lockout advice
+  names the baseline chosen. A Site Health entry with no advice anchors the capacity row, so no unscoped log,
+  backup or dcdiag entry answers it.
+- **Help, README and docs.** The help and README say "Seven sections make CIM METHOD calls" (AccountsPolicy and
+  Topology added, through the TimeHierarchy read); `AccountsPolicy` is no longer "directory reads only";
+  `-ConfigOverridePath` lists the five new keys; docs/SIDE-EFFECT-AUDIT.md rows `CimMethod:StdRegProv.GetDWORDValue`,
+  `Command:New-CimSession` and `Command:Get-ADObject` name the new reads (no new key).
+- **Existing tests changed because behaviour legitimately changed**: every version pin (1.47.0, titles "bumped by
+  PORT-PLAN C16e+C14e"); the C16b list of `AccountsPolicy.Reads` keys (nine to twelve); the C16b help pin "AccountsPolicy
+  reads the directory only" (now "reads the directory and, since v1.47.0 ..."); the C16b collector row counts (25 to 31
+  rows, north 11 to 13: the RODC and application-partition rows); the H20 pins "Five sections make CIM METHOD calls"
+  and "Five sections make one" (now Seven); the C4 `Laps.ExcludedClasses` pin (dMSA added); the H21 populations (508 to 517 functions, 1943 to 1997 parameters: nine new functions); the C4b4 `Get-AdfaInventoryReadCause` call count (32 to 41). None deleted.
+- **Tests**: a new Describe (PSO subjects and the verdict, KDC per DC and per domain and the driver over three DCs in
+  two domains, the encryption grading on the KDC value, RODC holder, application-partition holders, both lockout
+  baselines with their off-by-one edges, Netlogon capacity and its driver, the collector over two domains with
+  stubs, override valid and every malformed shape, wiring by AST, help, README and advice). Run-SmokeTest stubs the
+  Kdc value, the PSO link and subject reads, and asserts the new rows in the single-domain, three-domain and
+  failing-collector passes; Run-Validation asserts the pure verdicts.
+- **Mutations** (each on a scratch copy, only the new Describe run, the file restored byte-for-byte and checked by
+  SHA-256):
+
+  | Id | Mutation | Result |
+  | --- | --- | --- |
+  | M1 | wrong verdict direction: an RODC holder never Fail (`$rodc.Count -lt 0`) | killed, 3 tests |
+  | M2 | Not Assessed turned into Pass: an unread DC ignored by the KDC domain verdict | killed, 3 tests |
+  | M3 | unreachable DC read as reachable: the KDC driver ignores the reachability class | killed, 1 test |
+  | M4 | access denied reported as unreachable: the Netlogon capacity row | killed, 1 test |
+  | M5 | override validation removed: any lockout baseline name accepted | killed, 1 test |
+  | M6 | wiring dropped: Invoke-Main no longer hands the DCs to AccountsPolicy | killed, 1 test |
+  | M7 | threshold off by one: the CIS threshold 6 | killed, 3 tests |
+  | M8 | per-DC loop handles only the first DC: the Netlogon capacity driver | killed, 1 test |
+
+**Microsoft Learn sources read on 2026-11-20:**
+https://learn.microsoft.com/windows-server/identity/ad-ds/get-started/adac/fine-grained-password-policies,
+https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/cc770394(v=ws.10),
+https://learn.microsoft.com/windows/win32/adschema/a-grouptype,
+https://learn.microsoft.com/windows/win32/adschema/a-msds-psoappliesto,
+https://learn.microsoft.com/powershell/module/activedirectory/add-adfinegrainedpasswordpolicysubject,
+https://learn.microsoft.com/troubleshoot/windows-server/windows-security/kerberos-protocol-registry-kdc-configuration-keys,
+https://learn.microsoft.com/windows-server/security/kerberos/detect-remediate-rc4-kerberos,
+https://learn.microsoft.com/previous-versions/windows/desktop/regprov/getdwordvalue-method-in-class-stdregprov,
+https://learn.microsoft.com/windows-server/identity/ad-ds/plan/planning-operations-master-role-placement,
+https://learn.microsoft.com/windows/win32/adschema/c-ntdsdsaro,
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/fsmo-placement-and-optimization-on-ad-dcs,
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/error-run-adprep-rodcprep-command,
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/dcpromo-demotion-fails,
+https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows,
+https://learn.microsoft.com/services-hub/microsoft-engage-center/health/remediation-steps-ad/set-the-account-lockout-threshold-to-the-recommended-value,
+https://learn.microsoft.com/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview,
+https://learn.microsoft.com/troubleshoot/windows-client/windows-security/enable-debug-logging-netlogon-service,
+https://learn.microsoft.com/troubleshoot/windows-server/active-directory/dc-delayed-response-to-ldap-kerberos-request,
+https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-netlogon.
+
 ### Changed - 2026-11-19 (function-specific parameter help, tool v1.46.0)
 
 **PORT-PLAN H21b** (approved upfront by the operator). Help text only; **no code change**. The parser's

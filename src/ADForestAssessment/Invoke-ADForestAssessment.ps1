@@ -75,7 +75,10 @@
           msDS-SupportedEncryptionTypes on enabled users with an SPN, computers, managed service accounts,
           domain controllers and trusts; enabled accounts with PASSWD_NOTREQD; the spread of the five FSMO
           roles and the infrastructure master on a global catalog; the domain lockout policy; and the
-          precedence, applies-to and lockout values of fine-grained password policies. Directory reads only
+          precedence, applies-to and lockout values of fine-grained password policies; since v1.47.0 the
+          groupType of each object a PSO is linked to, an RODC named as a FSMO holder, the infrastructure
+          masters of DomainDnsZones and ForestDnsZones, an operator-selectable CIS-mapped lockout baseline
+          and each DC's DefaultDomainSupportedEncTypes (a remote registry read, GetDWORDValue)
         - Stale user / computer objects, and stale disabled ones (inventory only)
         - Object counts per domain (users, computers, groups, contacts, OUs, gMSA, sMSA; enabled
           and disabled) and a group inventory (scope, type, empty groups, direct member counts),
@@ -247,7 +250,7 @@
     whether reading the remote registry starts the Remote Registry service, and the DNS client
     cache of the host running the assessment.
 
-    Five sections make CIM METHOD calls, and DcDiagnostics shares one of them (since v1.41.0);
+    Seven sections make CIM METHOD calls, and DcDiagnostics shares one of them (since v1.41.0);
     no other section does. Each reads the registry of
     each DC through the WMI registry provider, StdRegProv, which exposes no instances and can
     be read only by calling a method. DcDisk reads three values with GetStringValue and, where
@@ -261,7 +264,12 @@
     GetExpandedStringValue where the value has the other string type), the second instrument of
     the SYSVOL engine (PORT-PLAN C14c, since v1.41.0); that read runs once per run, before the
     dcdiag grid, whenever Sysvol or DcDiagnostics is selected, because the grid uses the engine
-    (PORT-PLAN C11e). Each of the three methods is named literally in the source, and no
+    (PORT-PLAN C11e). AccountsPolicy reads DefaultDomainSupportedEncTypes under
+    SYSTEM\CurrentControlSet\Services\Kdc on every DC with GetDWORDValue (PORT-PLAN C16e(b), since
+    v1.47.0), and Topology reads MaximumLogFileSize and LogFileMaxSize under
+    SYSTEM\CurrentControlSet\Services\Netlogon\Parameters on every DC with GetDWORDValue (PORT-PLAN
+    C14e(3), since v1.47.0); both through the TimeHierarchy registry read, so no CIM session is opened
+    elsewhere. Each of the three methods is named literally in the source, and no
     other method is called. StdRegProv's writing methods (Create*, Delete*, Set*) are never
     called. Microsoft does not state in so many words that the Get* methods have no side
     effect; the decision rests on their documented purpose and signature.
@@ -349,22 +357,31 @@
     pool as Info. A missing RID Set, a refused read and an unreachable server are each their own
     Not Assessed result. It runs no dcdiag test and never reads or writes SidCompatibilityVersion.
 
-    AccountsPolicy reads the directory only and needs domain read access (Domain Admins to see
-    fine-grained password policies: by default only they may read a PSO). For every scoped domain,
+    AccountsPolicy reads the directory and, since v1.47.0 (PORT-PLAN C16e), DefaultDomainSupportedEncTypes
+    from each DC's registry, and needs domain read access (Domain Admins to see fine-grained password
+    policies: by default only they may read a PSO) and local Administrators on each DC for the registry read. For every scoped domain,
     read from itself, it gives: five "Kerberos encryption types" rows (enabled users with an SPN,
     computers, managed service accounts, domain controllers, trusts) from the stored
     msDS-SupportedEncryptionTypes, decoded per MS-KILE 2.2.7 - only RC4 or DES is a Warning, RC4 or
     DES beside AES Info, a trust with no AES bit a Warning (Learn: a trust supports RC4 and not AES by
-    default), and an account with no value Info, never graded, because the KDC then takes its own
-    DefaultDomainSupportedEncTypes, a per-DC registry value this read does not see; a "Password not
+    default), and an account with no value graded on the DefaultDomainSupportedEncTypes the KDC then
+    takes only when every DC of the domain was read and holds one value (otherwise Info, never graded,
+    with the cause), and a "KDC default encryption types" row per DC and per domain (values that differ
+    between DCs a Warning, a tool default; a DC that could not be read Not Assessed); a "Password not
     required" row (enabled accounts with PASSWD_NOTREQD, trust accounts left out, a Warning); an
     "FSMO role spread" row per domain and one for the forest (Info: Learn publishes no concentration
     threshold); an "Infrastructure master on a global catalog" row graded on KB 223346 and KB 248047
     exactly (exempt in a single-domain forest, when every DC of the domain is a GC, or at forest level
     Windows Server 2008 R2 or later with the Recycle Bin enabled); a "Lockout policy" row against the
     Windows security baseline figures Learn quotes (threshold 10, duration and window 15 minutes, at
-    most a Warning); and a row per fine-grained password policy, a precedence-tie row and an
-    applied-to-nothing row. Every grade is a tool default, settable with the key AccountsPolicy of
+    most a Warning), or, with LockoutBaseline AzureGuestConfigCis, the CIS-mapped Azure guest-configuration
+    figures (5 or fewer and not 0, 15 minutes or more); a row per fine-grained password policy, a
+    precedence-tie row and an applied-to-nothing row, which since v1.47.0 also names the PSOs linked only
+    to distribution groups or non-global security groups (Learn: PSOs apply only to global security groups
+    and user objects; an unread groupType is Not Assessed, never ignored); a "FSMO role on a read-only
+    domain controller" row for the forest and each domain (a Fail: Learn, "RODCs cannot act as operations
+    master role holders"); and an "Infrastructure master (application partition)" row for ForestDnsZones and
+    each domain's DomainDnsZones (a deleted or missing holder a Warning, KB 2694933; otherwise Info). Every grade is a tool default, settable with the key AccountsPolicy of
     -ConfigOverridePath. A read that failed is Not Assessed with its cause - unreachable, access
     denied and timed out worded apart - and an empty answer that cannot prove absence (no PSO
     visible, no PASSWD_NOTREQD account where userAccountControl was not shown readable) is never a
@@ -555,7 +572,13 @@
     value; 1 to 365 from -ConfigOverridePath) holds only old lines, reported as old and never as
     current. The window is applied per file by its last write time, because Microsoft does not
     publish the line time stamp. netlogon.bak not found is a normal state; refused, unreachable or
-    timed out is Not Assessed when nothing current was found.
+    timed out is Not Assessed when nothing current was found. Since v1.47.0 (PORT-PLAN C14e(3)) every
+    DC also gets a "Netlogon log capacity" row (Info, never graded): MaximumLogFileSize and
+    LogFileMaxSize, the two value names Learn gives for the size of netlogon.log, read with
+    GetDWORDValue; neither set is the documented default of 20000000 bytes, and the two files hold at
+    most twice the size (Learn). Both set to different values, a value of 0, another type, a refused
+    read or a DC not reached is Not Assessed. The Group Policy value is not read: Learn publishes no
+    value name for it.
 
     TimeHierarchy also gives every DC a "Clock offset vs forest root PDC" row: the difference between
     its w32tm /stripchart reading and the forest root PDC's, both taken from the host running the
@@ -617,7 +640,9 @@
 
     Identity also gives "Object Counts" (users, computers and groups, each split enabled and
     disabled or security and distribution, contacts, OUs, gMSA and sMSA, from capped reads that are
-    not the full export) and "Group Inventory" (groups by scope and type, empty groups, direct
+    not the full export; since v1.47.0, PORT-PLAN C14e(1), computers exclude delegated managed service
+    accounts, msDS-DelegatedManagedServiceAccount, as they exclude gMSA and sMSA - a class name Learn
+    does not publish, an operator decision - and no count kind is added for them) and "Group Inventory" (groups by scope and type, empty groups, direct
     member counts - a group of 1500 values or more, the MaxValRange default, is not counted exactly;
     one row per group in csv\Groups_<domain>.csv, ListComplete "No" on every row of a read that
     reached its cap). A failed user or computer export is now Not
@@ -804,9 +829,14 @@
     1000) and eight grades: WeakOnlyStatus (Warning or Fail), Rc4AllowedStatus (Info or Warning),
     TrustNoAesStatus, PasswordNotRequiredStatus and PrecedenceTieStatus (each Info, Warning or Fail),
     InfrastructureOnGcStatus (Warning or Fail), LockoutBaselineStatus (Info or Warning: Learn calls
-    the baseline figures a guideline) and PsoAppliedToNothingStatus (Info or Warning). All are tool
-    defaults, not Microsoft values. The encryption type and userAccountControl bits, the filters, the
-    property lists, the baseline figures, the container and the feature name are refused:
+    the baseline figures a guideline) and PsoAppliedToNothingStatus (Info or Warning); since v1.47.0
+    (PORT-PLAN C16e) also PsoLinkReadCap (PSO link targets read per domain, 0 to 100000, default 500),
+    KdcDefaultDiffersStatus (Info, Warning or Fail), RodcRoleHolderStatus (Warning or Fail),
+    AppPartitionHolderDeletedStatus (Info or Warning) and LockoutBaseline (WindowsSecurityBaseline, the
+    default, or AzureGuestConfigCis, the CIS-mapped Azure guest-configuration figures). All are tool
+    defaults, not Microsoft values. The encryption type, userAccountControl and groupType bits, the
+    filters, the property lists, the baseline figures, the KDC registry value, the ports, the class
+    names, the container and the feature name are refused:
 
         { "AccountsPolicy": { "WeakOnlyStatus": "Fail" } }
 
@@ -1024,7 +1054,7 @@
 
 .NOTES
     Owner: Carlos Annes (TakeItToCloud)
-    Version: 1.46.0
+    Version: 1.47.0
     Created: 2026-07-22
     Last updated: 2026-11-19
     Requires: Windows PowerShell 5.1 or PowerShell 7+ (5.1 because the script runs on a stock domain controller); RSAT ActiveDirectory module (no minimum version set); DnsServer, GroupPolicy and DFSR modules optional; domain read access; administrative rights on the domain controllers for trust verification, dcdiag and the remote CIM sections; Enterprise Admins for the opt-in dcdiag DNS test (Microsoft's statement).
@@ -1142,7 +1172,7 @@ $ErrorActionPreference = 'Stop'
 # Versioned configuration (no magic numbers scattered in logic)
 # ---------------------------------------------------------------------------
 $script:Config = @{
-    Version                 = '1.46.0'
+    Version                 = '1.47.0'
     StaleDays               = $StaleDays
     KrbtgtMaxAgeDays        = $KrbtgtMaxAgeDays
     RpcPortTimeoutMs        = $RpcPortTimeoutMs
@@ -2170,7 +2200,10 @@ $script:Config = @{
             @{ MinBuild = 17763; MaxBuild = 17763 }
             @{ MinBuild = 19041; MaxBuild = $null }
         )
-        ExcludedClasses    = @('msDS-GroupManagedServiceAccount', 'msDS-ManagedServiceAccount')
+        # PORT-PLAN C14e(1) (v1.47.0): the dMSA class is excluded too.
+        # msDS-DelegatedManagedServiceAccount is not published on Learn (no adschema class page, read 2026-11-20; the dMSA overview calls a dMSA "a machine
+        # account" and names no objectClass), so its exclusion is the operator decision of C14d(7), awaiting C14f.
+        ExcludedClasses    = @('msDS-GroupManagedServiceAccount', 'msDS-ManagedServiceAccount', 'msDS-DelegatedManagedServiceAccount')
     }
     # --- Declared property lists: no wildcard read, no secret attribute (PORT-PLAN C4b) ---
     # Before v1.33.0 five reads asked for every attribute ("-Properties *"): the AllUsers_ and
@@ -3414,9 +3447,31 @@ $script:Config = @{
         AgeWindowSourceUrl = 'https://learn.microsoft.com/dotnet/api/system.io.file.getlastwritetimeutc and https://learn.microsoft.com/troubleshoot/windows-client/windows-security/enable-debug-logging-netlogon-service and https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-netlogon'
         AgeWindowReadDate  = '2026-11-19'
         SmbPort            = 445
+        # PORT-PLAN C14e(3) (v1.47.0), read on Learn 2026-11-20: how much history netlogon.log and netlogon.bak can
+        # hold. Learn names TWO values on the same key, HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters:
+        #   MaximumLogFileSize, REG_DWORD, bytes: "By default, this registry entry doesn't exist, and the default
+        #   maximum size of the Netlogon.log file is 20 MB. When the file reaches 20 MB, it's renamed to Netlogon.bak";
+        #   "the total disk space that's used by Netlogon logging is the size that's specified in the maximum log file
+        #   size times two (2)" (KB 109626, enable-debug-logging-netlogon-service);
+        #   LogFileMaxSize, "registry DWORD value ...\Netlogon\Parameters\LogFileMaxSize; the default is 20000000 bytes"
+        #   (the event 5807 text, KB 2668820, dc-delayed-response-to-ldap-kerberos-request).
+        # NOT PUBLISHED: which of the two Netlogon honours when both are set, and the registry value name of the policy
+        # "Specify maximum log file size" (policy-csp-admx-netlogon gives only the key
+        # Software\Policies\Microsoft\Netlogon\Parameters), which is therefore not read. The default is taken as the
+        # explicit 20000000 bytes ("20 MB" on the other page is ambiguous between 20000000 and 20971520). Both values
+        # are read with StdRegProv GetDWORDValue through the W32Time registry seam (no new seam, session or method).
+        NetlogonLogSizeValues = @(
+            @{ Id = 'MaximumLogFileSize'; Key = 'SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'; ValueName = 'MaximumLogFileSize'; Kind = 'Dword' }
+            @{ Id = 'LogFileMaxSize'; Key = 'SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'; ValueName = 'LogFileMaxSize'; Kind = 'Dword' }
+        )
+        NetlogonLogSizeDefaultBytes = 20000000
+        NetlogonLogSizeSourceUrl = 'https://learn.microsoft.com/troubleshoot/windows-client/windows-security/enable-debug-logging-netlogon-service and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/dc-delayed-response-to-ldap-kerberos-request and https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-netlogon'
+        NetlogonLogSizeReadDate = '2026-11-20'
+        WsmanPort          = 5985
+        RpcPort            = 135
         OverrideLabel      = 'SiteCoverage'
         OverrideExample    = '{ "UnassignedStatus": "Info" }'
-        OverrideRefused    = 'The log and rollover paths, the marker, the port and the sources cannot be set from a file.'
+        OverrideRefused    = 'The log and rollover paths, the marker, the ports, the Netlogon log size values and their default (Learn values) and the sources cannot be set from a file.'
         OverrideSpec       = [ordered]@{
             UnassignedStatus       = @{ Kind = 'Status'; Allowed = @('Warning', 'Info') }
             NoClientSiteStatus     = @{ Kind = 'Status'; Allowed = @('Warning', 'Info') }
@@ -3825,7 +3880,9 @@ $script:Config = @{
         GroupSecurityBit       = 2147483648
         CountFilters           = [ordered]@{
             Users     = '(&(objectCategory=person)(objectClass=user))'
-            Computers = '(&(objectCategory=computer)(!(objectClass=msDS-GroupManagedServiceAccount))(!(objectClass=msDS-ManagedServiceAccount)))'
+            # PORT-PLAN C14e(1) (v1.47.0): dMSA excluded as gMSA and sMSA are; msDS-DelegatedManagedServiceAccount is not
+            # published on Learn (read 2026-11-20), an operator decision (C14d(7)). A dMSA is not counted under any kind.
+            Computers = '(&(objectCategory=computer)(!(objectClass=msDS-GroupManagedServiceAccount))(!(objectClass=msDS-ManagedServiceAccount))(!(objectClass=msDS-DelegatedManagedServiceAccount)))'
             Groups    = '(objectClass=group)'
             Contacts  = '(objectClass=contact)'
             OUs       = '(objectClass=organizationalUnit)'
@@ -3971,7 +4028,8 @@ $script:Config = @{
     #     https://learn.microsoft.com/windows/win32/adschema/a-msds-lockoutobservationwindow
     #     https://learn.microsoft.com/windows/win32/adschema/s-interval
     #   The CIS-mapped Azure guest-configuration baseline ("5 or fewer ... but not 0") disagrees on the
-    #   threshold and is not used.
+    #   threshold; since v1.47.0 (PORT-PLAN C16e(e)) it is an operator-selectable alternative (LockoutBaseline,
+    #   below), the Windows baseline staying the default.
     #     https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/account-lockout-threshold
     #     https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/account-lockout-duration
     #     https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/reset-account-lockout-counter-after
@@ -3980,15 +4038,57 @@ $script:Config = @{
     #   Admins group have Read Property permissions"; "We recommend that you assign a unique
     #   msDS-PasswordSettingsPrecedence value for each PSO"; on a tie "the PSO with the smallest GUID is
     #   applied"; "PSOs that are linked to distribution groups or other types of security groups are
-    #   ignored" (not classified here: the groupType of each linked object is not read).
+    #   ignored" (classified since v1.47.0, PORT-PLAN C16e(a): the groupType of each linked object is read).
     #     https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc770394(v=ws.10)
     #     https://learn.microsoft.com/windows/win32/adschema/c-msds-passwordsettings
     #
-    # TOOL DEFAULTS, not Microsoft values: MaxObjects 100000 per read, NameListCap 20, and every *Status
-    # below except where its comment cites Learn for the finding (the grade itself is always the
-    # tool's). -ConfigOverridePath, key "AccountsPolicy": MaxObjects, NameListCap and the eight
-    # *Status keys. Everything else - the bits, the filters, the property lists, the baseline figures,
-    # the DNs and the feature name - is refused.
+    # PORT-PLAN C16e (v1.47.0), every page below read on Learn 2026-11-20:
+    #   (a) "Fine-grained password policies apply only to global security groups and user objects" (the current page
+    #   for cc770394); cc770394: "PSOs that are linked to distribution groups or other types of security groups are
+    #   ignored", and "Fine-grained password policies apply only to user objects (or inetOrgPerson objects if they are
+    #   used instead of user objects) and global security groups". groupType: 0x00000002 "a group with global scope",
+    #   0x80000000 "Specifies a security group. If this flag is not set, then the group is a distribution group".
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/get-started/adac/fine-grained-password-policies
+    #     https://learn.microsoft.com/windows/win32/adschema/a-grouptype
+    #     https://learn.microsoft.com/windows/win32/adschema/a-msds-psoappliesto
+    #   (b) DefaultDomainSupportedEncTypes, REG_DWORD, under HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Kdc
+    #   ("If the Kdc key isn't listed under Services, you must create the key"): "Default value: 0x18" and "After
+    #   applying the April 2026 Windows updates the default value will be changed to 0x18 (AES-SHA1)"; "If the
+    #   msDS-SupportedEncryptionTypes value in AD for the source and/or target machine isn't defined, the KDC falls
+    #   back to the DefaultDomainSupportedEncTypes value". An absent value is therefore NOT decoded (its default
+    #   depends on the DC's update level, which this read does not see); values that differ between DCs are a tool
+    #   grade (Learn publishes none). Read with StdRegProv GetDWORDValue only, through the W32Time registry seam.
+    #     https://learn.microsoft.com/troubleshoot/windows-server/windows-security/kerberos-protocol-registry-kdc-configuration-keys
+    #     https://learn.microsoft.com/windows-server/security/kerberos/detect-remediate-rc4-kerberos
+    #   (c) "Because of the read-only nature of the Active Directory database on a read-only domain controller
+    #   (RODC), RODCs cannot act as operations master role holders." An RODC's NTDS Settings object is of class
+    #   nTDSDSARO, a subclass of nTDSDSA (c-ntdsdsaro, above), told by objectClass on the NTDS Settings read.
+    #     https://learn.microsoft.com/windows-server/identity/ad-ds/plan/planning-operations-master-role-placement
+    #   (d) KB 223346: "A separate infrastructure master is created for each application partition, including the
+    #   default forest-wide and domain-wide application partitions"; KB 949257: "query the fSMORoleOwner attribute on
+    #   the infrastructure object under the naming context root in question" (CN=Infrastructure,DC=DomainDnsZones,...
+    #   and CN=Infrastructure,DC=ForestDnsZones,...); KB 2694933: "The fSMORoleOwner attribute contains the string 0ADEL
+    #   indicating that the role owning DC's NTDS Settings object has been deleted", which makes demotion fail, and
+    #   "This same error may also occur for the ForestDNSZones application partition". Learn publishes no grade: the
+    #   Warning is a tool default.
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/fsmo-placement-and-optimization-on-ad-dcs
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/error-run-adprep-rodcprep-command
+    #     https://learn.microsoft.com/troubleshoot/windows-server/active-directory/dcpromo-demotion-fails
+    #   (e) The CIS-mapped Azure guest-configuration baseline (Windows security baseline page of Azure Policy):
+    #   AZ-WIN-73311 Account lockout threshold, "The recommended state for this setting is: 5 or fewer invalid logon
+    #   attempt(s), but not 0" (CIS WS2022/WS2019 1.2.2) - the same row's "Expected value" cell reads "In 1-3", which
+    #   Learn does not explain (a recorded discrepancy; the figure used is the recommended-state text, 5, as the
+    #   operator chose); AZ-WIN-73312 Account Lockout Duration "15 or more minute(s)" (CIS 1.2.1); AZ-WIN-73309 Reset
+    #   account lockout counter after "15 or more minute(s)" and "must be less than or equal to the value for the
+    #   Account lockout duration" (CIS 1.2.3).
+    #     https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows
+    #
+    # TOOL DEFAULTS, not Microsoft values: MaxObjects 100000 per read, NameListCap 20, and every *Status below
+    # except where its comment cites Learn for the finding (the grade itself is always the tool's); since v1.47.0
+    # also PsoLinkReadCap 500 (tool default, not a Microsoft value). -ConfigOverridePath, key "AccountsPolicy": MaxObjects, NameListCap,
+    # PsoLinkReadCap, LockoutBaseline and the eleven *Status keys. Everything else - the bits, the filters, the
+    # property lists, the baseline figures, the registry value, the ports, the class names, the DNs and the feature
+    # name - is refused.
     AccountsPolicy          = @{
         SourceUrl                  = 'https://learn.microsoft.com/windows/win32/adschema/a-msds-supportedencryptiontypes and https://learn.microsoft.com/openspecs/windows_protocols/ms-kile/6cfc7b50-11ed-4b4d-846d-6f08f0812919 and https://learn.microsoft.com/windows-server/security/kerberos/detect-remediate-rc4-kerberos and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/fsmo-placement-and-optimization-on-ad-dcs and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/phantoms-tombstones-infrastructure-master and https://learn.microsoft.com/windows/win32/adschema/a-lockoutduration and https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc770394(v=ws.10)'
         ReadDate                   = '2026-11-19'
@@ -4024,11 +4124,45 @@ $script:Config = @{
             Computers           = @{ Filter = '(&(objectClass=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))'; Scope = 'Subtree'; Properties = @('sAMAccountName', 'userAccountControl', 'objectClass', 'operatingSystemVersion', 'msDS-SupportedEncryptionTypes') }
             Trusts              = @{ Filter = '(objectClass=trustedDomain)'; Scope = 'OneLevel'; Properties = @('trustPartner', 'msDS-SupportedEncryptionTypes') }
             PasswordNotRequired = @{ Filter = '(&(userAccountControl:1.2.840.113556.1.4.803:=32)(!(userAccountControl:1.2.840.113556.1.4.803:=2))(!(userAccountControl:1.2.840.113556.1.4.803:=2048)))'; Scope = 'Subtree'; Properties = @('sAMAccountName', 'userAccountControl', 'objectClass') }
-            Dsa                 = @{ Filter = '(objectClass=nTDSDSA)'; Scope = 'Subtree'; Properties = @('options', 'msDS-HasDomainNCs') }
+            Dsa                 = @{ Filter = '(objectClass=nTDSDSA)'; Scope = 'Subtree'; Properties = @('options', 'msDS-HasDomainNCs', 'objectClass') }
             Pso                 = @{ Filter = '(objectClass=msDS-PasswordSettings)'; Scope = 'OneLevel'; Properties = @('objectGUID', 'msDS-PasswordSettingsPrecedence', 'msDS-LockoutDuration', 'msDS-LockoutObservationWindow', 'msDS-LockoutThreshold'); CountProperties = @('msDS-PSOAppliesTo') }
             DomainHead          = @{ Properties = @('fSMORoleOwner', 'lockoutDuration', 'lockOutObservationWindow', 'lockoutThreshold') }
             Partitions          = @{ Properties = @('fSMORoleOwner', 'msDS-Behavior-Version') }
             FsmoRole            = @{ Properties = @('fSMORoleOwner') }
+            # PORT-PLAN C16e(a): the link values of one PSO (read by identity; the Pso search keeps counting them, so
+            # a ranged answer is still caught there), then each linked object's class and groupType, from the domain.
+            PsoLinks            = @{ Properties = @('msDS-PSOAppliesTo') }
+            PsoSubject          = @{ Properties = @('objectClass', 'groupType') }
+            # PORT-PLAN C16e(d): the crossRef objects one level under CN=Partitions, from the forest root, so an
+            # application partition's CN=Infrastructure is read only where the partition exists.
+            AppPartitions       = @{ Filter = '(objectClass=crossRef)'; Scope = 'OneLevel'; Properties = @('nCName', 'systemFlags') }
+        }
+        C16eSourceUrl              = 'https://learn.microsoft.com/windows-server/identity/ad-ds/get-started/adac/fine-grained-password-policies and https://learn.microsoft.com/windows/win32/adschema/a-grouptype and https://learn.microsoft.com/troubleshoot/windows-server/windows-security/kerberos-protocol-registry-kdc-configuration-keys and https://learn.microsoft.com/windows-server/identity/ad-ds/plan/planning-operations-master-role-placement and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/fsmo-placement-and-optimization-on-ad-dcs and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/dcpromo-demotion-fails and https://learn.microsoft.com/troubleshoot/windows-server/active-directory/error-run-adprep-rodcprep-command and https://learn.microsoft.com/azure/governance/policy/samples/guest-configuration-baseline-windows'
+        C16eReadDate               = '2026-11-20'
+        # (a) The most link targets read per domain (tool default, not a Microsoft value); a PSO whose links were not
+        # all read under it is undecided, never "applied to nothing".
+        PsoLinkReadCap             = 500
+        # (a) The classes Learn says a PSO applies to (user, or inetOrgPerson used instead), the group class and the
+        # groupType bits of a global security group (a-grouptype).
+        PsoHonouredUserClasses     = @('user', 'inetOrgPerson')
+        GroupClass                 = 'group'
+        GroupTypeGlobalBit         = 2
+        GroupTypeSecurityBit       = 2147483648
+        # (b) The KDC value, read with GetDWORDValue over the shared CIM transport (WinRM, then DCOM).
+        KdcValues                  = @(
+            @{ Id = 'DefaultDomainSupportedEncTypes'; Key = 'SYSTEM\CurrentControlSet\Services\Kdc'; ValueName = 'DefaultDomainSupportedEncTypes'; Kind = 'Dword' }
+        )
+        WsmanPort                  = 5985
+        RpcPort                    = 135
+        # (c) The class of an RODC's NTDS Settings object (c-ntdsdsaro).
+        RodcDsaClass               = 'nTDSDSARO'
+        # (e) The lockout baseline graded against: WindowsSecurityBaseline (the figures above, the default) or
+        # AzureGuestConfigCis (the figures below). Only the name is settable from a file, never a figure.
+        LockoutBaseline            = 'WindowsSecurityBaseline'
+        LockoutBaselines           = [ordered]@{
+            WindowsSecurityBaseline = @{ Label = 'the Windows security baseline'; Source = 'the Windows security baseline figures Learn quotes (account-lockout-threshold, account-lockout-duration, reset-account-lockout-counter-after, read 2026-11-19): threshold 10, duration about 15 minutes, observation window 15 minutes ("more of a guideline")' }
+            AzureGuestConfigCis     = @{ Label = 'the CIS-mapped Azure guest-configuration baseline'; ThresholdMax = 5; DurationMinutes = 15; WindowMinutes = 15; ZeroDurationFlagged = $true
+                Source = 'the CIS-mapped Azure guest-configuration baseline (guest-configuration-baseline-windows, read 2026-11-20): AZ-WIN-73311 threshold "5 or fewer invalid logon attempt(s), but not 0" (CIS 1.2.2; the same row''s Expected value cell reads "In 1-3", which Learn does not explain), AZ-WIN-73312 duration "15 or more minute(s)" (CIS 1.2.1), AZ-WIN-73309 reset counter "15 or more minute(s)" (CIS 1.2.3)' }
         }
         PsoContainer               = 'CN=Password Settings Container,CN=System'
         GcOptionBit                = 1
@@ -4049,9 +4183,15 @@ $script:Config = @{
         LockoutBaselineStatus      = 'Warning'
         PrecedenceTieStatus        = 'Warning'
         PsoAppliedToNothingStatus  = 'Info'
+        # PORT-PLAN C16e: (b) DCs of one domain holding different DefaultDomainSupportedEncTypes, (c) an RODC named as a
+        # role holder (Learn states the fact; the grade is the tool's), (d) an application-partition infrastructure
+        # master naming a deleted or missing DSA. Tool defaults.
+        KdcDefaultDiffersStatus    = 'Warning'
+        RodcRoleHolderStatus       = 'Fail'
+        AppPartitionHolderDeletedStatus = 'Warning'
         OverrideLabel              = 'AccountsPolicy'
         OverrideExample            = '{ "WeakOnlyStatus": "Fail" }'
-        OverrideRefused            = 'The encryption type bits, the userAccountControl bits, the filters, the property lists, the baseline figures (Microsoft values), the container, the feature name and the forest level are refused.'
+        OverrideRefused            = 'The encryption type bits, the userAccountControl bits, the groupType bits, the filters, the property lists, the baseline figures (Microsoft values), the KDC registry value, the ports, the class names, the container, the feature name and the forest level are refused.'
         OverrideSpec               = [ordered]@{
             MaxObjects                = @{ Kind = 'Int'; Min = 1; Max = 1000000; Unit = 'objects per read' }
             NameListCap               = @{ Kind = 'Int'; Min = 0; Max = 1000; Unit = 'names listed per row' }
@@ -4063,6 +4203,11 @@ $script:Config = @{
             LockoutBaselineStatus     = @{ Kind = 'Status'; Allowed = @('Info', 'Warning') }
             PrecedenceTieStatus       = @{ Kind = 'Status'; Allowed = @('Info', 'Warning', 'Fail') }
             PsoAppliedToNothingStatus = @{ Kind = 'Status'; Allowed = @('Info', 'Warning') }
+            PsoLinkReadCap            = @{ Kind = 'Int'; Min = 0; Max = 100000; Unit = 'PSO link targets read per domain' }
+            KdcDefaultDiffersStatus   = @{ Kind = 'Status'; Allowed = @('Info', 'Warning', 'Fail') }
+            RodcRoleHolderStatus      = @{ Kind = 'Status'; Allowed = @('Warning', 'Fail') }
+            AppPartitionHolderDeletedStatus = @{ Kind = 'Status'; Allowed = @('Info', 'Warning') }
+            LockoutBaseline           = @{ Kind = 'Status'; Allowed = @('WindowsSecurityBaseline', 'AzureGuestConfigCis') }
         }
     }
     # --- PKI / AD CS: ESC1 over PUBLISHED certificate templates and the template enrolment ACL
@@ -35160,6 +35305,191 @@ function Get-AdfaClientSiteRows {
     return @($rows)
 }
 
+function Get-AdfaNetlogonLogCapacityRow {
+    <#
+    .SYNOPSIS
+        Pure: "Netlogon log capacity: <dc>" - how much history netlogon.log and netlogon.bak can hold on one
+        DC, from MaximumLogFileSize and LogFileMaxSize (PORT-PLAN C14e(3)). Info when read, never graded.
+    .DESCRIPTION
+        Learn names two REG_DWORD values for the size, on the same key (KB 109626 MaximumLogFileSize; the
+        event 5807 text of KB 2668820 LogFileMaxSize), with the default "20 MB" / "20000000 bytes", and
+        says the two files together take "the maximum log file size times two". Neither value set (StdRegProv
+        1 or 2): the documented default, NetlogonLogSizeDefaultBytes, and twice it for both files. One set:
+        that value, named. Both set to one value: that value. Both set to different values: Not Assessed -
+        Learn does not say which Netlogon honours. A value of 0 (meaning not published), another type, a
+        refused or failed read, or a DC not reached: Not Assessed, each worded apart. The policy value is
+        not read (Learn publishes no value name for it); NotRun says so.
+    .OUTPUTS
+        [pscustomobject] with columns MaximumLogFileSize, LogFileMaxSize, BytesPerFile, HistoryBytes,
+        SizeSource, Transport.
+    .PARAMETER ComputerName
+        The host name of the DC. Type [string], mandatory.
+    .PARAMETER Scope
+        The domain of the DC. Type [string], default '', may be empty.
+    .PARAMETER Read
+        The Invoke-AdfaDcRemoteRead result (Raw from Get-AdfaDcW32TimeRaw, Denied), or $null when no read
+        was made. Untyped, may be null.
+    .PARAMETER Unreachable
+        Why the DC was not reached; empty when it was. Type [string], default '', may be null or empty.
+    .PARAMETER Config
+        The SiteCoverage table in force (NetlogonLogSizeValues, NetlogonLogSizeDefaultBytes). Type
+        [hashtable], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()]$Read,
+        [AllowNull()][AllowEmptyString()][string]$Unreachable = '',
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("Netlogon log capacity: {0}" -f $ComputerName)
+    $default = [int64]$Config['NetlogonLogSizeDefaultBytes']
+    $evidence = ('StdRegProv GetDWORDValue of MaximumLogFileSize and LogFileMaxSize under HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters over one CIM session (WinRM, then DCOM); needs local Administrators on the DC. Learn enable-debug-logging-netlogon-service (KB 109626: default 20 MB, "the maximum log file size times two") and dc-delayed-response-to-ldap-kerberos-request (KB 2668820: LogFileMaxSize, "the default is {0} bytes"), read 2026-11-20. Not graded.' -f $default)
+    $notRun = 'The Group Policy setting "Specify maximum log file size" (key Software\Policies\Microsoft\Netlogon\Parameters) is not read: Learn publishes no registry value name for it.'
+    $columns = [ordered]@{ MaximumLogFileSize = ''; LogFileMaxSize = ''; BytesPerFile = ''; HistoryBytes = ''; SizeSource = ''; Transport = '' }
+    $na = { param([string]$Why) New-AdfaC14Row -Area 'Sites' -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -NotRun $notRun -Detail ("{0} How much history the two Netlogon log files can hold is not known." -f $Why) }
+    if (-not [string]::IsNullOrWhiteSpace($Unreachable)) { return (& $na $Unreachable.Trim()) }
+    if ($null -eq $Read) { return (& $na 'No read was made.') }
+    $raw = Get-AdfaConfigValue -Entry $Read -Name 'Raw'
+    $err = ''
+    if ($null -ne $raw) { $err = ([string](Get-AdfaConfigValue -Entry $raw -Name 'Error')).Trim().TrimEnd('.'); $columns.Transport = [string](Get-AdfaConfigValue -Entry $raw -Name 'Protocol') }
+    if ([bool](Get-AdfaConfigValue -Entry $Read -Name 'Denied')) { return (& $na ("Access denied: the account running the assessment could not read the registry of this DC ({0}). Local Administrators rights on the DC are needed for this read." -f $err)) }
+    if ($null -eq $raw -or -not [bool](Get-AdfaConfigValue -Entry $raw -Name 'Ok')) { return (& $na ("Read failed: a port answered, but the values could not be read: {0}." -f $err)) }
+    $values = @(@(Get-AdfaConfigValue -Entry $raw -Name 'Values') | Where-Object { $null -ne $_ })
+    $set = [ordered]@{}
+    $problems = @()
+    foreach ($definition in @($Config['NetlogonLogSizeValues'])) {
+        $id = [string](Get-AdfaConfigValue -Entry $definition -Name 'Id')
+        $entry = @($values | Where-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'Id') -eq $id })
+        if ($entry.Count -eq 0) { $problems += ("{0}: no answer came back for it" -f $id); continue }
+        $e = $entry[0]
+        $class = Get-AdfaStdRegReturnClass -ReturnValue (Get-AdfaConfigValue -Entry $e -Name 'ReturnValue') -ErrorText ([string](Get-AdfaConfigValue -Entry $e -Name 'Error')) -ErrorCode ([string](Get-AdfaConfigValue -Entry $e -Name 'ErrorCode'))
+        switch ([string]$class.Class) {
+            'Success' {
+                $n = ConvertTo-AdfaInventoryUInt32 -Value (Get-AdfaConfigValue -Entry $e -Name 'Value')
+                if ($null -eq $n) { $problems += ("{0}: the value returned is not a number" -f $id) }
+                elseif ($n -eq 0) { $columns[$id] = '0'; $problems += ("{0} is 0, whose meaning Learn does not publish" -f $id) }
+                else { $columns[$id] = [string]$n; $set[$id] = [int64]$n }
+            }
+            'ValueNotSet' { $columns[$id] = '(not set)' }
+            'KeyAbsent' { $columns[$id] = '(not set)' }
+            'AccessDenied' { $problems += ("{0}: access denied by the registry provider" -f $id) }
+            'TypeMismatch' { $problems += ("{0}: the value exists with a type other than REG_DWORD, the type Learn names" -f $id) }
+            default {
+                $why = ([string](Get-AdfaConfigValue -Entry $e -Name 'Error')).Trim().TrimEnd('.')
+                if ($why -eq '') { $why = ("return code {0}" -f [string]$class.Code) }
+                $problems += ("{0}: read failed ({1})" -f $id, $why)
+            }
+        }
+    }
+    if ($problems.Count -gt 0) { return (& $na ("Not every size value could be used: {0}." -f ($problems -join '; '))) }
+    $distinct = @($set.Values | Sort-Object -Unique)
+    if ($distinct.Count -gt 1) {
+        return (& $na ("Both MaximumLogFileSize and LogFileMaxSize are set, to different values (in their columns); Learn names both and does not say which Netlogon honours."))
+    }
+    $per = $default
+    $columns.SizeSource = 'documented default (neither value set)'
+    if ($distinct.Count -eq 1) { $per = [int64]$distinct[0]; $columns.SizeSource = ("set: {0}" -f (@($set.Keys) -join ' and ')) }
+    $columns.BytesPerFile = [string]$per
+    $columns.HistoryBytes = [string]($per * 2)
+    $how = 'Neither MaximumLogFileSize nor LogFileMaxSize is set, so the documented default applies'
+    if ($distinct.Count -eq 1) { $how = ("The size is set ({0}); Learn names both value names for it" -f $columns.SizeSource) }
+    return New-AdfaC14Row -Area 'Sites' -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns -NotRun $notRun `
+        -Detail ("{0}. netlogon.log grows to BytesPerFile, is then renamed netlogon.bak and a new netlogon.log is started, so the two files together hold at most HistoryBytes of Netlogon entries (Learn: the size times two). How far back that reaches depends on how fast the DC writes it. Not graded." -f $how)
+}
+
+function Get-AdfaNetlogonCapacityRows {
+    <#
+    .SYNOPSIS
+        Topology, PORT-PLAN C14e(3): one "Netlogon log capacity: <dc>" row per DC of every scoped domain,
+        and a population row for a scoped domain with no DC row. Read-only.
+    .DESCRIPTION
+        A DC classified Unreachable in this run is not probed; otherwise WinRM and RPC are probed through
+        the shared gate and the two size values of NetlogonLogSizeValues are read with
+        Invoke-AdfaDcRemoteRead -ReadCommand Get-AdfaDcW32TimeRaw (StdRegProv GetDWORDValue; no new CIM
+        session owner, no new method). Never changes the "Clients without a site" rows.
+    .OUTPUTS
+        [pscustomobject[]]
+    .PARAMETER DomainControllers
+        The domain controllers to read: DC inventory rows that carry HostName and Scope, or host names.
+        Untyped, default @(), may be null or empty.
+    .PARAMETER Config
+        The SiteCoverage table in force (NetlogonLogSizeValues, NetlogonLogSizeDefaultBytes, WsmanPort,
+        RpcPort). Type [hashtable], mandatory.
+    .PARAMETER Credential
+        The credential for the remote reads; absent uses the account running the assessment. Type
+        [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe. Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause. Untyped, default @(), may be null
+        or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses. Type [string[]], default @(), may be null or
+        empty.
+    .PARAMETER EnumerationError
+        The error text when the domain controllers could not be enumerated; empty when they were. Type
+        [string], default '', may be null or empty.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [Parameter(Mandatory)][hashtable]$Config,
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90,
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [AllowNull()][AllowEmptyString()][string]$EnumerationError = ''
+    )
+    $rows = @()
+    $targets = @(@($DomainControllers) | Where-Object { $null -ne $_ })
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $rows += New-AdfaC14Row -Area 'Sites' -Scope ([string]$gap.Domain) -Item ("Netlogon log capacity (population): {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No Netlogon log size value of its DCs was read.')
+    }
+    if ($targets.Count -eq 0) {
+        $why = 'No domain controllers were enumerated'
+        if (-not [string]::IsNullOrWhiteSpace($EnumerationError)) { $why = ("Domain controller enumeration failed ({0})" -f $EnumerationError.Trim().TrimEnd('.')) }
+        $rows += New-AdfaC14Row -Area 'Sites' -Item 'Netlogon log capacity (population): (no domain controller)' -Status $script:Status.NotAssessed -Detail ("{0}, so no Netlogon log size value was read. This is not a clean result." -f $why)
+        return @($rows)
+    }
+    $wsmanPort = [int]$Config['WsmanPort']
+    $rpcPort = [int]$Config['RpcPort']
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $rows += New-AdfaC14Row -Area 'Sites' -Scope $scope -Item 'Netlogon log capacity: (unnamed)' -Status $script:Status.NotAssessed -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no value was read.'
+            continue
+        }
+        $reach = Get-AdfaDcReachCause -HostName $dc
+        if (-not [string]::IsNullOrWhiteSpace($reach)) { $rows += Get-AdfaNetlogonLogCapacityRow -ComputerName $dc -Scope $scope -Read $null -Unreachable $reach -Config $Config; continue }
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @($wsmanPort, $rpcPort) -TimeoutMs $PortTimeoutMs
+        $wsman = [bool]$gate.Open[$wsmanPort]
+        $rpc = [bool]$gate.Open[$rpcPort]
+        if (-not $wsman -and -not $rpc) {
+            $rows += Get-AdfaNetlogonLogCapacityRow -ComputerName $dc -Scope $scope -Read $null -Config $Config `
+                -Unreachable ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so no read was attempted." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
+            continue
+        }
+        $protocols = @()
+        if ($wsman) { $protocols += 'Wsman' }
+        if ($rpc) { $protocols += 'Dcom' }
+        $readArguments = @{ OperationTimeoutSec = $OperationTimeoutSec; Values = @($Config['NetlogonLogSizeValues']) }
+        if ($Credential) { $readArguments.Credential = $Credential }
+        $read = Invoke-AdfaDcRemoteRead -ComputerName $dc -Protocols $protocols -ReadCommand 'Get-AdfaDcW32TimeRaw' -ReadArguments $readArguments
+        $rows += Get-AdfaNetlogonLogCapacityRow -ComputerName $dc -Scope $scope -Read $read -Config $Config
+    }
+    return @($rows)
+}
+
 # --- TIME-001 ------------------------------------------------------------------------------------
 
 function Get-AdfaStripchartSample {
@@ -37059,6 +37389,9 @@ function Resolve-AdfaDcdiagApplicability {
 # values of fine-grained password policies. Directory reads only, through Get-AdfaAccountsPolicyRaw
 # (the capped C15 seam with the declared lists of AccountsPolicy.Reads), and Get-AdfaRecycleBinRaw
 # (Get-ADOptionalFeature). Every decision is in a pure function; the collector only reads and passes.
+# Since v1.47.0 (PORT-PLAN C16e) also the PSO link targets, an RODC as FSMO holder, the application-partition
+# infrastructure masters, a selectable lockout baseline and each DC's DefaultDomainSupportedEncTypes - the one
+# registry read of the section, StdRegProv GetDWORDValue through the shared CIM transport and the W32Time seam.
 # Sources and read dates are next to the config table.
 
 function New-AdfaAccountsPolicyRow {
@@ -37337,6 +37670,12 @@ function Get-AdfaEncryptionTypeVerdict {
     .PARAMETER CapSource
         Where MaxObjects came from, in the row's words (Get-AdfaCapSource of the AccountsPolicy table).
         Type [string], mandatory.
+    .PARAMETER KdcDefault
+        PORT-PLAN C16e(b): the domain's DefaultDomainSupportedEncTypes as Resolve-AdfaKdcDomainDefault
+        decided it (State, Value, Cause). Only State Known - every DC of the domain read, all holding one
+        value - grades the accounts with no msDS-SupportedEncryptionTypes on that value (counted in
+        GradedByKdcDefault); any other state leaves them ungraded and names its Cause. Trusts are never
+        graded on it. $null (no KDC read) keeps the v1.44.0 wording. Untyped, default $null, may be null.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -37346,7 +37685,8 @@ function Get-AdfaEncryptionTypeVerdict {
         [AllowNull()]$Raw,
         [AllowNull()][AllowEmptyCollection()]$Records = @(),
         [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][string]$CapSource
+        [Parameter(Mandatory)][string]$CapSource,
+        [AllowNull()]$KdcDefault = $null
     )
     $labels = @{ UsersWithSpn = 'users with an SPN'; Computers = 'computers'; ManagedServiceAccounts = 'managed service accounts'; DomainControllers = 'domain controllers'; Trusts = 'trusts' }
     $declared = @{
@@ -37358,7 +37698,21 @@ function Get-AdfaEncryptionTypeVerdict {
     }
     $item = ("Kerberos encryption types ({0}): {1}" -f $labels[$Population], $DomainName)
     $evidence = 'msDS-SupportedEncryptionTypes as stored in the directory, decoded per MS-KILE 2.2.7 (Learn, read 2026-11-19); not the processed value of events 4768/4769, which can differ.'
-    $columns = [ordered]@{ Population = $declared[$Population]; Accounts = 0; NotDefined = 0; WeakOnly = 0; LegacyWithAes = 0; AesOnly = 0; NoEtype = 0; NotNumber = 0; LegacyOs = 0; WeakOnlyAccounts = ''; LegacyWithAesAccounts = ''; NotDefinedAccounts = '' }
+    $columns = [ordered]@{ Population = $declared[$Population]; Accounts = 0; NotDefined = 0; WeakOnly = 0; LegacyWithAes = 0; AesOnly = 0; NoEtype = 0; NotNumber = 0; LegacyOs = 0; WeakOnlyAccounts = ''; LegacyWithAesAccounts = ''; NotDefinedAccounts = ''; KdcDefault = ''; GradedByKdcDefault = 0 }
+    # PORT-PLAN C16e(b): the domain's KDC default decoded, only when every DC was read with one value.
+    $kdcState = ''
+    $kdcDecoded = $null
+    $kdcCause = ''
+    if ($null -ne $KdcDefault -and $Population -ne 'Trusts') {
+        $kdcState = [string](Get-AdfaConfigValue -Entry $KdcDefault -Name 'State')
+        $kdcCause = ([string](Get-AdfaConfigValue -Entry $KdcDefault -Name 'Cause')).Trim().TrimEnd('.')
+        if ($kdcState -eq 'Known') {
+            $kdcDecoded = ConvertFrom-AdfaEncryptionTypeValue -Value (Get-AdfaConfigValue -Entry $KdcDefault -Name 'Value') -Config $Config
+            if ([string]$kdcDecoded.State -ne 'Defined' -or [bool]$kdcDecoded.NoEtype) { $kdcCause = ("the value every DC holds ({0}) names no encryption type this read can grade" -f [string]$kdcDecoded.Value); $kdcDecoded = $null }
+            else { $columns.KdcDefault = ("0x{0:X} ({1})" -f [int64]$kdcDecoded.Value, (@($kdcDecoded.Names) -join ', ')) }
+        }
+        if ($columns.KdcDefault -eq '') { $columns.KdcDefault = ("not graded: {0}" -f $kdcCause) }
+    }
     $cap = [int]$Config['NameListCap']
     $cause = Get-AdfaInventoryReadCause -Raw $Raw -What ("the {0} of {1}" -f $labels[$Population], $DomainName) -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
     if ($cause -ne '') {
@@ -37386,7 +37740,14 @@ function Get-AdfaEncryptionTypeVerdict {
         }
         $d = ConvertFrom-AdfaEncryptionTypeValue -Value (Get-AdfaConfigValue -Entry $r -Name $attr) -Config $Config
         if ($d.State -eq 'NotNumber') { $columns.NotNumber++; continue }
-        if ($d.State -eq 'NotDefined') { $columns.NotDefined++; $notDefined += $name; continue }
+        if ($d.State -eq 'NotDefined') {
+            $columns.NotDefined++
+            if ($null -eq $kdcDecoded) { $notDefined += $name; continue }
+            # PORT-PLAN C16e(b): Learn - the KDC "falls back to the DefaultDomainSupportedEncTypes value".
+            $columns.GradedByKdcDefault++
+            $d = $kdcDecoded
+            $name = ("{0} (KDC default)" -f $name)
+        }
         if ($d.WeakOnly) { $columns.WeakOnly++; $weak += $name; continue }
         if ($d.NoEtype) { $columns.NoEtype++; continue }
         if ($d.Rc4 -or $d.Des) { $columns.LegacyWithAes++; $legacy += $name; continue }
@@ -37398,7 +37759,12 @@ function Get-AdfaEncryptionTypeVerdict {
     $counts = ("{0} read: {1} allow only RC4 or DES, {2} allow RC4 or DES beside AES, {3} allow AES only, {4} have no value (or 0), {5} name no encryption type, {6} hold a value that is not a whole number, {7} are computers whose operatingSystemVersion begins with a digit below 6 (the KDC ignores their stored value)." -f `
             $list.Count, $columns.WeakOnly, $columns.LegacyWithAes, $columns.AesOnly, $columns.NotDefined, $columns.NoEtype, $columns.NotNumber, $columns.LegacyOs)
     $absent = 'An account with no value takes the DefaultDomainSupportedEncTypes of the KDC that serves it, a per-DC registry value this read does not see and whose default Learn states two ways, so it is not graded.'
+    if ($kdcState -ne '') {
+        if ($null -ne $kdcDecoded) { $absent = ("The {0} account(s) with no value were graded on the DefaultDomainSupportedEncTypes every DC of the domain holds, {1} (Learn: the KDC falls back to that value); they are counted above and named with ""(KDC default)""." -f $columns.GradedByKdcDefault, $columns.KdcDefault) }
+        else { $absent = ("An account with no value takes the DefaultDomainSupportedEncTypes of the KDC that serves it, and that value is not known for this domain: {0}. Those accounts are not graded." -f $kdcCause) }
+    }
     if ($Population -eq 'Trusts') { $absent = '' }
+    $ungradedNotDefined = $columns.NotDefined - $columns.GradedByKdcDefault
     if ($Population -eq 'Trusts') {
         $noAes = $columns.NotDefined + $columns.WeakOnly + $columns.NoEtype
         if ($noAes -gt 0) {
@@ -37414,12 +37780,12 @@ function Get-AdfaEncryptionTypeVerdict {
         return New-AdfaAccountsPolicyRow -Scope $DomainName -Item $item -Status ([string]$Config['Rc4AllowedStatus']) -Evidence $evidence -Columns $columns `
             -Detail ("{0} RC4 or DES is allowed beside AES on the accounts in LegacyWithAesAccounts; Microsoft plans to stop assuming RC4 by default on domain controllers by the end of the second quarter of 2026. {1} Grade: AccountsPolicy.Rc4AllowedStatus, a tool default." -f $counts, $absent)
     }
-    if (($columns.NotDefined + $columns.NoEtype + $columns.NotNumber + $columns.LegacyOs) -gt 0) {
+    if (($ungradedNotDefined + $columns.NoEtype + $columns.NotNumber + $columns.LegacyOs) -gt 0) {
         return New-AdfaAccountsPolicyRow -Scope $DomainName -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
             -Detail ("{0} {1} No account allows only RC4 or DES; the accounts above that are not graded keep this row from passing." -f $counts, $absent)
     }
     return New-AdfaAccountsPolicyRow -Scope $DomainName -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
-        -Detail ("{0} Every account read allows AES and neither RC4 nor DES." -f $counts)
+        -Detail (("{0} Every account read allows AES and neither RC4 nor DES. {1}" -f $counts, $(if ($columns.GradedByKdcDefault -gt 0) { $absent } else { '' })).Trim())
 }
 
 function Get-AdfaPasswordNotRequiredVerdict {
@@ -37538,6 +37904,48 @@ function ConvertFrom-AdfaLockoutInterval {
     return $out
 }
 
+function Get-AdfaLockoutBaseline {
+    <#
+    .SYNOPSIS
+        Pure: the lockout baseline in force - its name, label, figures and source - from
+        AccountsPolicy.LockoutBaseline (PORT-PLAN C16e(e)).
+    .DESCRIPTION
+        WindowsSecurityBaseline (the default) takes its figures from LockoutThresholdBaseline,
+        LockoutDurationBaselineMinutes and LockoutWindowBaselineMinutes, the Windows security baseline
+        figures Learn quotes; a duration of 0 is noted, not flagged. AzureGuestConfigCis takes them from
+        LockoutBaselines.AzureGuestConfigCis (AZ-WIN-73311, 73312, 73309: threshold 5 or fewer and not 0,
+        duration and window 15 minutes or more, a duration of 0 flagged). A name the table does not hold
+        throws: the override validator refuses any other name before a section runs, so reaching it is a
+        defect in the tool.
+    .OUTPUTS
+        [pscustomobject] Name, Label, ThresholdMax, DurationMinutes, WindowMinutes, ZeroDurationFlagged,
+        Source.
+    .PARAMETER Config
+        The AccountsPolicy table in force, whose LockoutBaseline names the baseline and whose
+        LockoutBaselines and Lockout*Baseline* keys hold the figures. Type [hashtable], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][hashtable]$Config)
+    $name = [string]$Config['LockoutBaseline']
+    if ([string]::IsNullOrWhiteSpace($name)) { $name = 'WindowsSecurityBaseline' }
+    $table = $Config['LockoutBaselines']
+    if ($null -eq $table -or -not $table.Contains($name)) { throw ("AccountsPolicy: the lockout baseline '{0}' is not declared in LockoutBaselines (a defect in the tool)." -f $name) }
+    $entry = $table[$name]
+    $out = [pscustomobject]@{ Name = $name; Label = [string]$entry['Label']; ThresholdMax = 0; DurationMinutes = 0; WindowMinutes = 0; ZeroDurationFlagged = $false; Source = [string]$entry['Source'] }
+    if ($name -eq 'WindowsSecurityBaseline') {
+        $out.ThresholdMax = [int]$Config['LockoutThresholdBaseline']
+        $out.DurationMinutes = [int]$Config['LockoutDurationBaselineMinutes']
+        $out.WindowMinutes = [int]$Config['LockoutWindowBaselineMinutes']
+        return $out
+    }
+    $out.ThresholdMax = [int]$entry['ThresholdMax']
+    $out.DurationMinutes = [int]$entry['DurationMinutes']
+    $out.WindowMinutes = [int]$entry['WindowMinutes']
+    $out.ZeroDurationFlagged = [bool]$entry['ZeroDurationFlagged']
+    return $out
+}
+
 function Get-AdfaLockoutAssessment {
     <#
     .SYNOPSIS
@@ -37552,7 +37960,10 @@ function Get-AdfaLockoutAssessment {
         equal to the value of Account lockout duration"). A duration of 0 (until an administrator
         unlocks) is noted, not graded. A value missing or not a whole number is Not Assessed; an
         Undecoded one is Info. Learn calls the figures "more of a guideline", so a difference is
-        LockoutBaselineStatus (Warning or Info), never Fail.
+        LockoutBaselineStatus (Warning or Info), never Fail. PORT-PLAN C16e(e) (v1.47.0): the figures are
+        those of the baseline AccountsPolicy.LockoutBaseline names (Get-AdfaLockoutBaseline); with the
+        CIS-mapped Azure guest-configuration baseline the threshold must be 5 or fewer and not 0, the
+        duration 15 minutes or more (0 included in the flag) and the window 15 minutes or more.
     .OUTPUTS
         [pscustomobject] Status, Notes.
     .PARAMETER Threshold
@@ -37574,14 +37985,21 @@ function Get-AdfaLockoutAssessment {
         $out.Notes = @('the lockout threshold was not returned or is not a whole number of 0 or more (a value that is not set and one this account may not read look the same)')
         return $out
     }
-    $baseT = [int]$Config['LockoutThresholdBaseline']; $baseD = [double]$Config['LockoutDurationBaselineMinutes']; $baseW = [double]$Config['LockoutWindowBaselineMinutes']
+    # PORT-PLAN C16e(e): the figures of the baseline in force (AccountsPolicy.LockoutBaseline).
+    $b = Get-AdfaLockoutBaseline -Config $Config
+    $baseT = [int]$b.ThresholdMax; $baseD = [double]$b.DurationMinutes; $baseW = [double]$b.WindowMinutes
+    $isWinBaseline = ([string]$b.Name -eq 'WindowsSecurityBaseline')
     if ($t -eq 0) {
         $out.Status = [string]$Config['LockoutBaselineStatus']
-        $out.Notes = @(("the lockout threshold is 0, so accounts are never locked out; the Windows security baseline Learn quotes is {0}, and Learn accepts 0 only with complex passwords of 8 or more characters and robust failed-logon auditing, which this read cannot verify" -f $baseT))
+        if ($isWinBaseline) { $out.Notes = @(("the lockout threshold is 0, so accounts are never locked out; the Windows security baseline Learn quotes is {0}, and Learn accepts 0 only with complex passwords of 8 or more characters and robust failed-logon auditing, which this read cannot verify" -f $baseT)) }
+        else { $out.Notes = @(("the lockout threshold is 0, so accounts are never locked out; {0} requires {1} or fewer, but not 0" -f [string]$b.Label, $baseT)) }
         return $out
     }
     $flags = @(); $info = @(); $missing = @()
-    if ($t -gt $baseT) { $flags += ("the lockout threshold {0} is above the {1} of the Windows security baseline" -f $t, $baseT) }
+    if ($t -gt $baseT) {
+        if ($isWinBaseline) { $flags += ("the lockout threshold {0} is above the {1} of the Windows security baseline" -f $t, $baseT) }
+        else { $flags += ("the lockout threshold {0} is above the {1} or fewer of {2}" -f $t, $baseT, [string]$b.Label) }
+    }
     foreach ($pair in @(@{ Name = 'duration'; V = $Duration }, @{ Name = 'observation window'; V = $Window })) {
         $state = [string](Get-AdfaConfigValue -Entry $pair.V -Name 'State')
         if ($state -eq 'Missing' -or $state -eq 'NotNumber' -or $state -eq '') { $missing += ("the lockout {0} was not returned or is not a whole number" -f $pair.Name) }
@@ -37592,10 +38010,17 @@ function Get-AdfaLockoutAssessment {
     if ([string]$Duration.State -eq 'Decoded') { $dMin = [double]$Duration.Minutes }
     if ([string]$Window.State -eq 'Decoded') { $wMin = [double]$Window.Minutes }
     if ($null -ne $dMin) {
-        if ($dMin -eq 0) { $info += 'the lockout duration is 0: an account stays locked until an administrator unlocks it (Learn advises about 15 minutes)' }
-        elseif ($dMin -lt $baseD) { $flags += ("the lockout duration of {0} minutes is below the about {1} minutes Learn advises" -f $dMin, $baseD) }
+        if ($dMin -eq 0 -and -not [bool]$b.ZeroDurationFlagged) { $info += 'the lockout duration is 0: an account stays locked until an administrator unlocks it (Learn advises about 15 minutes)' }
+        elseif ($dMin -eq 0) { $flags += ("the lockout duration is 0 (an account stays locked until an administrator unlocks it), not the {0} or more minutes of {1}" -f $baseD, [string]$b.Label) }
+        elseif ($dMin -lt $baseD) {
+            if ($isWinBaseline) { $flags += ("the lockout duration of {0} minutes is below the about {1} minutes Learn advises" -f $dMin, $baseD) }
+            else { $flags += ("the lockout duration of {0} minutes is below the {1} or more minutes of {2}" -f $dMin, $baseD, [string]$b.Label) }
+        }
     }
-    if ($null -ne $wMin -and $wMin -lt $baseW) { $flags += ("the observation window of {0} minutes is below the {1} of the Windows security baseline" -f $wMin, $baseW) }
+    if ($null -ne $wMin -and $wMin -lt $baseW) {
+        if ($isWinBaseline) { $flags += ("the observation window of {0} minutes is below the {1} of the Windows security baseline" -f $wMin, $baseW) }
+        else { $flags += ("the observation window of {0} minutes is below the {1} or more minutes of {2}" -f $wMin, $baseW, [string]$b.Label) }
+    }
     if ($null -ne $dMin -and $null -ne $wMin -and $dMin -gt 0 -and $dMin -lt $wMin) { $flags += ("the lockout duration ({0} minutes) is shorter than the observation window ({1} minutes); Learn: the reset time must be less than or equal to the lockout duration" -f $dMin, $wMin) }
     $out.Notes = @($flags + $info)
     if ($flags.Count -gt 0) { $out.Status = [string]$Config['LockoutBaselineStatus'] }
@@ -37628,8 +38053,12 @@ function Get-AdfaLockoutVerdict {
     [OutputType([pscustomobject])]
     param([Parameter(Mandatory)][string]$DomainName, [AllowNull()]$Raw, [Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][string]$CapSource)
     $item = ("Lockout policy: {0}" -f $DomainName)
+    $baseline = Get-AdfaLockoutBaseline -Config $Config
     $evidence = ('lockoutThreshold, lockoutDuration and lockOutObservationWindow on the domain head (Learn adschema, read 2026-11-19), against the Windows security baseline figures Learn quotes: threshold {0}, duration about {1} minutes, observation window {2} minutes ("more of a guideline").' -f $Config['LockoutThresholdBaseline'], $Config['LockoutDurationBaselineMinutes'], $Config['LockoutWindowBaselineMinutes'])
-    $columns = [ordered]@{ LockoutThreshold = ''; LockoutDurationMinutes = ''; LockoutWindowMinutes = ''; LockoutDurationRaw = ''; LockoutWindowRaw = '' }
+    if ([string]$baseline.Name -ne 'WindowsSecurityBaseline') {
+        $evidence = ('lockoutThreshold, lockoutDuration and lockOutObservationWindow on the domain head (Learn adschema, read 2026-11-19), against {0} chosen with AccountsPolicy.LockoutBaseline: {1}.' -f [string]$baseline.Label, [string]$baseline.Source)
+    }
+    $columns = [ordered]@{ LockoutThreshold = ''; LockoutDurationMinutes = ''; LockoutWindowMinutes = ''; LockoutDurationRaw = ''; LockoutWindowRaw = ''; Baseline = [string]$baseline.Name }
     $cause = Get-AdfaInventoryReadCause -Raw $Raw -What ("the domain head of {0}" -f $DomainName) -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
     $records = @()
     if ($cause -eq '') { $records = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ }) }
@@ -37646,9 +38075,68 @@ function Get-AdfaLockoutVerdict {
     $columns.LockoutWindowRaw = [string]$window.Ticks
     $a = Get-AdfaLockoutAssessment -Threshold $threshold -Duration $duration -Window $window -Config $Config
     $text = 'The lockout threshold, duration and observation window match the Windows security baseline figures Learn quotes.'
+    if ([string]$baseline.Name -ne 'WindowsSecurityBaseline') { $text = ("The lockout threshold, duration and observation window match {0}." -f [string]$baseline.Label) }
     if (@($a.Notes).Count -gt 0) { $text = ("Of the domain's lockout policy: {0}." -f (@($a.Notes) -join '; ')) }
     if ([string]$a.Status -eq [string]$Config['LockoutBaselineStatus'] -and [string]$a.Status -ne $script:Status.Info) { $text = ("{0} Grade: AccountsPolicy.LockoutBaselineStatus, a tool default." -f $text) }
     return New-AdfaAccountsPolicyRow -Scope $DomainName -Item $item -Status ([string]$a.Status) -Evidence $evidence -Columns $columns -Detail $text
+}
+
+function Resolve-AdfaPsoSubject {
+    <#
+    .SYNOPSIS
+        Pure: whether Windows honours a PSO link to one object - Honoured, Ignored or Unknown - from the
+        read of that object's objectClass and groupType (PORT-PLAN C16e(a)).
+    .DESCRIPTION
+        Learn: "Fine-grained password policies apply only to global security groups and user objects"
+        (fine-grained-password-policies, read 2026-11-20), "or inetOrgPerson objects if they are used
+        instead of user objects", and PSOs "linked to distribution groups or other types of security groups
+        are ignored" (cc770394). Honoured: an objectClass list holding a class of PsoHonouredUserClasses, or
+        a group whose groupType has both the security bit (0x80000000) and the global bit (0x2). Ignored: a
+        group whose groupType lacks either bit (a distribution group, or a domain local or universal
+        security group). Unknown, with Why: the read failed (unreachable, access denied, not found, each
+        worded apart), returned no object, returned no objectClass, a group returned no groupType or one
+        that is not a number, or another class (a computer named by its most specific class alone, for
+        example: Learn names user objects, and whether a computer link is honoured is not stated). An
+        unread groupType is never read as Ignored.
+    .OUTPUTS
+        [pscustomobject] Dn, Kind, Why.
+    .PARAMETER Dn
+        The distinguished name the PSO's msDS-PSOAppliesTo names, used in the wording. Type [string],
+        default '', may be empty.
+    .PARAMETER Raw
+        The seam result of the PsoSubject read of that object. Untyped, may be null.
+    .PARAMETER Config
+        The AccountsPolicy table in force (PsoHonouredUserClasses, GroupClass and the two groupType bits).
+        Type [hashtable], mandatory.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words. Type [string], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowEmptyString()][string]$Dn = '', [AllowNull()]$Raw, [Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][string]$CapSource)
+    $out = [pscustomobject]@{ Dn = $Dn; Kind = 'Unknown'; Why = '' }
+    $cause = Get-AdfaInventoryReadCause -Raw $Raw -What ("the linked object {0}" -f $Dn) -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
+    if ($cause -ne '') { $out.Why = $cause; return $out }
+    $recs = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ })
+    if ($recs.Count -eq 0) { $out.Why = ("The read of the linked object {0} returned no object." -f $Dn); return $out }
+    $classes = @(@(Get-AdfaConfigValue -Entry $recs[0] -Name 'objectClass') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+    if ($classes.Count -eq 0) { $out.Why = ("objectClass was not returned on the linked object {0}." -f $Dn); return $out }
+    $userClasses = @($Config['PsoHonouredUserClasses'])
+    if (@($classes | Where-Object { $userClasses -contains $_ }).Count -gt 0) { $out.Kind = 'Honoured'; return $out }
+    if ($classes -notcontains [string]$Config['GroupClass']) {
+        $out.Why = ("the linked object {0} is of class {1}, neither a user object nor a group; whether Windows honours a link to it is not stated on Learn." -f $Dn, ($classes -join '/'))
+        return $out
+    }
+    $gt = ConvertTo-AdfaInventoryUInt32 -Value (Get-AdfaConfigValue -Entry $recs[0] -Name 'groupType')
+    if ($null -eq $gt) { $out.Why = ("groupType was not returned on the linked group {0}, or is not a number (a value not set and one this account may not read look the same)." -f $Dn); return $out }
+    $isSecurity = (($gt -band [int64]$Config['GroupTypeSecurityBit']) -ne 0)
+    $isGlobal = (($gt -band [int64]$Config['GroupTypeGlobalBit']) -ne 0)
+    if ($isSecurity -and $isGlobal) { $out.Kind = 'Honoured'; return $out }
+    $out.Kind = 'Ignored'
+    $kind = 'a distribution group'
+    if ($isSecurity) { $kind = 'a security group that is not global' }
+    $out.Why = ("the linked group {0} is {1} (groupType 0x{2:X8})" -f $Dn, $kind, [int64]$gt)
+    return $out
 }
 
 function Get-AdfaPsoVerdict {
@@ -37677,16 +38165,32 @@ function Get-AdfaPsoVerdict {
         The AccountsPolicy table in force. Type [hashtable], mandatory.
     .PARAMETER CapSource
         Where MaxObjects came from, in the row's words. Type [string], mandatory.
+    .PARAMETER Links
+        PORT-PLAN C16e(a): what was read of each linked PSO - objects with Dn (the PSO's DN), LinksRaw
+        (the PsoLinks read of its msDS-PSOAppliesTo values), Subjects (Dn and Raw, the PsoSubject read of
+        each linked object) and NotRead (why its links were not read, for example the link cap). With it,
+        a PSO is applied to nothing Windows honours when every link was read and none is Honoured
+        (Resolve-AdfaPsoSubject); a PSO whose links failed, came back ranged, do not match the counted
+        links, were not read, or include an Unknown and no Honoured link is undecided - never applied to
+        nothing. The row is PsoAppliedToNothingStatus when any PSO has no link or no honoured link (the
+        undecided ones named too), Not Assessed when any is undecided and none is decided, Pass otherwise.
+        $null keeps the v1.44.0 rule (no link classified, said in NotRun). Untyped, default $null.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string]$DomainName, [AllowNull()]$Raw, [Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][string]$CapSource)
+    param([Parameter(Mandatory)][string]$DomainName, [AllowNull()]$Raw, [Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][string]$CapSource, [AllowNull()][AllowEmptyCollection()]$Links = $null)
     $evidence = 'msDS-PasswordSettings objects one level under CN=Password Settings Container,CN=System: msDS-PasswordSettingsPrecedence, msDS-PSOAppliesTo (counted), msDS-LockoutThreshold, msDS-LockoutDuration, msDS-LockoutObservationWindow (Learn cc770394 and adschema, read 2026-11-19).'
     $tieItem = ("Fine-grained password policy precedence: {0}" -f $DomainName)
     $nothingItem = ("Fine-grained password policies applied to nothing: {0}" -f $DomainName)
     $groupNote = 'Links to distribution groups or to security groups that are not global, which Windows ignores (cc770394), are not classified: the groupType of each linked object is not read.'
+    $classify = ($null -ne $Links)
+    if ($classify) {
+        $groupNote = ''
+        $evidence = ('{0} Since v1.47.0 (PORT-PLAN C16e(a)) the msDS-PSOAppliesTo values of each linked PSO and the objectClass and groupType of each object they name, read from the domain: Learn "Fine-grained password policies apply only to global security groups and user objects" (fine-grained-password-policies, read 2026-11-20); groupType bits 0x80000000 (security) and 0x2 (global), a-grouptype.' -f $evidence)
+    }
     $tieCols = [ordered]@{ Policies = 0; TiedPolicies = '' }
     $nothingCols = [ordered]@{ Policies = 0; NotApplied = '' }
+    if ($classify) { $nothingCols = [ordered]@{ Policies = 0; NotApplied = ''; NotHonoured = ''; Undecided = ''; LinksRead = 0 } }
     $cause = Get-AdfaInventoryReadCause -Raw $Raw -What ("the Password Settings Container of {0}" -f $DomainName) -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
     $records = @()
     if ($cause -eq '') {
@@ -37725,7 +38229,7 @@ function Get-AdfaPsoVerdict {
                 -Detail ("The PSO was returned without {0}, which every PSO must hold (mustHave): this account cannot read its attributes (by default only Domain Admins can, Learn cc770394). Its settings are not known." -f ($absent -join ', '))
             continue
         }
-        $complete += [pscustomobject]@{ Name = $name; Precedence = [int64]$precedence; Count = $count; Ranged = $ranged }
+        $complete += [pscustomobject]@{ Name = $name; Precedence = [int64]$precedence; Count = $count; Ranged = $ranged; Dn = [string](Get-AdfaConfigValue -Entry $r -Name 'DistinguishedName') }
         $a = Get-AdfaLockoutAssessment -Threshold $threshold -Duration $duration -Window $window -Config $Config
         $text = 'The PSO''s lockout threshold, duration and observation window match the Windows security baseline figures Learn quotes.'
         if (@($a.Notes).Count -gt 0) { $text = ("Of this PSO's lockout values: {0}." -f (@($a.Notes) -join '; ')) }
@@ -37752,6 +38256,59 @@ function Get-AdfaPsoVerdict {
     }
     $none = @($complete | Where-Object { -not $_.Ranged -and $null -ne $_.Count -and [int64]$_.Count -eq 0 } | ForEach-Object { $_.Name })
     $nothingCols.NotApplied = Get-AdfaC14NameList -Names $none -Cap ([int]$Config['NameListCap'])
+    if ($classify) {
+        # PORT-PLAN C16e(a): every other PSO is decided only from links that were all read.
+        $notHonoured = @(); $undecided = @(); $causes = @(); $linksRead = 0
+        foreach ($p in @($complete | Where-Object { $none -notcontains $_.Name })) {
+            $entry = @(@($Links) | Where-Object { $null -ne $_ -and [string]::Equals([string](Get-AdfaConfigValue -Entry $_ -Name 'Dn'), [string]$p.Dn, [System.StringComparison]::OrdinalIgnoreCase) })
+            if ($p.Ranged -or $null -eq $p.Count) { $undecided += $p.Name; $causes += 'a PSO''s msDS-PSOAppliesTo came back in more than one range, so its links were not all read'; continue }
+            if ($entry.Count -eq 0) { $undecided += $p.Name; $causes += 'the links of a PSO were not read'; continue }
+            $e = $entry[0]
+            $notRead = ([string](Get-AdfaConfigValue -Entry $e -Name 'NotRead')).Trim().TrimEnd('.')
+            if ($notRead -ne '') { $undecided += $p.Name; $causes += $notRead; continue }
+            $linkCause = Get-AdfaInventoryReadCause -Raw (Get-AdfaConfigValue -Entry $e -Name 'LinksRaw') -What ("the links of {0}" -f $p.Name) -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
+            $values = @()
+            if ($linkCause -eq '') {
+                $lrecs = @(@(Get-AdfaConfigValue -Entry (Get-AdfaConfigValue -Entry $e -Name 'LinksRaw') -Name 'Records') | Where-Object { $null -ne $_ })
+                if ($lrecs.Count -eq 0) { $linkCause = ("The read of the links of {0} returned no object." -f $p.Name) }
+                else { $values = @(@(Get-AdfaConfigValue -Entry $lrecs[0] -Name 'msDS-PSOAppliesTo') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ }) }
+            }
+            if ($linkCause -eq '' -and $values.Count -ne [int64]$p.Count) { $linkCause = ("the link read returned {0} value(s) where the PSO read counted {1}" -f $values.Count, $p.Count) }
+            if ($linkCause -ne '') { $undecided += $p.Name; $causes += $linkCause.Trim().TrimEnd('.'); continue }
+            $honoured = 0; $unknown = @()
+            foreach ($v in $values) {
+                $s = @(@(Get-AdfaConfigValue -Entry $e -Name 'Subjects') | Where-Object { $null -ne $_ -and [string]::Equals([string](Get-AdfaConfigValue -Entry $_ -Name 'Dn'), $v, [System.StringComparison]::OrdinalIgnoreCase) })
+                $subjectRaw = $null
+                if ($s.Count -gt 0) { $subjectRaw = Get-AdfaConfigValue -Entry $s[0] -Name 'Raw' }
+                $k = Resolve-AdfaPsoSubject -Dn $v -Raw $subjectRaw -Config $Config -CapSource $CapSource
+                $linksRead++
+                if ([string]$k.Kind -eq 'Honoured') { $honoured++ }
+                elseif ([string]$k.Kind -eq 'Unknown') { $unknown += ([string]$k.Why).Trim().TrimEnd('.') }
+            }
+            if ($honoured -gt 0) { continue }
+            if ($unknown.Count -gt 0) { $undecided += $p.Name; $causes += ($unknown -join '; '); continue }
+            $notHonoured += $p.Name
+        }
+        $nothingCols.NotHonoured = Get-AdfaC14NameList -Names $notHonoured -Cap ([int]$Config['NameListCap'])
+        $nothingCols.Undecided = Get-AdfaC14NameList -Names $undecided -Cap ([int]$Config['NameListCap'])
+        $nothingCols.LinksRead = $linksRead
+        $learn = 'Learn: "Fine-grained password policies apply only to global security groups and user objects", and PSOs linked to distribution groups or other types of security groups are ignored (cc770394).'
+        $undecidedText = ''
+        if ($undecided.Count -gt 0) { $undecidedText = (" {0} PSO(s) are undecided (named in Undecided): {1}." -f $undecided.Count, (@($causes | Select-Object -Unique) -join ' / ')) }
+        if (($none.Count + $notHonoured.Count) -gt 0) {
+            $rows += New-AdfaAccountsPolicyRow -Scope $DomainName -Item $nothingItem -Status ([string]$Config['PsoAppliedToNothingStatus']) -Evidence $evidence -Columns $nothingCols `
+                -Detail ("{0} PSO(s) have no msDS-PSOAppliesTo value (named in NotApplied) and {1} are linked only to objects Windows ignores (named in NotHonoured), so they apply to nothing Windows honours. {2}{3} Grade: AccountsPolicy.PsoAppliedToNothingStatus, a tool default." -f $none.Count, $notHonoured.Count, $learn, $undecidedText)
+        }
+        elseif ($undecided.Count -gt 0) {
+            $rows += New-AdfaAccountsPolicyRow -Scope $DomainName -Item $nothingItem -Status $script:Status.NotAssessed -Evidence $evidence -Columns $nothingCols `
+                -Detail ("Whether every PSO applies to an object Windows honours is not known.{0} An object whose class or groupType was not read is never taken as ignored." -f $undecidedText)
+        }
+        else {
+            $rows += New-AdfaAccountsPolicyRow -Scope $DomainName -Item $nothingItem -Status $script:Status.Pass -Evidence $evidence -Columns $nothingCols `
+                -Detail ("Each of the {0} PSO(s) read is linked to at least one user object or global security group; {1} link(s) were read. {2}" -f $complete.Count, $linksRead, $learn)
+        }
+        return @($rows)
+    }
     if ($none.Count -gt 0) {
         $rows += New-AdfaAccountsPolicyRow -Scope $DomainName -Item $nothingItem -Status ([string]$Config['PsoAppliedToNothingStatus']) -Evidence $evidence -Columns $nothingCols -NotRun $groupNote `
             -Detail ("{0} PSO(s) have no msDS-PSOAppliesTo value, so they apply to no user or group (names in NotApplied). Grade: AccountsPolicy.PsoAppliedToNothingStatus, a tool default." -f $none.Count)
@@ -37976,6 +38533,434 @@ function Get-AdfaInfrastructureMasterVerdict {
         -Detail ("The infrastructure master is a global catalog in a forest of {0} domains, {1} of the domain's {2} DC(s) are not global catalogs, and the Recycle Bin exemption does not hold. Learn (KB 248047): ""the infrastructure FSMO role holder can't be a global catalog server"" in that case, and event 1419 is logged. Grade: AccountsPolicy.InfrastructureOnGcStatus, a tool default." -f $count, $nonGc, $mine.Count)
 }
 
+function Get-AdfaRodcRoleHolderVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "FSMO role on a read-only domain controller (forest|domain): <scope>" - whether any role read
+        names the NTDS Settings object of an RODC (PORT-PLAN C16e(c)).
+    .DESCRIPTION
+        Learn (planning-operations-master-role-placement, read 2026-11-20): "RODCs cannot act as operations
+        master role holders". Each role's fSMORoleOwner (the DN of the holder's NTDS Settings object) is
+        matched by DN to the NTDS Settings objects of the forest; a holder whose objectClass holds
+        RodcDsaClass (nTDSDSARO, a subclass of nTDSDSA) is an RODC. RodcRoleHolderStatus (Fail by default)
+        when any role is held by an RODC - it stands even if another role could not be read, and that is
+        named. Pass only when every role was read and every holder was found among a complete, uncapped
+        NTDS Settings read with objectClass returned and none is an RODC. Not Assessed otherwise, with each
+        cause: a role read that failed (unreachable, access denied, not found, worded apart) or returned
+        nothing, a holder naming a deleted object, the NTDS Settings read failed or capped, a holder not
+        among the objects read, or objectClass not returned on it.
+    .OUTPUTS
+        [pscustomobject]
+    .PARAMETER Scope
+        The forest or domain the row is about. Type [string], mandatory.
+    .PARAMETER Kind
+        Whether the row covers the forest's two roles or a domain's three. Type [string], default Domain,
+        one of Forest, Domain.
+    .PARAMETER Roles
+        The roles: objects with Role (the role name) and Raw (the seam result of its role object). Untyped,
+        mandatory.
+    .PARAMETER DsaRaw
+        The seam result of the NTDS Settings read of the forest (objectClass among its properties).
+        Untyped, may be null.
+    .PARAMETER Config
+        The AccountsPolicy table in force (RodcDsaClass, RodcRoleHolderStatus). Type [hashtable], mandatory.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words. Type [string], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Scope,
+        [ValidateSet('Forest', 'Domain')][string]$Kind = 'Domain',
+        [Parameter(Mandatory)]$Roles,
+        [AllowNull()]$DsaRaw,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$CapSource
+    )
+    $item = ("FSMO role on a read-only domain controller ({0}): {1}" -f $Kind.ToLowerInvariant(), $Scope)
+    $evidence = 'fSMORoleOwner on each role object, matched by DN to the NTDS Settings objects of the forest; an RODC''s NTDS Settings object is of class nTDSDSARO (Learn c-ntdsdsaro). Learn planning-operations-master-role-placement (read 2026-11-20): "RODCs cannot act as operations master role holders".'
+    $columns = [ordered]@{ RolesDeclared = 0; RolesRead = 0; Holders = ''; RodcHolders = '' }
+    $declared = @(@($Roles) | Where-Object { $null -ne $_ })
+    $columns.RolesDeclared = $declared.Count
+    $dsaCause = Get-AdfaInventoryReadCause -Raw $DsaRaw -What 'the NTDS Settings objects of the forest' -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
+    $dsas = @()
+    if ($dsaCause -eq '') { $dsas = @(@(Get-AdfaConfigValue -Entry $DsaRaw -Name 'Records') | Where-Object { $null -ne $_ }) }
+    $rodcClass = [string]$Config['RodcDsaClass']
+    $causes = @(); $holders = @(); $rodc = @(); $read = 0
+    foreach ($r in $declared) {
+        $role = [string]$r.Role
+        $cause = Get-AdfaInventoryReadCause -Raw $r.Raw -What ("the {0} role object" -f $role) -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
+        if ($cause -ne '') { $causes += ("{0}: {1}" -f $role, $cause); continue }
+        $recs = @(@(Get-AdfaConfigValue -Entry $r.Raw -Name 'Records') | Where-Object { $null -ne $_ })
+        if ($recs.Count -eq 0) { $causes += ("{0}: the read returned no object." -f $role); continue }
+        $dn = [string](Get-AdfaConfigValue -Entry $recs[0] -Name 'fSMORoleOwner')
+        $h = Get-AdfaFsmoHolderName -Value $dn
+        if (-not $h.Valid) { $causes += ("{0}: {1}." -f $role, $h.Reason); continue }
+        $read++
+        $holders += ("{0}={1}" -f $role, [string]$h.Server)
+        if ($dsaCause -ne '') { $causes += ("{0}: {1}" -f $role, $dsaCause); continue }
+        $match = @($dsas | Where-Object { [string]::Equals([string](Get-AdfaConfigValue -Entry $_ -Name 'DistinguishedName'), $dn, [System.StringComparison]::OrdinalIgnoreCase) })
+        if ($match.Count -ne 1) { $causes += ("{0}: the holder's NTDS Settings object is not among the {1} returned by the read." -f $role, $dsas.Count); continue }
+        $classes = @(@(Get-AdfaConfigValue -Entry $match[0] -Name 'objectClass') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+        if ($classes.Count -eq 0) { $causes += ("{0}: objectClass was not returned on the holder's NTDS Settings object, so whether it is an RODC is not known." -f $role); continue }
+        if (@($classes | Where-Object { [string]::Equals($_, $rodcClass, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { $rodc += ("{0}={1}" -f $role, [string]$h.Server) }
+    }
+    $columns.RolesRead = $read
+    $columns.Holders = ($holders -join '; ')
+    $columns.RodcHolders = ($rodc -join '; ')
+    $causeText = ''
+    if ($causes.Count -gt 0) { $causeText = (" {0} of the {1} role(s) could not be decided: {2}" -f $causes.Count, $declared.Count, ($causes -join ' ')) }
+    if ($rodc.Count -gt 0) {
+        return New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status ([string]$Config['RodcRoleHolderStatus']) -Evidence $evidence -Columns $columns `
+            -Detail ("{0} role(s) name the NTDS Settings object of a read-only domain controller (role and holder in RodcHolders). Learn: ""RODCs cannot act as operations master role holders"".{1} Grade: AccountsPolicy.RodcRoleHolderStatus, a tool default." -f $rodc.Count, $causeText)
+    }
+    if ($causes.Count -gt 0 -or $declared.Count -eq 0) {
+        if ($declared.Count -eq 0) { $causeText = ' No role was given to this check (a defect in the tool).' }
+        return New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns `
+            -Detail ("Whether any role is held by a read-only domain controller is not known.{0}" -f $causeText)
+    }
+    return New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
+        -Detail ("Each of the {0} role(s) is held by a writable domain controller: its NTDS Settings object was found among a complete read and is not of class {1}." -f $declared.Count, $rodcClass)
+}
+
+function Get-AdfaAppPartitionInfraVerdict {
+    <#
+    .SYNOPSIS
+        Pure: "Infrastructure master (application partition): <partition DN>" - the fSMORoleOwner of
+        CN=Infrastructure under DomainDnsZones or ForestDnsZones (PORT-PLAN C16e(d)).
+    .DESCRIPTION
+        KB 223346: "A separate infrastructure master is created for each application partition"; KB 949257:
+        read fSMORoleOwner on CN=Infrastructure under the partition; KB 2694933: a value holding 0ADEL names a
+        deleted NTDS Settings object, and demotion then fails (all read 2026-11-20). The crossRef objects of
+        the forest decide whether the partition exists; the read is trusted only when it holds the crossRef
+        of the partition's parent naming context (the domain, or the forest root). Info "not present" when
+        that read lists no crossRef for the partition. AppPartitionHolderDeletedStatus (Warning by default)
+        when the holder holds the deleted mark (0ADEL or DEL:) or names a DSA absent from a complete,
+        uncapped NTDS Settings read. Info, with the holder, otherwise. Not Assessed when the crossRef read,
+        the CN=Infrastructure read or (for a holder not deleted) the NTDS Settings read failed or was
+        capped, CN=Infrastructure returned nothing or no value, or the value is not an NTDS Settings DN.
+    .OUTPUTS
+        [pscustomobject]
+    .PARAMETER PartitionDn
+        The partition, for example DC=DomainDnsZones,DC=contoso,DC=com. Type [string], mandatory.
+    .PARAMETER Scope
+        The domain or forest the row is reported under. Type [string], default '', may be empty.
+    .PARAMETER PartitionsRaw
+        The seam result of the AppPartitions crossRef read (nCName). Untyped, may be null.
+    .PARAMETER Raw
+        The seam result of the CN=Infrastructure read under the partition; $null when it was not read
+        because the partition is not listed. Untyped, may be null.
+    .PARAMETER DsaRaw
+        The seam result of the NTDS Settings read of the forest. Untyped, may be null.
+    .PARAMETER Config
+        The AccountsPolicy table in force (AppPartitionHolderDeletedStatus). Type [hashtable], mandatory.
+    .PARAMETER CapSource
+        Where MaxObjects came from, in the row's words. Type [string], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$PartitionDn,
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()]$PartitionsRaw,
+        [AllowNull()]$Raw,
+        [AllowNull()]$DsaRaw,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$CapSource
+    )
+    $item = ("Infrastructure master (application partition): {0}" -f $PartitionDn)
+    $evidence = 'fSMORoleOwner on CN=Infrastructure under the application partition (KB 949257), the crossRef objects under CN=Partitions (nCName) and the NTDS Settings objects of the forest. KB 223346: a separate infrastructure master per application partition; KB 2694933: 0ADEL names a deleted NTDS Settings object and demotion fails (Learn, read 2026-11-20).'
+    $columns = [ordered]@{ Partition = $PartitionDn; Holder = ''; HolderDn = ''; HolderState = '' }
+    $na = { param([string]$Why) New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail ("{0} The partition's infrastructure master is not known." -f $Why) }
+    $crossCause = Get-AdfaInventoryReadCause -Raw $PartitionsRaw -What 'the crossRef objects under CN=Partitions' -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
+    if ($crossCause -ne '') { return (& $na $crossCause) }
+    $ncs = @(@(Get-AdfaConfigValue -Entry $PartitionsRaw -Name 'Records') | Where-Object { $null -ne $_ } | ForEach-Object { [string](Get-AdfaConfigValue -Entry $_ -Name 'nCName') } | Where-Object { $_ -ne '' })
+    $parent = ($PartitionDn -replace '^[^,]+,', '')
+    # Non-vacuity: the declared population is every crossRef of the forest, which holds the parent naming context's.
+    if (@($ncs | Where-Object { [string]::Equals($_, $parent, [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+        return (& $na ("The crossRef read returned {0} object(s) but none for {1}, which every forest holds, so the read is not complete enough to say whether the partition exists." -f $ncs.Count, $parent))
+    }
+    if (@($ncs | Where-Object { [string]::Equals($_, $PartitionDn, [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+        $columns.HolderState = 'NotPresent'
+        return New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+            -Detail ("The forest's crossRef objects (read in full, {0} of them) list no partition {1}, so it has no infrastructure master to read." -f $ncs.Count, $PartitionDn)
+    }
+    $cause = Get-AdfaInventoryReadCause -Raw $Raw -What ("CN=Infrastructure,{0}" -f $PartitionDn) -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
+    if ($cause -ne '') { return (& $na ("{0} The partition is listed among the crossRef objects; the DC that answered may not hold a copy of it." -f $cause)) }
+    $recs = @(@(Get-AdfaConfigValue -Entry $Raw -Name 'Records') | Where-Object { $null -ne $_ })
+    if ($recs.Count -eq 0) { return (& $na 'The read of CN=Infrastructure returned no object.') }
+    $dn = [string](Get-AdfaConfigValue -Entry $recs[0] -Name 'fSMORoleOwner')
+    $columns.HolderDn = $dn
+    if ([string]::IsNullOrWhiteSpace($dn)) { return (& $na 'fSMORoleOwner was not returned on CN=Infrastructure (a value not set and one this account may not read look the same).') }
+    $deletedText = 'Learn (KB 2694933): the role owner''s NTDS Settings object has been deleted, which makes the demotion of a DC holding the partition fail, and adprep /rodcprep fails the same way (KB 949257).'
+    if ($dn -match '(?i)\\0ADEL|DEL:') {
+        $columns.HolderState = 'Deleted'
+        return New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status ([string]$Config['AppPartitionHolderDeletedStatus']) -Evidence $evidence -Columns $columns `
+            -Detail ("fSMORoleOwner holds the deleted-object mark (0ADEL or DEL:), shown in HolderDn. {0} Grade: AccountsPolicy.AppPartitionHolderDeletedStatus, a tool default." -f $deletedText)
+    }
+    $h = Get-AdfaFsmoHolderName -Value $dn
+    if (-not $h.Valid) { return (& $na ("{0}." -f $h.Reason)) }
+    $columns.Holder = [string]$h.Server
+    $dsaCause = Get-AdfaInventoryReadCause -Raw $DsaRaw -What 'the NTDS Settings objects of the forest' -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
+    if ($dsaCause -ne '') { return (& $na ("{0} Whether the holder still exists is not known." -f $dsaCause)) }
+    $dsas = @(@(Get-AdfaConfigValue -Entry $DsaRaw -Name 'Records') | Where-Object { $null -ne $_ })
+    $match = @($dsas | Where-Object { [string]::Equals([string](Get-AdfaConfigValue -Entry $_ -Name 'DistinguishedName'), $dn, [System.StringComparison]::OrdinalIgnoreCase) })
+    if ($match.Count -eq 0) {
+        $columns.HolderState = 'Missing'
+        return New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status ([string]$Config['AppPartitionHolderDeletedStatus']) -Evidence $evidence -Columns $columns `
+            -Detail ("fSMORoleOwner names an NTDS Settings object that is not among the {0} returned by a complete read of the forest's NTDS Settings objects, so it names a DSA that does not exist. {1} Grade: AccountsPolicy.AppPartitionHolderDeletedStatus, a tool default." -f $dsas.Count, $deletedText)
+    }
+    $columns.HolderState = 'Live'
+    return New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+        -Detail 'fSMORoleOwner names an NTDS Settings object found among the forest''s NTDS Settings objects; the holder is in the Holder column. Not graded.'
+}
+
+function Get-AdfaKdcDefaultRow {
+    <#
+    .SYNOPSIS
+        Pure: "KDC default encryption types: <dc>" - the DefaultDomainSupportedEncTypes value one DC holds
+        under HKLM\SYSTEM\CurrentControlSet\Services\Kdc (PORT-PLAN C16e(b)).
+    .DESCRIPTION
+        Info, KdcState Set, with the value and its MS-KILE 2.2.7 names, when GetDWORDValue returned it;
+        Info, KdcState NotSet, when the value or the Kdc key is absent (StdRegProv 1 or 2, measured on one
+        host and not published): Learn gives the default as 0x18 only after the April 2026 updates, so an
+        absent value is not decoded. Not Assessed, KdcState Unread, with the cause, when the DC was not
+        reached, access was denied (by the session or by the provider), the value has another type, the
+        read failed or gave no answer. Unreachable and access denied are worded apart.
+    .OUTPUTS
+        [pscustomobject] with columns Value, ValueHex, Names, KdcState, Transport.
+    .PARAMETER ComputerName
+        The host name of the DC. Type [string], mandatory.
+    .PARAMETER Scope
+        The domain of the DC. Type [string], default '', may be empty.
+    .PARAMETER Read
+        The Invoke-AdfaDcRemoteRead result (Raw from Get-AdfaDcW32TimeRaw, Denied), or $null when no read
+        was made. Untyped, may be null.
+    .PARAMETER Unreachable
+        Why the DC was not reached; empty when it was. Type [string], default '', may be null or empty.
+    .PARAMETER Config
+        The AccountsPolicy table in force (KdcValues, EncryptionTypeBits). Type [hashtable], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [AllowEmptyString()][string]$Scope = '',
+        [AllowNull()]$Read,
+        [AllowNull()][AllowEmptyString()][string]$Unreachable = '',
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("KDC default encryption types: {0}" -f $ComputerName)
+    $evidence = 'StdRegProv GetDWORDValue of DefaultDomainSupportedEncTypes under HKLM\SYSTEM\CurrentControlSet\Services\Kdc, over one CIM session (WinRM, then DCOM); needs local Administrators on the DC. Learn kerberos-protocol-registry-kdc-configuration-keys and detect-remediate-rc4-kerberos, read 2026-11-20. Not graded per DC.'
+    $columns = [ordered]@{ Value = ''; ValueHex = ''; Names = ''; KdcState = 'Unread'; Transport = '' }
+    $na = { param([string]$Why) New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail ("{0} The KDC default encryption types of this DC are not known." -f $Why) }
+    if (-not [string]::IsNullOrWhiteSpace($Unreachable)) { return (& $na $Unreachable.Trim()) }
+    if ($null -eq $Read) { return (& $na 'No read was made.') }
+    $raw = Get-AdfaConfigValue -Entry $Read -Name 'Raw'
+    $err = ''
+    if ($null -ne $raw) { $err = ([string](Get-AdfaConfigValue -Entry $raw -Name 'Error')).Trim().TrimEnd('.'); $columns.Transport = [string](Get-AdfaConfigValue -Entry $raw -Name 'Protocol') }
+    if ([bool](Get-AdfaConfigValue -Entry $Read -Name 'Denied')) { return (& $na ("Access denied: the account running the assessment could not read the registry of this DC ({0}). Local Administrators rights on the DC are needed for this read." -f $err)) }
+    if ($null -eq $raw -or -not [bool](Get-AdfaConfigValue -Entry $raw -Name 'Ok')) { return (& $na ("Read failed: a port answered, but the value could not be read: {0}." -f $err)) }
+    $id = [string](@($Config['KdcValues'])[0]['Id'])
+    $entry = @(@(Get-AdfaConfigValue -Entry $raw -Name 'Values') | Where-Object { $null -ne $_ -and [string](Get-AdfaConfigValue -Entry $_ -Name 'Id') -eq $id })
+    if ($entry.Count -eq 0) { return (& $na 'Read failed: no answer came back for DefaultDomainSupportedEncTypes.') }
+    $e = $entry[0]
+    $class = Get-AdfaStdRegReturnClass -ReturnValue (Get-AdfaConfigValue -Entry $e -Name 'ReturnValue') -ErrorText ([string](Get-AdfaConfigValue -Entry $e -Name 'Error')) -ErrorCode ([string](Get-AdfaConfigValue -Entry $e -Name 'ErrorCode'))
+    switch ([string]$class.Class) {
+        'Success' {
+            $n = ConvertTo-AdfaInventoryUInt32 -Value (Get-AdfaConfigValue -Entry $e -Name 'Value')
+            if ($null -eq $n) { return (& $na 'Read failed: the value returned is not a number.') }
+            $d = ConvertFrom-AdfaEncryptionTypeValue -Value $n -Config $Config
+            $columns.Value = [string]$n
+            $columns.ValueHex = ("0x{0:X}" -f [int64]$n)
+            $columns.Names = (@($d.Names) -join ', ')
+            $columns.KdcState = 'Set'
+            return New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+                -Detail 'DefaultDomainSupportedEncTypes is set on this DC; the value and the encryption types it names (MS-KILE 2.2.7: RC4, DES, AES) are in the Value, ValueHex and Names columns. Learn: an account with no msDS-SupportedEncryptionTypes takes this value from the KDC that serves it.'
+        }
+        'ValueNotSet' { $columns.KdcState = 'NotSet' }
+        'KeyAbsent' { $columns.KdcState = 'NotSet' }
+        'AccessDenied' { return (& $na 'Read failed: access denied by the registry provider on this DC.') }
+        'TypeMismatch' { return (& $na 'Read failed: the value exists with a type other than REG_DWORD, the type Learn names.') }
+        default {
+            $why = ([string](Get-AdfaConfigValue -Entry $e -Name 'Error')).Trim().TrimEnd('.')
+            if ($why -eq '') { $why = ("return code {0}" -f [string]$class.Code) }
+            return (& $na ("Read failed: {0}." -f $why))
+        }
+    }
+    return New-AdfaAccountsPolicyRow -Scope $Scope -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+        -Detail 'DefaultDomainSupportedEncTypes is not set on this DC (the value or the Kdc key is absent). Learn gives its default as 0x18 only after the April 2026 updates and states the earlier default otherwise, so an absent value is not decoded.'
+}
+
+function Resolve-AdfaKdcDomainDefault {
+    <#
+    .SYNOPSIS
+        Pure: the DefaultDomainSupportedEncTypes of one domain from its DCs' rows, and the row
+        "KDC default encryption types: <domain>" (PORT-PLAN C16e(b)).
+    .DESCRIPTION
+        Known (Pass): every DC row of the domain is Set and all hold one value - only then are the
+        accounts with no msDS-SupportedEncryptionTypes graded on it. Differs (KdcDefaultDiffersStatus,
+        Warning by default): the DCs read hold different values, or some hold one and others none - Learn
+        publishes no consistency rule, but the KDC that answers decides. NotSet (Info): every DC read holds
+        none (not decoded, see Get-AdfaKdcDefaultRow). Unknown (Not Assessed): a DC row is Unread, the
+        domain's DCs could not be listed (-Gap), or no DC row carries the domain. Unread wins over Differs:
+        a value not read is never compared away.
+    .OUTPUTS
+        [pscustomobject] Domain, State, Value, Cause, Row.
+    .PARAMETER DomainName
+        The DNS name of the domain. Type [string], mandatory.
+    .PARAMETER Rows
+        The per-DC rows of Get-AdfaKdcDefaultRow; only those whose Scope is this domain are used.
+        Untyped, default @(), may be null or empty.
+    .PARAMETER Gap
+        The Get-AdfaDcPopulationGap entry of this domain, or $null when its DCs were listed. Untyped,
+        default $null, may be null.
+    .PARAMETER Config
+        The AccountsPolicy table in force (KdcDefaultDiffersStatus). Type [hashtable], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$DomainName,
+        [AllowNull()][AllowEmptyCollection()]$Rows = @(),
+        [AllowNull()]$Gap = $null,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $item = ("KDC default encryption types: {0}" -f $DomainName)
+    $evidence = 'DefaultDomainSupportedEncTypes read on every DC of the domain (StdRegProv GetDWORDValue). Learn (detect-remediate-rc4-kerberos, read 2026-11-20): when msDS-SupportedEncryptionTypes is not defined "the KDC falls back to the DefaultDomainSupportedEncTypes value". Learn publishes no rule for DCs that differ: the grade is the tool''s.'
+    $mine = @(@($Rows) | Where-Object { $null -ne $_ -and [string]::Equals(([string](Get-AdfaConfigValue -Entry $_ -Name 'Scope')).TrimEnd('.'), $DomainName.TrimEnd('.'), [System.StringComparison]::OrdinalIgnoreCase) })
+    $set = @($mine | Where-Object { [string]$_.KdcState -eq 'Set' })
+    $notSet = @($mine | Where-Object { [string]$_.KdcState -eq 'NotSet' })
+    $unread = @($mine | Where-Object { [string]$_.KdcState -ne 'Set' -and [string]$_.KdcState -ne 'NotSet' })
+    $values = @($set | ForEach-Object { [string]$_.ValueHex } | Sort-Object -Unique)
+    $columns = [ordered]@{ Dcs = $mine.Count; DcsRead = ($set.Count + $notSet.Count); Values = ($values -join ', '); NotSetOn = (@($notSet | ForEach-Object { ([string]$_.Item -replace '^KDC default encryption types: ', '') }) -join '; '); UnreadOn = (@($unread | ForEach-Object { ([string]$_.Item -replace '^KDC default encryption types: ', '') }) -join '; ') }
+    $out = [pscustomobject]@{ Domain = $DomainName; State = 'Unknown'; Value = $null; Cause = ''; Row = $null }
+    $why = ''
+    if ($null -ne $Gap) { $why = (Get-AdfaDcPopulationGapText -Gap $Gap -NothingRead 'No DefaultDomainSupportedEncTypes of its DCs was read.') }
+    elseif ($mine.Count -eq 0) { $why = 'No domain controller of this domain was given to the read, so the value its KDCs hold is not known.' }
+    elseif ($unread.Count -gt 0) { $why = ("{0} of the {1} DC(s) could not be read (named in UnreadOn; each DC row says why), so the value every KDC of the domain holds is not known." -f $unread.Count, $mine.Count) }
+    if ($why -ne '') {
+        $out.Cause = $why.Trim().TrimEnd('.')
+        $out.Row = New-AdfaAccountsPolicyRow -Scope $DomainName -Item $item -Status $script:Status.NotAssessed -Evidence $evidence -Columns $columns -Detail ("{0} Accounts with no msDS-SupportedEncryptionTypes are not graded." -f $why)
+        return $out
+    }
+    if ($values.Count -gt 1 -or ($set.Count -gt 0 -and $notSet.Count -gt 0)) {
+        $out.State = 'Differs'
+        $out.Cause = 'the DCs of the domain hold different DefaultDomainSupportedEncTypes values (or some hold none), so the value an account gets depends on the KDC that answers'
+        $out.Row = New-AdfaAccountsPolicyRow -Scope $DomainName -Item $item -Status ([string]$Config['KdcDefaultDiffersStatus']) -Evidence $evidence -Columns $columns `
+            -Detail ("The {0} DC(s) read do not hold one value: the values are in Values and the DCs with none in NotSetOn. The encryption types an account with no msDS-SupportedEncryptionTypes gets depend on the KDC that answers, so those accounts are not graded. Grade: AccountsPolicy.KdcDefaultDiffersStatus, a tool default." -f $mine.Count)
+        return $out
+    }
+    if ($set.Count -eq 0) {
+        $out.State = 'NotSet'
+        $out.Cause = 'DefaultDomainSupportedEncTypes is not set on any DC of the domain, and Learn gives its default as 0x18 only after the April 2026 updates, so it is not decoded'
+        $out.Row = New-AdfaAccountsPolicyRow -Scope $DomainName -Item $item -Status $script:Status.Info -Evidence $evidence -Columns $columns `
+            -Detail ("None of the {0} DC(s) holds DefaultDomainSupportedEncTypes. Learn gives the default as 0x18 (AES) only after the April 2026 updates, and states the earlier default otherwise; the update level is not read here, so accounts with no msDS-SupportedEncryptionTypes are not graded." -f $mine.Count)
+        return $out
+    }
+    $out.State = 'Known'
+    $out.Value = [int64]$set[0].Value
+    $out.Row = New-AdfaAccountsPolicyRow -Scope $DomainName -Item $item -Status $script:Status.Pass -Evidence $evidence -Columns $columns `
+        -Detail ("Every one of the {0} DC(s) holds the same DefaultDomainSupportedEncTypes (in Values), so accounts with no msDS-SupportedEncryptionTypes are graded on it in the encryption type rows." -f $mine.Count)
+    return $out
+}
+
+function Get-AdfaKdcDefaultInventory {
+    <#
+    .SYNOPSIS
+        AccountsPolicy, PORT-PLAN C16e(b): DefaultDomainSupportedEncTypes on every DC of every scoped
+        domain, through the shared CIM transport loop and the W32Time registry seam, and the domain value
+        each domain's accounts are graded on. Read-only.
+    .DESCRIPTION
+        Per DC: a DC classified Unreachable in this run is not probed; otherwise WinRM and RPC are probed
+        through the shared gate (Get-AdfaDcProbeGate), and the one value of KdcValues is read with
+        Invoke-AdfaDcRemoteRead -ReadCommand Get-AdfaDcW32TimeRaw (StdRegProv GetDWORDValue; no new CIM
+        session owner, no new method). A scoped domain no DC row covers gets a population row. Per domain:
+        Resolve-AdfaKdcDomainDefault.
+    .OUTPUTS
+        [pscustomobject] Rows (per-DC, population and domain rows), ByDomain (hashtable, lower-case domain
+        name to the Resolve-AdfaKdcDomainDefault result).
+    .PARAMETER DomainControllers
+        The domain controllers to read: DC inventory rows that carry HostName and Scope, or host names.
+        Untyped, default @(), may be null or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause. Untyped, default @(), may be null
+        or empty.
+    .PARAMETER ScopedDomains
+        The DNS names of the domains this run assesses. Type [string[]], default @(), may be null or
+        empty.
+    .PARAMETER Credential
+        The credential for the remote reads; absent uses the account running the assessment. Type
+        [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each TCP port probe. Type [int], default 1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation may take before it is abandoned. Type [int], default 90.
+    .PARAMETER Config
+        The AccountsPolicy table in force (KdcValues, WsmanPort, RpcPort). Type [hashtable], mandatory.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = @(),
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [AllowNull()][AllowEmptyCollection()][string[]]$ScopedDomains = @(),
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    $rows = @()
+    $dcRows = @()
+    $targets = @(@($DomainControllers) | Where-Object { $null -ne $_ })
+    $gaps = @{}
+    foreach ($gap in @(Get-AdfaDcPopulationGap -Targets $targets -InventoryFailures $InventoryFailures -ScopedDomains $ScopedDomains)) {
+        $gaps[([string]$gap.Domain).ToLowerInvariant()] = $gap
+        $rows += New-AdfaAccountsPolicyRow -Scope ([string]$gap.Domain) -Item ("KDC default encryption types (population): {0}" -f [string]$gap.Domain) -Status $script:Status.NotAssessed `
+            -Detail (Get-AdfaDcPopulationGapText -Gap $gap -NothingRead 'No DefaultDomainSupportedEncTypes of its DCs was read.')
+    }
+    $wsmanPort = [int]$Config['WsmanPort']
+    $rpcPort = [int]$Config['RpcPort']
+    foreach ($target in $targets) {
+        $named = ConvertTo-AdfaDcTarget -Target $target
+        $dc = [string]$named.HostName
+        $scope = [string]$named.Scope
+        if ([string]::IsNullOrWhiteSpace($dc)) {
+            $dcRows += New-AdfaAccountsPolicyRow -Scope $scope -Item 'KDC default encryption types: (unnamed)' -Status $script:Status.NotAssessed -Columns ([ordered]@{ Value = ''; ValueHex = ''; Names = ''; KdcState = 'Unread'; Transport = '' }) `
+                -Detail 'The inventory holds a domain controller with no host name, so there was nothing to connect to and no value was read.'
+            continue
+        }
+        $reach = Get-AdfaDcReachCause -HostName $dc
+        if (-not [string]::IsNullOrWhiteSpace($reach)) { $dcRows += Get-AdfaKdcDefaultRow -ComputerName $dc -Scope $scope -Read $null -Unreachable $reach -Config $Config; continue }
+        $gate = Get-AdfaDcProbeGate -ComputerName $dc -Ports @($wsmanPort, $rpcPort) -TimeoutMs $PortTimeoutMs
+        $wsman = [bool]$gate.Open[$wsmanPort]
+        $rpc = [bool]$gate.Open[$rpcPort]
+        if (-not $wsman -and -not $rpc) {
+            $dcRows += Get-AdfaKdcDefaultRow -ComputerName $dc -Scope $scope -Read $null -Config $Config `
+                -Unreachable ("Unreachable: neither WinRM ({0}) nor RPC ({1}) answered within {2} ms, so no read was attempted." -f $wsmanPort, $rpcPort, $PortTimeoutMs)
+            continue
+        }
+        $protocols = @()
+        if ($wsman) { $protocols += 'Wsman' }
+        if ($rpc) { $protocols += 'Dcom' }
+        $readArguments = @{ OperationTimeoutSec = $OperationTimeoutSec; Values = @($Config['KdcValues']) }
+        if ($Credential) { $readArguments.Credential = $Credential }
+        $read = Invoke-AdfaDcRemoteRead -ComputerName $dc -Protocols $protocols -ReadCommand 'Get-AdfaDcW32TimeRaw' -ReadArguments $readArguments
+        $dcRows += Get-AdfaKdcDefaultRow -ComputerName $dc -Scope $scope -Read $read -Config $Config
+    }
+    $rows += $dcRows
+    $byDomain = @{}
+    foreach ($d in @(@($ScopedDomains) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $key = ([string]$d).TrimEnd('.').ToLowerInvariant()
+        $gap = $null
+        if ($gaps.ContainsKey($key)) { $gap = $gaps[$key] }
+        $res = Resolve-AdfaKdcDomainDefault -DomainName ([string]$d).TrimEnd('.') -Rows $dcRows -Gap $gap -Config $Config
+        $byDomain[$key] = $res
+        $rows += $res.Row
+    }
+    return [pscustomobject]@{ Rows = @($rows); ByDomain = $byDomain }
+}
+
 function Get-AdfaAccountsPolicy {
     <#
     .SYNOPSIS
@@ -37989,7 +38974,12 @@ function Get-AdfaAccountsPolicy {
         CN=RID Manager$,CN=System and CN=Infrastructure, the enabled users with an SPN, the enabled
         computers (split into DCs, managed service accounts and computers), the trustedDomain objects
         under CN=System, the PASSWD_NOTREQD search and the PSOs. Get-ADOptionalFeature once, only in a
-        forest of more than one domain, for the Recycle Bin. Every decision is in a pure verdict. A
+        forest of more than one domain, for the Recycle Bin. PORT-PLAN C16e (v1.47.0): the crossRef objects
+        of the forest and the CN=Infrastructure object of ForestDnsZones (from the root) and of each domain's
+        DomainDnsZones (from itself) where a crossRef lists the partition; the msDS-PSOAppliesTo values of each
+        linked PSO and the objectClass and groupType of each linked object in the domain (at most
+        PsoLinkReadCap per domain); and, when -DomainControllers is given, DefaultDomainSupportedEncTypes
+        on every DC (Get-AdfaKdcDefaultInventory). Every decision is in a pure verdict. A
         domain whose DN could not be read gets every row Not Assessed with that cause; an unreadable
         forest gives one Not Assessed row.
     .OUTPUTS
@@ -38016,6 +39006,23 @@ function Get-AdfaAccountsPolicy {
     .PARAMETER CapSource
         Where MaxObjects came from, in the row's words (Get-AdfaCapSource of the AccountsPolicy table
         in force). Type [string], mandatory.
+    .PARAMETER DomainControllers
+        PORT-PLAN C16e(b): the DCs of every scoped domain (inventory rows with HostName and Scope), whose
+        DefaultDomainSupportedEncTypes is read through Get-AdfaKdcDefaultInventory. $null (the default)
+        reads no registry and leaves accounts with no msDS-SupportedEncryptionTypes ungraded as before;
+        Invoke-Main always passes the run's per-domain DC list. Untyped, default $null, may be null or empty.
+    .PARAMETER InventoryFailures
+        The DC inventory failures of the run, per domain with the cause, for the KDC population rows.
+        Untyped, default @(), may be null or empty.
+    .PARAMETER Credential
+        The credential for the remote registry reads; absent uses the account running the assessment.
+        Type [pscredential].
+    .PARAMETER PortTimeoutMs
+        Milliseconds to wait for each WinRM and RPC probe of a DC before the KDC read. Type [int], default
+        1200.
+    .PARAMETER OperationTimeoutSec
+        Seconds a remote CIM operation of the KDC read may take before it is abandoned. Type [int], default
+        90.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
@@ -38027,7 +39034,12 @@ function Get-AdfaAccountsPolicy {
         [AllowNull()][AllowEmptyString()][string]$ForestError = '',
         [hashtable]$AdParams = @{},
         [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][string]$CapSource
+        [Parameter(Mandatory)][string]$CapSource,
+        [AllowNull()][AllowEmptyCollection()]$DomainControllers = $null,
+        [AllowNull()][AllowEmptyCollection()]$InventoryFailures = @(),
+        [pscredential]$Credential,
+        [int]$PortTimeoutMs = 1200,
+        [int]$OperationTimeoutSec = 90
     )
     if (-not [string]::IsNullOrWhiteSpace($ForestError)) {
         return @(New-AdfaAccountsPolicyRow -Item ("Accounts and policy: {0}" -f $ForestName) -Status $script:Status.NotAssessed `
@@ -38046,13 +39058,31 @@ function Get-AdfaAccountsPolicy {
         $schema = Get-AdfaAccountsPolicyRaw -Server $RootDomain -Read 'FsmoRole' -Identity ("CN=Schema,CN=Configuration,{0}" -f $rootDn.Dn) -Config $Config -AdParams $AdParams
         $rootHead = Get-AdfaAccountsPolicyRaw -Server $RootDomain -Read 'DomainHead' -Identity $rootDn.Dn -Config $Config -AdParams $AdParams
         $dsa = Get-AdfaAccountsPolicyRaw -Server $RootDomain -Read 'Dsa' -SearchBase ("CN=Sites,CN=Configuration,{0}" -f $rootDn.Dn) -Config $Config -AdParams $AdParams
+        # PORT-PLAN C16e(d): the crossRef objects, so an application partition's CN=Infrastructure is read only where it exists.
+        $crossRefs = Get-AdfaAccountsPolicyRaw -Server $RootDomain -Read 'AppPartitions' -SearchBase ("CN=Partitions,CN=Configuration,{0}" -f $rootDn.Dn) -Config $Config -AdParams $AdParams
     }
     else {
         $why = 'no forest root domain was named'
         $type = ''
         if ($null -ne $rootDn) { $why = ("the forest root domain's distinguished name could not be read: {0}" -f $rootDn.Error); $type = $rootDn.ErrorType }
         $partitions = New-AdfaInventoryFailedRead -ErrorText $why -ErrorType $type
-        $schema = $partitions; $rootHead = $partitions; $dsa = $partitions
+        $schema = $partitions; $rootHead = $partitions; $dsa = $partitions; $crossRefs = $partitions
+    }
+    # PORT-PLAN C16e(d): an application partition's CN=Infrastructure, read from -Server only when the crossRef
+    # read lists the partition; otherwise $null and the verdict says why.
+    $readAppInfra = {
+        param([string]$PartitionDn, [string]$Server)
+        if (-not [bool](Get-AdfaConfigValue -Entry $crossRefs -Name 'Ok')) { return $null }
+        $listed = @(@(Get-AdfaConfigValue -Entry $crossRefs -Name 'Records') | Where-Object { $null -ne $_ -and [string]::Equals([string](Get-AdfaConfigValue -Entry $_ -Name 'nCName'), $PartitionDn, [System.StringComparison]::OrdinalIgnoreCase) })
+        if ($listed.Count -eq 0) { return $null }
+        return (Get-AdfaAccountsPolicyRaw -Server $Server -Read 'FsmoRole' -Identity ("CN=Infrastructure,{0}" -f $PartitionDn) -Config $Config -AdParams $AdParams)
+    }
+    # PORT-PLAN C16e(b): DefaultDomainSupportedEncTypes on every DC, only when the caller gave the DCs.
+    $kdc = $null
+    if ($null -ne $DomainControllers) {
+        $kdcArgs = @{ DomainControllers = @($DomainControllers); InventoryFailures = @($InventoryFailures); ScopedDomains = @($scoped); PortTimeoutMs = $PortTimeoutMs; OperationTimeoutSec = $OperationTimeoutSec; Config = $Config }
+        if ($Credential) { $kdcArgs.Credential = $Credential }
+        $kdc = Get-AdfaKdcDefaultInventory @kdcArgs
     }
     $forestFacts = [pscustomobject]@{ DomainCount = $null; DomainCountCause = ''; Level = $null; LevelCause = ''; RecycleBin = 'Unknown'; RecycleBinCause = '' }
     $forestList = @(@($ForestDomains) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { ([string]$_).Trim().TrimEnd('.').ToLowerInvariant() } | Sort-Object -Unique)
@@ -38072,6 +39102,18 @@ function Get-AdfaAccountsPolicy {
     $rows += Get-AdfaFsmoSpreadVerdict -Scope $ForestName -Kind 'Forest' -Config $Config -CapSource $CapSource `
         -Roles @([pscustomobject]@{ Role = 'Schema master'; Raw = $schema }, [pscustomobject]@{ Role = 'Domain naming master'; Raw = $partitions }, [pscustomobject]@{ Role = 'PDC emulator of the forest root domain'; Raw = $rootHead }) `
         -Placement @([pscustomobject]@{ Name = 'Schema master on the forest root PDC'; Role = 'Schema master'; SameAs = 'PDC emulator of the forest root domain' }, [pscustomobject]@{ Name = 'Domain naming master on the forest root PDC'; Role = 'Domain naming master'; SameAs = 'PDC emulator of the forest root domain' })
+    # PORT-PLAN C16e(c): the forest's two roles on an RODC; (d) the ForestDnsZones infrastructure master, read from the root.
+    $rows += Get-AdfaRodcRoleHolderVerdict -Scope $ForestName -Kind 'Forest' -Config $Config -CapSource $CapSource -DsaRaw $dsa `
+        -Roles @([pscustomobject]@{ Role = 'Schema master'; Raw = $schema }, [pscustomobject]@{ Role = 'Domain naming master'; Raw = $partitions })
+    if ($null -ne $rootDn -and $rootDn.Ok) {
+        $forestDnsZones = ("DC=ForestDnsZones,{0}" -f $rootDn.Dn)
+        $rows += Get-AdfaAppPartitionInfraVerdict -PartitionDn $forestDnsZones -Scope $ForestName -PartitionsRaw $crossRefs -Raw (& $readAppInfra $forestDnsZones $RootDomain) -DsaRaw $dsa -Config $Config -CapSource $CapSource
+    }
+    else {
+        $rows += New-AdfaAccountsPolicyRow -Scope $ForestName -Item 'Infrastructure master (application partition): DC=ForestDnsZones' -Status $script:Status.NotAssessed `
+            -Detail ("{0} So the ForestDnsZones partition and its infrastructure master were not read." -f (Get-AdfaInventoryReadCause -Raw $crossRefs -What 'the forest root domain''s distinguished name' -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource))
+    }
+    $linkCap = [int]$Config['PsoLinkReadCap']
     foreach ($d in $scoped) {
         $isRoot = [string]::Equals(([string]$d).TrimEnd('.'), ([string]$RootDomain).TrimEnd('.'), [System.StringComparison]::OrdinalIgnoreCase)
         if ($isRoot -and $null -ne $rootDn -and $rootDn.Ok) { $dn = $rootDn } else { $dn = Get-AdfaInventoryDomainDn -DomainName $d -AdParams $AdParams }
@@ -38092,10 +39134,17 @@ function Get-AdfaAccountsPolicy {
             $domainDn = ''
         }
         $split = Split-AdfaComputerPopulation -Records @(Get-AdfaConfigValue -Entry $computers -Name 'Records') -Config $Config
-        $rows += Get-AdfaEncryptionTypeVerdict -DomainName $d -Population 'UsersWithSpn' -Raw $users -Records @(Get-AdfaConfigValue -Entry $users -Name 'Records') -Config $Config -CapSource $CapSource
-        $rows += Get-AdfaEncryptionTypeVerdict -DomainName $d -Population 'Computers' -Raw $computers -Records $split.Computers -Config $Config -CapSource $CapSource
-        $rows += Get-AdfaEncryptionTypeVerdict -DomainName $d -Population 'ManagedServiceAccounts' -Raw $computers -Records $split.ManagedServiceAccounts -Config $Config -CapSource $CapSource
-        $rows += Get-AdfaEncryptionTypeVerdict -DomainName $d -Population 'DomainControllers' -Raw $computers -Records $split.DomainControllers -Config $Config -CapSource $CapSource
+        # PORT-PLAN C16e(b): the domain's KDC default, when the DCs were given.
+        $kdcDomain = $null
+        if ($null -ne $kdc) {
+            $kdcKey = ([string]$d).TrimEnd('.').ToLowerInvariant()
+            if ($kdc.ByDomain.ContainsKey($kdcKey)) { $kdcDomain = $kdc.ByDomain[$kdcKey] }
+            else { $kdcDomain = [pscustomobject]@{ State = 'Unknown'; Value = $null; Cause = 'no KDC value was read for this domain' } }
+        }
+        $rows += Get-AdfaEncryptionTypeVerdict -DomainName $d -Population 'UsersWithSpn' -Raw $users -Records @(Get-AdfaConfigValue -Entry $users -Name 'Records') -Config $Config -CapSource $CapSource -KdcDefault $kdcDomain
+        $rows += Get-AdfaEncryptionTypeVerdict -DomainName $d -Population 'Computers' -Raw $computers -Records $split.Computers -Config $Config -CapSource $CapSource -KdcDefault $kdcDomain
+        $rows += Get-AdfaEncryptionTypeVerdict -DomainName $d -Population 'ManagedServiceAccounts' -Raw $computers -Records $split.ManagedServiceAccounts -Config $Config -CapSource $CapSource -KdcDefault $kdcDomain
+        $rows += Get-AdfaEncryptionTypeVerdict -DomainName $d -Population 'DomainControllers' -Raw $computers -Records $split.DomainControllers -Config $Config -CapSource $CapSource -KdcDefault $kdcDomain
         $rows += Get-AdfaEncryptionTypeVerdict -DomainName $d -Population 'Trusts' -Raw $trusts -Records @(Get-AdfaConfigValue -Entry $trusts -Name 'Records') -Config $Config -CapSource $CapSource
         # PASSWD_NOTREQD: an empty answer is a measured one only when userAccountControl was read here.
         $proof = Get-AdfaInventoryReadCause -Raw $computers -What ("the computer accounts of {0}" -f $d) -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
@@ -38105,9 +39154,56 @@ function Get-AdfaAccountsPolicy {
             -Roles @([pscustomobject]@{ Role = 'PDC emulator'; Raw = $head }, [pscustomobject]@{ Role = 'RID master'; Raw = $rid }, [pscustomobject]@{ Role = 'Infrastructure master'; Raw = $infra }) `
             -Placement @([pscustomobject]@{ Name = 'RID master on the PDC emulator'; Role = 'RID master'; SameAs = 'PDC emulator' })
         $rows += Get-AdfaInfrastructureMasterVerdict -DomainName $d -DomainDn $domainDn -Raw $infra -DsaRaw $dsa -Forest $forestFacts -Config $Config -CapSource $CapSource
+        # PORT-PLAN C16e(c): the domain's three roles on an RODC; (d) its DomainDnsZones infrastructure master, read from itself.
+        $rows += Get-AdfaRodcRoleHolderVerdict -Scope $d -Kind 'Domain' -Config $Config -CapSource $CapSource -DsaRaw $dsa `
+            -Roles @([pscustomobject]@{ Role = 'PDC emulator'; Raw = $head }, [pscustomobject]@{ Role = 'RID master'; Raw = $rid }, [pscustomobject]@{ Role = 'Infrastructure master'; Raw = $infra })
+        # The domain is read from itself: a domain whose head could not be read is not asked for its partition either.
+        $headCause = Get-AdfaInventoryReadCause -Raw $head -What ("the domain head of {0}" -f $d) -MaxObjects ([int]$Config['MaxObjects']) -CapSource $CapSource
+        if ($domainDn -ne '' -and $headCause -eq '') {
+            $domainDnsZones = ("DC=DomainDnsZones,{0}" -f $domainDn)
+            $rows += Get-AdfaAppPartitionInfraVerdict -PartitionDn $domainDnsZones -Scope $d -PartitionsRaw $crossRefs -Raw (& $readAppInfra $domainDnsZones $d) -DsaRaw $dsa -Config $Config -CapSource $CapSource
+        }
+        else {
+            $dzItem = ("Infrastructure master (application partition): DC=DomainDnsZones of {0}" -f $d)
+            if ($domainDn -ne '') { $dzItem = ("Infrastructure master (application partition): DC=DomainDnsZones,{0}" -f $domainDn) }
+            $rows += New-AdfaAccountsPolicyRow -Scope $d -Item $dzItem -Status $script:Status.NotAssessed `
+                -Detail ("{0} So the domain's DomainDnsZones partition and its infrastructure master were not read." -f $headCause)
+        }
         $rows += Get-AdfaLockoutVerdict -DomainName $d -Raw $head -Config $Config -CapSource $CapSource
-        $rows += @(Get-AdfaPsoVerdict -DomainName $d -Raw $pso -Config $Config -CapSource $CapSource)
+        # PORT-PLAN C16e(a): the links of each PSO the Pso read counted (not ranged), and each linked object, from
+        # this domain, at most PsoLinkReadCap link targets per domain; a link outside the domain is not read.
+        $links = @()
+        if ([bool](Get-AdfaConfigValue -Entry $pso -Name 'Ok') -and -not [bool](Get-AdfaConfigValue -Entry $pso -Name 'Capped')) {
+            $budget = $linkCap
+            foreach ($p in @(@(Get-AdfaConfigValue -Entry $pso -Name 'Records') | Where-Object { $null -ne $_ })) {
+                $pDn = [string](Get-AdfaConfigValue -Entry $p -Name 'DistinguishedName')
+                $pCount = ConvertTo-AdfaInventoryInteger -Value (Get-AdfaConfigValue -Entry $p -Name 'msDS-PSOAppliesToCount')
+                if ([bool](Get-AdfaConfigValue -Entry $p -Name 'msDS-PSOAppliesToRangeReturned') -or $null -eq $pCount -or $pCount -le 0 -or $pDn -eq '') { continue }
+                if ($pCount -gt $budget) {
+                    $links += [pscustomobject]@{ Dn = $pDn; LinksRaw = $null; Subjects = @(); NotRead = ("its {0} link(s) were not read: the link read cap of {1} per domain ({2}) was reached" -f $pCount, $linkCap, (Get-AdfaCapSource -Config $Config -BaseConfig $script:Config.AccountsPolicy -Key 'PsoLinkReadCap' -Label 'AccountsPolicy')) }
+                    continue
+                }
+                $budget -= $pCount
+                $linksRaw = Get-AdfaAccountsPolicyRaw -Server $d -Read 'PsoLinks' -Identity $pDn -Config $Config -AdParams $AdParams
+                $subjects = @()
+                if ([bool](Get-AdfaConfigValue -Entry $linksRaw -Name 'Ok')) {
+                    $lrec = @(@(Get-AdfaConfigValue -Entry $linksRaw -Name 'Records') | Where-Object { $null -ne $_ })
+                    $targetsDn = @()
+                    if ($lrec.Count -gt 0) { $targetsDn = @(@(Get-AdfaConfigValue -Entry $lrec[0] -Name 'msDS-PSOAppliesTo') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ }) }
+                    foreach ($t in @($targetsDn | Select-Object -First $pCount)) {
+                        if ($domainDn -eq '' -or -not $t.EndsWith((',{0}' -f $domainDn), [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $subjects += [pscustomobject]@{ Dn = $t; Raw = (New-AdfaInventoryFailedRead -ErrorText ("the linked object {0} is not in {1}, so it was not read from this domain" -f $t, $d)) }
+                            continue
+                        }
+                        $subjects += [pscustomobject]@{ Dn = $t; Raw = (Get-AdfaAccountsPolicyRaw -Server $d -Read 'PsoSubject' -Identity $t -Config $Config -AdParams $AdParams) }
+                    }
+                }
+                $links += [pscustomobject]@{ Dn = $pDn; LinksRaw = $linksRaw; Subjects = @($subjects); NotRead = '' }
+            }
+        }
+        $rows += @(Get-AdfaPsoVerdict -DomainName $d -Raw $pso -Config $Config -CapSource $CapSource -Links @($links))
     }
+    if ($null -ne $kdc) { $rows += @($kdc.Rows) }
     return @($rows)
 }
 
@@ -41829,7 +42925,20 @@ $script:RecommendationMap = @(
     @{ Section = '(?i)^accounts & policy'; Match = '(?i)^Accounts & Policy :: Infrastructure master on a global catalog: '
        Text  = 'Microsoft (KB 223346, KB 248047) says that in a multi-domain forest the infrastructure master must not be a global catalog unless every domain controller of its domain is one, or the forest is at the Windows Server 2008 R2 level or later with the Recycle Bin enabled. Do one of these: move the infrastructure master of this domain to a domain controller that is not a global catalog, make every domain controller of the domain a global catalog, or enable the AD Recycle Bin - which Microsoft documents as irreversible. Until then expect event 1419 on the holder. This report reads only and changes nothing.' }
     @{ Section = '(?i)^accounts & policy'; Match = '(?i)^Accounts & Policy :: (Lockout policy|Fine-grained password policy): '
-       Text  = 'Compare these values with the Windows security baseline figures Microsoft quotes - an account lockout threshold of 10, a lockout duration of about 15 minutes and a reset counter of 15 minutes, which Microsoft itself calls more of a guideline - and with Microsoft''s rule that, when the threshold is above 0, the reset time must be less than or equal to the lockout duration. A threshold of 0 never locks an account out; Microsoft accepts it only with complex passwords of 8 or more characters and robust failed-logon auditing. Change the Default Domain Policy or the PSO only after weighing the risk of locking users out. This report reads only and changes nothing.' }
+       Text  = 'Compare these values with the baseline named in the Baseline column and the Evidence (AccountsPolicy.LockoutBaseline): by default the Windows security baseline figures Microsoft quotes - an account lockout threshold of 10, a lockout duration of about 15 minutes and a reset counter of 15 minutes, which Microsoft itself calls more of a guideline - or, when selected, the CIS-mapped Azure guest-configuration baseline (AZ-WIN-73311, 73312, 73309: a threshold of 5 or fewer but not 0, a duration and a reset counter of 15 minutes or more); and with Microsoft''s rule that, when the threshold is above 0, the reset time must be less than or equal to the lockout duration. A threshold of 0 never locks an account out; Microsoft accepts it only with complex passwords of 8 or more characters and robust failed-logon auditing. Change the Default Domain Policy or the PSO only after weighing the risk of locking users out. This report reads only and changes nothing.' }
+    # PORT-PLAN C16e (v1.47.0), each statement read on Learn 2026-11-20:
+    #   "RODCs cannot act as operations master role holders" - planning-operations-master-role-placement
+    #   assign fSMORoleOwner of the partition's infrastructure object to a live DC hosting it (KB 2694933, KB 949257)
+    #   DefaultDomainSupportedEncTypes, 0x18 AES, 0x24 only where legacy RC4 is still needed - kerberos-protocol-registry-kdc-configuration-keys
+    #   "Fine-grained password policies apply only to global security groups and user objects" - adac/fine-grained-password-policies
+    @{ Section = '(?i)^accounts & policy'; Match = '(?i)^Accounts & Policy :: FSMO role on a read-only domain controller '
+       Text  = 'Microsoft states that "RODCs cannot act as operations master role holders" (Planning Operations Master Role Placement). Move each role named in the RodcHolders column to a writable domain controller of the same scope (a transfer with Move-ADDirectoryServerOperationMasterRole or ntdsutil, run by an administrator after checking replication), and find out how the role came to name a read-only domain controller. This report reads only and changes nothing.' }
+    @{ Section = '(?i)^accounts & policy'; Match = '(?i)^Accounts & Policy :: Infrastructure master \(application partition\): '
+       Text  = 'Microsoft (KB 2694933, KB 949257) says the infrastructure master of each DNS application partition must name a live domain controller that hosts the partition: a deleted or missing owner makes the demotion of a domain controller holding the partition and adprep /rodcprep fail. Set the fSMORoleOwner of the partition''s CN=Infrastructure object, named in this finding, to the NTDS Settings object of a live domain controller that hosts the partition (ADSI Edit, or the script in KB 949257), and check both DomainDnsZones and ForestDnsZones, as Microsoft recommends. This report reads only and changes nothing.' }
+    @{ Section = '(?i)^accounts & policy'; Match = '(?i)^Accounts & Policy :: KDC default encryption types: '
+       Text  = 'Microsoft documents DefaultDomainSupportedEncTypes under HKLM\SYSTEM\CurrentControlSet\Services\Kdc as the encryption types the KDC assumes for accounts with no msDS-SupportedEncryptionTypes, so a domain whose domain controllers hold different values gives such accounts different tickets depending on the KDC that answers. Choose one value for every domain controller of the domain - Microsoft names 0x18 (AES) and recommends 0x24 only where legacy applications still need RC4 - and set it on each, after checking the Kerberos events 4768 and 4769 for what still requests RC4. This report reads only and changes nothing.' }
+    @{ Section = '(?i)^accounts & policy'; Match = '(?i)^Accounts & Policy :: Fine-grained password policies applied to nothing: '
+       Text  = 'Microsoft states that fine-grained password policies apply only to global security groups and user objects, and that PSOs linked to distribution groups or other types of security groups are ignored. For each PSO in NotApplied or NotHonoured, link it to the users or global security groups it was meant for (Add-ADFineGrainedPasswordPolicySubject or Active Directory Administrative Center), or delete it if it is no longer needed. This report reads only and changes nothing.' }
     @{ Section = '(?i)^accounts & policy'; Match = '(?i)^Accounts & Policy :: Fine-grained password policy precedence: '
        Text  = 'Give each PSO named in the TiedPolicies column a unique msDS-PasswordSettingsPrecedence: Microsoft recommends a unique value for each PSO, and when several PSOs with one value apply to a user, the PSO with the smallest GUID is applied, which is rarely what was intended. This report reads only and changes nothing.' }
     @{ Section = '(?i)^accounts & policy'; Match = '.'
@@ -42014,6 +43123,10 @@ $script:RecommendationMap = @(
        Text  = 'Find out why this domain controller does not answer the host running the assessment before reading any other result for it. A name that does not resolve needs its A record (check the DC''s DNS client settings and its registration). A refused or silent LDAP port needs the firewall between the two hosts checked against Microsoft''s port list for AD (TCP 389, 88, 135, 445, 3268 and the dynamic RPC range 49152-65535), or the DC itself checked. A DC that answers LDAP but neither WinRM (5985) nor RPC (135) cannot be read remotely; WinRM can listen on another port, so confirm its listener before opening anything. If the DC was retired and will not come back, perform metadata cleanup (delete its computer object in Active Directory Users and Computers, or ntdsutil "metadata cleanup"), as Microsoft documents for a forcibly removed DC.' }
     @{ Section = '(?i)^site health$'; Match = '(?i)^Site Health :: Subnets without a site: '
        Text  = 'Assign a site to each subnet listed in the Subnets column: Active Directory Sites and Services, Sites > Subnets, the subnet''s properties, Site. A domain controller maps a client to a site by the subnet object that covers its address, whose siteObject names the site; a subnet with no site maps its clients to none, and they may then use any domain controller.' }
+    # PORT-PLAN C14e(3): the Netlogon log capacity row is Info and needs no advice; this entry keeps the
+    # unscoped log, backup and dcdiag entries from answering it.
+    @{ Section = '(?i)^site health$'; Match = '(?i)^Site Health :: Netlogon log capacity'
+       Text  = '' }
     @{ Section = '(?i)^site health$'; Match = '(?i)^Site Health :: Clients without a site: '
        Text  = 'Create subnet object(s) covering the client addresses listed in the Clients column and map each to the site those clients are in (Active Directory Sites and Services, Sites > Subnets > New Subnet), as Microsoft''s Netlogon event 5807 advises. Until then those clients have no site and may use any domain controller, including a distant one. The Clients column holds the clients named in netlogon.log and netlogon.bak (where the log is saved when it is full) in a file last written inside the age window; clients named only in an older file are counted in OldClientCount and not listed.' }
     @{ Section = '(?i)^time hierarchy$'; Match = '(?i)^Time Hierarchy :: Clock offset (vs forest root PDC: |on )'
@@ -43404,7 +44517,7 @@ function Invoke-Main {
         # probe gate (Get-AdfaDcProbeGate), DomainControllers for its DC DNS client read; a test derives the
         # same list from the call graph and fails on a section missing here or listed without a probe.
         $classifySections = @('DomainControllers', 'Replication', 'Topology', 'DcDiagnostics', 'Dns', 'Sysvol', 'Gpo', 'DcHardening', 'DcSystem', 'DcDisk',
-            'DcCertificates', 'Backup', 'DnsAdConsistency', 'TimeHierarchy', 'PortMatrix', 'DcSecureChannel', 'DsEvents', 'RestoreIntegrity', 'DnsRecordExport')
+            'DcCertificates', 'Backup', 'DnsAdConsistency', 'TimeHierarchy', 'PortMatrix', 'DcSecureChannel', 'DsEvents', 'RestoreIntegrity', 'DnsRecordExport', 'AccountsPolicy')
         $classifyDcs = ((@($classifySections | Where-Object { Test-SectionSelected $_ $Sections }).Count -gt 0) -or $IncludeLingeringObjectScan -or $IncludeRepadmin -or $IncludeDcdiag)
         if (-not $dcInventoryCollected -and ($classifyDcs -or (Test-SectionSelected 'Topology' $Sections))) {
             $c14Enumeration = Get-AdfaDcTargetsByDomain -Domains $targetDomains -AdParams $adParams
@@ -43561,6 +44674,11 @@ function Invoke-Main {
             Write-Stage 'Clients without a site (netlogon.log NO_CLIENT_SITE, per DC, read-only)'
             $siteRows += @(Get-AdfaClientSiteRows -DomainControllers $c14Targets -Config $siteConfig -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
                     -InventoryFailures $c14Failures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
+            # PORT-PLAN C14e(3): how much history netlogon.log and netlogon.bak can hold on each DC (MaximumLogFileSize and
+            # LogFileMaxSize, StdRegProv GetDWORDValue through the shared CIM transport). Info only.
+            Write-Stage 'Netlogon log capacity (MaximumLogFileSize / LogFileMaxSize, per DC, read-only)'
+            $siteRows += @(Get-AdfaNetlogonCapacityRows -DomainControllers $c14Targets -Config $siteConfig -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs `
+                    -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec -InventoryFailures $c14Failures -EnumerationError $script:DcEnumerationError -ScopedDomains $targetDomains)
             $sectionData['Site Health'] = @($siteRows)
         }
 
@@ -43758,8 +44876,11 @@ function Invoke-Main {
             $accountsPolicyConfig = $script:Config.AccountsPolicy
             if ($configOverrides.ContainsKey('AccountsPolicy')) { $accountsPolicyConfig = $configOverrides['AccountsPolicy'] }
             $accountsPolicyCapSource = Get-AdfaCapSource -Config $accountsPolicyConfig -BaseConfig $script:Config.AccountsPolicy -Key 'MaxObjects' -Label 'AccountsPolicy'
+            # PORT-PLAN C16e(b): DefaultDomainSupportedEncTypes on every DC of every scoped domain (the per-domain list,
+            # classified above), read through the shared CIM transport.
             $sectionData['Accounts & Policy'] = @(Get-AdfaAccountsPolicy -ForestName ([string]$forest.Name) -RootDomain $rootDomain -Domains $targetDomains -ForestDomains @($forestDomainList) `
-                    -ForestError $forestError -AdParams $adParams -Config $accountsPolicyConfig -CapSource $accountsPolicyCapSource)
+                    -ForestError $forestError -AdParams $adParams -Config $accountsPolicyConfig -CapSource $accountsPolicyCapSource `
+                    -DomainControllers $c14Targets -InventoryFailures $c14Failures -Credential $Credential -PortTimeoutMs $script:Config.RpcPortTimeoutMs -OperationTimeoutSec $script:Config.ExternalToolTimeoutSec)
         }
         if (Test-SectionSelected 'PasswordPolicy' $Sections) {
             $pp = foreach ($d in $targetDomains) { Get-AdfaPasswordPolicy -DomainName $d -AdParams $adParams }
